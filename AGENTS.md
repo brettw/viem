@@ -31,7 +31,11 @@ and terminal frontends, but those frontends are not part of the current scope.
 
 ## Working rules for this repository
 
-- Put portable document, command, editing, and layout logic under `src/core`.
+- Put portable document-state logic under `src/core/document`, Vim command
+  interpretation under `src/core/command`, and layout logic under
+  `src/core/layout`. The `src/core` crate root is their composition boundary and
+  public facade; it must not become an unstructured alternative location for
+  their implementations.
 - Put AppKit, Core Text, macOS input, drawing, clipboard, accessibility, and
   application lifecycle code under `src/mac`.
 - `src/core` MUST NOT import AppKit, Core Text, Metal, or other platform UI
@@ -1509,6 +1513,209 @@ subsystems for them now.
 The core is organized around testable services rather than platform widgets.
 Names below are conceptual; language-specific spelling may differ.
 
+### Core module and dependency boundaries
+
+The portable Rust core follows a model/controller split. The split is a strict
+dependency and mutation boundary, not merely a naming convention:
+
+```text
+src/core coordinator --> command
+src/core coordinator --> layout
+src/core coordinator --> document
+command -------------> layout public API
+command -------------> document public API
+layout --------------> document public API
+document -X---------> command
+```
+
+`src/core/document` is the model. It owns authoritative and derived document
+state, state invariants, and the operations that can change that state.
+`src/core/command` is the Vim-compatible controller. It interprets normalized
+input and decides which model operation or view action is intended. Layout is a
+separate derived service because it consumes document snapshots but has
+view-specific configuration, caches, geometry, and background scheduling.
+
+The required initial directory responsibilities are:
+
+```text
+src/core/
+    lib.rs or equivalent       public facade and C-ABI-facing core handles
+    coordinator.*              serial ownership and atomic publication
+    document/
+        source and artifact storage
+        encoding, format, and semantic projections
+        formatted block/text tree, styles, and position algebra
+        buffer/view editing state, transactions, and undo history
+        persistence capabilities and semantic edit intentions
+    command/
+        normalized command input and Vim grammar
+        modes and pending parser states
+        motions, text objects, operators, and insert/replace behavior
+        Ex/search command interpretation
+        repeat and macro command representation
+    layout/
+        segmentation, shaping-provider integration, and wrapping
+        view height indexes, viewport layout, hit testing, and geometry
+    services/                   only genuinely cross-cutting portable contracts
+```
+
+The leaf filenames are not normative and related responsibilities may begin in
+one file before being split. The `document`, `command`, and `layout` module
+boundaries and the dependency rules below are normative. Do not create a
+general `common`, `util`, or `shared` module as a way to evade those boundaries;
+small dependency-free value types may live at the crate root only when at least
+two sibling modules genuinely own neither concept.
+
+A service interface normally belongs to the portable module that consumes it:
+for example, the artifact-storage contract belongs with `document` and the text-
+measurement contract belongs with `layout`. `services` is reserved for a
+genuinely cross-cutting clock, scheduler, or similar dependency-free contract.
+It contains no AppKit implementation and MUST NOT depend back on both sibling
+modules in a way that creates a cycle. Platform implementations remain under
+`src/mac` and are injected through the core facade.
+
+#### Document model boundary
+
+`document` owns at least:
+
+- source artifacts, snapshots, piece trees, format adapters, transformation
+  pipelines, formatted trees, styles, provenance, anchors, and range types;
+- document and buffer state, including file identity, dirty state, capabilities,
+  undo history, registers, marks, search history, and the persistent portions of
+  attached view state such as cursor and selection anchors;
+- typed model requests, including semantic edit intentions such as replace text,
+  apply formatting, insert a break, or change block kind; history navigation;
+  save serialization; and model-level view-state changes;
+- preparation, reverse projection, verification, and atomic commit of source
+  transactions; and
+- immutable read snapshots and bounded query APIs used by commands, layout,
+  accessibility, and frontends.
+
+Model request, semantic intention, and document result types belong to
+`document`, not `command`, because native UI actions and future controllers must
+be able to use the same model operations without manufacturing Vim commands.
+The model may store command-relevant values such as register contents or named
+marks, but it does not know which keystroke, count, operator, or Ex spelling
+caused a requested state transition.
+
+Tree nodes, mutable indexes, parser state, cache implementations, and format-
+specific syntax types are private to `document` submodules. Consumers receive
+immutable snapshots, opaque stable identities, iterators/batches with bounded
+lifetime, and typed query results. `command` MUST NOT import or pattern-match on
+piece-tree nodes, projection-tree nodes, concrete format syntax, or mutable
+document internals, even when Rust crate visibility would technically allow it.
+
+`document` MUST NOT import `command` or accept `ParsedCommand`, `Motion`, Vim
+key codes, counts, operator names, or mode-machine state. This prohibition keeps
+the dependency graph acyclic and permits the complete model and transaction
+suite to run without instantiating a Vim interpreter.
+
+#### Command controller boundary
+
+`command` owns at least:
+
+- Normal, Insert, Replace, Visual, command-line, and transient pending states;
+- count, register-prefix, multi-key-prefix, operator, motion, and text-object
+  grammar;
+- Vim-specific inclusive/exclusive and linewise motion semantics;
+- selection of register effects, undo grouping directives, dot-repeat actions,
+  macro recording/replay, and command-line/search history behavior; and
+- translation from normalized input into a revision-bound `CommandPlan`.
+
+The command interpreter may read only a `CommandContext` composed of immutable
+document/projection state, the relevant view editing state, implemented options
+and capabilities, and an exact layout snapshot when the command requires visual
+rows. Queries are explicit and side-effect-free. A command that does not need
+layout must not acquire or wait for it.
+
+A resolved plan is conceptually:
+
+```text
+CommandPlan {
+    document/projection/layout revision preconditions,
+    optional document::ModelRequest,
+    planned buffer/view/controller state effects,
+    undo-group directive,
+    presentation or platform requests
+}
+```
+
+A `ModelRequest` distinguishes an atomic semantic edit, history navigation,
+persistence preparation, and other model operations. A compound or
+discontiguous edit is one request containing one atomic semantic intention, not
+a list that may partially commit.
+
+The exact Rust representation may use enums and specialized variants rather
+than one broad structure. It MUST remain a typed value: commands do not call
+arbitrary model closures, retain mutable document references, directly patch
+source bytes, mutate derived spans, or publish UI effects while resolving.
+Unsupported, incomplete, cancelled, or failed commands produce typed outcomes
+and no partially applied model change. Updating the command parser's own pending
+state while accumulating a multi-key command is not a document mutation.
+
+#### Coordinator and atomic application
+
+The buffer coordinator at the `src/core` composition boundary owns concrete
+instances of document, command, and per-view layout/controller state. It is the
+only layer allowed to orchestrate all three; it contains sequencing and
+publication logic, not a second implementation of their domain rules.
+
+For a mutating command, the coordinator:
+
+1. captures a `CommandContext` from mutually compatible immutable snapshots;
+2. asks `command` to resolve input into a `CommandPlan`;
+3. verifies the plan's revision preconditions;
+4. asks `document` to prepare, reverse-project, and verify its semantic
+   intentions without publishing them;
+5. atomically installs the prepared document transaction and the plan's
+   register, mark, cursor/selection, undo-group, repeat, mode, and invalidation
+   effects; and
+6. schedules or returns typed layout, redraw, persistence, clipboard, dialog,
+   or diagnostic requests.
+
+Before publication, every success-dependent state effect must be validated and
+infallible to install; step 5 performs no provider call, callback, allocation
+whose failure can become partial state, or external I/O. If preparation,
+verification, policy resolution, or a revision check fails, the source snapshot
+and all success-dependent plan effects remain unchanged. Parser cleanup and an
+error diagnostic may still be published. Non-mutating plans use the same
+revision check and coordinator turn but need no prepared document transaction.
+Native frontend actions may enter at step 3 with a `document::ModelRequest`;
+they do not pass through the Vim grammar, but they use the same preparation,
+commit, history, and invalidation path.
+
+This coordinator is the serial owner described by the concurrency model. The
+module boundary does not imply one thread per module, and it introduces no lock
+between `command` and `document`. Background work still receives immutable
+snapshots and returns revision-tagged candidates to the coordinator.
+
+#### Public surface and tests
+
+`src/core/lib.rs` exposes task-oriented facade operations and opaque handles,
+not the complete public surface of every internal module. The stable C ABI wraps
+this facade. Rust module types may evolve internally without expanding the ABI;
+positions, edits, queries, and layout data crossing the ABI remain explicit,
+revision-tagged, ownership-safe, and batch-oriented.
+
+Testing follows the same boundary:
+
+- `document` unit and property tests construct snapshots and semantic intentions
+  directly, with no key-event or Vim parser setup;
+- `command` unit tests use small immutable command contexts and deterministic
+  layout/query fakes to verify parsing and resulting plans without committing a
+  document;
+- `layout` tests use immutable formatted snapshots and fake shapers without a
+  command interpreter; and
+- coordinator integration tests run plans through preparation and atomic commit,
+  including stale revisions, unsupported intentions, undo grouping, and failure
+  rollback.
+
+At least one architectural test or compile-time visibility check MUST ensure
+that `document` has no dependency on `command` and that `command` does not reach
+private document storage. Mocking a document by duplicating its tree internals
+inside command tests is forbidden; test through the same snapshot/query contract
+used in production.
+
 ### Core source and projection storage
 
 - Source storage follows the byte-preserving balanced structures defined in
@@ -1550,21 +1757,41 @@ and layout caches belong to a view. Two views of one buffer may have different
 widths, wrapping settings, and layout caches while sharing source snapshots,
 formatted projections, and width-independent shaping results.
 
-The command engine is a state machine inspired by Vim's separation of Normal
-command parsing and operator execution:
+Logical ownership does not require one monolithic `ViewState` structure. The
+coordinator composes state along the module boundaries:
 
-1. normalize platform input into key, text, composition, pointer, or command
-   events;
-2. parse counts, prefixes, registers, operators, and motions without mutating;
-3. resolve motions/text objects against a formatted projection snapshot and,
-   when needed, a view layout snapshot;
-4. produce a typed semantic edit intention or non-mutating action;
-5. reverse-project an edit intention to a minimal source patch set, tentatively
-   apply it, reproject, and verify its semantic result;
-6. atomically commit the source transaction, undo record, mode,
-   cursor/selection, registers, repeat state, and invalidations; and
-7. return state changes, diagnostics/policy requests, and redraw/layout
-   requests to the frontend.
+- `document::BufferState` owns shared source/projection/history state and the
+  model stores required for registers, marks, search history, and persistence;
+- `document::ViewEditState` owns stable cursor and selection anchors that must
+  be remapped or restored with document transactions;
+- `command::BufferCommandState` owns dot-repeat and macro state, while
+  `command::ViewCommandState` owns mode, pending grammar, and desired x; and
+- `layout::ViewLayoutState` owns wrap width/options, scroll and viewport state,
+  height indexes, and view-specific layout caches. Its scroll anchor uses the
+  `document::TextAnchor` value type without transferring ownership to the model.
+
+The exact structs may be finer-grained, but these ownership assignments and
+shared-versus-view-local semantics must remain observable. In particular, a
+second view never shares a cursor, mode, desired x, viewport, or pending command
+with the first view.
+
+The full command-dispatch path preserves Vim's separation of Normal command
+parsing and operator execution while respecting the module boundary:
+
+1. the frontend adapter sends normalized portable key, text, composition,
+   pointer, or native-command events through the facade;
+2. `command` parses counts, prefixes, registers, operators, and motions without
+   mutating document state;
+3. `command` resolves motions/text objects against a formatted projection
+   snapshot and, when needed, a view layout snapshot;
+4. `command` produces a typed, revision-bound `CommandPlan`;
+5. the coordinator asks `document` to reverse-project any semantic edit to a
+   minimal source patch set, tentatively apply it, reproject, and verify it;
+6. the coordinator atomically commits the prepared source transaction, undo
+   record, mode, cursor/selection, registers, repeat state, and invalidations;
+   and
+7. the facade returns state changes, diagnostics/policy requests, and redraw or
+   layout requests to the frontend.
 
 Commands that require visual rows explicitly receive a valid layout snapshot.
 Most edits, searches, word motions, and linewise operations must remain usable
