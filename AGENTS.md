@@ -290,8 +290,10 @@ can translate it.
 - Opening a large document may index or parse source progressively. Producing
   the first interactive viewport must not require formatting unrelated content
   unless a declared global dependency makes it necessary.
-- Background projection is cancellable and revision checked. Results from a
-  stale source revision or transform configuration are discarded.
+- Background projection is cancellable and revision checked. A stale top-level
+  result is never installed. Independently keyed subresults may enter a shared
+  cache only when every content identity and dependency generation is
+  revalidated as unchanged.
 - A layout-only change such as window width or zoom does not invalidate source,
   decoding, syntax, or semantic projections. It invalidates only the applicable
   shaping/wrapping/layout layers.
@@ -819,6 +821,109 @@ Commands that require visual rows explicitly receive a valid layout snapshot.
 Most edits, searches, word motions, and linewise operations must remain usable
 in headless core tests with fake format, encoding, and measurement providers.
 
+### Concurrency, scheduling, and locking
+
+The core uses serial ownership for mutable editor state and immutable snapshots
+for parallel work. It MUST NOT protect an entire document with a reader/writer
+lock or allow background tasks to read mutable buffer or view structures.
+
+#### Ownership domains
+
+- Each buffer has one logical **buffer coordinator** that is the sole writer of
+  its source-current pointer, undo history, marks, registers, command state,
+  projection-current pointer, and attached view states. The coordinator may be
+  an actor or a serial executor; it does not require a dedicated operating-
+  system thread.
+- All commands and native edit intentions for views of the same buffer are
+  messages processed to completion in coordinator order. A long operation must
+  be decomposed into bounded work rather than occupying the coordinator while
+  doing whole-document parsing, shaping, or layout.
+- Different buffer coordinators may run concurrently. Session-level operations
+  such as `:wall` orchestrate buffer messages and do not obtain several buffer
+  locks or directly mutate their state.
+- AppKit view objects, menus, windows, and native drawing resources are confined
+  to the macOS main thread. The frontend sends normalized events to the core and
+  applies returned, revision-tagged presentation updates on the main thread.
+- A provider explicitly declares any additional thread confinement. The core
+  scheduler obeys it without changing ownership of buffer state.
+
+Serial ownership is the logical equivalent of a buffer-level mutation lock,
+but arbitrary callers never acquire such a lock. No mutex is required to read
+a source, projection, or layout snapshot after obtaining an immutable retained
+reference to it.
+
+#### Background jobs
+
+Projection, segmentation, shaping, wrapping, and height refinement may run on a
+bounded worker pool. A job captures only immutable inputs, including:
+
+- retained source and/or projection snapshots;
+- the bounded source, formatted, or hard-line region requested;
+- view configuration and its generation when layout is view-specific;
+- metrics, transform, and external-resource generations on which it depends;
+- a priority and monotonically ordered job identity; and
+- a cooperative cancellation token.
+
+Workers own their temporary state. They return immutable result packages to the
+buffer coordinator and never install results, advance history, move anchors,
+mutate a view, or call frontend UI code directly.
+
+The coordinator validates a returned package before making it observable:
+
+- A projection or positioned layout result is installed only when its complete
+  source/projection revision and every relevant configuration generation match
+  the current target.
+- A stale top-level result is discarded. A shaped or segmented subresult from a
+  stale job may be admitted to a content-keyed cache only after the coordinator
+  verifies that its stable projected identities, local revisions, bounded
+  context, style, language/direction inputs, and metrics generation are all
+  unchanged.
+- Validation and installation are one coordinator turn, so an edit cannot
+  interleave between the check and publication.
+
+Work priorities, from highest to lowest, are changed visible rows required for
+caret/hit-testing correctness, newly exposed scroll rows, viewport overscan,
+and off-screen estimates or pre-layout. Pending work for superseded revisions,
+intermediate live-resize widths, or abandoned viewports is cancelled and
+coalesced. There is at most one current background layout generation per view;
+new demand may extend or replace its bounded region rather than enqueueing an
+unbounded backlog.
+
+Cancellation is checked at bounded parse checkpoints, projected leaves,
+shaping fragments, and hard-line/wrap units. Obsolete jobs must release retained
+snapshots promptly enough that continuous typing cannot keep an unbounded chain
+of old source revisions alive. Cancellation does not make a partially produced
+result observable.
+
+#### Permitted synchronization primitives
+
+- Immutable snapshot and buffer-piece lifetimes may use atomic reference
+  counts. Cancellation tokens and simple generation/closed flags may use
+  atomics with documented ordering.
+- The initial cache design SHOULD keep cache indexes, memory accounting, and
+  eviction policy coordinator-owned. Workers receive immutable cache hits and
+  return candidate entries, so expensive computation requires no cache lock.
+- A cache proven by profiling to need concurrent access MAY use sharded locks.
+  A shard lock protects only lookup, insertion, eviction metadata, and memory
+  accounting. Cached values are immutable, shaping/projection occurs outside
+  the lock, and duplicate computation is preferable to waiting on a
+  single-flight lock.
+- FFI handle tables and scheduler queues MAY use short internal locks. Public
+  mutable operations still enqueue work to the appropriate coordinator instead
+  of exposing locked buffer state to Swift.
+
+Code MUST NOT hold a lock while parsing, projecting, shaping, wrapping, drawing,
+performing filesystem or clipboard I/O, waiting for a worker or coordinator,
+crossing the C ABI into a provider, or invoking a callback. Code MUST NOT hold
+more than one cache-shard or registry lock at once. Lock-protected code does not
+call user, adapter, frontend, or provider code. These rules take precedence
+over avoiding harmless duplicate cache work.
+
+An edit never waits for an off-screen layout job that captured an older
+snapshot. It commits a new immutable revision, performs or requests only the
+bounded exact visible work required by the next frame, and lets the coordinator
+cancel, reuse, or discard older results according to the validation rules.
+
 ### Platform interfaces
 
 At minimum, define these narrow directions of dependency:
@@ -1092,6 +1197,11 @@ structurally; avoid brittle wall-clock-only tests.
 - **Cache tests**: source edits, projection changes, font-generation changes,
   wrapping toggles, and resize invalidate exactly the required layers. Stale
   async results are rejected.
+- **Concurrency tests**: a deterministic scheduler permutes edits, undo/redo,
+  resize, scroll, cancellation, worker completion, and view destruction. Assert
+  that only matching revisions become observable, stale reusable fragments are
+  admitted only after dependency revalidation, cancelled jobs release old
+  snapshots, and reentrant fake providers cannot observe a held core lock.
 - **Geometry tests**: round-trip text position -> caret point -> hit-tested
   position, including affinity, bidi, ligatures, mixed sizes, empty lines, and
   visual-block rectangles.
