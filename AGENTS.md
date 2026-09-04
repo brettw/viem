@@ -74,9 +74,10 @@ Use these terms consistently in code, tests, and documentation:
 - **Paragraph**: a paragraph-bearing logical block and the unit to which one
   paragraph style is assigned. Depending on the format, it may contain one or
   more formatted hard lines or may itself define the hard-line boundary.
-- **Style sheet**: the immutable normalized collection of paragraph and
-  character style definitions associated with one formatted snapshot.
-- **Direct formatting**: sparse paragraph or character property declarations
+- **Style sheet**: the immutable normalized collection of block and character
+  style definitions associated with one formatted snapshot. Document and
+  paragraph styles are roles within the block-style namespace.
+- **Direct formatting**: sparse block or character property declarations
   attached to content after named-style assignment; it does not mutate the
   named style.
 - **Document**: a source artifact, its configured transformation pipeline, and
@@ -312,10 +313,10 @@ The base plain-text pipeline is decoding, the shared line-ending projection,
 and an otherwise identity lossless format projection. Each logical source-line
 break ends one formatted hard line and one paragraph; consecutive breaks create
 empty paragraphs, and the final unterminated segment is still a paragraph. Its
-synthetic Base Paragraph and Base Character styles provide display defaults,
-with zero paragraph spacing by default so the result has gVim-like line
-placement. Plain text exposes no source-backed named styles or direct formatting
-capabilities.
+synthetic Base Document, Base Paragraph, and Base Character styles provide
+display defaults, with zero paragraph spacing by default so the result has
+gVim-like line placement. Plain text exposes no source-backed named styles or
+direct formatting capabilities.
 
 Ordinary decoded characters, including CR or LF characters not recognized as
 delimiters under the selected open interpretation, remain formatted content and
@@ -349,10 +350,10 @@ must never affect correctness because any projection can be regenerated.
 ### Normalized style system
 
 The formatted document has a platform-independent, immutable style sheet. It
-expresses semantic paragraph and character styling without exposing CSS,
-AppKit, Core Text, RTF, or another source format's object model to general core
-code. Format adapters project their native styling systems into this model and
-retain the original syntax and provenance needed for lossless reverse edits.
+expresses semantic block and character styling without exposing CSS, AppKit,
+Core Text, RTF, or another source format's object model to general core code.
+Format adapters project their native styling systems into this model and retain
+the original syntax and provenance needed for lossless reverse edits.
 Source-language cascade rules remain adapter responsibilities: for example, an
 HTML adapter resolves selectors, specificity, and CSS inheritance before
 exposing normalized declarations and dependencies. The generic style resolver
@@ -361,34 +362,49 @@ does not reinterpret source CSS or RTF control state.
 The style sheet has a revision identity, stable style identities, and two
 namespaces:
 
-- A **paragraph style** applies to one paragraph block. It contains paragraph
-  layout declarations and character declarations that provide the paragraph's
-  default text appearance. A heading paragraph style can therefore set spacing
-  and indentation as well as font family, size, weight, or color. Paragraph
-  styles are the initial block-style kind.
+- A **block style** applies to a typed block node. Its role declares which
+  property domains are applicable. The initial roles are Document and
+  Paragraph. The document root uses a Document-role block style; a paragraph
+  style is a Paragraph-role block style containing paragraph layout declarations
+  and character declarations that provide the paragraph's default text
+  appearance. A heading paragraph style can therefore set spacing and
+  indentation as well as font family, size, weight, or color.
 - A **character style** applies to a formatted text range and contains only
   character declarations. It does not change paragraph geometry.
 
 Style identity is an opaque stable ID, not the user-visible name or an array
 index. Renaming or reordering a style does not invalidate assignments to it.
 Each style has at most one parent in the same namespace. Multiple inheritance
-is forbidden. Every non-base style ultimately derives from its namespace's base
-style. Parent links must be acyclic; a missing parent or cycle produces a
-diagnostic and deterministically falls back to the applicable base style without
-discarding source syntax.
+is forbidden. Every non-root block style ultimately derives from Base Document
+and every non-root character style ultimately derives from Base Character. A
+block-style child may narrow its parent's general applicability to a concrete
+block role, but it may not broaden a specialized parent to an incompatible role.
+Parent links must be acyclic; a missing parent, role violation, or cycle
+produces a diagnostic and deterministically falls back to the applicable base
+path without discarding source syntax.
 
 Deleting a non-base style is allowed only when the same atomic intention
 reassigns its children and every content assignment, or when none exist.
 Otherwise deletion is rejected; it never leaves silently dangling style IDs.
 
-Every style sheet defines a distinguished Base Paragraph style and Base
-Character style. They have no parent and cannot be deleted. Base Paragraph
-provides complete paragraph-layout values. Together with the engine's emergency
-fallbacks, Base Character and Base Paragraph provide complete character values,
-so layout never depends on a platform default that is absent from the style
-snapshot. Adapters may synthesize these base styles from document defaults,
-source defaults, or pipeline configuration and must identify which declarations
-are source-backed versus generated.
+Every style sheet defines three distinguished styles:
+
+- **Base Document** is the root of the block-style hierarchy and has no parent.
+  It is the default assignment for the formatted document root. It provides the
+  canvas background and padding together with inheritable default character
+  declarations such as font and foreground color.
+- **Base Paragraph** is a Paragraph-role child of Base Document and provides
+  complete paragraph-layout values. Every other Paragraph-role style derives
+  through it.
+- **Base Character** is the root of the character-style hierarchy. Its sparse
+  declarations refine the document defaults without preventing paragraph styles
+  from overriding them.
+
+These styles cannot be deleted. Together with engine emergency values they
+produce complete paragraph and character results, so layout never depends on an
+unrecorded platform default. Adapters may synthesize them from application,
+document, source, or pipeline defaults and must identify which declarations are
+source-backed versus generated.
 
 #### Declarations and values
 
@@ -405,6 +421,26 @@ projects their semantic declaration and records dependency/provenance edges so
 that a change to an ancestor invalidates every dependent result. Unsupported
 expressions may be projected as resolved read-only values with a capability
 diagnostic rather than being approximated on reverse edit.
+
+Every property belongs to a schema-defined domain with an applicability and
+inheritance rule. The initial domains are Document Canvas, Paragraph Layout,
+and Character. A style definition may declare only properties allowed by its
+role: for example, a Document-role style cannot declare future list-numbering
+properties, while a Paragraph-role style cannot change the document canvas
+padding. Inapplicable declarations are diagnostics, not silently ignored
+values. Target-only properties affect the assigned block; inheritable properties
+also contribute to applicable descendants.
+
+Initial Document Canvas properties include:
+
+- canvas background color; and
+- logical start, end, top, and bottom padding.
+
+The Base Document style's Character declarations define the default content
+font request, size, and foreground color. Selection, caret, diagnostics, gutter,
+window chrome, and other editor-interface colors remain view/theme properties;
+they are not document content styles and are adjusted independently for
+accessibility.
 
 Initial character properties include:
 
@@ -446,37 +482,51 @@ fallbacks.
 
 #### Cascade and assignments
 
-Each paragraph stores a paragraph-style ID plus sparse direct paragraph and
-paragraph-default-character declarations. Character-style assignments and
+The formatted document root is a styleable Document block. It stores a
+Document-role block-style ID, normally Base Document, plus sparse direct
+Document Canvas and default-character declarations when the adapter needs to
+represent source constructs such as an HTML `body` inline style. Each paragraph
+stores a compatible Paragraph-role block-style ID plus sparse direct paragraph
+and paragraph-default-character declarations. Character-style assignments and
 direct character formatting are separate range maps over formatted text. At a
 given text position there is at most one assigned named character style, but
 different direct properties may cover independently overlapping ranges.
 
+Document Canvas properties are resolved in this order:
+
+1. engine emergency values;
+2. ancestor-to-descendant applicable declarations from Base Document through
+   the block style assigned to the document root; and
+3. direct Document Canvas declarations on the root.
+
 Paragraph geometry is resolved in this order, with later declarations winning:
 
 1. engine emergency values;
-2. Base Paragraph declarations;
-3. ancestor-to-descendant declarations of the assigned paragraph style;
+2. applicable inheritable block declarations from Base Document;
+3. ancestor-to-descendant declarations from Base Paragraph through the
+   Paragraph-role style assigned to the paragraph;
 4. a future structural block contribution, such as list-item geometry; and
 5. direct paragraph declarations on the paragraph.
 
 Character appearance is resolved in this order:
 
 1. engine emergency values;
-2. Base Character declarations;
-3. character declarations from Base Paragraph through the assigned paragraph
+2. character declarations from Base Document through the Document-role style
+   assigned to the root, followed by direct root default-character declarations;
+3. Base Character declarations;
+4. character declarations from Base Paragraph through the assigned paragraph
    style, followed by direct paragraph-default-character declarations;
-4. ancestor-to-descendant declarations explicitly present in the assigned
+5. ancestor-to-descendant declarations explicitly present in the assigned
    character-style chain, without reapplying Base Character over the paragraph
    defaults;
-5. a future structural contribution for generated content such as a list
+6. a future structural contribution for generated content such as a list
    marker; and
-6. direct character declarations.
+7. direct character declarations.
 
-This ordering makes a named paragraph style capable of changing a heading's
-font while allowing a named character style and then direct bold, italic, font,
-size, or color formatting to override it. Direct formatting never mutates or
-implicitly creates a named style.
+This ordering makes the document style the common visual foundation, while a
+named paragraph style can change a heading's font and a named character style
+and then direct bold, italic, font, size, or color formatting can override it.
+Direct formatting never mutates or implicitly creates a named style.
 
 Direct character formatting is canonicalized per property: applying a property
 replaces that property's value only in the selected range, splitting existing
@@ -494,11 +544,13 @@ direct-declaration identity, and structural-context identity.
 
 #### Editing, insertion, and provenance
 
-Style operations are typed semantic intentions, including applying a named
-paragraph or character style, setting or clearing a direct property, and
-editing a style definition. Each adapter reports these capabilities separately:
-support for displaying a style does not imply that its definition, assignment,
-or every direct property can be reverse-projected.
+Style operations are typed semantic intentions, including applying a compatible
+named block or character style, setting or clearing a direct property, and
+editing a style definition. Document- and Paragraph-role assignments use the
+same block-style intention with different target kinds. Each adapter reports
+these capabilities separately: support for displaying a style does not imply
+that its definition, assignment, or every direct property can be
+reverse-projected.
 
 Style definitions, assignments, direct declarations, and generated defaults all
 carry provenance. A source-backed style edit follows the same minimal-patch,
@@ -525,11 +577,14 @@ require an explicit policy choice.
 Lists are document structure, not a bullet character embedded in text and not
 merely a paragraph-style flag. The formatted block tree is designed to add List
 and List Item nodes carrying list identity, nesting level, marker/numbering
-policy, and optional style references. Paragraphs inside an item continue to
-use the paragraph-style system above. A list definition may later contribute
-hanging indentation and spacing at the reserved structural cascade layer and
-may reference a character style for its generated marker. Generated markers
-have explicit synthetic provenance and caret/edit rules.
+policy, and optional style references. List-role styles use the same block-style
+record and inheritance mechanism, while the property schema permits list-only
+marker and numbering declarations for that role and rejects them for Document
+or Paragraph roles. Paragraphs inside an item continue to use Paragraph-role
+block styles. A list style may contribute hanging indentation and spacing at the
+reserved structural cascade layer and may reference a character style for its
+generated marker. Generated markers have explicit synthetic provenance and
+caret/edit rules.
 
 The same structural contribution mechanism may later support quotations,
 tables, callouts, or other block containers without adding format-specific
@@ -651,12 +706,15 @@ can translate it.
 ### Continuous canvas and paragraph layout
 
 The editor canvas is an unpaginated continuous surface. It has a finite usable
-width determined by the view width, canvas insets, gutter, and zoom, and an
-unbounded logical vertical extent represented through the estimated/exact
-height index. Pages, page breaks, headers, footers, columns, footnotes, and
-widow/orphan rules do not participate in interactive layout. A future print or
-export feature may build a separate paginated projection without changing the
-interactive document or serializing visual wraps.
+width determined by the view width, view-owned chrome/gutter insets, resolved
+Document-style padding, and zoom, and an unbounded logical vertical extent
+represented through the estimated/exact height index. The resolved Document
+Canvas background paints the content canvas; the document's inherited Character
+declarations establish its default font and text colors. Pages, page breaks,
+headers, footers, columns, footnotes, and widow/orphan rules do not participate
+in interactive layout. A future print or export feature may build a separate
+paginated projection without changing the interactive document or serializing
+visual wraps.
 
 Paragraph layout follows the resolved paragraph style:
 
@@ -668,7 +726,7 @@ Paragraph layout follows the resolved paragraph style:
   reduce or offset that box in the future.
 - Space between adjacent paragraphs is the sum of the first paragraph's space
   after and the second paragraph's space before. Spacing does not collapse.
-  Canvas top and bottom insets are separate from paragraph spacing.
+  Document top and bottom padding are separate from paragraph spacing.
 - `normal` line spacing uses the maximum shaped ascent, descent, and leading on
   each visual row. A multiplier scales that natural row height. `at-least`
   takes the greater of the natural and requested heights. `exact` uses the
@@ -679,9 +737,9 @@ Paragraph layout follows the resolved paragraph style:
   expansion, hit-testing, and editing behavior is specified.
 
 Paragraph spacing and indentation affect wrapping and the view height index but
-never create source newline characters. Canvas width or inset changes invalidate
-view wrap plans and paragraph geometry, not source, syntax, style assignments,
-or width-independent shaping.
+never create source newline characters. Canvas width, view chrome inset, or
+Document padding changes invalidate view wrap plans and paragraph geometry, not
+source, syntax, unrelated style assignments, or width-independent shaping.
 
 ### Wrapping and resize reflow
 
@@ -1441,8 +1499,11 @@ property difference and invalidate by effect:
 - paragraph indents, spacing, line spacing, alignment, or structural
   contributions invalidate affected paragraph wrap/position/height results but
   retain width-independent shaping when its character inputs are unchanged; and
-- color and other paint-only changes invalidate display resources and damage
-  regions without reshaping or rewrapping.
+- Document padding changes the usable content width and invalidates view wrap
+  generations and height estimates in `O(1)`, with exact visible replacement;
+  and
+- canvas background, text color, and other paint-only changes invalidate display
+  resources and damage regions without reshaping or rewrapping.
 
 A base-style or ancestor definition change follows dependency edges to all
 affected assignments rather than scanning unrelated text. A global view
@@ -1557,12 +1618,13 @@ structurally; avoid brittle wall-clock-only tests.
   same conformance suite. No-op saves are byte-identical; inserted breaks use
   `fileformat`; conversions declare every patch and preserve the logical token
   sequence or return the required policy result.
-- **Style tests**: randomized acyclic paragraph and character style trees resolve
+- **Style tests**: randomized acyclic block and character style trees resolve
   identically with and without caches. Tests cover sparse inheritance, explicit
-  normal values, paragraph character defaults, named character styles,
-  independently overlapping direct-property spans, boundary-affinity insertion,
-  empty paragraphs, definition invalidation, cycles/missing parents, structural
-  contribution precedence, provenance, and reverse-edit capabilities.
+  normal values, Document-to-Paragraph defaults, role/property applicability,
+  canvas background/padding, paragraph character defaults, named character
+  styles, independently overlapping direct-property spans, boundary-affinity
+  insertion, empty paragraphs, definition invalidation, cycles/missing parents,
+  structural contribution precedence, provenance, and reverse-edit capabilities.
 - **Pipeline tests**: composed provenance and reverse edits match an equivalent
   unfused pipeline; stale, generated, ambiguous, and unsupported edits return
   the required structured result.
@@ -1662,7 +1724,7 @@ decision in this file or an architecture decision record first:
 - exact Unicode word/sentence segmentation tailoring;
 - exact regular-expression syntax supported by `/` and `:substitute`;
 - whether rich system clipboard formats are required for the first release;
-- default Base Paragraph/Base Character values, canvas insets, colors, and
-  other visual design choices;
+- default Base Document/Base Paragraph/Base Character values, view chrome
+  insets, colors, and other visual design choices;
 - hyphenation and justification; and
 - concrete latency and memory budgets for supported hardware.
