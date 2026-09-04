@@ -91,8 +91,23 @@ Use these terms consistently in code, tests, and documentation:
   never changes hard lines or source bytes.
 - **Visual row**: one displayed fragment of a hard line after wrapping. With
   wrapping off, a hard line has one visual row.
-- **Text position**: a boundary in formatted text, with affinity where a single
-  logical position has two visual sides. Public editing APIs do not use pixels.
+- **Snapshot point**: an exact boundary in one explicitly identified immutable
+  source or projection snapshot. It is lightweight and becomes stale rather
+  than silently moving when a new revision is committed.
+- **Persistent anchor**: a stable identity plus local boundary, insertion
+  association, recovery policy, and provenance used for state that must survive
+  edits and reprojection.
+- **Text point**: a snapshot point at a legal logical boundary in formatted
+  content. Public editing APIs use text points and ranges, never pixels.
+- **Caret point**: a layout-snapshot-specific visual realization of a text point
+  and boundary affinity at a legal shaping caret stop.
+- **Association**: whether an anchor remains before or moves after content
+  inserted exactly at its boundary. It controls edit remapping, not geometry.
+- **Boundary affinity**: the upstream or downstream association of a logical
+  text point with preceding or following content. It selects side-dependent
+  context such as typing-style inheritance and, at a soft-wrap, bidirectional,
+  or other split-caret boundary, the visual side. It does not control edit
+  remapping.
 - **Caret stop**: a legal visual insertion or navigation position returned by
   shaping. It may not correspond one-to-one with a byte, Unicode scalar, or
   glyph.
@@ -103,18 +118,317 @@ Use these terms consistently in code, tests, and documentation:
 - **Projection snapshot**: an immutable formatted result identified by source
   revision, pipeline configuration, and transformation generations.
 - **Provenance map**: the bidirectional relation between ranges/nodes in two
-  adjacent transformation stages, including affinity and synthetic content.
+  adjacent transformation stages, including insertion association, boundary
+  affinity where applicable, and synthetic content.
 - **Metrics generation**: an identity for the current font resolver and text
   measurement environment. It changes when results may differ.
 
-The formatted document is expressed in valid UTF-8. User-visible positions,
-selections, deletions, and caret movement MUST NOT split an extended grapheme
-cluster.
-Shaping clusters and bidirectional affinity must be preserved where they are
-stricter than grapheme boundaries. Source byte positions and formatted text
-positions are distinct types and must never be confused. Raw numeric offsets
-MUST NOT be retained across edits as persistent marks, selections, or cache
-keys; use source anchors, stable projected identities, and explicit affinity.
+The formatted document is expressed in valid UTF-8. Logical user edits,
+selections, and motion ranges MUST NOT split an extended grapheme cluster.
+Visual cursor placement additionally obeys shaping caret stops. Source byte
+positions and formatted text positions are distinct types and must never be
+confused. Naked numeric offsets MUST NOT be retained across edits as persistent
+marks, selections, or cache keys; use anchors with stable source/projected
+identities and explicit association. A local offset paired with an immutable
+piece/leaf identity and revision is part of an anchor, not a naked document
+offset.
+
+## Position and range algebra
+
+The core uses exact snapshot-bound points for immediate computation and
+persistent anchors for state that survives a transaction. Requiring every
+temporary operation to allocate a persistent anchor is unnecessary; retaining a
+snapshot point after its snapshot is no longer current is an error.
+
+### Coordinate domains and snapshot points
+
+The following are distinct nominal types and have no implicit conversions:
+
+- `SourcePoint`: a byte boundary in one named source-artifact part and source
+  snapshot;
+- `DecodedPoint`: a boundary in one encoding projection;
+- stage-specific syntax/projection points used internally between transforms;
+- `TextPoint`: a logical formatted-content boundary in one projection snapshot;
+- `CaretPoint`: a visual realization of a `TextPoint` in one layout snapshot;
+  and
+- `LayoutPoint`: an x/y location in layout units.
+
+Conceptually, snapshot points have this shape; concrete tree-specific spelling
+may differ:
+
+```text
+SnapshotPoint {
+    document identity,
+    snapshot or projection identity,
+    stable leaf/part identity,
+    leaf/part revision,
+    validated local boundary
+}
+```
+
+A source point's local boundary is a byte boundary; encoding and format stages
+are responsible for accepting or rejecting a patch that would split a construct
+they require to remain indivisible. A text point's local boundary is either an
+extended-grapheme boundary in a text leaf or a boundary before/after an atomic
+formatted item.
+
+Points from different documents, domains, or revisions cannot be ordered,
+subtracted, combined into a range, or passed to an API expecting the other
+domain. Such operations return a structured `WrongDocument`, `WrongDomain`, or
+`WrongSnapshot` result. APIs never interpret an old numeric position in the
+current snapshot and never silently clamp an invalid boundary.
+
+Document-wide ordinal byte, grapheme, hard-line, or block indexes may be derived
+temporarily through tree aggregates. They are snapshot-local values for
+algorithms and external reporting, not persistent position identities.
+
+### Logical formatted boundary space
+
+The formatted block/text tree defines one total logical document order. Its
+conceptual atomic content items are:
+
+- extended grapheme clusters stored compactly in text leaves;
+- explicit hard-line boundary items; and
+- atomic inline/embedded objects when those are supported.
+
+Positions exist between items, never inside a grapheme cluster, hard-line
+boundary, or atomic object. This is a conceptual algebra: implementations do not
+create one allocation or tree node per grapheme.
+
+Each hard-line boundary contributes one normalized U+000A to APIs that require
+a flat logical UTF-8 view, including search, registers, and regular-expression
+matching. The block tree still distinguishes a hard break inside a paragraph
+from a boundary that also separates paragraphs. There is no implicit newline at
+the end of the document. Source line-ending spelling remains the responsibility
+of the transformation pipeline.
+
+An object has positions before and after it and no public interior position. Its
+plain-text register/search representation is an explicit property of the object
+kind rather than an invented source character.
+
+### Persistent anchors and mapping
+
+Marks, cursors, selection endpoints, jumps, viewport anchors, undo restoration
+positions, and long-lived cache dependencies use persistent anchors. A formatted
+anchor conceptually contains:
+
+```text
+TextAnchor {
+    document identity,
+    stable projected identity and local validated boundary,
+    BeforeInsertion | AfterInsertion association,
+    Upstream | Downstream boundary affinity,
+    deletion recovery policy,
+    recoverable source provenance
+}
+```
+
+A source anchor uses a stable source-piece/part identity and local byte boundary
+with the same association and an applicable recovery policy. The local boundary
+is meaningful only together with the immutable piece/leaf identity and revision.
+
+Insertion association and boundary affinity are orthogonal:
+
+- `BeforeInsertion` remains before text inserted exactly at the anchor;
+- `AfterInsertion` moves after text inserted exactly at the anchor;
+- `Upstream` chooses the visual side associated with logically preceding
+  content at a split caret; and
+- `Downstream` chooses the side associated with logically following content.
+
+Insertion association never selects adjacent semantic context, a visual row, or
+bidi caret. Boundary affinity never decides whether an anchor moves across an
+insertion.
+
+Default associations are semantic rather than universal:
+
+- a typing caret is `AfterInsertion` for its own insertion;
+- normalized selection boundaries associate inward—the lower boundary after an
+  insertion at that boundary and the upper boundary before it—so unrelated
+  boundary insertions are not silently selected;
+- a named mark or viewport anchor remains associated with its following content
+  when possible and otherwise with its preceding content; and
+- commands and history records may specify another association explicitly when
+  required by Vim semantics.
+
+Every committed source transaction and incremental projection produces a
+forward change map from each changed domain's prior snapshot to its new
+snapshot. The identity map changes nothing. Two maps compose only when they have
+the same document and domain and the first map's target snapshot is the second
+map's source snapshot; composition is associative. A projection additionally
+provides the cross-domain provenance relation described below.
+
+A change map is not presumed invertible or globally monotonic: deletion loses
+identity, and an explicit move may preserve stable content identities while
+changing their order. Mapping a persistent anchor is the primitive operation.
+Mapping a range is therefore not generally equivalent to mapping only its two
+endpoints; it returns an ordered `RangeSet` or a structured ambiguous or
+unresolvable result. Move-aware maps preserve the identity of moved content.
+Undo and redo use recorded states and maps rather than synthesizing an inverse.
+
+For an ordinary splice, an anchor before it remains unchanged; one after it
+follows the structural shift; one at a pure insertion uses its association. An
+anchor whose associated content is deleted collapses to the deletion boundary,
+preferring following content and then preceding content when the document ends.
+An empty hard line supplies an explicit recoverable boundary.
+
+Resolving an anchor against a snapshot returns a status, not only a point:
+
+```text
+Exact(point)
+Moved(point)
+CollapsedByDeletion(point)
+RecoveredFromProvenance(point)
+Ambiguous(candidates)
+Unresolvable(reason)
+```
+
+Stable projected identity is tried first after reprojection and composed source
+provenance is the fallback. Ambiguous or unresolvable anchors are never guessed
+for a source-changing operation. Presentation state may use its declared
+recovery policy and surface a diagnostic when exact recovery is impossible.
+
+Mapping may be implemented lazily through persistent tree structure and
+composable change maps. Committing an edit MUST NOT walk every later anchor or
+shift a flat list of document offsets. Undo and redo restore their recorded
+anchors from history state rather than attempting to invert arbitrary current
+anchor mappings.
+
+### Ranges, range sets, and selections
+
+All internal source and formatted ranges are ordered and half-open:
+
+```text
+Range { start, end } // start is included; end is excluded
+```
+
+A range's endpoints must have the same document, domain, and snapshot identity;
+`start` must not follow `end`; and both endpoints must be legal boundaries.
+Empty ranges are valid. Range construction validates these invariants and
+returns an error rather than swapping, snapping, or clamping endpoints.
+
+A source patch range is additionally confined to one source-artifact part. A
+multi-part or discontiguous source edit uses an ordered patch/range set. A
+formatted `RangeSet` contains sorted, non-overlapping segments. Adjacent
+segments may remain distinct when their identities carry row or block semantics;
+ordinary set normalization may coalesce them only when that distinction is not
+observable.
+
+A character selection preserves direction as two anchors. Resolving it against
+an explicit target snapshot, then normalizing it, produces an ordered half-open
+range without discarding which endpoint is active:
+
+```text
+DirectedSelection { anchor, active }
+```
+
+Visual Line stores a stable ordered hard-line span rather than a character
+range. Visual Block stores top/bottom `TextAnchor` values whose boundary
+affinities identify the endpoint rows, plus left/right layout x coordinates.
+Resolving it against an exact layout snapshot hit-tests each visual row and
+produces a tagged `RangeSet`.
+
+Motion results retain their semantic kind:
+
+```text
+Characterwise { selection: DirectedSelection,
+                endpoint: Inclusive | Exclusive }
+HardLinewise(HardLineSpan)
+VisualRowCharacterwise { selection: DirectedSelection,
+                         endpoint: Inclusive | Exclusive }
+VisualBlock(BlockSelection or resolved RangeSet)
+```
+
+Endpoint policy belongs to the resolved motion, not the operator. A Vim-
+inclusive endpoint is converted exactly once when a motion or Visual selection
+is resolved for an operator: the associated final atomic content item is
+included and the result becomes half-open. An exclusive endpoint is already a
+boundary and is not advanced. Operators consume typed half-open extents and do
+not independently adjust endpoints. A multi-range block edit is one atomic
+semantic intention and source transaction.
+
+The algebra exposes explicit checked operations such as compare, normalize a
+directed selection, intersection, union, subtraction, advance by grapheme,
+hard-line start/end, and rebase through a named position map. It does not expose
+unchecked integer arithmetic on public point types.
+
+### Cursor representation
+
+Every view cursor is a persistent text anchor. Its resolved `TextPoint` is a
+boundary and its boundary affinity associates an adjacent atomic content item when
+a mode needs a character-shaped cursor:
+
+- At an ordinary cluster start, downstream affinity associates the following
+  grapheme.
+- At hard-line end, upstream affinity associates the preceding grapheme.
+- An empty hard line has a boundary with explicit empty-line caret and block
+  geometry rather than a fictitious character.
+
+Normal mode draws its block around the associated grapheme/object. Insert mode
+draws a thin caret at the boundary itself. Replace mode draws beneath the
+associated replaceable item. Thus `0` resolves to line start with downstream
+affinity, `$` resolves to line end with upstream affinity, `i` inserts before
+the associated item, and `a` inserts after it without maintaining a separate
+character-index coordinate system. On an empty line or empty document, both
+commands insert at the sole legal boundary.
+
+At a soft-wrap or bidi boundary, affinity also selects the correct visual row
+and caret side. Visual horizontal movement and hit testing operate on layout
+caret stops and return a new text point plus affinity. Desired x remains
+separate view state used only for vertical movement.
+
+### Grapheme boundaries and shaping caret stops
+
+Logical editing validity is based on portable extended-grapheme boundaries.
+Font choice, fallback, OpenType shaping, view width, and platform shaper behavior
+MUST NOT change the text deleted, yanked, searched, case-converted, or placed in
+a register by a logical command.
+
+A `CaretPoint` is a `TextPoint` plus boundary affinity and a legal caret-stop
+identity in one exact layout snapshot. The provider should expose a caret stop
+at each grapheme boundary it can represent, but it may report a stricter
+indivisible shaping cluster. Visual movement and pointer hit testing then skip
+the unavailable interior stop. A logical command may still use an extended-
+grapheme endpoint without expanding its edit to a font-dependent shaping
+cluster; after the edit, layout reshapes the result. If a logical endpoint has
+no independent caret geometry, selection/highlight drawing uses the containing
+cluster geometry without changing the logical range.
+
+Caret points cannot be retained after their layout snapshot becomes stale. The
+underlying text anchor is retained and resolved against the new exact layout.
+
+### Relational provenance and reverse edits
+
+Mapping a formatted point or range to source is a relation, never an assumed
+single offset or contiguous range. A provenance query returns a structured
+result equivalent to:
+
+```text
+Exact(SourceRangeSet)
+Synthetic
+Ambiguous(candidate SourceRangeSets)
+PartiallyMapped { mapped ranges, formatted gaps }
+```
+
+Reverse-edit translation consumes that result and either produces an explicit
+minimal patch set or returns unsupported, ambiguous, stale, or needs-policy.
+Synthetic or partially mapped content is not silently dropped from an edit.
+
+### Complexity and API requirements
+
+Resolving or comparing points and finding a hard-line boundary in one snapshot
+are `O(log n)` apart from required local Unicode boundary work. Rebasing through
+`k` uncompacted position maps may additionally cost `O(k)`; implementations
+MUST compact or checkpoint map chains so repeatedly resolving long-lived anchors
+has amortized logarithmic cost rather than growing without bound. Batch APIs
+resolve related anchors/ranges against one snapshot traversal for Visual Block,
+multi-cursor-like internal operations, accessibility, and multi-view remapping.
+
+Public and C ABI operations carry domain and revision identities explicitly or
+through validated opaque handles. Required structured failures include wrong
+document/domain/snapshot, invalid Unicode boundary, inverted range, stale
+layout, ambiguous provenance, synthetic/read-only content, and unresolvable
+anchor. Callers must request an explicit rebase; APIs never substitute the
+current revision automatically.
 
 ## Source authority and transformation pipeline
 
@@ -559,11 +873,13 @@ configuration style may be edited only through an explicit configuration
 intention. A synthetic read-only style cannot be edited.
 
 Inserted text inherits the character-style assignment and direct character
-declarations at the caret side selected by its affinity. Inside a run this is
-unambiguous; at a run boundary upstream affinity chooses the preceding run and
-downstream affinity chooses the following run. At paragraph start or end, the
-only interior side is used. Empty paragraphs retain an explicit paragraph-style
-assignment and typing-character declarations even though they contain no text.
+declarations at the caret side selected by its boundary affinity. Inside a run
+this is unambiguous; at a run boundary upstream affinity chooses the preceding
+run and downstream affinity chooses the following run. Anchor association
+controls how the caret remaps across that insertion and does not select the
+typing style. At paragraph start or end, the only interior side is used. Empty
+paragraphs retain an explicit paragraph-style assignment and typing-character
+declarations even though they contain no text.
 
 Splitting a paragraph normally copies its paragraph-style assignment and direct
 paragraph declarations to the new paragraph. A paragraph style may name a
@@ -600,8 +916,10 @@ directly persist mutations to derived style spans.
 
 Committed edits follow this path:
 
-1. capture the semantic intention, selection/cursor affinity, and exact
-   projection revision on which the command operated;
+1. capture the semantic intention, directed selection/cursor anchors including
+   insertion association and boundary affinity, and the exact projection
+   revision on which
+   the command operated;
 2. ask the transformation stages, from last to first, to translate that
    intention into edits to their respective inputs;
 3. compose the result into a minimal source patch set or return an explicit
@@ -644,7 +962,8 @@ The concrete API need not use these names. It must additionally provide:
 
 - immutable input/output revision identities;
 - stable node/range identities where possible;
-- composable provenance with affinity;
+- composable provenance with insertion association and boundary affinity where
+  applicable;
 - deterministic results for the same inputs and configuration;
 - bounded incremental work and cancellation;
 - structured diagnostics and policy requests; and
@@ -821,12 +1140,14 @@ assume a glyph exists under the caret.
 ### Visual Block with proportional text
 
 Visual Block is a display-space rectangle, because character columns are not
-meaningful with proportional fonts. Its left and right edges are layout x
-coordinates and its vertical extent is a sequence of visual rows. Each row is
-hit-tested independently to produce a set of logical text ranges. Block edits
-are one atomic source transaction after reverse projection. When wrapping or
-width changes during an active block selection, recompute row intersections
-from stable projected identities/source anchors and the stored x edges.
+meaningful with proportional fonts. It is stored as the `BlockSelection`
+defined by the position algebra: stable top/bottom row anchors and left/right
+layout x coordinates. Resolve it only against an exact layout snapshot by
+hit-testing each visual row into a tagged, ordered `RangeSet`; do not flatten it
+to one character range or retain stale row numbers. Block edits reverse-project
+that complete range set as one atomic source transaction. When wrapping or
+width changes during an active block selection, resolve the stable row anchors
+again and recompute the row intersections from the stored x edges.
 
 ## Vim command surface
 
@@ -977,7 +1298,8 @@ The history store records at least:
 - the resulting immutable source snapshot, including source-artifact metadata
   required to interpret and serialize it exactly;
 - the initiating edit's before and after restoration positions, represented as
-  stable anchors with affinity rather than raw offsets;
+  stable anchors with insertion association and boundary affinity rather than raw
+  offsets;
 - persistent before and after snapshots of required buffer-local marks;
 - a typed summary of the semantic change for diagnostics and future history
   UI, without making that description responsible for undo or redo; and
@@ -1207,12 +1529,16 @@ Names below are conceptual; language-specific spelling may differ.
   implicit safe upper bound.
 - Derived style runs use a range structure that permits logarithmic queries and
   does not require walking all following spans after a local projection change.
-- Persistent marks, selections, jumps, and viewport anchors retain a projected
-  identity/affinity plus recoverable source provenance. They are remapped after
-  every committed source transaction and reprojection.
+- Persistent marks, selections, jumps, cursors, and viewport anchors use the
+  `TextAnchor` contract: stable projected identity, insertion association,
+  boundary affinity, deletion recovery policy, and recoverable source provenance.
+  They are logically rebased through each transaction/projection position map;
+  an implementation may resolve that composed mapping lazily and MUST NOT walk
+  every anchor after a local edit.
 - A committed source transaction reports exact byte patches, affected source
   identities, before/after source revisions, projection changes, and any
-  supporting format/encoding changes.
+  supporting format/encoding changes. It also publishes the composable position
+  maps needed to rebase source and formatted anchors.
 
 ### Buffer, view, and command state
 
@@ -1385,7 +1711,7 @@ A shaping response contains platform-neutral data sufficient for core layout:
 - glyph/cluster sequence or an opaque render-run handle plus its lifetime;
 - cluster-to-formatted-text mapping; source provenance remains available
   through the formatted projection;
-- legal caret stops with affinity;
+- legal caret stops with upstream/downstream boundary affinity;
 - per-cluster or per-caret advances;
 - ascent, descent, leading, ink bounds, and typographic bounds;
 - resolved fallback font identities; and
@@ -1395,6 +1721,8 @@ Requirements for the provider contract:
 
 - Results are deterministic for the same request and metrics generation.
 - It never returns a caret stop inside an indivisible shaping cluster.
+- The absence of a visual caret stop at a logical grapheme boundary does not
+  expand or otherwise change the logical range of an edit.
 - Cache-fragment boundaries must not change shaping. The request supplies
   context and the response identifies the stable interior that can be cached.
 - Native objects do not leak into general core APIs. Opaque handles have an
@@ -1419,8 +1747,10 @@ containing:
 - each row's projected hard-line identity, formatted range, baseline,
   ascent/descent, bounds, and wrap-continuation flags;
 - positioned shaped fragments in visual order;
-- hit-test mappings in both directions;
-- caret geometry for every legal caret stop requested;
+- bidirectional mappings between `CaretPoint` values and `LayoutPoint` values,
+  each tied to this exact layout revision;
+- caret geometry for every requested legal caret stop and explicit fallback
+  geometry for logical endpoints inside a visually indivisible cluster;
 - selection rectangles, including discontiguous bidirectional selections; and
 - exact visible bounds plus estimated or exact total vertical extent.
 
@@ -1525,9 +1855,9 @@ scroll.
 
 - Vertical scrolling is continuous in layout units, not integer terminal rows.
 - Cursor reveal scrolls the minimum needed subject to configured context.
-- The primary scroll anchor is a stable projected identity/position with source
-  provenance, its affinity, and an offset from the viewport edge, not only an
-  absolute y value.
+- The primary scroll anchor is a persistent `TextAnchor` with source provenance,
+  insertion association, boundary affinity, and an offset from the viewport edge,
+  not only an absolute y value.
 - Mapping a far-away y coordinate may begin from height estimates, then refine
   the local neighborhood. Refinement must not strand the viewport on unrelated
   text.
@@ -1605,7 +1935,15 @@ structurally; avoid brittle wall-clock-only tests.
   aggregates, unchanged byte slices, part identities, and source anchors.
 - **Projection property tests**: randomized incremental projections equal
   clean projections and preserve UTF-8, formatted-tree, style-span,
-  provenance, and affinity invariants.
+  provenance, insertion-association, and boundary-affinity invariants.
+- **Position/range property tests**: randomized edit sequences verify point
+  ordering, half-open intersection/union/subtraction, directed-selection
+  normalization, sorted non-overlapping range sets, insertion association,
+  deletion collapse, moved-content identity, identity maps, and associative map
+  composition. Tests reject cross-document, cross-domain, cross-snapshot,
+  invalid-boundary, and inverted-range operations; exercise split range maps,
+  stable-identity and provenance recovery; and verify that inclusive and
+  exclusive Vim endpoints are converted to half-open extents exactly once.
 - **Round-trip tests**: no-op saves are byte-identical; changed saves alter
   only declared patches; forward projection after a reverse edit satisfies the
   semantic intention.
@@ -1623,8 +1961,9 @@ structurally; avoid brittle wall-clock-only tests.
   normal values, Document-to-Paragraph defaults, role/property applicability,
   canvas background/padding, paragraph character defaults, named character
   styles, independently overlapping direct-property spans, boundary-affinity
-  insertion, empty paragraphs, definition invalidation, cycles/missing parents,
-  structural contribution precedence, provenance, and reverse-edit capabilities.
+  typing-style inheritance independently of anchor association, empty
+  paragraphs, definition invalidation, cycles/missing parents, structural
+  contribution precedence, provenance, and reverse-edit capabilities.
 - **Pipeline tests**: composed provenance and reverse edits match an equivalent
   unfused pipeline; stale, generated, ambiguous, and unsupported edits return
   the required structured result.
@@ -1655,9 +1994,11 @@ structurally; avoid brittle wall-clock-only tests.
   that only matching revisions become observable, stale reusable fragments are
   admitted only after dependency revalidation, cancelled jobs release old
   snapshots, and reentrant fake providers cannot observe a held core lock.
-- **Geometry tests**: round-trip text position -> caret point -> hit-tested
-  position, including affinity, bidi, ligatures, mixed sizes, empty lines, and
-  visual-block rectangles.
+- **Geometry tests**: round-trip `TextPoint` plus boundary affinity to
+  `CaretPoint`, then to `LayoutPoint` and back, including bidi, ligatures,
+  visually indivisible shaping clusters, mixed sizes, hard-line end, empty
+  lines, stale layout rejection, and Visual Block rectangles resolved to tagged
+  range sets.
 - **macOS integration tests**: compare Core Text output to emitted row geometry,
   verify IME lifecycle and native undo/menu routing, and exercise accessibility
   range/geometry APIs.
