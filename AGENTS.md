@@ -71,6 +71,14 @@ Use these terms consistently in code, tests, and documentation:
 - **Formatted document**: a derived, normalized UTF-8 model containing logical
   blocks, text, style spans, objects, and provenance. It is editable through
   semantic intentions but is never an independent persistence authority.
+- **Paragraph**: a paragraph-bearing logical block and the unit to which one
+  paragraph style is assigned. Depending on the format, it may contain one or
+  more formatted hard lines or may itself define the hard-line boundary.
+- **Style sheet**: the immutable normalized collection of paragraph and
+  character style definitions associated with one formatted snapshot.
+- **Direct formatting**: sparse paragraph or character property declarations
+  attached to content after named-style assignment; it does not mutate the
+  named style.
 - **Document**: a source artifact, its configured transformation pipeline, and
   cached derived projections.
 - **Buffer**: an editing session for a document plus undo history, registers,
@@ -116,6 +124,7 @@ required conceptual pipeline is:
 ```text
 SourceArtifact (original bytes or package parts)
     -> EncodingProjection (valid UTF-8 plus byte provenance)
+    -> optional TextLineEndingProjection (logical breaks plus byte provenance)
     -> LosslessFormatProjection (format syntax plus semantic provenance)
     -> zero or more SemanticTransformations
     -> FormattedDocument (UTF-8 text, blocks, objects, and style spans)
@@ -190,6 +199,131 @@ retained unless the edit necessarily changes that source region.
   declarations, or reject/request a user decision. Silent substitution or data
   loss is forbidden.
 
+### Shared text line-ending projection
+
+Line-ending interpretation is a reusable pipeline component, not behavior
+reimplemented by each format adapter and not a base class from which adapters
+inherit. A text-like adapter composes a `TextLineEndingProjection` immediately
+after decoding and before its lossless format projection. Plain text, Markdown,
+and HTML use this component. Formats whose source grammar owns all line-break
+semantics may omit it.
+
+The component consumes decoded Unicode with source-byte provenance and emits a
+sequence containing ordinary text and logical source-line-break tokens. Each
+token retains whether its original spelling was LF, CRLF, or CR and the exact
+decoded and source-byte ranges that produced it. The later format adapter
+decides whether a source-line-break token becomes a formatted hard line, a
+paragraph boundary, collapsible whitespace, trivia, or no visible content. For
+example, raw source line endings do not automatically become visible hard lines
+in HTML.
+
+The normalized interface is shared, but semantic paragraph construction remains
+adapter-specific. Adapters use composition and delegation rather than subtype
+inheritance:
+
+```text
+DecodedText
+    -> TextLineEndingProjection(fileformat/open policy)
+    -> PlainText | Markdown | HTML lossless format projection
+```
+
+#### Detection and interpretation
+
+The supported file-format names and their read interpretations follow Vim:
+
+- `unix`: LF is a logical source-line break. A preceding CR remains ordinary
+  content.
+- `dos`: CRLF and bare LF are logical source-line breaks. A bare CR remains
+  ordinary content.
+- `mac`: CR is a logical source-line break. LF remains ordinary content.
+
+NEL, Unicode line separator, Unicode paragraph separator, and other characters
+are ordinary content at this stage unless a later format adapter deliberately
+interprets them. A trailing DOS Ctrl-Z is likewise preserved as source content;
+any future compatibility projection that hides it must remain lossless and
+explicit.
+
+`fileformat` is a concrete buffer-local value: `unix`, `dos`, or `mac`.
+`fileformats` is an ordered open-policy list using those values. On macOS its
+initial default is `unix,dos`, matching Vim on Unix-like systems; users may add
+`mac`. The initial fallback `fileformat` is `unix`. A new empty buffer uses the
+first `fileformats` item, or the fallback when the list is empty. Opening an
+existing source follows these rules:
+
+1. An explicit open request may force one interpretation without detection.
+2. If `fileformats` is empty, the configured initial `fileformat` is used.
+3. If `fileformats` contains one item, that interpretation is used.
+4. With multiple items, choose `dos` when at least one line ending exists, all
+   discovered line endings are CRLF, and `dos` is allowed; otherwise choose
+   `unix` when any LF exists and `unix` is allowed; otherwise choose `mac` when
+   CR exists and `mac` is allowed; otherwise use the first allowed item. As in
+   Vim, detection may prefer `mac` when CR appears before the first LF and a
+   bounded initial sample contains more CR than LF.
+
+The chosen value and detection evidence are buffer-local pipeline metadata
+shared by every view of that buffer and included in the document state needed
+to serialize its source snapshot. Detection is read-only. The component records
+whether the value was detected, forced, or defaulted, and diagnostics identify
+mixed or suspicious endings without rewriting them.
+
+Existing source-line-break tokens retain their exact original spelling during
+ordinary edits and no-op saves. A newly inserted source-line break uses the
+current `fileformat`: LF for `unix`, CRLF for `dos`, and CR for `mac`. Absence
+or presence of a final line terminator is represented explicitly and preserved;
+line-ending conversion does not add or remove a final terminator.
+
+#### Changing `fileformat`
+
+Pipelines containing this component expose `fileformat` as a shared capability,
+regardless of whether their later adapter is plain text, Markdown, or HTML. The
+commands `:set fileformat?`, `:set fileformat=unix|dos|mac`, their `ff`
+abbreviations, and corresponding `:setlocal` forms query or change it. An
+adapter must delegate these commands to the component rather than implement
+them itself. A pipeline without the component reports the option as unsupported
+for that buffer.
+
+Changing `fileformat` after opening does not reinterpret which current
+characters are logical breaks. It requests one atomic source transaction that
+changes every existing source-line-break token to the target spelling, updates
+the buffer-local metadata, and leaves formatted text and hard-line identities
+unchanged. The declared patch set therefore includes all converted delimiters;
+this explicitly requested whole-document operation is not subject to the usual
+local-edit work bound. It is cancellable before commit and is one undo unit.
+
+Before committing, the component simulates decoding and line-ending projection
+of the candidate bytes under the target mode. If literal CR or LF content would
+become a delimiter, combine with a delimiter, or otherwise change the logical
+token sequence on reopen, translation returns a structured
+`LineEndingConversionWouldReinterpretContent` policy result. The default is to
+reject. A future explicit force policy may authorize Vim-like reinterpretation,
+but the verified semantic intention must then describe the resulting content
+change rather than claiming it is formatting-only.
+
+The component provides incremental checkpoints, provenance composition, change
+summaries, and reverse translation like every editable projection stage. Format
+adapters request insertion or replacement of logical source-line-break tokens;
+they never spell CR/LF bytes themselves. This keeps detection, new-break
+spelling, conversion, validation, and diagnostics identical across all
+participating formats.
+
+#### Plain-text adapter use
+
+The base plain-text pipeline is decoding, the shared line-ending projection,
+and an otherwise identity lossless format projection. Each logical source-line
+break ends one formatted hard line and one paragraph; consecutive breaks create
+empty paragraphs, and the final unterminated segment is still a paragraph. Its
+synthetic Base Paragraph and Base Character styles provide display defaults,
+with zero paragraph spacing by default so the result has gVim-like line
+placement. Plain text exposes no source-backed named styles or direct formatting
+capabilities.
+
+Ordinary decoded characters, including CR or LF characters not recognized as
+delimiters under the selected open interpretation, remain formatted content and
+retain byte provenance. The frontend may draw visible control representations,
+but the adapter does not remove or normalize them. Aside from the explicitly
+documented visual-row navigation behavior, plain-text commands operate on the
+same logical lines and content as gVim fixtures.
+
 ### Formatted document model
 
 The formatted document is normalized for editing and layout. It contains:
@@ -211,6 +345,196 @@ many-to-one boundaries such as HTML entities.
 Formatted snapshots are immutable and cached by source revision plus pipeline
 configuration. They may be materialized incrementally by region. Cache eviction
 must never affect correctness because any projection can be regenerated.
+
+### Normalized style system
+
+The formatted document has a platform-independent, immutable style sheet. It
+expresses semantic paragraph and character styling without exposing CSS,
+AppKit, Core Text, RTF, or another source format's object model to general core
+code. Format adapters project their native styling systems into this model and
+retain the original syntax and provenance needed for lossless reverse edits.
+Source-language cascade rules remain adapter responsibilities: for example, an
+HTML adapter resolves selectors, specificity, and CSS inheritance before
+exposing normalized declarations and dependencies. The generic style resolver
+does not reinterpret source CSS or RTF control state.
+
+The style sheet has a revision identity, stable style identities, and two
+namespaces:
+
+- A **paragraph style** applies to one paragraph block. It contains paragraph
+  layout declarations and character declarations that provide the paragraph's
+  default text appearance. A heading paragraph style can therefore set spacing
+  and indentation as well as font family, size, weight, or color. Paragraph
+  styles are the initial block-style kind.
+- A **character style** applies to a formatted text range and contains only
+  character declarations. It does not change paragraph geometry.
+
+Style identity is an opaque stable ID, not the user-visible name or an array
+index. Renaming or reordering a style does not invalidate assignments to it.
+Each style has at most one parent in the same namespace. Multiple inheritance
+is forbidden. Every non-base style ultimately derives from its namespace's base
+style. Parent links must be acyclic; a missing parent or cycle produces a
+diagnostic and deterministically falls back to the applicable base style without
+discarding source syntax.
+
+Deleting a non-base style is allowed only when the same atomic intention
+reassigns its children and every content assignment, or when none exist.
+Otherwise deletion is rejected; it never leaves silently dangling style IDs.
+
+Every style sheet defines a distinguished Base Paragraph style and Base
+Character style. They have no parent and cannot be deleted. Base Paragraph
+provides complete paragraph-layout values. Together with the engine's emergency
+fallbacks, Base Character and Base Paragraph provide complete character values,
+so layout never depends on a platform default that is absent from the style
+snapshot. Adapters may synthesize these base styles from document defaults,
+source defaults, or pipeline configuration and must identify which declarations
+are source-backed versus generated.
+
+#### Declarations and values
+
+A style definition is sparse. For each property it either has no declaration,
+in which case cascade resolution continues, or it has an explicit typed value.
+Values such as normal weight, no underline, zero spacing, or transparent color
+are explicit values and are distinct from absence. Clearing formatting removes
+the declaration at the requested layer; it does not write a guessed value from
+an ancestor.
+
+Source-language constructs such as CSS `inherit`, relative units, or RTF state
+transitions remain represented in the lossless syntax model. The adapter
+projects their semantic declaration and records dependency/provenance edges so
+that a change to an ancestor invalidates every dependent result. Unsupported
+expressions may be projected as resolved read-only values with a capability
+diagnostic rather than being approximated on reverse edit.
+
+Initial character properties include:
+
+- an ordered font-family/fallback request, separate from the concrete font
+  identities returned by the shaping provider;
+- font size in layout units, numeric weight, and slant;
+- foreground and optional background color;
+- underline and strike decoration;
+- language and writing-direction override;
+- OpenType feature settings; and
+- letter spacing and baseline shift.
+
+Bold and italic are command/UI conveniences that set numeric weight and slant;
+they are not separate booleans that can disagree with those properties.
+Portable color and font requests are value types and contain no native handles.
+The resolved character style passed to shaping contains concrete values for
+every required property.
+
+Initial paragraph properties include:
+
+- space before and space after;
+- logical start and end indents and a first-line indent, with signed values so
+  hanging indents are representable;
+- line spacing as `normal`, a font-metric multiplier, `at-least`, or `exact`;
+- logical alignment: start, end, or center; and
+- base writing direction.
+
+Justified alignment, custom tab-stop collections, borders, backgrounds,
+keep-with-next, and pagination properties are reserved extensions rather than
+silently accepted initial features. Property records are versioned and
+extensible; an unknown property is retained with provenance by the adapter but
+has no layout effect until the core declares support for it.
+
+Absolute distances use layout units and are independent of backing scale and
+zoom. Relative values are resolved against explicitly recorded inherited font
+or containing-block inputs. Invalid numbers, non-positive font sizes, and other
+out-of-domain values produce deterministic diagnostics and schema-defined
+fallbacks.
+
+#### Cascade and assignments
+
+Each paragraph stores a paragraph-style ID plus sparse direct paragraph and
+paragraph-default-character declarations. Character-style assignments and
+direct character formatting are separate range maps over formatted text. At a
+given text position there is at most one assigned named character style, but
+different direct properties may cover independently overlapping ranges.
+
+Paragraph geometry is resolved in this order, with later declarations winning:
+
+1. engine emergency values;
+2. Base Paragraph declarations;
+3. ancestor-to-descendant declarations of the assigned paragraph style;
+4. a future structural block contribution, such as list-item geometry; and
+5. direct paragraph declarations on the paragraph.
+
+Character appearance is resolved in this order:
+
+1. engine emergency values;
+2. Base Character declarations;
+3. character declarations from Base Paragraph through the assigned paragraph
+   style, followed by direct paragraph-default-character declarations;
+4. ancestor-to-descendant declarations explicitly present in the assigned
+   character-style chain, without reapplying Base Character over the paragraph
+   defaults;
+5. a future structural contribution for generated content such as a list
+   marker; and
+6. direct character declarations.
+
+This ordering makes a named paragraph style capable of changing a heading's
+font while allowing a named character style and then direct bold, italic, font,
+size, or color formatting to override it. Direct formatting never mutates or
+implicitly creates a named style.
+
+Direct character formatting is canonicalized per property: applying a property
+replaces that property's value only in the selected range, splitting existing
+runs as needed, while leaving unrelated properties intact. Clearing it removes
+that property's direct declaration and reveals the underlying named-style or
+paragraph result. Equivalent adjacent assignments and declaration runs are
+coalesced. This avoids making rendering depend on the historical order in which
+overlapping bold, italic, and font spans were applied.
+
+Every resolved property retains contribution metadata identifying its winning
+declaration and dependencies. Style-definition changes invalidate assignments
+to that style and all transitive descendants, but unrelated styles and text
+remain valid. Resolution is cacheable by style-sheet revision, style IDs,
+direct-declaration identity, and structural-context identity.
+
+#### Editing, insertion, and provenance
+
+Style operations are typed semantic intentions, including applying a named
+paragraph or character style, setting or clearing a direct property, and
+editing a style definition. Each adapter reports these capabilities separately:
+support for displaying a style does not imply that its definition, assignment,
+or every direct property can be reverse-projected.
+
+Style definitions, assignments, direct declarations, and generated defaults all
+carry provenance. A source-backed style edit follows the same minimal-patch,
+reprojection, verification, and undo transaction path as text. A generated
+configuration style may be edited only through an explicit configuration
+intention. A synthetic read-only style cannot be edited.
+
+Inserted text inherits the character-style assignment and direct character
+declarations at the caret side selected by its affinity. Inside a run this is
+unambiguous; at a run boundary upstream affinity chooses the preceding run and
+downstream affinity chooses the following run. At paragraph start or end, the
+only interior side is used. Empty paragraphs retain an explicit paragraph-style
+assignment and typing-character declarations even though they contain no text.
+
+Splitting a paragraph normally copies its paragraph-style assignment and direct
+paragraph declarations to the new paragraph. A paragraph style may name a
+`next_paragraph_style`; when present, Enter at the paragraph's terminal boundary
+uses it for the new paragraph. Joining paragraphs keeps the first paragraph's
+style for the result unless the format adapter reports that source semantics
+require an explicit policy choice.
+
+#### Future structured blocks
+
+Lists are document structure, not a bullet character embedded in text and not
+merely a paragraph-style flag. The formatted block tree is designed to add List
+and List Item nodes carrying list identity, nesting level, marker/numbering
+policy, and optional style references. Paragraphs inside an item continue to
+use the paragraph-style system above. A list definition may later contribute
+hanging indentation and spacing at the reserved structural cascade layer and
+may reference a character style for its generated marker. Generated markers
+have explicit synthetic provenance and caret/edit rules.
+
+The same structural contribution mechanism may later support quotations,
+tables, callouts, or other block containers without adding format-specific
+fields to paragraph styles. These future node kinds and properties are not part
+of the initial implementation or command commitment.
 
 ### Semantic edit intentions and reverse projection
 
@@ -323,6 +647,41 @@ can translate it.
   styles together with enough portable semantics for the destination adapter
   to translate a paste. Plain-text system clipboard interchange is required;
   rich clipboard interchange is desirable but may be added separately.
+
+### Continuous canvas and paragraph layout
+
+The editor canvas is an unpaginated continuous surface. It has a finite usable
+width determined by the view width, canvas insets, gutter, and zoom, and an
+unbounded logical vertical extent represented through the estimated/exact
+height index. Pages, page breaks, headers, footers, columns, footnotes, and
+widow/orphan rules do not participate in interactive layout. A future print or
+export feature may build a separate paginated projection without changing the
+interactive document or serializing visual wraps.
+
+Paragraph layout follows the resolved paragraph style:
+
+- Start and end are logical edges resolved using the paragraph's base writing
+  direction. The first-line indent is relative to the resolved start indent;
+  negative values provide hanging indents.
+- The available width for a paragraph is the canvas usable width minus its
+  resolved start and end indents. Structural block contributions may further
+  reduce or offset that box in the future.
+- Space between adjacent paragraphs is the sum of the first paragraph's space
+  after and the second paragraph's space before. Spacing does not collapse.
+  Canvas top and bottom insets are separate from paragraph spacing.
+- `normal` line spacing uses the maximum shaped ascent, descent, and leading on
+  each visual row. A multiplier scales that natural row height. `at-least`
+  takes the greater of the natural and requested heights. `exact` uses the
+  requested advance while retaining unclipped ink bounds for damage and
+  accessibility geometry.
+- Start, end, and center alignment position the shaped visual row inside the
+  paragraph content box. Justification is unsupported until its breaking,
+  expansion, hit-testing, and editing behavior is specified.
+
+Paragraph spacing and indentation affect wrapping and the view height index but
+never create source newline characters. Canvas width or inset changes invalidate
+view wrap plans and paragraph geometry, not source, syntax, style assignments,
+or width-independent shaping.
 
 ### Wrapping and resize reflow
 
@@ -615,8 +974,10 @@ marked text is cancelled before history navigation; it is never implicitly
 committed by undo or redo. A failed or unsupported source transaction does not
 alter the open unit. A successful command that produces no authoritative
 source or source-metadata change does not create a history node. Navigation,
-selection, scrolling, option changes, register inspection, yank without
-deletion, search, and setting a mark are not undo units.
+selection, scrolling, presentation-only option changes, register inspection,
+yank without deletion, search, and setting a mark are not undo units. A
+source-affecting option such as `fileformat` follows its documented source
+transaction and undo policy.
 
 #### Branching, undo, and redo
 
@@ -729,7 +1090,11 @@ Required Ex commands and common unambiguous abbreviations are:
 - navigation/info: numeric line addresses, `:goto`, `:marks`, `:registers`,
   and `:jumps`; and
 - options: `:set`, `:setlocal`, `:set wrap`, `:set nowrap`, `:set linebreak`,
-  `:set nolinebreak`, and queries for implemented options.
+  `:set nolinebreak`, `:set fileformat?`, and
+  `:set fileformat=unix|dos|mac` (where one value is supplied), including the
+  `ff` abbreviation and corresponding `:setlocal` forms. The global
+  `fileformats` open-policy option supports query and ordered assignment even
+  though changing it does not reinterpret an already open buffer.
 
 Ranges always use hard lines. File dialogs, unsaved-change prompts, and error
 presentation are frontend responsibilities driven by typed core requests and
@@ -1067,10 +1432,22 @@ On a usable-width change:
   anchors; and
 - cancel work for obsolete intermediate widths during live resize.
 
-On a source-backed style change, use the new projection's change summary to
-invalidate only affected shaping. A global view default-font or
-metrics-generation change may make all shaping logically stale, but
-invalidation is generation-based and `O(1)`; replacement remains
+On a style definition, assignment, or direct-formatting change, resolve the
+property difference and invalidate by effect:
+
+- font, size, weight, slant, language/direction, OpenType features, letter
+  spacing, or baseline changes invalidate affected shaping and downstream wrap
+  and height results;
+- paragraph indents, spacing, line spacing, alignment, or structural
+  contributions invalidate affected paragraph wrap/position/height results but
+  retain width-independent shaping when its character inputs are unchanged; and
+- color and other paint-only changes invalidate display resources and damage
+  regions without reshaping or rewrapping.
+
+A base-style or ancestor definition change follows dependency edges to all
+affected assignments rather than scanning unrelated text. A global view
+default-font or metrics-generation change may make all shaping logically stale,
+but invalidation is generation-based and `O(1)`; replacement remains
 viewport-driven.
 
 ### Extremely long hard lines
@@ -1174,6 +1551,18 @@ structurally; avoid brittle wall-clock-only tests.
 - **Encoding tests**: legacy and invalid byte input survives no-op saves, maps
   correctly to valid UTF-8, and never silently substitutes unrepresentable
   edits.
+- **Line-ending tests**: LF, CRLF, CR, mixed endings, literal CR/LF content,
+  empty files, and files with and without a final terminator exercise every
+  detected, forced, and defaulted mode. Plain text, Markdown, and HTML use the
+  same conformance suite. No-op saves are byte-identical; inserted breaks use
+  `fileformat`; conversions declare every patch and preserve the logical token
+  sequence or return the required policy result.
+- **Style tests**: randomized acyclic paragraph and character style trees resolve
+  identically with and without caches. Tests cover sparse inheritance, explicit
+  normal values, paragraph character defaults, named character styles,
+  independently overlapping direct-property spans, boundary-affinity insertion,
+  empty paragraphs, definition invalidation, cycles/missing parents, structural
+  contribution precedence, provenance, and reverse-edit capabilities.
 - **Pipeline tests**: composed provenance and reverse edits match an equivalent
   unfused pipeline; stale, generated, ambiguous, and unsupported edits return
   the required structured result.
@@ -1193,7 +1582,9 @@ structurally; avoid brittle wall-clock-only tests.
   keystrokes against a pinned Vim version, and compare resulting formatted
   text, cursor, registers, and mode when feasible.
 - **Layout equivalence tests**: incremental results equal a from-scratch layout
-  for the same projection/configuration using a deterministic fake shaper.
+  for the same projection/configuration using a deterministic fake shaper,
+  including inherited and direct styles, paragraph spacing/indents, empty
+  paragraphs, and continuous-canvas height aggregation.
 - **Cache tests**: source edits, projection changes, font-generation changes,
   wrapping toggles, and resize invalidate exactly the required layers. Stale
   async results are rejected.
@@ -1271,6 +1662,7 @@ decision in this file or an architecture decision record first:
 - exact Unicode word/sentence segmentation tailoring;
 - exact regular-expression syntax supported by `/` and `:substitute`;
 - whether rich system clipboard formats are required for the first release;
-- default font, page insets, colors, and other visual design choices;
+- default Base Paragraph/Base Character values, canvas insets, colors, and
+  other visual design choices;
 - hyphenation and justification; and
 - concrete latency and memory budgets for supported hardware.
