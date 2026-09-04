@@ -501,10 +501,9 @@ single source transaction/undo unit. Cancelled composition restores the
 pre-composition projection without changing source.
 Core commands must not see partially decoded key events as text.
 
-One Insert/Replace session is normally one undo unit, matching Vim's useful
-behavior. Explicit cursor moves, `Ctrl-O`, paste boundaries, and IME commit
-boundaries may split units where Vim or native text input expectations require
-it; these cases need tests.
+Insert/Replace source transactions are grouped according to the undo-unit rules
+below. In particular, explicit cursor moves, `Ctrl-O`, paste boundaries, and
+IME commits create deterministic undo breaks.
 
 ### Visual modes
 
@@ -521,14 +520,197 @@ Vim terms while internal APIs use explicit half-open ranges.
   `%` where applicable.
 - Required commands: `u`, `Ctrl-R`, `U`, `.`, `q{a-z}`/`q`, `@{a-z}`, and
   `@@`.
-- Undo history is a branching transaction tree, not only two linear stacks.
-  Its committed states are source snapshots. Text changes, style changes, and
-  compound block edits participate in the same history, and undo restores the
-  exact previous source bytes before regenerating projections.
+- Undo history follows the branching transaction model below. It is not a pair
+  of linear command stacks.
 - Dot repeat records a semantic change action with its inserted payload and
   count, not a replay of frontend-specific key codes.
 - Macros record normalized core command/text events. Replaying a macro is
   deterministic and guarded against unbounded recursion.
+
+### Undo history and transaction model
+
+Undo and redo navigate previously committed document states. They MUST NOT
+execute an inverse command, reverse a patch against the current document, or
+rerun the original semantic intention. Reverse projection may depend on
+context, format policy, and transformation versions, so rerunning it would not
+be a reliable way to recover an exact earlier state.
+
+Keep these concepts distinct:
+
+- A **source transaction** is one atomic, verified transition from one source
+  snapshot to another. It may contain patches to several ranges or artifact
+  parts. A transaction either commits completely, together with its immediate
+  command side effects, or has no effect.
+- An **undo unit** is one user-visible change reversed by one `u`. It may
+  contain several consecutive source transactions, such as the incremental
+  updates made during one Insert session.
+- A **history node** is the immutable, finalized result of one undo unit. The
+  root node represents the state loaded or created before the first change.
+- An **open undo unit** has a fixed parent and before-state, but its resulting
+  snapshot is replaced as further source transactions join the group. It is
+  finalized at an undo break. Intermediate source revisions remain valid for
+  layout and background work but are not separate user-visible undo steps.
+
+The history store records at least:
+
+- a monotonically increasing change number and a stable history-node identity;
+- one parent, zero or more ordered children, and a preferred redo child;
+- the resulting immutable source snapshot, including source-artifact metadata
+  required to interpret and serialize it exactly;
+- the initiating edit's before and after restoration positions, represented as
+  stable anchors with affinity rather than raw offsets;
+- persistent before and after snapshots of required buffer-local marks;
+- a typed summary of the semantic change for diagnostics and future history
+  UI, without making that description responsible for undo or redo; and
+- the exact transaction/change summaries needed for invalidation,
+  instrumentation, and auditing. Retained patches are an optimization and
+  diagnostic aid, not the authority for restoring the state.
+
+A finalized node's source snapshot, restoration positions, mark snapshots,
+semantic summary, and change summary are immutable. The tree index may append
+children and may change a node's preferred-child link as the user navigates.
+The root has no parent or initiating-edit fields.
+
+Formatted projections, layout snapshots, native drawing objects, and cache
+contents are never history state. They are regenerated or reused after a
+history navigation from the selected source snapshot.
+
+#### Creating and grouping undo units
+
+The following grouping rules are required:
+
+- One Normal, Visual, native editing, or Ex change command, including its
+  count and every patch in a compound block edit, is normally one undo unit.
+- A change operator followed by Insert input, such as `cw` or `cc`, groups the
+  operator's deletion and the following Insert session into one undo unit.
+- An `i`, `I`, `a`, `A`, `o`, `O`, or `R` session is one undo unit from entry
+  until Escape, a required undo break, or another event below closes it. The
+  line creation performed by `o` or `O` belongs to that same unit.
+- Backspace, Forward Delete, Enter, and Tab remain in the current Insert or
+  Replace undo unit when they are handled as ordinary editing input.
+- An explicit cursor move in Insert or Replace mode closes the current unit
+  before moving. Later text starts a new unit without requiring the user to
+  leave the mode.
+- `Ctrl-O` closes the current Insert/Replace unit before executing its one
+  Normal command. A change made by that command is a separate unit, and later
+  inserted text starts another unit.
+- A paste or `Ctrl-R {register}` insertion is its own unit and closes adjacent
+  typed-text units. One committed IME composition is likewise its own unit;
+  marked-text updates and cancellation create no source transaction or history
+  node.
+- One dot repeat is one undo unit even when the recorded semantic change is
+  compound. One macro replay or `:normal` invocation is also one undo unit
+  containing all source transactions completed by its normalized commands. If
+  a later command in the replay fails, earlier transactions remain committed
+  in that unit and the replay stops with its diagnostic.
+- A single `:substitute`, font/style action, or other command that changes many
+  ranges is one atomic source transaction and one undo unit unless the command
+  explicitly documents a different policy.
+
+An undo/redo request, buffer close, save, mode transition that ends editing, or
+dispatch of an unrelated change first finalizes any open undo unit. Active IME
+marked text is cancelled before history navigation; it is never implicitly
+committed by undo or redo. A failed or unsupported source transaction does not
+alter the open unit. A successful command that produces no authoritative
+source or source-metadata change does not create a history node. Navigation,
+selection, scrolling, option changes, register inspection, yank without
+deletion, search, and setting a mark are not undo units.
+
+#### Branching, undo, and redo
+
+The buffer owns one history tree and one current-node pointer:
+
+- Committing a finalized undo unit adds a child to the current node and moves
+  the pointer to that child. Existing children are retained, so editing after
+  undo creates a sibling branch rather than destroying the abandoned future.
+- `u` moves to the parent, and `Ctrl-R` moves to the preferred child; their
+  Normal-mode counts repeat the operation. `:undo` and `:redo` perform one
+  corresponding step. `:undo {change-number}` selects that exact history node.
+- Moving to a parent records the child just left as that parent's preferred
+  redo child. Creating or explicitly selecting a child also makes it preferred.
+  Thus immediate undo/redo is predictable even when the parent has branches.
+- If the requested parent or preferred child does not exist, the command
+  reports a non-destructive boundary error and leaves all state unchanged.
+- Core history APIs enumerate branches and select a node by stable identity or
+  change number even if the first frontend does not yet expose all of Vim's
+  time-navigation commands. Selecting a node is atomic and updates the same
+  preferred-child links as stepwise navigation.
+- A read-only history status query reports the current change number, whether
+  undo and redo are available, and the semantic summaries of the parent and
+  preferred child so frontends can label and enable native menu items without
+  duplicating history state.
+- Redo installs the stored child snapshot; it does not reapply patches, update
+  delete/yank registers, request format policy, or rerun command side effects.
+
+History navigation first resolves and validates its target, then installs its
+source snapshot, regenerates or obtains the matching projection, updates the
+current-node pointer and saved/dirty state, remaps live anchors, and publishes
+one coherent state change. If the target cannot be made usable, nothing is
+installed.
+
+#### State restored by history navigation
+
+Undo history is buffer-owned, while cursor, selection, viewport, and mode are
+view-owned. On undo or redo:
+
+- the exact source artifact and source metadata in the target node are
+  restored;
+- required buffer-local marks are restored from the transition's before or
+  after mark snapshot, matching Vim's treatment of marks as saved with text;
+- the invoking view exits transient/Visual state to Normal mode, clears its
+  selection, and places its cursor at the transaction's before restoration
+  position for undo or after restoration position for redo;
+- every other live view of the buffer retains its mode and presentation state,
+  while its cursor, selection, and viewport anchors are remapped through source
+  provenance to the restored snapshot; and
+- each view invalidates only the projection and layout dependencies reported by
+  the installed history transition and then reveals its remapped caret when
+  required.
+
+Registers, macro recording/playback state, dot-repeat state, search pattern and
+history, jump lists, command-line history, view options, scroll offsets, and
+the file identity are not restored and redo does not replay their original
+side effects. Register and repeat updates caused by an ordinary edit still
+commit atomically with that edit: if the edit fails, those side effects do not
+occur. This atomicity does not make them part of the later undo payload.
+
+`U` is a change command, not history navigation. The buffer retains a line-undo
+slot containing the stable hard-line identity and exact source-backed baseline
+from before the current consecutive run of changes confined to that line.
+Further changes confined to the same hard line keep the baseline; a change
+involving another line or a hard-line boundary replaces or clears the slot as
+applicable. `U` issues a typed line-baseline restoration, from which the adapter
+produces the minimal patches needed to restore the saved source slices and then
+verifies the projected line. It creates a new undo unit. After it commits, the
+replaced line becomes the new baseline so another `U` can reverse the previous
+`U` in Vim-compatible fashion. Adapters report a non-destructive error if the
+saved baseline can no longer be restored unambiguously.
+
+#### Save points, retention, and persistence
+
+A successful write records the current source-snapshot identity as the
+buffer's persisted save point and may annotate the current history node with a
+monotonic write number. Saving does not create an undo unit. A failed write
+does not move the save point. The buffer is clean exactly when its current
+source-snapshot identity is the persisted identity; undoing away from a saved
+node makes it dirty and returning to that exact snapshot makes it clean again.
+Changing file identity with a successful `:saveas` is not undone.
+
+History retention has configurable node and retained-byte budgets and must
+account for structurally shared source buffers rather than charging each
+snapshot its apparent full size. Pruning removes the oldest non-current leaf
+branches first. If the retained current ancestry alone exceeds the budget, the
+oldest retained state is promoted to a new root, making older changes
+explicitly unavailable without affecting the current document. The active
+node and an open unit's parent and result are never pruned. A pruned saved node
+may lose its navigable history entry, but the persisted snapshot identity and
+artifact digest remain available for dirty-state comparison.
+
+The first release keeps undo history in memory only. A future persistent undo
+file must be versioned and bound to an exact physical source-artifact digest,
+adapter identity/version, encoding configuration, and required transformation
+configuration. A mismatch must reject the history without changing the opened
+document.
 
 ### Command-line and Ex commands
 
@@ -560,6 +742,10 @@ standard copy/cut/paste/select-all menu items, drag selection auto-scroll, and
 font selection for the active range. Native commands dispatch the same core
 semantic intentions and verified source transactions as keyboard commands.
 They must not maintain a second selection, source, or undo model in AppKit.
+The macOS Undo and Redo menu actions dispatch to the core history API. An
+`NSUndoManager` adapter, if required for AppKit integration, is only a proxy for
+core status and commands and never registers or executes independent inverse
+closures.
 
 ### Explicitly deferred compatibility
 
@@ -886,9 +1072,14 @@ structurally; avoid brittle wall-clock-only tests.
 - **Pipeline tests**: composed provenance and reverse edits match an equivalent
   unfused pipeline; stale, generated, ambiguous, and unsupported edits return
   the required structured result.
-- **Undo tests**: any transaction sequence round-trips exact source bytes,
-  projected content/styles, registers where applicable, marks, and cursor state
-  through undo/redo and alternate branches.
+- **Undo tests**: randomized grouped transactions round-trip exact source bytes,
+  source metadata, required buffer-local marks, and invoking-view restoration
+  positions through undo/redo and alternate branches. Tests cover every undo
+  break, edit-after-undo branch creation, preferred-child selection, multi-view
+  anchor remapping, saved/dirty transitions, history pruning, line undo, and
+  the rule that registers and other non-history command state are not replayed
+  or restored. Redo from a stored snapshot must equal the original committed
+  result without invoking reverse projection again.
 - **Command table tests**: every supported command covers counts, registers,
   mode transitions, operator composition, cancellation, dot repeat, and macro
   replay.
