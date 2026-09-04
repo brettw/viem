@@ -47,6 +47,15 @@ and terminal frontends, but those frontends are not part of the current scope.
 - Keep this file current when a requirement or supported-command decision
   changes.
 
+## Implementation languages
+
+- Implement the portable core under `src/core` in Rust.
+- Implement the macOS frontend under `src/mac` in Swift using AppKit, not
+  SwiftUI.
+- A future native Windows frontend will use C# and WinUI 3.
+- Connect frontends to the Rust core through a narrow, stable C ABI. Keep
+  ownership explicit and make performance-sensitive exchanges batch-oriented.
+
 ## Vocabulary and coordinate systems
 
 Use these terms consistently in code, tests, and documentation:
@@ -953,7 +962,7 @@ Primary source-preservation and transformation references:
 Do not silently settle these while implementing an unrelated feature. Record a
 decision in this file or an architecture decision record first:
 
-- implementation language and build/package layout;
+- build/package layout;
 - which format adapters beyond plain text ship initially;
 - each adapter's default authoring policy, such as Markdown delimiter and HTML
   element/style choices;
