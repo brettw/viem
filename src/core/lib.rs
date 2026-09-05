@@ -1,0 +1,28 @@
+//! Portable core for eVim.
+//!
+//! The crate intentionally exposes a small facade. Document state, Vim command
+//! interpretation, and layout are separate modules with one-way dependencies.
+
+pub mod command;
+pub mod document;
+pub mod ffi;
+pub mod layout;
+
+mod coordinator;
+
+pub use command::clipboard::{
+    ClipboardCommandContext, ClipboardContent, ClipboardContentError, ClipboardGeneration,
+    ClipboardProvider, ClipboardSnapshot, ClipboardTarget, ClipboardWriteRequest,
+    MemoryClipboardError, MemoryClipboardProvider,
+};
+pub use command::composition::{
+    CompositionCommit, CompositionCommitRequest, CompositionError, CompositionEvent,
+    CompositionOverlay, CompositionRestoration, CompositionSession, CompositionTarget,
+    CompositionUpdate,
+};
+pub use command::layout_motion::{LayoutDemand, LayoutDemandEdge};
+pub use coordinator::{
+    CompositionCancelReason, Core, CoreError, CoreEvent, CoreIdentifierKind, CoreOutcome,
+    ViewCompositionChange, ViewCompositionOutcome, ViewId, ViewRemovalOutcome, ViewportState,
+};
+pub use document::{Document, DocumentError, Encoding, Format, Revision};

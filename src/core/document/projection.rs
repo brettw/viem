@@ -1,0 +1,4049 @@
+use super::encoding::DecodingDiagnostic;
+use super::formatted_text::{
+    FormattedTextError, FormattedTextTree, LeafBoundarySide, LogicalGraphemeSnapshot,
+};
+use super::line_endings::{LogicalUnit, NormalizedText};
+use super::position::ProjectedAnchorBacking;
+use super::range_index::{IntervalRangeStore, OrderedRangeStore, RangeSpliceStats, RangedItem};
+use super::style::{
+    BlockProperties, CharacterProperties, DocumentStyleAssignment, SemanticInlineStyle,
+    StyleApplication, StyleId, StyleSheet,
+};
+use super::{
+    Association, BoundaryAffinity, DeletionRecovery, DocumentId, MappingOutcome, PositionDomain,
+    PositionError, PositionMap, ProjectedBlockBoundary, ProjectedLeafBoundary, Revision,
+    SourceAnchorProvenance, SourcePartId, TextAnchor, TextEdit, TextPoint, UnresolvableAnchor,
+};
+use std::fmt;
+use std::ops::Range;
+use std::sync::{Arc, OnceLock};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Format {
+    PlainText,
+    Markdown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BlockKind {
+    Paragraph,
+    Heading(u8),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Block {
+    /// Stable within the owning document across projection revisions. The
+    /// projector initially emits zero as a private provisional value; a
+    /// [`super::Document`] assigns or reconciles a globally fresh identity
+    /// before publishing the projection.
+    pub id: u64,
+    pub range: Range<usize>,
+    pub kind: BlockKind,
+    pub style: StyleId,
+    /// Sparse paragraph-layout declarations applied after the named paragraph
+    /// style chain.
+    pub direct_paragraph: BlockProperties,
+    /// Sparse default-character declarations inherited by this block's
+    /// content before named character styles and inline direct formatting.
+    pub direct_default_character: CharacterProperties,
+}
+
+impl RangedItem for Block {
+    fn range(&self) -> &Range<usize> {
+        &self.range
+    }
+
+    fn with_range(&self, range: Range<usize>) -> Self {
+        let mut shifted = self.clone();
+        shifted.range = range;
+        shifted
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BlockIdentityError {
+    Exhausted,
+    InvalidProjection,
+}
+
+/// Origin of one line in a source-backed hard-line transfer candidate.
+/// Existing lines retain identity; copied lines receive a fresh identity but
+/// inherit sparse direct declarations from the source line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TransferredLineOrigin {
+    Existing(usize),
+    Copied(usize),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StyleSpan {
+    pub range: Range<usize>,
+    pub application: StyleApplication,
+}
+
+impl RangedItem for StyleSpan {
+    fn range(&self) -> &Range<usize> {
+        &self.range
+    }
+
+    fn with_range(&self, range: Range<usize>) -> Self {
+        Self {
+            range,
+            application: self.application.clone(),
+        }
+    }
+}
+
+/// One authoritative formatted hard line. The range excludes its explicit
+/// hard-break item; ordinary U+000A content can therefore remain inside it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HardLine {
+    id: u64,
+    range: Range<usize>,
+    separator_length: usize,
+}
+
+impl RangedItem for HardLine {
+    fn range(&self) -> &Range<usize> {
+        &self.range
+    }
+
+    fn with_range(&self, range: Range<usize>) -> Self {
+        Self {
+            id: self.id,
+            range,
+            separator_length: self.separator_length,
+        }
+    }
+}
+
+impl HardLine {
+    fn separator_range(&self) -> Option<Range<usize>> {
+        (self.separator_length != 0).then(|| {
+            self.range.end
+                ..self
+                    .range
+                    .end
+                    .checked_add(self.separator_length)
+                    .expect("formatted hard-line separator is representable")
+        })
+    }
+}
+
+/// One immutable hard-line record in an explicitly identified document
+/// projection. All ranges are formatted UTF-8 byte ranges in `revision`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HardLineInfo {
+    document: DocumentId,
+    revision: Revision,
+    index: usize,
+    id: u64,
+    content_range: Range<usize>,
+    separator_range: Option<Range<usize>>,
+}
+
+impl HardLineInfo {
+    pub fn document(&self) -> DocumentId {
+        self.document
+    }
+
+    pub fn revision(&self) -> Revision {
+        self.revision
+    }
+
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Formatted content excluding the explicit hard-break item.
+    pub fn content_range(&self) -> Range<usize> {
+        self.content_range.clone()
+    }
+
+    /// The normalized hard-break item following this line, when present.
+    pub fn separator_range(&self) -> Option<Range<usize>> {
+        self.separator_range.clone()
+    }
+
+    /// Content plus its following hard-break item, when one exists.
+    pub fn linewise_range(&self) -> Range<usize> {
+        self.content_range.start
+            ..self
+                .separator_range
+                .as_ref()
+                .map_or(self.content_range.end, |separator| separator.end)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HardLineQueryError {
+    InvalidLineRange {
+        start: usize,
+        end: usize,
+        line_count: usize,
+    },
+    FormattedOffsetOutOfBounds {
+        offset: usize,
+        text_length: usize,
+    },
+    NotCharacterBoundary {
+        offset: usize,
+    },
+}
+
+impl fmt::Display for HardLineQueryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidLineRange {
+                start,
+                end,
+                line_count,
+            } => write!(
+                formatter,
+                "hard-line range {start}..{end} is invalid for {line_count} lines"
+            ),
+            Self::FormattedOffsetOutOfBounds {
+                offset,
+                text_length,
+            } => write!(
+                formatter,
+                "formatted offset {offset} exceeds text length {text_length}"
+            ),
+            Self::NotCharacterBoundary { offset } => {
+                write!(
+                    formatter,
+                    "formatted offset {offset} is not a UTF-8 boundary"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for HardLineQueryError {}
+
+/// Validation failure while creating or capturing a structured formatted-text
+/// payload. A marked break offset always names the single U+000A byte that
+/// represents one semantic hard-break item in the payload text.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FormattedPayloadError {
+    InvalidRange {
+        start: usize,
+        end: usize,
+        text_length: usize,
+    },
+    NotCharacterBoundary {
+        offset: usize,
+    },
+    NotGraphemeBoundary {
+        offset: usize,
+    },
+    BoundaryResolutionFailed {
+        offset: usize,
+    },
+    BreakOffsetOutOfBounds {
+        offset: usize,
+        text_length: usize,
+    },
+    BreakOffsetIsNotLineFeed {
+        offset: usize,
+    },
+    BreakOffsetsNotStrictlyIncreasing {
+        previous: usize,
+        offset: usize,
+    },
+}
+
+impl fmt::Display for FormattedPayloadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidRange {
+                start,
+                end,
+                text_length,
+            } => write!(
+                formatter,
+                "formatted payload range {start}..{end} is invalid for text length {text_length}"
+            ),
+            Self::NotCharacterBoundary { offset } => {
+                write!(
+                    formatter,
+                    "payload boundary {offset} is not a UTF-8 boundary"
+                )
+            }
+            Self::NotGraphemeBoundary { offset } => {
+                write!(formatter, "payload boundary {offset} splits a grapheme")
+            }
+            Self::BoundaryResolutionFailed { offset } => write!(
+                formatter,
+                "payload boundary {offset} could not be resolved in formatted text storage"
+            ),
+            Self::BreakOffsetOutOfBounds {
+                offset,
+                text_length,
+            } => write!(
+                formatter,
+                "payload break offset {offset} is outside text length {text_length}"
+            ),
+            Self::BreakOffsetIsNotLineFeed { offset } => write!(
+                formatter,
+                "payload break offset {offset} does not name U+000A"
+            ),
+            Self::BreakOffsetsNotStrictlyIncreasing { previous, offset } => write!(
+                formatter,
+                "payload break offsets are not strictly increasing at {previous}, {offset}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FormattedPayloadError {}
+
+/// Revision-bound formatted UTF-8 plus explicit semantic hard-break markers.
+///
+/// Unmarked U+000A values are ordinary text. Markers are sorted unique byte
+/// offsets into `text`, and each points at one U+000A scalar. Source spelling
+/// is deliberately absent: insertion delegates marked breaks to the target
+/// document's line-ending component.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FormattedTextPayload {
+    document: DocumentId,
+    revision: Revision,
+    text: Arc<str>,
+    break_offsets: Arc<[usize]>,
+}
+
+impl FormattedTextPayload {
+    /// Creates payload content bound to an exact hard-line snapshot.
+    pub fn new(
+        snapshot: &HardLineSnapshot,
+        text: impl Into<String>,
+        break_offsets: Vec<usize>,
+    ) -> Result<Self, FormattedPayloadError> {
+        let text: Arc<str> = text.into().into();
+        validate_payload_break_offsets(text.as_ref(), &break_offsets)?;
+        Ok(Self {
+            document: snapshot.document,
+            revision: snapshot.revision,
+            text,
+            break_offsets: break_offsets.into(),
+        })
+    }
+
+    pub fn document(&self) -> DocumentId {
+        self.document
+    }
+
+    pub fn revision(&self) -> Revision {
+        self.revision
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn break_offsets(&self) -> &[usize] {
+        &self.break_offsets
+    }
+}
+
+fn validate_payload_break_offsets(
+    text: &str,
+    break_offsets: &[usize],
+) -> Result<(), FormattedPayloadError> {
+    let mut previous = None;
+    for &offset in break_offsets {
+        if offset >= text.len() {
+            return Err(FormattedPayloadError::BreakOffsetOutOfBounds {
+                offset,
+                text_length: text.len(),
+            });
+        }
+        if let Some(previous) = previous {
+            if previous >= offset {
+                return Err(FormattedPayloadError::BreakOffsetsNotStrictlyIncreasing {
+                    previous,
+                    offset,
+                });
+            }
+        }
+        if text.as_bytes()[offset] != b'\n' {
+            return Err(FormattedPayloadError::BreakOffsetIsNotLineFeed { offset });
+        }
+        previous = Some(offset);
+    }
+    Ok(())
+}
+
+fn validate_payload_capture_range(
+    snapshot: &HardLineSnapshot,
+    range: &Range<usize>,
+) -> Result<(), FormattedPayloadError> {
+    if range.start > range.end || range.end > snapshot.text_length() {
+        return Err(FormattedPayloadError::InvalidRange {
+            start: range.start,
+            end: range.end,
+            text_length: snapshot.text_length(),
+        });
+    }
+    for offset in [range.start, range.end] {
+        let is_char_boundary = snapshot
+            .text_tree
+            .is_char_boundary(offset)
+            .map_err(|_| FormattedPayloadError::BoundaryResolutionFailed { offset })?;
+        if !is_char_boundary {
+            return Err(FormattedPayloadError::NotCharacterBoundary { offset });
+        }
+        if !snapshot.is_grapheme_boundary(offset) {
+            return Err(FormattedPayloadError::NotGraphemeBoundary { offset });
+        }
+    }
+    Ok(())
+}
+
+/// Cheap owned read snapshot of the authoritative formatted hard-line index.
+///
+/// Cloning this value shares the persistent range tree and text allocation. A
+/// snapshot remains queryable after the live document advances; callers can
+/// compare its document/revision identity or ask the document to validate it
+/// before applying a result.
+#[derive(Clone)]
+pub struct HardLineSnapshot {
+    document: DocumentId,
+    revision: Revision,
+    flat_text: Arc<OnceLock<Arc<str>>>,
+    text_tree: FormattedTextTree,
+    hard_lines: OrderedRangeStore<HardLine>,
+}
+
+impl fmt::Debug for HardLineSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HardLineSnapshot")
+            .field("document", &self.document)
+            .field("revision", &self.revision)
+            .field("text_length", &self.text_tree.byte_len())
+            .field("line_count", &self.hard_lines.len())
+            .finish()
+    }
+}
+
+impl HardLineSnapshot {
+    fn new(document: DocumentId, projection: &FormattedDocument) -> Self {
+        Self {
+            document,
+            revision: projection.revision,
+            flat_text: projection.flat_text.clone(),
+            text_tree: projection.text.clone(),
+            hard_lines: projection.hard_lines.clone(),
+        }
+    }
+
+    pub fn document(&self) -> DocumentId {
+        self.document
+    }
+
+    pub fn revision(&self) -> Revision {
+        self.revision
+    }
+
+    pub fn text_length(&self) -> usize {
+        self.text_tree.byte_len()
+    }
+
+    /// Exact formatted UTF-8 backing for the ranges returned by this snapshot.
+    pub fn text(&self) -> &str {
+        self.flat_text
+            .get_or_init(|| Arc::from(self.text_tree.flatten()))
+            .as_ref()
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.hard_lines.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.hard_lines.is_empty()
+    }
+
+    /// Whether `offset` is a legal logical formatted-content boundary.
+    ///
+    /// Unicode segmentation is applied within text items, while both sides of
+    /// every marked semantic hard break are forced boundaries. Thus a literal
+    /// CR immediately followed by a marked U+000A remains a distinct content
+    /// grapheme followed by a distinct hard-break item. An unmarked literal
+    /// CRLF inside line content retains normal UAX #29 behavior.
+    pub fn is_grapheme_boundary(&self, offset: usize) -> bool {
+        logical_is_grapheme_boundary(&self.text_tree, &self.hard_lines, offset).unwrap_or(false)
+    }
+
+    /// Return the next logical grapheme/item boundary after `offset`.
+    pub fn next_grapheme_boundary(&self, offset: usize) -> Option<usize> {
+        logical_next_grapheme_boundary(&self.text_tree, &self.hard_lines, offset)
+            .ok()
+            .flatten()
+    }
+
+    /// Return the preceding logical grapheme/item boundary before `offset`.
+    pub fn previous_grapheme_boundary(&self, offset: usize) -> Option<usize> {
+        logical_previous_grapheme_boundary(&self.text_tree, &self.hard_lines, offset)
+            .ok()
+            .flatten()
+    }
+
+    /// Return the logical item beginning at a legal non-EOF boundary.
+    pub fn grapheme_range_at(&self, offset: usize) -> Option<Range<usize>> {
+        if offset >= self.text_length() || !self.is_grapheme_boundary(offset) {
+            return None;
+        }
+        self.next_grapheme_boundary(offset).map(|end| offset..end)
+    }
+
+    /// Materialize the logical grapheme/item ranges in one aligned range.
+    pub fn grapheme_ranges(&self, range: Range<usize>) -> Option<Vec<Range<usize>>> {
+        if range.start > range.end
+            || range.end > self.text_length()
+            || !self.is_grapheme_boundary(range.start)
+            || !self.is_grapheme_boundary(range.end)
+        {
+            return None;
+        }
+        let mut ranges = Vec::new();
+        let mut start = range.start;
+        while start < range.end {
+            let end = self.next_grapheme_boundary(start)?;
+            if end > range.end {
+                return None;
+            }
+            ranges.push(start..end);
+            start = end;
+        }
+        Some(ranges)
+    }
+
+    /// Count logical grapheme/item ranges without flattening the snapshot.
+    pub fn grapheme_count(&self, range: Range<usize>) -> Option<usize> {
+        if range.start > range.end
+            || range.end > self.text_length()
+            || !self.is_grapheme_boundary(range.start)
+            || !self.is_grapheme_boundary(range.end)
+        {
+            return None;
+        }
+        let mut count = 0usize;
+        let mut offset = range.start;
+        while offset < range.end {
+            offset = self.next_grapheme_boundary(offset)?;
+            if offset > range.end {
+                return None;
+            }
+            count = count.checked_add(1)?;
+        }
+        Some(count)
+    }
+
+    /// Advance exactly `count` logical items, returning `None` when that would
+    /// pass EOF or when `offset` is not itself a legal boundary.
+    pub fn advance_graphemes(&self, offset: usize, count: usize) -> Option<usize> {
+        if !self.is_grapheme_boundary(offset) {
+            return None;
+        }
+        let mut result = offset;
+        for _ in 0..count {
+            result = self.next_grapheme_boundary(result)?;
+        }
+        Some(result)
+    }
+
+    /// Captures any valid grapheme-aligned formatted range, retaining exactly
+    /// which included U+000A items are semantic hard breaks. Literal U+000A
+    /// content remains unmarked.
+    pub fn capture(
+        &self,
+        range: Range<usize>,
+    ) -> Result<FormattedTextPayload, FormattedPayloadError> {
+        validate_payload_capture_range(self, &range)?;
+        let break_offsets = self
+            .hard_lines
+            .query_touching(&range)
+            .into_iter()
+            .filter_map(|line| line.separator_range())
+            .filter(|separator| range.start <= separator.start && separator.end <= range.end)
+            .map(|separator| {
+                separator
+                    .start
+                    .checked_sub(range.start)
+                    .expect("a captured separator follows the payload start")
+            })
+            .collect::<Vec<_>>();
+        let text = self.text_tree.slice(range).map_err(|_| {
+            FormattedPayloadError::BoundaryResolutionFailed {
+                offset: self.text_tree.byte_len(),
+            }
+        })?;
+        FormattedTextPayload::new(self, text, break_offsets)
+    }
+
+    /// Looks up one zero-based line in `O(log n)`.
+    pub fn line(&self, index: usize) -> Option<HardLineInfo> {
+        self.hard_lines
+            .get(index)
+            .map(|line| self.info(index, line))
+    }
+
+    /// Looks up a half-open ordinal line range in `O(log n + k)`.
+    pub fn lines(&self, indices: Range<usize>) -> Result<Vec<HardLineInfo>, HardLineQueryError> {
+        let lines =
+            self.hard_lines
+                .get_range(&indices)
+                .ok_or(HardLineQueryError::InvalidLineRange {
+                    start: indices.start,
+                    end: indices.end,
+                    line_count: self.line_count(),
+                })?;
+        Ok(lines
+            .into_iter()
+            .enumerate()
+            .map(|(relative, line)| {
+                self.info(
+                    indices
+                        .start
+                        .checked_add(relative)
+                        .expect("validated hard-line indices are representable"),
+                    line,
+                )
+            })
+            .collect())
+    }
+
+    /// Resolves a valid formatted UTF-8 boundary in `O(log n)` and returns
+    /// both its line index and all ranges needed by command/layout consumers.
+    /// A separator's leading boundary belongs to the preceding line, its
+    /// trailing boundary belongs to the following line, and EOF belongs to the
+    /// final line (including a trailing empty line).
+    pub fn line_at_offset(&self, offset: usize) -> Result<HardLineInfo, HardLineQueryError> {
+        if offset > self.text_tree.byte_len() {
+            return Err(HardLineQueryError::FormattedOffsetOutOfBounds {
+                offset,
+                text_length: self.text_tree.byte_len(),
+            });
+        }
+        if !self
+            .text_tree
+            .is_char_boundary(offset)
+            .map_err(|_| HardLineQueryError::NotCharacterBoundary { offset })?
+        {
+            return Err(HardLineQueryError::NotCharacterBoundary { offset });
+        }
+        let index = self
+            .hard_lines
+            .index_touching_point(offset)
+            .expect("every formatted projection contains a hard line");
+        let line = self
+            .hard_lines
+            .get(index)
+            .expect("a hard-line index resolves to an existing record");
+        Ok(self.info(index, line))
+    }
+
+    /// Returns the formatted extent for a half-open ordinal line span. Every
+    /// selected line contributes its following stored separator when present.
+    /// An empty span resolves to an empty boundary at that line's start, or at
+    /// EOF for `line_count..line_count`.
+    pub fn linewise_extent(
+        &self,
+        indices: Range<usize>,
+    ) -> Result<Range<usize>, HardLineQueryError> {
+        if indices.start > indices.end || indices.end > self.line_count() {
+            return Err(HardLineQueryError::InvalidLineRange {
+                start: indices.start,
+                end: indices.end,
+                line_count: self.line_count(),
+            });
+        }
+        if indices.is_empty() {
+            let boundary = if indices.start == self.line_count() {
+                self.text_tree.byte_len()
+            } else {
+                self.line(indices.start)
+                    .expect("a validated line index exists")
+                    .content_range
+                    .start
+            };
+            return Ok(boundary..boundary);
+        }
+        let first = self
+            .line(indices.start)
+            .expect("a validated first line exists");
+        let last = self
+            .line(indices.end - 1)
+            .expect("a validated final line exists");
+        Ok(first.content_range.start..last.linewise_range().end)
+    }
+
+    fn info(&self, index: usize, line: HardLine) -> HardLineInfo {
+        HardLineInfo {
+            document: self.document,
+            revision: self.revision,
+            index,
+            id: line.id,
+            content_range: line.range.clone(),
+            separator_range: line.separator_range(),
+        }
+    }
+
+    #[cfg(test)]
+    fn lines_with_stats(
+        &self,
+        indices: Range<usize>,
+    ) -> Result<(Vec<HardLineInfo>, super::range_index::QueryStats), HardLineQueryError> {
+        let (lines, stats) = self.hard_lines.get_range_with_stats(&indices).ok_or(
+            HardLineQueryError::InvalidLineRange {
+                start: indices.start,
+                end: indices.end,
+                line_count: self.line_count(),
+            },
+        )?;
+        Ok((
+            lines
+                .into_iter()
+                .enumerate()
+                .map(|(relative, line)| {
+                    self.info(
+                        indices
+                            .start
+                            .checked_add(relative)
+                            .expect("validated hard-line indices are representable"),
+                        line,
+                    )
+                })
+                .collect(),
+            stats,
+        ))
+    }
+}
+
+impl LogicalGraphemeSnapshot for HardLineSnapshot {
+    fn text_len(&self) -> usize {
+        self.text_length()
+    }
+
+    fn is_logical_grapheme_boundary(&self, offset: usize) -> Result<bool, FormattedTextError> {
+        logical_is_grapheme_boundary(&self.text_tree, &self.hard_lines, offset)
+    }
+
+    fn next_logical_grapheme_boundary(
+        &self,
+        offset: usize,
+    ) -> Result<Option<usize>, FormattedTextError> {
+        logical_next_grapheme_boundary(&self.text_tree, &self.hard_lines, offset)
+    }
+
+    fn previous_logical_grapheme_boundary(
+        &self,
+        offset: usize,
+    ) -> Result<Option<usize>, FormattedTextError> {
+        logical_previous_grapheme_boundary(&self.text_tree, &self.hard_lines, offset)
+    }
+}
+
+fn nearby_hard_line_indices(
+    hard_lines: &OrderedRangeStore<HardLine>,
+    offset: usize,
+) -> Option<Range<usize>> {
+    let center = hard_lines.index_touching_point(offset)?;
+    let start = center.saturating_sub(1);
+    let end = center.saturating_add(2).min(hard_lines.len());
+    Some(start..end)
+}
+
+fn is_semantic_item_boundary(hard_lines: &OrderedRangeStore<HardLine>, offset: usize) -> bool {
+    let Some(indices) = nearby_hard_line_indices(hard_lines, offset) else {
+        return false;
+    };
+    indices
+        .filter_map(|index| hard_lines.get(index))
+        .any(|line| {
+            line.separator_range()
+                .is_some_and(|separator| offset == separator.start || offset == separator.end)
+        })
+}
+
+fn next_semantic_item_boundary(
+    hard_lines: &OrderedRangeStore<HardLine>,
+    offset: usize,
+) -> Option<usize> {
+    let indices = nearby_hard_line_indices(hard_lines, offset)?;
+    indices
+        .filter_map(|index| hard_lines.get(index))
+        .filter_map(|line| line.separator_range())
+        .flat_map(|separator| [separator.start, separator.end])
+        .filter(|boundary| *boundary > offset)
+        .min()
+}
+
+fn previous_semantic_item_boundary(
+    hard_lines: &OrderedRangeStore<HardLine>,
+    offset: usize,
+) -> Option<usize> {
+    let indices = nearby_hard_line_indices(hard_lines, offset)?;
+    indices
+        .filter_map(|index| hard_lines.get(index))
+        .filter_map(|line| line.separator_range())
+        .flat_map(|separator| [separator.start, separator.end])
+        .filter(|boundary| *boundary < offset)
+        .max()
+}
+
+fn logical_is_grapheme_boundary(
+    text: &FormattedTextTree,
+    hard_lines: &OrderedRangeStore<HardLine>,
+    offset: usize,
+) -> Result<bool, FormattedTextError> {
+    if !text.is_char_boundary(offset)? {
+        return Ok(false);
+    }
+    if is_semantic_item_boundary(hard_lines, offset) {
+        return Ok(true);
+    }
+    text.is_grapheme_boundary(offset)
+}
+
+fn logical_next_grapheme_boundary(
+    text: &FormattedTextTree,
+    hard_lines: &OrderedRangeStore<HardLine>,
+    offset: usize,
+) -> Result<Option<usize>, FormattedTextError> {
+    if !text.is_char_boundary(offset)? {
+        return Err(FormattedTextError::NotCharBoundary(offset));
+    }
+    let unicode = text.next_grapheme_boundary(offset)?;
+    let semantic = next_semantic_item_boundary(hard_lines, offset);
+    Ok(match (unicode, semantic) {
+        (Some(unicode), Some(semantic)) => Some(unicode.min(semantic)),
+        (Some(unicode), None) => Some(unicode),
+        (None, Some(semantic)) => Some(semantic),
+        (None, None) => None,
+    })
+}
+
+fn logical_previous_grapheme_boundary(
+    text: &FormattedTextTree,
+    hard_lines: &OrderedRangeStore<HardLine>,
+    offset: usize,
+) -> Result<Option<usize>, FormattedTextError> {
+    if !text.is_char_boundary(offset)? {
+        return Err(FormattedTextError::NotCharBoundary(offset));
+    }
+    let unicode = text.previous_grapheme_boundary(offset)?;
+    let semantic = previous_semantic_item_boundary(hard_lines, offset);
+    Ok(match (unicode, semantic) {
+        (Some(unicode), Some(semantic)) => Some(unicode.max(semantic)),
+        (Some(unicode), None) => Some(unicode),
+        (None, Some(semantic)) => Some(semantic),
+        (None, None) => None,
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProvenanceSpan {
+    pub formatted: Range<usize>,
+    pub source: Range<usize>,
+}
+
+/// One monotonic source-backed run of visible formatted content. Hidden
+/// format syntax between adjacent runs is intentionally absent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct VisibleSourceRun {
+    pub(crate) formatted: Range<usize>,
+    pub(crate) source: Range<usize>,
+}
+
+impl RangedItem for ProvenanceSpan {
+    fn range(&self) -> &Range<usize> {
+        &self.formatted
+    }
+
+    fn with_range(&self, range: Range<usize>) -> Self {
+        Self {
+            formatted: range,
+            source: self.source.clone(),
+        }
+    }
+
+    fn with_transform(
+        &self,
+        range: Range<usize>,
+        auxiliary_shift: i128,
+        _revision: Option<u64>,
+    ) -> Option<Self> {
+        Some(Self {
+            formatted: range,
+            source: shift_range_i128(&self.source, auxiliary_shift)?,
+        })
+    }
+}
+
+impl RangedItem for DecodingDiagnostic {
+    fn range(&self) -> &Range<usize> {
+        &self.formatted_range
+    }
+
+    fn with_range(&self, range: Range<usize>) -> Self {
+        let mut shifted = self.clone();
+        shifted.formatted_range = range;
+        shifted
+    }
+
+    fn with_transform(
+        &self,
+        range: Range<usize>,
+        auxiliary_shift: i128,
+        revision: Option<u64>,
+    ) -> Option<Self> {
+        let mut shifted = self.clone();
+        shifted.formatted_range = range;
+        shifted.source_range = shift_range_i128(&shifted.source_range, auxiliary_shift)?;
+        if let Some(revision) = revision {
+            shifted.revision = Revision(revision);
+        }
+        Some(shifted)
+    }
+}
+
+fn shift_range_i128(range: &Range<usize>, delta: i128) -> Option<Range<usize>> {
+    fn shift(value: usize, delta: i128) -> Option<usize> {
+        let shifted = i128::try_from(value).ok()?.checked_add(delta)?;
+        usize::try_from(shifted).ok()
+    }
+    Some(shift(range.start, delta)?..shift(range.end, delta)?)
+}
+
+/// How an exact source boundary relates to its formatted projection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceBoundaryRelation {
+    Exact,
+    DocumentStart,
+    DocumentEnd,
+    EmptyDocument,
+}
+
+/// A revision-bound mapping from one source byte boundary into formatted text.
+///
+/// The ordinal fields remain explicitly named by domain. They are temporary
+/// values in the identified immutable revision, not persistent anchors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectedSourceBoundary {
+    pub revision: Revision,
+    pub source_offset: usize,
+    pub formatted_offset: usize,
+    pub affinity: BoundaryAffinity,
+    pub relation: SourceBoundaryRelation,
+}
+
+/// Why an exact source byte boundary cannot be represented by one legal
+/// formatted text point.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SourceToTextError {
+    WrongDocument {
+        expected: DocumentId,
+        actual: DocumentId,
+    },
+    WrongSourcePart {
+        expected: SourcePartId,
+        actual: SourcePartId,
+    },
+    WrongSnapshot {
+        expected: Revision,
+        actual: Revision,
+    },
+    SourceOffsetOutOfBounds {
+        offset: usize,
+        length: usize,
+    },
+    InteriorBom {
+        source_range: Range<usize>,
+    },
+    InteriorOpaqueUnit {
+        source_range: Range<usize>,
+        formatted_range: Range<usize>,
+    },
+    InteriorMappedUnit {
+        source_range: Range<usize>,
+        formatted_range: Range<usize>,
+    },
+    InteriorHiddenSyntax {
+        source_range: Range<usize>,
+        upstream_formatted: Option<usize>,
+        downstream_formatted: Option<usize>,
+    },
+    AmbiguousBoundary {
+        source_offset: usize,
+        candidates: Vec<usize>,
+    },
+    UnmappedBoundary {
+        source_offset: usize,
+    },
+    NotFormattedGraphemeBoundary {
+        source_offset: usize,
+        formatted_offset: usize,
+    },
+    FormattedText(FormattedTextError),
+}
+
+impl fmt::Display for SourceToTextError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WrongDocument { expected, actual } => write!(
+                formatter,
+                "source point belongs to document {}, expected {}",
+                actual.0, expected.0
+            ),
+            Self::WrongSourcePart { expected, actual } => write!(
+                formatter,
+                "source point belongs to part {}, expected {}",
+                actual.0, expected.0
+            ),
+            Self::WrongSnapshot { expected, actual } => write!(
+                formatter,
+                "source point belongs to revision {}; projection revision is {}",
+                actual.0, expected.0
+            ),
+            Self::SourceOffsetOutOfBounds { offset, length } => write!(
+                formatter,
+                "source byte boundary {offset} exceeds source length {length}"
+            ),
+            Self::InteriorBom { source_range } => write!(
+                formatter,
+                "source byte boundary is inside BOM bytes {}..{}",
+                source_range.start, source_range.end
+            ),
+            Self::InteriorOpaqueUnit {
+                source_range,
+                formatted_range,
+            } => write!(
+                formatter,
+                "source byte boundary is inside opaque bytes {}..{} projected at {}..{}",
+                source_range.start,
+                source_range.end,
+                formatted_range.start,
+                formatted_range.end
+            ),
+            Self::InteriorMappedUnit {
+                source_range,
+                formatted_range,
+            } => write!(
+                formatter,
+                "source byte boundary is inside indivisible mapped unit {}..{} projected at {}..{}",
+                source_range.start,
+                source_range.end,
+                formatted_range.start,
+                formatted_range.end
+            ),
+            Self::InteriorHiddenSyntax {
+                source_range,
+                ..
+            } => write!(
+                formatter,
+                "source byte boundary is inside hidden syntax {}..{}",
+                source_range.start, source_range.end
+            ),
+            Self::AmbiguousBoundary {
+                source_offset,
+                candidates,
+            } => write!(
+                formatter,
+                "source byte boundary {source_offset} maps to multiple formatted boundaries {candidates:?}"
+            ),
+            Self::UnmappedBoundary { source_offset } => write!(
+                formatter,
+                "source byte boundary {source_offset} has no formatted provenance"
+            ),
+            Self::NotFormattedGraphemeBoundary {
+                source_offset,
+                formatted_offset,
+            } => write!(
+                formatter,
+                "source byte boundary {source_offset} maps inside a formatted grapheme at {formatted_offset}"
+            ),
+            Self::FormattedText(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for SourceToTextError {}
+
+impl From<FormattedTextError> for SourceToTextError {
+    fn from(value: FormattedTextError) -> Self {
+        Self::FormattedText(value)
+    }
+}
+
+/// Immutable formatted projection consumed by commands and layout.
+#[derive(Clone, Debug)]
+pub struct FormattedDocument {
+    revision: Revision,
+    /// Canonical persistent formatted-text representation.
+    text: FormattedTextTree,
+    /// Lazily materialized compatibility view. Regional candidates can remain
+    /// wholly tree-backed until a legacy caller explicitly requests `text()`.
+    flat_text: Arc<OnceLock<Arc<str>>>,
+    blocks: OrderedRangeStore<Block>,
+    /// Authoritative hard-line structure. This is intentionally distinct from
+    /// both the block tree and the text tree's lexical U+000A aggregates. The
+    /// current plain/Markdown adapters seed one line per paragraph, but future
+    /// list/table/container blocks may own multiple lines and must populate
+    /// this index independently. A pipeline may also retain U+000A as ordinary
+    /// content (for example forced legacy-Mac input).
+    hard_lines: OrderedRangeStore<HardLine>,
+    styles: IntervalRangeStore<StyleSpan>,
+    provenance: IntervalRangeStore<ProvenanceSpan>,
+    decoding_diagnostics: IntervalRangeStore<DecodingDiagnostic>,
+    style_sheet: StyleSheet,
+    document_style: DocumentStyleAssignment,
+    source_content_start: usize,
+    source_content_end: usize,
+}
+
+impl PartialEq for FormattedDocument {
+    fn eq(&self, other: &Self) -> bool {
+        self.revision == other.revision
+            && self.text() == other.text()
+            && self.blocks == other.blocks
+            && self.hard_lines == other.hard_lines
+            && self.styles == other.styles
+            && self.provenance == other.provenance
+            && self.decoding_diagnostics == other.decoding_diagnostics
+            && self.style_sheet == other.style_sheet
+            && self.document_style == other.document_style
+            && self.source_content_start == other.source_content_start
+            && self.source_content_end == other.source_content_end
+    }
+}
+
+impl LogicalGraphemeSnapshot for FormattedDocument {
+    fn text_len(&self) -> usize {
+        self.text.byte_len()
+    }
+
+    fn is_logical_grapheme_boundary(&self, offset: usize) -> Result<bool, FormattedTextError> {
+        logical_is_grapheme_boundary(&self.text, &self.hard_lines, offset)
+    }
+
+    fn next_logical_grapheme_boundary(
+        &self,
+        offset: usize,
+    ) -> Result<Option<usize>, FormattedTextError> {
+        logical_next_grapheme_boundary(&self.text, &self.hard_lines, offset)
+    }
+
+    fn previous_logical_grapheme_boundary(
+        &self,
+        offset: usize,
+    ) -> Result<Option<usize>, FormattedTextError> {
+        logical_previous_grapheme_boundary(&self.text, &self.hard_lines, offset)
+    }
+}
+
+impl FormattedDocument {
+    #[allow(clippy::too_many_arguments)]
+    fn from_parts(
+        revision: Revision,
+        flat_text: String,
+        blocks: Vec<Block>,
+        styles: Vec<StyleSpan>,
+        provenance: Vec<ProvenanceSpan>,
+        decoding_diagnostics: Vec<DecodingDiagnostic>,
+        style_sheet: StyleSheet,
+        source_content_start: usize,
+        source_content_end: usize,
+    ) -> Self {
+        let document_style = DocumentStyleAssignment::new(style_sheet.base_document.clone());
+        let flat_text: Arc<str> = flat_text.into();
+        let text = FormattedTextTree::try_from_shared(flat_text.clone())
+            .expect("a materialized Rust string has representable text-tree aggregates");
+        // `from_parts` is private and all current projector builders produce a
+        // validated one-block-per-line partition. Publication through
+        // `Document` validates it again and returns a typed error. Keeping the
+        // seed helper checked prevents a malformed internal fixture from
+        // silently inventing separator extents in release builds.
+        let hard_lines = seed_hard_lines_from_current_blocks(&blocks, flat_text.as_ref())
+            .expect("private projectors emit a valid current-adapter hard-line partition");
+        let compatibility_text = Arc::new(OnceLock::new());
+        compatibility_text
+            .set(flat_text)
+            .expect("a fresh compatibility cell is empty");
+        Self {
+            revision,
+            text,
+            flat_text: compatibility_text,
+            blocks: OrderedRangeStore::new(blocks),
+            hard_lines: OrderedRangeStore::new(hard_lines),
+            styles: IntervalRangeStore::new(styles),
+            provenance: IntervalRangeStore::new(provenance),
+            decoding_diagnostics: IntervalRangeStore::new(decoding_diagnostics),
+            style_sheet,
+            document_style,
+            source_content_start,
+            source_content_end,
+        }
+    }
+
+    pub fn revision(&self) -> Revision {
+        self.revision
+    }
+
+    pub fn text(&self) -> &str {
+        self.flat_text
+            .get_or_init(|| Arc::from(self.text.flatten()))
+            .as_ref()
+    }
+
+    /// Canonical persistent UTF-8 tree for logarithmic text lookup. Its legacy
+    /// U+000A aggregates are lexical only; pipeline-defined hard lines are
+    /// exposed by [`Self::hard_line_range`] and related methods. The flat
+    /// [`Self::text`] view remains available while APIs migrate to
+    /// snapshot-bound tree positions.
+    pub fn text_tree(&self) -> &FormattedTextTree {
+        &self.text
+    }
+
+    /// Capture a persistent anchor backed by stable projected identities and,
+    /// where the adapter exposes one, exact source provenance.
+    pub fn capture_text_anchor(
+        &self,
+        document: DocumentId,
+        point: TextPoint,
+        association: Association,
+        affinity: BoundaryAffinity,
+        deletion_recovery: DeletionRecovery,
+    ) -> Result<TextAnchor, PositionError> {
+        if point.document() != document {
+            return Err(PositionError::WrongDocument {
+                expected: document,
+                actual: point.document(),
+            });
+        }
+        if point.revision() != self.revision {
+            return Err(PositionError::WrongSnapshot {
+                expected: self.revision,
+                actual: point.revision(),
+            });
+        }
+        let offset = point.offset();
+        if offset > self.text.byte_len() {
+            return Err(PositionError::InvalidBoundary {
+                domain: PositionDomain::FormattedText,
+                offset,
+                length: self.text.byte_len(),
+            });
+        }
+        if !self.is_logical_grapheme_boundary(offset).unwrap_or(false) {
+            return Err(PositionError::InvalidUnicodeBoundary { offset });
+        }
+        let leaf = |side| {
+            self.text.locate_byte(offset, side).map(|location| {
+                location.map(|location| {
+                    ProjectedLeafBoundary::new(
+                        location.id,
+                        location.revision,
+                        location.buffer_id,
+                        location.buffer_byte,
+                        side,
+                    )
+                })
+            })
+        };
+        let preceding_leaf = leaf(LeafBoundarySide::Preceding)
+            .map_err(|_| PositionError::InvalidUnicodeBoundary { offset })?;
+        let following_leaf = leaf(LeafBoundarySide::Following)
+            .map_err(|_| PositionError::InvalidUnicodeBoundary { offset })?;
+        let block = self.block_anchor_at(offset, affinity);
+        let (preceding_text, following_text) = self.anchor_context_fingerprints(offset);
+        let provenance = self
+            .source_boundary(
+                offset,
+                match affinity {
+                    BoundaryAffinity::Upstream => Side::Upstream,
+                    BoundaryAffinity::Downstream => Side::Downstream,
+                },
+            )
+            .map(|source_offset| {
+                SourceAnchorProvenance::new(
+                    SourcePartId::PRIMARY,
+                    self.revision,
+                    source_offset,
+                    preceding_text,
+                    following_text,
+                )
+            });
+        Ok(
+            TextAnchor::new(point, association, affinity, deletion_recovery).with_backing(
+                ProjectedAnchorBacking {
+                    preceding_leaf,
+                    following_leaf,
+                    block,
+                    provenance,
+                },
+            ),
+        )
+    }
+
+    /// Resolve a persistent anchor against this exact projection without ever
+    /// interpreting its stale compatibility ordinal as current.
+    pub fn resolve_text_anchor(
+        &self,
+        document: DocumentId,
+        anchor: TextAnchor,
+    ) -> Result<MappingOutcome<TextPoint>, PositionError> {
+        if anchor.document() != document {
+            return Err(PositionError::WrongDocument {
+                expected: document,
+                actual: anchor.document(),
+            });
+        }
+        if anchor.revision() == self.revision
+            && anchor.offset() <= self.text.byte_len()
+            && self
+                .is_logical_grapheme_boundary(anchor.offset())
+                .unwrap_or(false)
+        {
+            return Ok(MappingOutcome::Exact(TextPoint {
+                document,
+                revision: self.revision,
+                offset: anchor.offset(),
+            }));
+        }
+        if let Some((preceding, following)) = anchor.projected_leaf_boundaries() {
+            let preceding = preceding.and_then(|identity| self.resolve_leaf_boundary(identity));
+            let following = following.and_then(|identity| self.resolve_leaf_boundary(identity));
+            let resolved = match (preceding, following, anchor.association()) {
+                (Some(left), Some(right), _) if left == right => Some(left),
+                (Some(left), Some(_), Association::BeforeInsertion) => Some(left),
+                (Some(_), Some(right), Association::AfterInsertion) => Some(right),
+                (Some(only), None, _) | (None, Some(only), _) => Some(only),
+                (None, None, _) => None,
+            };
+            if let Some(offset) = resolved
+                .filter(|offset| self.is_logical_grapheme_boundary(*offset).unwrap_or(false))
+            {
+                let point = TextPoint {
+                    document,
+                    revision: self.revision,
+                    offset,
+                };
+                return Ok(
+                    if anchor.revision() == self.revision && anchor.offset() == offset {
+                        MappingOutcome::Exact(point)
+                    } else {
+                        MappingOutcome::Moved(point)
+                    },
+                );
+            }
+        }
+
+        if let Some(identity) = anchor.projected_block_boundary() {
+            if let Some(offset) = self.resolve_block_boundary(identity) {
+                let point = TextPoint {
+                    document,
+                    revision: self.revision,
+                    offset,
+                };
+                return Ok(
+                    if anchor.revision() == self.revision && anchor.offset() == offset {
+                        MappingOutcome::Exact(point)
+                    } else {
+                        MappingOutcome::Moved(point)
+                    },
+                );
+            }
+        }
+
+        if let Some(provenance) = anchor
+            .source_provenance()
+            .filter(|provenance| provenance.part() == SourcePartId::PRIMARY)
+        {
+            match self.map_source_boundary(self.revision, provenance.offset(), anchor.affinity()) {
+                Ok(mapped) => {
+                    if self.anchor_context_fingerprints(mapped.formatted_offset)
+                        == (
+                            provenance.preceding_text_fingerprint(),
+                            provenance.following_text_fingerprint(),
+                        )
+                    {
+                        return Ok(MappingOutcome::RecoveredFromProvenance(TextPoint {
+                            document,
+                            revision: self.revision,
+                            offset: mapped.formatted_offset,
+                        }));
+                    }
+                }
+                Err(SourceToTextError::AmbiguousBoundary { candidates, .. }) => {
+                    return Ok(MappingOutcome::Ambiguous(
+                        candidates
+                            .into_iter()
+                            .map(|offset| TextPoint {
+                                document,
+                                revision: self.revision,
+                                offset,
+                            })
+                            .collect(),
+                    ));
+                }
+                Err(_) => {}
+            }
+        }
+
+        Ok(MappingOutcome::Unresolvable(
+            UnresolvableAnchor::MissingProvenance,
+        ))
+    }
+
+    fn resolve_leaf_boundary(&self, identity: ProjectedLeafBoundary) -> Option<usize> {
+        self.text.resolve_stable_boundary(
+            identity.leaf(),
+            identity.leaf_revision(),
+            identity.buffer(),
+            identity.buffer_byte(),
+            identity.side(),
+        )
+    }
+
+    fn block_anchor_at(
+        &self,
+        offset: usize,
+        affinity: BoundaryAffinity,
+    ) -> Option<ProjectedBlockBoundary> {
+        let touching = self.blocks.query_touching(&(offset..offset));
+        let selected = match affinity {
+            BoundaryAffinity::Upstream => touching
+                .iter()
+                .rev()
+                .find(|block| block.range.start < offset || block.range.end == offset)
+                .or_else(|| touching.first()),
+            BoundaryAffinity::Downstream => touching
+                .iter()
+                .find(|block| block.range.start == offset || offset < block.range.end)
+                .or_else(|| touching.last()),
+        }?;
+        let text = self.text.slice(selected.range.clone()).ok()?;
+        Some(ProjectedBlockBoundary::new(
+            selected.id,
+            offset.checked_sub(selected.range.start)?,
+            selected.range.len(),
+            stable_text_fingerprint(&text),
+        ))
+    }
+
+    fn resolve_block_boundary(&self, identity: ProjectedBlockBoundary) -> Option<usize> {
+        let block = self
+            .blocks
+            .iter()
+            .find(|block| block.id != 0 && block.id == identity.block())?;
+        if block.range.len() != identity.block_len() || identity.local_byte() > block.range.len() {
+            return None;
+        }
+        let text = self.text.slice(block.range.clone()).ok()?;
+        if stable_text_fingerprint(&text) != identity.content_fingerprint() {
+            return None;
+        }
+        let offset = block.range.start.checked_add(identity.local_byte())?;
+        self.is_logical_grapheme_boundary(offset)
+            .ok()
+            .filter(|boundary| *boundary)
+            .map(|_| offset)
+    }
+
+    fn anchor_context_fingerprints(&self, offset: usize) -> (Option<u64>, Option<u64>) {
+        let preceding = self
+            .previous_logical_grapheme_boundary(offset)
+            .ok()
+            .flatten()
+            .and_then(|start| self.text.slice(start..offset).ok())
+            .map(|text| stable_text_fingerprint(&text));
+        let following = self
+            .next_logical_grapheme_boundary(offset)
+            .ok()
+            .flatten()
+            .and_then(|end| self.text.slice(offset..end).ok())
+            .map(|text| stable_text_fingerprint(&text));
+        (preceding, following)
+    }
+
+    /// Install a persistent text-tree splice after either a full or regional
+    /// candidate has passed semantic verification. This preserves untouched
+    /// leaf identities for downstream caches.
+    pub(crate) fn install_persistent_text_edits(
+        &mut self,
+        previous: &Self,
+        edits: &[TextEdit],
+    ) -> Result<(), FormattedTextError> {
+        let edits: Vec<_> = edits
+            .iter()
+            .map(|edit| (edit.range.clone(), edit.replacement.as_str()))
+            .collect();
+        let persistent = previous.text.splice_prevalidated_batch(&edits)?;
+        if persistent.flatten() != self.text() {
+            return Err(FormattedTextError::ResultTextMismatch);
+        }
+        self.text = persistent;
+        Ok(())
+    }
+
+    /// Reuse both canonical rope and compatibility flat storage when a full
+    /// projection verified that the formatted text is byte-identical.
+    pub(crate) fn install_unchanged_text_storage(
+        &mut self,
+        previous: &Self,
+    ) -> Result<(), FormattedTextError> {
+        if self.text() != previous.text() {
+            return Err(FormattedTextError::ResultTextMismatch);
+        }
+        self.text = previous.text.clone();
+        self.flat_text = previous.flat_text.clone();
+        Ok(())
+    }
+
+    fn rebuild_hard_lines_from_blocks(
+        &mut self,
+        previous: Option<&Self>,
+    ) -> Result<(), BlockIdentityError> {
+        let blocks = self.blocks.to_vec();
+        let hard_lines = seed_hard_lines_from_current_blocks(&blocks, self.text())?;
+        self.hard_lines = OrderedRangeStore::new(hard_lines);
+        if let Some(previous) = previous {
+            self.hard_lines.reuse_equal_chunks(&previous.hard_lines);
+        }
+        Ok(())
+    }
+
+    /// Assign identities to an initial projection. Zero is reserved for the
+    /// projector's unpublished provisional blocks.
+    pub(crate) fn assign_initial_block_ids(
+        &mut self,
+        next_id: u64,
+    ) -> Result<u64, BlockIdentityError> {
+        let mut blocks = self.blocks.to_vec();
+        validate_block_partition(self.text(), &blocks)?;
+        let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
+        self.blocks = OrderedRangeStore::new(blocks);
+        self.rebuild_hard_lines_from_blocks(None)?;
+        Ok(next_id)
+    }
+
+    /// Preserve every logical block identity when a fully verified
+    /// reprojection has byte-identical formatted text and block boundaries.
+    /// Block kind is deliberately not part of identity: a source-backed
+    /// structural line that changes semantic interpretation may retain its ID.
+    pub(crate) fn install_unchanged_block_ids(
+        &mut self,
+        previous: &Self,
+    ) -> Result<(), BlockIdentityError> {
+        let mut blocks = self.blocks.to_vec();
+        let previous_blocks = previous.blocks.to_vec();
+        if self.text() != previous.text()
+            || blocks.len() != previous_blocks.len()
+            || blocks
+                .iter()
+                .zip(&previous_blocks)
+                .any(|(candidate, old)| candidate.range != old.range)
+        {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+        for (candidate, old) in blocks.iter_mut().zip(&previous_blocks) {
+            candidate.id = old.id;
+            candidate.direct_paragraph = old.direct_paragraph.clone();
+            candidate.direct_default_character = old.direct_default_character.clone();
+        }
+        self.style_sheet = previous.style_sheet.clone();
+        self.document_style = previous.document_style.clone();
+        self.blocks = OrderedRangeStore::new(blocks);
+        self.blocks.reuse_equal_chunks(&previous.blocks);
+        self.rebuild_hard_lines_from_blocks(Some(previous))?;
+        self.styles.reuse_equal_chunks(&previous.styles);
+        Ok(())
+    }
+
+    /// Reconcile provisional block IDs after the candidate has been fully
+    /// parsed and semantically verified. The exact position map establishes
+    /// the snapshot transition; edit ranges decide which source-backed line
+    /// structure survived. Surviving content is preferred as the witness; if
+    /// none remains, a non-final block uses its following hard break and the
+    /// final block uses its preceding break. This retains identity across
+    /// complete content replacement while allowing a whole-line deletion to
+    /// retire the deleted ID. An insertion at a block start leaves the old ID
+    /// with the original content, a join gives a collision to the first
+    /// surviving block in document order, and a split copies sparse direct
+    /// declarations to each child without replacing projector-derived named
+    /// styles. Parsing itself is still a full reprojection.
+    pub(crate) fn install_reconciled_block_ids(
+        &mut self,
+        previous: &Self,
+        edits: &[TextEdit],
+        position_map: &PositionMap,
+        next_id: u64,
+    ) -> Result<u64, BlockIdentityError> {
+        if position_map.domain() != PositionDomain::FormattedText
+            || position_map.source_revision() != previous.revision
+            || position_map.target_revision() != self.revision
+            || position_map.source_len() != previous.text().len()
+            || position_map.target_len() != self.text().len()
+        {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+        let previous_blocks = previous.blocks.to_vec();
+        let mut blocks = self.blocks.to_vec();
+        validate_block_partition(previous.text(), &previous_blocks)?;
+        validate_block_partition(self.text(), &blocks)?;
+        if next_id == 0
+            || previous_blocks
+                .iter()
+                .any(|block| block.id == 0 || block.id >= next_id)
+        {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+
+        let edit_mappings = build_edit_mappings(previous.text().len(), self.text().len(), edits)?;
+        for block in &mut blocks {
+            block.id = 0;
+        }
+        let new_text = self.text().to_owned();
+
+        for old in &previous_blocks {
+            inherit_split_direct_assignments(&new_text, &mut blocks, old, &edit_mappings)?;
+            let witness = block_identity_witness(previous.text(), old, &edit_mappings)?;
+            let target = if let Some(old_offset) = witness {
+                let mapped_offset = map_surviving_byte(old_offset, &edit_mappings)?;
+                let side = witness_side(previous.text(), old, old_offset);
+                block_index_for_witness(self.text(), &blocks, mapped_offset, side)?
+            } else if let Some(mapped_break) =
+                deleted_empty_join_boundary(previous.text(), old, &edit_mappings)
+            {
+                // Removing the separator after an empty block is still a
+                // join. Preserve the first block's ID even though that block
+                // has no content byte to serve as a witness.
+                block_index_for_witness(
+                    self.text(),
+                    &blocks,
+                    mapped_break,
+                    BlockWitnessSide::PrecedingBreak,
+                )?
+            } else if previous_blocks.len() == 1 {
+                // The document's sole structural block survives a complete
+                // content replacement or deletion even though no old byte can
+                // witness it. If it was split, it remains the first block.
+                0
+            } else {
+                continue;
+            };
+            if blocks[target].id == 0 {
+                // Multiple surviving blocks can map into one block after a
+                // join. Iteration is in document order, so the first ID wins.
+                let target = &mut blocks[target];
+                target.id = old.id;
+                target.direct_paragraph = old.direct_paragraph.clone();
+                target.direct_default_character = old.direct_default_character.clone();
+            }
+        }
+
+        self.style_sheet = previous.style_sheet.clone();
+        self.document_style = previous.document_style.clone();
+        let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
+        self.blocks = OrderedRangeStore::new(blocks);
+        self.blocks.reuse_equal_chunks(&previous.blocks);
+        self.rebuild_hard_lines_from_blocks(Some(previous))?;
+        self.styles.reuse_equal_chunks(&previous.styles);
+        Ok(next_id)
+    }
+
+    /// Install move-aware block identities after a verified source-backed
+    /// hard-line transfer. The initial adapters publish exactly one block per
+    /// hard line; refusing any other shape keeps this temporary contract
+    /// explicit until nested/multi-line block transfer is modeled directly.
+    pub(crate) fn install_transferred_block_ids(
+        &mut self,
+        previous: &Self,
+        origins: &[TransferredLineOrigin],
+        next_id: u64,
+    ) -> Result<u64, BlockIdentityError> {
+        let previous_blocks = previous.blocks.to_vec();
+        let mut blocks = self.blocks.to_vec();
+        if previous_blocks.len() != previous.hard_lines.len()
+            || blocks.len() != self.hard_lines.len()
+            || blocks.len() != origins.len()
+        {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+        validate_block_partition(previous.text(), &previous_blocks)?;
+        validate_block_partition(self.text(), &blocks)?;
+        if next_id == 0
+            || previous_blocks
+                .iter()
+                .any(|block| block.id == 0 || block.id >= next_id)
+        {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+
+        for (candidate, origin) in blocks.iter_mut().zip(origins) {
+            let source_index = match origin {
+                TransferredLineOrigin::Existing(index) | TransferredLineOrigin::Copied(index) => {
+                    *index
+                }
+            };
+            let source = previous_blocks
+                .get(source_index)
+                .ok_or(BlockIdentityError::InvalidProjection)?;
+            candidate.direct_paragraph = source.direct_paragraph.clone();
+            candidate.direct_default_character = source.direct_default_character.clone();
+            candidate.id = match origin {
+                TransferredLineOrigin::Existing(_) => source.id,
+                TransferredLineOrigin::Copied(_) => 0,
+            };
+        }
+
+        self.style_sheet = previous.style_sheet.clone();
+        self.document_style = previous.document_style.clone();
+        let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
+        self.blocks = OrderedRangeStore::new(blocks);
+        self.blocks.reuse_equal_chunks(&previous.blocks);
+        self.rebuild_hard_lines_from_blocks(Some(previous))?;
+        self.styles.reuse_equal_chunks(&previous.styles);
+        Ok(next_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shares_flat_text_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.flat_text, &other.flat_text)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compatibility_text_is_materialized(&self) -> bool {
+        self.flat_text.get().is_some()
+    }
+
+    /// Physical byte length of the single-part source snapshot represented by
+    /// this projection. This includes a BOM and hidden format syntax.
+    pub fn source_byte_len(&self) -> usize {
+        self.source_content_end
+    }
+
+    /// Map one exact physical source-byte boundary into this formatted
+    /// projection.
+    ///
+    /// Interior bytes of an encoding unit, CRLF token, opaque malformed unit,
+    /// BOM, or hidden format delimiter are rejected rather than rounded. At a
+    /// boundary with distinct preceding and following projections, `affinity`
+    /// explicitly selects the corresponding side.
+    pub fn map_source_boundary(
+        &self,
+        source_revision: Revision,
+        source_offset: usize,
+        affinity: BoundaryAffinity,
+    ) -> Result<ProjectedSourceBoundary, SourceToTextError> {
+        if source_revision != self.revision {
+            return Err(SourceToTextError::WrongSnapshot {
+                expected: self.revision,
+                actual: source_revision,
+            });
+        }
+        if source_offset > self.source_content_end {
+            return Err(SourceToTextError::SourceOffsetOutOfBounds {
+                offset: source_offset,
+                length: self.source_content_end,
+            });
+        }
+
+        let relation = if self.source_content_end == 0 {
+            SourceBoundaryRelation::EmptyDocument
+        } else if source_offset == 0 {
+            SourceBoundaryRelation::DocumentStart
+        } else if source_offset == self.source_content_end {
+            SourceBoundaryRelation::DocumentEnd
+        } else {
+            SourceBoundaryRelation::Exact
+        };
+        if source_offset == 0 {
+            return self.checked_source_mapping(source_offset, 0, affinity, relation);
+        }
+        if source_offset == self.source_content_end {
+            return self.checked_source_mapping(
+                source_offset,
+                self.text.byte_len(),
+                affinity,
+                relation,
+            );
+        }
+        if source_offset < self.source_content_start {
+            return Err(SourceToTextError::InteriorBom {
+                source_range: 0..self.source_content_start,
+            });
+        }
+
+        if let Some(span) = self
+            .provenance
+            .iter()
+            .find(|span| span.source.start < source_offset && source_offset < span.source.end)
+        {
+            let opaque = self.decoding_diagnostics.iter().any(|diagnostic| {
+                diagnostic.source_range.start <= source_offset
+                    && source_offset < diagnostic.source_range.end
+            });
+            return Err(if opaque {
+                SourceToTextError::InteriorOpaqueUnit {
+                    source_range: span.source.clone(),
+                    formatted_range: span.formatted.clone(),
+                }
+            } else {
+                SourceToTextError::InteriorMappedUnit {
+                    source_range: span.source.clone(),
+                    formatted_range: span.formatted.clone(),
+                }
+            });
+        }
+
+        let mut upstream: Vec<_> = self
+            .provenance
+            .iter()
+            .filter(|span| span.source.end == source_offset)
+            .map(|span| span.formatted.end)
+            .collect();
+        let mut downstream: Vec<_> = self
+            .provenance
+            .iter()
+            .filter(|span| span.source.start == source_offset)
+            .map(|span| span.formatted.start)
+            .collect();
+        upstream.sort_unstable();
+        upstream.dedup();
+        downstream.sort_unstable();
+        downstream.dedup();
+        let (preferred, fallback) = match affinity {
+            BoundaryAffinity::Upstream => (&upstream, &downstream),
+            BoundaryAffinity::Downstream => (&downstream, &upstream),
+        };
+        if let Some(formatted_offset) = unique_candidate(source_offset, preferred)?
+            .or(unique_candidate(source_offset, fallback)?)
+        {
+            return self.checked_source_mapping(
+                source_offset,
+                formatted_offset,
+                affinity,
+                relation,
+            );
+        }
+
+        if let Some((source_range, upstream_formatted, downstream_formatted)) =
+            self.hidden_gap(source_offset)
+        {
+            if source_offset == source_range.start || source_offset == source_range.end {
+                let formatted_offset = match affinity {
+                    BoundaryAffinity::Upstream => upstream_formatted.or(downstream_formatted),
+                    BoundaryAffinity::Downstream => downstream_formatted.or(upstream_formatted),
+                };
+                if let Some(formatted_offset) = formatted_offset {
+                    return self.checked_source_mapping(
+                        source_offset,
+                        formatted_offset,
+                        affinity,
+                        relation,
+                    );
+                }
+            }
+            return Err(SourceToTextError::InteriorHiddenSyntax {
+                source_range,
+                upstream_formatted,
+                downstream_formatted,
+            });
+        }
+
+        Err(SourceToTextError::UnmappedBoundary { source_offset })
+    }
+
+    fn checked_source_mapping(
+        &self,
+        source_offset: usize,
+        formatted_offset: usize,
+        affinity: BoundaryAffinity,
+        relation: SourceBoundaryRelation,
+    ) -> Result<ProjectedSourceBoundary, SourceToTextError> {
+        if !self.is_logical_grapheme_boundary(formatted_offset)? {
+            return Err(SourceToTextError::NotFormattedGraphemeBoundary {
+                source_offset,
+                formatted_offset,
+            });
+        }
+        Ok(ProjectedSourceBoundary {
+            revision: self.revision,
+            source_offset,
+            formatted_offset,
+            affinity,
+            relation,
+        })
+    }
+
+    fn hidden_gap(
+        &self,
+        source_offset: usize,
+    ) -> Option<(Range<usize>, Option<usize>, Option<usize>)> {
+        let mut source_start = self.source_content_start;
+        let mut upstream = None;
+        for span in self.provenance.as_slice() {
+            if source_start < span.source.start
+                && source_start <= source_offset
+                && source_offset <= span.source.start
+            {
+                return Some((
+                    source_start..span.source.start,
+                    upstream,
+                    Some(span.formatted.start),
+                ));
+            }
+            if span.source.end > source_start {
+                source_start = span.source.end;
+                upstream = Some(span.formatted.end);
+            }
+        }
+        (source_start < self.source_content_end
+            && source_start <= source_offset
+            && source_offset <= self.source_content_end)
+            .then_some((source_start..self.source_content_end, upstream, None))
+    }
+
+    pub fn blocks(&self) -> &[Block] {
+        self.blocks.as_slice()
+    }
+
+    pub fn style_spans(&self) -> &[StyleSpan] {
+        self.styles.as_slice()
+    }
+
+    /// Number of semantic hard lines in this exact projection. This is not
+    /// derived from scalar values in [`Self::text`].
+    pub fn hard_line_count(&self) -> usize {
+        self.hard_lines.len()
+    }
+
+    /// Snapshot-absolute formatted range for one zero-based hard line in
+    /// `O(log n)` time. The terminating hard-break item is excluded.
+    pub fn hard_line_range(&self, line: usize) -> Option<Range<usize>> {
+        self.hard_lines.get(line).map(|line| line.range)
+    }
+
+    /// Stable identity of one projected hard line. Current plain-text and
+    /// Markdown adapters have one hard line per block, so these identities
+    /// deliberately follow the corresponding stable block identities.
+    pub fn hard_line_id(&self, line: usize) -> Option<u64> {
+        self.hard_lines.get(line).map(|line| line.id)
+    }
+
+    pub(crate) fn hard_line_snapshot(&self, document: DocumentId) -> HardLineSnapshot {
+        HardLineSnapshot::new(document, self)
+    }
+
+    /// Resolve a valid formatted UTF-8 byte boundary to its zero-based hard
+    /// line in `O(log n)`. A boundary immediately before an explicit hard break
+    /// belongs to the preceding line; the boundary after it belongs to the
+    /// following line. EOF belongs to the final line, including a trailing
+    /// empty line. Literal U+000A content has no special treatment.
+    pub fn hard_line_at_offset(&self, offset: usize) -> Option<usize> {
+        if offset > self.text.byte_len() || !self.text.is_char_boundary(offset).ok()? {
+            return None;
+        }
+        self.hard_lines.index_touching_point(offset)
+    }
+
+    /// Authoritative line ranges touching a formatted text region, found in
+    /// `O(log n + k)` time and materialized with absolute snapshot offsets.
+    pub(crate) fn hard_lines_for_region(&self, text_range: &Range<usize>) -> Vec<Range<usize>> {
+        self.hard_lines
+            .query_touching(text_range)
+            .into_iter()
+            .map(|line| line.range)
+            .collect()
+    }
+
+    pub(crate) fn hard_break_offsets(&self) -> Vec<usize> {
+        self.hard_lines
+            .get_range(&(0..self.hard_lines.len()))
+            .expect("the complete hard-line range is valid")
+            .into_iter()
+            .filter_map(|line| line.separator_range().map(|separator| separator.start))
+            .collect()
+    }
+
+    pub(crate) fn has_same_hard_line_structure(&self, other: &Self) -> bool {
+        if self.hard_line_count() != other.hard_line_count() {
+            return false;
+        }
+        let indices = 0..self.hard_line_count();
+        let left = self
+            .hard_lines
+            .get_range(&indices)
+            .expect("the complete hard-line range is valid");
+        let right = other
+            .hard_lines
+            .get_range(&indices)
+            .expect("the complete hard-line range is valid");
+        left.iter().zip(&right).all(|(left, right)| {
+            left.range == right.range && left.separator_length == right.separator_length
+        })
+    }
+
+    /// Blocks touching a formatted region, located in `O(log n + k)` time.
+    /// Touching rather than strict overlap preserves empty-paragraph geometry
+    /// and the established paragraph-boundary layout semantics.
+    pub(crate) fn blocks_for_region(&self, range: &Range<usize>) -> Vec<Block> {
+        self.blocks.query_touching(range)
+    }
+
+    /// Style spans with a non-empty intersection with a formatted region,
+    /// located in `O(log n + k)` time. The `k` returned records are materialized
+    /// with snapshot-absolute ranges and remain ordered by normalized span
+    /// start (and stable input order for equal starts).
+    pub(crate) fn style_spans_for_region(&self, range: &Range<usize>) -> Vec<StyleSpan> {
+        self.styles.query_overlapping(range)
+    }
+
+    pub fn provenance(&self) -> &[ProvenanceSpan] {
+        self.provenance.as_slice()
+    }
+
+    /// Malformed source ranges represented by visible opaque replacement
+    /// items in this exact formatted snapshot.
+    pub fn decoding_diagnostics(&self) -> &[DecodingDiagnostic] {
+        self.decoding_diagnostics.as_slice()
+    }
+
+    pub(crate) fn has_decoding_diagnostic_overlapping(&self, range: &Range<usize>) -> bool {
+        self.decoding_diagnostics
+            .query_touching(range)
+            .into_iter()
+            .any(|diagnostic| {
+                diagnostic.formatted_range.start < range.end
+                    && range.start < diagnostic.formatted_range.end
+            })
+    }
+
+    pub(crate) fn decoding_diagnostics_for_region(
+        &self,
+        range: &Range<usize>,
+    ) -> Vec<DecodingDiagnostic> {
+        self.decoding_diagnostics.query_touching(range)
+    }
+
+    pub fn style_sheet(&self) -> &StyleSheet {
+        &self.style_sheet
+    }
+
+    /// Install an already validated generated-configuration sheet on an
+    /// otherwise unchanged projection candidate. The caller binds the
+    /// candidate to the new document revision before atomic publication.
+    pub(crate) fn install_configuration_styles(
+        &mut self,
+        revision: Revision,
+        style_sheet: StyleSheet,
+        document_style: DocumentStyleAssignment,
+    ) {
+        self.revision = revision;
+        self.style_sheet = style_sheet;
+        self.document_style = document_style;
+    }
+
+    pub(crate) fn has_block_style_assignment(&self, style: &StyleId) -> bool {
+        self.document_style.style == *style || self.blocks.iter().any(|block| block.style == *style)
+    }
+
+    pub(crate) fn has_character_style_assignment(&self, style: &StyleId) -> bool {
+        self.styles
+            .iter()
+            .any(|span| matches!(&span.application, StyleApplication::Named(id) if id == style))
+    }
+
+    /// Current formatted ranges whose resolved result depends on one of the
+    /// supplied block or character style definitions. Ranges are normalized
+    /// and adjacent ranges are coalesced because this summary describes cache
+    /// invalidation, not selection row identity.
+    pub(crate) fn style_dependency_ranges(
+        &self,
+        block_styles: &std::collections::BTreeSet<StyleId>,
+        character_styles: &std::collections::BTreeSet<StyleId>,
+    ) -> Vec<Range<usize>> {
+        let mut ranges = Vec::new();
+        if character_styles.contains(&self.style_sheet.base_character) {
+            ranges.push(0..self.text.byte_len());
+        }
+        if block_styles.contains(&self.document_style.style) {
+            ranges.push(0..self.text.byte_len());
+        }
+        ranges.extend(
+            self.blocks
+                .iter()
+                .filter(|block| block_styles.contains(&block.style))
+                .map(|block| block.range.clone()),
+        );
+        ranges.extend(self.styles.iter().filter_map(|span| {
+            let StyleApplication::Named(id) = &span.application else {
+                return None;
+            };
+            character_styles.contains(id).then(|| span.range.clone())
+        }));
+        ranges.sort_by_key(|range| (range.start, range.end));
+        let mut normalized: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            if let Some(previous) = normalized.last_mut() {
+                if range.start <= previous.end {
+                    previous.end = previous.end.max(range.end);
+                    continue;
+                }
+            }
+            normalized.push(range);
+        }
+        normalized
+    }
+
+    /// The normalized document-root style assignment for this projection.
+    pub fn document_style(&self) -> &DocumentStyleAssignment {
+        &self.document_style
+    }
+
+    pub(crate) fn source_range(&self, range: Range<usize>) -> Option<Range<usize>> {
+        if range.start > range.end || range.end > self.text.byte_len() {
+            return None;
+        }
+        let start = self.source_boundary(range.start, Side::Downstream)?;
+        let end = self.source_boundary(range.end, Side::Upstream)?;
+        (start <= end).then_some(start..end)
+    }
+
+    /// Return the ordered source ranges which contribute visible content to a
+    /// non-empty formatted range contained by one hard line. Hidden syntax
+    /// between those ranges is deliberately excluded.
+    ///
+    /// Markdown text replacement uses this relational view instead of the
+    /// contiguous source hull returned by [`Self::source_range`]. Replacing
+    /// that hull would consume inline delimiters at adjacent style boundaries
+    /// (for example the `**_` between `**ab**_cd_`). Keeping the ranges
+    /// discontiguous lets a transaction replace the first visible run, delete
+    /// the remaining selected runs, and leave every delimiter byte untouched.
+    ///
+    /// The initial adapters produce monotonic, non-overlapping scalar
+    /// provenance. A future transform with a genuinely relational or
+    /// non-monotonic mapping gets `None` here and must provide its own typed
+    /// reverse rule rather than being flattened into an unsafe patch.
+    pub(crate) fn line_local_visible_source_runs(
+        &self,
+        range: Range<usize>,
+    ) -> Option<Vec<VisibleSourceRun>> {
+        if range.is_empty() || range.end > self.text.byte_len() {
+            return None;
+        }
+        if self.hard_line_at_offset(range.start)? != self.hard_line_at_offset(range.end)? {
+            return None;
+        }
+
+        let spans = self.provenance.query_overlapping(&range);
+        let mut formatted_at = range.start;
+        let mut runs: Vec<VisibleSourceRun> = Vec::new();
+        for span in spans {
+            // A public text range cannot split a scalar provenance unit. If a
+            // later adapter emits a many-to-one or overlapping relation, this
+            // specialized rewrite path must conservatively decline it.
+            if span.formatted.start != formatted_at || span.formatted.end > range.end {
+                return None;
+            }
+            formatted_at = span.formatted.end;
+
+            if let Some(previous) = runs.last_mut() {
+                if span.source.start < previous.source.end {
+                    return None;
+                }
+                if span.source.start == previous.source.end {
+                    previous.formatted.end = span.formatted.end;
+                    previous.source.end = span.source.end;
+                    continue;
+                }
+            }
+            runs.push(VisibleSourceRun {
+                formatted: span.formatted,
+                source: span.source,
+            });
+        }
+        (formatted_at == range.end && !runs.is_empty()).then_some(runs)
+    }
+
+    /// Whether replacement text inserted at the downstream side of this
+    /// range begins inside a Markdown code span. This is intentionally based
+    /// on the first selected item (or following item for an insertion), not on
+    /// whether one code span contains the entire replacement range.
+    pub(crate) fn markdown_replacement_begins_in_code(&self, range: &Range<usize>) -> bool {
+        let at = range.start;
+        self.styles.query_touching(&(at..at)).iter().any(|span| {
+            span.range.start <= at
+                && at < span.range.end
+                && span.application == StyleApplication::Semantic(SemanticInlineStyle::Code)
+        })
+    }
+
+    pub(crate) fn source_insertion_point(&self, at: usize, downstream: bool) -> Option<usize> {
+        self.source_boundary(
+            at,
+            if downstream {
+                Side::Downstream
+            } else {
+                Side::Upstream
+            },
+        )
+    }
+
+    fn source_boundary(&self, at: usize, side: Side) -> Option<usize> {
+        if at > self.text.byte_len() || !self.text.is_char_boundary(at).ok()? {
+            return None;
+        }
+        if self.provenance.is_empty() {
+            return Some(self.source_content_start);
+        }
+
+        // At the outer document boundaries, downstream means outside trailing
+        // syntax and upstream means outside leading syntax. At interior split
+        // boundaries the adjacent provenance segments decide the side.
+        if at == 0 && matches!(side, Side::Upstream) {
+            return Some(self.source_content_start);
+        }
+        if at == self.text.byte_len() && matches!(side, Side::Downstream) {
+            return Some(self.source_content_end);
+        }
+
+        let adjacent = self.provenance.query_touching(&(at..at));
+        let preceding = adjacent
+            .iter()
+            .rev()
+            .find(|span| span.formatted.end == at)
+            .map(|span| span.source.end);
+        let following = adjacent
+            .iter()
+            .find(|span| span.formatted.start == at)
+            .map(|span| span.source.start);
+        match side {
+            Side::Upstream => preceding.or(following).or_else(|| {
+                (at == 0)
+                    .then_some(self.source_content_start)
+                    .or((at == self.text.byte_len()).then_some(self.source_content_end))
+            }),
+            Side::Downstream => following.or(preceding).or_else(|| {
+                (at == 0)
+                    .then_some(self.source_content_start)
+                    .or((at == self.text.byte_len()).then_some(self.source_content_end))
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Side {
+    Upstream,
+    Downstream,
+}
+
+fn stable_text_fingerprint(text: &str) -> u64 {
+    // FNV-1a is sufficient here: the stable block ID and byte length are also
+    // checked, and this fingerprint is a stale-anchor guard rather than a
+    // persistence or security digest.
+    text.as_bytes()
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+}
+
+#[derive(Clone, Copy)]
+enum BlockWitnessSide {
+    Containing,
+    PrecedingBreak,
+    FollowingBreak,
+}
+
+#[derive(Clone, Debug)]
+struct EditMapping {
+    old: Range<usize>,
+    new: Range<usize>,
+}
+
+fn allocate_unassigned_block_ids(
+    blocks: &mut [Block],
+    next_id: u64,
+) -> Result<u64, BlockIdentityError> {
+    if next_id == 0 {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+    let needed = blocks.iter().filter(|block| block.id == 0).count();
+    let needed = u64::try_from(needed).map_err(|_| BlockIdentityError::Exhausted)?;
+    let next_after = next_id
+        .checked_add(needed)
+        .ok_or(BlockIdentityError::Exhausted)?;
+    let mut allocated = next_id;
+    for block in blocks.iter_mut().filter(|block| block.id == 0) {
+        block.id = allocated;
+        allocated = allocated
+            .checked_add(1)
+            .ok_or(BlockIdentityError::Exhausted)?;
+    }
+    debug_assert_eq!(allocated, next_after);
+    Ok(next_after)
+}
+
+/// Transitional seed used by the two current adapters, whose paragraph and
+/// hard-line partitions coincide. The persistent hard-line index itself does
+/// not depend on this equivalence; adapters with nested or multiline blocks
+/// must provide their own explicit hard-line records.
+fn seed_hard_lines_from_current_blocks(
+    blocks: &[Block],
+    text: &str,
+) -> Result<Vec<HardLine>, BlockIdentityError> {
+    validate_block_partition(text, blocks)?;
+    Ok(blocks
+        .iter()
+        .map(|block| HardLine {
+            id: block.id,
+            range: block.range.clone(),
+            separator_length: usize::from(block.range.end < text.len()),
+        })
+        .collect())
+}
+
+fn validate_block_partition(text: &str, blocks: &[Block]) -> Result<(), BlockIdentityError> {
+    if blocks.is_empty() {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+    let mut expected_start = 0;
+    for (index, block) in blocks.iter().enumerate() {
+        if block.range.start != expected_start
+            || block.range.start > block.range.end
+            || block.range.end > text.len()
+            || !text.is_char_boundary(block.range.start)
+            || !text.is_char_boundary(block.range.end)
+        {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+        if block.range.end == text.len() {
+            if index + 1 != blocks.len() {
+                return Err(BlockIdentityError::InvalidProjection);
+            }
+            expected_start = block.range.end;
+        } else {
+            if text.as_bytes()[block.range.end] != b'\n' {
+                return Err(BlockIdentityError::InvalidProjection);
+            }
+            expected_start = block
+                .range
+                .end
+                .checked_add(1)
+                .ok_or(BlockIdentityError::InvalidProjection)?;
+        }
+    }
+    if expected_start != text.len() {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+    Ok(())
+}
+
+fn build_edit_mappings(
+    old_len: usize,
+    new_len: usize,
+    edits: &[TextEdit],
+) -> Result<Vec<EditMapping>, BlockIdentityError> {
+    let mut mappings = Vec::with_capacity(edits.len());
+    let mut old_cursor: usize = 0;
+    let mut new_cursor: usize = 0;
+    for edit in edits {
+        if edit.range.start < old_cursor
+            || edit.range.start > edit.range.end
+            || edit.range.end > old_len
+        {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+        let unchanged = edit
+            .range
+            .start
+            .checked_sub(old_cursor)
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        new_cursor = new_cursor
+            .checked_add(unchanged)
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        let new_start = new_cursor;
+        new_cursor = new_cursor
+            .checked_add(edit.replacement.len())
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        mappings.push(EditMapping {
+            old: edit.range.clone(),
+            new: new_start..new_cursor,
+        });
+        old_cursor = edit.range.end;
+    }
+    new_cursor = new_cursor
+        .checked_add(
+            old_len
+                .checked_sub(old_cursor)
+                .ok_or(BlockIdentityError::InvalidProjection)?,
+        )
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+    if new_cursor != new_len {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+    Ok(mappings)
+}
+
+/// Carry sparse direct declarations to every child created by splitting one
+/// old paragraph. Named styles remain projector-owned because a child may have
+/// distinct source-derived semantics (for example, Markdown Heading followed
+/// by Paragraph).
+fn inherit_split_direct_assignments(
+    new_text: &str,
+    new_blocks: &mut [Block],
+    old: &Block,
+    edits: &[EditMapping],
+) -> Result<(), BlockIdentityError> {
+    let split_inside_old = edits.iter().any(|edit| {
+        old.range.start <= edit.old.start
+            && edit.old.end <= old.range.end
+            && new_text.as_bytes()[edit.new.clone()].contains(&b'\n')
+    });
+    if !split_inside_old {
+        return Ok(());
+    }
+
+    // An edit crossing a paragraph boundary does not have one unambiguous
+    // parent assignment. The normal retained-ID rule still handles the
+    // surviving block; only a self-contained split fans declarations out.
+    if edits.iter().any(|edit| {
+        (edit.old.start < old.range.start && old.range.start < edit.old.end)
+            || (edit.old.start < old.range.end && old.range.end < edit.old.end)
+    }) {
+        return Ok(());
+    }
+
+    let mapped_start = map_old_boundary_before(old.range.start, edits)?;
+    let mut mapped_end = map_old_boundary_before(old.range.end, edits)?;
+    for edit in edits
+        .iter()
+        .filter(|edit| edit.old.is_empty() && edit.old.start == old.range.end)
+    {
+        mapped_end = mapped_end.max(edit.new.end);
+    }
+    if mapped_start > mapped_end || mapped_end > new_text.len() {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+
+    for candidate in new_blocks.iter_mut().filter(|candidate| {
+        mapped_start <= candidate.range.start && candidate.range.end <= mapped_end
+    }) {
+        candidate.direct_paragraph = old.direct_paragraph.clone();
+        candidate.direct_default_character = old.direct_default_character.clone();
+    }
+    Ok(())
+}
+
+fn map_old_boundary_before(
+    old_offset: usize,
+    edits: &[EditMapping],
+) -> Result<usize, BlockIdentityError> {
+    let mut old_cursor = 0usize;
+    let mut new_cursor = 0usize;
+    for edit in edits {
+        if old_offset < edit.old.start {
+            return new_cursor
+                .checked_add(
+                    old_offset
+                        .checked_sub(old_cursor)
+                        .ok_or(BlockIdentityError::InvalidProjection)?,
+                )
+                .ok_or(BlockIdentityError::InvalidProjection);
+        }
+        if old_offset == edit.old.start {
+            return Ok(edit.new.start);
+        }
+        if old_offset < edit.old.end {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+        if old_offset == edit.old.end {
+            return Ok(edit.new.end);
+        }
+        old_cursor = edit.old.end;
+        new_cursor = edit.new.end;
+    }
+    new_cursor
+        .checked_add(
+            old_offset
+                .checked_sub(old_cursor)
+                .ok_or(BlockIdentityError::InvalidProjection)?,
+        )
+        .ok_or(BlockIdentityError::InvalidProjection)
+}
+
+fn block_identity_witness(
+    text: &str,
+    block: &Block,
+    edits: &[EditMapping],
+) -> Result<Option<usize>, BlockIdentityError> {
+    if let Some(content) = first_surviving_byte(&block.range, edits) {
+        return Ok(Some(content));
+    }
+    let delimiter = if block.range.end < text.len() && text.as_bytes()[block.range.end] == b'\n' {
+        block.range.end
+            ..block
+                .range
+                .end
+                .checked_add(1)
+                .ok_or(BlockIdentityError::InvalidProjection)?
+    } else if block.range.start > 0 && text.as_bytes()[block.range.start - 1] == b'\n' {
+        block.range.start - 1..block.range.start
+    } else {
+        block.range.start..block.range.start
+    };
+    Ok(first_surviving_byte(&delimiter, edits))
+}
+
+fn first_surviving_byte(extent: &Range<usize>, edits: &[EditMapping]) -> Option<usize> {
+    if extent.is_empty() {
+        return None;
+    }
+    let mut cursor = extent.start;
+    let first = edits.partition_point(|edit| edit.old.end <= cursor);
+    for edit in &edits[first..] {
+        if edit.old.start >= extent.end {
+            break;
+        }
+        if edit.old.is_empty() || edit.old.end <= cursor {
+            continue;
+        }
+        if edit.old.start > cursor {
+            return Some(cursor);
+        }
+        cursor = cursor.max(edit.old.end);
+        if cursor >= extent.end {
+            return None;
+        }
+    }
+    Some(cursor)
+}
+
+fn deleted_empty_join_boundary(text: &str, block: &Block, edits: &[EditMapping]) -> Option<usize> {
+    if !block.range.is_empty()
+        || block.range.end >= text.len()
+        || text.as_bytes()[block.range.end] != b'\n'
+    {
+        return None;
+    }
+    edits
+        .iter()
+        .find(|edit| {
+            !edit.old.is_empty()
+                && edit.old.start <= block.range.end
+                && block.range.end < edit.old.end
+        })
+        .map(|edit| edit.new.start)
+}
+
+fn map_surviving_byte(
+    old_offset: usize,
+    edits: &[EditMapping],
+) -> Result<usize, BlockIdentityError> {
+    let completed = edits.partition_point(|edit| edit.old.end <= old_offset);
+    let Some(edit) = completed.checked_sub(1).and_then(|index| edits.get(index)) else {
+        return Ok(old_offset);
+    };
+    edit.new
+        .end
+        .checked_add(
+            old_offset
+                .checked_sub(edit.old.end)
+                .ok_or(BlockIdentityError::InvalidProjection)?,
+        )
+        .ok_or(BlockIdentityError::InvalidProjection)
+}
+
+fn witness_side(text: &str, block: &Block, offset: usize) -> BlockWitnessSide {
+    if offset == block.range.end && offset < text.len() && text.as_bytes()[offset] == b'\n' {
+        BlockWitnessSide::PrecedingBreak
+    } else if offset
+        .checked_add(1)
+        .is_some_and(|after| after == block.range.start)
+        && text.as_bytes().get(offset) == Some(&b'\n')
+    {
+        BlockWitnessSide::FollowingBreak
+    } else {
+        BlockWitnessSide::Containing
+    }
+}
+
+fn block_index_for_witness(
+    text: &str,
+    blocks: &[Block],
+    mapped_offset: usize,
+    side: BlockWitnessSide,
+) -> Result<usize, BlockIdentityError> {
+    let probe = match side {
+        BlockWitnessSide::Containing | BlockWitnessSide::PrecedingBreak => mapped_offset,
+        BlockWitnessSide::FollowingBreak => mapped_offset
+            .checked_add(1)
+            .ok_or(BlockIdentityError::InvalidProjection)?,
+    };
+    if probe > text.len() {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+    blocks
+        .partition_point(|block| block.range.start <= probe)
+        .checked_sub(1)
+        .ok_or(BlockIdentityError::InvalidProjection)
+}
+
+fn unique_candidate(
+    source_offset: usize,
+    candidates: &[usize],
+) -> Result<Option<usize>, SourceToTextError> {
+    match candidates {
+        [] => Ok(None),
+        [candidate] => Ok(Some(*candidate)),
+        _ => Err(SourceToTextError::AmbiguousBoundary {
+            source_offset,
+            candidates: candidates.to_vec(),
+        }),
+    }
+}
+
+pub(crate) fn project(
+    normalized: &NormalizedText,
+    format: Format,
+    revision: Revision,
+    source_content_start: usize,
+    source_content_end: usize,
+) -> FormattedDocument {
+    match format {
+        Format::PlainText => project_plain(
+            normalized,
+            revision,
+            source_content_start,
+            source_content_end,
+        ),
+        Format::Markdown => project_markdown(
+            normalized,
+            revision,
+            source_content_start,
+            source_content_end,
+        ),
+    }
+}
+
+/// Merge a freshly projected, delimiter-bounded hard-line region into an
+/// existing formatted snapshot. The current plain-text and Markdown adapters
+/// are line-local, so a region containing complete source lines is a semantic
+/// restart boundary. Callers must fall back to full projection whenever an
+/// edit changes that boundary topology.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProjectionSpliceStatistics {
+    range_indexes: RangeSpliceStats,
+}
+
+impl ProjectionSpliceStatistics {
+    pub(crate) fn range_index_nodes_visited(self) -> usize {
+        self.range_indexes.nodes_visited
+    }
+
+    pub(crate) fn range_index_nodes_copied(self) -> usize {
+        self.range_indexes.nodes_copied
+    }
+
+    pub(crate) fn range_index_leaves_copied(self) -> usize {
+        self.range_indexes.leaves_copied
+    }
+
+    pub(crate) fn range_index_records_copied(self) -> usize {
+        self.range_indexes.items_copied
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn splice_line_local_projection(
+    previous: &FormattedDocument,
+    regional: FormattedDocument,
+    revision: Revision,
+    old_hard_lines: Range<usize>,
+    old_formatted: Range<usize>,
+    old_source: Range<usize>,
+    new_source: Range<usize>,
+    target_text: FormattedTextTree,
+    new_source_content_end: usize,
+) -> Result<(FormattedDocument, ProjectionSpliceStatistics), BlockIdentityError> {
+    if regional.revision != revision
+        || regional.source_content_start != new_source.start
+        || regional.source_content_end != new_source.end
+        || old_hard_lines.start >= old_hard_lines.end
+        || old_hard_lines.end > previous.blocks.len()
+        || previous.blocks.len() != previous.hard_lines.len()
+        || old_formatted.start > old_formatted.end
+        || old_formatted.end > previous.text.byte_len()
+        || old_source.start > old_source.end
+        || old_source.end > previous.source_content_end
+        || new_source.start > new_source.end
+        || new_source.end > new_source_content_end
+    {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+
+    let previous_region_blocks = previous
+        .blocks
+        .get_range(&old_hard_lines)
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+    let mut regional_blocks = regional.blocks.to_vec();
+    if regional_blocks.len() != previous_region_blocks.len() {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+
+    let new_formatted_end = old_formatted
+        .start
+        .checked_add(regional.text().len())
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+    if new_formatted_end > target_text.byte_len()
+        || target_text
+            .slice(old_formatted.start..new_formatted_end)
+            .map_err(|_| BlockIdentityError::InvalidProjection)?
+            != regional.text()
+        || target_text.byte_len()
+            != previous
+                .text
+                .byte_len()
+                .checked_sub(old_formatted.len())
+                .and_then(|length| length.checked_add(regional.text().len()))
+                .ok_or(BlockIdentityError::InvalidProjection)?
+    {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+
+    for (candidate, old) in regional_blocks.iter_mut().zip(&previous_region_blocks) {
+        candidate.range = shift_region_range(&candidate.range, old_formatted.start)?;
+        candidate.id = old.id;
+        candidate.direct_paragraph = old.direct_paragraph.clone();
+        candidate.direct_default_character = old.direct_default_character.clone();
+    }
+
+    let mut range_stats = RangeSpliceStats::default();
+    let blocks = previous
+        .blocks
+        .splice(
+            old_hard_lines.clone(),
+            regional_blocks.clone(),
+            old_formatted.end,
+            new_formatted_end,
+            &mut range_stats,
+        )
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+
+    let regional_hard_lines = regional_blocks
+        .iter()
+        .enumerate()
+        .map(|(relative, block)| HardLine {
+            id: block.id,
+            range: block.range.clone(),
+            separator_length: usize::from(
+                old_hard_lines.start + relative + 1 != previous.hard_lines.len(),
+            ),
+        })
+        .collect();
+    let hard_lines = previous
+        .hard_lines
+        .splice(
+            old_hard_lines,
+            regional_hard_lines,
+            old_formatted.end,
+            new_formatted_end,
+            &mut range_stats,
+        )
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+
+    let style_indices = contained_interval_indices(&previous.styles, &old_formatted)?;
+    let regional_styles = regional
+        .styles
+        .as_slice()
+        .iter()
+        .map(|span| {
+            Ok(StyleSpan {
+                range: shift_region_range(&span.range, old_formatted.start)?,
+                application: span.application.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, BlockIdentityError>>()?;
+    let styles = previous
+        .styles
+        .splice(
+            style_indices,
+            regional_styles,
+            old_formatted.end,
+            new_formatted_end,
+            &mut range_stats,
+        )
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+
+    let provenance_indices = contained_interval_indices(&previous.provenance, &old_formatted)?;
+    let old_provenance = previous
+        .provenance
+        .get_range(&provenance_indices)
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+    if old_provenance
+        .iter()
+        .any(|span| span.source.start < old_source.start || span.source.end > old_source.end)
+    {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+    validate_source_neighbors(
+        &previous.provenance,
+        &provenance_indices,
+        &old_source,
+        |span| &span.source,
+    )?;
+    let regional_provenance = regional
+        .provenance
+        .as_slice()
+        .iter()
+        .map(|span| {
+            Ok(ProvenanceSpan {
+                formatted: shift_region_range(&span.formatted, old_formatted.start)?,
+                source: span.source.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, BlockIdentityError>>()?;
+    let provenance = previous
+        .provenance
+        .splice_transformed(
+            provenance_indices,
+            regional_provenance,
+            old_formatted.end,
+            new_formatted_end,
+            Some((old_source.end, new_source.end)),
+            None,
+            &mut range_stats,
+        )
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+
+    let diagnostic_indices =
+        contained_interval_indices(&previous.decoding_diagnostics, &old_formatted)?;
+    let old_diagnostics = previous
+        .decoding_diagnostics
+        .get_range(&diagnostic_indices)
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+    if old_diagnostics.iter().any(|diagnostic| {
+        diagnostic.source_range.start < old_source.start
+            || diagnostic.source_range.end > old_source.end
+    }) {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+    validate_source_neighbors(
+        &previous.decoding_diagnostics,
+        &diagnostic_indices,
+        &old_source,
+        |diagnostic| &diagnostic.source_range,
+    )?;
+    let regional_diagnostics = regional
+        .decoding_diagnostics
+        .as_slice()
+        .iter()
+        .cloned()
+        .map(|mut diagnostic| {
+            diagnostic.revision = revision;
+            diagnostic.formatted_range =
+                shift_region_range(&diagnostic.formatted_range, old_formatted.start)?;
+            Ok(diagnostic)
+        })
+        .collect::<Result<Vec<_>, BlockIdentityError>>()?;
+    let decoding_diagnostics = previous
+        .decoding_diagnostics
+        .splice_transformed(
+            diagnostic_indices,
+            regional_diagnostics,
+            old_formatted.end,
+            new_formatted_end,
+            Some((old_source.end, new_source.end)),
+            Some(revision.0),
+            &mut range_stats,
+        )
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+
+    let candidate = FormattedDocument {
+        revision,
+        text: target_text,
+        flat_text: Arc::new(OnceLock::new()),
+        blocks,
+        hard_lines,
+        styles,
+        provenance,
+        decoding_diagnostics,
+        style_sheet: previous.style_sheet.clone(),
+        document_style: previous.document_style.clone(),
+        source_content_start: previous.source_content_start,
+        source_content_end: new_source_content_end,
+    };
+    Ok((
+        candidate,
+        ProjectionSpliceStatistics {
+            range_indexes: range_stats,
+        },
+    ))
+}
+
+fn contained_interval_indices<T>(
+    store: &IntervalRangeStore<T>,
+    region: &Range<usize>,
+) -> Result<Range<usize>, BlockIdentityError>
+where
+    T: RangedItem + Clone,
+{
+    if store
+        .query_overlapping(region)
+        .iter()
+        .any(|item| item.range().start < region.start || item.range().end > region.end)
+    {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+    let indices =
+        store.partition_point_start(region.start)..store.partition_point_start(region.end);
+    if store
+        .get_range(&indices)
+        .ok_or(BlockIdentityError::InvalidProjection)?
+        .iter()
+        .any(|item| item.range().start < region.start || item.range().end > region.end)
+    {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+    Ok(indices)
+}
+
+fn validate_source_neighbors<T>(
+    store: &IntervalRangeStore<T>,
+    replaced: &Range<usize>,
+    old_source: &Range<usize>,
+    source_range: impl Fn(&T) -> &Range<usize>,
+) -> Result<(), BlockIdentityError>
+where
+    T: RangedItem + Clone,
+{
+    if replaced.start > 0 {
+        let preceding = store
+            .get(replaced.start - 1)
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        if source_range(&preceding).end > old_source.start {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+    }
+    if replaced.end < store.len() {
+        let following = store
+            .get(replaced.end)
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        if source_range(&following).start < old_source.end {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+    }
+    Ok(())
+}
+
+fn shift_region_range(
+    range: &Range<usize>,
+    destination_start: usize,
+) -> Result<Range<usize>, BlockIdentityError> {
+    Ok(destination_start
+        .checked_add(range.start)
+        .ok_or(BlockIdentityError::InvalidProjection)?
+        ..destination_start
+            .checked_add(range.end)
+            .ok_or(BlockIdentityError::InvalidProjection)?)
+}
+
+fn project_plain(
+    normalized: &NormalizedText,
+    revision: Revision,
+    source_content_start: usize,
+    source_content_end: usize,
+) -> FormattedDocument {
+    let hard_lines = normalized_hard_line_ranges(normalized);
+    let provenance = normalized
+        .units
+        .iter()
+        .map(|unit| ProvenanceSpan {
+            formatted: unit.normalized.clone(),
+            source: unit.source.clone(),
+        })
+        .collect();
+    let decoding_diagnostics = normalized
+        .units
+        .iter()
+        .filter_map(|unit| {
+            unit.decoding_diagnostic.map(|kind| DecodingDiagnostic {
+                revision,
+                encoding: normalized.encoding,
+                kind,
+                source_range: unit.source.clone(),
+                formatted_range: unit.normalized.clone(),
+            })
+        })
+        .collect();
+    FormattedDocument::from_parts(
+        revision,
+        normalized.text.clone(),
+        blocks_for_hard_line_ranges(&hard_lines),
+        Vec::new(),
+        provenance,
+        decoding_diagnostics,
+        StyleSheet::default(),
+        source_content_start,
+        source_content_end,
+    )
+}
+
+fn normalized_hard_line_ranges(normalized: &NormalizedText) -> Vec<Range<usize>> {
+    let mut ranges = Vec::with_capacity(normalized.endings.len() + 1);
+    let mut start = 0;
+    for ending in &normalized.endings {
+        debug_assert!(start <= ending.normalized.start);
+        debug_assert!(ending.normalized.start < ending.normalized.end);
+        ranges.push(start..ending.normalized.start);
+        start = ending.normalized.end;
+    }
+    ranges.push(start..normalized.text.len());
+    ranges
+}
+
+fn blocks_for_hard_line_ranges(ranges: &[Range<usize>]) -> Vec<Block> {
+    ranges
+        .iter()
+        .cloned()
+        .map(|range| Block {
+            id: 0,
+            range,
+            kind: BlockKind::Paragraph,
+            style: "Paragraph".into(),
+            direct_paragraph: BlockProperties::default(),
+            direct_default_character: CharacterProperties::default(),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn blocks_for_plain_text(text: &str) -> Vec<Block> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    loop {
+        let end = text[start..]
+            .find('\n')
+            .map(|relative| start + relative)
+            .unwrap_or(text.len());
+        ranges.push(start..end);
+        if end == text.len() {
+            break;
+        }
+        start = end + 1;
+    }
+    blocks_for_hard_line_ranges(&ranges)
+}
+
+/// Fast, provenance-free fixture used only by large-document layout tests.
+/// It preserves the real formatted text tree and paragraph partition while
+/// avoiding the intentionally detailed decode/line-ending provenance setup,
+/// which is tested independently and would dominate this test's runtime.
+#[cfg(test)]
+pub(crate) fn layout_test_plain_projection(text: String) -> FormattedDocument {
+    let text_len = text.len();
+    let mut blocks = blocks_for_plain_text(&text);
+    for (index, block) in blocks.iter_mut().enumerate() {
+        block.id = u64::try_from(index + 1).expect("fixture block identity is representable");
+    }
+    FormattedDocument::from_parts(
+        Revision(0),
+        text,
+        blocks,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        StyleSheet::default(),
+        0,
+        text_len,
+    )
+}
+
+fn project_markdown(
+    normalized: &NormalizedText,
+    revision: Revision,
+    source_content_start: usize,
+    source_content_end: usize,
+) -> FormattedDocument {
+    let mut builder = MarkdownBuilder::new(
+        &normalized.text,
+        &normalized.units,
+        normalized.encoding,
+        revision,
+    );
+    let input_lines = normalized_hard_line_ranges(normalized);
+
+    for (line_index, line) in input_lines.into_iter().enumerate() {
+        let output_start = builder.output.len();
+        let (content_start, kind) = heading_prefix(&normalized.text, line.start, line.end);
+        builder.parse_inline(content_start, line.end);
+        let output_end = builder.output.len();
+        let style = match kind {
+            BlockKind::Heading(level) => format!("Heading{level}").as_str().into(),
+            BlockKind::Paragraph => "Paragraph".into(),
+        };
+        builder.blocks.push(Block {
+            id: 0,
+            range: output_start..output_end,
+            kind,
+            style,
+            direct_paragraph: BlockProperties::default(),
+            direct_default_character: CharacterProperties::default(),
+        });
+        if let Some(ending) = normalized.endings.get(line_index) {
+            builder.emit_unit_at(ending.normalized.start);
+        }
+    }
+
+    FormattedDocument::from_parts(
+        revision,
+        builder.output,
+        builder.blocks,
+        builder.styles,
+        builder.provenance,
+        builder.decoding_diagnostics,
+        StyleSheet::default(),
+        source_content_start,
+        source_content_end,
+    )
+}
+
+fn heading_prefix(text: &str, start: usize, end: usize) -> (usize, BlockKind) {
+    let line = &text.as_bytes()[start..end];
+    let hashes = line.iter().take_while(|byte| **byte == b'#').count();
+    if (1..=6).contains(&hashes) && line.get(hashes) == Some(&b' ') {
+        (start + hashes + 1, BlockKind::Heading(hashes as u8))
+    } else {
+        (start, BlockKind::Paragraph)
+    }
+}
+
+struct MarkdownBuilder<'a> {
+    source_text: &'a str,
+    units: &'a [LogicalUnit],
+    output: String,
+    blocks: Vec<Block>,
+    styles: Vec<StyleSpan>,
+    provenance: Vec<ProvenanceSpan>,
+    decoding_diagnostics: Vec<DecodingDiagnostic>,
+    encoding: super::Encoding,
+    revision: Revision,
+}
+
+impl<'a> MarkdownBuilder<'a> {
+    fn new(
+        source_text: &'a str,
+        units: &'a [LogicalUnit],
+        encoding: super::Encoding,
+        revision: Revision,
+    ) -> Self {
+        Self {
+            source_text,
+            units,
+            output: String::new(),
+            blocks: Vec::new(),
+            styles: Vec::new(),
+            provenance: Vec::new(),
+            decoding_diagnostics: Vec::new(),
+            encoding,
+            revision,
+        }
+    }
+
+    fn parse_inline(&mut self, start: usize, end: usize) {
+        let mut at = start;
+        while at < end {
+            if self.source_text[at..].starts_with('\\') {
+                if let Some(next) = self.next_boundary(at) {
+                    if next < end {
+                        let escaped = self.source_text[next..].chars().next().unwrap();
+                        if matches!(escaped, '\\' | '*' | '_' | '`' | '#') {
+                            self.emit_escaped(at, next);
+                            at = next + escaped.len_utf8();
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            if self.source_text[at..].starts_with('`') {
+                if let Some(close) = self.find_marker(at + 1, end, "`") {
+                    let output_start = self.output.len();
+                    self.emit_range(at + 1, close);
+                    self.push_semantic_style(output_start, SemanticInlineStyle::Code);
+                    at = close + 1;
+                    continue;
+                }
+            }
+
+            let double = if self.source_text[at..].starts_with("**") {
+                Some("**")
+            } else if self.source_text[at..].starts_with("__") {
+                Some("__")
+            } else {
+                None
+            };
+            if let Some(marker) = double {
+                let inner = at + marker.len();
+                if let Some(close) = self.find_marker(inner, end, marker) {
+                    let output_start = self.output.len();
+                    self.emit_range_with_escapes(inner, close);
+                    self.push_semantic_style(output_start, SemanticInlineStyle::Strong);
+                    at = close + marker.len();
+                    continue;
+                }
+            }
+
+            let marker = if self.source_text[at..].starts_with('*') {
+                Some("*")
+            } else if self.source_text[at..].starts_with('_') {
+                Some("_")
+            } else {
+                None
+            };
+            if let Some(marker) = marker {
+                let inner = at + 1;
+                if let Some(close) = self.find_marker(inner, end, marker) {
+                    let output_start = self.output.len();
+                    self.emit_range_with_escapes(inner, close);
+                    self.push_semantic_style(output_start, SemanticInlineStyle::Emphasis);
+                    at = close + 1;
+                    continue;
+                }
+            }
+
+            self.emit_unit_at(at);
+            at = self.next_boundary(at).unwrap_or(end);
+        }
+    }
+
+    fn emit_range_with_escapes(&mut self, start: usize, end: usize) {
+        let mut at = start;
+        while at < end {
+            if self.source_text[at..].starts_with('\\') {
+                if let Some(next) = self.next_boundary(at) {
+                    if next < end {
+                        let escaped = self.source_text[next..].chars().next().unwrap();
+                        if matches!(escaped, '\\' | '*' | '_' | '`' | '#') {
+                            self.emit_escaped(at, next);
+                            at = next + escaped.len_utf8();
+                            continue;
+                        }
+                    }
+                }
+            }
+            self.emit_unit_at(at);
+            at = self.next_boundary(at).unwrap_or(end);
+        }
+    }
+
+    fn emit_range(&mut self, start: usize, end: usize) {
+        let mut at = start;
+        while at < end {
+            self.emit_unit_at(at);
+            at = self.next_boundary(at).unwrap_or(end);
+        }
+    }
+
+    fn emit_escaped(&mut self, slash: usize, escaped: usize) {
+        let Some(slash_source_start) = self.unit_at(slash).map(|unit| unit.source.start) else {
+            return;
+        };
+        let Some((normalized, source_end)) = self
+            .unit_at(escaped)
+            .map(|unit| (unit.normalized.clone(), unit.source.end))
+        else {
+            return;
+        };
+        let output_start = self.output.len();
+        self.output.push_str(&self.source_text[normalized]);
+        self.provenance.push(ProvenanceSpan {
+            formatted: output_start..self.output.len(),
+            source: slash_source_start..source_end,
+        });
+    }
+
+    fn emit_unit_at(&mut self, normalized: usize) {
+        let Some((normalized_range, source, decoding_diagnostic)) =
+            self.unit_at(normalized).map(|unit| {
+                (
+                    unit.normalized.clone(),
+                    unit.source.clone(),
+                    unit.decoding_diagnostic,
+                )
+            })
+        else {
+            return;
+        };
+        let output_start = self.output.len();
+        self.output.push_str(&self.source_text[normalized_range]);
+        let formatted = output_start..self.output.len();
+        self.provenance.push(ProvenanceSpan {
+            formatted: formatted.clone(),
+            source: source.clone(),
+        });
+        if let Some(kind) = decoding_diagnostic {
+            self.decoding_diagnostics.push(DecodingDiagnostic {
+                revision: self.revision,
+                encoding: self.encoding,
+                kind,
+                source_range: source,
+                formatted_range: formatted,
+            });
+        }
+    }
+
+    fn push_semantic_style(&mut self, output_start: usize, style: SemanticInlineStyle) {
+        if output_start != self.output.len() {
+            self.styles.push(StyleSpan {
+                range: output_start..self.output.len(),
+                application: StyleApplication::Semantic(style),
+            });
+        }
+    }
+
+    fn unit_at(&self, normalized: usize) -> Option<&LogicalUnit> {
+        self.units
+            .binary_search_by_key(&normalized, |unit| unit.normalized.start)
+            .ok()
+            .map(|index| &self.units[index])
+    }
+
+    fn next_boundary(&self, normalized: usize) -> Option<usize> {
+        self.unit_at(normalized).map(|unit| unit.normalized.end)
+    }
+
+    fn find_marker(&self, mut at: usize, end: usize, marker: &str) -> Option<usize> {
+        while at + marker.len() <= end {
+            if self.source_text[at..].starts_with('\\') {
+                at = self.next_boundary(at)?;
+                if at < end {
+                    at = self.next_boundary(at)?;
+                }
+                continue;
+            }
+            if self.source_text[at..].starts_with(marker) {
+                return Some(at);
+            }
+            at = self.next_boundary(at)?;
+        }
+        None
+    }
+}
+
+pub(crate) fn escape_markdown_insert(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if matches!(ch, '\\' | '*' | '_' | '`' | '#') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::history::History;
+    use crate::document::line_endings::{normalize, FileFormat};
+    use crate::document::{Encoding, Splice};
+
+    fn markdown_at(source: &str, revision: Revision) -> FormattedDocument {
+        let decoded = Encoding::Utf8.decode(source.as_bytes()).unwrap();
+        let normalized = normalize(&decoded, FileFormat::Unix);
+        project(&normalized, Format::Markdown, revision, 0, source.len())
+    }
+
+    fn markdown(source: &str) -> FormattedDocument {
+        markdown_at(source, Revision(1))
+    }
+
+    fn plain(text: String, revision: Revision) -> FormattedDocument {
+        let length = text.len();
+        FormattedDocument::from_parts(
+            revision,
+            text.clone(),
+            blocks_for_plain_text(&text),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            StyleSheet::default(),
+            0,
+            length,
+        )
+    }
+
+    fn add_direct_assignments(document: &mut FormattedDocument) {
+        document.document_style.direct_canvas.padding_left = Some(17.0);
+        document.document_style.direct_default_character.size = Some(16.0);
+        let mut blocks = document.blocks.to_vec();
+        blocks[0].direct_paragraph.spacing_after = Some(9.0);
+        blocks[0].direct_default_character.font_families = Some(vec!["Assigned Serif".to_owned()]);
+        document.blocks = OrderedRangeStore::new(blocks);
+    }
+
+    #[test]
+    fn plain_and_markdown_project_default_root_and_paragraph_assignments() {
+        let plain = plain("plain".to_owned(), Revision(1));
+        let markdown = markdown("# heading\nbody");
+
+        for projection in [&plain, &markdown] {
+            assert_eq!(
+                projection.document_style.style,
+                projection.style_sheet.base_document
+            );
+            assert_eq!(
+                projection.document_style.direct_canvas,
+                BlockProperties::default()
+            );
+            assert_eq!(
+                projection.document_style.direct_default_character,
+                CharacterProperties::default()
+            );
+            assert!(projection.blocks.iter().all(|block| {
+                block.direct_paragraph == BlockProperties::default()
+                    && block.direct_default_character == CharacterProperties::default()
+            }));
+        }
+        assert_eq!(plain.blocks[0].style, plain.style_sheet.base_paragraph);
+        assert_eq!(markdown.blocks[0].style, StyleId::from("Heading1"));
+        assert_eq!(
+            markdown.blocks[1].style,
+            markdown.style_sheet.base_paragraph
+        );
+    }
+
+    #[test]
+    fn unchanged_projection_and_history_preserve_all_direct_assignments() {
+        let mut previous = plain("first\nsecond".to_owned(), Revision(1));
+        previous.assign_initial_block_ids(1).unwrap();
+        add_direct_assignments(&mut previous);
+        let expected_root = previous.document_style.clone();
+        let expected_block = previous.blocks[0].clone();
+
+        let mut candidate = plain("first\nsecond".to_owned(), Revision(2));
+        candidate.install_unchanged_block_ids(&previous).unwrap();
+        assert_eq!(candidate.document_style, expected_root);
+        assert_eq!(candidate.blocks[0], expected_block);
+
+        let mut history = History::new(previous);
+        history.commit(candidate, false);
+        assert!(history.undo());
+        assert_eq!(history.current().document_style, expected_root);
+        assert_eq!(history.current().blocks[0], expected_block);
+        assert!(history.redo());
+        assert_eq!(history.current().document_style, expected_root);
+        assert_eq!(history.current().blocks[0], expected_block);
+    }
+
+    #[test]
+    fn text_reconciliation_carries_assignments_with_the_retained_block() {
+        let old_text = "first\nsecond".to_owned();
+        let new_text = "prefix first\nsecond".to_owned();
+        let mut previous = plain(old_text.clone(), Revision(1));
+        let next_id = previous.assign_initial_block_ids(1).unwrap();
+        add_direct_assignments(&mut previous);
+        let expected_root = previous.document_style.clone();
+        let expected_id = previous.blocks[0].id;
+        let expected_paragraph = previous.blocks[0].direct_paragraph.clone();
+        let expected_character = previous.blocks[0].direct_default_character.clone();
+        let mut candidate = plain(new_text.clone(), Revision(2));
+        let edits = vec![TextEdit::new(0..0, "prefix ")];
+        let map = PositionMap::for_text(
+            DocumentId(1),
+            Revision(1),
+            Revision(2),
+            &old_text,
+            &new_text,
+            vec![Splice::new(0..0, 7).unwrap()],
+        )
+        .unwrap();
+
+        candidate
+            .install_reconciled_block_ids(&previous, &edits, &map, next_id)
+            .unwrap();
+        assert_eq!(candidate.document_style, expected_root);
+        assert_eq!(candidate.blocks[0].id, expected_id);
+        assert_eq!(candidate.blocks[0].direct_paragraph, expected_paragraph);
+        assert_eq!(
+            candidate.blocks[0].direct_default_character,
+            expected_character
+        );
+    }
+
+    #[test]
+    fn paragraph_splits_inherit_direct_assignments_at_start_middle_and_end() {
+        for (old_text, new_text, edit) in [
+            ("styled", "\nstyled", TextEdit::new(0..0, "\n")),
+            ("styled", "sty\nled", TextEdit::new(3..3, "\n")),
+            ("styled", "styled\n", TextEdit::new(6..6, "\n")),
+        ] {
+            let mut previous = plain(old_text.to_owned(), Revision(1));
+            let next_id = previous.assign_initial_block_ids(1).unwrap();
+            add_direct_assignments(&mut previous);
+            let old_id = previous.blocks[0].id;
+            let expected_paragraph = previous.blocks[0].direct_paragraph.clone();
+            let expected_character = previous.blocks[0].direct_default_character.clone();
+            let mut candidate = plain(new_text.to_owned(), Revision(2));
+            let map = PositionMap::for_text(
+                DocumentId(1),
+                Revision(1),
+                Revision(2),
+                old_text,
+                new_text,
+                vec![Splice::new(edit.range.clone(), edit.replacement.len()).unwrap()],
+            )
+            .unwrap();
+
+            candidate
+                .install_reconciled_block_ids(&previous, &[edit], &map, next_id)
+                .unwrap();
+            assert_eq!(candidate.blocks.len(), 2);
+            assert!(candidate.blocks.iter().all(|block| {
+                block.direct_paragraph == expected_paragraph
+                    && block.direct_default_character == expected_character
+            }));
+            let retained_index = if new_text.starts_with('\n') { 1 } else { 0 };
+            assert_eq!(candidate.blocks[retained_index].id, old_id);
+        }
+    }
+
+    #[test]
+    fn split_inheritance_does_not_replace_projected_markdown_block_styles() {
+        let old_text = "title";
+        let new_text = "title\nbody";
+        let mut previous = markdown_at("# title", Revision(1));
+        let next_id = previous.assign_initial_block_ids(1).unwrap();
+        add_direct_assignments(&mut previous);
+        let expected_paragraph = previous.blocks[0].direct_paragraph.clone();
+        let expected_character = previous.blocks[0].direct_default_character.clone();
+        let mut candidate = markdown_at("# title\nbody", Revision(2));
+        let edit = TextEdit::new(5..5, "\nbody");
+        let map = PositionMap::for_text(
+            DocumentId(1),
+            Revision(1),
+            Revision(2),
+            old_text,
+            new_text,
+            vec![Splice::new(edit.range.clone(), edit.replacement.len()).unwrap()],
+        )
+        .unwrap();
+
+        candidate
+            .install_reconciled_block_ids(&previous, &[edit], &map, next_id)
+            .unwrap();
+        assert_eq!(candidate.blocks[0].style, StyleId::from("Heading1"));
+        assert_eq!(candidate.blocks[1].style, StyleId::from("Paragraph"));
+        assert!(candidate.blocks.iter().all(|block| {
+            block.direct_paragraph == expected_paragraph
+                && block.direct_default_character == expected_character
+        }));
+    }
+
+    #[test]
+    fn unchanged_source_backed_block_may_retain_id_when_kind_changes() {
+        let mut previous = plain("title\nbody".to_owned(), Revision(1));
+        previous.assign_initial_block_ids(1).unwrap();
+        let mut candidate = plain("title\nbody".to_owned(), Revision(2));
+        let mut blocks = candidate.blocks.to_vec();
+        blocks[0].kind = BlockKind::Heading(1);
+        blocks[0].style = "Heading1".into();
+        candidate.blocks = OrderedRangeStore::new(blocks);
+
+        candidate.install_unchanged_block_ids(&previous).unwrap();
+        assert_eq!(candidate.blocks[0].id, previous.blocks[0].id);
+        assert_eq!(candidate.blocks[0].kind, BlockKind::Heading(1));
+    }
+
+    #[test]
+    fn large_block_reconciliation_preserves_all_shifted_ids_without_pairwise_diffing() {
+        const LINES: usize = 100_000;
+        let old_text = format!("{}tail", "x\n".repeat(LINES));
+        let new_text = format!("new\n{old_text}");
+        let mut previous = plain(old_text.clone(), Revision(1));
+        let next_id = previous.assign_initial_block_ids(1).unwrap();
+        let previous_last = previous.blocks.last().unwrap().id;
+        let mut candidate = plain(new_text.clone(), Revision(2));
+        let edits = vec![TextEdit::new(0..0, "new\n")];
+        let map = PositionMap::for_text(
+            DocumentId(1),
+            Revision(1),
+            Revision(2),
+            &old_text,
+            &new_text,
+            vec![Splice::new(0..0, 4).unwrap()],
+        )
+        .unwrap();
+
+        let after = candidate
+            .install_reconciled_block_ids(&previous, &edits, &map, next_id)
+            .unwrap();
+        assert_eq!(candidate.blocks.len(), LINES + 2);
+        assert_eq!(candidate.blocks[0].id, next_id);
+        assert_eq!(candidate.blocks[1].id, previous.blocks[0].id);
+        assert_eq!(candidate.blocks.last().unwrap().id, previous_last);
+        assert_eq!(after, next_id + 1);
+    }
+
+    #[test]
+    fn markdown_projects_headings_and_inline_styles() {
+        let projected = markdown("# A **bold** and *soft* with `code`\nplain");
+        assert_eq!(projected.text(), "A bold and soft with code\nplain");
+        assert_eq!(projected.text_tree().flatten(), projected.text());
+        assert_eq!(projected.text_tree().hard_line_count(), 2);
+        assert_eq!(projected.text_tree().hard_line_start(1).unwrap(), 26);
+        assert_eq!(projected.blocks[0].kind, BlockKind::Heading(1));
+        assert_eq!(projected.blocks[1].kind, BlockKind::Paragraph);
+        assert_eq!(projected.styles.len(), 3);
+        assert_eq!(projected.styles[0].range, 2..6);
+        assert_eq!(
+            projected.styles[0].application,
+            StyleApplication::Semantic(SemanticInlineStyle::Strong)
+        );
+    }
+
+    #[test]
+    fn escaped_markdown_is_visible_but_escape_has_provenance() {
+        let projected = markdown("\\*literal\\*");
+        assert_eq!(projected.text(), "*literal*");
+        assert_eq!(projected.provenance[0].source, 0..2);
+    }
+
+    #[test]
+    fn formatted_range_maps_inside_delimiters() {
+        let projected = markdown("**bold** next");
+        assert_eq!(projected.source_range(0..4), Some(2..6));
+        assert_eq!(projected.source_insertion_point(4, false), Some(6));
+        assert_eq!(projected.source_insertion_point(4, true), Some(8));
+    }
+
+    #[test]
+    fn markdown_visible_source_ranges_exclude_adjacent_style_delimiters() {
+        let projected = markdown("**ab**_cd_ tail");
+        assert_eq!(projected.text(), "abcd tail");
+        assert_eq!(projected.source_range(1..3), Some(3..8));
+        assert_eq!(
+            projected.line_local_visible_source_runs(1..3),
+            Some(vec![
+                VisibleSourceRun {
+                    formatted: 1..2,
+                    source: 3..4,
+                },
+                VisibleSourceRun {
+                    formatted: 2..3,
+                    source: 7..8,
+                },
+            ])
+        );
+        assert!(!projected.markdown_replacement_begins_in_code(&(1..3)));
+    }
+
+    #[test]
+    fn line_local_source_ranges_decline_cross_line_and_relational_mappings() {
+        let projected = markdown("**a**\n_b_");
+        assert_eq!(projected.line_local_visible_source_runs(0..3), None);
+
+        let relational = FormattedDocument::from_parts(
+            Revision(7),
+            "ab".to_owned(),
+            blocks_for_plain_text("ab"),
+            Vec::new(),
+            vec![
+                ProvenanceSpan {
+                    formatted: 0..1,
+                    source: 0..2,
+                },
+                ProvenanceSpan {
+                    formatted: 1..2,
+                    source: 1..3,
+                },
+            ],
+            Vec::new(),
+            StyleSheet::default(),
+            0,
+            3,
+        );
+        assert_eq!(relational.line_local_visible_source_runs(0..2), None);
+    }
+
+    #[test]
+    fn markdown_replacement_context_uses_the_downstream_start_style() {
+        let projected = markdown("`ab`plain`cd`");
+        assert!(projected.markdown_replacement_begins_in_code(&(1..3)));
+        assert!(!projected.markdown_replacement_begins_in_code(&(2..4)));
+        assert!(projected.markdown_replacement_begins_in_code(&(7..7)));
+        assert!(!projected.markdown_replacement_begins_in_code(&(2..2)));
+    }
+
+    #[test]
+    fn source_boundary_affinity_selects_distinct_projection_sides() {
+        let projected = FormattedDocument::from_parts(
+            Revision(7),
+            "abc".to_owned(),
+            blocks_for_plain_text("abc"),
+            Vec::new(),
+            vec![
+                ProvenanceSpan {
+                    formatted: 0..1,
+                    source: 0..1,
+                },
+                ProvenanceSpan {
+                    formatted: 2..3,
+                    source: 1..2,
+                },
+            ],
+            Vec::new(),
+            StyleSheet::default(),
+            0,
+            2,
+        );
+        assert_eq!(
+            projected
+                .map_source_boundary(Revision(7), 1, BoundaryAffinity::Upstream)
+                .unwrap()
+                .formatted_offset,
+            1
+        );
+        assert_eq!(
+            projected
+                .map_source_boundary(Revision(7), 1, BoundaryAffinity::Downstream)
+                .unwrap()
+                .formatted_offset,
+            2
+        );
+    }
+
+    #[test]
+    fn source_boundary_mapping_reports_ambiguity_staleness_and_bounds() {
+        let projected = FormattedDocument::from_parts(
+            Revision(7),
+            "abc".to_owned(),
+            blocks_for_plain_text("abc"),
+            Vec::new(),
+            vec![
+                ProvenanceSpan {
+                    formatted: 0..1,
+                    source: 1..2,
+                },
+                ProvenanceSpan {
+                    formatted: 2..3,
+                    source: 1..3,
+                },
+            ],
+            Vec::new(),
+            StyleSheet::default(),
+            0,
+            3,
+        );
+        assert_eq!(
+            projected.map_source_boundary(Revision(7), 1, BoundaryAffinity::Downstream),
+            Err(SourceToTextError::AmbiguousBoundary {
+                source_offset: 1,
+                candidates: vec![0, 2]
+            })
+        );
+        assert!(matches!(
+            projected.map_source_boundary(Revision(6), 1, BoundaryAffinity::Downstream),
+            Err(SourceToTextError::WrongSnapshot { .. })
+        ));
+        assert_eq!(
+            projected.map_source_boundary(Revision(7), 4, BoundaryAffinity::Downstream),
+            Err(SourceToTextError::SourceOffsetOutOfBounds {
+                offset: 4,
+                length: 3
+            })
+        );
+    }
+
+    #[test]
+    fn projection_clones_and_equal_reprojections_share_range_indexes() {
+        let mut previous = markdown_at("# left\n**bold**", Revision(1));
+        previous.assign_initial_block_ids(1).unwrap();
+        let cloned = previous.clone();
+        assert!(previous.blocks.shares_root_with(&cloned.blocks));
+        assert!(previous.hard_lines.shares_root_with(&cloned.hard_lines));
+        assert!(previous.styles.shares_root_with(&cloned.styles));
+
+        let mut candidate = markdown_at("# left\n**bold**", Revision(2));
+        candidate.install_unchanged_block_ids(&previous).unwrap();
+        assert!(previous.blocks.shares_root_with(&candidate.blocks));
+        assert!(previous.hard_lines.shares_root_with(&candidate.hard_lines));
+        assert!(previous.styles.shares_root_with(&candidate.styles));
+    }
+
+    #[test]
+    fn malformed_current_adapter_partition_is_rejected_before_line_index_rebuild() {
+        let mut projection = plain("a\nb".to_owned(), Revision(1));
+        let original_lines = projection.hard_lines.clone();
+        let mut malformed = projection.blocks.to_vec();
+        malformed[1].range = 3..3;
+        projection.blocks = OrderedRangeStore::new(malformed);
+
+        assert_eq!(
+            projection.rebuild_hard_lines_from_blocks(None),
+            Err(BlockIdentityError::InvalidProjection)
+        );
+        assert_eq!(projection.hard_lines, original_lines);
+    }
+
+    #[test]
+    fn same_length_local_edit_reuses_equal_block_and_style_indexes() {
+        let old_text = "left\nbold";
+        let new_text = "LEFT\nbold";
+        let mut previous = markdown_at("left\n**bold**", Revision(1));
+        let next_id = previous.assign_initial_block_ids(1).unwrap();
+        let mut candidate = markdown_at("LEFT\n**bold**", Revision(2));
+        let edit = TextEdit::new(0..4, "LEFT");
+        let map = PositionMap::for_text(
+            DocumentId(1),
+            Revision(1),
+            Revision(2),
+            old_text,
+            new_text,
+            vec![Splice::new(0..4, 4).unwrap()],
+        )
+        .unwrap();
+
+        candidate
+            .install_reconciled_block_ids(&previous, &[edit], &map, next_id)
+            .unwrap();
+        assert!(previous.blocks.shares_root_with(&candidate.blocks));
+        assert!(previous.hard_lines.shares_root_with(&candidate.hard_lines));
+        assert!(previous.styles.shares_root_with(&candidate.styles));
+    }
+
+    #[test]
+    fn prefix_length_change_shares_shifted_suffix_block_leaves() {
+        const LINES: usize = 256;
+        let old_text = format!("{}tail", "x\n".repeat(LINES));
+        let new_text = format!("prefix {old_text}");
+        let mut previous = plain(old_text.clone(), Revision(1));
+        let next_id = previous.assign_initial_block_ids(1).unwrap();
+        let previous_leaf_count = previous.blocks.leaf_count();
+        let mut candidate = plain(new_text.clone(), Revision(2));
+        let edit = TextEdit::new(0..0, "prefix ");
+        let map = PositionMap::for_text(
+            DocumentId(1),
+            Revision(1),
+            Revision(2),
+            &old_text,
+            &new_text,
+            vec![Splice::new(0..0, 7).unwrap()],
+        )
+        .unwrap();
+
+        candidate
+            .install_reconciled_block_ids(&previous, &[edit], &map, next_id)
+            .unwrap();
+        assert_eq!(candidate.blocks.leaf_count(), previous_leaf_count);
+        assert_eq!(
+            candidate.blocks.shared_leaf_count_with(&previous.blocks),
+            previous_leaf_count - 1
+        );
+        assert_eq!(
+            candidate
+                .hard_lines
+                .shared_leaf_count_with(&previous.hard_lines),
+            previous_leaf_count - 1
+        );
+        assert_eq!(candidate.blocks()[1].id, previous.blocks()[1].id);
+    }
+
+    #[test]
+    fn uniformly_shifted_style_index_reuses_its_complete_relative_root() {
+        const SPANS: usize = 200;
+        let marked = "**x** ".repeat(SPANS);
+        let old_source = format!("a {marked}");
+        let new_source = format!("prefix a {marked}");
+        let old_text = format!("a {}", "x ".repeat(SPANS));
+        let new_text = format!("prefix a {}", "x ".repeat(SPANS));
+        let mut previous = markdown_at(&old_source, Revision(1));
+        let next_id = previous.assign_initial_block_ids(1).unwrap();
+        let mut candidate = markdown_at(&new_source, Revision(2));
+        let edit = TextEdit::new(0..0, "prefix ");
+        let map = PositionMap::for_text(
+            DocumentId(1),
+            Revision(1),
+            Revision(2),
+            &old_text,
+            &new_text,
+            vec![Splice::new(0..0, 7).unwrap()],
+        )
+        .unwrap();
+
+        candidate
+            .install_reconciled_block_ids(&previous, &[edit], &map, next_id)
+            .unwrap();
+        assert_eq!(candidate.styles.len(), SPANS);
+        assert!(candidate.styles.shares_root_with(&previous.styles));
+        assert_eq!(
+            candidate.styles.shared_leaf_count_with(&previous.styles),
+            candidate.styles.leaf_count()
+        );
+    }
+
+    #[test]
+    fn many_style_spans_are_queried_through_a_bounded_interval_frontier() {
+        const SPANS: usize = 100_000;
+        let text = "x ".repeat(SPANS);
+        let styles = (0..SPANS)
+            .map(|index| StyleSpan {
+                range: index * 2..index * 2 + 1,
+                application: StyleApplication::Semantic(SemanticInlineStyle::Strong),
+            })
+            .collect();
+        let projection = FormattedDocument::from_parts(
+            Revision(1),
+            text.clone(),
+            blocks_for_plain_text(&text),
+            styles,
+            Vec::new(),
+            Vec::new(),
+            StyleSheet::default(),
+            0,
+            text.len(),
+        );
+        let query_start = (SPANS - 2) * 2;
+        let (matches, stats) = projection
+            .styles
+            .query_overlapping_with_stats(&(query_start..query_start + 1));
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].range, query_start..query_start + 1);
+        assert!(stats.nodes_visited <= 40, "{stats:?}");
+        assert!(stats.items_examined <= 64, "{stats:?}");
+        assert!(projection.styles.invariant_holds());
+    }
+
+    #[test]
+    fn extremely_long_single_block_has_constant_size_regional_result() {
+        let projection = plain("x".repeat(4 * 1024 * 1024), Revision(1));
+        let middle = projection.text().len() / 2;
+        let (blocks, stats) = projection
+            .blocks
+            .query_touching_with_stats(&(middle..middle));
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].range, 0..projection.text().len());
+        assert_eq!(stats.nodes_visited, 1);
+        assert_eq!(stats.items_examined, 1);
+        assert!(projection.blocks.invariant_holds());
+    }
+
+    #[test]
+    fn hard_line_snapshot_batches_match_a_random_flat_oracle() {
+        const LINES: usize = 20_000;
+        let mut seed = 0x6a09_e667_f3bc_c909_u64;
+        let mut text = String::new();
+        let mut expected = Vec::with_capacity(LINES);
+        for line in 0..LINES {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let length = usize::try_from(seed % 9).unwrap();
+            let start = text.len();
+            text.extend(std::iter::repeat('x').take(length));
+            expected.push(start..text.len());
+            if line + 1 != LINES {
+                text.push('\n');
+            }
+        }
+        let projection = plain(text, Revision(7));
+        let snapshot = HardLineSnapshot::new(DocumentId(91), &projection);
+
+        for _ in 0..2_000 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let start = usize::try_from(seed % u64::try_from(LINES + 1).unwrap()).unwrap();
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let remaining = LINES - start;
+            let count = usize::try_from(seed % u64::try_from(remaining + 1).unwrap()).unwrap();
+            let end = start + count;
+            let actual = snapshot.lines(start..end).unwrap();
+            assert_eq!(actual.len(), count);
+            for (relative, info) in actual.iter().enumerate() {
+                let index = start + relative;
+                assert_eq!(info.document(), DocumentId(91));
+                assert_eq!(info.revision(), Revision(7));
+                assert_eq!(info.index(), index);
+                assert_eq!(info.content_range(), expected[index]);
+                let separator =
+                    (index + 1 != LINES).then(|| expected[index].end..expected[index].end + 1);
+                assert_eq!(info.separator_range(), separator);
+            }
+
+            let expected_extent = if start == end {
+                let boundary = expected
+                    .get(start)
+                    .map_or(snapshot.text_length(), |line| line.start);
+                boundary..boundary
+            } else {
+                let final_end = if end == LINES {
+                    expected[end - 1].end
+                } else {
+                    expected[end - 1].end + 1
+                };
+                expected[start].start..final_end
+            };
+            assert_eq!(
+                snapshot.linewise_extent(start..end).unwrap(),
+                expected_extent
+            );
+        }
+
+        for _ in 0..2_000 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let offset =
+                usize::try_from(seed % u64::try_from(snapshot.text_length() + 1).unwrap()).unwrap();
+            let expected_index = expected
+                .iter()
+                .rposition(|line| line.start <= offset && offset <= line.end)
+                .unwrap();
+            let actual = snapshot.line_at_offset(offset).unwrap();
+            assert_eq!(actual.index(), expected_index);
+            assert_eq!(actual.content_range(), expected[expected_index]);
+        }
+    }
+
+    #[test]
+    fn million_line_snapshot_batch_visits_only_the_requested_frontier() {
+        const LINES: usize = 1_000_000;
+        const REQUESTED: usize = 7;
+        let mut text = "x\n".repeat(LINES - 1);
+        text.push('x');
+        let hard_lines = (0..LINES)
+            .map(|index| HardLine {
+                id: u64::try_from(index + 1).unwrap(),
+                range: index * 2..index * 2 + 1,
+                separator_length: usize::from(index + 1 != LINES),
+            })
+            .collect();
+        let snapshot = HardLineSnapshot {
+            document: DocumentId(1),
+            revision: Revision(2),
+            flat_text: {
+                let value = Arc::new(OnceLock::new());
+                value.set(Arc::from(text.clone())).unwrap();
+                value
+            },
+            text_tree: FormattedTextTree::try_from_text(text).unwrap(),
+            hard_lines: OrderedRangeStore::new(hard_lines),
+        };
+        let start = LINES - REQUESTED;
+        let (lines, stats) = snapshot.lines_with_stats(start..LINES).unwrap();
+
+        assert_eq!(lines.len(), REQUESTED);
+        assert_eq!(lines[0].index(), start);
+        assert_eq!(lines.last().unwrap().index(), LINES - 1);
+        assert!(stats.nodes_visited <= 48, "{stats:?}");
+        assert_eq!(stats.items_examined, REQUESTED);
+    }
+}

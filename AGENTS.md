@@ -1217,8 +1217,32 @@ Required shorthand/change commands are:
 - `p`, `P`, `gp`, and `gP`; and
 - `i`, `I`, `a`, `A`, `o`, and `O`.
 
+Replacement operands retain whether a U+000A is literal content or a semantic
+hard-line item; frontends MUST pass a normalized Enter key separately from a
+text-input event. Normal `[count]r<Enter>` replaces `count` graphemes on the
+current hard line with exactly one semantic hard-line item and leaves the
+cursor at the start of the following line. Characterwise and linewise Visual
+`r<Enter>` follow Vim's distinct behavior: every selected content grapheme is
+replaced by a literal U+000D while existing semantic hard-line items are
+preserved. Visual Block `r<Enter>` removes the selected content and inserts
+exactly one semantic hard-line item in each nonempty selected visual row,
+regardless of the rectangle width; empty or short rows with no selected content
+remain unchanged. A literal CR or LF supplied through text input remains
+literal and may be rejected atomically when the active source pipeline cannot
+reverse-project it without changing the logical hard-line sequence. Dot repeat
+retains this typed operand distinction.
+
 The `=` operator initially performs deterministic indentation defined by core
 configuration. It must not invoke a language-specific formatter implicitly.
+
+Marks and searches are composable operator motions. `` `{a-z} `` uses the
+mark's exact position as an exclusive characterwise motion, while `'{a-z}`
+uses the marked hard line's first nonblank position and is linewise; counts do
+not alter a named-mark destination. `/pattern`, `?pattern`, `n`, `N`, `*`, `#`,
+`g*`, and `g#` are exclusive search motions and multiply operator and motion
+counts where Vim does. An operator search records its jump only after the
+operator succeeds. Escape from its command line cancels the complete pending
+operator without changing text, registers, search state, or the jumplist.
 
 ### Text objects
 
@@ -1262,8 +1286,39 @@ Vim terms while internal APIs use explicit half-open ranges.
   register `0`, named `a`-`z`, append aliases `A`-`Z`, small-delete `-`, black
   hole `_`, system clipboard `+` and `*`, last-insert `.`, and current filename
   `%` where applicable.
+- A text register payload explicitly records which U+000A byte offsets denote
+  formatted hard breaks. An unmarked U+000A remains literal formatted content;
+  adapters spell only marked breaks according to the destination pipeline.
+  In a blockwise payload, U+000A separates display rows and is not itself a
+  semantic hard break. Appending registers rebases these markers without
+  inferring semantics from the payload text.
+- A named register recorded as a macro stores its normalized key/text event
+  program alongside, but separately from, its UTF-8 text-register projection.
+  Macro playback uses the event program and never reparses human-readable
+  inspection notation such as `<Left>`. Text-register inspection MAY render
+  non-text events with that notation. When such a register is put, text and
+  character events materialize directly, Tab materializes as U+0009, Enter as
+  literal U+000D with no hard-break marker, Escape as U+001B, and Ctrl-letter
+  or Ctrl-[ as its corresponding C0 scalar. Backspace, Delete, arrow, Home,
+  End, and Page keys have no unambiguous formatted-text representation: an
+  ordinary put, `:put`, or Insert-mode `Ctrl-R` containing one returns the
+  structured `MacroContainsNonTextKeys` error without changing the document;
+  inspection notation is never inserted as a substitute. Literal printable
+  text such as `<Left>` in a text register remains literal and is never parsed
+  as a key event. Overwriting a named macro register with text removes its
+  event program; uppercase append preserves an existing program and appends
+  the text payload as normalized character or semantic-break events.
 - Required commands: `u`, `Ctrl-R`, `U`, `.`, `q{a-z}`/`q`, `@{a-z}`, and
   `@@`.
+- `U` restores the hard line on which the latest eligible change was made,
+  even if the cursor subsequently moved to another line. Its baseline is an
+  exact source-backed line image identified by stable projected identity, not
+  a flattened formatted string or retained numeric offset. Repeated eligible
+  changes to that same line retain the original baseline; a change on another
+  line replaces it. A topology change which makes the identity ambiguous
+  invalidates the slot explicitly. `U` swaps the current and retained images,
+  is itself one ordinary source transaction, and participates in branching
+  undo/redo and dot repeat.
 - Undo history follows the branching transaction model below. It is not a pair
   of linear command stacks.
 - Dot repeat records a semantic change action with its inserted payload and
@@ -1870,6 +1925,31 @@ shaping fragments, and hard-line/wrap units. Obsolete jobs must release retained
 snapshots promptly enough that continuous typing cannot keep an unbounded chain
 of old source revisions alive. Cancellation does not make a partially produced
 result observable.
+
+The coordinator retains the cooperative cancellation token for the one current
+layout job of each attached view. A replacement becomes current, and only then
+cancels its predecessor, after the replacement has passed preparation and
+registration; a cancelled or invalid replacement request therefore does not
+orphan valid work. Resize or view-configuration invalidation, a metrics-
+generation change observed by the coordinator, a shared document commit, and
+view removal cancel affected current work. Successful installation retires its
+matching token without cancelling it, and cancellation observed after the
+installation linearization point does not roll back the installed snapshot.
+Removing a view is a serial, nonblocking coordinator operation: it cancels that
+view's layout work, discards uncommitted marked-text/IME overlay state without
+editing the document, and closes an Insert/Replace edit group owned by the view
+so already committed text remains one complete undo unit. It does not disturb
+other views' jobs or presentation state.
+
+View and layout-job identities are monotonically allocated and never reused,
+including after view removal. Exhaustion is a typed failure; compatibility APIs
+that cannot return it may fail explicitly rather than wrap. When an exact visual-
+row command reaches partial snapshot coverage, its non-mutating result carries
+a typed, revision- and generation-bound layout demand. That demand identifies
+the missing edge and the complete bounded hard-line interval for a replacement
+viewport request, so the frontend does not guess an expansion direction or
+range. A demand whose source, layout, configuration, or metrics identity is no
+longer current is rejected as stale.
 
 #### Permitted synchronization primitives
 

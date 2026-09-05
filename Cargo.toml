@@ -1,0 +1,15 @@
+[package]
+name = "evim-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/core/lib.rs"
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+regex = "1.11"
+unicode-linebreak = "=0.1.5"
+unicode-segmentation = "=1.12.0"
+
+[dev-dependencies]

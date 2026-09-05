@@ -1,0 +1,2901 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+/// Opaque stable identity of a block or character style. The string is a
+/// serialization-friendly token, not the user-visible style name.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
+pub struct StyleId(pub String);
+
+impl From<&str> for StyleId {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Color {
+    pub red: f32,
+    pub green: f32,
+    pub blue: f32,
+    pub alpha: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FontSlant {
+    Upright,
+    Italic,
+    Oblique,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WritingDirection {
+    Natural,
+    LeftToRight,
+    RightToLeft,
+}
+
+/// The schema domain a block style may declare. Future structural roles (for
+/// example List and ListItem) can extend this enum without creating another
+/// style namespace.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BlockRole {
+    Document,
+    Paragraph,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LineSpacing {
+    Normal,
+    Multiplier(f32),
+    AtLeast(f32),
+    Exact(f32),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParagraphAlignment {
+    Start,
+    End,
+    Center,
+}
+
+/// Sparse character declarations. `None` means inherit/leave unchanged.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CharacterProperties {
+    pub font_families: Option<Vec<String>>,
+    pub size: Option<f32>,
+    pub weight: Option<u16>,
+    pub slant: Option<FontSlant>,
+    pub foreground: Option<Color>,
+    pub background: Option<Color>,
+    pub underline: Option<bool>,
+    pub strikethrough: Option<bool>,
+    pub language: Option<String>,
+    pub direction: Option<WritingDirection>,
+    pub open_type_features: Option<BTreeMap<String, u32>>,
+    pub letter_spacing: Option<f32>,
+    pub baseline_shift: Option<f32>,
+}
+
+impl CharacterProperties {
+    /// Exact normalized declaration keys which differ between two sparse
+    /// layers. Absence and an explicit default-valued declaration are
+    /// intentionally different.
+    pub fn changed_properties(&self, other: &Self) -> BTreeSet<StyleProperty> {
+        let mut changed = BTreeSet::new();
+        macro_rules! compare {
+            ($field:ident, $property:expr) => {
+                if self.$field != other.$field {
+                    changed.insert($property);
+                }
+            };
+        }
+        compare!(font_families, StyleProperty::CharacterFontFamilies);
+        compare!(size, StyleProperty::CharacterSize);
+        compare!(weight, StyleProperty::CharacterWeight);
+        compare!(slant, StyleProperty::CharacterSlant);
+        compare!(foreground, StyleProperty::CharacterForeground);
+        compare!(background, StyleProperty::CharacterBackground);
+        compare!(underline, StyleProperty::CharacterUnderline);
+        compare!(strikethrough, StyleProperty::CharacterStrikethrough);
+        compare!(language, StyleProperty::CharacterLanguage);
+        compare!(direction, StyleProperty::CharacterDirection);
+        compare!(open_type_features, StyleProperty::CharacterOpenTypeFeatures);
+        compare!(letter_spacing, StyleProperty::CharacterLetterSpacing);
+        compare!(baseline_shift, StyleProperty::CharacterBaselineShift);
+        changed
+    }
+
+    pub fn declared_properties(&self) -> BTreeSet<StyleProperty> {
+        self.changed_properties(&Self::default())
+    }
+}
+
+/// Sparse paragraph/block declarations. Future list properties can be added
+/// here without introducing a separate paragraph-style namespace.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BlockProperties {
+    pub spacing_before: Option<f32>,
+    pub spacing_after: Option<f32>,
+    pub line_spacing: Option<LineSpacing>,
+    pub first_line_indent: Option<f32>,
+    pub leading_indent: Option<f32>,
+    pub trailing_indent: Option<f32>,
+    pub padding_top: Option<f32>,
+    pub padding_right: Option<f32>,
+    pub padding_bottom: Option<f32>,
+    pub padding_left: Option<f32>,
+    pub background: Option<Color>,
+    pub alignment: Option<ParagraphAlignment>,
+    pub base_direction: Option<WritingDirection>,
+}
+
+impl BlockProperties {
+    /// Exact normalized declaration keys which differ between two sparse
+    /// block layers.
+    pub fn changed_properties(&self, other: &Self) -> BTreeSet<StyleProperty> {
+        let mut changed = BTreeSet::new();
+        macro_rules! compare {
+            ($field:ident, $property:expr) => {
+                if self.$field != other.$field {
+                    changed.insert($property);
+                }
+            };
+        }
+        compare!(spacing_before, StyleProperty::ParagraphSpacingBefore);
+        compare!(spacing_after, StyleProperty::ParagraphSpacingAfter);
+        compare!(line_spacing, StyleProperty::ParagraphLineSpacing);
+        compare!(first_line_indent, StyleProperty::ParagraphFirstLineIndent);
+        compare!(leading_indent, StyleProperty::ParagraphLeadingIndent);
+        compare!(trailing_indent, StyleProperty::ParagraphTrailingIndent);
+        compare!(padding_top, StyleProperty::CanvasPaddingTop);
+        compare!(padding_right, StyleProperty::CanvasPaddingRight);
+        compare!(padding_bottom, StyleProperty::CanvasPaddingBottom);
+        compare!(padding_left, StyleProperty::CanvasPaddingLeft);
+        compare!(background, StyleProperty::CanvasBackground);
+        compare!(alignment, StyleProperty::ParagraphAlignment);
+        compare!(base_direction, StyleProperty::ParagraphBaseDirection);
+        changed
+    }
+
+    pub fn declared_properties(&self) -> BTreeSet<StyleProperty> {
+        self.changed_properties(&Self::default())
+    }
+}
+
+/// Normalized style assignment for the formatted document root.
+///
+/// The style must have the [`BlockRole::Document`] role. Direct declarations
+/// are sparse layers applied after the assigned style chain: `direct_canvas`
+/// affects the document surface, while `direct_default_character` supplies
+/// inherited character defaults for every paragraph.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocumentStyleAssignment {
+    pub style: StyleId,
+    pub direct_canvas: BlockProperties,
+    pub direct_default_character: CharacterProperties,
+}
+
+impl DocumentStyleAssignment {
+    pub fn new(style: StyleId) -> Self {
+        Self {
+            style,
+            direct_canvas: BlockProperties::default(),
+            direct_default_character: CharacterProperties::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CharacterStyle {
+    pub id: StyleId,
+    pub based_on: Option<StyleId>,
+    pub properties: CharacterProperties,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlockStyle {
+    pub id: StyleId,
+    pub based_on: Option<StyleId>,
+    /// Paragraph style assigned to a new paragraph created by splitting this
+    /// paragraph at its terminal boundary. `None` means retain this style.
+    /// Only [`BlockRole::Paragraph`] styles may declare this relationship.
+    pub next_paragraph_style: Option<StyleId>,
+    pub role: BlockRole,
+    pub character: CharacterProperties,
+    pub block: BlockProperties,
+}
+
+/// Format-independent payload for inserting, updating, or deleting one style
+/// definition. The containing model intention supplies the authority and
+/// provenance class; this payload alone cannot mutate a document.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StyleDefinitionEdit {
+    InsertBlock(BlockStyle),
+    UpdateBlock(BlockStyle),
+    DeleteBlock(StyleId),
+    InsertCharacter(CharacterStyle),
+    UpdateCharacter(CharacterStyle),
+    DeleteCharacter(StyleId),
+}
+
+impl StyleDefinitionEdit {
+    pub fn style_id(&self) -> &StyleId {
+        match self {
+            Self::InsertBlock(style) | Self::UpdateBlock(style) => &style.id,
+            Self::DeleteBlock(id) => id,
+            Self::InsertCharacter(style) | Self::UpdateCharacter(style) => &style.id,
+            Self::DeleteCharacter(id) => id,
+        }
+    }
+
+    pub fn is_block(&self) -> bool {
+        matches!(
+            self,
+            Self::InsertBlock(_) | Self::UpdateBlock(_) | Self::DeleteBlock(_)
+        )
+    }
+}
+
+/// Explicit operations on the generated/application configuration layer.
+/// These create immutable, undoable configuration states while leaving source
+/// bytes untouched. Source-backed edits use adapter-capability-checked
+/// persisted intentions, and synthetic definitions remain read-only.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConfigurationStyleIntent {
+    EditDefinition(StyleDefinitionEdit),
+    /// Assign a generated/configuration Document-role style to the formatted
+    /// root. This is not a persisted content assignment.
+    AssignDocumentStyle(StyleId),
+    SetDocumentCanvas(BlockProperties),
+    ClearDocumentCanvas(BTreeSet<StyleProperty>),
+    SetDocumentDefaultCharacter(CharacterProperties),
+    ClearDocumentDefaultCharacter(BTreeSet<StyleProperty>),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Hash)]
+pub struct StyleSheetRevision(pub u64);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StyleSheet {
+    pub revision: StyleSheetRevision,
+    pub base_document: StyleId,
+    pub base_paragraph: StyleId,
+    pub base_character: StyleId,
+    block_styles: BTreeMap<StyleId, BlockStyle>,
+    character_styles: BTreeMap<StyleId, CharacterStyle>,
+}
+
+impl Default for StyleSheet {
+    fn default() -> Self {
+        let document: StyleId = "Document".into();
+        let paragraph: StyleId = "Paragraph".into();
+        let character: StyleId = "Character".into();
+        let mut block_styles = BTreeMap::new();
+        block_styles.insert(
+            document.clone(),
+            BlockStyle {
+                id: document.clone(),
+                based_on: None,
+                next_paragraph_style: None,
+                role: BlockRole::Document,
+                character: CharacterProperties {
+                    font_families: Some(vec!["system-ui".to_owned()]),
+                    size: Some(14.0),
+                    weight: Some(400),
+                    slant: Some(FontSlant::Upright),
+                    foreground: Some(Color {
+                        red: 0.0,
+                        green: 0.0,
+                        blue: 0.0,
+                        alpha: 1.0,
+                    }),
+                    underline: Some(false),
+                    strikethrough: Some(false),
+                    direction: Some(WritingDirection::Natural),
+                    open_type_features: Some(BTreeMap::new()),
+                    letter_spacing: Some(0.0),
+                    baseline_shift: Some(0.0),
+                    ..CharacterProperties::default()
+                },
+                block: BlockProperties {
+                    // Product defaults remain a configuration decision. Zero
+                    // keeps the generated base neutral while still making the
+                    // canvas values explicit and overridable.
+                    padding_top: Some(0.0),
+                    padding_right: Some(0.0),
+                    padding_bottom: Some(0.0),
+                    padding_left: Some(0.0),
+                    background: Some(Color {
+                        red: 1.0,
+                        green: 1.0,
+                        blue: 1.0,
+                        alpha: 1.0,
+                    }),
+                    ..BlockProperties::default()
+                },
+            },
+        );
+        block_styles.insert(
+            paragraph.clone(),
+            BlockStyle {
+                id: paragraph.clone(),
+                based_on: Some(document.clone()),
+                next_paragraph_style: None,
+                role: BlockRole::Paragraph,
+                character: CharacterProperties::default(),
+                block: BlockProperties {
+                    spacing_before: Some(0.0),
+                    spacing_after: Some(0.0),
+                    line_spacing: Some(LineSpacing::Normal),
+                    first_line_indent: Some(0.0),
+                    leading_indent: Some(0.0),
+                    trailing_indent: Some(0.0),
+                    alignment: Some(ParagraphAlignment::Start),
+                    base_direction: Some(WritingDirection::Natural),
+                    ..BlockProperties::default()
+                },
+            },
+        );
+        for level in 1..=6 {
+            let id: StyleId = format!("Heading{level}").as_str().into();
+            block_styles.insert(
+                id.clone(),
+                BlockStyle {
+                    id,
+                    based_on: Some(paragraph.clone()),
+                    next_paragraph_style: Some(paragraph.clone()),
+                    role: BlockRole::Paragraph,
+                    character: CharacterProperties {
+                        size: Some(26.0 - level as f32 * 2.0),
+                        weight: Some(700),
+                        ..CharacterProperties::default()
+                    },
+                    block: BlockProperties {
+                        spacing_before: Some(10.0),
+                        spacing_after: Some(5.0),
+                        ..BlockProperties::default()
+                    },
+                },
+            );
+        }
+        let mut character_styles = BTreeMap::new();
+        character_styles.insert(
+            character.clone(),
+            CharacterStyle {
+                id: character.clone(),
+                based_on: None,
+                properties: CharacterProperties::default(),
+            },
+        );
+        Self {
+            revision: StyleSheetRevision(1),
+            base_document: document,
+            base_paragraph: paragraph,
+            base_character: character,
+            block_styles,
+            character_styles,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StyleError {
+    StyleSheetRevisionExhausted,
+    StyleAlreadyExists(StyleId),
+    CannotReplaceBaseStyle(StyleId),
+    CannotRemoveBaseStyle(StyleId),
+    InvalidBaseStyleDefinition(StyleId),
+    StyleInUse(StyleId),
+    UnknownStyle(StyleId),
+    MissingParent(StyleId),
+    InheritanceCycle(StyleId),
+    IncompatibleBlockRole {
+        style: StyleId,
+        role: BlockRole,
+        parent_role: BlockRole,
+    },
+    InapplicableBlockProperties {
+        style: StyleId,
+        role: BlockRole,
+    },
+    InapplicableNextParagraphStyle {
+        style: StyleId,
+        role: BlockRole,
+    },
+    InvalidNextParagraphStyle {
+        style: StyleId,
+        next: StyleId,
+    },
+    InvalidCharacterProperties(StyleId),
+    InvalidBlockProperties(StyleId),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedCharacterStyle {
+    pub font_families: Vec<String>,
+    pub size: f32,
+    pub weight: u16,
+    pub slant: FontSlant,
+    pub foreground: Color,
+    pub background: Option<Color>,
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub language: Option<String>,
+    pub direction: WritingDirection,
+    pub open_type_features: BTreeMap<String, u32>,
+    pub letter_spacing: f32,
+    pub baseline_shift: f32,
+}
+
+impl Default for ResolvedCharacterStyle {
+    fn default() -> Self {
+        Self {
+            font_families: vec!["system-ui".to_owned()],
+            size: 14.0,
+            weight: 400,
+            slant: FontSlant::Upright,
+            foreground: Color {
+                red: 0.0,
+                green: 0.0,
+                blue: 0.0,
+                alpha: 1.0,
+            },
+            background: None,
+            underline: false,
+            strikethrough: false,
+            language: None,
+            direction: WritingDirection::Natural,
+            open_type_features: BTreeMap::new(),
+            letter_spacing: 0.0,
+            baseline_shift: 0.0,
+        }
+    }
+}
+
+impl ResolvedCharacterStyle {
+    /// Return exactly the normalized properties whose effective values differ.
+    /// Callers can map these through [`StyleProperty::invalidation_effect`]
+    /// instead of invalidating every layout layer for any style edit.
+    pub fn changed_properties(&self, other: &Self) -> BTreeSet<StyleProperty> {
+        let mut changed = BTreeSet::new();
+        macro_rules! compare {
+            ($field:ident, $property:expr) => {
+                if self.$field != other.$field {
+                    changed.insert($property);
+                }
+            };
+        }
+        compare!(font_families, StyleProperty::CharacterFontFamilies);
+        compare!(size, StyleProperty::CharacterSize);
+        compare!(weight, StyleProperty::CharacterWeight);
+        compare!(slant, StyleProperty::CharacterSlant);
+        compare!(foreground, StyleProperty::CharacterForeground);
+        compare!(background, StyleProperty::CharacterBackground);
+        compare!(underline, StyleProperty::CharacterUnderline);
+        compare!(strikethrough, StyleProperty::CharacterStrikethrough);
+        compare!(language, StyleProperty::CharacterLanguage);
+        compare!(direction, StyleProperty::CharacterDirection);
+        compare!(open_type_features, StyleProperty::CharacterOpenTypeFeatures);
+        compare!(letter_spacing, StyleProperty::CharacterLetterSpacing);
+        compare!(baseline_shift, StyleProperty::CharacterBaselineShift);
+        changed
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedDocumentStyle {
+    pub background: Color,
+    pub padding_top: f32,
+    pub padding_right: f32,
+    pub padding_bottom: f32,
+    pub padding_left: f32,
+    pub character: ResolvedCharacterStyle,
+}
+
+impl Default for ResolvedDocumentStyle {
+    fn default() -> Self {
+        Self {
+            background: Color {
+                red: 1.0,
+                green: 1.0,
+                blue: 1.0,
+                alpha: 1.0,
+            },
+            padding_top: 0.0,
+            padding_right: 0.0,
+            padding_bottom: 0.0,
+            padding_left: 0.0,
+            character: ResolvedCharacterStyle::default(),
+        }
+    }
+}
+
+impl ResolvedDocumentStyle {
+    pub fn changed_properties(&self, other: &Self) -> BTreeSet<StyleProperty> {
+        let mut changed = self.character.changed_properties(&other.character);
+        if self.background != other.background {
+            changed.insert(StyleProperty::CanvasBackground);
+        }
+        if self.padding_top != other.padding_top {
+            changed.insert(StyleProperty::CanvasPaddingTop);
+        }
+        if self.padding_right != other.padding_right {
+            changed.insert(StyleProperty::CanvasPaddingRight);
+        }
+        if self.padding_bottom != other.padding_bottom {
+            changed.insert(StyleProperty::CanvasPaddingBottom);
+        }
+        if self.padding_left != other.padding_left {
+            changed.insert(StyleProperty::CanvasPaddingLeft);
+        }
+        changed
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedParagraphStyle {
+    pub spacing_before: f32,
+    pub spacing_after: f32,
+    pub line_spacing: LineSpacing,
+    pub first_line_indent: f32,
+    pub leading_indent: f32,
+    pub trailing_indent: f32,
+    pub alignment: ParagraphAlignment,
+    pub base_direction: WritingDirection,
+    pub character: ResolvedCharacterStyle,
+}
+
+/// A schema property whose resolved value participates in style dependency
+/// tracking.  The key deliberately names the normalized property rather than
+/// a source-format spelling such as a CSS property or RTF control word.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
+pub enum StyleProperty {
+    CanvasBackground,
+    CanvasPaddingTop,
+    CanvasPaddingRight,
+    CanvasPaddingBottom,
+    CanvasPaddingLeft,
+    ParagraphSpacingBefore,
+    ParagraphSpacingAfter,
+    ParagraphLineSpacing,
+    ParagraphFirstLineIndent,
+    ParagraphLeadingIndent,
+    ParagraphTrailingIndent,
+    ParagraphAlignment,
+    ParagraphBaseDirection,
+    CharacterFontFamilies,
+    CharacterSize,
+    CharacterWeight,
+    CharacterSlant,
+    CharacterForeground,
+    CharacterBackground,
+    CharacterUnderline,
+    CharacterStrikethrough,
+    CharacterLanguage,
+    CharacterDirection,
+    CharacterOpenTypeFeatures,
+    CharacterLetterSpacing,
+    CharacterBaselineShift,
+}
+
+/// Smallest downstream layer invalidated when one normalized property changes.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
+pub enum StyleInvalidationEffect {
+    Paint,
+    Shaping,
+    ParagraphLayout,
+    DocumentLayout,
+    ViewUsableWidth,
+}
+
+impl StyleProperty {
+    pub fn invalidation_effect(self) -> StyleInvalidationEffect {
+        match self {
+            Self::CanvasBackground
+            | Self::CharacterForeground
+            | Self::CharacterBackground
+            | Self::CharacterUnderline
+            | Self::CharacterStrikethrough => StyleInvalidationEffect::Paint,
+            Self::CanvasPaddingLeft | Self::CanvasPaddingRight => {
+                StyleInvalidationEffect::ViewUsableWidth
+            }
+            Self::CanvasPaddingTop | Self::CanvasPaddingBottom => {
+                StyleInvalidationEffect::DocumentLayout
+            }
+            Self::ParagraphSpacingBefore
+            | Self::ParagraphSpacingAfter
+            | Self::ParagraphLineSpacing
+            | Self::ParagraphFirstLineIndent
+            | Self::ParagraphLeadingIndent
+            | Self::ParagraphTrailingIndent
+            | Self::ParagraphAlignment => StyleInvalidationEffect::ParagraphLayout,
+            Self::ParagraphBaseDirection => StyleInvalidationEffect::Shaping,
+            Self::CharacterFontFamilies
+            | Self::CharacterSize
+            | Self::CharacterWeight
+            | Self::CharacterSlant
+            | Self::CharacterLanguage
+            | Self::CharacterDirection
+            | Self::CharacterOpenTypeFeatures
+            | Self::CharacterLetterSpacing
+            | Self::CharacterBaselineShift => StyleInvalidationEffect::Shaping,
+        }
+    }
+}
+
+const CANVAS_STYLE_PROPERTIES: [StyleProperty; 5] = [
+    StyleProperty::CanvasBackground,
+    StyleProperty::CanvasPaddingTop,
+    StyleProperty::CanvasPaddingRight,
+    StyleProperty::CanvasPaddingBottom,
+    StyleProperty::CanvasPaddingLeft,
+];
+
+const PARAGRAPH_STYLE_PROPERTIES: [StyleProperty; 8] = [
+    StyleProperty::ParagraphSpacingBefore,
+    StyleProperty::ParagraphSpacingAfter,
+    StyleProperty::ParagraphLineSpacing,
+    StyleProperty::ParagraphFirstLineIndent,
+    StyleProperty::ParagraphLeadingIndent,
+    StyleProperty::ParagraphTrailingIndent,
+    StyleProperty::ParagraphAlignment,
+    StyleProperty::ParagraphBaseDirection,
+];
+
+const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 13] = [
+    StyleProperty::CharacterFontFamilies,
+    StyleProperty::CharacterSize,
+    StyleProperty::CharacterWeight,
+    StyleProperty::CharacterSlant,
+    StyleProperty::CharacterForeground,
+    StyleProperty::CharacterBackground,
+    StyleProperty::CharacterUnderline,
+    StyleProperty::CharacterStrikethrough,
+    StyleProperty::CharacterLanguage,
+    StyleProperty::CharacterDirection,
+    StyleProperty::CharacterOpenTypeFeatures,
+    StyleProperty::CharacterLetterSpacing,
+    StyleProperty::CharacterBaselineShift,
+];
+
+/// The normalized declaration layer which supplied a resolved property's
+/// current value.  Source adapters can associate these normalized layers with
+/// their own lossless syntax provenance without leaking format-specific types
+/// into the generic resolver.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StyleContributionOrigin {
+    EngineEmergency,
+    BlockStyle(StyleId),
+    CharacterStyle(StyleId),
+    DirectDocumentCanvas,
+    DirectDocumentCharacter,
+    DirectParagraph,
+    DirectParagraphCharacter,
+    DirectCharacter,
+}
+
+/// A stable style-definition dependency consulted while resolving a property.
+/// The namespace is retained because block and character style IDs are opaque
+/// and are permitted to contain the same token.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
+pub enum StyleDependency {
+    Block(StyleId),
+    Character(StyleId),
+}
+
+/// Contribution metadata for one complete resolved property.
+///
+/// `dependencies` includes style definitions whose ancestry was consulted,
+/// including definitions which currently omit this property.  Adding or
+/// clearing a declaration in any such definition can therefore invalidate the
+/// cached result without conservatively invalidating unrelated style trees.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StyleContribution {
+    pub winner: StyleContributionOrigin,
+    pub dependencies: Vec<StyleDependency>,
+}
+
+/// A resolved style together with complete, property-keyed cascade metadata.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedStyle<T> {
+    pub value: T,
+    contributions: BTreeMap<StyleProperty, StyleContribution>,
+}
+
+impl<T> ResolvedStyle<T> {
+    pub fn contribution(&self, property: StyleProperty) -> Option<&StyleContribution> {
+        self.contributions.get(&property)
+    }
+
+    pub fn contributions(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (StyleProperty, &StyleContribution)> {
+        self.contributions
+            .iter()
+            .map(|(property, contribution)| (*property, contribution))
+    }
+}
+
+/// Immutable reverse-dependency closure for one exact style-sheet revision.
+/// Queries visit only affected descendants after the index has been built.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StyleDependencyIndex {
+    pub revision: StyleSheetRevision,
+    block_dependents: BTreeMap<StyleId, Vec<StyleId>>,
+    character_dependents: BTreeMap<StyleId, Vec<StyleId>>,
+}
+
+impl StyleDependencyIndex {
+    /// The changed block style and every transitive derived style, in stable ID
+    /// order. Unknown IDs return `None` rather than implying a
+    /// document-wide invalidation.
+    pub fn block_dependents(&self, style: &StyleId) -> Option<&[StyleId]> {
+        self.block_dependents.get(style).map(Vec::as_slice)
+    }
+
+    /// The changed character style followed by every transitive derived style,
+    /// in stable ID order.
+    pub fn character_dependents(&self, style: &StyleId) -> Option<&[StyleId]> {
+        self.character_dependents.get(style).map(Vec::as_slice)
+    }
+}
+
+impl Default for ResolvedParagraphStyle {
+    fn default() -> Self {
+        Self {
+            spacing_before: 0.0,
+            spacing_after: 0.0,
+            line_spacing: LineSpacing::Normal,
+            first_line_indent: 0.0,
+            leading_indent: 0.0,
+            trailing_indent: 0.0,
+            alignment: ParagraphAlignment::Start,
+            base_direction: WritingDirection::Natural,
+            character: ResolvedCharacterStyle::default(),
+        }
+    }
+}
+
+impl ResolvedParagraphStyle {
+    pub fn changed_properties(&self, other: &Self) -> BTreeSet<StyleProperty> {
+        let mut changed = self.character.changed_properties(&other.character);
+        macro_rules! compare {
+            ($field:ident, $property:expr) => {
+                if self.$field != other.$field {
+                    changed.insert($property);
+                }
+            };
+        }
+        compare!(spacing_before, StyleProperty::ParagraphSpacingBefore);
+        compare!(spacing_after, StyleProperty::ParagraphSpacingAfter);
+        compare!(line_spacing, StyleProperty::ParagraphLineSpacing);
+        compare!(first_line_indent, StyleProperty::ParagraphFirstLineIndent);
+        compare!(leading_indent, StyleProperty::ParagraphLeadingIndent);
+        compare!(trailing_indent, StyleProperty::ParagraphTrailingIndent);
+        compare!(alignment, StyleProperty::ParagraphAlignment);
+        compare!(base_direction, StyleProperty::ParagraphBaseDirection);
+        changed
+    }
+}
+
+impl StyleSheet {
+    /// Look up one immutable block-style definition by its stable ID.
+    pub fn block_style(&self, id: &StyleId) -> Option<&BlockStyle> {
+        self.block_styles.get(id)
+    }
+
+    /// Iterate immutable block-style definitions in stable ID order.
+    pub fn block_styles(&self) -> impl ExactSizeIterator<Item = &BlockStyle> + '_ {
+        self.block_styles.values()
+    }
+
+    pub fn block_style_count(&self) -> usize {
+        self.block_styles.len()
+    }
+
+    /// Look up one immutable character-style definition by its stable ID.
+    pub fn character_style(&self, id: &StyleId) -> Option<&CharacterStyle> {
+        self.character_styles.get(id)
+    }
+
+    /// Iterate immutable character-style definitions in stable ID order.
+    pub fn character_styles(&self) -> impl ExactSizeIterator<Item = &CharacterStyle> + '_ {
+        self.character_styles.values()
+    }
+
+    pub fn character_style_count(&self) -> usize {
+        self.character_styles.len()
+    }
+
+    pub(crate) fn set_configuration_revision(&mut self, revision: StyleSheetRevision) {
+        self.revision = revision;
+    }
+
+    /// Apply one explicit configuration edit atomically. `has_assignment`
+    /// is consulted only for deletions and must describe assignments in the
+    /// owning formatted snapshot. A successful no-op update retains the
+    /// existing revision and returns `false`.
+    pub(crate) fn apply_configuration_edit(
+        &mut self,
+        edit: &StyleDefinitionEdit,
+        revision: StyleSheetRevision,
+        has_assignment: bool,
+    ) -> Result<bool, StyleError> {
+        let mut candidate = self.clone();
+        let changed = match edit {
+            StyleDefinitionEdit::InsertBlock(style) => {
+                if candidate.block_styles.contains_key(&style.id) {
+                    return Err(StyleError::StyleAlreadyExists(style.id.clone()));
+                }
+                candidate.insert_block_style(style.clone())?;
+                true
+            }
+            StyleDefinitionEdit::UpdateBlock(style) => {
+                let old = candidate
+                    .block_styles
+                    .get(&style.id)
+                    .ok_or_else(|| StyleError::UnknownStyle(style.id.clone()))?;
+                if old == style {
+                    false
+                } else {
+                    candidate.replace_block_style(style.clone())?;
+                    true
+                }
+            }
+            StyleDefinitionEdit::DeleteBlock(id) => {
+                if !candidate.block_styles.contains_key(id) {
+                    return Err(StyleError::UnknownStyle(id.clone()));
+                }
+                candidate.remove_block_style(id, has_assignment)?;
+                true
+            }
+            StyleDefinitionEdit::InsertCharacter(style) => {
+                if candidate.character_styles.contains_key(&style.id) {
+                    return Err(StyleError::StyleAlreadyExists(style.id.clone()));
+                }
+                candidate.insert_character_style(style.clone())?;
+                true
+            }
+            StyleDefinitionEdit::UpdateCharacter(style) => {
+                let old = candidate
+                    .character_styles
+                    .get(&style.id)
+                    .ok_or_else(|| StyleError::UnknownStyle(style.id.clone()))?;
+                if old == style {
+                    false
+                } else {
+                    candidate.replace_character_style(style.clone())?;
+                    true
+                }
+            }
+            StyleDefinitionEdit::DeleteCharacter(id) => {
+                if !candidate.character_styles.contains_key(id) {
+                    return Err(StyleError::UnknownStyle(id.clone()));
+                }
+                candidate.remove_character_style(id, has_assignment)?;
+                true
+            }
+        };
+        if !changed {
+            return Ok(false);
+        }
+        candidate.revision = revision;
+        *self = candidate;
+        Ok(true)
+    }
+
+    /// Build the transitive reverse-inheritance index for this immutable style
+    /// sheet revision.  A resolver cache can retain this value beside entries
+    /// keyed by [`StyleSheetRevision`] and answer definition invalidations
+    /// without scanning formatted content.
+    pub fn dependency_index(&self) -> StyleDependencyIndex {
+        let mut block_dependents = self
+            .block_styles
+            .keys()
+            .cloned()
+            .map(|id| (id, Vec::new()))
+            .collect::<BTreeMap<_, _>>();
+        for descendant in self.block_styles.keys() {
+            let mut current = Some(descendant);
+            while let Some(id) = current {
+                block_dependents
+                    .get_mut(id)
+                    .expect("validated block ancestry remains in the style sheet")
+                    .push(descendant.clone());
+                current = self
+                    .block_styles
+                    .get(id)
+                    .and_then(|style| style.based_on.as_ref());
+            }
+        }
+
+        let mut character_dependents = self
+            .character_styles
+            .keys()
+            .cloned()
+            .map(|id| (id, Vec::new()))
+            .collect::<BTreeMap<_, _>>();
+        for descendant in self.character_styles.keys() {
+            let mut current = Some(descendant);
+            while let Some(id) = current {
+                character_dependents
+                    .get_mut(id)
+                    .expect("validated character ancestry remains in the style sheet")
+                    .push(descendant.clone());
+                current = self
+                    .character_styles
+                    .get(id)
+                    .and_then(|style| style.based_on.as_ref());
+            }
+        }
+
+        StyleDependencyIndex {
+            revision: self.revision,
+            block_dependents,
+            character_dependents,
+        }
+    }
+
+    /// Insert a style defined by application or generated configuration. Source
+    /// adapters may retain malformed native definitions separately, but the
+    /// normalized sheet never accepts a cycle or an inapplicable declaration.
+    pub fn insert_block_style(&mut self, style: BlockStyle) -> Result<(), StyleError> {
+        if style.id == self.base_document || style.id == self.base_paragraph {
+            return Err(StyleError::CannotReplaceBaseStyle(style.id));
+        }
+        validate_character_properties(&style.id, &style.character)?;
+        validate_block_properties(&style)?;
+        self.validate_block_parent(&style)?;
+        self.validate_next_paragraph_style(&style)?;
+        let next_revision = self.next_revision()?;
+
+        let old = self.block_styles.insert(style.id.clone(), style.clone());
+        if let Err(error) = self.validate_block_cycles() {
+            if let Some(old) = old {
+                self.block_styles.insert(old.id.clone(), old);
+            } else {
+                self.block_styles.remove(&style.id);
+            }
+            return Err(error);
+        }
+        self.revision = next_revision;
+        Ok(())
+    }
+
+    pub fn insert_character_style(&mut self, style: CharacterStyle) -> Result<(), StyleError> {
+        if style.id == self.base_character {
+            return Err(StyleError::CannotReplaceBaseStyle(style.id));
+        }
+        validate_character_properties(&style.id, &style.properties)?;
+        let parent = style
+            .based_on
+            .as_ref()
+            .ok_or_else(|| StyleError::MissingParent(style.id.clone()))?;
+        if !self.character_styles.contains_key(parent) {
+            return Err(StyleError::MissingParent(parent.clone()));
+        }
+        let next_revision = self.next_revision()?;
+        let old = self
+            .character_styles
+            .insert(style.id.clone(), style.clone());
+        if let Err(error) = self.validate_character_cycles() {
+            if let Some(old) = old {
+                self.character_styles.insert(old.id.clone(), old);
+            } else {
+                self.character_styles.remove(&style.id);
+            }
+            return Err(error);
+        }
+        self.revision = next_revision;
+        Ok(())
+    }
+
+    pub fn remove_block_style(
+        &mut self,
+        id: &StyleId,
+        has_content_assignment: bool,
+    ) -> Result<(), StyleError> {
+        if id == &self.base_document || id == &self.base_paragraph {
+            return Err(StyleError::CannotRemoveBaseStyle(id.clone()));
+        }
+        if has_content_assignment
+            || self.block_styles.values().any(|style| {
+                &style.id != id
+                    && (style.based_on.as_ref() == Some(id)
+                        || style.next_paragraph_style.as_ref() == Some(id))
+            })
+        {
+            return Err(StyleError::StyleInUse(id.clone()));
+        }
+        if self.block_styles.contains_key(id) {
+            let next_revision = self.next_revision()?;
+            self.block_styles.remove(id);
+            self.revision = next_revision;
+        }
+        Ok(())
+    }
+
+    pub fn remove_character_style(
+        &mut self,
+        id: &StyleId,
+        has_content_assignment: bool,
+    ) -> Result<(), StyleError> {
+        if id == &self.base_character {
+            return Err(StyleError::CannotRemoveBaseStyle(id.clone()));
+        }
+        if has_content_assignment
+            || self
+                .character_styles
+                .values()
+                .any(|style| style.based_on.as_ref() == Some(id))
+        {
+            return Err(StyleError::StyleInUse(id.clone()));
+        }
+        if self.character_styles.contains_key(id) {
+            let next_revision = self.next_revision()?;
+            self.character_styles.remove(id);
+            self.revision = next_revision;
+        }
+        Ok(())
+    }
+
+    pub fn resolve_document_style(
+        &self,
+        assigned: &StyleId,
+        direct_canvas: &BlockProperties,
+        direct_character: &CharacterProperties,
+    ) -> Result<ResolvedDocumentStyle, StyleError> {
+        validate_character_properties(assigned, direct_character)?;
+        validate_block_property_values(assigned, direct_canvas)?;
+        if declares_paragraph_properties(direct_canvas) {
+            return Err(StyleError::InapplicableBlockProperties {
+                style: assigned.clone(),
+                role: BlockRole::Document,
+            });
+        }
+        let chain = self.block_chain(assigned, BlockRole::Document)?;
+        let mut resolved = ResolvedDocumentStyle::default();
+        for style in chain {
+            apply_document_properties(&mut resolved, &style.block);
+            apply_character_properties(&mut resolved.character, &style.character);
+        }
+        apply_document_properties(&mut resolved, direct_canvas);
+        apply_character_properties(&mut resolved.character, direct_character);
+        Ok(resolved)
+    }
+
+    /// Resolve the document root while retaining the winner and dependency
+    /// chain for every complete canvas and character property.
+    pub fn resolve_document_style_with_contributions(
+        &self,
+        assigned: &StyleId,
+        direct_canvas: &BlockProperties,
+        direct_character: &CharacterProperties,
+    ) -> Result<ResolvedStyle<ResolvedDocumentStyle>, StyleError> {
+        validate_character_properties(assigned, direct_character)?;
+        validate_block_property_values(assigned, direct_canvas)?;
+        if declares_paragraph_properties(direct_canvas) {
+            return Err(StyleError::InapplicableBlockProperties {
+                style: assigned.clone(),
+                role: BlockRole::Document,
+            });
+        }
+
+        let chain = self.block_chain(assigned, BlockRole::Document)?;
+        let mut value = ResolvedDocumentStyle::default();
+        let mut contributions = emergency_contributions(
+            CANVAS_STYLE_PROPERTIES
+                .into_iter()
+                .chain(CHARACTER_STYLE_PROPERTIES),
+        );
+        for style in chain {
+            add_dependency(
+                &mut contributions,
+                CANVAS_STYLE_PROPERTIES
+                    .into_iter()
+                    .chain(CHARACTER_STYLE_PROPERTIES),
+                StyleDependency::Block(style.id.clone()),
+            );
+            apply_document_properties(&mut value, &style.block);
+            record_document_winners(
+                &mut contributions,
+                &style.block,
+                StyleContributionOrigin::BlockStyle(style.id.clone()),
+            );
+            apply_character_properties(&mut value.character, &style.character);
+            record_character_winners(
+                &mut contributions,
+                &style.character,
+                StyleContributionOrigin::BlockStyle(style.id.clone()),
+            );
+        }
+        apply_document_properties(&mut value, direct_canvas);
+        record_document_winners(
+            &mut contributions,
+            direct_canvas,
+            StyleContributionOrigin::DirectDocumentCanvas,
+        );
+        apply_character_properties(&mut value.character, direct_character);
+        record_character_winners(
+            &mut contributions,
+            direct_character,
+            StyleContributionOrigin::DirectDocumentCharacter,
+        );
+        Ok(ResolvedStyle {
+            value,
+            contributions,
+        })
+    }
+
+    /// Resolve the style for a paragraph created at the terminal boundary of
+    /// `current`. An absent declaration means that the current style carries
+    /// forward, so callers never need to encode that default independently.
+    pub fn next_paragraph_style(&self, current: &StyleId) -> Result<&StyleId, StyleError> {
+        let style = self
+            .block_styles
+            .get(current)
+            .ok_or_else(|| StyleError::UnknownStyle(current.clone()))?;
+        if style.role != BlockRole::Paragraph {
+            return Err(StyleError::IncompatibleBlockRole {
+                style: style.id.clone(),
+                role: style.role,
+                parent_role: BlockRole::Paragraph,
+            });
+        }
+        Ok(style.next_paragraph_style.as_ref().unwrap_or(&style.id))
+    }
+
+    /// Resolve one normalized document-root assignment.
+    pub fn resolve_document_assignment(
+        &self,
+        assignment: &DocumentStyleAssignment,
+    ) -> Result<ResolvedDocumentStyle, StyleError> {
+        self.resolve_document_style(
+            &assignment.style,
+            &assignment.direct_canvas,
+            &assignment.direct_default_character,
+        )
+    }
+
+    /// Resolve the generic cascade through Document, Base Character,
+    /// Paragraph, an optional named character style, and finally direct
+    /// formatting. Later layers win property-by-property.
+    pub fn resolve_paragraph_style(
+        &self,
+        document_style: &StyleId,
+        paragraph_style: &StyleId,
+        character_style: Option<&StyleId>,
+        direct_paragraph: &BlockProperties,
+        direct_character: &CharacterProperties,
+    ) -> Result<ResolvedParagraphStyle, StyleError> {
+        self.resolve_assigned_paragraph_style(
+            &DocumentStyleAssignment::new(document_style.clone()),
+            paragraph_style,
+            direct_paragraph,
+            &CharacterProperties::default(),
+            character_style,
+            direct_character,
+        )
+    }
+
+    /// Resolve the complete normalized cascade using the root and paragraph
+    /// assignments stored by the formatted projection. The final character
+    /// declarations are inline direct formatting, after an optional named
+    /// character style.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_assigned_paragraph_style(
+        &self,
+        document: &DocumentStyleAssignment,
+        paragraph_style: &StyleId,
+        direct_paragraph: &BlockProperties,
+        paragraph_default_character: &CharacterProperties,
+        character_style: Option<&StyleId>,
+        direct_character: &CharacterProperties,
+    ) -> Result<ResolvedParagraphStyle, StyleError> {
+        validate_character_properties(&document.style, &document.direct_default_character)?;
+        validate_block_property_values(&document.style, &document.direct_canvas)?;
+        if declares_paragraph_properties(&document.direct_canvas) {
+            return Err(StyleError::InapplicableBlockProperties {
+                style: document.style.clone(),
+                role: BlockRole::Document,
+            });
+        }
+        validate_character_properties(paragraph_style, paragraph_default_character)?;
+        validate_character_properties(
+            character_style.unwrap_or(paragraph_style),
+            direct_character,
+        )?;
+        validate_block_property_values(paragraph_style, direct_paragraph)?;
+        if declares_canvas_properties(direct_paragraph) {
+            return Err(StyleError::InapplicableBlockProperties {
+                style: paragraph_style.clone(),
+                role: BlockRole::Paragraph,
+            });
+        }
+        let document_chain = self.block_chain(&document.style, BlockRole::Document)?;
+        let paragraph_chain = self.block_chain(paragraph_style, BlockRole::Paragraph)?;
+        let base_character_chain = self.character_chain(&self.base_character)?;
+        let mut resolved = ResolvedParagraphStyle::default();
+
+        for style in document_chain {
+            apply_character_properties(&mut resolved.character, &style.character);
+        }
+        apply_character_properties(&mut resolved.character, &document.direct_default_character);
+        for style in base_character_chain {
+            apply_character_properties(&mut resolved.character, &style.properties);
+        }
+        for style in paragraph_chain {
+            if style.role == BlockRole::Document {
+                continue;
+            }
+            apply_paragraph_properties(&mut resolved, &style.block);
+            apply_character_properties(&mut resolved.character, &style.character);
+        }
+        apply_paragraph_properties(&mut resolved, direct_paragraph);
+        apply_character_properties(&mut resolved.character, paragraph_default_character);
+        if let Some(id) = character_style {
+            for style in self.character_chain(id)? {
+                // Base Character was already applied before paragraph defaults.
+                if style.id != self.base_character {
+                    apply_character_properties(&mut resolved.character, &style.properties);
+                }
+            }
+        }
+        apply_character_properties(&mut resolved.character, direct_character);
+        Ok(resolved)
+    }
+
+    /// Resolve a paragraph/character cascade with complete contribution
+    /// metadata. This is the dependency-aware counterpart of
+    /// [`Self::resolve_assigned_paragraph_style`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_assigned_paragraph_style_with_contributions(
+        &self,
+        document: &DocumentStyleAssignment,
+        paragraph_style: &StyleId,
+        direct_paragraph: &BlockProperties,
+        paragraph_default_character: &CharacterProperties,
+        character_style: Option<&StyleId>,
+        direct_character: &CharacterProperties,
+    ) -> Result<ResolvedStyle<ResolvedParagraphStyle>, StyleError> {
+        validate_character_properties(&document.style, &document.direct_default_character)?;
+        validate_block_property_values(&document.style, &document.direct_canvas)?;
+        if declares_paragraph_properties(&document.direct_canvas) {
+            return Err(StyleError::InapplicableBlockProperties {
+                style: document.style.clone(),
+                role: BlockRole::Document,
+            });
+        }
+        validate_character_properties(paragraph_style, paragraph_default_character)?;
+        validate_character_properties(
+            character_style.unwrap_or(paragraph_style),
+            direct_character,
+        )?;
+        validate_block_property_values(paragraph_style, direct_paragraph)?;
+        if declares_canvas_properties(direct_paragraph) {
+            return Err(StyleError::InapplicableBlockProperties {
+                style: paragraph_style.clone(),
+                role: BlockRole::Paragraph,
+            });
+        }
+
+        let document_chain = self.block_chain(&document.style, BlockRole::Document)?;
+        let paragraph_chain = self.block_chain(paragraph_style, BlockRole::Paragraph)?;
+        let base_character_chain = self.character_chain(&self.base_character)?;
+        let mut value = ResolvedParagraphStyle::default();
+        let mut contributions = emergency_contributions(
+            PARAGRAPH_STYLE_PROPERTIES
+                .into_iter()
+                .chain(CHARACTER_STYLE_PROPERTIES),
+        );
+
+        for style in document_chain {
+            add_dependency(
+                &mut contributions,
+                CHARACTER_STYLE_PROPERTIES,
+                StyleDependency::Block(style.id.clone()),
+            );
+            apply_character_properties(&mut value.character, &style.character);
+            record_character_winners(
+                &mut contributions,
+                &style.character,
+                StyleContributionOrigin::BlockStyle(style.id.clone()),
+            );
+        }
+        apply_character_properties(&mut value.character, &document.direct_default_character);
+        record_character_winners(
+            &mut contributions,
+            &document.direct_default_character,
+            StyleContributionOrigin::DirectDocumentCharacter,
+        );
+        for style in base_character_chain {
+            add_dependency(
+                &mut contributions,
+                CHARACTER_STYLE_PROPERTIES,
+                StyleDependency::Character(style.id.clone()),
+            );
+            apply_character_properties(&mut value.character, &style.properties);
+            record_character_winners(
+                &mut contributions,
+                &style.properties,
+                StyleContributionOrigin::CharacterStyle(style.id.clone()),
+            );
+        }
+        for style in paragraph_chain {
+            if style.role == BlockRole::Document {
+                continue;
+            }
+            add_dependency(
+                &mut contributions,
+                PARAGRAPH_STYLE_PROPERTIES
+                    .into_iter()
+                    .chain(CHARACTER_STYLE_PROPERTIES),
+                StyleDependency::Block(style.id.clone()),
+            );
+            apply_paragraph_properties(&mut value, &style.block);
+            record_paragraph_winners(
+                &mut contributions,
+                &style.block,
+                StyleContributionOrigin::BlockStyle(style.id.clone()),
+            );
+            apply_character_properties(&mut value.character, &style.character);
+            record_character_winners(
+                &mut contributions,
+                &style.character,
+                StyleContributionOrigin::BlockStyle(style.id.clone()),
+            );
+        }
+        apply_paragraph_properties(&mut value, direct_paragraph);
+        record_paragraph_winners(
+            &mut contributions,
+            direct_paragraph,
+            StyleContributionOrigin::DirectParagraph,
+        );
+        apply_character_properties(&mut value.character, paragraph_default_character);
+        record_character_winners(
+            &mut contributions,
+            paragraph_default_character,
+            StyleContributionOrigin::DirectParagraphCharacter,
+        );
+        if let Some(id) = character_style {
+            for style in self.character_chain(id)? {
+                if style.id == self.base_character {
+                    continue;
+                }
+                add_dependency(
+                    &mut contributions,
+                    CHARACTER_STYLE_PROPERTIES,
+                    StyleDependency::Character(style.id.clone()),
+                );
+                apply_character_properties(&mut value.character, &style.properties);
+                record_character_winners(
+                    &mut contributions,
+                    &style.properties,
+                    StyleContributionOrigin::CharacterStyle(style.id.clone()),
+                );
+            }
+        }
+        apply_character_properties(&mut value.character, direct_character);
+        record_character_winners(
+            &mut contributions,
+            direct_character,
+            StyleContributionOrigin::DirectCharacter,
+        );
+
+        Ok(ResolvedStyle {
+            value,
+            contributions,
+        })
+    }
+
+    fn validate_block_parent(&self, style: &BlockStyle) -> Result<(), StyleError> {
+        let parent_id = style
+            .based_on
+            .as_ref()
+            .ok_or_else(|| StyleError::MissingParent(style.id.clone()))?;
+        let parent = self
+            .block_styles
+            .get(parent_id)
+            .ok_or_else(|| StyleError::MissingParent(parent_id.clone()))?;
+        let compatible = match (style.role, parent.role) {
+            (BlockRole::Document, BlockRole::Document) => true,
+            (BlockRole::Paragraph, BlockRole::Paragraph) => true,
+            (BlockRole::Paragraph, BlockRole::Document) => style.id == self.base_paragraph,
+            _ => false,
+        };
+        if compatible {
+            Ok(())
+        } else {
+            Err(StyleError::IncompatibleBlockRole {
+                style: style.id.clone(),
+                role: style.role,
+                parent_role: parent.role,
+            })
+        }
+    }
+
+    fn replace_block_style(&mut self, style: BlockStyle) -> Result<(), StyleError> {
+        if style.id == self.base_document {
+            if style.role != BlockRole::Document
+                || style.based_on.is_some()
+                || style.next_paragraph_style.is_some()
+            {
+                return Err(StyleError::InvalidBaseStyleDefinition(style.id));
+            }
+            validate_character_properties(&style.id, &style.character)?;
+            validate_block_properties(&style)?;
+        } else if style.id == self.base_paragraph {
+            if style.role != BlockRole::Paragraph
+                || style.based_on.as_ref() != Some(&self.base_document)
+            {
+                return Err(StyleError::InvalidBaseStyleDefinition(style.id));
+            }
+            validate_character_properties(&style.id, &style.character)?;
+            validate_block_properties(&style)?;
+            self.validate_next_paragraph_style(&style)?;
+        } else {
+            return self.insert_block_style(style);
+        }
+
+        let next_revision = self.next_revision()?;
+        self.block_styles.insert(style.id.clone(), style);
+        self.validate_block_cycles()?;
+        self.revision = next_revision;
+        Ok(())
+    }
+
+    fn replace_character_style(&mut self, style: CharacterStyle) -> Result<(), StyleError> {
+        if style.id != self.base_character {
+            return self.insert_character_style(style);
+        }
+        if style.based_on.is_some() {
+            return Err(StyleError::InvalidBaseStyleDefinition(style.id));
+        }
+        validate_character_properties(&style.id, &style.properties)?;
+        let next_revision = self.next_revision()?;
+        self.character_styles.insert(style.id.clone(), style);
+        self.validate_character_cycles()?;
+        self.revision = next_revision;
+        Ok(())
+    }
+
+    fn validate_next_paragraph_style(&self, style: &BlockStyle) -> Result<(), StyleError> {
+        let Some(next) = style.next_paragraph_style.as_ref() else {
+            return Ok(());
+        };
+        if style.role != BlockRole::Paragraph {
+            return Err(StyleError::InapplicableNextParagraphStyle {
+                style: style.id.clone(),
+                role: style.role,
+            });
+        }
+        if next == &style.id {
+            return Ok(());
+        }
+        if self
+            .block_styles
+            .get(next)
+            .is_some_and(|candidate| candidate.role == BlockRole::Paragraph)
+        {
+            Ok(())
+        } else {
+            Err(StyleError::InvalidNextParagraphStyle {
+                style: style.id.clone(),
+                next: next.clone(),
+            })
+        }
+    }
+
+    fn block_chain(
+        &self,
+        id: &StyleId,
+        expected_role: BlockRole,
+    ) -> Result<Vec<&BlockStyle>, StyleError> {
+        if !self.block_styles.contains_key(id) {
+            return Err(StyleError::UnknownStyle(id.clone()));
+        }
+        let mut chain = Vec::new();
+        let mut current = Some(id);
+        let mut seen = BTreeMap::new();
+        while let Some(style_id) = current {
+            if seen.insert(style_id.clone(), ()).is_some() {
+                return Err(StyleError::InheritanceCycle(style_id.clone()));
+            }
+            let style = self
+                .block_styles
+                .get(style_id)
+                .ok_or_else(|| StyleError::MissingParent(style_id.clone()))?;
+            chain.push(style);
+            current = style.based_on.as_ref();
+        }
+        chain.reverse();
+        if chain.last().map(|style| style.role) != Some(expected_role) {
+            let style = chain.last().expect("a requested style produced a chain");
+            return Err(StyleError::IncompatibleBlockRole {
+                style: style.id.clone(),
+                role: style.role,
+                parent_role: expected_role,
+            });
+        }
+        Ok(chain)
+    }
+
+    fn character_chain(&self, id: &StyleId) -> Result<Vec<&CharacterStyle>, StyleError> {
+        if !self.character_styles.contains_key(id) {
+            return Err(StyleError::UnknownStyle(id.clone()));
+        }
+        let mut chain = Vec::new();
+        let mut current = Some(id);
+        let mut seen = BTreeMap::new();
+        while let Some(style_id) = current {
+            if seen.insert(style_id.clone(), ()).is_some() {
+                return Err(StyleError::InheritanceCycle(style_id.clone()));
+            }
+            let style = self
+                .character_styles
+                .get(style_id)
+                .ok_or_else(|| StyleError::MissingParent(style_id.clone()))?;
+            chain.push(style);
+            current = style.based_on.as_ref();
+        }
+        chain.reverse();
+        Ok(chain)
+    }
+
+    fn validate_block_cycles(&self) -> Result<(), StyleError> {
+        for style in self.block_styles.values() {
+            if style.id != self.base_document {
+                self.validate_block_parent(style)?;
+            }
+            self.validate_next_paragraph_style(style)?;
+            let _ = self.block_chain(&style.id, style.role)?;
+        }
+        Ok(())
+    }
+
+    fn validate_character_cycles(&self) -> Result<(), StyleError> {
+        for style in self.character_styles.values() {
+            let _ = self.character_chain(&style.id)?;
+        }
+        Ok(())
+    }
+
+    fn next_revision(&self) -> Result<StyleSheetRevision, StyleError> {
+        self.revision
+            .0
+            .checked_add(1)
+            .map(StyleSheetRevision)
+            .ok_or(StyleError::StyleSheetRevisionExhausted)
+    }
+}
+
+fn validate_character_properties(
+    id: &StyleId,
+    properties: &CharacterProperties,
+) -> Result<(), StyleError> {
+    let font_families_valid = properties.font_families.as_ref().map_or(true, |families| {
+        !families.is_empty() && families.iter().all(|family| !family.is_empty())
+    });
+    let language_valid = properties
+        .language
+        .as_ref()
+        .map_or(true, |language| !language.is_empty());
+    let features_valid = properties
+        .open_type_features
+        .as_ref()
+        .map_or(true, |features| {
+            features
+                .keys()
+                .all(|tag| tag.len() == 4 && tag.bytes().all(|byte| (0x20..=0x7e).contains(&byte)))
+        });
+    let valid = font_families_valid
+        && language_valid
+        && features_valid
+        && properties
+            .size
+            .map_or(true, |size| size.is_finite() && size > 0.0)
+        && properties
+            .weight
+            .map_or(true, |weight| (1..=1000).contains(&weight))
+        && properties.foreground.map_or(true, valid_color)
+        && properties.background.map_or(true, valid_color)
+        && properties
+            .letter_spacing
+            .map_or(true, |value| value.is_finite())
+        && properties
+            .baseline_shift
+            .map_or(true, |value| value.is_finite());
+    if valid {
+        Ok(())
+    } else {
+        Err(StyleError::InvalidCharacterProperties(id.clone()))
+    }
+}
+
+fn validate_block_properties(style: &BlockStyle) -> Result<(), StyleError> {
+    let block = &style.block;
+    let paragraph_declared = declares_paragraph_properties(block);
+    let canvas_declared = declares_canvas_properties(block);
+    if (style.role == BlockRole::Document && paragraph_declared)
+        || (style.role == BlockRole::Paragraph && canvas_declared)
+    {
+        return Err(StyleError::InapplicableBlockProperties {
+            style: style.id.clone(),
+            role: style.role,
+        });
+    }
+    validate_block_property_values(&style.id, block)
+}
+
+fn validate_block_property_values(id: &StyleId, block: &BlockProperties) -> Result<(), StyleError> {
+    let finite = [
+        block.spacing_before,
+        block.spacing_after,
+        block.first_line_indent,
+        block.leading_indent,
+        block.trailing_indent,
+        block.padding_top,
+        block.padding_right,
+        block.padding_bottom,
+        block.padding_left,
+    ]
+    .into_iter()
+    .flatten()
+    .all(f32::is_finite)
+        && block.background.map_or(true, valid_color);
+    let spacing_valid = block.line_spacing.map_or(true, |spacing| match spacing {
+        LineSpacing::Normal => true,
+        LineSpacing::Multiplier(value) => value.is_finite() && value > 0.0,
+        LineSpacing::AtLeast(value) | LineSpacing::Exact(value) => {
+            value.is_finite() && value >= 0.0
+        }
+    });
+    if finite && spacing_valid {
+        Ok(())
+    } else {
+        Err(StyleError::InvalidBlockProperties(id.clone()))
+    }
+}
+
+fn valid_color(color: Color) -> bool {
+    [color.red, color.green, color.blue, color.alpha]
+        .into_iter()
+        .all(|component| component.is_finite() && (0.0..=1.0).contains(&component))
+}
+
+fn declares_paragraph_properties(block: &BlockProperties) -> bool {
+    block.spacing_before.is_some()
+        || block.spacing_after.is_some()
+        || block.line_spacing.is_some()
+        || block.first_line_indent.is_some()
+        || block.leading_indent.is_some()
+        || block.trailing_indent.is_some()
+        || block.alignment.is_some()
+        || block.base_direction.is_some()
+}
+
+fn declares_canvas_properties(block: &BlockProperties) -> bool {
+    block.padding_top.is_some()
+        || block.padding_right.is_some()
+        || block.padding_bottom.is_some()
+        || block.padding_left.is_some()
+        || block.background.is_some()
+}
+
+fn emergency_contributions(
+    properties: impl IntoIterator<Item = StyleProperty>,
+) -> BTreeMap<StyleProperty, StyleContribution> {
+    properties
+        .into_iter()
+        .map(|property| {
+            (
+                property,
+                StyleContribution {
+                    winner: StyleContributionOrigin::EngineEmergency,
+                    dependencies: Vec::new(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn add_dependency(
+    contributions: &mut BTreeMap<StyleProperty, StyleContribution>,
+    properties: impl IntoIterator<Item = StyleProperty>,
+    dependency: StyleDependency,
+) {
+    for property in properties {
+        let entry = contributions
+            .get_mut(&property)
+            .expect("the resolved style initialized every applicable property");
+        if entry.dependencies.last() != Some(&dependency)
+            && !entry.dependencies.contains(&dependency)
+        {
+            entry.dependencies.push(dependency.clone());
+        }
+    }
+}
+
+fn record_winner(
+    contributions: &mut BTreeMap<StyleProperty, StyleContribution>,
+    property: StyleProperty,
+    origin: &StyleContributionOrigin,
+) {
+    contributions
+        .get_mut(&property)
+        .expect("the resolved style initialized every applicable property")
+        .winner
+        .clone_from(origin);
+}
+
+fn record_character_winners(
+    contributions: &mut BTreeMap<StyleProperty, StyleContribution>,
+    properties: &CharacterProperties,
+    origin: StyleContributionOrigin,
+) {
+    if properties.font_families.is_some() {
+        record_winner(contributions, StyleProperty::CharacterFontFamilies, &origin);
+    }
+    if properties.size.is_some() {
+        record_winner(contributions, StyleProperty::CharacterSize, &origin);
+    }
+    if properties.weight.is_some() {
+        record_winner(contributions, StyleProperty::CharacterWeight, &origin);
+    }
+    if properties.slant.is_some() {
+        record_winner(contributions, StyleProperty::CharacterSlant, &origin);
+    }
+    if properties.foreground.is_some() {
+        record_winner(contributions, StyleProperty::CharacterForeground, &origin);
+    }
+    if properties.background.is_some() {
+        record_winner(contributions, StyleProperty::CharacterBackground, &origin);
+    }
+    if properties.underline.is_some() {
+        record_winner(contributions, StyleProperty::CharacterUnderline, &origin);
+    }
+    if properties.strikethrough.is_some() {
+        record_winner(
+            contributions,
+            StyleProperty::CharacterStrikethrough,
+            &origin,
+        );
+    }
+    if properties.language.is_some() {
+        record_winner(contributions, StyleProperty::CharacterLanguage, &origin);
+    }
+    if properties.direction.is_some() {
+        record_winner(contributions, StyleProperty::CharacterDirection, &origin);
+    }
+    if properties.open_type_features.is_some() {
+        record_winner(
+            contributions,
+            StyleProperty::CharacterOpenTypeFeatures,
+            &origin,
+        );
+    }
+    if properties.letter_spacing.is_some() {
+        record_winner(
+            contributions,
+            StyleProperty::CharacterLetterSpacing,
+            &origin,
+        );
+    }
+    if properties.baseline_shift.is_some() {
+        record_winner(
+            contributions,
+            StyleProperty::CharacterBaselineShift,
+            &origin,
+        );
+    }
+}
+
+fn record_document_winners(
+    contributions: &mut BTreeMap<StyleProperty, StyleContribution>,
+    properties: &BlockProperties,
+    origin: StyleContributionOrigin,
+) {
+    if properties.background.is_some() {
+        record_winner(contributions, StyleProperty::CanvasBackground, &origin);
+    }
+    if properties.padding_top.is_some() {
+        record_winner(contributions, StyleProperty::CanvasPaddingTop, &origin);
+    }
+    if properties.padding_right.is_some() {
+        record_winner(contributions, StyleProperty::CanvasPaddingRight, &origin);
+    }
+    if properties.padding_bottom.is_some() {
+        record_winner(contributions, StyleProperty::CanvasPaddingBottom, &origin);
+    }
+    if properties.padding_left.is_some() {
+        record_winner(contributions, StyleProperty::CanvasPaddingLeft, &origin);
+    }
+}
+
+fn record_paragraph_winners(
+    contributions: &mut BTreeMap<StyleProperty, StyleContribution>,
+    properties: &BlockProperties,
+    origin: StyleContributionOrigin,
+) {
+    if properties.spacing_before.is_some() {
+        record_winner(
+            contributions,
+            StyleProperty::ParagraphSpacingBefore,
+            &origin,
+        );
+    }
+    if properties.spacing_after.is_some() {
+        record_winner(contributions, StyleProperty::ParagraphSpacingAfter, &origin);
+    }
+    if properties.line_spacing.is_some() {
+        record_winner(contributions, StyleProperty::ParagraphLineSpacing, &origin);
+    }
+    if properties.first_line_indent.is_some() {
+        record_winner(
+            contributions,
+            StyleProperty::ParagraphFirstLineIndent,
+            &origin,
+        );
+    }
+    if properties.leading_indent.is_some() {
+        record_winner(
+            contributions,
+            StyleProperty::ParagraphLeadingIndent,
+            &origin,
+        );
+    }
+    if properties.trailing_indent.is_some() {
+        record_winner(
+            contributions,
+            StyleProperty::ParagraphTrailingIndent,
+            &origin,
+        );
+    }
+    if properties.alignment.is_some() {
+        record_winner(contributions, StyleProperty::ParagraphAlignment, &origin);
+    }
+    if properties.base_direction.is_some() {
+        record_winner(
+            contributions,
+            StyleProperty::ParagraphBaseDirection,
+            &origin,
+        );
+    }
+}
+
+fn apply_character_properties(
+    resolved: &mut ResolvedCharacterStyle,
+    properties: &CharacterProperties,
+) {
+    if let Some(value) = properties.font_families.as_ref() {
+        resolved.font_families.clone_from(value);
+    }
+    if let Some(value) = properties.size {
+        resolved.size = value;
+    }
+    if let Some(value) = properties.weight {
+        resolved.weight = value;
+    }
+    if let Some(value) = properties.slant {
+        resolved.slant = value;
+    }
+    if let Some(value) = properties.foreground {
+        resolved.foreground = value;
+    }
+    if let Some(value) = properties.background {
+        resolved.background = Some(value);
+    }
+    if let Some(value) = properties.underline {
+        resolved.underline = value;
+    }
+    if let Some(value) = properties.strikethrough {
+        resolved.strikethrough = value;
+    }
+    if let Some(value) = properties.language.as_ref() {
+        resolved.language = Some(value.clone());
+    }
+    if let Some(value) = properties.direction {
+        resolved.direction = value;
+    }
+    if let Some(value) = properties.open_type_features.as_ref() {
+        resolved.open_type_features.clone_from(value);
+    }
+    if let Some(value) = properties.letter_spacing {
+        resolved.letter_spacing = value;
+    }
+    if let Some(value) = properties.baseline_shift {
+        resolved.baseline_shift = value;
+    }
+}
+
+fn apply_document_properties(resolved: &mut ResolvedDocumentStyle, properties: &BlockProperties) {
+    if let Some(value) = properties.background {
+        resolved.background = value;
+    }
+    if let Some(value) = properties.padding_top {
+        resolved.padding_top = value;
+    }
+    if let Some(value) = properties.padding_right {
+        resolved.padding_right = value;
+    }
+    if let Some(value) = properties.padding_bottom {
+        resolved.padding_bottom = value;
+    }
+    if let Some(value) = properties.padding_left {
+        resolved.padding_left = value;
+    }
+}
+
+fn apply_paragraph_properties(resolved: &mut ResolvedParagraphStyle, properties: &BlockProperties) {
+    if let Some(value) = properties.spacing_before {
+        resolved.spacing_before = value;
+    }
+    if let Some(value) = properties.spacing_after {
+        resolved.spacing_after = value;
+    }
+    if let Some(value) = properties.line_spacing {
+        resolved.line_spacing = value;
+    }
+    if let Some(value) = properties.first_line_indent {
+        resolved.first_line_indent = value;
+    }
+    if let Some(value) = properties.leading_indent {
+        resolved.leading_indent = value;
+    }
+    if let Some(value) = properties.trailing_indent {
+        resolved.trailing_indent = value;
+    }
+    if let Some(value) = properties.alignment {
+        resolved.alignment = value;
+    }
+    if let Some(value) = properties.base_direction {
+        resolved.base_direction = value;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SemanticInlineStyle {
+    Strong,
+    Emphasis,
+    Code,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum StyleApplication {
+    Named(StyleId),
+    Direct(CharacterProperties),
+    Semantic(SemanticInlineStyle),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn character_style(
+        id: &str,
+        parent: &StyleId,
+        properties: CharacterProperties,
+    ) -> CharacterStyle {
+        CharacterStyle {
+            id: id.into(),
+            based_on: Some(parent.clone()),
+            properties,
+        }
+    }
+
+    fn paragraph_style(id: &str, parent: &StyleId) -> BlockStyle {
+        BlockStyle {
+            id: id.into(),
+            based_on: Some(parent.clone()),
+            next_paragraph_style: None,
+            role: BlockRole::Paragraph,
+            character: CharacterProperties::default(),
+            block: BlockProperties::default(),
+        }
+    }
+
+    #[test]
+    fn built_in_styles_explicitly_define_the_defaults_they_own() {
+        let sheet = StyleSheet::default();
+        let document = sheet.block_style(&sheet.base_document).unwrap();
+        let paragraph = sheet.block_style(&sheet.base_paragraph).unwrap();
+
+        assert_eq!(
+            document.character,
+            CharacterProperties {
+                font_families: Some(vec!["system-ui".to_owned()]),
+                size: Some(14.0),
+                weight: Some(400),
+                slant: Some(FontSlant::Upright),
+                foreground: Some(Color {
+                    red: 0.0,
+                    green: 0.0,
+                    blue: 0.0,
+                    alpha: 1.0,
+                }),
+                underline: Some(false),
+                strikethrough: Some(false),
+                direction: Some(WritingDirection::Natural),
+                open_type_features: Some(BTreeMap::new()),
+                letter_spacing: Some(0.0),
+                baseline_shift: Some(0.0),
+                ..CharacterProperties::default()
+            }
+        );
+        assert_eq!(
+            document.block,
+            BlockProperties {
+                padding_top: Some(0.0),
+                padding_right: Some(0.0),
+                padding_bottom: Some(0.0),
+                padding_left: Some(0.0),
+                background: Some(Color {
+                    red: 1.0,
+                    green: 1.0,
+                    blue: 1.0,
+                    alpha: 1.0,
+                }),
+                ..BlockProperties::default()
+            }
+        );
+        assert_eq!(
+            paragraph.block,
+            BlockProperties {
+                spacing_before: Some(0.0),
+                spacing_after: Some(0.0),
+                line_spacing: Some(LineSpacing::Normal),
+                first_line_indent: Some(0.0),
+                leading_indent: Some(0.0),
+                trailing_indent: Some(0.0),
+                alignment: Some(ParagraphAlignment::Start),
+                base_direction: Some(WritingDirection::Natural),
+                ..BlockProperties::default()
+            }
+        );
+        assert_eq!(
+            sheet
+                .character_style(&sheet.base_character)
+                .unwrap()
+                .properties,
+            CharacterProperties::default()
+        );
+
+        assert_eq!(
+            sheet
+                .resolve_document_assignment(&DocumentStyleAssignment::new(
+                    sheet.base_document.clone(),
+                ))
+                .unwrap(),
+            ResolvedDocumentStyle::default()
+        );
+        assert_eq!(
+            sheet
+                .resolve_assigned_paragraph_style(
+                    &DocumentStyleAssignment::new(sheet.base_document.clone()),
+                    &sheet.base_paragraph,
+                    &BlockProperties::default(),
+                    &CharacterProperties::default(),
+                    None,
+                    &CharacterProperties::default(),
+                )
+                .unwrap(),
+            ResolvedParagraphStyle::default()
+        );
+    }
+
+    #[test]
+    fn document_text_overrides_flow_through_sparse_character_and_paragraph_bases() {
+        let mut sheet = StyleSheet::default();
+        let foreground = Color {
+            red: 0.15,
+            green: 0.25,
+            blue: 0.35,
+            alpha: 1.0,
+        };
+        let features = BTreeMap::from([("liga".to_owned(), 0)]);
+        let document_style = BlockStyle {
+            id: "WriterDocument".into(),
+            based_on: Some(sheet.base_document.clone()),
+            next_paragraph_style: None,
+            role: BlockRole::Document,
+            character: CharacterProperties {
+                font_families: Some(vec!["Writer Serif".to_owned(), "system-ui".to_owned()]),
+                size: Some(19.0),
+                weight: Some(525),
+                slant: Some(FontSlant::Italic),
+                foreground: Some(foreground),
+                underline: Some(true),
+                direction: Some(WritingDirection::RightToLeft),
+                open_type_features: Some(features.clone()),
+                letter_spacing: Some(0.5),
+                ..CharacterProperties::default()
+            },
+            block: BlockProperties::default(),
+        };
+        let document_style_id = document_style.id.clone();
+        sheet.insert_block_style(document_style).unwrap();
+
+        let resolved = sheet
+            .resolve_assigned_paragraph_style(
+                &DocumentStyleAssignment::new(document_style_id),
+                &sheet.base_paragraph,
+                &BlockProperties::default(),
+                &CharacterProperties::default(),
+                None,
+                &CharacterProperties::default(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            resolved.character.font_families,
+            ["Writer Serif", "system-ui"]
+        );
+        assert_eq!(resolved.character.size, 19.0);
+        assert_eq!(resolved.character.weight, 525);
+        assert_eq!(resolved.character.slant, FontSlant::Italic);
+        assert_eq!(resolved.character.foreground, foreground);
+        assert!(resolved.character.underline);
+        assert_eq!(resolved.character.direction, WritingDirection::RightToLeft);
+        assert_eq!(resolved.character.open_type_features, features);
+        assert_eq!(resolved.character.letter_spacing, 0.5);
+        assert_eq!(resolved.spacing_before, 0.0);
+        assert_eq!(resolved.line_spacing, LineSpacing::Normal);
+    }
+
+    #[test]
+    fn cascade_orders_document_paragraph_named_character_and_direct_layers() {
+        let mut sheet = StyleSheet::default();
+        let named = character_style(
+            "Callout",
+            &sheet.base_character,
+            CharacterProperties {
+                foreground: Some(Color {
+                    red: 0.8,
+                    green: 0.1,
+                    blue: 0.2,
+                    alpha: 1.0,
+                }),
+                weight: Some(600),
+                ..CharacterProperties::default()
+            },
+        );
+        let named_id = named.id.clone();
+        sheet.insert_character_style(named).unwrap();
+
+        let resolved = sheet
+            .resolve_paragraph_style(
+                &sheet.base_document,
+                &"Heading1".into(),
+                Some(&named_id),
+                &BlockProperties {
+                    leading_indent: Some(18.0),
+                    line_spacing: Some(LineSpacing::Multiplier(1.25)),
+                    ..BlockProperties::default()
+                },
+                &CharacterProperties {
+                    weight: Some(900),
+                    underline: Some(true),
+                    ..CharacterProperties::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(resolved.character.size, 24.0);
+        assert_eq!(resolved.character.weight, 900);
+        assert!(resolved.character.underline);
+        assert_eq!(resolved.character.foreground.red, 0.8);
+        assert_eq!(resolved.leading_indent, 18.0);
+        assert_eq!(resolved.line_spacing, LineSpacing::Multiplier(1.25));
+    }
+
+    #[test]
+    fn complete_paragraph_resolution_validates_the_root_assignment() {
+        let sheet = StyleSheet::default();
+        let mut root = DocumentStyleAssignment::new(sheet.base_document.clone());
+        root.direct_canvas.spacing_before = Some(1.0);
+        assert!(matches!(
+            sheet.resolve_assigned_paragraph_style(
+                &root,
+                &sheet.base_paragraph,
+                &BlockProperties::default(),
+                &CharacterProperties::default(),
+                None,
+                &CharacterProperties::default(),
+            ),
+            Err(StyleError::InapplicableBlockProperties {
+                role: BlockRole::Document,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn block_roles_reject_inapplicable_properties_and_broadened_parents() {
+        let mut sheet = StyleSheet::default();
+        let invalid_canvas = BlockStyle {
+            block: BlockProperties {
+                padding_left: Some(10.0),
+                ..BlockProperties::default()
+            },
+            ..paragraph_style("BadParagraph", &sheet.base_paragraph)
+        };
+        assert!(matches!(
+            sheet.insert_block_style(invalid_canvas),
+            Err(StyleError::InapplicableBlockProperties { .. })
+        ));
+
+        let document_child = BlockStyle {
+            id: "DocumentChild".into(),
+            based_on: Some(sheet.base_document.clone()),
+            next_paragraph_style: None,
+            role: BlockRole::Document,
+            character: CharacterProperties::default(),
+            block: BlockProperties::default(),
+        };
+        let document_child_id = document_child.id.clone();
+        sheet.insert_block_style(document_child).unwrap();
+        assert!(matches!(
+            sheet.insert_block_style(paragraph_style("BadParent", &document_child_id)),
+            Err(StyleError::IncompatibleBlockRole { .. })
+        ));
+    }
+
+    #[test]
+    fn paragraph_next_style_is_typed_validated_and_defaults_to_self() {
+        let mut sheet = StyleSheet::default();
+        assert_eq!(
+            sheet.next_paragraph_style(&sheet.base_paragraph).unwrap(),
+            &sheet.base_paragraph
+        );
+        assert_eq!(
+            sheet.next_paragraph_style(&"Heading1".into()).unwrap(),
+            &sheet.base_paragraph
+        );
+
+        let self_id: StyleId = "SelfFollowing".into();
+        let mut self_following = paragraph_style("SelfFollowing", &sheet.base_paragraph);
+        self_following.next_paragraph_style = Some(self_id.clone());
+        sheet.insert_block_style(self_following).unwrap();
+        assert_eq!(sheet.next_paragraph_style(&self_id).unwrap(), &self_id);
+        sheet.remove_block_style(&self_id, false).unwrap();
+        assert!(!sheet.block_styles.contains_key(&self_id));
+
+        let mut missing = paragraph_style("MissingNext", &sheet.base_paragraph);
+        missing.next_paragraph_style = Some("NotAStyle".into());
+        assert!(matches!(
+            sheet.insert_block_style(missing),
+            Err(StyleError::InvalidNextParagraphStyle { .. })
+        ));
+
+        let mut document_child = BlockStyle {
+            id: "CanvasWithNext".into(),
+            based_on: Some(sheet.base_document.clone()),
+            next_paragraph_style: Some(sheet.base_paragraph.clone()),
+            role: BlockRole::Document,
+            character: CharacterProperties::default(),
+            block: BlockProperties::default(),
+        };
+        assert!(matches!(
+            sheet.insert_block_style(document_child.clone()),
+            Err(StyleError::InapplicableNextParagraphStyle { .. })
+        ));
+        document_child.next_paragraph_style = None;
+        sheet.insert_block_style(document_child).unwrap();
+        assert!(matches!(
+            sheet.next_paragraph_style(&"CanvasWithNext".into()),
+            Err(StyleError::IncompatibleBlockRole { .. })
+        ));
+    }
+
+    #[test]
+    fn a_next_paragraph_reference_prevents_style_removal() {
+        let mut sheet = StyleSheet::default();
+        let target = paragraph_style("BodyAfterLead", &sheet.base_paragraph);
+        let target_id = target.id.clone();
+        sheet.insert_block_style(target).unwrap();
+
+        let mut lead = paragraph_style("Lead", &sheet.base_paragraph);
+        lead.next_paragraph_style = Some(target_id.clone());
+        sheet.insert_block_style(lead).unwrap();
+
+        assert_eq!(
+            sheet.remove_block_style(&target_id, false),
+            Err(StyleError::StyleInUse(target_id))
+        );
+    }
+
+    #[test]
+    fn cycles_are_rejected_without_corrupting_the_previous_definition() {
+        let mut sheet = StyleSheet::default();
+        let first = paragraph_style("First", &sheet.base_paragraph);
+        let first_id = first.id.clone();
+        sheet.insert_block_style(first).unwrap();
+        let second = paragraph_style("Second", &first_id);
+        let second_id = second.id.clone();
+        sheet.insert_block_style(second).unwrap();
+        let revision = sheet.revision;
+
+        let cyclic = paragraph_style("First", &second_id);
+        assert_eq!(
+            sheet.insert_block_style(cyclic),
+            Err(StyleError::InheritanceCycle(first_id.clone()))
+        );
+        assert_eq!(sheet.revision, revision);
+        assert_eq!(
+            sheet.block_styles[&first_id].based_on.as_ref(),
+            Some(&sheet.base_paragraph)
+        );
+    }
+
+    #[test]
+    fn base_and_referenced_styles_cannot_be_removed() {
+        let mut sheet = StyleSheet::default();
+        assert_eq!(
+            sheet.remove_block_style(&sheet.base_document.clone(), false),
+            Err(StyleError::CannotRemoveBaseStyle(
+                sheet.base_document.clone()
+            ))
+        );
+
+        let parent = paragraph_style("Parent", &sheet.base_paragraph);
+        let parent_id = parent.id.clone();
+        sheet.insert_block_style(parent).unwrap();
+        sheet
+            .insert_block_style(paragraph_style("Child", &parent_id))
+            .unwrap();
+        assert_eq!(
+            sheet.remove_block_style(&parent_id, false),
+            Err(StyleError::StyleInUse(parent_id))
+        );
+    }
+
+    #[test]
+    fn invalid_numeric_declarations_are_rejected_atomically() {
+        let mut sheet = StyleSheet::default();
+        let revision = sheet.revision;
+        let invalid = character_style(
+            "Broken",
+            &sheet.base_character,
+            CharacterProperties {
+                size: Some(f32::NAN),
+                ..CharacterProperties::default()
+            },
+        );
+        let id = invalid.id.clone();
+        assert_eq!(
+            sheet.insert_character_style(invalid),
+            Err(StyleError::InvalidCharacterProperties(id.clone()))
+        );
+        assert_eq!(sheet.revision, revision);
+        assert!(!sheet.character_styles.contains_key(&id));
+    }
+
+    #[test]
+    fn invalid_provider_facing_character_declarations_are_rejected_atomically() {
+        let invalid_properties = [
+            CharacterProperties {
+                font_families: Some(Vec::new()),
+                ..CharacterProperties::default()
+            },
+            CharacterProperties {
+                font_families: Some(vec![String::new()]),
+                ..CharacterProperties::default()
+            },
+            CharacterProperties {
+                language: Some(String::new()),
+                ..CharacterProperties::default()
+            },
+            CharacterProperties {
+                open_type_features: Some(BTreeMap::from([("lig".to_owned(), 1)])),
+                ..CharacterProperties::default()
+            },
+            CharacterProperties {
+                open_type_features: Some(BTreeMap::from([("li\0a".to_owned(), 1)])),
+                ..CharacterProperties::default()
+            },
+            CharacterProperties {
+                // Two two-byte code points make this exactly four bytes, so
+                // the printable-ASCII rule is independently exercised.
+                open_type_features: Some(BTreeMap::from([("éé".to_owned(), 1)])),
+                ..CharacterProperties::default()
+            },
+        ];
+
+        for (index, properties) in invalid_properties.into_iter().enumerate() {
+            let mut sheet = StyleSheet::default();
+            let before = sheet.clone();
+            let id = StyleId(format!("InvalidProviderInput{index}"));
+            let invalid = CharacterStyle {
+                id: id.clone(),
+                based_on: Some(sheet.base_character.clone()),
+                properties,
+            };
+
+            assert_eq!(
+                sheet.insert_character_style(invalid),
+                Err(StyleError::InvalidCharacterProperties(id))
+            );
+            assert_eq!(sheet, before);
+        }
+    }
+
+    #[test]
+    fn invalid_direct_character_declarations_fail_before_reaching_layout() {
+        let sheet = StyleSheet::default();
+        let invalid = CharacterProperties {
+            font_families: Some(Vec::new()),
+            ..CharacterProperties::default()
+        };
+
+        assert_eq!(
+            sheet.resolve_paragraph_style(
+                &sheet.base_document,
+                &sheet.base_paragraph,
+                None,
+                &BlockProperties::default(),
+                &invalid,
+            ),
+            Err(StyleError::InvalidCharacterProperties(
+                sheet.base_paragraph.clone()
+            ))
+        );
+
+        let valid = CharacterProperties {
+            font_families: Some(vec!["Writer Serif".to_owned(), "system-ui".to_owned()]),
+            language: Some("en-US".to_owned()),
+            open_type_features: Some(BTreeMap::from([
+                ("kern".to_owned(), 1),
+                ("liga".to_owned(), 0),
+            ])),
+            ..CharacterProperties::default()
+        };
+        let resolved = sheet
+            .resolve_paragraph_style(
+                &sheet.base_document,
+                &sheet.base_paragraph,
+                None,
+                &BlockProperties::default(),
+                &valid,
+            )
+            .unwrap();
+        assert_eq!(
+            resolved.character.font_families,
+            valid.font_families.unwrap()
+        );
+        assert_eq!(resolved.character.language.as_deref(), Some("en-US"));
+        assert_eq!(resolved.character.open_type_features.len(), 2);
+    }
+
+    #[test]
+    fn document_resolution_reports_every_winner_and_consulted_dependency() {
+        let mut sheet = StyleSheet::default();
+        let writer_id = StyleId::from("WriterDocument");
+        sheet
+            .insert_block_style(BlockStyle {
+                id: writer_id.clone(),
+                based_on: Some(sheet.base_document.clone()),
+                next_paragraph_style: None,
+                role: BlockRole::Document,
+                character: CharacterProperties {
+                    size: Some(18.0),
+                    ..CharacterProperties::default()
+                },
+                block: BlockProperties {
+                    padding_left: Some(12.0),
+                    ..BlockProperties::default()
+                },
+            })
+            .unwrap();
+        let direct_canvas = BlockProperties {
+            padding_top: Some(7.0),
+            ..BlockProperties::default()
+        };
+        let direct_character = CharacterProperties {
+            foreground: Some(Color {
+                red: 0.2,
+                green: 0.3,
+                blue: 0.4,
+                alpha: 1.0,
+            }),
+            ..CharacterProperties::default()
+        };
+
+        let traced = sheet
+            .resolve_document_style_with_contributions(
+                &writer_id,
+                &direct_canvas,
+                &direct_character,
+            )
+            .unwrap();
+        assert_eq!(traced.contributions().len(), 18);
+        assert_eq!(traced.value.padding_left, 12.0);
+        assert_eq!(traced.value.padding_top, 7.0);
+        assert_eq!(traced.value.character.size, 18.0);
+        assert_eq!(
+            traced
+                .contribution(StyleProperty::CanvasPaddingLeft)
+                .unwrap()
+                .winner,
+            StyleContributionOrigin::BlockStyle(writer_id.clone())
+        );
+        assert_eq!(
+            traced
+                .contribution(StyleProperty::CanvasPaddingTop)
+                .unwrap()
+                .winner,
+            StyleContributionOrigin::DirectDocumentCanvas
+        );
+        assert_eq!(
+            traced
+                .contribution(StyleProperty::CharacterForeground)
+                .unwrap()
+                .winner,
+            StyleContributionOrigin::DirectDocumentCharacter
+        );
+        assert_eq!(
+            traced
+                .contribution(StyleProperty::CharacterSize)
+                .unwrap()
+                .dependencies,
+            vec![
+                StyleDependency::Block(sheet.base_document.clone()),
+                StyleDependency::Block(writer_id),
+            ]
+        );
+    }
+
+    #[test]
+    fn paragraph_resolution_traces_independent_cascade_layers() {
+        let mut sheet = StyleSheet::default();
+        let lead_id = StyleId::from("Lead");
+        sheet
+            .insert_block_style(BlockStyle {
+                id: lead_id.clone(),
+                based_on: Some(sheet.base_paragraph.clone()),
+                next_paragraph_style: None,
+                role: BlockRole::Paragraph,
+                character: CharacterProperties {
+                    size: Some(20.0),
+                    ..CharacterProperties::default()
+                },
+                block: BlockProperties {
+                    spacing_before: Some(9.0),
+                    ..BlockProperties::default()
+                },
+            })
+            .unwrap();
+        let emphasis_id = StyleId::from("NamedEmphasis");
+        sheet
+            .insert_character_style(CharacterStyle {
+                id: emphasis_id.clone(),
+                based_on: Some(sheet.base_character.clone()),
+                properties: CharacterProperties {
+                    weight: Some(650),
+                    ..CharacterProperties::default()
+                },
+            })
+            .unwrap();
+        let direct_paragraph = BlockProperties {
+            leading_indent: Some(11.0),
+            ..BlockProperties::default()
+        };
+        let paragraph_character = CharacterProperties {
+            slant: Some(FontSlant::Italic),
+            ..CharacterProperties::default()
+        };
+        let direct_character = CharacterProperties {
+            underline: Some(true),
+            ..CharacterProperties::default()
+        };
+        let assignment = DocumentStyleAssignment::new(sheet.base_document.clone());
+
+        let traced = sheet
+            .resolve_assigned_paragraph_style_with_contributions(
+                &assignment,
+                &lead_id,
+                &direct_paragraph,
+                &paragraph_character,
+                Some(&emphasis_id),
+                &direct_character,
+            )
+            .unwrap();
+        let ordinary = sheet
+            .resolve_assigned_paragraph_style(
+                &assignment,
+                &lead_id,
+                &direct_paragraph,
+                &paragraph_character,
+                Some(&emphasis_id),
+                &direct_character,
+            )
+            .unwrap();
+        assert_eq!(traced.value, ordinary);
+        assert_eq!(traced.contributions().len(), 21);
+        assert_eq!(
+            traced
+                .contribution(StyleProperty::ParagraphSpacingBefore)
+                .unwrap()
+                .winner,
+            StyleContributionOrigin::BlockStyle(lead_id)
+        );
+        assert_eq!(
+            traced
+                .contribution(StyleProperty::ParagraphLeadingIndent)
+                .unwrap()
+                .winner,
+            StyleContributionOrigin::DirectParagraph
+        );
+        assert_eq!(
+            traced
+                .contribution(StyleProperty::CharacterSlant)
+                .unwrap()
+                .winner,
+            StyleContributionOrigin::DirectParagraphCharacter
+        );
+        assert_eq!(
+            traced
+                .contribution(StyleProperty::CharacterWeight)
+                .unwrap()
+                .winner,
+            StyleContributionOrigin::CharacterStyle(emphasis_id.clone())
+        );
+        let weight_dependencies = &traced
+            .contribution(StyleProperty::CharacterWeight)
+            .unwrap()
+            .dependencies;
+        assert!(
+            weight_dependencies.contains(&StyleDependency::Character(sheet.base_character.clone()))
+        );
+        assert!(weight_dependencies.contains(&StyleDependency::Character(emphasis_id)));
+        assert_eq!(
+            traced
+                .contribution(StyleProperty::CharacterUnderline)
+                .unwrap()
+                .winner,
+            StyleContributionOrigin::DirectCharacter
+        );
+    }
+
+    #[test]
+    fn dependency_index_limits_definition_invalidation_to_transitive_descendants() {
+        let mut sheet = StyleSheet::default();
+        let parent_id = StyleId::from("Parent");
+        let child_id = StyleId::from("Child");
+        let separate_id = StyleId::from("Separate");
+        sheet
+            .insert_block_style(paragraph_style("Parent", &sheet.base_paragraph))
+            .unwrap();
+        sheet
+            .insert_block_style(paragraph_style("Child", &parent_id))
+            .unwrap();
+        sheet
+            .insert_block_style(paragraph_style("Separate", &sheet.base_paragraph))
+            .unwrap();
+
+        let character_parent_id = StyleId::from("CharacterParent");
+        let character_child_id = StyleId::from("CharacterChild");
+        sheet
+            .insert_character_style(character_style(
+                "CharacterParent",
+                &sheet.base_character,
+                CharacterProperties::default(),
+            ))
+            .unwrap();
+        sheet
+            .insert_character_style(character_style(
+                "CharacterChild",
+                &character_parent_id,
+                CharacterProperties::default(),
+            ))
+            .unwrap();
+
+        let index = sheet.dependency_index();
+        assert_eq!(index.revision, sheet.revision);
+        let affected = index.block_dependents(&parent_id).unwrap();
+        assert_eq!(affected.len(), 2);
+        assert!(affected.contains(&parent_id));
+        assert!(affected.contains(&child_id));
+        assert!(!affected.contains(&separate_id));
+        let affected = index.character_dependents(&character_parent_id).unwrap();
+        assert_eq!(affected.len(), 2);
+        assert!(affected.contains(&character_parent_id));
+        assert!(affected.contains(&character_child_id));
+        assert!(index.block_dependents(&StyleId::from("Missing")).is_none());
+    }
+
+    #[test]
+    fn property_effects_separate_paint_shaping_geometry_and_width() {
+        assert_eq!(
+            StyleProperty::CharacterForeground.invalidation_effect(),
+            StyleInvalidationEffect::Paint
+        );
+        assert_eq!(
+            StyleProperty::CharacterFontFamilies.invalidation_effect(),
+            StyleInvalidationEffect::Shaping
+        );
+        assert_eq!(
+            StyleProperty::ParagraphLeadingIndent.invalidation_effect(),
+            StyleInvalidationEffect::ParagraphLayout
+        );
+        assert_eq!(
+            StyleProperty::CanvasPaddingTop.invalidation_effect(),
+            StyleInvalidationEffect::DocumentLayout
+        );
+        assert_eq!(
+            StyleProperty::CanvasPaddingLeft.invalidation_effect(),
+            StyleInvalidationEffect::ViewUsableWidth
+        );
+    }
+
+    #[test]
+    fn resolved_differences_report_only_effective_property_changes() {
+        let before_character = ResolvedCharacterStyle::default();
+        let mut after_character = before_character.clone();
+        after_character.foreground.red = 0.5;
+        after_character.weight = 700;
+        assert_eq!(
+            before_character.changed_properties(&after_character),
+            BTreeSet::from([
+                StyleProperty::CharacterForeground,
+                StyleProperty::CharacterWeight,
+            ])
+        );
+
+        let before_paragraph = ResolvedParagraphStyle::default();
+        let mut after_paragraph = before_paragraph.clone();
+        after_paragraph.leading_indent = 8.0;
+        after_paragraph.character.size = 16.0;
+        assert_eq!(
+            before_paragraph.changed_properties(&after_paragraph),
+            BTreeSet::from([
+                StyleProperty::ParagraphLeadingIndent,
+                StyleProperty::CharacterSize,
+            ])
+        );
+
+        let before_document = ResolvedDocumentStyle::default();
+        let mut after_document = before_document.clone();
+        after_document.padding_left = 12.0;
+        after_document.character.underline = true;
+        assert_eq!(
+            before_document.changed_properties(&after_document),
+            BTreeSet::from([
+                StyleProperty::CanvasPaddingLeft,
+                StyleProperty::CharacterUnderline,
+            ])
+        );
+    }
+
+    #[test]
+    fn randomized_acyclic_cascades_match_with_and_without_contribution_tracing() {
+        let mut sheet = StyleSheet::default();
+        let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = || {
+            seed ^= seed << 7;
+            seed ^= seed >> 9;
+            seed = seed.wrapping_mul(0x2545_f491_4f6c_dd1d);
+            seed
+        };
+
+        let mut paragraph_ids = vec![sheet.base_paragraph.clone()];
+        for index in 0..64 {
+            let parent = paragraph_ids[next() as usize % paragraph_ids.len()].clone();
+            let id = StyleId(format!("RandomParagraph{index:02}"));
+            let bits = next();
+            sheet
+                .insert_block_style(BlockStyle {
+                    id: id.clone(),
+                    based_on: Some(parent),
+                    next_paragraph_style: None,
+                    role: BlockRole::Paragraph,
+                    character: CharacterProperties {
+                        size: (bits & 1 != 0).then_some(10.0 + (bits % 18) as f32),
+                        weight: (bits & 2 != 0).then_some(300 + (bits % 6) as u16 * 100),
+                        underline: (bits & 4 != 0).then_some(bits & 8 != 0),
+                        ..CharacterProperties::default()
+                    },
+                    block: BlockProperties {
+                        spacing_before: (bits & 16 != 0).then_some((bits % 12) as f32),
+                        leading_indent: (bits & 32 != 0).then_some((bits % 20) as f32),
+                        ..BlockProperties::default()
+                    },
+                })
+                .unwrap();
+            paragraph_ids.push(id);
+        }
+
+        let mut character_ids = vec![sheet.base_character.clone()];
+        for index in 0..64 {
+            let parent = character_ids[next() as usize % character_ids.len()].clone();
+            let id = StyleId(format!("RandomCharacter{index:02}"));
+            let bits = next();
+            sheet
+                .insert_character_style(CharacterStyle {
+                    id: id.clone(),
+                    based_on: Some(parent),
+                    properties: CharacterProperties {
+                        slant: (bits & 1 != 0).then_some(FontSlant::Italic),
+                        weight: (bits & 2 != 0).then_some(400 + (bits % 5) as u16 * 100),
+                        letter_spacing: (bits & 4 != 0).then_some((bits % 7) as f32 / 4.0),
+                        ..CharacterProperties::default()
+                    },
+                })
+                .unwrap();
+            character_ids.push(id);
+        }
+
+        let assignment = DocumentStyleAssignment::new(sheet.base_document.clone());
+        for _ in 0..256 {
+            let paragraph = &paragraph_ids[next() as usize % paragraph_ids.len()];
+            let character = &character_ids[next() as usize % character_ids.len()];
+            let direct_paragraph = BlockProperties {
+                trailing_indent: (next() & 1 != 0).then_some((next() % 16) as f32),
+                ..BlockProperties::default()
+            };
+            let direct_character = CharacterProperties {
+                baseline_shift: (next() & 1 != 0).then_some((next() % 8) as f32),
+                ..CharacterProperties::default()
+            };
+            let ordinary = sheet
+                .resolve_assigned_paragraph_style(
+                    &assignment,
+                    paragraph,
+                    &direct_paragraph,
+                    &CharacterProperties::default(),
+                    Some(character),
+                    &direct_character,
+                )
+                .unwrap();
+            let traced = sheet
+                .resolve_assigned_paragraph_style_with_contributions(
+                    &assignment,
+                    paragraph,
+                    &direct_paragraph,
+                    &CharacterProperties::default(),
+                    Some(character),
+                    &direct_character,
+                )
+                .unwrap();
+            assert_eq!(traced.value, ordinary);
+            assert_eq!(traced.contributions().len(), 21);
+            assert!(traced
+                .contributions()
+                .all(|(_, contribution)| !contribution.dependencies.is_empty()));
+        }
+    }
+
+    #[test]
+    fn revision_exhaustion_is_typed_and_leaves_the_sheet_unchanged() {
+        let mut sheet = StyleSheet {
+            revision: StyleSheetRevision(u64::MAX),
+            ..StyleSheet::default()
+        };
+        let before = sheet.clone();
+        let style = character_style(
+            "WouldWrap",
+            &sheet.base_character,
+            CharacterProperties::default(),
+        );
+
+        assert_eq!(
+            sheet.insert_character_style(style),
+            Err(StyleError::StyleSheetRevisionExhausted)
+        );
+        assert_eq!(sheet, before);
+
+        let removable = StyleId::from("Removable");
+        sheet.character_styles.insert(
+            removable.clone(),
+            character_style(
+                "Removable",
+                &sheet.base_character,
+                CharacterProperties::default(),
+            ),
+        );
+        let before_remove = sheet.clone();
+        assert_eq!(
+            sheet.remove_character_style(&removable, false),
+            Err(StyleError::StyleSheetRevisionExhausted)
+        );
+        assert_eq!(sheet, before_remove);
+    }
+}
