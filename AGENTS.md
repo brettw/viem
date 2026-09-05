@@ -712,8 +712,10 @@ Every style sheet defines three distinguished styles:
   canvas background and padding together with inheritable default character
   declarations such as font and foreground color.
 - **Base Paragraph** is a Paragraph-role child of Base Document and provides
-  complete paragraph-layout values. Every other Paragraph-role style derives
-  through it.
+  complete paragraph-layout values. It is the default paragraph-style
+  assignment when an adapter does not provide a more specific assignment and
+  the fallback selection for style-editing UI. Every other Paragraph-role
+  style derives through it.
 - **Base Character** is the root of the character-style hierarchy. Its sparse
   declarations refine the document defaults without preventing paragraph styles
   from overriding them.
@@ -1552,6 +1554,393 @@ The macOS Undo and Redo menu actions dispatch to the core history API. An
 `NSUndoManager` adapter, if required for AppKit integration, is only a proxy for
 core status and commands and never registers or executes independent inverse
 closures.
+
+### macOS main menu
+
+The initial main-menu order is `eVim`, `File`, `Edit`, `Format`, `View`,
+`Window`, and `Help`. There are no `Navigate` or `Command` top-level menus.
+Vim motions, mode changes, command-line entry, registers, marks, and macros
+remain available through the Vim command grammar and any separately specified
+UI; they are not duplicated into speculative menu hierarchies.
+
+The menu hierarchy is:
+
+- **eVim**
+  - About eVim
+  - Settings… (`Command-,`)
+  - separator
+  - Services (system supplied)
+  - separator
+  - Hide eVim (`Command-H`)
+  - Hide Others (`Option-Command-H`)
+  - Show All
+  - separator
+  - Quit eVim (`Command-Q`)
+- **File**
+  - New (`Command-N`)
+  - Open… (`Command-O`)
+  - Open Recent
+    - dynamically listed recent documents
+    - separator
+    - Clear Menu
+  - separator
+  - Close (`Command-W`)
+  - Save (`Command-S`)
+  - Save As… (`Shift-Command-S`)
+  - Duplicate
+  - Rename…
+  - Move To…
+  - Revert To
+    - Last Saved Version
+    - Browse All Versions…
+  - separator
+  - Document Format…
+  - Text Encoding…
+  - Line Endings
+    - Unix (LF)
+    - Windows (CRLF)
+    - Classic Mac (CR)
+  - separator
+  - Page Setup…
+  - Print… (`Command-P`)
+- **Edit**
+  - Undo *Action* (`Command-Z`)
+  - Redo *Action* (`Shift-Command-Z`)
+  - separator
+  - Cut (`Command-X`)
+  - Copy (`Command-C`)
+  - Paste (`Command-V`)
+  - Paste and Match Style (`Option-Shift-Command-V`)
+  - Delete
+  - separator
+  - Select All (`Command-A`)
+  - Select
+    - Word
+    - Sentence
+    - Paragraph
+    - Hard Line
+    - Visual Row
+  - separator
+  - Find
+    - Find… (`Command-F`)
+    - Find and Replace…
+    - Find Next (`Command-G`)
+    - Find Previous (`Shift-Command-G`)
+    - Use Selection for Find (`Command-E`)
+    - Jump to Selection (`Command-J`)
+  - separator
+  - Transformations
+    - Make Uppercase
+    - Make Lowercase
+    - Toggle Case
+  - separator
+  - Start Dictation…
+  - Emoji & Symbols (`Control-Command-Space`)
+- **Format**
+  - Font
+    - Show Fonts (`Command-T`)
+    - separator
+    - Bold (`Command-B`)
+    - Italic (`Command-I`)
+    - Underline (`Command-U`)
+    - Strikethrough
+    - separator
+    - Bigger
+    - Smaller
+    - separator
+    - Ligatures
+      - Use Default Ligatures
+      - Use All Ligatures
+      - Use No Ligatures
+    - Kerning
+      - Use Default Kerning
+      - Use No Kerning
+    - Baseline
+      - Superscript
+      - Subscript
+      - Raise
+      - Lower
+    - OpenType Features…
+  - Color
+    - Show Colors
+    - Text Color…
+    - Highlight Color…
+  - separator
+  - Character Style
+    - Base Character
+    - dynamically listed named character styles
+    - separator
+    - Edit Styles…
+  - Paragraph Style
+    - Base Paragraph
+    - dynamically listed named paragraph styles
+    - separator
+    - Edit Styles…
+  - Document Style
+    - Base Document
+    - dynamically listed named document styles
+    - separator
+    - Edit Styles…
+  - separator
+  - Paragraph
+    - Alignment
+      - Start
+      - Center
+      - End
+    - Writing Direction
+      - Automatic
+      - Left to Right
+      - Right to Left
+    - Increase Indent
+    - Decrease Indent
+    - Paragraph Spacing…
+    - Line Spacing
+      - Normal
+      - Single
+      - 1.5 Lines
+      - Double
+      - Custom…
+  - separator
+  - Copy Style
+  - Paste Style
+  - Clear Direct Character Formatting
+  - Clear Direct Paragraph Formatting
+  - Clear All Direct Formatting
+- **View**
+  - Show Status Bar
+  - separator
+  - Word Wrap
+  - Wrap at Word Boundaries
+  - Show Invisible Characters
+  - separator
+  - Zoom In
+  - Zoom Out
+  - Actual Size
+  - separator
+  - Enter Full Screen (`Control-Command-F`)
+- **Window**
+  - Minimize (`Command-M`)
+  - Zoom
+  - separator
+  - New Window for Document
+  - system-supplied window placement and tiling commands
+  - separator
+  - Bring All to Front
+  - separator
+  - dynamically listed document windows
+- **Help**
+  - system-supplied menu search
+  - separator
+  - eVim Help
+  - Vim Command Reference
+  - Keyboard Shortcuts
+  - Supported Vim Commands
+  - Document Format Compatibility
+  - Round-Trip and Source Preservation
+  - separator
+  - Release Notes
+  - Report a Problem…
+
+Menu separators are presentation elements, not commands. Ellipses indicate
+that the item opens a panel, sheet, chooser, or other interaction before taking
+effect. Use standard macOS shortcuts and localized system titles where the
+platform supplies them; do not repurpose a standard shortcut for unrelated
+Vim behavior.
+
+`Word Wrap` reflects the view-local `wrap` option. `Wrap at Word Boundaries`
+reflects `linebreak` and is disabled when wrapping is off. Resizing a wrapped
+view reflows automatically and has no menu command. `Line Endings` is a radio
+group over the buffer's `fileformat` value and follows the verified conversion
+rules in "Changing `fileformat`".
+
+Menu validation comes from current core state and pipeline capabilities.
+Actions that cannot apply to the current selection or adapter are disabled.
+Rich-formatting actions are disabled for plain text; `Document Format…` may
+offer an explicit conversion when an appropriate adapter exists. Style and
+formatting items show a checkmark, mixed state, or no mark as appropriate.
+Undo and Redo use the core-provided action label. The Services, window
+management, recent-document, open-window, and Help-search contents remain
+system or dynamically supplied.
+
+Bare Vim keys such as `i`, `v`, `.`, and `:` MUST NOT be registered as global
+`NSMenu` key equivalents because they would interfere with text input and
+mode-dependent command interpretation. Every menu action dispatches the same
+typed core command or semantic intention as its keyboard equivalent and does
+not create separate AppKit editing, selection, formatting, source, or undo
+state.
+
+### macOS style editor
+
+Use [`docs/Word style.png`](<docs/Word style.png>) as the visual reference for
+the style editor's overall density, labeled properties at the top, large
+formatting area, bordered live preview, resolved-format summary, and bottom
+action row. It is a composition reference rather than a behavioral or
+pixel-exact template. Use native AppKit controls, metrics, typography, focus
+rings, accessibility behavior, and current macOS window appearance. Do not
+copy Word's `Format` section picker, template/Quick Style/automatic-update
+checkboxes, or `Cancel` and `OK` buttons.
+
+#### Window behavior and ownership
+
+- Although it is colloquially a dialog box, the style editor is a modeless
+  auxiliary window or panel. It is never an application-modal dialog or a
+  document-modal sheet. The user can focus and edit any document while it is
+  open.
+- Exactly one style-editor window exists application-wide. Invoking any
+  `Edit Styles…` action while it is closed creates it. Invoking one while it is
+  open brings the existing window forward, retargets it to the invoking
+  document, and selects the requested style by stable style ID.
+- Merely moving the document caret or selection does not silently retarget an
+  open editor. Retargeting occurs through an explicit Edit Style action or the
+  editor's Style picker.
+- The window has a **Close** button at the bottom trailing edge. It has no
+  **Apply**, **Cancel**, or **OK** button because valid changes are already
+  applied. The standard window close command and `Command-W` have the same
+  effect when the style editor is key. Closing never rolls changes back.
+- The window coordinator, current target document identity, and selected stable
+  style ID belong to `src/mac`. Style definitions and mutations remain owned by
+  core. The frontend never keeps a private editable copy of a style sheet.
+
+#### Layout and common controls
+
+From top to bottom, the content is:
+
+1. a properties section containing:
+   - **Style**, a pop-up that selects a style in the target document and groups
+     Document, Paragraph, and Character styles;
+   - **Name**, an editable text field;
+   - **Style type**, a read-only value showing Document, Paragraph, or
+     Character; and
+   - **Based on**, a pop-up for the style's parent;
+2. a native macOS tab row immediately below the name/base-style section, with
+   **Character** and **Paragraph** tabs;
+3. the controls for the selected tab;
+4. a bordered, live preview using the real core style resolver and Core Text
+   shaping path;
+5. a scrollable, read-only summary of explicit declarations, inherited values,
+   their contributing base styles, and the resulting effective properties; and
+6. a bottom action row containing the **Close** button.
+
+Style type is immutable after style creation. The Based on picker contains only
+parents allowed by the selected style's namespace and role and excludes the
+style itself and its transitive descendants. It cannot create an inheritance
+cycle. Base Character and Base Document have no editable parent; Base
+Paragraph's parent is fixed to Base Document. The distinguished base styles
+remain editable where their declarations permit it, but cannot be deleted or
+have their role changed.
+
+Every property control must distinguish **Inherited** (no declaration at this
+style layer) from an explicit value, including explicit normal weight, no
+decoration, zero spacing, or transparent color. The UI shows the effective
+inherited value while making it visually clear that the selected style does not
+declare that value. A `Use Inherited` or equivalent action removes the
+declaration rather than copying the current ancestor value into the style.
+
+The first version of this two-tab editor changes Character and Paragraph
+declarations. It does not edit Document Canvas background or padding; a future
+Document tab or separate canvas UI must be specified before those properties
+are exposed. Document-role styles may be selected to edit their allowed
+Character declarations, but their Paragraph tab is disabled.
+
+#### Character tab
+
+The Character tab edits Character declarations. It is enabled for Character,
+Paragraph, and Document styles because all three supported roles may contribute
+default character appearance. For a Paragraph style, these controls edit the
+paragraph's default character declarations rather than assigning a separate
+Character style.
+
+Expose controls for all initial Character properties:
+
+- ordered font-family and fallback requests;
+- font size in layout units;
+- numeric weight and slant, with Bold and Italic conveniences;
+- foreground and optional background color;
+- underline and strike decoration;
+- language;
+- writing-direction override;
+- OpenType feature settings;
+- letter spacing; and
+- baseline shift.
+
+Font-family fallback order requires an ordered editor rather than a single-font
+field. Native font and color panels may be used as transient choosers, but they
+must update the same selected style and must not become alternate persistence
+or undo authorities.
+
+#### Paragraph tab
+
+The Paragraph tab is enabled only for Paragraph-role styles. It is visibly
+disabled for Character and Document styles and cannot retain keyboard focus
+when disabled.
+
+Expose controls for all initial Paragraph Layout properties:
+
+- space before and space after;
+- logical start indent and end indent;
+- signed first-line indent, including hanging indents;
+- line-spacing kind (`normal`, multiplier, `at-least`, or `exact`) and the
+  numeric value required by the selected kind;
+- logical alignment (`start`, `center`, or `end`);
+- base writing direction; and
+- **Following paragraph style**, which edits `next_paragraph_style` and offers
+  Same Style plus every compatible Paragraph-role style.
+
+Controls that are meaningless for the chosen line-spacing kind are disabled
+without erasing their last valid draft value. Only the active kind and its
+applicable value form the committed declaration.
+
+#### Live application, preview, and undo
+
+- Every valid control change immediately issues a typed style-definition
+  intention against the exact current core snapshot. Successful reverse
+  projection commits through the normal verified source transaction path and
+  updates every view of the document without waiting for the window to close.
+- The preview is not a private draft. It renders the currently committed style
+  after cascade resolution. A Character style preview shows the style in
+  representative surrounding text. A Paragraph style preview shows preceding,
+  current, and following paragraphs so font, indentation, alignment, line
+  spacing, and before/after spacing are visible together.
+- A pop-up or button choice is one undo unit. Continuous gestures such as color
+  dragging, stepping, or scrubbing apply live but coalesce into one undo unit
+  per gesture. Contiguous typing in a text field applies each valid change live
+  while coalescing according to the core's text-input undo grouping rules.
+- An incomplete or invalid intermediate text-field value remains visibly local
+  to that control and does not mutate core. Show an inline validation state and
+  retain the last committed style value until the entry becomes valid.
+- If an adapter rejects a style edit as unsupported, ambiguous, stale, or
+  policy-dependent, commit nothing, restore the affected control from current
+  core state, and present the structured diagnostic. Other controls and the
+  document remain usable.
+- Undo, redo, source reprojection, or another frontend action may change the
+  selected style while the window is open. The editor observes style-sheet
+  revision changes and refreshes its fields, inheritance state, preview, and
+  summary from core without manufacturing another edit.
+
+#### Selection validity and deletion
+
+The selected style is tracked by document identity and stable style ID, never
+by menu index, name, or stale array position. On every style-sheet update and
+before sending an edit, the window revalidates that identity against the latest
+snapshot.
+
+If the selected style was deleted from another action, reverse projection, or
+history navigation, the editor must not apply a pending callback to the deleted
+ID or to whichever style reused its former list position. It immediately
+selects **Base Paragraph** in the same document, switches the style type and tab
+enablement accordingly, and reloads every control and preview from that style.
+Base Paragraph is the guaranteed default paragraph style and is undeletable.
+
+If the target document closes, the editor retargets to Base Paragraph in the
+current key document when one exists; otherwise it remains open in a disabled
+no-document state or closes according to normal macOS auxiliary-window policy.
+It must never continue editing a closed document through retained UI callbacks.
+
+Required macOS integration tests cover single-window reuse and retargeting,
+continued document editing while the window is open, live application and undo
+grouping, Character/Paragraph tab enablement, inherited versus explicit values,
+base-style parent restrictions, external undo/redo refresh, deletion fallback
+to Base Paragraph, stale callback rejection, and target-document closure.
 
 ### Explicitly deferred compatibility
 
