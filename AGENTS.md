@@ -1132,16 +1132,67 @@ Escape cancels a transient state without leaving a partially applied edit.
 
 The frontend renders mode from core state:
 
-- Normal and Visual modes: a block around the shaped cluster under the cursor;
+- Normal and Visual modes: a filled character block around the associated
+  grapheme, shaping cluster, or atomic object under the cursor;
 - Insert mode: a thin vertical insertion caret at the caret stop;
 - Replace mode: an underline or low horizontal bar under the cluster that will
   be replaced; and
-- Command-line mode: a thin insertion caret in the command line.
+- Command-line mode: a thin vertical insertion caret in the command line.
 
-The caret must remain visible against selection and text colors, blink according
-to platform accessibility preferences, and stop blinking while keys are being
-processed. Empty lines and end-of-line positions need explicit geometry; never
-assume a glyph exists under the caret.
+These mode-to-appearance rules, the custom block and underline rendering rules,
+focus behavior, and caret-color policy are portable requirements. A future
+Windows frontend follows them using Windows-native facilities where suitable.
+The decision to use `NSTextInsertionIndicator` for a vertical caret is specific
+to the macOS frontend and is not part of the core or Windows contract.
+
+The block caret is custom rendered; do not attempt to stretch a platform's thin
+insertion indicator into a block. Its logical extent is the associated atomic
+content item selected by the cursor's boundary affinity. Its visual extent uses
+the exact selection/highlight geometry returned by the current layout for that
+item. It is not a fixed monospace cell. When several graphemes form a visually
+indivisible shaping cluster, the block uses the containing cluster geometry
+without changing the logical cursor position or the range a command will edit.
+
+For ordinary monochrome text, draw the active block with an opaque caret-color
+fill, then redraw the covered shaped glyph fragment clipped to the block in a
+color chosen for accessible contrast with that fill. This may reuse the text
+renderer's selection pass, but it must not create a logical selection. For a
+color glyph, emoji, embedded object, or other content that cannot be recolored
+faithfully, use a translucent caret-color fill with a solid caret-color outline
+so the original content remains recognizable. Normal and Visual modes use the
+same block treatment; selection painting must still make the active endpoint
+unambiguous.
+
+The Replace caret is custom rendered as a solid caret-color underline or low
+horizontal bar spanning the same associated-item geometry. An empty hard line,
+empty document, or end-of-line position has explicit block and underline
+geometry based on the current caret height and a minimum width derived from the
+active font's space advance; never assume a glyph exists under the caret.
+
+When an editor view is not the active first responder, its caret is a
+nonblinking hollow outline in the same geometry instead of a filled block,
+vertical insertion indicator, or underline. An active caret blinks according to
+the platform's text-cursor and accessibility preferences where those are
+available. Processing a key or changing the caret position makes it visible and
+restarts the applicable idle/blink behavior.
+
+Caret color is one centralized application appearance setting, not separate
+state in each renderer or mode. Its portable value is conceptually:
+
+```text
+CaretColorPreference = SystemCaretColor | Explicit(PortableColor)
+```
+
+`SystemCaretColor` is the default and resolves dynamically through each
+frontend's current system appearance. `Explicit` is reserved for a future
+manual setting and uses the portable color value type. The preference belongs
+to application-level appearance settings, is shared by all views unless a
+future scoped override is specified, and is persisted with other application
+preferences rather than in the document source. Every custom caret and every
+native vertical indicator in one frontend uses the same resolved color. A
+system appearance, accent, accessibility, or explicit-setting change advances
+an appearance generation and redraws visible carets without invalidating text
+layout or document state.
 
 ### Visual Block with proportional text
 
@@ -2585,6 +2636,45 @@ The frontend draws only damage regions returned by state/layout changes where
 practical. It may cache native glyph/draw resources separately from core
 metrics, keyed by layout snapshot and metrics generation.
 
+### macOS caret realization
+
+The initial macOS frontend may require the latest generally available macOS
+major release at the time it ships. Record the resulting numeric deployment
+target in the project configuration. Compatibility fallbacks for older macOS
+releases are not required merely to avoid current AppKit text-cursor APIs.
+
+On macOS, use AppKit's `NSTextInsertionIndicator` for the thin vertical caret in
+the document's Insert mode and in command-line text entry. This is a native
+macOS presentation choice. It must not leak an AppKit type or native-indicator
+assumption through the C ABI or into `src/core`.
+
+- Add the indicator as a view above the custom text surface and update its frame
+  from the exact `CaretPoint` geometry. Keep it a thin insertion indicator; do
+  not resize it to implement Normal or Visual mode blocks.
+- Set `displayMode` to `.automatic` while its text-input surface is the active
+  first responder and the applicable mode uses a vertical caret. Set it to
+  `.hidden` in Normal, Visual, or Replace mode, when the view resigns first
+  responder, and whenever the portable inactive-outline presentation is used.
+- Preserve the native indicator's system blinking, dictation effects, input
+  source/Caps Lock accessories, tracking behavior, and accessibility styling.
+  Notify the AppKit text-input system when scrolling or zooming begins and ends
+  as required by the current API.
+- Resolve `SystemCaretColor` to `NSColor.textInsertionPointColor`. Assign the
+  resolved color to `NSTextInsertionIndicator.color` and use that identical
+  resolved color for the custom block, underline, and inactive-outline drawing.
+  If an `Explicit(PortableColor)` preference is added, convert it to `NSColor`
+  once in the centralized appearance resolver and feed both paths from that
+  result.
+- Re-resolve dynamic system color when effective appearance, accent color, or
+  accessibility contrast changes. Do not cache a permanently resolved RGB value
+  for `SystemCaretColor`.
+
+Normal and Visual block carets, the Replace underline, color-glyph fallback,
+empty/end-of-line geometry, and inactive outline are drawn by eVim according to
+the portable requirements in "Modes and caret". A future Windows frontend uses
+the same portable appearance and centralized color preference but chooses its
+own native or custom implementation for the thin vertical caret.
+
 ## Performance requirements and acceptance fixtures
 
 Complexity and bounded work are release requirements, not later optimization.
@@ -2697,7 +2787,11 @@ structurally; avoid brittle wall-clock-only tests.
   range sets.
 - **macOS integration tests**: compare Core Text output to emitted row geometry,
   verify IME lifecycle and native undo/menu routing, and exercise accessibility
-  range/geometry APIs.
+  range/geometry APIs. Verify that mode and first-responder transitions show
+  exactly one of the native vertical indicator or the applicable custom caret;
+  both paths use the same resolved system or explicit caret color; dynamic
+  appearance changes are propagated; and block, color-glyph, underline, empty
+  line, end-of-line, bidi, and inactive-outline cases use exact layout geometry.
 
 ## Architecture lessons adopted from Vim
 
@@ -2747,6 +2841,11 @@ Primary source-preservation and transformation references:
 - [LibreOffice Writer filter test model](https://github.com/LibreOffice/core/blob/master/sw/qa/extras/README)
 - [ICU character conversion behavior](https://unicode-org.github.io/icu/userguide/conversion/converters.html)
 - [Bidirectional lens round-trip laws](https://www.cis.upenn.edu/~bcpierce/papers/wagner-thesis.pdf)
+
+Primary macOS caret references:
+
+- [Adopting the system text cursor in custom text views](https://developer.apple.com/documentation/appkit/adopting-the-system-text-cursor-in-custom-text-views)
+- [`NSTextInsertionIndicator`](https://developer.apple.com/documentation/appkit/nstextinsertionindicator)
 
 ## Decisions still intentionally open
 
