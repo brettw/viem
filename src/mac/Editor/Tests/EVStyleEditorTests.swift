@@ -443,6 +443,66 @@ final class EVStyleEditorTests: XCTestCase {
             EVStyleColor(red: 1, green: 1, blue: 1, alpha: 1),
             "the document preview remains a white canvas independent of window appearance"
         )
+
+        let cachedDisplay = try XCTUnwrap(
+            editor.view.bitmapImageRepForCachingDisplay(in: editor.view.bounds)
+        )
+        editor.view.cacheDisplay(in: editor.view.bounds, to: cachedDisplay)
+        let corner = try XCTUnwrap(cachedDisplay.colorAt(x: 2, y: 2)?.usingColorSpace(.sRGB))
+        let luminance = (corner.redComponent + corner.greenComponent + corner.blueComponent) / 3
+        XCTAssertLessThan(
+            luminance,
+            0.35,
+            "the style editor must paint a dark window background behind dark-appearance controls"
+        )
+
+        let scaleX = CGFloat(cachedDisplay.pixelsWide) / editor.view.bounds.width
+        let scaleY = CGFloat(cachedDisplay.pixelsHigh) / editor.view.bounds.height
+        func contrastingPixels(in frame: NSRect) -> Int {
+            let xRange = max(0, Int(floor(frame.minX * scaleX)))..<min(
+                cachedDisplay.pixelsWide,
+                Int(ceil(frame.maxX * scaleX))
+            )
+            let yRange = max(
+                0,
+                Int(floor((editor.view.bounds.maxY - frame.maxY) * scaleY))
+            )..<min(
+                cachedDisplay.pixelsHigh,
+                Int(ceil((editor.view.bounds.maxY - frame.minY) * scaleY))
+            )
+            return xRange.reduce(into: 0) { count, x in
+                for y in yRange {
+                    guard let color = cachedDisplay.colorAt(x: x, y: y)?.usingColorSpace(.sRGB)
+                    else { continue }
+                    let pixelLuminance = (
+                        color.redComponent + color.greenComponent + color.blueComponent
+                    ) / 3
+                    if abs(pixelLuminance - luminance) > 0.2 { count += 1 }
+                }
+            }
+        }
+        XCTAssertGreaterThan(
+            contrastingPixels(in: editor.stylePickerFrameForTesting),
+            20,
+            "the native Style picker must produce visible pixels against the editor background"
+        )
+        XCTAssertGreaterThan(
+            contrastingPixels(in: editor.propertyTabsFrameForTesting),
+            20,
+            "the native Character and Paragraph tabs must produce visible pixels"
+        )
+
+        let panelBackground = try XCTUnwrap(panel.backgroundColor.usingColorSpace(.sRGB))
+        let panelLuminance = (
+            panelBackground.redComponent
+                + panelBackground.greenComponent
+                + panelBackground.blueComponent
+        ) / 3
+        XCTAssertLessThan(
+            panelLuminance,
+            0.35,
+            "the window backing and its content root must agree on the effective appearance"
+        )
     }
 
     @MainActor

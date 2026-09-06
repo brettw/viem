@@ -66,13 +66,14 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             let content = EVStyleEditorViewController()
             content.onClose = { [weak self] in self?.controller?.close() }
             let panel = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 760, height: 820),
+                contentRect: NSRect(x: 0, y: 0, width: 800, height: 820),
                 styleMask: [.titled, .closable, .resizable],
                 backing: .buffered,
                 defer: false
             )
             panel.title = "Edit Styles"
-            panel.contentMinSize = NSSize(width: 680, height: 750)
+            panel.contentMinSize = NSSize(width: 720, height: 750)
+            panel.backgroundColor = .windowBackgroundColor
             panel.isReleasedWhenClosed = false
             panel.collectionBehavior.insert(.fullScreenAuxiliary)
             panel.contentViewController = content
@@ -238,7 +239,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     }
 
     override func loadView() {
-        let root = NSView()
+        let root = EVStyleEditorBackgroundView(frame: .zero)
         root.setAccessibilityElement(false)
         stylePopup.target = self
         stylePopup.action = #selector(styleChanged(_:))
@@ -259,6 +260,11 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             [label("Based on"), basedOnPopup],
         ])
         configurePropertiesGrid(propertiesGrid)
+        let propertiesContainer = centeredContainer(
+            propertiesGrid,
+            maximumWidth: 570,
+            horizontalInset: 12
+        )
         availabilityLabel.textColor = .secondaryLabelColor
         availabilityLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         availabilityLabel.setAccessibilityLabel("Style editing availability")
@@ -284,13 +290,25 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             paragraphControls.bottomAnchor.constraint(equalTo: controlsContainer.bottomAnchor),
         ])
 
-        let previewBox = NSBox()
-        previewBox.boxType = .custom
-        previewBox.borderWidth = 1
-        previewBox.borderColor = .separatorColor
-        previewBox.cornerRadius = 5
-        previewBox.contentViewMargins = NSSize(width: 12, height: 10)
-        previewBox.contentView = preview
+        let formattingBox = EVStyleEditorSectionView()
+        formattingBox.addSubview(controlsContainer)
+        controlsContainer.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            controlsContainer.leadingAnchor.constraint(equalTo: formattingBox.leadingAnchor, constant: 8),
+            controlsContainer.trailingAnchor.constraint(equalTo: formattingBox.trailingAnchor, constant: -8),
+            controlsContainer.topAnchor.constraint(equalTo: formattingBox.topAnchor, constant: 7),
+            controlsContainer.bottomAnchor.constraint(equalTo: formattingBox.bottomAnchor, constant: -7),
+        ])
+
+        let previewBox = EVStyleEditorPreviewContainer()
+        previewBox.addSubview(preview)
+        preview.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            preview.leadingAnchor.constraint(equalTo: previewBox.leadingAnchor, constant: 12),
+            preview.trailingAnchor.constraint(equalTo: previewBox.trailingAnchor, constant: -12),
+            preview.topAnchor.constraint(equalTo: previewBox.topAnchor, constant: 10),
+            preview.bottomAnchor.constraint(equalTo: previewBox.bottomAnchor, constant: -10),
+        ])
 
         summary.isEditable = false
         summary.isSelectable = true
@@ -308,33 +326,49 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         let closeButton = NSButton(title: "Close", target: self, action: #selector(closePressed(_:)))
         closeButton.bezelStyle = .rounded
         closeButton.setAccessibilityLabel("Close style editor")
-        let bottom = NSStackView()
+        closeButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 82).isActive = true
+        let liveApplyLabel = NSTextField(labelWithString: "Changes apply immediately")
+        liveApplyLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        liveApplyLabel.textColor = .secondaryLabelColor
+        let bottom = NSStackView(views: [liveApplyLabel, NSView(), closeButton])
         bottom.orientation = .horizontal
-        bottom.addView(NSView(), in: .leading)
-        bottom.addView(closeButton, in: .trailing)
+        bottom.alignment = .centerY
+
+        let tabsContainer = centeredContainer(tabs, maximumWidth: 260, horizontalInset: 0)
 
         let stack = NSStackView(views: [
-            sectionTitle("Properties"), propertiesGrid, availabilityLabel,
-            separator(), tabs, controlsContainer, sectionTitle("Preview"), previewBox,
+            sectionTitle("Properties"), propertiesContainer, availabilityLabel,
+            separator(), sectionTitle("Formatting"), tabsContainer, formattingBox,
+            sectionTitle("Preview"), previewBox,
             sectionTitle("Resolved formatting"), summaryScroll, separator(), bottom,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 7
+        stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
         for arranged in stack.arrangedSubviews where !(arranged is NSTextField) {
             arranged.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
+        stack.setCustomSpacing(10, after: propertiesContainer)
         root.addSubview(stack)
+        let preferredFormattingHeight = formattingBox.heightAnchor.constraint(equalToConstant: 190)
+        preferredFormattingHeight.priority = .defaultHigh
+        let preferredPreviewHeight = previewBox.heightAnchor.constraint(equalToConstant: 112)
+        preferredPreviewHeight.priority = .defaultHigh
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
             stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 16),
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
-            controlsContainer.heightAnchor.constraint(equalToConstant: 200),
-            previewBox.heightAnchor.constraint(greaterThanOrEqualToConstant: 112),
-            summaryScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 96),
+            preferredFormattingHeight,
+            formattingBox.heightAnchor.constraint(greaterThanOrEqualToConstant: 150),
+            preferredPreviewHeight,
+            previewBox.heightAnchor.constraint(greaterThanOrEqualToConstant: 92),
+            summaryScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 70),
         ])
+        formattingBox.setContentCompressionResistancePriority(.required, for: .vertical)
+        previewBox.setContentCompressionResistancePriority(.required, for: .vertical)
+        summaryScroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         view = root
         renderNoDocument()
     }
@@ -445,6 +479,18 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             !row.view.isHidden
                 && active.bounds.intersects(row.view.convert(row.view.bounds, to: active))
         }.count
+    }
+
+    var stylePickerFrameForTesting: NSRect {
+        loadViewIfNeeded()
+        view.layoutSubtreeIfNeeded()
+        return stylePopup.convert(stylePopup.bounds, to: view)
+    }
+
+    var propertyTabsFrameForTesting: NSRect {
+        loadViewIfNeeded()
+        view.layoutSubtreeIfNeeded()
+        return tabs.convert(tabs.bounds, to: view)
     }
 
     private func installPropertyControls() {
@@ -902,8 +948,38 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private func configurePropertiesGrid(_ grid: NSGridView) {
         grid.rowSpacing = 8
         grid.columnSpacing = 12
+        grid.column(at: 0).width = 104
         grid.column(at: 0).xPlacement = .trailing
         grid.column(at: 1).xPlacement = .fill
+        for view in [stylePopup, nameField, typeLabel, basedOnPopup] {
+            view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 390).isActive = true
+        }
+    }
+
+    private func centeredContainer(
+        _ content: NSView,
+        maximumWidth: CGFloat,
+        horizontalInset: CGFloat
+    ) -> NSView {
+        let container = NSView()
+        container.addSubview(content)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        let preferredWidth = content.widthAnchor.constraint(
+            equalTo: container.widthAnchor,
+            constant: -(horizontalInset * 2)
+        )
+        preferredWidth.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            content.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            content.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: horizontalInset),
+            content.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -horizontalInset),
+            content.topAnchor.constraint(equalTo: container.topAnchor),
+            content.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            content.widthAnchor.constraint(lessThanOrEqualToConstant: maximumWidth),
+            preferredWidth,
+        ])
+        return container
     }
 
     private func label(_ value: String) -> NSTextField {
@@ -943,6 +1019,96 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     }
 
     @objc private func closePressed(_ sender: Any?) { onClose?() }
+}
+
+private final class EVStyleEditorBackgroundView: NSView {
+    override var isOpaque: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            NSColor.windowBackgroundColor.setFill()
+            dirtyRect.fill()
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        synchronizeWindowBackground()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        synchronizeWindowBackground()
+        needsDisplay = true
+    }
+
+    private func synchronizeWindowBackground() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let background = NSColor.windowBackgroundColor.usingColorSpace(.sRGB)
+                ?? .windowBackgroundColor
+            window?.backgroundColor = background
+            layer?.backgroundColor = background.cgColor
+        }
+    }
+}
+
+private class EVStyleEditorBorderedView: NSView {
+    let fillColor: NSColor
+
+    init(fillColor: NSColor) {
+        self.fillColor = fillColor
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.borderWidth = 1
+        synchronizeLayerColors()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        synchronizeLayerColors()
+    }
+
+    private func synchronizeLayerColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = (fillColor.usingColorSpace(.sRGB) ?? fillColor).cgColor
+            layer?.borderColor = (NSColor.separatorColor.usingColorSpace(.sRGB)
+                ?? .separatorColor).cgColor
+        }
+    }
+}
+
+private final class EVStyleEditorSectionView: EVStyleEditorBorderedView {
+    init() { super.init(fillColor: .controlBackgroundColor) }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+}
+
+private final class EVStyleEditorPreviewContainer: EVStyleEditorBorderedView {
+    init() { super.init(fillColor: .textBackgroundColor) }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
 }
 
 private final class EVFlippedStyleStackView: NSStackView {
