@@ -1290,6 +1290,20 @@ impl CommandInterpreter {
         self.cursor
     }
 
+    /// Install a literal string as the buffer's forward search target without
+    /// moving the cursor or entering command-line mode. Native "Use Selection
+    /// for Find" uses this after the coordinator has validated the exact
+    /// core-owned Visual selection. Escaping here keeps arbitrary prose (and
+    /// regex metacharacters in it) literal while `n`/`N` continue through the
+    /// ordinary Vim search engine.
+    pub(crate) fn set_literal_search_pattern(&mut self, literal: &str) -> bool {
+        if literal.is_empty() {
+            return false;
+        }
+        self.last_search = Some((SearchDirection::Forward, regex::escape(literal)));
+        true
+    }
+
     pub fn position_revision(&self) -> Option<Revision> {
         self.position_revision
     }
@@ -2027,6 +2041,24 @@ impl CommandInterpreter {
         self.visual_block.as_ref()
     }
 
+    /// Resolve the active linear Visual selection to the exact logical
+    /// half-open range consumed by operators. Keeping this query beside the
+    /// command implementation prevents presentation adapters from separately
+    /// approximating Character- and Linewise inclusive endpoint rules.
+    pub(crate) fn linear_visual_selection_range(
+        &self,
+        document: &Document,
+    ) -> Option<Range<usize>> {
+        matches!(self.mode, Mode::VisualCharacter | Mode::VisualLine)
+            .then(|| self.visual_extent(document).range)
+    }
+
+    /// Whether the active Visual Block right edge follows each row's semantic
+    /// end rather than a fixed x coordinate.
+    pub(crate) fn visual_block_to_line_end(&self) -> bool {
+        self.mode == Mode::VisualBlock && self.visual_to_line_end
+    }
+
     pub fn visual_block_rebind_error(&self) -> Option<&VisualBlockRebindError> {
         self.visual_block_rebind_error.as_ref()
     }
@@ -2217,6 +2249,30 @@ impl CommandInterpreter {
         self.registers.get(name)
     }
 
+    /// Current stored register names in stable scalar order. Dynamic host
+    /// registers (`+`/`*`) and the current artifact name (`%`) are deliberately
+    /// absent; a boundary resolving them must add only the capabilities it
+    /// captured for that exact turn.
+    pub(crate) fn stored_register_names(&self) -> Vec<char> {
+        self.registers.names()
+    }
+
+    /// Current local marks in stable name order. Offsets belong to
+    /// `position_revision()` and are exposed only to the coordinator/FFI
+    /// composition boundary for immutable command-result snapshots.
+    pub(crate) fn mark_positions(&self) -> impl Iterator<Item = (char, usize)> + '_ {
+        self.marks.iter().map(|(name, offset)| (*name, *offset))
+    }
+
+    /// Jump locations from oldest to newest plus the current list index.
+    /// An empty list has no meaningful current index.
+    pub(crate) fn jump_positions(&self) -> (&[usize], Option<usize>) {
+        (
+            &self.jumps,
+            (!self.jumps.is_empty()).then_some(self.jump_index),
+        )
+    }
+
     /// Resolve a stored or special register against exact external state for
     /// one read. `+`/`*` never fall back to an internal cache and `%` never
     /// performs a lossy path conversion.
@@ -2255,6 +2311,75 @@ impl CommandInterpreter {
         } else {
             false
         }
+    }
+
+    /// Places the caret from a native pointer hit-test while keeping Vim mode
+    /// state authoritative in the command controller. A plain placement ends
+    /// an active Visual selection but preserves Insert/Replace mode. Extending
+    /// starts or updates a Visual Character selection from the pre-click
+    /// cursor, matching the native shift-click/drag affordance without keeping
+    /// a second frontend-owned selection.
+    pub fn set_cursor_from_pointer(
+        &mut self,
+        document: &Document,
+        offset: usize,
+        affinity: BoundaryAffinity,
+        extend_selection: bool,
+    ) -> bool {
+        let lines = document.hard_line_snapshot();
+        if !lines.is_grapheme_boundary(offset) {
+            return false;
+        }
+
+        self.invalidate_replace_restoration();
+        if extend_selection {
+            if !matches!(
+                self.mode,
+                Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock
+            ) {
+                self.visual_anchor = Some(self.cursor);
+            }
+            self.mode = Mode::VisualCharacter;
+        } else {
+            if matches!(
+                self.mode,
+                Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock | Mode::CommandLine
+            ) {
+                self.mode = Mode::Normal;
+            }
+            self.visual_anchor = None;
+        }
+
+        let (cursor, affinity) = if matches!(self.mode, Mode::Insert | Mode::Replace) {
+            (offset, affinity)
+        } else {
+            let cursor = normalize_normal_cursor_snapshot(&lines, offset);
+            // A hit-test at the trailing edge of a non-empty hard line returns
+            // its end boundary with upstream affinity. Normal-mode storage
+            // addresses the associated grapheme by its start boundary, so the
+            // affinity must be canonicalized with the moved point. Retaining
+            // upstream here would visually associate the preceding grapheme a
+            // second time even though commands operate on `cursor`.
+            let affinity = if cursor == offset {
+                affinity
+            } else {
+                BoundaryAffinity::Downstream
+            };
+            (cursor, affinity)
+        };
+        self.cursor = cursor;
+        self.position_revision = Some(document.revision());
+        self.boundary_affinity = affinity;
+        self.visual_position = None;
+        self.visual_block = None;
+        self.active_visual_block = None;
+        self.desired_x = None;
+        self.preferred_column = None;
+        self.command_line_state = None;
+        self.insert_normal_once = None;
+        self.ctrl_o_just_started = false;
+        self.clear_pending();
+        true
     }
 
     /// Publish a text commit performed by a non-keyboard core input source,

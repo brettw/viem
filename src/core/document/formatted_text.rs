@@ -82,6 +82,11 @@ pub enum FormattedTextError {
         second: Range<usize>,
     },
     NotCharBoundary(usize),
+    InvalidUtf16Offset {
+        offset: usize,
+        length: usize,
+    },
+    NotUtf16Boundary(usize),
     NotGraphemeBoundary(usize),
     HardLineOutOfBounds {
         line: usize,
@@ -114,6 +119,13 @@ impl fmt::Display for FormattedTextError {
             Self::NotCharBoundary(offset) => {
                 write!(formatter, "byte offset {offset} splits a UTF-8 scalar")
             }
+            Self::InvalidUtf16Offset { offset, length } => write!(
+                formatter,
+                "UTF-16 offset {offset} exceeds text length {length}"
+            ),
+            Self::NotUtf16Boundary(offset) => {
+                write!(formatter, "UTF-16 offset {offset} splits a surrogate pair")
+            }
             Self::NotGraphemeBoundary(offset) => write!(
                 formatter,
                 "byte offset {offset} splits an extended grapheme cluster"
@@ -142,6 +154,7 @@ impl std::error::Error for FormattedTextError {}
 #[derive(Clone, Copy, Debug)]
 struct Aggregate {
     bytes: usize,
+    utf16_units: usize,
     hard_line_breaks: usize,
     leaves: usize,
     height: u32,
@@ -154,6 +167,7 @@ struct Leaf {
     buffer_id: FormattedBufferId,
     buffer: Arc<str>,
     range: Range<usize>,
+    utf16_units: usize,
     hard_line_breaks: usize,
 }
 
@@ -187,6 +201,7 @@ impl Node {
         match self {
             Self::Leaf(leaf) => Aggregate {
                 bytes: leaf.byte_len(),
+                utf16_units: leaf.utf16_units,
                 hard_line_breaks: leaf.hard_line_breaks,
                 leaves: 1,
                 height: 1,
@@ -234,6 +249,16 @@ pub(crate) struct FormattedTextSpliceStats {
     pub(crate) inserted_bytes: usize,
 }
 
+/// Test-only witness for bounded regional reads. Production queries use the
+/// same traversal without retaining counters.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct FormattedTextReadStats {
+    pub(crate) nodes_visited: usize,
+    pub(crate) leaves_visited: usize,
+    pub(crate) bytes_copied: usize,
+}
+
 impl FormattedTextTree {
     pub fn new() -> Self {
         Self::default()
@@ -278,6 +303,12 @@ impl FormattedTextTree {
 
     pub fn byte_len(&self) -> usize {
         aggregate(self.root.as_ref()).bytes
+    }
+
+    /// Number of UTF-16 code units in this immutable formatted snapshot.
+    /// This is a root aggregate and does not visit text leaves.
+    pub fn utf16_len(&self) -> usize {
+        aggregate(self.root.as_ref()).utf16_units
     }
 
     pub fn is_empty(&self) -> bool {
@@ -327,6 +358,48 @@ impl FormattedTextTree {
             append_range(root, 0, &range, &mut output);
         }
         Ok(output)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn slice_with_stats(
+        &self,
+        range: Range<usize>,
+    ) -> Result<(String, FormattedTextReadStats), FormattedTextError> {
+        self.validate_range(&range, false)?;
+        let mut output = String::with_capacity(range.len());
+        let mut stats = FormattedTextReadStats::default();
+        if let Some(root) = &self.root {
+            append_range_with_stats(root, 0, &range, &mut output, &mut stats);
+        }
+        Ok((output, stats))
+    }
+
+    /// Map a UTF-8 scalar boundary to its UTF-16 code-unit boundary. Tree
+    /// aggregates make prefix traversal logarithmic; only the containing
+    /// bounded leaf is decoded.
+    pub fn utf16_offset_for_byte(&self, offset: usize) -> Result<usize, FormattedTextError> {
+        self.validate_offset(offset)?;
+        if !self.is_char_boundary(offset)? {
+            return Err(FormattedTextError::NotCharBoundary(offset));
+        }
+        let Some(root) = &self.root else {
+            return Ok(0);
+        };
+        utf16_offset_for_byte(root, offset)
+    }
+
+    /// Map a UTF-16 code-unit boundary to its UTF-8 scalar boundary. An offset
+    /// between the two code units of a surrogate pair is rejected rather than
+    /// rounded. Prefix traversal is logarithmic with bounded leaf-local work.
+    pub fn byte_offset_for_utf16(&self, offset: usize) -> Result<usize, FormattedTextError> {
+        let length = self.utf16_len();
+        if offset > length {
+            return Err(FormattedTextError::InvalidUtf16Offset { offset, length });
+        }
+        let Some(root) = &self.root else {
+            return Ok(0);
+        };
+        byte_offset_for_utf16(root, offset, offset)
     }
 
     /// Persistently replace a grapheme-aligned range.
@@ -834,12 +907,14 @@ fn new_leaf_with_identity(
         .bytes()
         .filter(|byte| *byte == b'\n')
         .count();
+    let utf16_units = buffer[range.clone()].encode_utf16().count();
     Ok(Arc::new(Node::Leaf(Leaf {
         id,
         revision,
         buffer_id,
         buffer,
         range,
+        utf16_units,
         hard_line_breaks,
     })))
 }
@@ -848,6 +923,7 @@ fn aggregate(node: Option<&Arc<Node>>) -> Aggregate {
     node.map_or(
         Aggregate {
             bytes: 0,
+            utf16_units: 0,
             hard_line_breaks: 0,
             leaves: 0,
             height: 0,
@@ -863,6 +939,10 @@ fn branch(left: Arc<Node>, right: Arc<Node>) -> Result<Arc<Node>, FormattedTextE
         bytes: left_aggregate
             .bytes
             .checked_add(right_aggregate.bytes)
+            .ok_or(FormattedTextError::ArithmeticOverflow)?,
+        utf16_units: left_aggregate
+            .utf16_units
+            .checked_add(right_aggregate.utf16_units)
             .ok_or(FormattedTextError::ArithmeticOverflow)?,
         hard_line_breaks: left_aggregate
             .hard_line_breaks
@@ -1136,6 +1216,103 @@ fn append_range(node: &Node, start: usize, range: &Range<usize>, output: &mut St
     }
 }
 
+#[cfg(test)]
+fn append_range_with_stats(
+    node: &Node,
+    start: usize,
+    range: &Range<usize>,
+    output: &mut String,
+    stats: &mut FormattedTextReadStats,
+) {
+    stats.nodes_visited = stats.nodes_visited.saturating_add(1);
+    let end = start + node.aggregate().bytes;
+    if range.end <= start || end <= range.start {
+        return;
+    }
+    match node {
+        Node::Leaf(leaf) => {
+            stats.leaves_visited = stats.leaves_visited.saturating_add(1);
+            let local_start = range.start.saturating_sub(start).min(leaf.byte_len());
+            let local_end = range.end.saturating_sub(start).min(leaf.byte_len());
+            let text = &leaf.text()[local_start..local_end];
+            stats.bytes_copied = stats.bytes_copied.saturating_add(text.len());
+            output.push_str(text);
+        }
+        Node::Branch(branch) => {
+            append_range_with_stats(&branch.left, start, range, output, stats);
+            append_range_with_stats(
+                &branch.right,
+                start + branch.left.aggregate().bytes,
+                range,
+                output,
+                stats,
+            );
+        }
+    }
+}
+
+fn utf16_offset_for_byte(node: &Node, offset: usize) -> Result<usize, FormattedTextError> {
+    match node {
+        Node::Leaf(leaf) => Ok(leaf.text()[..offset].encode_utf16().count()),
+        Node::Branch(branch) => {
+            let left = branch.left.aggregate();
+            if offset <= left.bytes {
+                utf16_offset_for_byte(&branch.left, offset)
+            } else {
+                left.utf16_units
+                    .checked_add(utf16_offset_for_byte(&branch.right, offset - left.bytes)?)
+                    .ok_or(FormattedTextError::ArithmeticOverflow)
+            }
+        }
+    }
+}
+
+fn byte_offset_for_utf16(
+    node: &Node,
+    offset: usize,
+    requested: usize,
+) -> Result<usize, FormattedTextError> {
+    match node {
+        Node::Leaf(leaf) => {
+            let mut utf16 = 0usize;
+            for (byte, scalar) in leaf.text().char_indices() {
+                if utf16 == offset {
+                    return Ok(byte);
+                }
+                let next = utf16
+                    .checked_add(scalar.len_utf16())
+                    .ok_or(FormattedTextError::ArithmeticOverflow)?;
+                if offset < next {
+                    return Err(FormattedTextError::NotUtf16Boundary(requested));
+                }
+                utf16 = next;
+            }
+            if utf16 == offset {
+                Ok(leaf.byte_len())
+            } else {
+                Err(FormattedTextError::InvalidUtf16Offset {
+                    offset: requested,
+                    length: node.aggregate().utf16_units,
+                })
+            }
+        }
+        Node::Branch(branch) => {
+            let left = branch.left.aggregate();
+            if offset <= left.utf16_units {
+                byte_offset_for_utf16(&branch.left, offset, requested)
+            } else {
+                left.bytes
+                    .checked_add(byte_offset_for_utf16(
+                        &branch.right,
+                        offset - left.utf16_units,
+                        requested,
+                    )?)
+                    .ok_or(FormattedTextError::ArithmeticOverflow)
+            }
+        }
+    }
+}
+
 fn leaf_at_or_after(node: &Node, offset: usize, start: usize) -> (&Leaf, usize) {
     match node {
         Node::Leaf(leaf) => (leaf, start),
@@ -1324,6 +1501,7 @@ mod tests {
                         leaf.hard_line_breaks,
                         leaf.text().bytes().filter(|byte| *byte == b'\n').count()
                     );
+                    assert_eq!(leaf.utf16_units, leaf.text().encode_utf16().count());
                     node.aggregate()
                 }
                 Node::Branch(branch) => {
@@ -1331,6 +1509,10 @@ mod tests {
                     let right = visit(&branch.right);
                     assert!(left.height.abs_diff(right.height) <= 1);
                     assert_eq!(branch.aggregate.bytes, left.bytes + right.bytes);
+                    assert_eq!(
+                        branch.aggregate.utf16_units,
+                        left.utf16_units + right.utf16_units
+                    );
                     assert_eq!(
                         branch.aggregate.hard_line_breaks,
                         left.hard_line_breaks + right.hard_line_breaks
@@ -1534,6 +1716,7 @@ mod tests {
         let text = "x\n".repeat(1_000_000);
         let tree = FormattedTextTree::try_from_text(text.as_str()).unwrap();
         assert_eq!(tree.byte_len(), 2_000_000);
+        assert_eq!(tree.utf16_len(), 2_000_000);
         assert_eq!(tree.hard_line_count(), 1_000_001);
         assert_eq!(tree.hard_line_start(999_999).unwrap(), 1_999_998);
         assert_eq!(tree.hard_line_start(1_000_000).unwrap(), 2_000_000);
@@ -1556,6 +1739,71 @@ mod tests {
         assert!(stats.leaves_copied <= 8, "{stats:?}");
         assert_eq!(tree.slice(edit_start - 1..edit_start + 2).unwrap(), "\nx\n");
         assert_invariants(&changed);
+    }
+
+    #[test]
+    fn utf8_and_utf16_boundaries_map_through_tree_aggregates() {
+        let text = format!(
+            "{}Aé👩‍💻e\u{301}Z",
+            "x".repeat(FORMATTED_TEXT_LEAF_BYTES - 2)
+        );
+        let tree = FormattedTextTree::try_from_text(text.as_str()).unwrap();
+        assert!(tree.leaf_count() > 1);
+        assert_eq!(tree.utf16_len(), text.encode_utf16().count());
+
+        for byte in text
+            .char_indices()
+            .map(|(offset, _)| offset)
+            .chain(std::iter::once(text.len()))
+        {
+            let expected = text[..byte].encode_utf16().count();
+            assert_eq!(tree.utf16_offset_for_byte(byte).unwrap(), expected);
+            assert_eq!(tree.byte_offset_for_utf16(expected).unwrap(), byte);
+        }
+
+        let emoji = text.find('👩').unwrap();
+        assert_eq!(
+            tree.utf16_offset_for_byte(emoji + 1),
+            Err(FormattedTextError::NotCharBoundary(emoji + 1))
+        );
+        let emoji_utf16 = text[..emoji].encode_utf16().count();
+        assert_eq!(
+            tree.byte_offset_for_utf16(emoji_utf16 + 1),
+            Err(FormattedTextError::NotUtf16Boundary(emoji_utf16 + 1))
+        );
+        assert_eq!(
+            tree.byte_offset_for_utf16(tree.utf16_len() + 1),
+            Err(FormattedTextError::InvalidUtf16Offset {
+                offset: tree.utf16_len() + 1,
+                length: tree.utf16_len(),
+            })
+        );
+
+        let changed = tree.splice(0..1, "🎉").unwrap();
+        let mut expected = text;
+        expected.replace_range(0..1, "🎉");
+        assert_eq!(changed.utf16_len(), expected.encode_utf16().count());
+        assert_eq!(
+            changed.byte_offset_for_utf16(changed.utf16_len()).unwrap(),
+            changed.byte_len()
+        );
+        assert_invariants(&changed);
+    }
+
+    #[test]
+    fn million_line_regional_read_visits_only_its_tree_frontier() {
+        let text = "x\n".repeat(1_000_000);
+        let tree = FormattedTextTree::try_from_text(text).unwrap();
+        let range = 1_765_431..1_765_447;
+        let (slice, stats) = tree.slice_with_stats(range.clone()).unwrap();
+
+        assert_eq!(slice, "\nx\nx\nx\nx\nx\nx\nx\nx");
+        assert_eq!(stats.bytes_copied, range.len());
+        assert!(stats.leaves_visited <= 2, "{stats:?}");
+        assert!(
+            stats.nodes_visited <= (tree.height() as usize * 4 + 4),
+            "{stats:?}"
+        );
     }
 
     #[test]

@@ -11,6 +11,36 @@ impl From<&str> for StyleId {
     }
 }
 
+/// Provenance/editability class of one normalized style definition.
+///
+/// This is immutable metadata on the definition itself. Model requests do not
+/// get to assert their own authority: callers name a stable style ID and the
+/// document derives whether it is editable from this core-owned value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StyleDefinitionOrigin {
+    SourceBacked,
+    GeneratedConfiguration,
+    SyntheticReadOnly,
+}
+
+/// Core-owned presentation and authority metadata for one style definition.
+/// Stable IDs remain opaque serialization tokens and are deliberately distinct
+/// from the user-visible display name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StyleDefinitionMetadata {
+    pub display_name: String,
+    pub origin: StyleDefinitionOrigin,
+}
+
+impl StyleDefinitionMetadata {
+    pub fn generated(display_name: impl Into<String>) -> Self {
+        Self {
+            display_name: display_name.into(),
+            origin: StyleDefinitionOrigin::GeneratedConfiguration,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Color {
     pub red: f32,
@@ -209,28 +239,46 @@ pub struct BlockStyle {
 /// provenance class; this payload alone cannot mutate a document.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StyleDefinitionEdit {
-    InsertBlock(BlockStyle),
+    InsertBlock {
+        style: BlockStyle,
+        metadata: StyleDefinitionMetadata,
+    },
     UpdateBlock(BlockStyle),
     DeleteBlock(StyleId),
-    InsertCharacter(CharacterStyle),
+    InsertCharacter {
+        style: CharacterStyle,
+        metadata: StyleDefinitionMetadata,
+    },
     UpdateCharacter(CharacterStyle),
     DeleteCharacter(StyleId),
+    UpdateMetadata {
+        namespace: StyleNamespace,
+        id: StyleId,
+        metadata: StyleDefinitionMetadata,
+    },
 }
 
 impl StyleDefinitionEdit {
     pub fn style_id(&self) -> &StyleId {
         match self {
-            Self::InsertBlock(style) | Self::UpdateBlock(style) => &style.id,
+            Self::InsertBlock { style, .. } | Self::UpdateBlock(style) => &style.id,
             Self::DeleteBlock(id) => id,
-            Self::InsertCharacter(style) | Self::UpdateCharacter(style) => &style.id,
+            Self::InsertCharacter { style, .. } | Self::UpdateCharacter(style) => &style.id,
             Self::DeleteCharacter(id) => id,
+            Self::UpdateMetadata { id, .. } => id,
         }
     }
 
     pub fn is_block(&self) -> bool {
         matches!(
             self,
-            Self::InsertBlock(_) | Self::UpdateBlock(_) | Self::DeleteBlock(_)
+            Self::InsertBlock { .. }
+                | Self::UpdateBlock(_)
+                | Self::DeleteBlock(_)
+                | Self::UpdateMetadata {
+                    namespace: StyleNamespace::Block,
+                    ..
+                }
         )
     }
 }
@@ -262,6 +310,8 @@ pub struct StyleSheet {
     pub base_character: StyleId,
     block_styles: BTreeMap<StyleId, BlockStyle>,
     character_styles: BTreeMap<StyleId, CharacterStyle>,
+    block_metadata: BTreeMap<StyleId, StyleDefinitionMetadata>,
+    character_metadata: BTreeMap<StyleId, StyleDefinitionMetadata>,
 }
 
 impl Default for StyleSheet {
@@ -278,7 +328,7 @@ impl Default for StyleSheet {
                 next_paragraph_style: None,
                 role: BlockRole::Document,
                 character: CharacterProperties {
-                    font_families: Some(vec!["system-ui".to_owned()]),
+                    font_families: Some(vec!["SF Pro".to_owned()]),
                     size: Some(14.0),
                     weight: Some(400),
                     slant: Some(FontSlant::Upright),
@@ -366,6 +416,26 @@ impl Default for StyleSheet {
                 properties: CharacterProperties::default(),
             },
         );
+        let mut block_metadata = BTreeMap::new();
+        block_metadata.insert(
+            document.clone(),
+            StyleDefinitionMetadata::generated("Base Document"),
+        );
+        block_metadata.insert(
+            paragraph.clone(),
+            StyleDefinitionMetadata::generated("Base Paragraph"),
+        );
+        for level in 1..=6 {
+            block_metadata.insert(
+                StyleId(format!("Heading{level}")),
+                StyleDefinitionMetadata::generated(format!("Heading {level}")),
+            );
+        }
+        let mut character_metadata = BTreeMap::new();
+        character_metadata.insert(
+            character.clone(),
+            StyleDefinitionMetadata::generated("Base Character"),
+        );
         Self {
             revision: StyleSheetRevision(1),
             base_document: document,
@@ -373,6 +443,8 @@ impl Default for StyleSheet {
             base_character: character,
             block_styles,
             character_styles,
+            block_metadata,
+            character_metadata,
         }
     }
 }
@@ -407,6 +479,20 @@ pub enum StyleError {
     },
     InvalidCharacterProperties(StyleId),
     InvalidBlockProperties(StyleId),
+    InvalidDefinitionMetadata(StyleId),
+    DefinitionNotGeneratedConfiguration {
+        style: StyleId,
+        origin: StyleDefinitionOrigin,
+    },
+    InapplicableStyleProperty {
+        style: StyleId,
+        property: StyleProperty,
+    },
+    InvalidStylePropertyValue {
+        style: StyleId,
+        property: StyleProperty,
+    },
+    InapplicableStyleRelationship(StyleId),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -429,7 +515,7 @@ pub struct ResolvedCharacterStyle {
 impl Default for ResolvedCharacterStyle {
     fn default() -> Self {
         Self {
-            font_families: vec!["system-ui".to_owned()],
+            font_families: vec!["SF Pro".to_owned()],
             size: 14.0,
             weight: 400,
             slant: FontSlant::Upright,
@@ -575,6 +661,44 @@ pub enum StyleProperty {
     CharacterOpenTypeFeatures,
     CharacterLetterSpacing,
     CharacterBaselineShift,
+}
+
+/// Namespace of one normalized style definition. IDs are unique only within
+/// their namespace.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StyleNamespace {
+    Block,
+    Character,
+}
+
+/// Strongly typed value used by native single-property configuration edits.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StylePropertyValue {
+    Float(f32),
+    FontWeight(u16),
+    Boolean(bool),
+    Color(Color),
+    FontFamilies(Vec<String>),
+    Text(String),
+    FontSlant(FontSlant),
+    WritingDirection(WritingDirection),
+    OpenTypeFeatures(BTreeMap<String, u32>),
+    LineSpacing(LineSpacing),
+    ParagraphAlignment(ParagraphAlignment),
+}
+
+/// One field of an existing style definition. Each successful edit is a
+/// standalone semantic intention and undo unit.
+#[derive(Clone, Debug, PartialEq)]
+pub enum StyleDefinitionFieldEdit {
+    SetDeclaration {
+        property: StyleProperty,
+        value: StylePropertyValue,
+    },
+    ClearDeclaration(StyleProperty),
+    SetParent(Option<StyleId>),
+    SetNextParagraphStyle(Option<StyleId>),
+    SetDisplayName(String),
 }
 
 /// Smallest downstream layer invalidated when one normalized property changes.
@@ -792,6 +916,11 @@ impl StyleSheet {
         self.block_styles.len()
     }
 
+    /// Read immutable core-owned metadata for a block definition.
+    pub fn block_style_metadata(&self, id: &StyleId) -> Option<&StyleDefinitionMetadata> {
+        self.block_metadata.get(id)
+    }
+
     /// Look up one immutable character-style definition by its stable ID.
     pub fn character_style(&self, id: &StyleId) -> Option<&CharacterStyle> {
         self.character_styles.get(id)
@@ -804,6 +933,64 @@ impl StyleSheet {
 
     pub fn character_style_count(&self) -> usize {
         self.character_styles.len()
+    }
+
+    /// Read immutable core-owned metadata for a character definition.
+    pub fn character_style_metadata(&self, id: &StyleId) -> Option<&StyleDefinitionMetadata> {
+        self.character_metadata.get(id)
+    }
+
+    /// Build one immutable definition replacement for a core-authorized
+    /// generated-configuration field edit. The current metadata, namespace,
+    /// and property kind are validated before any candidate sheet is changed.
+    pub fn prepare_generated_field_edit(
+        &self,
+        namespace: StyleNamespace,
+        id: &StyleId,
+        edit: &StyleDefinitionFieldEdit,
+    ) -> Result<StyleDefinitionEdit, StyleError> {
+        let metadata = match namespace {
+            StyleNamespace::Block => self.block_style_metadata(id),
+            StyleNamespace::Character => self.character_style_metadata(id),
+        }
+        .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?;
+        if metadata.origin != StyleDefinitionOrigin::GeneratedConfiguration {
+            return Err(StyleError::DefinitionNotGeneratedConfiguration {
+                style: id.clone(),
+                origin: metadata.origin,
+            });
+        }
+        if let StyleDefinitionFieldEdit::SetDisplayName(display_name) = edit {
+            let metadata = StyleDefinitionMetadata {
+                display_name: display_name.clone(),
+                origin: metadata.origin,
+            };
+            validate_definition_metadata(id, &metadata)?;
+            return Ok(StyleDefinitionEdit::UpdateMetadata {
+                namespace,
+                id: id.clone(),
+                metadata,
+            });
+        }
+
+        match namespace {
+            StyleNamespace::Block => {
+                let mut style = self
+                    .block_style(id)
+                    .cloned()
+                    .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?;
+                apply_block_field_edit(&mut style, edit)?;
+                Ok(StyleDefinitionEdit::UpdateBlock(style))
+            }
+            StyleNamespace::Character => {
+                let mut style = self
+                    .character_style(id)
+                    .cloned()
+                    .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?;
+                apply_character_field_edit(&mut style, edit)?;
+                Ok(StyleDefinitionEdit::UpdateCharacter(style))
+            }
+        }
     }
 
     pub(crate) fn set_configuration_revision(&mut self, revision: StyleSheetRevision) {
@@ -820,13 +1007,58 @@ impl StyleSheet {
         revision: StyleSheetRevision,
         has_assignment: bool,
     ) -> Result<bool, StyleError> {
+        let (origin, id) = match edit {
+            StyleDefinitionEdit::InsertBlock { style, metadata } => (metadata.origin, &style.id),
+            StyleDefinitionEdit::InsertCharacter { style, metadata } => {
+                (metadata.origin, &style.id)
+            }
+            StyleDefinitionEdit::UpdateBlock(style) => (
+                self.block_style_metadata(&style.id)
+                    .ok_or_else(|| StyleError::UnknownStyle(style.id.clone()))?
+                    .origin,
+                &style.id,
+            ),
+            StyleDefinitionEdit::DeleteBlock(id) => (
+                self.block_style_metadata(id)
+                    .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?
+                    .origin,
+                id,
+            ),
+            StyleDefinitionEdit::UpdateCharacter(style) => (
+                self.character_style_metadata(&style.id)
+                    .ok_or_else(|| StyleError::UnknownStyle(style.id.clone()))?
+                    .origin,
+                &style.id,
+            ),
+            StyleDefinitionEdit::DeleteCharacter(id) => (
+                self.character_style_metadata(id)
+                    .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?
+                    .origin,
+                id,
+            ),
+            StyleDefinitionEdit::UpdateMetadata { namespace, id, .. } => (
+                match namespace {
+                    StyleNamespace::Block => self.block_style_metadata(id),
+                    StyleNamespace::Character => self.character_style_metadata(id),
+                }
+                .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?
+                .origin,
+                id,
+            ),
+        };
+        if origin != StyleDefinitionOrigin::GeneratedConfiguration {
+            return Err(StyleError::DefinitionNotGeneratedConfiguration {
+                style: id.clone(),
+                origin,
+            });
+        }
         let mut candidate = self.clone();
         let changed = match edit {
-            StyleDefinitionEdit::InsertBlock(style) => {
+            StyleDefinitionEdit::InsertBlock { style, metadata } => {
                 if candidate.block_styles.contains_key(&style.id) {
                     return Err(StyleError::StyleAlreadyExists(style.id.clone()));
                 }
-                candidate.insert_block_style(style.clone())?;
+                candidate.insert_block_style(style.clone(), metadata.clone())?;
                 true
             }
             StyleDefinitionEdit::UpdateBlock(style) => {
@@ -848,11 +1080,11 @@ impl StyleSheet {
                 candidate.remove_block_style(id, has_assignment)?;
                 true
             }
-            StyleDefinitionEdit::InsertCharacter(style) => {
+            StyleDefinitionEdit::InsertCharacter { style, metadata } => {
                 if candidate.character_styles.contains_key(&style.id) {
                     return Err(StyleError::StyleAlreadyExists(style.id.clone()));
                 }
-                candidate.insert_character_style(style.clone())?;
+                candidate.insert_character_style(style.clone(), metadata.clone())?;
                 true
             }
             StyleDefinitionEdit::UpdateCharacter(style) => {
@@ -873,6 +1105,24 @@ impl StyleSheet {
                 }
                 candidate.remove_character_style(id, has_assignment)?;
                 true
+            }
+            StyleDefinitionEdit::UpdateMetadata {
+                namespace,
+                id,
+                metadata,
+            } => {
+                validate_definition_metadata(id, metadata)?;
+                let current = match namespace {
+                    StyleNamespace::Block => candidate.block_metadata.get_mut(id),
+                    StyleNamespace::Character => candidate.character_metadata.get_mut(id),
+                }
+                .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?;
+                if current == metadata {
+                    false
+                } else {
+                    current.clone_from(metadata);
+                    true
+                }
             }
         };
         if !changed {
@@ -938,10 +1188,15 @@ impl StyleSheet {
     /// Insert a style defined by application or generated configuration. Source
     /// adapters may retain malformed native definitions separately, but the
     /// normalized sheet never accepts a cycle or an inapplicable declaration.
-    pub fn insert_block_style(&mut self, style: BlockStyle) -> Result<(), StyleError> {
+    pub fn insert_block_style(
+        &mut self,
+        style: BlockStyle,
+        metadata: StyleDefinitionMetadata,
+    ) -> Result<(), StyleError> {
         if style.id == self.base_document || style.id == self.base_paragraph {
             return Err(StyleError::CannotReplaceBaseStyle(style.id));
         }
+        validate_definition_metadata(&style.id, &metadata)?;
         validate_character_properties(&style.id, &style.character)?;
         validate_block_properties(&style)?;
         self.validate_block_parent(&style)?;
@@ -957,14 +1212,20 @@ impl StyleSheet {
             }
             return Err(error);
         }
+        self.block_metadata.insert(style.id.clone(), metadata);
         self.revision = next_revision;
         Ok(())
     }
 
-    pub fn insert_character_style(&mut self, style: CharacterStyle) -> Result<(), StyleError> {
+    pub fn insert_character_style(
+        &mut self,
+        style: CharacterStyle,
+        metadata: StyleDefinitionMetadata,
+    ) -> Result<(), StyleError> {
         if style.id == self.base_character {
             return Err(StyleError::CannotReplaceBaseStyle(style.id));
         }
+        validate_definition_metadata(&style.id, &metadata)?;
         validate_character_properties(&style.id, &style.properties)?;
         let parent = style
             .based_on
@@ -985,6 +1246,7 @@ impl StyleSheet {
             }
             return Err(error);
         }
+        self.character_metadata.insert(style.id.clone(), metadata);
         self.revision = next_revision;
         Ok(())
     }
@@ -1009,6 +1271,7 @@ impl StyleSheet {
         if self.block_styles.contains_key(id) {
             let next_revision = self.next_revision()?;
             self.block_styles.remove(id);
+            self.block_metadata.remove(id);
             self.revision = next_revision;
         }
         Ok(())
@@ -1033,6 +1296,7 @@ impl StyleSheet {
         if self.character_styles.contains_key(id) {
             let next_revision = self.next_revision()?;
             self.character_styles.remove(id);
+            self.character_metadata.remove(id);
             self.revision = next_revision;
         }
         Ok(())
@@ -1433,7 +1697,12 @@ impl StyleSheet {
             validate_block_properties(&style)?;
             self.validate_next_paragraph_style(&style)?;
         } else {
-            return self.insert_block_style(style);
+            let metadata = self
+                .block_metadata
+                .get(&style.id)
+                .cloned()
+                .ok_or_else(|| StyleError::InvalidDefinitionMetadata(style.id.clone()))?;
+            return self.insert_block_style(style, metadata);
         }
 
         let next_revision = self.next_revision()?;
@@ -1445,7 +1714,12 @@ impl StyleSheet {
 
     fn replace_character_style(&mut self, style: CharacterStyle) -> Result<(), StyleError> {
         if style.id != self.base_character {
-            return self.insert_character_style(style);
+            let metadata = self
+                .character_metadata
+                .get(&style.id)
+                .cloned()
+                .ok_or_else(|| StyleError::InvalidDefinitionMetadata(style.id.clone()))?;
+            return self.insert_character_style(style, metadata);
         }
         if style.based_on.is_some() {
             return Err(StyleError::InvalidBaseStyleDefinition(style.id));
@@ -1568,6 +1842,237 @@ impl StyleSheet {
     }
 }
 
+fn apply_block_field_edit(
+    style: &mut BlockStyle,
+    edit: &StyleDefinitionFieldEdit,
+) -> Result<(), StyleError> {
+    match edit {
+        StyleDefinitionFieldEdit::SetDeclaration { property, value } => {
+            if is_character_property(*property) {
+                set_character_property(&style.id, &mut style.character, *property, value)
+            } else {
+                set_block_property(&style.id, &mut style.block, *property, value)
+            }
+        }
+        StyleDefinitionFieldEdit::ClearDeclaration(property) => {
+            if is_character_property(*property) {
+                clear_character_property(&style.id, &mut style.character, *property)
+            } else {
+                clear_block_property(&style.id, &mut style.block, *property)
+            }
+        }
+        StyleDefinitionFieldEdit::SetParent(parent) => {
+            style.based_on.clone_from(parent);
+            Ok(())
+        }
+        StyleDefinitionFieldEdit::SetNextParagraphStyle(next) => {
+            style.next_paragraph_style.clone_from(next);
+            Ok(())
+        }
+        StyleDefinitionFieldEdit::SetDisplayName(_) => {
+            Err(StyleError::InapplicableStyleRelationship(style.id.clone()))
+        }
+    }
+}
+
+fn apply_character_field_edit(
+    style: &mut CharacterStyle,
+    edit: &StyleDefinitionFieldEdit,
+) -> Result<(), StyleError> {
+    match edit {
+        StyleDefinitionFieldEdit::SetDeclaration { property, value } => {
+            set_character_property(&style.id, &mut style.properties, *property, value)
+        }
+        StyleDefinitionFieldEdit::ClearDeclaration(property) => {
+            clear_character_property(&style.id, &mut style.properties, *property)
+        }
+        StyleDefinitionFieldEdit::SetParent(parent) => {
+            style.based_on.clone_from(parent);
+            Ok(())
+        }
+        StyleDefinitionFieldEdit::SetNextParagraphStyle(_) => {
+            Err(StyleError::InapplicableStyleRelationship(style.id.clone()))
+        }
+        StyleDefinitionFieldEdit::SetDisplayName(_) => {
+            Err(StyleError::InapplicableStyleRelationship(style.id.clone()))
+        }
+    }
+}
+
+fn is_character_property(property: StyleProperty) -> bool {
+    CHARACTER_STYLE_PROPERTIES.contains(&property)
+}
+
+fn invalid_style_value(style: &StyleId, property: StyleProperty) -> StyleError {
+    StyleError::InvalidStylePropertyValue {
+        style: style.clone(),
+        property,
+    }
+}
+
+fn inapplicable_style_property(style: &StyleId, property: StyleProperty) -> StyleError {
+    StyleError::InapplicableStyleProperty {
+        style: style.clone(),
+        property,
+    }
+}
+
+fn set_character_property(
+    style: &StyleId,
+    properties: &mut CharacterProperties,
+    property: StyleProperty,
+    value: &StylePropertyValue,
+) -> Result<(), StyleError> {
+    match (property, value) {
+        (StyleProperty::CharacterFontFamilies, StylePropertyValue::FontFamilies(value)) => {
+            properties.font_families = Some(value.clone());
+        }
+        (StyleProperty::CharacterSize, StylePropertyValue::Float(value)) => {
+            properties.size = Some(*value);
+        }
+        (StyleProperty::CharacterWeight, StylePropertyValue::FontWeight(value)) => {
+            properties.weight = Some(*value);
+        }
+        (StyleProperty::CharacterSlant, StylePropertyValue::FontSlant(value)) => {
+            properties.slant = Some(*value);
+        }
+        (StyleProperty::CharacterForeground, StylePropertyValue::Color(value)) => {
+            properties.foreground = Some(*value);
+        }
+        (StyleProperty::CharacterBackground, StylePropertyValue::Color(value)) => {
+            properties.background = Some(*value);
+        }
+        (StyleProperty::CharacterUnderline, StylePropertyValue::Boolean(value)) => {
+            properties.underline = Some(*value);
+        }
+        (StyleProperty::CharacterStrikethrough, StylePropertyValue::Boolean(value)) => {
+            properties.strikethrough = Some(*value);
+        }
+        (StyleProperty::CharacterLanguage, StylePropertyValue::Text(value)) => {
+            properties.language = Some(value.clone());
+        }
+        (StyleProperty::CharacterDirection, StylePropertyValue::WritingDirection(value)) => {
+            properties.direction = Some(*value);
+        }
+        (StyleProperty::CharacterOpenTypeFeatures, StylePropertyValue::OpenTypeFeatures(value)) => {
+            properties.open_type_features = Some(value.clone());
+        }
+        (StyleProperty::CharacterLetterSpacing, StylePropertyValue::Float(value)) => {
+            properties.letter_spacing = Some(*value);
+        }
+        (StyleProperty::CharacterBaselineShift, StylePropertyValue::Float(value)) => {
+            properties.baseline_shift = Some(*value);
+        }
+        (property, _) if !is_character_property(property) => {
+            return Err(inapplicable_style_property(style, property));
+        }
+        (property, _) => return Err(invalid_style_value(style, property)),
+    }
+    Ok(())
+}
+
+fn clear_character_property(
+    style: &StyleId,
+    properties: &mut CharacterProperties,
+    property: StyleProperty,
+) -> Result<(), StyleError> {
+    match property {
+        StyleProperty::CharacterFontFamilies => properties.font_families = None,
+        StyleProperty::CharacterSize => properties.size = None,
+        StyleProperty::CharacterWeight => properties.weight = None,
+        StyleProperty::CharacterSlant => properties.slant = None,
+        StyleProperty::CharacterForeground => properties.foreground = None,
+        StyleProperty::CharacterBackground => properties.background = None,
+        StyleProperty::CharacterUnderline => properties.underline = None,
+        StyleProperty::CharacterStrikethrough => properties.strikethrough = None,
+        StyleProperty::CharacterLanguage => properties.language = None,
+        StyleProperty::CharacterDirection => properties.direction = None,
+        StyleProperty::CharacterOpenTypeFeatures => properties.open_type_features = None,
+        StyleProperty::CharacterLetterSpacing => properties.letter_spacing = None,
+        StyleProperty::CharacterBaselineShift => properties.baseline_shift = None,
+        property => return Err(inapplicable_style_property(style, property)),
+    }
+    Ok(())
+}
+
+fn set_block_property(
+    style: &StyleId,
+    properties: &mut BlockProperties,
+    property: StyleProperty,
+    value: &StylePropertyValue,
+) -> Result<(), StyleError> {
+    match (property, value) {
+        (StyleProperty::CanvasBackground, StylePropertyValue::Color(value)) => {
+            properties.background = Some(*value);
+        }
+        (StyleProperty::CanvasPaddingTop, StylePropertyValue::Float(value)) => {
+            properties.padding_top = Some(*value);
+        }
+        (StyleProperty::CanvasPaddingRight, StylePropertyValue::Float(value)) => {
+            properties.padding_right = Some(*value);
+        }
+        (StyleProperty::CanvasPaddingBottom, StylePropertyValue::Float(value)) => {
+            properties.padding_bottom = Some(*value);
+        }
+        (StyleProperty::CanvasPaddingLeft, StylePropertyValue::Float(value)) => {
+            properties.padding_left = Some(*value);
+        }
+        (StyleProperty::ParagraphSpacingBefore, StylePropertyValue::Float(value)) => {
+            properties.spacing_before = Some(*value);
+        }
+        (StyleProperty::ParagraphSpacingAfter, StylePropertyValue::Float(value)) => {
+            properties.spacing_after = Some(*value);
+        }
+        (StyleProperty::ParagraphLineSpacing, StylePropertyValue::LineSpacing(value)) => {
+            properties.line_spacing = Some(*value);
+        }
+        (StyleProperty::ParagraphFirstLineIndent, StylePropertyValue::Float(value)) => {
+            properties.first_line_indent = Some(*value);
+        }
+        (StyleProperty::ParagraphLeadingIndent, StylePropertyValue::Float(value)) => {
+            properties.leading_indent = Some(*value);
+        }
+        (StyleProperty::ParagraphTrailingIndent, StylePropertyValue::Float(value)) => {
+            properties.trailing_indent = Some(*value);
+        }
+        (StyleProperty::ParagraphAlignment, StylePropertyValue::ParagraphAlignment(value)) => {
+            properties.alignment = Some(*value)
+        }
+        (StyleProperty::ParagraphBaseDirection, StylePropertyValue::WritingDirection(value)) => {
+            properties.base_direction = Some(*value)
+        }
+        (property, _) if is_character_property(property) => {
+            return Err(inapplicable_style_property(style, property));
+        }
+        (property, _) => return Err(invalid_style_value(style, property)),
+    }
+    Ok(())
+}
+
+fn clear_block_property(
+    style: &StyleId,
+    properties: &mut BlockProperties,
+    property: StyleProperty,
+) -> Result<(), StyleError> {
+    match property {
+        StyleProperty::CanvasBackground => properties.background = None,
+        StyleProperty::CanvasPaddingTop => properties.padding_top = None,
+        StyleProperty::CanvasPaddingRight => properties.padding_right = None,
+        StyleProperty::CanvasPaddingBottom => properties.padding_bottom = None,
+        StyleProperty::CanvasPaddingLeft => properties.padding_left = None,
+        StyleProperty::ParagraphSpacingBefore => properties.spacing_before = None,
+        StyleProperty::ParagraphSpacingAfter => properties.spacing_after = None,
+        StyleProperty::ParagraphLineSpacing => properties.line_spacing = None,
+        StyleProperty::ParagraphFirstLineIndent => properties.first_line_indent = None,
+        StyleProperty::ParagraphLeadingIndent => properties.leading_indent = None,
+        StyleProperty::ParagraphTrailingIndent => properties.trailing_indent = None,
+        StyleProperty::ParagraphAlignment => properties.alignment = None,
+        StyleProperty::ParagraphBaseDirection => properties.base_direction = None,
+        property => return Err(inapplicable_style_property(style, property)),
+    }
+    Ok(())
+}
+
 fn validate_character_properties(
     id: &StyleId,
     properties: &CharacterProperties,
@@ -1608,6 +2113,17 @@ fn validate_character_properties(
         Ok(())
     } else {
         Err(StyleError::InvalidCharacterProperties(id.clone()))
+    }
+}
+
+fn validate_definition_metadata(
+    id: &StyleId,
+    metadata: &StyleDefinitionMetadata,
+) -> Result<(), StyleError> {
+    if metadata.display_name.trim().is_empty() || metadata.display_name.contains('\0') {
+        Err(StyleError::InvalidDefinitionMetadata(id.clone()))
+    } else {
+        Ok(())
     }
 }
 
@@ -1970,6 +2486,10 @@ pub enum StyleApplication {
 mod tests {
     use super::*;
 
+    fn generated() -> StyleDefinitionMetadata {
+        StyleDefinitionMetadata::generated("Test style")
+    }
+
     fn character_style(
         id: &str,
         parent: &StyleId,
@@ -1998,11 +2518,32 @@ mod tests {
         let sheet = StyleSheet::default();
         let document = sheet.block_style(&sheet.base_document).unwrap();
         let paragraph = sheet.block_style(&sheet.base_paragraph).unwrap();
+        assert_eq!(
+            sheet
+                .block_style_metadata(&sheet.base_document)
+                .unwrap()
+                .display_name,
+            "Base Document"
+        );
+        assert_eq!(
+            sheet
+                .block_style_metadata(&StyleId::from("Heading1"))
+                .unwrap()
+                .display_name,
+            "Heading 1"
+        );
+        assert_eq!(
+            sheet
+                .character_style_metadata(&sheet.base_character)
+                .unwrap()
+                .origin,
+            StyleDefinitionOrigin::GeneratedConfiguration
+        );
 
         assert_eq!(
             document.character,
             CharacterProperties {
-                font_families: Some(vec!["system-ui".to_owned()]),
+                font_families: Some(vec!["SF Pro".to_owned()]),
                 size: Some(14.0),
                 weight: Some(400),
                 slant: Some(FontSlant::Upright),
@@ -2083,6 +2624,64 @@ mod tests {
     }
 
     #[test]
+    fn generated_field_edits_derive_authority_from_definition_metadata() {
+        let mut sheet = StyleSheet::default();
+        let source_id = StyleId::from("source-token-17");
+        let source_style = paragraph_style(&source_id.0, &sheet.base_paragraph);
+        sheet
+            .insert_block_style(
+                source_style,
+                StyleDefinitionMetadata {
+                    display_name: "Imported Body".to_owned(),
+                    origin: StyleDefinitionOrigin::SourceBacked,
+                },
+            )
+            .unwrap();
+        let synthetic_id = StyleId::from("synthetic-token-3");
+        sheet
+            .insert_character_style(
+                character_style(
+                    &synthetic_id.0,
+                    &sheet.base_character,
+                    CharacterProperties::default(),
+                ),
+                StyleDefinitionMetadata {
+                    display_name: "Computed Emphasis".to_owned(),
+                    origin: StyleDefinitionOrigin::SyntheticReadOnly,
+                },
+            )
+            .unwrap();
+        let before = sheet.clone();
+
+        assert_eq!(
+            sheet.prepare_generated_field_edit(
+                StyleNamespace::Block,
+                &source_id,
+                &StyleDefinitionFieldEdit::SetDeclaration {
+                    property: StyleProperty::ParagraphSpacingAfter,
+                    value: StylePropertyValue::Float(8.0),
+                },
+            ),
+            Err(StyleError::DefinitionNotGeneratedConfiguration {
+                style: source_id,
+                origin: StyleDefinitionOrigin::SourceBacked,
+            })
+        );
+        assert_eq!(
+            sheet.prepare_generated_field_edit(
+                StyleNamespace::Character,
+                &synthetic_id,
+                &StyleDefinitionFieldEdit::ClearDeclaration(StyleProperty::CharacterWeight),
+            ),
+            Err(StyleError::DefinitionNotGeneratedConfiguration {
+                style: synthetic_id,
+                origin: StyleDefinitionOrigin::SyntheticReadOnly,
+            })
+        );
+        assert_eq!(sheet, before);
+    }
+
+    #[test]
     fn document_text_overrides_flow_through_sparse_character_and_paragraph_bases() {
         let mut sheet = StyleSheet::default();
         let foreground = Color {
@@ -2112,7 +2711,9 @@ mod tests {
             block: BlockProperties::default(),
         };
         let document_style_id = document_style.id.clone();
-        sheet.insert_block_style(document_style).unwrap();
+        sheet
+            .insert_block_style(document_style, generated())
+            .unwrap();
 
         let resolved = sheet
             .resolve_assigned_paragraph_style(
@@ -2159,7 +2760,7 @@ mod tests {
             },
         );
         let named_id = named.id.clone();
-        sheet.insert_character_style(named).unwrap();
+        sheet.insert_character_style(named, generated()).unwrap();
 
         let resolved = sheet
             .resolve_paragraph_style(
@@ -2219,7 +2820,7 @@ mod tests {
             ..paragraph_style("BadParagraph", &sheet.base_paragraph)
         };
         assert!(matches!(
-            sheet.insert_block_style(invalid_canvas),
+            sheet.insert_block_style(invalid_canvas, generated()),
             Err(StyleError::InapplicableBlockProperties { .. })
         ));
 
@@ -2232,9 +2833,14 @@ mod tests {
             block: BlockProperties::default(),
         };
         let document_child_id = document_child.id.clone();
-        sheet.insert_block_style(document_child).unwrap();
+        sheet
+            .insert_block_style(document_child, generated())
+            .unwrap();
         assert!(matches!(
-            sheet.insert_block_style(paragraph_style("BadParent", &document_child_id)),
+            sheet.insert_block_style(
+                paragraph_style("BadParent", &document_child_id),
+                generated()
+            ),
             Err(StyleError::IncompatibleBlockRole { .. })
         ));
     }
@@ -2254,7 +2860,9 @@ mod tests {
         let self_id: StyleId = "SelfFollowing".into();
         let mut self_following = paragraph_style("SelfFollowing", &sheet.base_paragraph);
         self_following.next_paragraph_style = Some(self_id.clone());
-        sheet.insert_block_style(self_following).unwrap();
+        sheet
+            .insert_block_style(self_following, generated())
+            .unwrap();
         assert_eq!(sheet.next_paragraph_style(&self_id).unwrap(), &self_id);
         sheet.remove_block_style(&self_id, false).unwrap();
         assert!(!sheet.block_styles.contains_key(&self_id));
@@ -2262,7 +2870,7 @@ mod tests {
         let mut missing = paragraph_style("MissingNext", &sheet.base_paragraph);
         missing.next_paragraph_style = Some("NotAStyle".into());
         assert!(matches!(
-            sheet.insert_block_style(missing),
+            sheet.insert_block_style(missing, generated()),
             Err(StyleError::InvalidNextParagraphStyle { .. })
         ));
 
@@ -2275,11 +2883,13 @@ mod tests {
             block: BlockProperties::default(),
         };
         assert!(matches!(
-            sheet.insert_block_style(document_child.clone()),
+            sheet.insert_block_style(document_child.clone(), generated()),
             Err(StyleError::InapplicableNextParagraphStyle { .. })
         ));
         document_child.next_paragraph_style = None;
-        sheet.insert_block_style(document_child).unwrap();
+        sheet
+            .insert_block_style(document_child, generated())
+            .unwrap();
         assert!(matches!(
             sheet.next_paragraph_style(&"CanvasWithNext".into()),
             Err(StyleError::IncompatibleBlockRole { .. })
@@ -2291,11 +2901,11 @@ mod tests {
         let mut sheet = StyleSheet::default();
         let target = paragraph_style("BodyAfterLead", &sheet.base_paragraph);
         let target_id = target.id.clone();
-        sheet.insert_block_style(target).unwrap();
+        sheet.insert_block_style(target, generated()).unwrap();
 
         let mut lead = paragraph_style("Lead", &sheet.base_paragraph);
         lead.next_paragraph_style = Some(target_id.clone());
-        sheet.insert_block_style(lead).unwrap();
+        sheet.insert_block_style(lead, generated()).unwrap();
 
         assert_eq!(
             sheet.remove_block_style(&target_id, false),
@@ -2308,15 +2918,15 @@ mod tests {
         let mut sheet = StyleSheet::default();
         let first = paragraph_style("First", &sheet.base_paragraph);
         let first_id = first.id.clone();
-        sheet.insert_block_style(first).unwrap();
+        sheet.insert_block_style(first, generated()).unwrap();
         let second = paragraph_style("Second", &first_id);
         let second_id = second.id.clone();
-        sheet.insert_block_style(second).unwrap();
+        sheet.insert_block_style(second, generated()).unwrap();
         let revision = sheet.revision;
 
         let cyclic = paragraph_style("First", &second_id);
         assert_eq!(
-            sheet.insert_block_style(cyclic),
+            sheet.insert_block_style(cyclic, generated()),
             Err(StyleError::InheritanceCycle(first_id.clone()))
         );
         assert_eq!(sheet.revision, revision);
@@ -2338,9 +2948,9 @@ mod tests {
 
         let parent = paragraph_style("Parent", &sheet.base_paragraph);
         let parent_id = parent.id.clone();
-        sheet.insert_block_style(parent).unwrap();
+        sheet.insert_block_style(parent, generated()).unwrap();
         sheet
-            .insert_block_style(paragraph_style("Child", &parent_id))
+            .insert_block_style(paragraph_style("Child", &parent_id), generated())
             .unwrap();
         assert_eq!(
             sheet.remove_block_style(&parent_id, false),
@@ -2362,7 +2972,7 @@ mod tests {
         );
         let id = invalid.id.clone();
         assert_eq!(
-            sheet.insert_character_style(invalid),
+            sheet.insert_character_style(invalid, generated()),
             Err(StyleError::InvalidCharacterProperties(id.clone()))
         );
         assert_eq!(sheet.revision, revision);
@@ -2411,7 +3021,7 @@ mod tests {
             };
 
             assert_eq!(
-                sheet.insert_character_style(invalid),
+                sheet.insert_character_style(invalid, generated()),
                 Err(StyleError::InvalidCharacterProperties(id))
             );
             assert_eq!(sheet, before);
@@ -2470,20 +3080,23 @@ mod tests {
         let mut sheet = StyleSheet::default();
         let writer_id = StyleId::from("WriterDocument");
         sheet
-            .insert_block_style(BlockStyle {
-                id: writer_id.clone(),
-                based_on: Some(sheet.base_document.clone()),
-                next_paragraph_style: None,
-                role: BlockRole::Document,
-                character: CharacterProperties {
-                    size: Some(18.0),
-                    ..CharacterProperties::default()
+            .insert_block_style(
+                BlockStyle {
+                    id: writer_id.clone(),
+                    based_on: Some(sheet.base_document.clone()),
+                    next_paragraph_style: None,
+                    role: BlockRole::Document,
+                    character: CharacterProperties {
+                        size: Some(18.0),
+                        ..CharacterProperties::default()
+                    },
+                    block: BlockProperties {
+                        padding_left: Some(12.0),
+                        ..BlockProperties::default()
+                    },
                 },
-                block: BlockProperties {
-                    padding_left: Some(12.0),
-                    ..BlockProperties::default()
-                },
-            })
+                generated(),
+            )
             .unwrap();
         let direct_canvas = BlockProperties {
             padding_top: Some(7.0),
@@ -2548,31 +3161,37 @@ mod tests {
         let mut sheet = StyleSheet::default();
         let lead_id = StyleId::from("Lead");
         sheet
-            .insert_block_style(BlockStyle {
-                id: lead_id.clone(),
-                based_on: Some(sheet.base_paragraph.clone()),
-                next_paragraph_style: None,
-                role: BlockRole::Paragraph,
-                character: CharacterProperties {
-                    size: Some(20.0),
-                    ..CharacterProperties::default()
+            .insert_block_style(
+                BlockStyle {
+                    id: lead_id.clone(),
+                    based_on: Some(sheet.base_paragraph.clone()),
+                    next_paragraph_style: None,
+                    role: BlockRole::Paragraph,
+                    character: CharacterProperties {
+                        size: Some(20.0),
+                        ..CharacterProperties::default()
+                    },
+                    block: BlockProperties {
+                        spacing_before: Some(9.0),
+                        ..BlockProperties::default()
+                    },
                 },
-                block: BlockProperties {
-                    spacing_before: Some(9.0),
-                    ..BlockProperties::default()
-                },
-            })
+                generated(),
+            )
             .unwrap();
         let emphasis_id = StyleId::from("NamedEmphasis");
         sheet
-            .insert_character_style(CharacterStyle {
-                id: emphasis_id.clone(),
-                based_on: Some(sheet.base_character.clone()),
-                properties: CharacterProperties {
-                    weight: Some(650),
-                    ..CharacterProperties::default()
+            .insert_character_style(
+                CharacterStyle {
+                    id: emphasis_id.clone(),
+                    based_on: Some(sheet.base_character.clone()),
+                    properties: CharacterProperties {
+                        weight: Some(650),
+                        ..CharacterProperties::default()
+                    },
                 },
-            })
+                generated(),
+            )
             .unwrap();
         let direct_paragraph = BlockProperties {
             leading_indent: Some(11.0),
@@ -2662,30 +3281,42 @@ mod tests {
         let child_id = StyleId::from("Child");
         let separate_id = StyleId::from("Separate");
         sheet
-            .insert_block_style(paragraph_style("Parent", &sheet.base_paragraph))
+            .insert_block_style(
+                paragraph_style("Parent", &sheet.base_paragraph),
+                generated(),
+            )
             .unwrap();
         sheet
-            .insert_block_style(paragraph_style("Child", &parent_id))
+            .insert_block_style(paragraph_style("Child", &parent_id), generated())
             .unwrap();
         sheet
-            .insert_block_style(paragraph_style("Separate", &sheet.base_paragraph))
+            .insert_block_style(
+                paragraph_style("Separate", &sheet.base_paragraph),
+                generated(),
+            )
             .unwrap();
 
         let character_parent_id = StyleId::from("CharacterParent");
         let character_child_id = StyleId::from("CharacterChild");
         sheet
-            .insert_character_style(character_style(
-                "CharacterParent",
-                &sheet.base_character,
-                CharacterProperties::default(),
-            ))
+            .insert_character_style(
+                character_style(
+                    "CharacterParent",
+                    &sheet.base_character,
+                    CharacterProperties::default(),
+                ),
+                generated(),
+            )
             .unwrap();
         sheet
-            .insert_character_style(character_style(
-                "CharacterChild",
-                &character_parent_id,
-                CharacterProperties::default(),
-            ))
+            .insert_character_style(
+                character_style(
+                    "CharacterChild",
+                    &character_parent_id,
+                    CharacterProperties::default(),
+                ),
+                generated(),
+            )
             .unwrap();
 
         let index = sheet.dependency_index();
@@ -2782,23 +3413,26 @@ mod tests {
             let id = StyleId(format!("RandomParagraph{index:02}"));
             let bits = next();
             sheet
-                .insert_block_style(BlockStyle {
-                    id: id.clone(),
-                    based_on: Some(parent),
-                    next_paragraph_style: None,
-                    role: BlockRole::Paragraph,
-                    character: CharacterProperties {
-                        size: (bits & 1 != 0).then_some(10.0 + (bits % 18) as f32),
-                        weight: (bits & 2 != 0).then_some(300 + (bits % 6) as u16 * 100),
-                        underline: (bits & 4 != 0).then_some(bits & 8 != 0),
-                        ..CharacterProperties::default()
+                .insert_block_style(
+                    BlockStyle {
+                        id: id.clone(),
+                        based_on: Some(parent),
+                        next_paragraph_style: None,
+                        role: BlockRole::Paragraph,
+                        character: CharacterProperties {
+                            size: (bits & 1 != 0).then_some(10.0 + (bits % 18) as f32),
+                            weight: (bits & 2 != 0).then_some(300 + (bits % 6) as u16 * 100),
+                            underline: (bits & 4 != 0).then_some(bits & 8 != 0),
+                            ..CharacterProperties::default()
+                        },
+                        block: BlockProperties {
+                            spacing_before: (bits & 16 != 0).then_some((bits % 12) as f32),
+                            leading_indent: (bits & 32 != 0).then_some((bits % 20) as f32),
+                            ..BlockProperties::default()
+                        },
                     },
-                    block: BlockProperties {
-                        spacing_before: (bits & 16 != 0).then_some((bits % 12) as f32),
-                        leading_indent: (bits & 32 != 0).then_some((bits % 20) as f32),
-                        ..BlockProperties::default()
-                    },
-                })
+                    generated(),
+                )
                 .unwrap();
             paragraph_ids.push(id);
         }
@@ -2809,16 +3443,19 @@ mod tests {
             let id = StyleId(format!("RandomCharacter{index:02}"));
             let bits = next();
             sheet
-                .insert_character_style(CharacterStyle {
-                    id: id.clone(),
-                    based_on: Some(parent),
-                    properties: CharacterProperties {
-                        slant: (bits & 1 != 0).then_some(FontSlant::Italic),
-                        weight: (bits & 2 != 0).then_some(400 + (bits % 5) as u16 * 100),
-                        letter_spacing: (bits & 4 != 0).then_some((bits % 7) as f32 / 4.0),
-                        ..CharacterProperties::default()
+                .insert_character_style(
+                    CharacterStyle {
+                        id: id.clone(),
+                        based_on: Some(parent),
+                        properties: CharacterProperties {
+                            slant: (bits & 1 != 0).then_some(FontSlant::Italic),
+                            weight: (bits & 2 != 0).then_some(400 + (bits % 5) as u16 * 100),
+                            letter_spacing: (bits & 4 != 0).then_some((bits % 7) as f32 / 4.0),
+                            ..CharacterProperties::default()
+                        },
                     },
-                })
+                    generated(),
+                )
                 .unwrap();
             character_ids.push(id);
         }
@@ -2877,7 +3514,7 @@ mod tests {
         );
 
         assert_eq!(
-            sheet.insert_character_style(style),
+            sheet.insert_character_style(style, generated()),
             Err(StyleError::StyleSheetRevisionExhausted)
         );
         assert_eq!(sheet, before);

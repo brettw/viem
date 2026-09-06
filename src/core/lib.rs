@@ -23,6 +23,8 @@ pub use command::composition::{
 pub use command::layout_motion::{LayoutDemand, LayoutDemandEdge};
 pub use coordinator::{
     CompositionCancelReason, Core, CoreError, CoreEvent, CoreIdentifierKind, CoreOutcome,
-    ViewCompositionChange, ViewCompositionOutcome, ViewId, ViewRemovalOutcome, ViewportState,
+    LogicalSelectionIdentity, LogicalSelectionKind, SemanticStylePresentation, SemanticStyleState,
+    StyleEditGroup, StyleEditGroupError, StyleEditGroupId, ViewCompositionChange,
+    ViewCompositionOutcome, ViewId, ViewRemovalOutcome, ViewportState,
 };
 pub use document::{Document, DocumentError, Encoding, Format, Revision};

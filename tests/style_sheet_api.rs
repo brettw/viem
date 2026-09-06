@@ -1,6 +1,6 @@
 use evim_core::document::{
-    BlockProperties, BlockRole, BlockStyle, CharacterProperties, CharacterStyle, StyleId,
-    StyleSheet,
+    BlockProperties, BlockRole, BlockStyle, CharacterProperties, CharacterStyle,
+    StyleDefinitionMetadata, StyleId, StyleSheet,
 };
 
 #[test]
@@ -15,7 +15,12 @@ fn style_definitions_have_ergonomic_read_only_lookup_and_iteration() {
         character: CharacterProperties::default(),
         block: BlockProperties::default(),
     };
-    sheet.insert_block_style(paragraph.clone()).unwrap();
+    sheet
+        .insert_block_style(
+            paragraph.clone(),
+            StyleDefinitionMetadata::generated("Body"),
+        )
+        .unwrap();
 
     let character_id = StyleId::from("Comment");
     let character = CharacterStyle {
@@ -23,7 +28,12 @@ fn style_definitions_have_ergonomic_read_only_lookup_and_iteration() {
         based_on: Some(sheet.base_character.clone()),
         properties: CharacterProperties::default(),
     };
-    sheet.insert_character_style(character.clone()).unwrap();
+    sheet
+        .insert_character_style(
+            character.clone(),
+            StyleDefinitionMetadata::generated("Comment"),
+        )
+        .unwrap();
 
     assert_eq!(sheet.block_style(&paragraph_id), Some(&paragraph));
     assert_eq!(sheet.character_style(&character_id), Some(&character));

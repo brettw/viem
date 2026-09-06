@@ -495,6 +495,7 @@ mod tests {
     use super::*;
     use crate::document::{
         BlockProperties, BlockRole, BlockStyle, CharacterStyle, Document, Encoding, Format,
+        StyleDefinitionMetadata,
     };
 
     fn resolve_custom(
@@ -520,31 +521,34 @@ mod tests {
         let mut sheet = projection.style_sheet().clone();
         let root_style: StyleId = "Writing Canvas".into();
         sheet
-            .insert_block_style(BlockStyle {
-                id: root_style.clone(),
-                based_on: Some(sheet.base_document.clone()),
-                next_paragraph_style: None,
-                role: BlockRole::Document,
-                character: CharacterProperties {
-                    font_families: Some(vec!["Theme Sans".to_owned()]),
-                    size: Some(11.0),
-                    weight: Some(550),
-                    ..CharacterProperties::default()
+            .insert_block_style(
+                BlockStyle {
+                    id: root_style.clone(),
+                    based_on: Some(sheet.base_document.clone()),
+                    next_paragraph_style: None,
+                    role: BlockRole::Document,
+                    character: CharacterProperties {
+                        font_families: Some(vec!["Theme Sans".to_owned()]),
+                        size: Some(11.0),
+                        weight: Some(550),
+                        ..CharacterProperties::default()
+                    },
+                    block: BlockProperties {
+                        padding_top: Some(4.0),
+                        padding_right: Some(8.0),
+                        padding_bottom: Some(4.0),
+                        padding_left: Some(8.0),
+                        background: Some(Color {
+                            red: 0.8,
+                            green: 0.8,
+                            blue: 0.8,
+                            alpha: 1.0,
+                        }),
+                        ..BlockProperties::default()
+                    },
                 },
-                block: BlockProperties {
-                    padding_top: Some(4.0),
-                    padding_right: Some(8.0),
-                    padding_bottom: Some(4.0),
-                    padding_left: Some(8.0),
-                    background: Some(Color {
-                        red: 0.8,
-                        green: 0.8,
-                        blue: 0.8,
-                        alpha: 1.0,
-                    }),
-                    ..BlockProperties::default()
-                },
-            })
+                StyleDefinitionMetadata::generated("Writing Canvas"),
+            )
             .unwrap();
         let mut root = projection.document_style().clone();
         root.style = root_style;
@@ -645,16 +649,19 @@ mod tests {
         let mut sheet = projection.style_sheet().clone();
         let named_id: StyleId = "Emphatic".into();
         sheet
-            .insert_character_style(CharacterStyle {
-                id: named_id.clone(),
-                based_on: Some(sheet.base_character.clone()),
-                properties: CharacterProperties {
-                    font_families: Some(vec!["Named Serif".to_owned()]),
-                    size: Some(20.0),
-                    weight: Some(650),
-                    ..CharacterProperties::default()
+            .insert_character_style(
+                CharacterStyle {
+                    id: named_id.clone(),
+                    based_on: Some(sheet.base_character.clone()),
+                    properties: CharacterProperties {
+                        font_families: Some(vec!["Named Serif".to_owned()]),
+                        size: Some(20.0),
+                        weight: Some(650),
+                        ..CharacterProperties::default()
+                    },
                 },
-            })
+                StyleDefinitionMetadata::generated("Emphatic"),
+            )
             .unwrap();
         let root = projection.document_style().clone();
         let mut blocks = projection.blocks().to_vec();

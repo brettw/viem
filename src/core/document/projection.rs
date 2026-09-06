@@ -454,6 +454,36 @@ impl HardLineSnapshot {
         self.text_tree.byte_len()
     }
 
+    /// Number of UTF-16 code units in this exact formatted snapshot.
+    ///
+    /// This is read from the persistent text tree's root aggregate and does
+    /// not materialize the compatibility flat string.
+    pub fn utf16_length(&self) -> usize {
+        self.text_tree.utf16_len()
+    }
+
+    /// Copy one scalar-aligned UTF-8 range from this exact snapshot.
+    ///
+    /// Only tree leaves intersecting `range` are visited. The returned string
+    /// is independent of the snapshot and the compatibility flat string stays
+    /// unmaterialized.
+    pub fn slice_utf8(&self, range: Range<usize>) -> Result<String, FormattedTextError> {
+        self.text_tree.slice(range)
+    }
+
+    /// Convert an exact UTF-8 scalar boundary to a UTF-16 code-unit boundary.
+    /// Prefix work is logarithmic apart from decoding the one bounded leaf
+    /// containing the requested boundary.
+    pub fn utf16_offset_for_utf8(&self, offset: usize) -> Result<usize, FormattedTextError> {
+        self.text_tree.utf16_offset_for_byte(offset)
+    }
+
+    /// Convert an exact UTF-16 code-unit boundary to a UTF-8 scalar boundary.
+    /// A boundary splitting a surrogate pair is rejected rather than rounded.
+    pub fn utf8_offset_for_utf16(&self, offset: usize) -> Result<usize, FormattedTextError> {
+        self.text_tree.byte_offset_for_utf16(offset)
+    }
+
     /// Exact formatted UTF-8 backing for the ranges returned by this snapshot.
     pub fn text(&self) -> &str {
         self.flat_text

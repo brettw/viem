@@ -2,7 +2,7 @@ use evim_core::ffi::{
     evim_core_abi_version, evim_document_copy_formatted_utf8, evim_document_copy_source_bytes,
     evim_document_create, evim_document_destroy, evim_document_replace_formatted_utf8,
     evim_document_revision, EvimDocumentHandle, EvimDocumentOptions, EvimStatus,
-    EVIM_CORE_ABI_VERSION, EVIM_DOCUMENT_OPTIONS_SIZE, EVIM_ENCODING_LATIN1,
+    EVIM_CORE_ABI_VERSION, EVIM_DOCUMENT_OPTIONS_SIZE, EVIM_ENCODING_DETECT, EVIM_ENCODING_LATIN1,
     EVIM_ENCODING_UTF16_BE, EVIM_ENCODING_UTF16_LE, EVIM_ENCODING_UTF8, EVIM_FILE_FORMAT_DETECT,
     EVIM_FILE_FORMAT_DOS, EVIM_FILE_FORMAT_MAC, EVIM_FILE_FORMAT_UNIX, EVIM_FORMAT_MARKDOWN,
     EVIM_FORMAT_PLAIN_TEXT,
@@ -179,6 +179,24 @@ fn abi_create_validates_pointers_and_every_option_domain() {
     assert_eq!(empty.revision, 0);
     assert!(source_bytes(&empty, 0).is_empty());
     assert!(formatted_utf8(&empty, 0).is_empty());
+}
+
+#[test]
+fn automatic_encoding_choice_is_shared_by_document_creation_and_is_byte_exact() {
+    let options = EvimDocumentOptions {
+        encoding: EVIM_ENCODING_DETECT,
+        file_format: EVIM_FILE_FORMAT_UNIX,
+        ..EvimDocumentOptions::default()
+    };
+    let utf16_le = [0xff, 0xfe, b'A', 0, 0x3d, 0xd8, 0x00, 0xde];
+    let detected_utf16 = create(&utf16_le, options);
+    assert_eq!(source_bytes(&detected_utf16, 0), utf16_le);
+    assert_eq!(formatted_utf8(&detected_utf16, 0), "A😀".as_bytes());
+
+    let malformed_utf8 = [b'a', 0xf0, 0x28, 0x8c, 0x28];
+    let detected_latin1 = create(&malformed_utf8, options);
+    assert_eq!(source_bytes(&detected_latin1, 0), malformed_utf8);
+    assert_eq!(formatted_utf8(&detected_latin1, 0), "að(\u{8c}(".as_bytes());
 }
 
 #[test]

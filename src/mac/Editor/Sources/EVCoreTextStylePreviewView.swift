@@ -1,0 +1,446 @@
+import AppKit
+import CEvimCore
+import CoreText
+import EvimCoreTextProvider
+
+struct EVCoreTextStylePreviewLine: Equatable {
+    let origin: CGPoint
+    let typographicWidth: CGFloat
+    let ascent: CGFloat
+    let descent: CGFloat
+    let stringRange: NSRange
+    let isCurrentStyle: Bool
+}
+
+struct EVCoreTextStylePreviewInspection: Equatable {
+    let kind: EVStyleKind?
+    let effectiveValues: [EVStyleProperty: EVStyleValue]
+    let requestedFontFamilies: [String]
+    let requestedFontSize: CGFloat
+    let resolvedFontFamily: String
+    let resolvedFontSize: CGFloat
+    let canvasBackground: EVStyleColor
+    let accessibilityText: String
+    let lines: [EVCoreTextStylePreviewLine]
+
+    var currentStyleLines: [EVCoreTextStylePreviewLine] {
+        lines.filter(\.isCurrentStyle)
+    }
+}
+
+/// A small, read-only style specimen that deliberately shares the editor's
+/// Core Text shaping path instead of relying on TextKit's private defaults.
+/// The value map is the exact committed, cascade-resolved map returned by core.
+@MainActor
+final class EVCoreTextStylePreviewView: NSView {
+    private static let contentInset: CGFloat = 12
+    private static let paragraphCurrentText =
+        "A calm writing surface shaped with the selected style,\u{2028}with line spacing and alignment visible."
+    private static let paragraphAccessibilityText =
+        "Previous paragraph gives the style context. "
+        + paragraphCurrentText.replacingOccurrences(of: "\u{2028}", with: " ")
+        + " Following paragraph shows spacing and inheritance."
+    private static let characterAccessibilityText =
+        "Surrounding text. The quick brown fox writes beautifully. Surrounding text."
+    private static let unavailableText =
+        "Select a document style to preview its effective formatting."
+
+    private var kind: EVStyleKind?
+    private var effectiveValues: [EVStyleProperty: EVStyleValue] = [:]
+    private var canvasBackground = EVStyleColor(red: 1, green: 1, blue: 1, alpha: 1)
+    private var attributedContent = NSAttributedString(string: unavailableText)
+    private var currentStyleRange = NSRange(location: 0, length: 0)
+
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 132) }
+    override var acceptsFirstResponder: Bool { false }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureAccessibility()
+        showUnavailable()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureAccessibility()
+        showUnavailable()
+    }
+
+    func apply(
+        kind: EVStyleKind,
+        effectiveValues: [EVStyleProperty: EVStyleValue],
+        canvasBackground: EVStyleColor = EVStyleColor(red: 1, green: 1, blue: 1, alpha: 1)
+    ) {
+        self.kind = kind
+        self.effectiveValues = effectiveValues
+        self.canvasBackground = canvasBackground
+        let content = makeAttributedContent(kind: kind, effectiveValues: effectiveValues)
+        attributedContent = content.value
+        currentStyleRange = content.currentRange
+        setAccessibilityValue(content.accessibilityText)
+        needsDisplay = true
+    }
+
+    func showUnavailable() {
+        kind = nil
+        effectiveValues = [:]
+        let attributes = contextualAttributes(size: CoreTextMeasurementProvider.defaultFontSize)
+        attributedContent = NSAttributedString(string: Self.unavailableText, attributes: attributes)
+        currentStyleRange = NSRange(location: 0, length: 0)
+        setAccessibilityValue(Self.unavailableText)
+        needsDisplay = true
+    }
+
+    func inspection(layoutSize: CGSize? = nil) -> EVCoreTextStylePreviewInspection {
+        let size = layoutSize ?? CGSize(
+            width: max(bounds.width, 560),
+            height: max(bounds.height, intrinsicContentSize.height)
+        )
+        let requested = requestedFontDescription(from: effectiveValues)
+        let font = makeFont(from: effectiveValues)
+        return EVCoreTextStylePreviewInspection(
+            kind: kind,
+            effectiveValues: effectiveValues,
+            requestedFontFamilies: requested.families,
+            requestedFontSize: requested.size,
+            resolvedFontFamily: resolvedFamilyName(font, requested: requested.families),
+            resolvedFontSize: CTFontGetSize(font),
+            canvasBackground: canvasBackground,
+            accessibilityText: (accessibilityValue() as? String) ?? "",
+            lines: lineGeometry(in: CGRect(origin: .zero, size: size))
+        )
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        canvasBackground.appKitColor.setFill()
+        dirtyRect.fill()
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.saveGState()
+        context.textMatrix = .identity
+        context.translateBy(x: 0, y: bounds.height)
+        context.scaleBy(x: 1, y: -1)
+        if kind == .character {
+            drawCharacterLine(in: bounds, context: context)
+        } else {
+            CTFrameDraw(makeParagraphFrame(in: bounds), context)
+        }
+        context.restoreGState()
+    }
+
+    private func configureAccessibility() {
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityLabel("Live style preview")
+        setAccessibilityHelp("Read-only preview of the committed, resolved style.")
+    }
+
+    private func makeAttributedContent(
+        kind: EVStyleKind,
+        effectiveValues: [EVStyleProperty: EVStyleValue]
+    ) -> (value: NSAttributedString, currentRange: NSRange, accessibilityText: String) {
+        let selectedAttributes = styleAttributes(from: effectiveValues)
+        let contextual = contextualAttributes(size: 12)
+        let value = NSMutableAttributedString()
+        if kind == .paragraph {
+            value.append(NSAttributedString(
+                string: "Previous paragraph gives the style context.\n",
+                attributes: contextual
+            ))
+            let location = value.length
+            let selectedText = Self.paragraphCurrentText + "\n"
+            value.append(NSAttributedString(string: selectedText, attributes: selectedAttributes))
+            let selectedRange = NSRange(location: location, length: (selectedText as NSString).length)
+            value.append(NSAttributedString(
+                string: "Following paragraph shows spacing and inheritance.",
+                attributes: contextual
+            ))
+            return (value, selectedRange, Self.paragraphAccessibilityText)
+        }
+
+        value.append(NSAttributedString(string: "Surrounding text · ", attributes: contextual))
+        let location = value.length
+        let selectedText = "The quick brown fox writes beautifully"
+        value.append(NSAttributedString(string: selectedText, attributes: selectedAttributes))
+        let selectedRange = NSRange(location: location, length: (selectedText as NSString).length)
+        value.append(NSAttributedString(string: " · surrounding text", attributes: contextual))
+        return (value, selectedRange, Self.characterAccessibilityText)
+    }
+
+    private func contextualAttributes(size: CGFloat) -> [NSAttributedString.Key: Any] {
+        let font = CTFontCreateUIFontForLanguage(.system, size, nil)
+            ?? CTFontCreateWithName("Helvetica" as CFString, size, nil)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.paragraphSpacing = 5
+        return [
+            NSAttributedString.Key(kCTFontAttributeName as String): font,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String):
+                contextualForegroundColor().cgColor,
+            .paragraphStyle: paragraph,
+        ]
+    }
+
+    private func contextualForegroundColor() -> NSColor {
+        let luminance = 0.2126 * canvasBackground.red
+            + 0.7152 * canvasBackground.green
+            + 0.0722 * canvasBackground.blue
+        return luminance > 0.5
+            ? NSColor(calibratedWhite: 0.38, alpha: 1)
+            : NSColor(calibratedWhite: 0.72, alpha: 1)
+    }
+
+    private func styleAttributes(
+        from values: [EVStyleProperty: EVStyleValue]
+    ) -> [NSAttributedString.Key: Any] {
+        var attributes: [NSAttributedString.Key: Any] = [
+            NSAttributedString.Key(kCTFontAttributeName as String): makeFont(from: values),
+            .paragraphStyle: makeParagraphStyle(from: values),
+        ]
+        if case let .color(value)? = values[.characterForeground] {
+            attributes[NSAttributedString.Key(kCTForegroundColorAttributeName as String)] =
+                value.appKitColor.cgColor
+        }
+        if case let .color(value)? = values[.characterBackground] {
+            attributes[NSAttributedString.Key(kCTBackgroundColorAttributeName as String)] =
+                value.appKitColor.cgColor
+        }
+        if case let .boolean(value)? = values[.characterUnderline], value {
+            attributes[NSAttributedString.Key(kCTUnderlineStyleAttributeName as String)] =
+                CTUnderlineStyle.single.rawValue
+        }
+        if case let .boolean(value)? = values[.characterStrikethrough], value {
+            attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+        }
+        if case let .string(value)? = values[.characterLanguage], !value.isEmpty {
+            attributes[NSAttributedString.Key(kCTLanguageAttributeName as String)] = value
+        }
+        if case let .writingDirection(value)? = values[.characterDirection],
+           value != UInt32(EVIM_TEXT_DIRECTION_AUTO)
+        {
+            let direction = value == UInt32(EVIM_TEXT_DIRECTION_RIGHT_TO_LEFT)
+                ? NSWritingDirection.rightToLeft : .leftToRight
+            attributes[.writingDirection] = [
+                NSNumber(value: direction.rawValue | NSWritingDirectionFormatType.override.rawValue),
+            ]
+        }
+        if case let .float(value)? = values[.characterLetterSpacing] {
+            attributes[NSAttributedString.Key(kCTKernAttributeName as String)] = CGFloat(value)
+        }
+        if case let .float(value)? = values[.characterBaselineShift] {
+            attributes[NSAttributedString.Key(kCTBaselineOffsetAttributeName as String)] = CGFloat(value)
+        }
+        return attributes
+    }
+
+    private func requestedFontDescription(
+        from values: [EVStyleProperty: EVStyleValue]
+    ) -> (families: [String], size: CGFloat) {
+        let families: [String]
+        if case let .stringList(value)? = values[.characterFontFamilies], !value.isEmpty {
+            families = value
+        } else {
+            families = [CoreTextMeasurementProvider.defaultFontFamily]
+        }
+        let size: CGFloat
+        if case let .float(value)? = values[.characterSize], value > 0 {
+            size = CGFloat(value)
+        } else {
+            size = CoreTextMeasurementProvider.defaultFontSize
+        }
+        return (families, size)
+    }
+
+    private func makeFont(from values: [EVStyleProperty: EVStyleValue]) -> CTFont {
+        let requested = requestedFontDescription(from: values)
+        let weight: UInt32
+        if case let .unsigned(value)? = values[.characterWeight] { weight = value }
+        else { weight = 400 }
+        let normalizedWeight = max(-1, min(1, CGFloat(Int(weight) - 400) / 500))
+        let isSlanted: Bool
+        if case let .fontSlant(value)? = values[.characterSlant] {
+            isSlanted = value != UInt32(EVIM_FONT_SLANT_UPRIGHT)
+        } else {
+            isSlanted = false
+        }
+
+        var traits: [CFString: Any] = [kCTFontWeightTrait: normalizedWeight]
+        if isSlanted { traits[kCTFontSlantTrait] = 0.16 }
+        let primaryRequest = requested.families[0]
+        let baseFont: CTFont
+        if isSystemFontRequest(primaryRequest) {
+            baseFont = CTFontCreateUIFontForLanguage(.system, requested.size, nil)
+                ?? CTFontCreateWithName("Helvetica" as CFString, requested.size, nil)
+        } else {
+            baseFont = CTFontCreateWithName(primaryRequest as CFString, requested.size, nil)
+        }
+        var descriptorAttributes: [CFString: Any] = [kCTFontTraitsAttribute: traits]
+        if requested.families.count > 1 {
+            descriptorAttributes[kCTFontCascadeListAttribute] = requested.families.dropFirst().map {
+                if isSystemFontRequest($0) {
+                    let font = CTFontCreateUIFontForLanguage(.system, requested.size, nil)
+                        ?? CTFontCreateWithName("Helvetica" as CFString, requested.size, nil)
+                    return CTFontCopyFontDescriptor(font)
+                }
+                return CTFontDescriptorCreateWithAttributes([
+                    kCTFontFamilyNameAttribute: $0,
+                ] as CFDictionary)
+            }
+        }
+        if case let .openTypeFeatures(features)? = values[.characterOpenTypeFeatures],
+           !features.isEmpty
+        {
+            descriptorAttributes[kCTFontFeatureSettingsAttribute] = features.map {
+                [
+                    kCTFontOpenTypeFeatureTag: $0.tag,
+                    kCTFontOpenTypeFeatureValue: $0.setting,
+                ] as [CFString: Any]
+            }
+        }
+        let descriptor = CTFontDescriptorCreateCopyWithAttributes(
+            CTFontCopyFontDescriptor(baseFont),
+            descriptorAttributes as CFDictionary
+        )
+        return CTFontCreateWithFontDescriptor(descriptor, requested.size, nil)
+    }
+
+    private func isSystemFontRequest(_ family: String) -> Bool {
+        switch family.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "sf pro", "system-ui", "-apple-system": true
+        default: false
+        }
+    }
+
+    private func resolvedFamilyName(_ font: CTFont, requested: [String]) -> String {
+        if let first = requested.first,
+           isSystemFontRequest(first),
+           (CTFontCopyPostScriptName(font) as String).hasPrefix(".SF")
+        {
+            return CoreTextMeasurementProvider.defaultFontFamily
+        }
+        return CTFontCopyFamilyName(font) as String
+    }
+
+    private func makeParagraphStyle(
+        from values: [EVStyleProperty: EVStyleValue]
+    ) -> NSParagraphStyle {
+        let paragraph = NSMutableParagraphStyle()
+        if case let .float(value)? = values[.paragraphSpacingBefore] {
+            paragraph.paragraphSpacingBefore = CGFloat(value)
+        }
+        if case let .float(value)? = values[.paragraphSpacingAfter] {
+            paragraph.paragraphSpacing = CGFloat(value)
+        }
+        if case let .float(value)? = values[.paragraphFirstLineIndent] {
+            paragraph.firstLineHeadIndent = CGFloat(value)
+        }
+        if case let .float(value)? = values[.paragraphLeadingIndent] {
+            paragraph.headIndent = CGFloat(value)
+        }
+        if case let .float(value)? = values[.paragraphTrailingIndent] {
+            paragraph.tailIndent = -CGFloat(value)
+        }
+
+        let direction: NSWritingDirection
+        if case let .writingDirection(value)? = values[.paragraphBaseDirection] {
+            switch value {
+            case UInt32(EVIM_TEXT_DIRECTION_LEFT_TO_RIGHT): direction = .leftToRight
+            case UInt32(EVIM_TEXT_DIRECTION_RIGHT_TO_LEFT): direction = .rightToLeft
+            default: direction = .natural
+            }
+        } else {
+            direction = .natural
+        }
+        paragraph.baseWritingDirection = direction
+
+        if case let .paragraphAlignment(value)? = values[.paragraphAlignment] {
+            switch value {
+            case UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_CENTER):
+                paragraph.alignment = .center
+            case UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_END):
+                paragraph.alignment = direction == .rightToLeft ? .left : .right
+            default:
+                paragraph.alignment = direction == .rightToLeft ? .right : .left
+            }
+        }
+        if case let .lineSpacing(value)? = values[.paragraphLineSpacing] {
+            switch value.kind {
+            case UInt32(EVIM_STYLE_LINE_SPACING_MULTIPLIER):
+                paragraph.lineHeightMultiple = CGFloat(value.value)
+            case UInt32(EVIM_STYLE_LINE_SPACING_AT_LEAST):
+                paragraph.minimumLineHeight = CGFloat(value.value)
+            case UInt32(EVIM_STYLE_LINE_SPACING_EXACT):
+                paragraph.minimumLineHeight = CGFloat(value.value)
+                paragraph.maximumLineHeight = CGFloat(value.value)
+            default:
+                break
+            }
+        }
+        return paragraph
+    }
+
+    private func drawCharacterLine(in bounds: CGRect, context: CGContext) {
+        let line = CTLineCreateWithAttributedString(attributedContent)
+        var ascent: CGFloat = 0
+        var descent: CGFloat = 0
+        let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, nil))
+        let available = max(0, bounds.width - Self.contentInset * 2)
+        let x = Self.contentInset + max(0, (available - width) / 2)
+        let y = max(Self.contentInset + descent, (bounds.height + ascent - descent) / 2)
+        context.textPosition = CGPoint(x: x, y: y)
+        CTLineDraw(line, context)
+    }
+
+    private func makeParagraphFrame(in bounds: CGRect) -> CTFrame {
+        let insetBounds = bounds.insetBy(dx: Self.contentInset, dy: Self.contentInset)
+        let path = CGPath(rect: insetBounds, transform: nil)
+        let framesetter = CTFramesetterCreateWithAttributedString(attributedContent)
+        return CTFramesetterCreateFrame(
+            framesetter,
+            CFRange(location: 0, length: attributedContent.length),
+            path,
+            nil
+        )
+    }
+
+    private func lineGeometry(in bounds: CGRect) -> [EVCoreTextStylePreviewLine] {
+        if kind == .character {
+            let line = CTLineCreateWithAttributedString(attributedContent)
+            var ascent: CGFloat = 0
+            var descent: CGFloat = 0
+            let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, nil))
+            let available = max(0, bounds.width - Self.contentInset * 2)
+            let x = Self.contentInset + max(0, (available - width) / 2)
+            let y = max(Self.contentInset + descent, (bounds.height + ascent - descent) / 2)
+            return [EVCoreTextStylePreviewLine(
+                origin: CGPoint(x: x, y: y),
+                typographicWidth: width,
+                ascent: ascent,
+                descent: descent,
+                stringRange: NSRange(location: 0, length: attributedContent.length),
+                isCurrentStyle: true
+            )]
+        }
+
+        let frame = makeParagraphFrame(in: bounds)
+        let lines = CTFrameGetLines(frame) as! [CTLine]
+        var origins = Array(repeating: CGPoint.zero, count: lines.count)
+        if !origins.isEmpty {
+            CTFrameGetLineOrigins(frame, CFRange(location: 0, length: 0), &origins)
+        }
+        return lines.enumerated().map { index, line in
+            var ascent: CGFloat = 0
+            var descent: CGFloat = 0
+            let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, nil))
+            let range = CTLineGetStringRange(line)
+            let nsRange = NSRange(location: range.location, length: range.length)
+            return EVCoreTextStylePreviewLine(
+                origin: origins[index],
+                typographicWidth: width,
+                ascent: ascent,
+                descent: descent,
+                stringRange: nsRange,
+                isCurrentStyle: NSIntersectionRange(nsRange, currentStyleRange).length > 0
+            )
+        }
+    }
+}

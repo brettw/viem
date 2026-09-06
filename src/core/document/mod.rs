@@ -66,15 +66,17 @@ pub use style::{
     ConfigurationStyleIntent, DocumentStyleAssignment, FontSlant, LineSpacing, ParagraphAlignment,
     ResolvedCharacterStyle, ResolvedDocumentStyle, ResolvedParagraphStyle, ResolvedStyle,
     SemanticInlineStyle, StyleApplication, StyleContribution, StyleContributionOrigin,
-    StyleDefinitionEdit, StyleDependency, StyleDependencyIndex, StyleError, StyleId,
-    StyleInvalidationEffect, StyleProperty, StyleSheet, StyleSheetRevision, WritingDirection,
+    StyleDefinitionEdit, StyleDefinitionFieldEdit, StyleDefinitionMetadata, StyleDefinitionOrigin,
+    StyleDependency, StyleDependencyIndex, StyleError, StyleId, StyleInvalidationEffect,
+    StyleNamespace, StyleProperty, StylePropertyValue, StyleSheet, StyleSheetRevision,
+    WritingDirection,
 };
 pub use transaction::{
     CommittedModelTransaction, HistoryNavigationRequest, ModelChangeKind, ModelChangeSummary,
     ModelRequest, ModelTransactionError, PersistedStyleIntent, PreparedModelTransaction,
     ProjectionWorkScope, ProjectionWorkStatistics, SourcePatch, StyleBlockTarget,
-    StyleChangeSummary, StyleDefinitionOrigin, StyleModelIntent, StyleModelRequest,
-    StylePropertyTarget, StyleTransactionError,
+    StyleChangeSummary, StyleModelIntent, StyleModelRequest, StylePropertyTarget,
+    StyleTransactionError,
 };
 pub use transfer::HardLineTransfer;
 
@@ -818,6 +820,16 @@ impl Document {
         Self::from_source(bytes, encoding, format, LineEndingOpenPolicy::default())
     }
 
+    /// Detect the source encoding in core, then open source bytes and detect
+    /// their line-ending interpretation. Detection is BOM-first, otherwise
+    /// strict UTF-8 with ISO-8859-1 fallback; it never changes source bytes.
+    pub fn from_bytes_detect_encoding(
+        bytes: Vec<u8>,
+        format: Format,
+    ) -> Result<Self, DocumentError> {
+        Self::from_source_detect_encoding(bytes, format, LineEndingOpenPolicy::default())
+    }
+
     /// Open source bytes using an explicit line-ending interpretation.
     pub fn from_bytes_with_file_format(
         bytes: Vec<u8>,
@@ -831,6 +843,17 @@ impl Document {
             format,
             LineEndingOpenPolicy::forced(file_format),
         )
+    }
+
+    /// Detect the source encoding in core while using an explicit line-ending
+    /// interpretation. Encoding detection and line-ending selection remain
+    /// independent policies.
+    pub fn from_bytes_detect_encoding_with_file_format(
+        bytes: Vec<u8>,
+        format: Format,
+        file_format: FileFormat,
+    ) -> Result<Self, DocumentError> {
+        Self::from_source_detect_encoding(bytes, format, LineEndingOpenPolicy::forced(file_format))
     }
 
     /// Open source bytes through the shared line-ending interpretation
@@ -871,8 +894,29 @@ impl Document {
         // persistent source tree. Besides avoiding a whole-source copy at
         // open, the same decoded value is consumed by detection and state
         // construction, so opening performs exactly one decoder pass.
-        let source_byte_len = bytes.len();
         let decoded = encoding.decode(&bytes)?;
+        Self::from_decoded_source(bytes, decoded, format, line_endings)
+    }
+
+    fn from_source_detect_encoding(
+        bytes: Vec<u8>,
+        format: Format,
+        line_endings: LineEndingOpenPolicy,
+    ) -> Result<Self, DocumentError> {
+        // Detection and decoding share their strict UTF-8 validation pass, so
+        // automatic opening has the same bounded opening work as a forced
+        // encoding while still retaining the original source bytes.
+        let decoded = Encoding::detect_and_decode(&bytes)?;
+        Self::from_decoded_source(bytes, decoded, format, line_endings)
+    }
+
+    fn from_decoded_source(
+        bytes: Vec<u8>,
+        decoded: DecodedText,
+        format: Format,
+        line_endings: LineEndingOpenPolicy,
+    ) -> Result<Self, DocumentError> {
+        let source_byte_len = bytes.len();
         let decoded_utf8_len = decoded.text.len();
         let (file_format, origin, evidence) = open_interpretation(&decoded.text, &line_endings);
         let revision = Revision(0);

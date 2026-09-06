@@ -60,6 +60,38 @@ pub(crate) struct DecodedSpan {
 }
 
 impl Encoding {
+    /// Select the initial textual encoding without interpreting or rewriting
+    /// the authoritative source bytes.
+    ///
+    /// Supported BOMs take precedence, including when their following payload
+    /// is malformed. Without a BOM, a wholly valid UTF-8 source selects UTF-8;
+    /// every other byte sequence uses the editor's existing ISO-8859-1
+    /// fallback. Deliberately no BOM-less UTF-16 or statistical charset
+    /// guessing is performed.
+    pub fn detect(bytes: &[u8]) -> Self {
+        detected_bom(bytes).unwrap_or_else(|| {
+            if std::str::from_utf8(bytes).is_ok() {
+                Self::Utf8
+            } else {
+                Self::Latin1
+            }
+        })
+    }
+
+    /// Detect and construct the initial decoded projection without validating
+    /// a valid BOM-less UTF-8 source twice. A malformed BOM-less candidate may
+    /// necessarily scan its valid prefix before the whole source is decoded as
+    /// Latin-1, but it never constructs and discards a UTF-8 projection.
+    pub(crate) fn detect_and_decode(bytes: &[u8]) -> Result<DecodedText, DocumentError> {
+        if let Some(encoding) = detected_bom(bytes) {
+            return encoding.decode(bytes);
+        }
+        match std::str::from_utf8(bytes) {
+            Ok(valid) => Ok(decode_known_valid_utf8(valid)),
+            Err(_) => Ok(decode_latin1(bytes)),
+        }
+    }
+
     pub(crate) fn decode(self, bytes: &[u8]) -> Result<DecodedText, DocumentError> {
         match self {
             Self::Utf8 => decode_utf8(bytes, true),
@@ -131,6 +163,30 @@ impl Encoding {
             Self::Utf16Le => &[0xff, 0xfe],
             Self::Utf16Be => &[0xfe, 0xff],
         }
+    }
+}
+
+fn detected_bom(bytes: &[u8]) -> Option<Encoding> {
+    if bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
+        Some(Encoding::Utf8)
+    } else if bytes.starts_with(&[0xff, 0xfe]) {
+        Some(Encoding::Utf16Le)
+    } else if bytes.starts_with(&[0xfe, 0xff]) {
+        Some(Encoding::Utf16Be)
+    } else {
+        None
+    }
+}
+
+fn decode_known_valid_utf8(valid: &str) -> DecodedText {
+    let mut text = String::with_capacity(valid.len());
+    let mut spans = Vec::new();
+    push_valid_utf8(&mut text, &mut spans, 0, valid);
+    DecodedText {
+        text,
+        spans,
+        bom_len: 0,
+        encoding: Encoding::Utf8,
     }
 }
 
@@ -373,6 +429,30 @@ mod tests {
         assert_eq!(
             Encoding::Latin1.encode_fragment(&decoded.text).unwrap(),
             [0x41, 0x80, 0xe9, 0xff]
+        );
+    }
+
+    #[test]
+    fn detection_is_bom_first_then_strict_utf8_then_latin1() {
+        assert_eq!(Encoding::detect(&[]), Encoding::Utf8);
+        assert_eq!(Encoding::detect(b"plain UTF-8"), Encoding::Utf8);
+        assert_eq!(Encoding::detect("café 😀".as_bytes()), Encoding::Utf8);
+        assert_eq!(
+            Encoding::detect(&[0xef, 0xbb, 0xbf, 0xff]),
+            Encoding::Utf8,
+            "a supported BOM owns detection even when its payload is malformed"
+        );
+        assert_eq!(Encoding::detect(&[0xff, 0xfe, b'A', 0]), Encoding::Utf16Le);
+        assert_eq!(Encoding::detect(&[0xfe, 0xff, 0, b'A']), Encoding::Utf16Be);
+        assert_eq!(Encoding::detect(b"caf\xe9"), Encoding::Latin1);
+        assert_eq!(
+            Encoding::detect(&[0xf0, 0x28, 0x8c, 0x28]),
+            Encoding::Latin1
+        );
+        assert_eq!(
+            Encoding::detect(&[b'A', 0, b'B', 0]),
+            Encoding::Utf8,
+            "BOM-less UTF-16 is intentionally not guessed"
         );
     }
 

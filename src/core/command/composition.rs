@@ -7,14 +7,13 @@
 
 use std::fmt;
 use std::ops::Range;
-use std::sync::Arc;
 
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::document::{
     Association, BoundaryAffinity, CommittedModelTransaction, DeletionRecovery, Document,
-    DocumentError, DocumentId, MappingOutcome, ModelRequest, ModelTransactionError, PositionError,
-    PreparedModelTransaction, Revision, TextEdit, TextRange,
+    DocumentError, DocumentId, FormattedTextTree, MappingOutcome, ModelRequest,
+    ModelTransactionError, PositionError, PreparedModelTransaction, Revision, TextEdit, TextRange,
 };
 
 /// Normalized composition input emitted after a frontend has converted its
@@ -53,11 +52,7 @@ impl CompositionTarget {
         document: &Document,
         replacement_range: Range<usize>,
     ) -> Result<Self, CompositionError> {
-        validate_range(
-            document.text(),
-            &replacement_range,
-            CompositionBoundary::Replacement,
-        )?;
+        validate_document_range(document, &replacement_range)?;
         Ok(Self {
             document_id: document.id(),
             revision: document.revision(),
@@ -103,7 +98,7 @@ impl CompositionUpdate {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompositionSession {
     target: CompositionTarget,
-    base_text: Arc<str>,
+    base_text: FormattedTextTree,
     marked_text: String,
     selected_range: Range<usize>,
     generation: u64,
@@ -115,7 +110,7 @@ impl CompositionSession {
         validate_target(document, &target)?;
         Ok(Self {
             target,
-            base_text: Arc::from(document.text()),
+            base_text: document.projection().text_tree().clone(),
             marked_text: String::new(),
             selected_range: 0..0,
             generation: 0,
@@ -180,7 +175,11 @@ impl CompositionSession {
     /// that is visible again. No source mutation is necessary or performed.
     pub fn cancel(self, document: &Document) -> Result<CompositionRestoration, CompositionError> {
         self.validate_document(document)?;
-        let original_range_text = self.base_text[self.target.replacement_range.clone()].to_owned();
+        let original_range_text = self
+            .base_text
+            .slice(self.target.replacement_range.clone())
+            .map_err(DocumentError::FormattedTextStorage)
+            .map_err(CompositionError::Document)?;
         Ok(CompositionRestoration {
             document_id: self.target.document_id,
             revision: self.target.revision,
@@ -210,31 +209,24 @@ impl CompositionSession {
             })
             .map_err(composition_model_error)?;
 
-        let raw_caret = edit.range.start + edit.replacement.len();
-        let overlay_text = self.overlay_unchecked().formatted_text();
-        let caret_offset = if is_grapheme_boundary(&overlay_text, raw_caret) {
-            raw_caret
-        } else {
-            // Text inserted at a legal old boundary may join a grapheme on
-            // its right (regional indicators are a common example). The
-            // model's grapheme-closed map provides the corresponding legal
-            // target boundary without weakening the position invariant.
-            let point = document
-                .text_point(edit.range.start)
-                .map_err(CompositionError::Document)?;
-            match prepared.text_position_map().map_text_point(
-                point,
-                Association::AfterInsertion,
-                BoundaryAffinity::Downstream,
-                DeletionRecovery::PreferFollowingThenPreceding,
-            )? {
-                MappingOutcome::Exact(point)
-                | MappingOutcome::Moved(point)
-                | MappingOutcome::CollapsedByDeletion(point)
-                | MappingOutcome::RecoveredFromProvenance(point) => point.offset(),
-                MappingOutcome::Ambiguous(_) | MappingOutcome::Unresolvable(_) => {
-                    return Err(CompositionError::UnresolvableCommitCaret)
-                }
+        // The model's grapheme-closed map supplies the legal target boundary.
+        // This also handles joins with adjacent text without flattening the
+        // immutable formatted tree merely to inspect a local boundary.
+        let point = document
+            .text_point(edit.range.start)
+            .map_err(CompositionError::Document)?;
+        let caret_offset = match prepared.text_position_map().map_text_point(
+            point,
+            Association::AfterInsertion,
+            BoundaryAffinity::Downstream,
+            DeletionRecovery::PreferFollowingThenPreceding,
+        )? {
+            MappingOutcome::Exact(point)
+            | MappingOutcome::Moved(point)
+            | MappingOutcome::CollapsedByDeletion(point)
+            | MappingOutcome::RecoveredFromProvenance(point) => point.offset(),
+            MappingOutcome::Ambiguous(_) | MappingOutcome::Unresolvable(_) => {
+                return Err(CompositionError::UnresolvableCommitCaret)
             }
         };
         Ok(CompositionCommitRequest {
@@ -256,7 +248,7 @@ impl CompositionSession {
             document_id: self.target.document_id,
             revision: self.target.revision,
             generation: self.generation,
-            base_text: Arc::clone(&self.base_text),
+            base_text: self.base_text.clone(),
             replacement_range: self.target.replacement_range.clone(),
             marked_text: self.marked_text.clone(),
             selected_range: self.selected_range.clone(),
@@ -271,7 +263,7 @@ pub struct CompositionOverlay {
     document_id: DocumentId,
     revision: Revision,
     generation: u64,
-    base_text: Arc<str>,
+    base_text: FormattedTextTree,
     replacement_range: Range<usize>,
     marked_text: String,
     selected_range: Range<usize>,
@@ -290,27 +282,124 @@ impl CompositionOverlay {
         self.generation
     }
 
-    pub fn prefix(&self) -> &str {
-        &self.base_text[..self.replacement_range.start]
+    /// Explicitly materialize the unchanged prefix. Regional presentation
+    /// code should prefer [`Self::text_in_range`].
+    pub fn prefix(&self) -> String {
+        self.base_text
+            .slice(0..self.replacement_range.start)
+            .expect("a validated composition target remains a valid tree range")
     }
 
     pub fn marked_text(&self) -> &str {
         &self.marked_text
     }
 
-    pub fn suffix(&self) -> &str {
-        &self.base_text[self.replacement_range.end..]
+    /// Explicitly materialize the unchanged suffix. Regional presentation
+    /// code should prefer [`Self::text_in_range`].
+    pub fn suffix(&self) -> String {
+        self.base_text
+            .slice(self.replacement_range.end..self.base_text.byte_len())
+            .expect("a validated composition target remains a valid tree range")
+    }
+
+    pub fn base_utf8_len(&self) -> usize {
+        self.base_text.byte_len()
+    }
+
+    /// UTF-8 byte length of the disposable formatted projection.
+    pub fn utf8_len(&self) -> usize {
+        self.base_text.byte_len() - self.replacement_range.len() + self.marked_text.len()
+    }
+
+    /// Map a boundary in the immutable base projection to the corresponding
+    /// boundary in this splice. Boundaries inside the replaced range have no
+    /// unique image and are rejected.
+    pub fn overlay_offset_for_base_boundary(
+        &self,
+        offset: usize,
+        association: Association,
+    ) -> Option<usize> {
+        if offset < self.replacement_range.start
+            || (offset == self.replacement_range.start
+                && (self.replacement_range.start != self.replacement_range.end
+                    || association == Association::BeforeInsertion))
+        {
+            return Some(offset);
+        }
+        if offset < self.replacement_range.end || offset > self.base_text.byte_len() {
+            return None;
+        }
+        self.marked_range()
+            .end
+            .checked_add(offset - self.replacement_range.end)
+    }
+
+    /// Number of hard lines in the disposable projection. Counting is limited
+    /// to the replaced and marked payloads; unchanged prefix/suffix topology is
+    /// supplied by the source-backed formatted snapshot.
+    pub fn hard_line_count(&self, base_hard_line_count: usize) -> Option<usize> {
+        let removed = self.base_text.slice(self.replacement_range.clone()).ok()?;
+        let removed_breaks = removed.bytes().filter(|byte| *byte == b'\n').count();
+        let inserted_breaks = self
+            .marked_text
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count();
+        base_hard_line_count
+            .checked_sub(removed_breaks)?
+            .checked_add(inserted_breaks)
+    }
+
+    /// Copy one scalar-aligned range without materializing the complete
+    /// projection. Presentation adapters use this to fetch only text covered
+    /// by their bounded layout snapshot.
+    pub fn text_in_range(&self, range: Range<usize>) -> Option<String> {
+        if range.start > range.end || range.end > self.utf8_len() {
+            return None;
+        }
+        if !self.is_char_boundary(range.start) || !self.is_char_boundary(range.end) {
+            return None;
+        }
+
+        let marked_start = self.replacement_range.start;
+        let marked_end = marked_start + self.marked_text.len();
+        let mut result = String::with_capacity(range.len());
+        append_tree_intersection(&mut result, &self.base_text, 0, 0, marked_start, &range)?;
+        append_intersection(&mut result, &self.marked_text, marked_start, &range);
+        append_tree_intersection(
+            &mut result,
+            &self.base_text,
+            self.replacement_range.end,
+            marked_end,
+            self.utf8_len(),
+            &range,
+        )?;
+        Some(result)
+    }
+
+    fn is_char_boundary(&self, offset: usize) -> bool {
+        let marked_start = self.replacement_range.start;
+        let marked_end = marked_start + self.marked_text.len();
+        if offset <= marked_start {
+            self.base_text.is_char_boundary(offset).unwrap_or(false)
+        } else if offset <= marked_end {
+            self.marked_text.is_char_boundary(offset - marked_start)
+        } else {
+            self.base_text
+                .is_char_boundary(self.replacement_range.end + offset - marked_end)
+                .unwrap_or(false)
+        }
     }
 
     /// Materialize the temporary formatted text. Layout code can instead use
     /// `prefix`, `marked_text`, and `suffix` to avoid this allocation.
     pub fn formatted_text(&self) -> String {
         let mut text = String::with_capacity(
-            self.base_text.len() - self.replacement_range.len() + self.marked_text.len(),
+            self.base_text.byte_len() - self.replacement_range.len() + self.marked_text.len(),
         );
-        text.push_str(self.prefix());
+        text.push_str(&self.prefix());
         text.push_str(&self.marked_text);
-        text.push_str(self.suffix());
+        text.push_str(&self.suffix());
         text
     }
 
@@ -333,6 +422,38 @@ impl CompositionOverlay {
     }
 }
 
+fn append_intersection(
+    output: &mut String,
+    segment: &str,
+    segment_start: usize,
+    requested: &Range<usize>,
+) {
+    let segment_end = segment_start + segment.len();
+    let start = requested.start.max(segment_start);
+    let end = requested.end.min(segment_end);
+    if start < end {
+        output.push_str(&segment[start - segment_start..end - segment_start]);
+    }
+}
+
+fn append_tree_intersection(
+    output: &mut String,
+    tree: &FormattedTextTree,
+    source_start: usize,
+    projected_start: usize,
+    projected_end: usize,
+    requested: &Range<usize>,
+) -> Option<()> {
+    let start = requested.start.max(projected_start);
+    let end = requested.end.min(projected_end);
+    if start < end {
+        let local_start = source_start.checked_add(start - projected_start)?;
+        let local_end = source_start.checked_add(end - projected_start)?;
+        output.push_str(&tree.slice(local_start..local_end).ok()?);
+    }
+    Some(())
+}
+
 /// The result of cancelling a session. It lets layout restore the exact base
 /// snapshot while making explicit that the document itself was never changed.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -341,12 +462,12 @@ pub struct CompositionRestoration {
     pub revision: Revision,
     pub replacement_range: Range<usize>,
     pub original_range_text: String,
-    original_formatted_text: Arc<str>,
+    original_formatted_text: FormattedTextTree,
 }
 
 impl CompositionRestoration {
-    pub fn formatted_text(&self) -> &str {
-        &self.original_formatted_text
+    pub fn formatted_text(&self) -> String {
+        self.original_formatted_text.flatten()
     }
 }
 
@@ -549,11 +670,35 @@ fn validate_target(
     target: &CompositionTarget,
 ) -> Result<(), CompositionError> {
     validate_document_revision(document, target.document_id, target.revision)?;
-    validate_range(
-        document.text(),
-        &target.replacement_range,
-        CompositionBoundary::Replacement,
-    )
+    validate_document_range(document, &target.replacement_range)
+}
+
+fn validate_document_range(
+    document: &Document,
+    range: &Range<usize>,
+) -> Result<(), CompositionError> {
+    let length = document.projection().text_tree().byte_len();
+    if range.start > range.end || range.end > length {
+        return Err(CompositionError::InvalidRange {
+            boundary: CompositionBoundary::Replacement,
+            start: range.start,
+            end: range.end,
+            length,
+        });
+    }
+    for offset in [range.start, range.end] {
+        match document.text_point(offset) {
+            Ok(_) => {}
+            Err(DocumentError::NotGraphemeBoundary(_)) => {
+                return Err(CompositionError::InvalidGraphemeBoundary {
+                    boundary: CompositionBoundary::Replacement,
+                    offset,
+                })
+            }
+            Err(error) => return Err(CompositionError::Document(error)),
+        }
+    }
+    Ok(())
 }
 
 fn validate_document_revision(

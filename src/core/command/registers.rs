@@ -324,6 +324,16 @@ impl Default for Registers {
 }
 
 impl Registers {
+    pub(crate) fn names(&self) -> Vec<char> {
+        let mut names = self.values.keys().copied().collect::<Vec<_>>();
+        if self.last_insert.is_some() {
+            names.push('.');
+        }
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+
     pub(crate) fn get(&self, name: char) -> Option<&RegisterValue> {
         if name == '.' {
             return self.last_insert.as_ref();

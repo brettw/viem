@@ -19,29 +19,211 @@ use crate::command::{
 use crate::document::{
     ArtifactOverwrite, ArtifactPath, ArtifactWriteCompletion, ArtifactWriteCompletionStatus,
     ArtifactWriteIntent, ArtifactWriteScope, ArtifactWriteToken, Association, BoundaryAffinity,
-    DeletionRecovery, Document, DocumentError, DocumentId, HardLineSourceRangeError, HistoryError,
-    HistoryLocation, HistoryRestoration, HistoryRestorationSnapshot, MappingOutcome,
+    ConfigurationStyleIntent, DeletionRecovery, Document, DocumentError, DocumentId, FileFormat,
+    HardLineSourceRangeError, HistoryError, HistoryLocation, HistoryNavigationRequest,
+    HistoryRestoration, HistoryRestorationSnapshot, MappingOutcome, ModelRequest,
     ModelTransactionError, PersistenceError, PositionDomain, PositionError, PositionMap,
-    PreparedArtifactWrite, Revision, TextAnchor,
+    PreparedArtifactWrite, Revision, SemanticInlineStyle, StyleApplication,
+    StyleDefinitionFieldEdit, StyleId, StyleModelIntent, StyleModelRequest, StyleNamespace,
+    StyleSheetRevision, TextAnchor,
 };
 use crate::layout::{
     compute_layout_job, inspect_layout_provider, install_layout_job, prepare_layout_job,
-    InstalledLayoutJob, LayoutCancellationToken, LayoutCoverage, LayoutEngine, LayoutError,
-    LayoutExecutionContext, LayoutInstallTarget, LayoutJobCandidate, LayoutJobError, LayoutJobId,
-    LayoutJobInstallRejection, LayoutJobPriority, LayoutJobRegion, LayoutProviderRequirements,
-    LayoutRevision, MeasurementEnvironmentId, MetricsGeneration, TextMeasurementProvider,
+    DocumentLayoutStyles, InstalledLayoutJob, LayoutCancellationToken, LayoutComputationError,
+    LayoutCoverage, LayoutEngine, LayoutError, LayoutExecutionContext, LayoutInstallTarget,
+    LayoutJobCandidate, LayoutJobError, LayoutJobId, LayoutJobInstallRejection, LayoutJobPriority,
+    LayoutJobRegion, LayoutProviderRequirements, LayoutRevision, MeasurementEnvironmentId,
+    MetricsGeneration, PaintStyleRun, ParagraphLayoutStyle, ShapeStyleRun, TextMeasurementProvider,
     ViewConfigurationGeneration, ViewLayout, ViewportLayoutRegion,
 };
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_STYLE_EDIT_GROUP_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Stable identity for a view attached to the core buffer.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 pub struct ViewId(pub u64);
 
+/// Logical selection shape reported without consulting layout geometry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LogicalSelectionKind {
+    None,
+    Character,
+    Line,
+    Block,
+}
+
+/// Exact snapshot-local identity of one active linear Visual selection.
+/// The normalized range is retained with the directed endpoints so a stale
+/// native menu action cannot silently target a different selection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogicalSelectionIdentity {
+    view: ViewId,
+    document: DocumentId,
+    revision: Revision,
+    kind: LogicalSelectionKind,
+    anchor: usize,
+    active: usize,
+    active_affinity: BoundaryAffinity,
+    range: std::ops::Range<usize>,
+}
+
+impl LogicalSelectionIdentity {
+    pub fn view(&self) -> ViewId {
+        self.view
+    }
+
+    pub fn document(&self) -> DocumentId {
+        self.document
+    }
+
+    pub fn revision(&self) -> Revision {
+        self.revision
+    }
+
+    pub fn kind(&self) -> LogicalSelectionKind {
+        self.kind
+    }
+
+    pub fn anchor(&self) -> usize {
+        self.anchor
+    }
+
+    pub fn active(&self) -> usize {
+        self.active
+    }
+
+    pub fn active_affinity(&self) -> BoundaryAffinity {
+        self.active_affinity
+    }
+
+    pub fn range(&self) -> std::ops::Range<usize> {
+        self.range.clone()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SemanticStyleState {
+    Off,
+    On,
+    Mixed,
+}
+
+/// Query-only native formatting presentation for one semantic inline style.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SemanticStylePresentation {
+    selection_kind: LogicalSelectionKind,
+    selection: Option<LogicalSelectionIdentity>,
+    state: SemanticStyleState,
+    can_set: bool,
+    can_clear: bool,
+}
+
+impl SemanticStylePresentation {
+    pub fn selection_kind(&self) -> LogicalSelectionKind {
+        self.selection_kind
+    }
+
+    pub fn selection(&self) -> Option<&LogicalSelectionIdentity> {
+        self.selection.as_ref()
+    }
+
+    pub fn state(&self) -> SemanticStyleState {
+        self.state
+    }
+
+    pub fn can_set(&self) -> bool {
+        self.can_set
+    }
+
+    pub fn can_clear(&self) -> bool {
+        self.can_clear
+    }
+}
+
+/// Process-wide, non-reused identity for one explicitly owned live style-edit
+/// group. The complete [`StyleEditGroup`] value remains scoped to its core,
+/// document, and owning view; the numeric ID alone is never sufficient
+/// authority to mutate a group.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
+pub struct StyleEditGroupId(pub u64);
+
+/// Immutable capability returned when a frontend begins a live style-edit
+/// gesture. The begin identities deliberately remain fixed while successful
+/// edits advance the document and style-sheet revisions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StyleEditGroup {
+    id: StyleEditGroupId,
+    view: ViewId,
+    document: DocumentId,
+    begin_document_revision: Revision,
+    begin_style_sheet_revision: StyleSheetRevision,
+}
+
+impl StyleEditGroup {
+    pub fn id(self) -> StyleEditGroupId {
+        self.id
+    }
+
+    pub fn view(self) -> ViewId {
+        self.view
+    }
+
+    pub fn document(self) -> DocumentId {
+        self.document
+    }
+
+    pub fn begin_document_revision(self) -> Revision {
+        self.begin_document_revision
+    }
+
+    pub fn begin_style_sheet_revision(self) -> StyleSheetRevision {
+        self.begin_style_sheet_revision
+    }
+
+    pub fn from_parts(
+        id: StyleEditGroupId,
+        view: ViewId,
+        document: DocumentId,
+        begin_document_revision: Revision,
+        begin_style_sheet_revision: StyleSheetRevision,
+    ) -> Self {
+        Self {
+            id,
+            view,
+            document,
+            begin_document_revision,
+            begin_style_sheet_revision,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CoreIdentifierKind {
     View,
     LayoutJob,
+    StyleEditGroup,
+}
+
+/// Typed ownership and lifecycle failures for a live style-edit group.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StyleEditGroupError {
+    AlreadyActive(StyleEditGroupId),
+    NoActiveGroup,
+    WrongGroup {
+        expected: StyleEditGroupId,
+        actual: StyleEditGroupId,
+    },
+    WrongOwner {
+        expected: ViewId,
+        actual: ViewId,
+    },
+    WrongDocument {
+        expected: DocumentId,
+        actual: DocumentId,
+    },
+    IdentityMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,16 +245,70 @@ pub enum CoreEvent {
         width: f32,
         height: f32,
     },
+    /// Change only this view's magnification. Scale participates in shaping,
+    /// wrapping, and layout identity but never changes source or semantic
+    /// projection state.
+    SetScale(f32),
+    /// Update the shared last-search target without moving any view. The FFI
+    /// entry point derives this literal from an exact core selection before
+    /// dispatching the event.
+    SetFindPattern(String),
+    /// Materialize and reveal the active endpoint of the current core-owned
+    /// Visual selection. The menu-specific FFI entry point rejects non-Visual
+    /// modes before dispatch.
+    RevealSelection,
+    /// Set or clear one source-backed semantic inline style on an exact,
+    /// core-owned linear Visual selection. The identity contains no layout
+    /// generation and remains valid when the selection is offscreen.
+    SetSelectionSemanticStyle {
+        expected: LogicalSelectionIdentity,
+        style: SemanticInlineStyle,
+        enabled: bool,
+    },
     SetWrap(bool),
+    SetLineBreak(bool),
+    /// Change the shared source line-ending spelling through one exact,
+    /// revision-bound model transaction. This is intentionally typed rather
+    /// than routed through Ex parsing so native UI can preserve model policy
+    /// and structured failures.
+    SetFileFormat {
+        document: DocumentId,
+        revision: Revision,
+        target: FileFormat,
+    },
+    /// Atomically edit one field of an existing generated-configuration style
+    /// definition. Authority is derived from immutable core metadata; callers
+    /// cannot promote source-backed or synthetic definitions to editable.
+    EditGeneratedStyle {
+        document: DocumentId,
+        revision: Revision,
+        style_sheet_revision: StyleSheetRevision,
+        namespace: StyleNamespace,
+        style: StyleId,
+        edit: StyleDefinitionFieldEdit,
+    },
     /// Set an absolute presentation origin. `left` is always requested;
-    /// `top: None` is a horizontal-only event. Absolute vertical host control
-    /// is intentionally deferred until bounded height-prefix refinement can
-    /// assemble one exact immutable viewport; requesting it returns a typed
-    /// limitation without changing either coordinate.
+    /// `top: None` is a horizontal-only event. A vertical request maps through
+    /// the compact height index, refines only its local neighborhood, and then
+    /// installs one exact immutable viewport while retaining an anchor to the
+    /// newly visible text. Estimated prefixes remain explicitly inexact.
     SetViewportOrigin {
         left: f32,
         top: Option<f32>,
     },
+    /// Place or extend the authoritative view cursor from a frontend hit-test.
+    /// The offset is bound to the supplied formatted snapshot revision; stale
+    /// numeric offsets are rejected rather than reinterpreted.
+    PlaceCursor {
+        document_revision: Revision,
+        text_offset: usize,
+        affinity: BoundaryAffinity,
+        extend_selection: bool,
+    },
+    /// Navigate one retained history edge independently of the current Vim
+    /// mode. Native Edit menu actions use this instead of synthesizing `u` or
+    /// Ctrl-R key input.
+    NavigateHistory(HistoryNavigationRequest),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,9 +360,9 @@ pub struct ViewCompositionChange {
 }
 
 /// Cleanup performed while detaching a view. Marked text is a presentation
-/// overlay and is discarded rather than committed; a view-owned Insert or
-/// Replace edit group is closed so its already committed edits remain one
-/// complete undo unit.
+/// overlay and is discarded rather than committed; a view-owned Insert,
+/// Replace, or explicit style edit group is closed so its already committed
+/// edits remain one complete undo unit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ViewRemovalOutcome {
     pub edit_group_closed: bool,
@@ -147,7 +383,9 @@ pub struct ViewportState {
     left: f32,
     top: f32,
     maximum_left: Option<f32>,
+    scale: f32,
     wrap: bool,
+    linebreak: bool,
     top_is_exact: bool,
 }
 
@@ -188,8 +426,16 @@ impl ViewportState {
         self.maximum_left
     }
 
+    pub fn scale(self) -> f32 {
+        self.scale
+    }
+
     pub fn wrap(self) -> bool {
         self.wrap
+    }
+
+    pub fn linebreak(self) -> bool {
+        self.linebreak
     }
 
     pub fn top_is_exact(self) -> bool {
@@ -212,17 +458,27 @@ pub enum CoreError {
     /// older document, position, or history facade errors (for example style
     /// policy decisions).
     ModelTransaction(ModelTransactionError),
+    StaleStyleSheet {
+        expected: StyleSheetRevision,
+        actual: StyleSheetRevision,
+    },
+    StyleEditGroup(StyleEditGroupError),
     Layout(LayoutError),
     LayoutMotion(LayoutMotionError),
     LayoutJob(LayoutJobError),
     LayoutInstall(LayoutJobInstallRejection),
-    /// Absolute vertical host scrolling is not exposed until the coordinator
-    /// can refine arbitrary estimated prefixes and assemble a bounded series
-    /// of regional jobs into one exact viewport snapshot.
+    /// Retained for Rust-facing compatibility with the original placeholder
+    /// protocol. `SetViewportOrigin` no longer produces this error.
     VerticalViewportOriginUnsupported,
     Composition(CompositionError),
     Persistence(PersistenceError),
     HardLineSourceRange(HardLineSourceRangeError),
+    /// A menu action requiring a live Visual selection was dispatched after
+    /// that selection disappeared or resolved to no text.
+    NoVisualSelection,
+    /// A revision-bound native action named a Visual selection which is no
+    /// longer the invoking view's exact current logical selection.
+    StaleLogicalSelection,
     /// Vim refuses to replace the current artifact with only a line range
     /// unless the command used `:write!` (E140). This policy is distinct from
     /// the storage provider's ordinary existing-destination check.
@@ -384,6 +640,9 @@ struct View<P: TextMeasurementProvider> {
     layout: ViewLayout,
     engine: LayoutEngine<P>,
     composition: Option<CompositionSession>,
+    /// Disposable, source-nonmutating layout of `composition`. The ordinary
+    /// view layout remains intact so cancellation is an O(1) restoration.
+    composition_layout: Option<ViewLayout>,
     viewport_anchor: Option<ViewportTextAnchor>,
     immediate_layout_context: LayoutExecutionContext,
     observed_metrics_generation: MetricsGeneration,
@@ -415,7 +674,7 @@ impl ActiveLayoutWork {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct ViewportTextAnchor {
     anchor: TextAnchor,
     offset_from_row_top: f32,
@@ -435,6 +694,15 @@ fn overwrite_for_alternate(force: bool) -> ArtifactOverwrite {
     }
 }
 
+fn allocate_style_edit_group_id() -> Option<StyleEditGroupId> {
+    NEXT_STYLE_EDIT_GROUP_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .ok()
+        .map(StyleEditGroupId)
+}
+
 /// Serial composition root for one buffer and its attached views.
 pub struct Core<P: TextMeasurementProvider> {
     document: Document,
@@ -444,6 +712,10 @@ pub struct Core<P: TextMeasurementProvider> {
     next_layout_job: Option<u64>,
     edit_group_owner: Option<ViewId>,
     edit_group_restoration: Option<OpenGroupRestoration>,
+    /// Explicit frontend-owned style gesture. It owns the document's sole
+    /// open history group until ended, its view is removed, or an unrelated
+    /// coordinator event consumes it.
+    style_edit_group: Option<OpenStyleEditGroup>,
     /// Set only during the synchronous coordinator-owned compound runner.
     /// Nested calls to `handle` publish one ordinary event and return their
     /// continuation to the iterative runner through `queued_replay`.
@@ -454,6 +726,14 @@ pub struct Core<P: TextMeasurementProvider> {
 
 #[derive(Clone, Debug)]
 struct OpenGroupRestoration {
+    generation: u64,
+    parent: HistoryLocation,
+    before: HistoryRestorationSnapshot,
+}
+
+#[derive(Clone, Debug)]
+struct OpenStyleEditGroup {
+    identity: StyleEditGroup,
     generation: u64,
     parent: HistoryLocation,
     before: HistoryRestorationSnapshot,
@@ -549,6 +829,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             next_layout_job: Some(1),
             edit_group_owner: None,
             edit_group_restoration: None,
+            style_edit_group: None,
             replay_undo_floor: None,
             queued_replay: None,
             compound_replay_event_limit: MACRO_REPLAY_EVENT_LIMIT,
@@ -559,6 +840,228 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self.document
     }
 
+    /// Return native Bold/Italic presentation from the authoritative logical
+    /// selection and transformation capability. This query performs no layout
+    /// work and therefore remains valid for an offscreen linear selection.
+    pub fn selection_semantic_style_presentation(
+        &self,
+        view_id: ViewId,
+        style: SemanticInlineStyle,
+    ) -> Result<SemanticStylePresentation, CoreError> {
+        let view = self
+            .views
+            .get(&view_id)
+            .ok_or(CoreError::UnknownView(view_id))?;
+        let selection_kind = match view.commands.mode() {
+            Mode::VisualCharacter => LogicalSelectionKind::Character,
+            Mode::VisualLine => LogicalSelectionKind::Line,
+            Mode::VisualBlock => LogicalSelectionKind::Block,
+            Mode::Normal | Mode::Insert | Mode::Replace | Mode::CommandLine => {
+                LogicalSelectionKind::None
+            }
+        };
+        if !matches!(
+            selection_kind,
+            LogicalSelectionKind::Character | LogicalSelectionKind::Line
+        ) {
+            return Ok(SemanticStylePresentation {
+                selection_kind,
+                selection: None,
+                state: SemanticStyleState::Off,
+                can_set: false,
+                can_clear: false,
+            });
+        }
+
+        let selection = self
+            .active_linear_selection_identity(view_id)?
+            .ok_or(CoreError::NoVisualSelection)?;
+        let range = selection.range();
+        if range.is_empty() {
+            return Ok(SemanticStylePresentation {
+                selection_kind,
+                selection: Some(selection),
+                state: SemanticStyleState::Off,
+                can_set: false,
+                can_clear: false,
+            });
+        }
+
+        let mut covered = self
+            .document
+            .projection()
+            .style_spans()
+            .iter()
+            .filter(|span| span.application == StyleApplication::Semantic(style))
+            .filter_map(|span| {
+                let start = span.range.start.max(range.start);
+                let end = span.range.end.min(range.end);
+                (start < end).then_some(start..end)
+            })
+            .collect::<Vec<_>>();
+        covered.sort_by_key(|segment| (segment.start, segment.end));
+        let state = if covered.is_empty() {
+            SemanticStyleState::Off
+        } else {
+            let mut cursor = range.start;
+            let mut has_gap = false;
+            for segment in covered {
+                if segment.start > cursor {
+                    has_gap = true;
+                    break;
+                }
+                cursor = cursor.max(segment.end);
+                if cursor >= range.end {
+                    break;
+                }
+            }
+            if !has_gap && cursor >= range.end {
+                SemanticStyleState::On
+            } else {
+                SemanticStyleState::Mixed
+            }
+        };
+        let can_set = self
+            .document
+            .semantic_style_edit_capability(range.clone(), style, true)
+            .is_ok();
+        let can_clear = self
+            .document
+            .semantic_style_edit_capability(range, style, false)
+            .is_ok();
+        Ok(SemanticStylePresentation {
+            selection_kind,
+            selection: Some(selection),
+            state,
+            can_set,
+            can_clear,
+        })
+    }
+
+    fn active_linear_selection_identity(
+        &self,
+        view_id: ViewId,
+    ) -> Result<Option<LogicalSelectionIdentity>, CoreError> {
+        let view = self
+            .views
+            .get(&view_id)
+            .ok_or(CoreError::UnknownView(view_id))?;
+        let kind = match view.commands.mode() {
+            Mode::VisualCharacter => LogicalSelectionKind::Character,
+            Mode::VisualLine => LogicalSelectionKind::Line,
+            Mode::Normal | Mode::Insert | Mode::Replace | Mode::VisualBlock | Mode::CommandLine => {
+                return Ok(None)
+            }
+        };
+        let range = view
+            .commands
+            .linear_visual_selection_range(&self.document)
+            .ok_or(CoreError::NoVisualSelection)?;
+        let active = view.commands.cursor();
+        let anchor = view.commands.visual_anchor().unwrap_or(active);
+        Ok(Some(LogicalSelectionIdentity {
+            view: view_id,
+            document: self.document.id(),
+            revision: self.document.revision(),
+            kind,
+            anchor,
+            active,
+            active_affinity: view.commands.boundary_affinity(),
+            range,
+        }))
+    }
+
+    /// Begin one explicit live style-edit gesture at an exact document and
+    /// style-sheet identity. Only one explicit style group may be active in a
+    /// core. A group with no successful edits creates no history entry.
+    pub fn begin_style_edit_group(
+        &mut self,
+        view_id: ViewId,
+        document: DocumentId,
+        revision: Revision,
+        style_sheet_revision: StyleSheetRevision,
+    ) -> Result<StyleEditGroup, CoreError> {
+        if !self.views.contains_key(&view_id) {
+            return Err(CoreError::UnknownView(view_id));
+        }
+        if let Some(open) = &self.style_edit_group {
+            return Err(CoreError::StyleEditGroup(
+                StyleEditGroupError::AlreadyActive(open.identity.id),
+            ));
+        }
+        self.validate_style_sheet_identity(document, revision, style_sheet_revision)?;
+        let id = allocate_style_edit_group_id().ok_or(CoreError::IdentifierExhausted(
+            CoreIdentifierKind::StyleEditGroup,
+        ))?;
+
+        // A style gesture is independent of any command-layer Insert/Replace
+        // unit. Preserve that unit's true owner endpoint before opening the
+        // model history group used by this gesture.
+        self.finalize_open_edit_group(view_id)?;
+        let identity = StyleEditGroup {
+            id,
+            view: view_id,
+            document,
+            begin_document_revision: revision,
+            begin_style_sheet_revision: style_sheet_revision,
+        };
+        let parent = self.document.history_status().current;
+        let before = self
+            .views
+            .get(&view_id)
+            .expect("view existence checked before beginning style edit group")
+            .commands
+            .capture_history_restoration(&self.document)?;
+        self.document.begin_edit_group();
+        self.style_edit_group = Some(OpenStyleEditGroup {
+            identity,
+            generation: self.document.edit_group_generation(),
+            parent,
+            before,
+        });
+        Ok(identity)
+    }
+
+    /// End and consume an explicit style-edit capability. Successfully
+    /// committed edits remain published and become one history unit; ending
+    /// never rolls them back. Reusing the capability after this call fails.
+    pub fn end_style_edit_group(
+        &mut self,
+        view_id: ViewId,
+        group: StyleEditGroup,
+    ) -> Result<(), CoreError> {
+        self.validate_style_edit_group(view_id, group)?;
+        self.finalize_style_edit_group()?;
+        Ok(())
+    }
+
+    /// Acknowledge that a native frontend successfully persisted the exact
+    /// current source snapshot. Stale acknowledgements are rejected before an
+    /// open edit group or save-point state is changed.
+    pub fn mark_saved(
+        &mut self,
+        document: DocumentId,
+        revision: Revision,
+    ) -> Result<(), CoreError> {
+        if document != self.document.id() {
+            return Err(CoreError::Document(DocumentError::WrongDocument));
+        }
+        if revision != self.document.revision() {
+            return Err(CoreError::Document(DocumentError::WrongSnapshot {
+                expected: self.document.revision(),
+                actual: revision,
+            }));
+        }
+        self.finalize_style_edit_group()?;
+        if let Some(owner) = self.edit_group_owner {
+            self.finalize_open_edit_group(owner)?;
+        } else {
+            self.edit_group_restoration = None;
+        }
+        self.document.mark_saved();
+        Ok(())
+    }
+
     /// Finalize the active command-layer edit unit and capture immutable bytes
     /// for external storage. The returned value can be sent to a provider
     /// without retaining a mutable borrow of `Core`.
@@ -566,6 +1069,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &mut self,
         intent: ArtifactWriteIntent,
     ) -> Result<PreparedArtifactWrite, CoreError> {
+        self.finalize_style_edit_group()?;
         self.edit_group_owner = None;
         self.edit_group_restoration = None;
         Ok(self.document.prepare_artifact_write(intent)?)
@@ -817,6 +1321,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 layout,
                 engine,
                 composition: None,
+                composition_layout: None,
                 viewport_anchor: None,
                 immediate_layout_context,
                 observed_metrics_generation,
@@ -841,24 +1346,38 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     /// Detach one view without committing any of its transient marked text.
-    /// Existing Insert/Replace edits remain committed and their open undo group
-    /// is closed. Any worker request owned by this view is cooperatively
-    /// cancelled before the view state is dropped.
+    /// Existing Insert/Replace or live style edits remain committed and their
+    /// open undo group is closed. Any worker request owned by this view is
+    /// cooperatively cancelled before the view state is dropped.
     pub fn remove_view(&mut self, view_id: ViewId) -> Result<ViewRemovalOutcome, CoreError> {
+        if !self.views.contains_key(&view_id) {
+            return Err(CoreError::UnknownView(view_id));
+        }
+        let style_group_closed = self
+            .style_edit_group
+            .as_ref()
+            .is_some_and(|open| open.identity.view == view_id);
+        if style_group_closed {
+            // Restoration must be captured while the owning view still
+            // exists. The capability is consumed even if final attachment
+            // unexpectedly fails; already committed edits are never rolled
+            // back by view teardown.
+            self.finalize_style_edit_group()?;
+        }
         let mut view = self
             .views
             .remove(&view_id)
-            .ok_or(CoreError::UnknownView(view_id))?;
+            .expect("view existence checked before style-group finalization");
         let layout_work_cancelled = cancel_active_layout_work(&mut view);
         let composition_discarded = view.composition.take().is_some();
-        let edit_group_closed = self.edit_group_owner == Some(view_id);
-        if edit_group_closed {
+        let command_group_closed = self.edit_group_owner == Some(view_id);
+        if command_group_closed {
             self.document.close_edit_group();
             self.edit_group_owner = None;
             self.edit_group_restoration = None;
         }
         Ok(ViewRemovalOutcome {
-            edit_group_closed,
+            edit_group_closed: style_group_closed || command_group_closed,
             composition_discarded,
             layout_work_cancelled,
         })
@@ -893,6 +1412,15 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.views.get(&view).map(|view| &view.layout)
     }
 
+    /// Return the layout a frontend should paint. Native marked text owns a
+    /// disposable composed layout while the command model keeps using the
+    /// source-backed layout for document-coordinate motions.
+    pub fn presentation_layout(&self, view: ViewId) -> Option<&ViewLayout> {
+        self.views
+            .get(&view)
+            .map(|view| view.composition_layout.as_ref().unwrap_or(&view.layout))
+    }
+
     /// Return the current absolute presentation origin and only those bounds
     /// proven exact for the current document/configuration/provider identity.
     pub fn viewport_state(&self, view_id: ViewId) -> Result<ViewportState, CoreError> {
@@ -901,28 +1429,31 @@ impl<P: TextMeasurementProvider> Core<P> {
             .get(&view_id)
             .ok_or(CoreError::UnknownView(view_id))?;
         let requirements = inspect_layout_provider(&view.engine);
-        let current_snapshot = current_layout_snapshot(&self.document, view, requirements);
+        let presentation_layout = view.composition_layout.as_ref().unwrap_or(&view.layout);
+        let current_snapshot =
+            current_snapshot_for_layout(&self.document, presentation_layout, requirements);
         let snapshot_is_current = current_snapshot.is_some();
         Ok(ViewportState {
             document_id: self.document.id(),
             document_revision: self.document.revision(),
             layout_revision: current_snapshot.map(|snapshot| snapshot.revision),
-            configuration_generation: view.layout.configuration_generation(),
+            configuration_generation: presentation_layout.configuration_generation(),
             measurement_environment_id: requirements.measurement_environment_id,
             metrics_generation: requirements.metrics_generation,
-            left: view.layout.viewport_left(),
-            top: view.layout.viewport_top(),
-            maximum_left: if view.layout.wrap() || snapshot_is_current {
-                view.layout.maximum_viewport_left()
+            left: presentation_layout.viewport_left(),
+            top: presentation_layout.viewport_top(),
+            maximum_left: if presentation_layout.wrap() || snapshot_is_current {
+                presentation_layout.maximum_viewport_left()
             } else {
                 None
             },
-            wrap: view.layout.wrap(),
-            top_is_exact: viewport_origin_has_exact_geometry(
-                &self.document,
-                view,
-                view.layout.viewport_top(),
-                requirements,
+            scale: presentation_layout.scale(),
+            wrap: presentation_layout.wrap(),
+            linebreak: presentation_layout.linebreak(),
+            top_is_exact: layout_origin_has_exact_geometry(
+                current_snapshot,
+                presentation_layout.height(),
+                presentation_layout.viewport_top(),
             ),
         })
     }
@@ -1297,6 +1828,182 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
     }
 
+    /// Stage and atomically install the exact local layout needed for an
+    /// absolute vertical presentation request. The requested y is first
+    /// resolved through the compact height index. Its hard line and within-line
+    /// offset then act as the refinement anchor, so discovering different
+    /// heights in the local overscan cannot strand the viewport on neighboring
+    /// text. Unknown heights before that neighborhood remain estimates.
+    fn materialize_requested_viewport(
+        &mut self,
+        view_id: ViewId,
+        left: f32,
+        requested_top: f32,
+    ) -> Result<(), CoreError> {
+        const MIN_OVERSCAN_LINES: usize = 8;
+
+        let hard_line_count = self.document.line_count();
+        let document_revision = self.document.revision();
+        let (mut staged_layout, requirements, immediate_layout_context, metrics_changed) = {
+            let view = self
+                .views
+                .get(&view_id)
+                .ok_or(CoreError::UnknownView(view_id))?;
+            let requirements = inspect_layout_provider(&view.engine);
+            (
+                view.layout.clone(),
+                requirements,
+                view.immediate_layout_context,
+                view.observed_metrics_generation != requirements.metrics_generation,
+            )
+        };
+        let dependency_changed = staged_layout.snapshot().is_some_and(|snapshot| {
+            snapshot.measurement_environment_id != requirements.measurement_environment_id
+                || snapshot.metrics_generation != requirements.metrics_generation
+        });
+        if metrics_changed || dependency_changed {
+            staged_layout.invalidate_text_metrics();
+        }
+        let document_is_stale = staged_layout.snapshot().is_some_and(|snapshot| {
+            snapshot.document_id != self.document.id()
+                || snapshot.document_revision != document_revision
+        });
+        staged_layout
+            .synchronize_document_hard_line_count(hard_line_count, document_is_stale)
+            .map_err(LayoutError::from)?;
+
+        let viewport_height = staged_layout.height().max(f32::EPSILON);
+        let requested_top = requested_top.max(0.0);
+        let target_hit = staged_layout
+            .hard_line_at_y(f64::from(requested_top))
+            .map_err(LayoutError::from)?;
+        let target_line = target_hit.map_or(hard_line_count - 1, |hit| hit.hard_line());
+        let target_line_top = match target_hit {
+            Some(hit) => hit.line_top(),
+            None => staged_layout
+                .hard_line_prefix_height(target_line)
+                .map_err(LayoutError::from)?
+                .height(),
+        };
+        let offset_from_target_line = (f64::from(requested_top) - target_line_top).max(0.0);
+
+        let visible_end = staged_layout
+            .hard_line_at_y(f64::from(requested_top) + f64::from(viewport_height))
+            .map_err(LayoutError::from)?
+            .map_or(hard_line_count, |hit| hit.hard_line().saturating_add(1));
+        let visible_start = target_line;
+        let visible_end = visible_end.max(target_line.saturating_add(1));
+        let overscan = (visible_end - visible_start).max(MIN_OVERSCAN_LINES);
+        let mut start = visible_start.saturating_sub(overscan);
+        let mut end = visible_end.saturating_add(overscan).min(hard_line_count);
+        let mut next_requested_top = requested_top;
+
+        loop {
+            let region = LayoutJobRegion::Viewport(ViewportLayoutRegion::new(
+                start..end,
+                next_requested_top,
+                viewport_height,
+            )?);
+            let job_id = self.allocate_layout_job_id()?;
+            let request = prepare_layout_job(
+                &self.document,
+                &mut staged_layout,
+                requirements,
+                job_id,
+                LayoutJobPriority::NewlyExposedRows,
+                region,
+                LayoutCancellationToken::new(),
+            )?;
+            let candidate = {
+                let view = self
+                    .views
+                    .get_mut(&view_id)
+                    .expect("view remains attached during serial layout");
+                compute_layout_job(&mut view.engine, &request, immediate_layout_context)?
+            };
+            install_layout_job(
+                &mut staged_layout,
+                LayoutInstallTarget {
+                    document_id: self.document.id(),
+                    document_revision,
+                    measurement_environment_id: requirements.measurement_environment_id,
+                    metrics_generation: requirements.metrics_generation,
+                },
+                candidate,
+            )?;
+
+            let refined_line_top = staged_layout
+                .hard_line_prefix_height(target_line)
+                .map_err(LayoutError::from)?
+                .height();
+            let refined_line_height = staged_layout
+                .hard_line_range_height(target_line..target_line + 1)
+                .map_err(LayoutError::from)?
+                .height();
+            let anchored_top = refined_line_top + offset_from_target_line.min(refined_line_height);
+            staged_layout.set_viewport_top(anchored_top.min(f64::from(f32::MAX)) as f32)?;
+
+            let (extend_before, extend_after) = viewport_layout_extension_needed(&staged_layout);
+            if !extend_before && !extend_after {
+                break;
+            }
+            let growth = (end - start).max(1);
+            let previous = start..end;
+            if extend_before {
+                start = start.saturating_sub(growth);
+            }
+            if extend_after {
+                end = end.saturating_add(growth).min(hard_line_count);
+            }
+            if start == previous.start && end == previous.end {
+                break;
+            }
+            next_requested_top = staged_layout.viewport_top();
+        }
+
+        staged_layout.set_viewport_left(left)?;
+        let actual_requirements = {
+            let view = self
+                .views
+                .get(&view_id)
+                .expect("view remains attached before atomic layout publication");
+            inspect_layout_provider(&view.engine)
+        };
+        if actual_requirements.threading != requirements.threading {
+            return Err(CoreError::LayoutJob(
+                LayoutJobError::ProviderThreadingChanged {
+                    expected: requirements.threading,
+                    actual: actual_requirements.threading,
+                },
+            ));
+        }
+        if actual_requirements.measurement_environment_id != requirements.measurement_environment_id
+        {
+            return Err(CoreError::LayoutJob(
+                LayoutJobError::WrongMeasurementEnvironment {
+                    expected: requirements.measurement_environment_id,
+                    actual: actual_requirements.measurement_environment_id,
+                },
+            ));
+        }
+        if actual_requirements.metrics_generation != requirements.metrics_generation {
+            return Err(CoreError::LayoutJob(LayoutJobError::StaleMetrics {
+                expected: requirements.metrics_generation,
+                actual: actual_requirements.metrics_generation,
+            }));
+        }
+
+        let view = self
+            .views
+            .get_mut(&view_id)
+            .expect("view remains attached for atomic layout publication");
+        cancel_active_layout_work(view);
+        view.layout = staged_layout;
+        view.observed_metrics_generation = requirements.metrics_generation;
+        update_viewport_anchor(&self.document, view);
+        Ok(())
+    }
+
     fn ensure_command_layout(&mut self, view_id: ViewId) -> Result<bool, CoreError> {
         let document_revision = self.document.revision();
         let needs_layout = {
@@ -1408,13 +2115,1102 @@ impl<P: TextMeasurementProvider> Core<P> {
             .transpose()
     }
 
+    /// Shape and wrap the active composition through the same provider and
+    /// resolved style inputs as ordinary document layout. Only the affected
+    /// hard lines and an already materialized viewport neighborhood are
+    /// captured. Thus repeated marked-text updates do not flatten or lay out
+    /// the complete document. The source-backed `ViewLayout` is cloned as
+    /// disposable presentation state; publishing it cannot mutate source,
+    /// history, commands, or the restorable base layout.
+    fn materialize_composition_layout(
+        &mut self,
+        view_id: ViewId,
+        reveal_selection: bool,
+    ) -> Result<(), CoreError> {
+        let (overlay, affinity, mut composed_layout, base_coverage, requested_top) = {
+            let view = self
+                .views
+                .get(&view_id)
+                .ok_or(CoreError::UnknownView(view_id))?;
+            let overlay = view
+                .composition
+                .as_ref()
+                .ok_or(CoreError::Composition(CompositionError::NoActiveSession))?
+                .overlay(&self.document)?;
+            (
+                overlay,
+                view.commands.boundary_affinity(),
+                view.layout.clone(),
+                view.layout
+                    .snapshot()
+                    .map(|snapshot| snapshot.coverage.hard_lines()),
+                view.layout.viewport_top(),
+            )
+        };
+
+        let base_line_count = self.document.line_count();
+        let replaced = overlay.replacement_range();
+        let affected_start = hard_line_for_boundary(&self.document, replaced.start)?;
+        let affected_end = hard_line_for_boundary(&self.document, replaced.end)?
+            .saturating_add(1)
+            .min(base_line_count);
+        let affected = affected_start..affected_end;
+        let base_region = base_coverage
+            .filter(|visible| ranges_touch(visible, &affected))
+            .map_or_else(
+                || affected.clone(),
+                |visible| union_ranges(visible, &affected),
+            );
+        let base_text_start = self
+            .document
+            .line_start(base_region.start)
+            .ok_or(LayoutError::InvalidTextOffset(replaced.start))?;
+        let base_text_end = self
+            .document
+            .line_end(base_region.end - 1)
+            .ok_or(LayoutError::InvalidTextOffset(replaced.end))?;
+        let text_origin = overlay
+            .overlay_offset_for_base_boundary(base_text_start, Association::BeforeInsertion)
+            .ok_or(LayoutError::InvalidTextOffset(base_text_start))?;
+        let text_end = overlay
+            .overlay_offset_for_base_boundary(base_text_end, Association::AfterInsertion)
+            .ok_or(LayoutError::InvalidTextOffset(base_text_end))?;
+        let text = overlay
+            .text_in_range(text_origin..text_end)
+            .ok_or(LayoutError::InvalidTextOffset(text_end))?;
+        let line_ranges = hard_line_ranges_with_origin(&text, text_origin);
+        let overlay_line_count = overlay
+            .hard_line_count(base_line_count)
+            .ok_or(LayoutError::InvalidTextOffset(overlay.utf8_len()))?;
+        let requested_end = base_region
+            .start
+            .checked_add(line_ranges.len())
+            .ok_or(LayoutError::InvalidTextOffset(overlay.utf8_len()))?;
+        if requested_end > overlay_line_count {
+            return Err(LayoutError::MalformedMeasurement(
+                "composition hard-line range exceeds the overlay",
+            )
+            .into());
+        }
+        let following_base_range = (base_region.end < base_line_count).then(|| {
+            let start = self
+                .document
+                .line_start(base_region.end)
+                .expect("validated following hard line has a start");
+            let end = self
+                .document
+                .line_end(base_region.end)
+                .expect("validated following hard line has an end");
+            start..end
+        });
+        let following_line_range = following_base_range
+            .as_ref()
+            .map(|range| map_base_range_to_overlay(&overlay, range))
+            .transpose()?;
+        if (requested_end < overlay_line_count) != following_line_range.is_some() {
+            return Err(LayoutError::MalformedMeasurement(
+                "composition regional layout has inconsistent following-line context",
+            )
+            .into());
+        }
+
+        let style_end = following_base_range
+            .as_ref()
+            .map_or(base_text_end, |range| range.end);
+        let styles = DocumentLayoutStyles::resolve_region(
+            self.document.projection(),
+            base_text_start..style_end,
+        )
+        .map_err(LayoutError::from)?;
+        let styles = composition_layout_styles(styles, &overlay, affinity)?;
+        composed_layout
+            .synchronize_document_hard_line_count(overlay_line_count, true)
+            .map_err(LayoutError::from)?;
+        let captured_view = composed_layout.capture_for_regional_layout_job(text_origin..text_end);
+        let job_id = self.allocate_layout_job_id()?;
+        if !composed_layout.begin_layout_job(job_id) {
+            return Err(CoreError::IdentifierExhausted(
+                CoreIdentifierKind::LayoutJob,
+            ));
+        }
+        let cancellation = LayoutCancellationToken::new();
+        let view = self
+            .views
+            .get_mut(&view_id)
+            .expect("composition view remains attached during synchronous layout");
+        let region = view.engine.layout_hard_line_region_cancellable(
+            self.document.id(),
+            self.document.revision(),
+            &text,
+            text_origin,
+            &line_ranges,
+            base_region.start,
+            overlay_line_count,
+            overlay.utf8_len(),
+            following_line_range,
+            &styles,
+            &captured_view,
+            &cancellation,
+        );
+        let region = match region {
+            Ok(region) => region,
+            Err(LayoutComputationError::Layout(error)) => return Err(error.into()),
+            Err(LayoutComputationError::Cancelled) => return Err(LayoutJobError::Cancelled.into()),
+        };
+        composed_layout
+            .publish_layout_job_viewport(job_id, region, requested_top)
+            .map_err(LayoutError::from)?;
+        if reveal_selection {
+            reveal_layout_endpoint(
+                &mut composed_layout,
+                overlay.selected_range_in_overlay().end,
+                BoundaryAffinity::Downstream,
+            )?;
+        }
+        view.composition_layout = Some(composed_layout);
+        Ok(())
+    }
+
+    fn rematerialize_active_composition(
+        &mut self,
+        view_id: ViewId,
+        reveal_selection: bool,
+    ) -> Result<(), CoreError> {
+        if self
+            .views
+            .get(&view_id)
+            .is_some_and(|view| view.composition.is_some())
+        {
+            self.materialize_composition_layout(view_id, reveal_selection)?;
+        }
+        Ok(())
+    }
+
+    fn place_cursor(
+        &mut self,
+        view_id: ViewId,
+        document_revision: Revision,
+        text_offset: usize,
+        affinity: BoundaryAffinity,
+        extend_selection: bool,
+    ) -> Result<CoreOutcome, CoreError> {
+        if document_revision != self.document.revision() {
+            return Err(CoreError::Document(DocumentError::WrongSnapshot {
+                expected: self.document.revision(),
+                actual: document_revision,
+            }));
+        }
+        self.document.text_point(text_offset)?;
+
+        let mut composition_changes = Vec::new();
+        if self
+            .views
+            .get(&view_id)
+            .is_some_and(|view| view.composition.is_some())
+        {
+            let cancelled = self.handle_composition_event(view_id, CompositionEvent::Cancel)?;
+            composition_changes.extend(cancelled.composition_changes);
+        }
+
+        // Pointer motion is an explicit Insert/Replace undo break. Capture the
+        // final pre-motion caret from the view that owns the open unit before
+        // moving the invoking view.
+        self.finalize_open_edit_group(view_id)?;
+
+        let placed = self
+            .views
+            .get_mut(&view_id)
+            .expect("view existence checked above")
+            .commands
+            .set_cursor_from_pointer(&self.document, text_offset, affinity, extend_selection);
+        debug_assert!(placed, "the boundary was validated before placement");
+
+        self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::RevealCaret)?;
+        Ok(CoreOutcome {
+            command: None,
+            document_changed: false,
+            position_map: None,
+            // Even if row geometry was reusable, the old and new caret and
+            // selection regions need presentation invalidation.
+            layout_changed: true,
+            composition_changes,
+        })
+    }
+
+    fn validate_style_sheet_identity(
+        &self,
+        document: DocumentId,
+        revision: Revision,
+        style_sheet_revision: StyleSheetRevision,
+    ) -> Result<(), CoreError> {
+        if document != self.document.id() {
+            return Err(CoreError::Document(DocumentError::WrongDocument));
+        }
+        if revision != self.document.revision() {
+            return Err(CoreError::Document(DocumentError::WrongSnapshot {
+                expected: self.document.revision(),
+                actual: revision,
+            }));
+        }
+        let actual_sheet_revision = self.document.projection().style_sheet().revision;
+        if style_sheet_revision != actual_sheet_revision {
+            return Err(CoreError::StaleStyleSheet {
+                expected: style_sheet_revision,
+                actual: actual_sheet_revision,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_style_edit_group(
+        &self,
+        view_id: ViewId,
+        group: StyleEditGroup,
+    ) -> Result<(), CoreError> {
+        if !self.views.contains_key(&view_id) {
+            return Err(CoreError::UnknownView(view_id));
+        }
+        let Some(open) = self.style_edit_group.as_ref() else {
+            return Err(CoreError::StyleEditGroup(
+                StyleEditGroupError::NoActiveGroup,
+            ));
+        };
+        if group.id != open.identity.id {
+            return Err(CoreError::StyleEditGroup(StyleEditGroupError::WrongGroup {
+                expected: open.identity.id,
+                actual: group.id,
+            }));
+        }
+        if view_id != open.identity.view {
+            return Err(CoreError::StyleEditGroup(StyleEditGroupError::WrongOwner {
+                expected: open.identity.view,
+                actual: view_id,
+            }));
+        }
+        if group.view != open.identity.view {
+            return Err(CoreError::StyleEditGroup(StyleEditGroupError::WrongOwner {
+                expected: open.identity.view,
+                actual: group.view,
+            }));
+        }
+        if group.document != open.identity.document {
+            return Err(CoreError::StyleEditGroup(
+                StyleEditGroupError::WrongDocument {
+                    expected: open.identity.document,
+                    actual: group.document,
+                },
+            ));
+        }
+        if group.begin_document_revision != open.identity.begin_document_revision
+            || group.begin_style_sheet_revision != open.identity.begin_style_sheet_revision
+            || self.document.edit_group_depth() == 0
+            || self.document.edit_group_generation() != open.generation
+        {
+            return Err(CoreError::StyleEditGroup(
+                StyleEditGroupError::IdentityMismatch,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Consume the active explicit style capability and close its document
+    /// history group. The capability is taken before any fallible restoration
+    /// work, and the model group is always closed: end/failure never rolls
+    /// back or poisons the successfully committed prefix.
+    fn finalize_style_edit_group(&mut self) -> Result<bool, CoreError> {
+        let Some(open) = self.style_edit_group.take() else {
+            return Ok(false);
+        };
+        let current = self.document.history_status().current;
+        let restoration = if current != open.parent {
+            match self.views.get(&open.identity.view) {
+                Some(view) => match view.commands.capture_history_restoration(&self.document) {
+                    Ok(after) => self
+                        .document
+                        .attach_history_restoration(
+                            current.node,
+                            HistoryRestoration::new(open.before, after),
+                        )
+                        .map_err(CoreError::from),
+                    Err(error) => Err(CoreError::from(error)),
+                },
+                None => Err(CoreError::UnknownView(open.identity.view)),
+            }
+        } else {
+            Ok(())
+        };
+        self.document.close_edit_group();
+        restoration?;
+        Ok(true)
+    }
+
+    /// Finalize the active Insert/Replace undo unit at a host-driven edit-group
+    /// boundary. The unit's last cursor/mark restoration belongs to the view
+    /// that opened it, even when a different view invokes the boundary.
+    fn finalize_open_edit_group(&mut self, invoking_view: ViewId) -> Result<(), CoreError> {
+        let owner = self.edit_group_owner.unwrap_or(invoking_view);
+        if let Some(open) = self.edit_group_restoration.as_ref() {
+            let current = self.document.history_status().current;
+            if current != open.parent {
+                let after = self
+                    .views
+                    .get(&owner)
+                    .ok_or(CoreError::UnknownView(owner))?
+                    .commands
+                    .capture_history_restoration(&self.document)?;
+                self.document.attach_history_restoration(
+                    current.node,
+                    HistoryRestoration::new(open.before.clone(), after),
+                )?;
+            }
+        }
+        if self.edit_group_owner.is_some() {
+            self.document.close_edit_group();
+        }
+        self.edit_group_owner = None;
+        self.edit_group_restoration = None;
+        Ok(())
+    }
+
+    /// Publish one source-backed semantic inline-style change as a standalone
+    /// undo unit. Selection identity and model capability are validated before
+    /// an existing Insert/Replace unit is closed, so rejection is atomic with
+    /// respect to both document state and undo grouping.
+    fn set_selection_semantic_style(
+        &mut self,
+        view_id: ViewId,
+        expected: LogicalSelectionIdentity,
+        style: SemanticInlineStyle,
+        enabled: bool,
+    ) -> Result<CoreOutcome, CoreError> {
+        let current = self
+            .active_linear_selection_identity(view_id)?
+            .ok_or(CoreError::StaleLogicalSelection)?;
+        if current != expected {
+            return Err(CoreError::StaleLogicalSelection);
+        }
+
+        let request = || ModelRequest::SetSemanticStyle {
+            document: expected.document(),
+            revision: expected.revision(),
+            range: expected.range(),
+            style,
+            enabled,
+        };
+        let preflight = self
+            .document
+            .prepare_model_request(request())
+            .map_err(command_model_transaction_error)?;
+        if preflight.is_no_op() {
+            return Ok(CoreOutcome {
+                command: None,
+                document_changed: false,
+                position_map: None,
+                layout_changed: false,
+                composition_changes: Vec::new(),
+            });
+        }
+
+        let before_revision = self.document.revision();
+        let expected_map = preflight.text_position_map().clone();
+        let before_restoration = self
+            .views
+            .get(&view_id)
+            .expect("view existence checked before native semantic style change")
+            .commands
+            .capture_history_restoration(&self.document)?;
+        let anchors = self
+            .views
+            .iter()
+            .map(|(id, view)| {
+                view.commands
+                    .capture_position_anchors(&self.document)
+                    .map(|anchors| (*id, anchors))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut next_commands = self
+            .views
+            .iter()
+            .map(|(id, view)| (*id, view.commands.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for (id, captured) in &anchors {
+            let commands = next_commands
+                .get_mut(id)
+                .expect("captured view remains attached during serial dispatch");
+            if !commands.apply_position_map(captured, &expected_map)? {
+                return Err(CoreError::Position(PositionError::WrongSnapshot {
+                    expected: before_revision,
+                    actual: captured.revision(),
+                }));
+            }
+        }
+        drop(preflight);
+
+        self.finalize_open_edit_group(view_id)?;
+        let prepared = self
+            .document
+            .prepare_model_request(request())
+            .map_err(command_model_transaction_error)?;
+        debug_assert!(!prepared.is_no_op());
+        debug_assert_eq!(prepared.text_position_map(), &expected_map);
+        let committed = self
+            .document
+            .commit_model_transaction(prepared)
+            .map_err(command_model_transaction_error)?;
+        debug_assert_eq!(committed.before_revision(), before_revision);
+        debug_assert_eq!(committed.text_position_map(), &expected_map);
+        let changed = committed.after_revision() != committed.before_revision();
+        debug_assert!(changed);
+
+        for (id, commands) in next_commands {
+            self.views
+                .get_mut(&id)
+                .expect("prepared view remains attached during serial dispatch")
+                .commands = commands;
+        }
+        let after_restoration = self
+            .views
+            .get(&view_id)
+            .expect("invoking view remains attached after semantic style change")
+            .commands
+            .capture_history_restoration(&self.document)?;
+        self.document.attach_history_restoration(
+            self.document.history_status().current.node,
+            HistoryRestoration::new(before_restoration, after_restoration),
+        )?;
+
+        self.cancel_all_active_layout_work();
+        self.rebase_viewport_anchors(&expected_map)?;
+        self.publish_buffer_commands(view_id);
+        let current_revision = self.document.revision();
+        let mut composition_changes = Vec::new();
+        for (id, view) in &mut self.views {
+            if let Some(session) = view.composition.take() {
+                view.composition_layout = None;
+                composition_changes.push(ViewCompositionChange {
+                    view: *id,
+                    outcome: ViewCompositionOutcome::Invalidated {
+                        reason: CompositionCancelReason::ExternalDocumentChange,
+                        base_revision: session.base_revision(),
+                        current_revision,
+                    },
+                });
+            }
+        }
+        self.materialize_views_after_document_change(
+            view_id,
+            ImmediateLayoutIntent::PreserveViewport,
+        );
+        Ok(CoreOutcome {
+            command: None,
+            document_changed: changed,
+            position_map: Some(expected_map),
+            layout_changed: true,
+            composition_changes,
+        })
+    }
+
+    /// Publish a native file-format change as a standalone source transaction.
+    ///
+    /// Preparation is deliberately performed once before closing any open
+    /// Insert/Replace group. A policy rejection, stale identity, or other
+    /// preparation failure therefore changes neither the document nor
+    /// controller grouping. Once preparation succeeds, the prior owner gets
+    /// its exact restoration endpoint, and a fresh candidate is prepared
+    /// against the now-closed history group before publication.
+    fn set_file_format(
+        &mut self,
+        view_id: ViewId,
+        document: DocumentId,
+        revision: Revision,
+        target: FileFormat,
+    ) -> Result<CoreOutcome, CoreError> {
+        let request = || ModelRequest::SetFileFormat {
+            document,
+            revision,
+            target,
+        };
+        let preflight = self
+            .document
+            .prepare_model_request(request())
+            .map_err(command_model_transaction_error)?;
+        if preflight.is_no_op() {
+            return Ok(CoreOutcome {
+                command: None,
+                document_changed: false,
+                position_map: None,
+                layout_changed: false,
+                composition_changes: Vec::new(),
+            });
+        }
+
+        let before_revision = self.document.revision();
+        let expected_map = preflight.text_position_map().clone();
+        let before_restoration = self
+            .views
+            .get(&view_id)
+            .expect("view existence checked before native file-format change")
+            .commands
+            .capture_history_restoration(&self.document)?;
+        let anchors = self
+            .views
+            .iter()
+            .map(|(id, view)| {
+                view.commands
+                    .capture_position_anchors(&self.document)
+                    .map(|anchors| (*id, anchors))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut next_commands = self
+            .views
+            .iter()
+            .map(|(id, view)| (*id, view.commands.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for (id, captured) in &anchors {
+            let commands = next_commands
+                .get_mut(id)
+                .expect("captured view remains attached during serial dispatch");
+            if !commands.apply_position_map(captured, &expected_map)? {
+                return Err(CoreError::Position(PositionError::WrongSnapshot {
+                    expected: before_revision,
+                    actual: captured.revision(),
+                }));
+            }
+        }
+        drop(preflight);
+
+        // Preserve the restoration endpoint of the view which owns an open
+        // edit group, even when another view invoked this native operation.
+        self.finalize_open_edit_group(view_id)?;
+        let prepared = self
+            .document
+            .prepare_model_request(request())
+            .map_err(command_model_transaction_error)?;
+        debug_assert!(!prepared.is_no_op());
+        debug_assert_eq!(prepared.text_position_map(), &expected_map);
+        let committed = self
+            .document
+            .commit_model_transaction(prepared)
+            .map_err(command_model_transaction_error)?;
+        debug_assert_eq!(committed.before_revision(), before_revision);
+        debug_assert_eq!(committed.text_position_map(), &expected_map);
+        let changed = committed.after_revision() != committed.before_revision();
+        debug_assert!(changed);
+
+        for (id, commands) in next_commands {
+            self.views
+                .get_mut(&id)
+                .expect("prepared view remains attached during serial dispatch")
+                .commands = commands;
+        }
+        let after_restoration = self
+            .views
+            .get(&view_id)
+            .expect("invoking view remains attached after file-format change")
+            .commands
+            .capture_history_restoration(&self.document)?;
+        let history_after = self.document.history_status().current;
+        self.document.attach_history_restoration(
+            history_after.node,
+            HistoryRestoration::new(before_restoration, after_restoration),
+        )?;
+
+        self.cancel_all_active_layout_work();
+        self.rebase_viewport_anchors(&expected_map)?;
+        self.publish_buffer_commands(view_id);
+        let current_revision = self.document.revision();
+        let mut composition_changes = Vec::new();
+        for (id, view) in &mut self.views {
+            if let Some(session) = view.composition.take() {
+                view.composition_layout = None;
+                composition_changes.push(ViewCompositionChange {
+                    view: *id,
+                    outcome: ViewCompositionOutcome::Invalidated {
+                        reason: CompositionCancelReason::ExternalDocumentChange,
+                        base_revision: session.base_revision(),
+                        current_revision,
+                    },
+                });
+            }
+        }
+        self.materialize_views_after_document_change(
+            view_id,
+            ImmediateLayoutIntent::PreserveViewport,
+        );
+        Ok(CoreOutcome {
+            command: None,
+            document_changed: changed,
+            position_map: Some(expected_map),
+            layout_changed: true,
+            composition_changes,
+        })
+    }
+
+    fn generated_style_model_request(
+        &self,
+        document: DocumentId,
+        revision: Revision,
+        style_sheet_revision: StyleSheetRevision,
+        namespace: StyleNamespace,
+        style: &StyleId,
+        edit: &StyleDefinitionFieldEdit,
+    ) -> Result<StyleModelRequest, CoreError> {
+        self.validate_style_sheet_identity(document, revision, style_sheet_revision)?;
+        let definition_edit = self
+            .document
+            .projection()
+            .style_sheet()
+            .prepare_generated_field_edit(namespace, style, edit)
+            .map_err(ModelTransactionError::from)
+            .map_err(command_model_transaction_error)?;
+        Ok(StyleModelRequest::new(
+            document,
+            revision,
+            StyleModelIntent::Configuration(ConfigurationStyleIntent::EditDefinition(
+                definition_edit,
+            )),
+        ))
+    }
+
+    /// Publish one exact, core-authorized generated-style field edit as a
+    /// standalone history unit while preserving every view's logical and
+    /// viewport anchors across the style-only revision transition.
+    #[allow(clippy::too_many_arguments)]
+    fn edit_generated_style(
+        &mut self,
+        view_id: ViewId,
+        document: DocumentId,
+        revision: Revision,
+        style_sheet_revision: StyleSheetRevision,
+        namespace: StyleNamespace,
+        style: StyleId,
+        edit: StyleDefinitionFieldEdit,
+    ) -> Result<CoreOutcome, CoreError> {
+        self.edit_generated_style_with_history(
+            view_id,
+            document,
+            revision,
+            style_sheet_revision,
+            namespace,
+            style,
+            edit,
+            false,
+        )
+    }
+
+    /// Commit one exact style edit into an explicitly owned live group. Each
+    /// successful call is immediately visible in every view, while the
+    /// document history composes all successful calls into the group's single
+    /// undo node. A rejected or no-op edit leaves the group usable.
+    #[allow(clippy::too_many_arguments)]
+    pub fn edit_generated_style_in_group(
+        &mut self,
+        view_id: ViewId,
+        group: StyleEditGroup,
+        document: DocumentId,
+        revision: Revision,
+        style_sheet_revision: StyleSheetRevision,
+        namespace: StyleNamespace,
+        style: StyleId,
+        edit: StyleDefinitionFieldEdit,
+    ) -> Result<CoreOutcome, CoreError> {
+        self.validate_style_edit_group(view_id, group)?;
+        self.edit_generated_style_with_history(
+            view_id,
+            document,
+            revision,
+            style_sheet_revision,
+            namespace,
+            style,
+            edit,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn edit_generated_style_with_history(
+        &mut self,
+        view_id: ViewId,
+        document: DocumentId,
+        revision: Revision,
+        style_sheet_revision: StyleSheetRevision,
+        namespace: StyleNamespace,
+        style: StyleId,
+        edit: StyleDefinitionFieldEdit,
+        grouped: bool,
+    ) -> Result<CoreOutcome, CoreError> {
+        let request = self.generated_style_model_request(
+            document,
+            revision,
+            style_sheet_revision,
+            namespace,
+            &style,
+            &edit,
+        )?;
+        let preflight = self
+            .document
+            .prepare_style_request(request)
+            .map_err(command_model_transaction_error)?;
+        if preflight.is_no_op() {
+            return Ok(CoreOutcome {
+                command: None,
+                document_changed: false,
+                position_map: None,
+                layout_changed: false,
+                composition_changes: Vec::new(),
+            });
+        }
+
+        let before_revision = self.document.revision();
+        let expected_map = preflight.text_position_map().clone();
+        let before_restoration = if grouped {
+            None
+        } else {
+            Some(
+                self.views
+                    .get(&view_id)
+                    .expect("view existence checked before native style edit")
+                    .commands
+                    .capture_history_restoration(&self.document)?,
+            )
+        };
+        let anchors = self
+            .views
+            .iter()
+            .map(|(id, view)| {
+                view.commands
+                    .capture_position_anchors(&self.document)
+                    .map(|anchors| (*id, anchors))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut next_commands = self
+            .views
+            .iter()
+            .map(|(id, view)| (*id, view.commands.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for (id, captured) in &anchors {
+            let commands = next_commands
+                .get_mut(id)
+                .expect("captured view remains attached during serial dispatch");
+            if !commands.apply_position_map(captured, &expected_map)? {
+                return Err(CoreError::Position(PositionError::WrongSnapshot {
+                    expected: before_revision,
+                    actual: captured.revision(),
+                }));
+            }
+        }
+        let prepared = if grouped {
+            preflight
+        } else {
+            drop(preflight);
+
+            // As with native history and file-format changes, preserve the
+            // true owner endpoint of any Insert/Replace group before creating
+            // this standalone semantic unit.
+            self.finalize_open_edit_group(view_id)?;
+            let request = self.generated_style_model_request(
+                document,
+                revision,
+                style_sheet_revision,
+                namespace,
+                &style,
+                &edit,
+            )?;
+            self.document
+                .prepare_style_request(request)
+                .map_err(command_model_transaction_error)?
+        };
+        debug_assert!(!prepared.is_no_op());
+        debug_assert_eq!(prepared.text_position_map(), &expected_map);
+        let committed = self
+            .document
+            .commit_model_transaction(prepared)
+            .map_err(command_model_transaction_error)?;
+        let changed = committed.after_revision() != committed.before_revision();
+        debug_assert!(changed);
+
+        for (id, commands) in next_commands {
+            self.views
+                .get_mut(&id)
+                .expect("prepared view remains attached during serial dispatch")
+                .commands = commands;
+        }
+        if let Some(before_restoration) = before_restoration {
+            let after_restoration = self
+                .views
+                .get(&view_id)
+                .expect("invoking view remains attached after style edit")
+                .commands
+                .capture_history_restoration(&self.document)?;
+            self.document.attach_history_restoration(
+                self.document.history_status().current.node,
+                HistoryRestoration::new(before_restoration, after_restoration),
+            )?;
+        }
+
+        self.cancel_all_active_layout_work();
+        self.rebase_viewport_anchors(&expected_map)?;
+        self.publish_buffer_commands(view_id);
+        let current_revision = self.document.revision();
+        let mut composition_changes = Vec::new();
+        for (id, view) in &mut self.views {
+            if let Some(session) = view.composition.take() {
+                view.composition_layout = None;
+                composition_changes.push(ViewCompositionChange {
+                    view: *id,
+                    outcome: ViewCompositionOutcome::Invalidated {
+                        reason: CompositionCancelReason::ExternalDocumentChange,
+                        base_revision: session.base_revision(),
+                        current_revision,
+                    },
+                });
+            }
+        }
+        self.materialize_views_after_document_change(
+            view_id,
+            ImmediateLayoutIntent::PreserveViewport,
+        );
+        Ok(CoreOutcome {
+            command: None,
+            document_changed: changed,
+            position_map: Some(expected_map),
+            layout_changed: true,
+            composition_changes,
+        })
+    }
+
+    fn navigate_history(
+        &mut self,
+        view_id: ViewId,
+        navigation: HistoryNavigationRequest,
+    ) -> Result<CoreOutcome, CoreError> {
+        let mut composition_changes = Vec::new();
+        if self
+            .views
+            .get(&view_id)
+            .is_some_and(|view| view.composition.is_some())
+        {
+            let cancelled = self.handle_composition_event(view_id, CompositionEvent::Cancel)?;
+            composition_changes.extend(cancelled.composition_changes);
+        }
+
+        self.finalize_open_edit_group(view_id)?;
+        let available = match navigation {
+            HistoryNavigationRequest::Undo => self.document.history_status().can_undo,
+            HistoryNavigationRequest::Redo => self.document.history_status().can_redo,
+            HistoryNavigationRequest::SelectNode(_) | HistoryNavigationRequest::SelectChange(_) => {
+                true
+            }
+        };
+        if !available {
+            let message = match navigation {
+                HistoryNavigationRequest::Undo => "already at the oldest document state",
+                HistoryNavigationRequest::Redo => "no preferred redo state is available",
+                HistoryNavigationRequest::SelectNode(_)
+                | HistoryNavigationRequest::SelectChange(_) => {
+                    unreachable!("exact history selections are validated by the model")
+                }
+            };
+            return Ok(CoreOutcome {
+                command: Some(CommandOutput {
+                    status: CommandStatus::Error(message.to_owned()),
+                    cursor_moved: false,
+                    document_changed: false,
+                    mode_changed: false,
+                    history_navigation: false,
+                    ex_outcome: None,
+                    clipboard_writes: Vec::new(),
+                }),
+                document_changed: false,
+                position_map: None,
+                layout_changed: !composition_changes.is_empty(),
+                composition_changes,
+            });
+        }
+
+        let before_revision = self.document.revision();
+        let history_before = self.document.history_status().current;
+        let (old_cursor, old_mode) = {
+            let commands = &self
+                .views
+                .get(&view_id)
+                .expect("view existence checked before native history navigation")
+                .commands;
+            (commands.cursor(), commands.mode())
+        };
+        let inactive_positions = self
+            .views
+            .iter()
+            .filter(|(id, _)| **id != view_id)
+            .map(|(id, view)| {
+                view.commands
+                    .capture_position_anchors(&self.document)
+                    .map(|anchors| (*id, anchors))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let request = ModelRequest::NavigateHistory {
+            document: self.document.id(),
+            revision: before_revision,
+            navigation,
+        };
+        let prepared = self
+            .document
+            .prepare_model_request(request)
+            .map_err(command_model_transaction_error)?;
+        let committed = self
+            .document
+            .commit_model_transaction(prepared)
+            .map_err(command_model_transaction_error)?;
+        let changed = committed.after_revision() != committed.before_revision();
+        let map = committed.text_position_map().clone();
+        let history_after = self.document.history_status().current;
+        let restoration = self
+            .document
+            .history_restoration_between(history_before.node, history_after.node)?
+            .expect("a successful history navigation traverses a recorded edge");
+
+        // Prepare every controller image before publishing any of them. A
+        // map/restoration invariant failure cannot leave only some views on
+        // the newly installed document revision.
+        let mut invoking_commands = self
+            .views
+            .get(&view_id)
+            .expect("invoking view remains attached")
+            .commands
+            .clone();
+        invoking_commands.apply_history_restoration(&self.document, &restoration)?;
+        let mut rebased = Vec::with_capacity(inactive_positions.len());
+        for (id, anchors) in inactive_positions {
+            let mut commands = self
+                .views
+                .get(&id)
+                .expect("captured view remains attached")
+                .commands
+                .clone();
+            if !commands.apply_position_map(&anchors, &map)? {
+                return Err(CoreError::Position(PositionError::WrongSnapshot {
+                    expected: before_revision,
+                    actual: anchors.revision(),
+                }));
+            }
+            rebased.push((id, commands));
+        }
+        self.views
+            .get_mut(&view_id)
+            .expect("invoking view remains attached")
+            .commands = invoking_commands;
+        for (id, commands) in rebased {
+            self.views
+                .get_mut(&id)
+                .expect("captured view remains attached")
+                .commands = commands;
+        }
+
+        self.replay_undo_floor = None;
+        self.cancel_all_active_layout_work();
+        self.rebase_viewport_anchors(&map)?;
+        let revision = self.document.revision();
+        for (id, view) in &mut self.views {
+            if *id == view_id {
+                continue;
+            }
+            if let Some(session) = view.composition.take() {
+                view.composition_layout = None;
+                composition_changes.push(ViewCompositionChange {
+                    view: *id,
+                    outcome: ViewCompositionOutcome::Invalidated {
+                        reason: CompositionCancelReason::ExternalDocumentChange,
+                        base_revision: session.base_revision(),
+                        current_revision: revision,
+                    },
+                });
+            }
+        }
+        self.materialize_views_after_document_change(view_id, ImmediateLayoutIntent::RevealCaret);
+        let commands = &self
+            .views
+            .get(&view_id)
+            .expect("invoking view remains attached")
+            .commands;
+        Ok(CoreOutcome {
+            command: Some(CommandOutput {
+                status: CommandStatus::Complete,
+                cursor_moved: commands.cursor() != old_cursor,
+                document_changed: changed,
+                mode_changed: commands.mode() != old_mode,
+                history_navigation: true,
+                ex_outcome: None,
+                clipboard_writes: Vec::new(),
+            }),
+            document_changed: changed,
+            position_map: Some(map),
+            layout_changed: true,
+            composition_changes,
+        })
+    }
+
     pub fn handle(&mut self, view_id: ViewId, event: CoreEvent) -> Result<CoreOutcome, CoreError> {
         if !self.views.contains_key(&view_id) {
             return Err(CoreError::UnknownView(view_id));
         }
+        // An explicit style gesture admits only its dedicated grouped-edit and
+        // end APIs. Any ordinary coordinator event is an unambiguous boundary:
+        // close the successful prefix, consume the token, then process the
+        // event. Frontends may therefore recover from a lost end notification
+        // without risking later commands joining the style undo unit.
+        self.finalize_style_edit_group()?;
         let event = match event {
             CoreEvent::Composition(event) => {
                 return self.handle_composition_event(view_id, event);
+            }
+            CoreEvent::PlaceCursor {
+                document_revision,
+                text_offset,
+                affinity,
+                extend_selection,
+            } => {
+                return self.place_cursor(
+                    view_id,
+                    document_revision,
+                    text_offset,
+                    affinity,
+                    extend_selection,
+                );
+            }
+            CoreEvent::NavigateHistory(navigation) => {
+                return self.navigate_history(view_id, navigation);
+            }
+            CoreEvent::SetFileFormat {
+                document,
+                revision,
+                target,
+            } => {
+                return self.set_file_format(view_id, document, revision, target);
+            }
+            CoreEvent::SetSelectionSemanticStyle {
+                expected,
+                style,
+                enabled,
+            } => {
+                return self.set_selection_semantic_style(view_id, expected, style, enabled);
+            }
+            CoreEvent::EditGeneratedStyle {
+                document,
+                revision,
+                style_sheet_revision,
+                namespace,
+                style,
+                edit,
+            } => {
+                return self.edit_generated_style(
+                    view_id,
+                    document,
+                    revision,
+                    style_sheet_revision,
+                    namespace,
+                    style,
+                    edit,
+                );
             }
             event => event,
         };
@@ -1532,11 +3328,103 @@ impl<P: TextMeasurementProvider> Core<P> {
                     view_id,
                     ImmediateLayoutIntent::PreserveViewport,
                 )?;
+                self.rematerialize_active_composition(view_id, true)?;
                 Ok(CoreOutcome {
                     command: None,
                     document_changed: false,
                     position_map: None,
                     layout_changed: true,
+                    composition_changes: Vec::new(),
+                })
+            }
+            CoreEvent::SetScale(scale) => {
+                let changed = {
+                    let view = self
+                        .views
+                        .get_mut(&view_id)
+                        .expect("view existence checked above");
+                    let before = view.layout.configuration_generation();
+                    view.layout.set_scale(scale)?;
+                    let changed = view.layout.configuration_generation() != before;
+                    if changed {
+                        cancel_active_layout_work(view);
+                    }
+                    changed
+                };
+                if changed {
+                    self.materialize_immediate_viewport(
+                        view_id,
+                        ImmediateLayoutIntent::PreserveViewport,
+                    )?;
+                    self.rematerialize_active_composition(view_id, true)?;
+                }
+                Ok(CoreOutcome {
+                    command: None,
+                    document_changed: false,
+                    position_map: None,
+                    layout_changed: changed,
+                    composition_changes: Vec::new(),
+                })
+            }
+            CoreEvent::SetFindPattern(pattern) => {
+                if pattern.is_empty() {
+                    return Err(CoreError::NoVisualSelection);
+                }
+                self.install_buffer_commands(view_id);
+                let accepted = self
+                    .views
+                    .get_mut(&view_id)
+                    .expect("view existence checked above")
+                    .commands
+                    .set_literal_search_pattern(&pattern);
+                if !accepted {
+                    return Err(CoreError::NoVisualSelection);
+                }
+                self.publish_buffer_commands(view_id);
+                Ok(CoreOutcome {
+                    command: None,
+                    document_changed: false,
+                    position_map: None,
+                    layout_changed: false,
+                    composition_changes: Vec::new(),
+                })
+            }
+            CoreEvent::RevealSelection => {
+                let mode = self
+                    .views
+                    .get(&view_id)
+                    .expect("view existence checked above")
+                    .commands
+                    .mode();
+                if !matches!(
+                    mode,
+                    Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock
+                ) {
+                    return Err(CoreError::NoVisualSelection);
+                }
+                let (before_top, before_layout) = {
+                    let layout = &self
+                        .views
+                        .get(&view_id)
+                        .expect("view existence checked above")
+                        .layout;
+                    (
+                        layout.viewport_top(),
+                        layout.snapshot().map(|snapshot| snapshot.revision),
+                    )
+                };
+                self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::RevealCaret)?;
+                let layout = &self
+                    .views
+                    .get(&view_id)
+                    .expect("view remains attached after selection reveal")
+                    .layout;
+                Ok(CoreOutcome {
+                    command: None,
+                    document_changed: false,
+                    position_map: None,
+                    layout_changed: layout.viewport_top() != before_top
+                        || layout.snapshot().map(|snapshot| snapshot.revision) != before_layout,
                     composition_changes: Vec::new(),
                 })
             }
@@ -1556,6 +3444,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     view_id,
                     ImmediateLayoutIntent::PreserveViewport,
                 )?;
+                self.rematerialize_active_composition(view_id, true)?;
                 Ok(CoreOutcome {
                     command: None,
                     document_changed: false,
@@ -1564,28 +3453,85 @@ impl<P: TextMeasurementProvider> Core<P> {
                     composition_changes: Vec::new(),
                 })
             }
-            CoreEvent::SetViewportOrigin { left, top } => {
-                // Validate every requested component before checking coverage
-                // or mutating either coordinate. This makes a combined event
-                // atomic even when its vertical part needs more layout.
-                if !left.is_finite() || top.is_some_and(|top| !top.is_finite()) {
-                    return Err(CoreError::Layout(LayoutError::InvalidGeometry));
+            CoreEvent::SetLineBreak(linebreak) => {
+                let changed = {
+                    let view = self
+                        .views
+                        .get_mut(&view_id)
+                        .expect("view existence checked above");
+                    let before = view.layout.configuration_generation();
+                    view.layout.set_linebreak(linebreak);
+                    view.commands
+                        .set_layout_options(view.layout.wrap(), view.layout.linebreak());
+                    let changed = view.layout.configuration_generation() != before;
+                    if changed {
+                        cancel_active_layout_work(view);
+                    }
+                    changed
+                };
+                if changed {
+                    if let Err(error) = self.materialize_immediate_viewport(
+                        view_id,
+                        ImmediateLayoutIntent::PreserveViewport,
+                    ) {
+                        // The view option is already published. Match source
+                        // transactions by retaining that state and recording a
+                        // presentation diagnostic instead of reporting a
+                        // misleading rollback through the ABI.
+                        self.record_presentation_error(view_id, error);
+                    }
+                    if let Err(error) = self.rematerialize_active_composition(view_id, true) {
+                        self.record_presentation_error(view_id, error);
+                    }
                 }
-                if top.is_some() {
-                    return Err(CoreError::VerticalViewportOriginUnsupported);
-                }
-
-                let view = self
-                    .views
-                    .get_mut(&view_id)
-                    .expect("view existence checked above");
-                let previous_left = view.layout.viewport_left();
-                view.layout.set_viewport_left(left)?;
                 Ok(CoreOutcome {
                     command: None,
                     document_changed: false,
                     position_map: None,
-                    layout_changed: view.layout.viewport_left() != previous_left,
+                    layout_changed: changed,
+                    composition_changes: Vec::new(),
+                })
+            }
+            CoreEvent::SetViewportOrigin { left, top } => {
+                // Validate every requested component before checking coverage
+                // or mutating either coordinate. Vertical layout is staged so
+                // a combined event remains atomic on every later failure.
+                if !left.is_finite() || top.is_some_and(|top| !top.is_finite()) {
+                    return Err(CoreError::Layout(LayoutError::InvalidGeometry));
+                }
+                let (previous_left, previous_top, previous_layout_revision) = {
+                    let view = self
+                        .views
+                        .get(&view_id)
+                        .expect("view existence checked above");
+                    (
+                        view.layout.viewport_left(),
+                        view.layout.viewport_top(),
+                        view.layout.snapshot().map(|snapshot| snapshot.revision),
+                    )
+                };
+                if let Some(top) = top {
+                    self.materialize_requested_viewport(view_id, left, top)?;
+                } else {
+                    self.views
+                        .get_mut(&view_id)
+                        .expect("view existence checked above")
+                        .layout
+                        .set_viewport_left(left)?;
+                }
+                self.rematerialize_active_composition(view_id, false)?;
+                let view = self
+                    .views
+                    .get(&view_id)
+                    .expect("view existence checked above");
+                Ok(CoreOutcome {
+                    command: None,
+                    document_changed: false,
+                    position_map: None,
+                    layout_changed: view.layout.viewport_left() != previous_left
+                        || view.layout.viewport_top() != previous_top
+                        || view.layout.snapshot().map(|snapshot| snapshot.revision)
+                            != previous_layout_revision,
                     composition_changes: Vec::new(),
                 })
             }
@@ -1887,6 +3833,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             continue;
                         }
                         if let Some(session) = view.composition.take() {
+                            view.composition_layout = None;
                             outcome.composition_changes.push(ViewCompositionChange {
                                 view: *id,
                                 outcome: ViewCompositionOutcome::Invalidated {
@@ -2029,6 +3976,21 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             CoreEvent::Composition(_) => {
                 unreachable!("composition events return before ordinary dispatch")
+            }
+            CoreEvent::PlaceCursor { .. } => {
+                unreachable!("pointer placements return before ordinary dispatch")
+            }
+            CoreEvent::NavigateHistory(_) => {
+                unreachable!("native history navigation returns before ordinary dispatch")
+            }
+            CoreEvent::SetFileFormat { .. } => {
+                unreachable!("native file-format changes return before ordinary dispatch")
+            }
+            CoreEvent::SetSelectionSemanticStyle { .. } => {
+                unreachable!("native semantic-style changes return before ordinary dispatch")
+            }
+            CoreEvent::EditGeneratedStyle { .. } => {
+                unreachable!("native style edits return before ordinary dispatch")
             }
             CoreEvent::InputWithClipboard { .. } => {
                 unreachable!("clipboard input is normalized before ordinary dispatch")
@@ -2564,6 +4526,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             .get_mut(&view_id)
             .expect("view remains attached during serial dispatch")
             .composition = None;
+        self.views
+            .get_mut(&view_id)
+            .expect("view remains attached during serial dispatch")
+            .composition_layout = None;
         Ok(CoreOutcome {
             command: None,
             document_changed: false,
@@ -2607,6 +4573,15 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .get_mut(&view_id)
                     .expect("view remains attached during serial dispatch")
                     .composition = Some(session);
+                if let Err(error) = self.materialize_composition_layout(view_id, true) {
+                    let view = self
+                        .views
+                        .get_mut(&view_id)
+                        .expect("view remains attached after composition layout failure");
+                    view.composition = None;
+                    view.composition_layout = None;
+                    return Err(error);
+                }
                 Ok(CoreOutcome {
                     command: None,
                     document_changed: false,
@@ -2619,15 +4594,33 @@ impl<P: TextMeasurementProvider> Core<P> {
                 })
             }
             CompositionEvent::Update(update) => {
-                let view = self
-                    .views
-                    .get_mut(&view_id)
-                    .expect("view existence checked by handle");
-                let session = view
-                    .composition
-                    .as_mut()
-                    .ok_or(CoreError::Composition(CompositionError::NoActiveSession))?;
-                let overlay = session.update(&self.document, update)?;
+                let (previous_session, previous_layout, overlay) = {
+                    let view = self
+                        .views
+                        .get_mut(&view_id)
+                        .expect("view existence checked by handle");
+                    let previous_session = view
+                        .composition
+                        .as_ref()
+                        .ok_or(CoreError::Composition(CompositionError::NoActiveSession))?
+                        .clone();
+                    let previous_layout = view.composition_layout.clone();
+                    let overlay = view
+                        .composition
+                        .as_mut()
+                        .expect("active session was just validated")
+                        .update(&self.document, update)?;
+                    (previous_session, previous_layout, overlay)
+                };
+                if let Err(error) = self.materialize_composition_layout(view_id, true) {
+                    let view = self
+                        .views
+                        .get_mut(&view_id)
+                        .expect("view remains attached after composition layout failure");
+                    view.composition = Some(previous_session);
+                    view.composition_layout = previous_layout;
+                    return Err(error);
+                }
                 Ok(CoreOutcome {
                     command: None,
                     document_changed: false,
@@ -2653,6 +4646,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .get_mut(&view_id)
                     .expect("view remains attached during serial dispatch")
                     .composition = None;
+                self.views
+                    .get_mut(&view_id)
+                    .expect("view remains attached during serial dispatch")
+                    .composition_layout = None;
                 Ok(CoreOutcome {
                     command: None,
                     document_changed: false,
@@ -2783,12 +4780,17 @@ impl<P: TextMeasurementProvider> Core<P> {
             .get_mut(&view_id)
             .expect("target view remains attached during serial dispatch")
             .composition = None;
+        self.views
+            .get_mut(&view_id)
+            .expect("target view remains attached during serial dispatch")
+            .composition_layout = None;
         if changed {
             for (id, view) in &mut self.views {
                 if *id == view_id {
                     continue;
                 }
                 if let Some(other) = view.composition.take() {
+                    view.composition_layout = None;
                     composition_changes.push(ViewCompositionChange {
                         view: *id,
                         outcome: ViewCompositionOutcome::Invalidated {
@@ -2817,6 +4819,318 @@ impl<P: TextMeasurementProvider> Core<P> {
             composition_changes,
         })
     }
+}
+
+fn hard_line_for_boundary(document: &Document, offset: usize) -> Result<usize, LayoutError> {
+    if offset == document.projection().text_tree().byte_len() {
+        return Ok(document.line_count().saturating_sub(1));
+    }
+    document
+        .hard_line_at_offset(offset)
+        .ok_or(LayoutError::InvalidTextOffset(offset))
+}
+
+fn ranges_touch(left: &std::ops::Range<usize>, right: &std::ops::Range<usize>) -> bool {
+    left.start <= right.end && right.start <= left.end
+}
+
+fn union_ranges(
+    left: std::ops::Range<usize>,
+    right: &std::ops::Range<usize>,
+) -> std::ops::Range<usize> {
+    left.start.min(right.start)..left.end.max(right.end)
+}
+
+fn map_base_range_to_overlay(
+    overlay: &CompositionOverlay,
+    range: &std::ops::Range<usize>,
+) -> Result<std::ops::Range<usize>, LayoutError> {
+    let start = overlay
+        .overlay_offset_for_base_boundary(range.start, Association::AfterInsertion)
+        .ok_or(LayoutError::InvalidTextOffset(range.start))?;
+    let end = overlay
+        .overlay_offset_for_base_boundary(range.end, Association::AfterInsertion)
+        .ok_or(LayoutError::InvalidTextOffset(range.end))?;
+    Ok(start..end)
+}
+
+fn hard_line_ranges_with_origin(text: &str, origin: usize) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut start = origin;
+    for (local, character) in text.char_indices() {
+        if character == '\n' {
+            let offset = origin + local;
+            ranges.push(start..offset);
+            start = offset + 1;
+        }
+    }
+    ranges.push(start..origin + text.len());
+    ranges
+}
+
+fn composition_layout_styles(
+    mut styles: DocumentLayoutStyles,
+    overlay: &CompositionOverlay,
+    affinity: BoundaryAffinity,
+) -> Result<DocumentLayoutStyles, LayoutError> {
+    let replaced = overlay.replacement_range();
+    let inserted = overlay.marked_range();
+    let old_text_len = overlay.base_utf8_len();
+
+    let shaping =
+        resolved_composition_shaping_style(&styles, replaced.start, old_text_len, affinity);
+    let paint = resolved_composition_paint(&styles, replaced.start, old_text_len, affinity);
+    styles.shaping_runs = splice_shaping_runs(styles.shaping_runs, &replaced, &inserted, shaping)?;
+    styles.paint_runs = splice_paint_runs(styles.paint_runs, &replaced, &inserted, paint)?;
+    styles.paragraphs = splice_paragraph_styles(styles.paragraphs, &replaced, &inserted, affinity)?;
+    Ok(styles)
+}
+
+fn resolved_composition_shaping_style(
+    styles: &DocumentLayoutStyles,
+    offset: usize,
+    text_len: usize,
+    affinity: BoundaryAffinity,
+) -> crate::layout::ResolvedTextStyle {
+    adjacent_run(&styles.shaping_runs, offset, text_len, affinity, |run| {
+        &run.text_range
+    })
+    .map(|run| run.style.clone())
+    .or_else(|| {
+        adjacent_run(
+            &styles.paragraphs,
+            offset,
+            text_len,
+            affinity,
+            |paragraph| &paragraph.text_range,
+        )
+        .map(|paragraph| paragraph.default_shaping_style.clone())
+    })
+    .unwrap_or_else(|| styles.default_shaping_style.clone())
+}
+
+fn resolved_composition_paint(
+    styles: &DocumentLayoutStyles,
+    offset: usize,
+    text_len: usize,
+    affinity: BoundaryAffinity,
+) -> crate::layout::ResolvedTextPaint {
+    adjacent_run(&styles.paint_runs, offset, text_len, affinity, |run| {
+        &run.text_range
+    })
+    .map(|run| run.paint.clone())
+    .unwrap_or_else(|| styles.default_paint.clone())
+}
+
+fn adjacent_run<T>(
+    values: &[T],
+    offset: usize,
+    text_len: usize,
+    affinity: BoundaryAffinity,
+    range: impl Fn(&T) -> &std::ops::Range<usize>,
+) -> Option<&T> {
+    let downstream = || {
+        values
+            .iter()
+            .find(|value| range(value).start <= offset && offset < range(value).end)
+    };
+    let upstream = || {
+        values
+            .iter()
+            .rev()
+            .find(|value| range(value).start < offset && offset <= range(value).end)
+    };
+    match affinity {
+        BoundaryAffinity::Downstream => downstream().or_else(upstream),
+        BoundaryAffinity::Upstream => upstream().or_else(downstream),
+    }
+    .or_else(|| if text_len == 0 { values.first() } else { None })
+}
+
+fn mapped_suffix_offset(
+    offset: usize,
+    replaced_end: usize,
+    inserted_end: usize,
+) -> Result<usize, LayoutError> {
+    inserted_end
+        .checked_add(offset.saturating_sub(replaced_end))
+        .ok_or(LayoutError::InvalidTextOffset(offset))
+}
+
+fn splice_shaping_runs(
+    runs: Vec<ShapeStyleRun>,
+    replaced: &std::ops::Range<usize>,
+    inserted: &std::ops::Range<usize>,
+    inserted_style: crate::layout::ResolvedTextStyle,
+) -> Result<Vec<ShapeStyleRun>, LayoutError> {
+    let mut output = Vec::with_capacity(runs.len() + 1);
+    for run in runs {
+        let before_end = run.text_range.end.min(replaced.start);
+        if run.text_range.start < before_end {
+            output.push(ShapeStyleRun {
+                text_range: run.text_range.start..before_end,
+                style: run.style.clone(),
+            });
+        }
+        let after_start = run.text_range.start.max(replaced.end);
+        if after_start < run.text_range.end {
+            output.push(ShapeStyleRun {
+                text_range: mapped_suffix_offset(after_start, replaced.end, inserted.end)?
+                    ..mapped_suffix_offset(run.text_range.end, replaced.end, inserted.end)?,
+                style: run.style,
+            });
+        }
+    }
+    if !inserted.is_empty() {
+        output.push(ShapeStyleRun {
+            text_range: inserted.clone(),
+            style: inserted_style,
+        });
+    }
+    output.sort_by_key(|run| run.text_range.start);
+    merge_shaping_runs(output)
+}
+
+fn merge_shaping_runs(runs: Vec<ShapeStyleRun>) -> Result<Vec<ShapeStyleRun>, LayoutError> {
+    let mut merged: Vec<ShapeStyleRun> = Vec::with_capacity(runs.len());
+    for run in runs {
+        if let Some(previous) = merged.last_mut() {
+            if run.text_range.start < previous.text_range.end {
+                return Err(LayoutError::InvalidStyleRun {
+                    index: merged.len(),
+                    reason: "composition style runs overlap",
+                });
+            }
+            if previous.text_range.end == run.text_range.start && previous.style == run.style {
+                previous.text_range.end = run.text_range.end;
+                continue;
+            }
+        }
+        merged.push(run);
+    }
+    Ok(merged)
+}
+
+fn splice_paint_runs(
+    runs: Vec<PaintStyleRun>,
+    replaced: &std::ops::Range<usize>,
+    inserted: &std::ops::Range<usize>,
+    inserted_paint: crate::layout::ResolvedTextPaint,
+) -> Result<Vec<PaintStyleRun>, LayoutError> {
+    let mut output = Vec::with_capacity(runs.len() + 1);
+    for run in runs {
+        let before_end = run.text_range.end.min(replaced.start);
+        if run.text_range.start < before_end {
+            output.push(PaintStyleRun {
+                text_range: run.text_range.start..before_end,
+                paint: run.paint.clone(),
+            });
+        }
+        let after_start = run.text_range.start.max(replaced.end);
+        if after_start < run.text_range.end {
+            output.push(PaintStyleRun {
+                text_range: mapped_suffix_offset(after_start, replaced.end, inserted.end)?
+                    ..mapped_suffix_offset(run.text_range.end, replaced.end, inserted.end)?,
+                paint: run.paint,
+            });
+        }
+    }
+    if !inserted.is_empty() {
+        output.push(PaintStyleRun {
+            text_range: inserted.clone(),
+            paint: inserted_paint,
+        });
+    }
+    output.sort_by_key(|run| run.text_range.start);
+    let mut merged: Vec<PaintStyleRun> = Vec::with_capacity(output.len());
+    for run in output {
+        if let Some(previous) = merged.last_mut() {
+            if run.text_range.start < previous.text_range.end {
+                return Err(LayoutError::InvalidStyleRun {
+                    index: merged.len(),
+                    reason: "composition paint runs overlap",
+                });
+            }
+            if previous.text_range.end == run.text_range.start && previous.paint == run.paint {
+                previous.text_range.end = run.text_range.end;
+                continue;
+            }
+        }
+        merged.push(run);
+    }
+    Ok(merged)
+}
+
+fn splice_paragraph_styles(
+    paragraphs: Vec<ParagraphLayoutStyle>,
+    replaced: &std::ops::Range<usize>,
+    inserted: &std::ops::Range<usize>,
+    affinity: BoundaryAffinity,
+) -> Result<Vec<ParagraphLayoutStyle>, LayoutError> {
+    let chosen = adjacent_run(
+        &paragraphs,
+        replaced.start,
+        paragraphs.last().map_or(0, |value| value.text_range.end),
+        affinity,
+        |paragraph| &paragraph.text_range,
+    )
+    .map(|paragraph| paragraph.block_id);
+    let mut output = Vec::with_capacity(paragraphs.len());
+    for mut paragraph in paragraphs {
+        let is_chosen = chosen == Some(paragraph.block_id);
+        let range = paragraph.text_range.clone();
+        let mapped = if range.end <= replaced.start && !is_chosen {
+            range
+        } else if range.start >= replaced.end && !is_chosen {
+            mapped_suffix_offset(range.start, replaced.end, inserted.end)?
+                ..mapped_suffix_offset(range.end, replaced.end, inserted.end)?
+        } else {
+            let start = range.start.min(replaced.start);
+            let end = if range.end <= replaced.end {
+                inserted.end
+            } else {
+                mapped_suffix_offset(range.end, replaced.end, inserted.end)?
+            }
+            .max(inserted.end);
+            start..end
+        };
+        paragraph.text_range = mapped;
+        output.push(paragraph);
+    }
+    output.sort_by_key(|paragraph| paragraph.text_range.start);
+    Ok(output)
+}
+
+fn reveal_layout_endpoint(
+    layout: &mut ViewLayout,
+    text_offset: usize,
+    affinity: BoundaryAffinity,
+) -> Result<(), LayoutError> {
+    let (caret_top, caret_bottom) = {
+        let snapshot = layout.snapshot().ok_or(LayoutError::NoRows)?;
+        let geometry = snapshot
+            .logical_endpoint_geometry(text_offset, affinity)
+            .or_else(|_| {
+                snapshot.logical_endpoint_geometry(
+                    text_offset,
+                    match affinity {
+                        BoundaryAffinity::Upstream => BoundaryAffinity::Downstream,
+                        BoundaryAffinity::Downstream => BoundaryAffinity::Upstream,
+                    },
+                )
+            })?;
+        (geometry.rect.y, geometry.rect.y + geometry.rect.height)
+    };
+    let viewport_top = layout.viewport_top();
+    let viewport_bottom = viewport_top + layout.height();
+    let requested_top = if caret_top < viewport_top {
+        caret_top
+    } else if caret_bottom > viewport_bottom {
+        caret_bottom - layout.height()
+    } else {
+        viewport_top
+    };
+    layout.set_viewport_top(requested_top)
 }
 
 fn replay_frame(plan: ReplayPlan) -> ReplayFrame {
@@ -2907,27 +5221,26 @@ fn refresh_observed_metrics<P: TextMeasurementProvider>(view: &mut View<P>) -> b
     true
 }
 
-fn current_layout_snapshot<'a, P: TextMeasurementProvider>(
+fn current_snapshot_for_layout<'a>(
     document: &Document,
-    view: &'a View<P>,
+    layout: &'a ViewLayout,
     requirements: LayoutProviderRequirements,
 ) -> Option<&'a crate::layout::LayoutSnapshot> {
-    view.layout.snapshot().filter(|snapshot| {
+    layout.snapshot().filter(|snapshot| {
         snapshot.document_id == document.id()
             && snapshot.document_revision == document.revision()
-            && snapshot.configuration_generation == view.layout.configuration_generation()
+            && snapshot.configuration_generation == layout.configuration_generation()
             && snapshot.measurement_environment_id == requirements.measurement_environment_id
             && snapshot.metrics_generation == requirements.metrics_generation
     })
 }
 
-fn viewport_origin_has_exact_geometry<P: TextMeasurementProvider>(
-    document: &Document,
-    view: &View<P>,
+fn layout_origin_has_exact_geometry(
+    snapshot: Option<&crate::layout::LayoutSnapshot>,
+    viewport_height: f32,
     top: f32,
-    requirements: LayoutProviderRequirements,
 ) -> bool {
-    let Some(snapshot) = current_layout_snapshot(document, view, requirements) else {
+    let Some(snapshot) = snapshot else {
         return false;
     };
     match &snapshot.coverage {
@@ -2948,7 +5261,7 @@ fn viewport_origin_has_exact_geometry<P: TextMeasurementProvider>(
             {
                 return true;
             }
-            let maximum = (vertical_range.end - view.layout.height()).max(vertical_range.start);
+            let maximum = (vertical_range.end - viewport_height).max(vertical_range.start);
             vertical_range.start <= top && top <= maximum
         }
     }
@@ -2972,7 +5285,11 @@ fn restore_viewport_anchor<P: TextMeasurementProvider>(
 }
 
 fn viewport_extension_needed<P: TextMeasurementProvider>(view: &View<P>) -> (bool, bool) {
-    let Some(snapshot) = view.layout.snapshot() else {
+    viewport_layout_extension_needed(&view.layout)
+}
+
+fn viewport_layout_extension_needed(layout: &ViewLayout) -> (bool, bool) {
+    let Some(snapshot) = layout.snapshot() else {
         return (true, true);
     };
     let Some(vertical) = snapshot.coverage.vertical_range() else {
@@ -2980,8 +5297,8 @@ fn viewport_extension_needed<P: TextMeasurementProvider>(view: &View<P>) -> (boo
     };
     let hard_lines = snapshot.coverage.hard_lines();
     let document_hard_line_count = snapshot.coverage.document_hard_line_count();
-    let top = view.layout.viewport_top();
-    let bottom = top + view.layout.height();
+    let top = layout.viewport_top();
+    let bottom = top + layout.height();
     (
         top < vertical.start && hard_lines.start > 0,
         bottom > vertical.end && hard_lines.end < document_hard_line_count,
@@ -3875,6 +6192,286 @@ mod tests {
     }
 
     #[test]
+    fn native_linebreak_is_view_local_and_does_not_change_the_document() {
+        let mut core = Core::new(Document::new("one two three four"));
+        let first = core.add_view(MockTextMeasurementProvider::new(), 80.0, 48.0);
+        let second = core.add_view(MockTextMeasurementProvider::new(), 80.0, 48.0);
+        let revision = core.document().revision();
+        assert!(core.viewport_state(first).unwrap().linebreak());
+        assert!(core.viewport_state(second).unwrap().linebreak());
+
+        let outcome = core.handle(first, CoreEvent::SetLineBreak(false)).unwrap();
+        assert!(!outcome.document_changed);
+        assert!(outcome.layout_changed);
+        assert_eq!(core.document().revision(), revision);
+        assert!(!core.viewport_state(first).unwrap().linebreak());
+        assert!(core.viewport_state(second).unwrap().linebreak());
+    }
+
+    #[test]
+    fn native_file_format_is_shared_standalone_history_and_preserves_group_owner() {
+        let document = Document::from_bytes_with_file_format(
+            b"a\nb".to_vec(),
+            Encoding::Utf8,
+            Format::PlainText,
+            FileFormat::Unix,
+        )
+        .unwrap();
+        let mut core = Core::new(document);
+        let owner = core.add_view(MockTextMeasurementProvider::new(), 200.0, 48.0);
+        let invoker = core.add_view(MockTextMeasurementProvider::new(), 200.0, 48.0);
+        core.handle(owner, key('i')).unwrap();
+        core.handle(owner, text("x")).unwrap();
+        let text_revision = core.document().revision();
+        assert_eq!(core.edit_group_owner, Some(owner));
+
+        let outcome = core
+            .handle(
+                invoker,
+                CoreEvent::SetFileFormat {
+                    document: core.document().id(),
+                    revision: text_revision,
+                    target: FileFormat::Dos,
+                },
+            )
+            .unwrap();
+        assert!(outcome.document_changed);
+        assert!(outcome.position_map.is_some());
+        assert_eq!(core.document().file_format(), FileFormat::Dos);
+        assert_eq!(core.document().source_bytes(), b"xa\r\nb");
+        assert_eq!(core.document().history_status().node_count, 3);
+        assert_eq!(core.edit_group_owner, None);
+        assert_eq!(core.command_state(owner).unwrap().mode(), Mode::Insert);
+
+        core.handle(
+            owner,
+            CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
+        )
+        .unwrap();
+        assert_eq!(core.document().file_format(), FileFormat::Unix);
+        assert_eq!(core.document().text(), "xa\nb");
+        core.handle(
+            owner,
+            CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
+        )
+        .unwrap();
+        assert_eq!(core.document().text(), "a\nb");
+        assert_eq!(core.command_state(owner).unwrap().cursor(), 0);
+    }
+
+    #[test]
+    fn markdown_semantic_style_query_and_event_are_exact_and_undoable() {
+        let document = Document::from_bytes_with_file_format(
+            b"alpha beta".to_vec(),
+            Encoding::Utf8,
+            Format::Markdown,
+            FileFormat::Unix,
+        )
+        .unwrap();
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 80.0);
+        core.handle(view, key('v')).unwrap();
+        core.handle(view, key('4')).unwrap();
+        core.handle(view, key('l')).unwrap();
+
+        let before = core
+            .selection_semantic_style_presentation(view, SemanticInlineStyle::Strong)
+            .unwrap();
+        assert_eq!(before.selection_kind(), LogicalSelectionKind::Character);
+        assert_eq!(before.state(), SemanticStyleState::Off);
+        assert!(before.can_set());
+        assert!(!before.can_clear());
+        let selection = before.selection().unwrap().clone();
+        assert_eq!(selection.range(), 0..5);
+        let history_before = core.document().history_status().node_count;
+        let first_layout = core.layout(view).unwrap().snapshot().unwrap().revision;
+
+        let outcome = core
+            .handle(
+                view,
+                CoreEvent::SetSelectionSemanticStyle {
+                    expected: selection,
+                    style: SemanticInlineStyle::Strong,
+                    enabled: true,
+                },
+            )
+            .unwrap();
+        assert!(outcome.document_changed);
+        assert!(outcome.layout_changed);
+        assert_eq!(core.document().text(), "alpha beta");
+        assert_eq!(core.document().source_bytes(), b"**alpha** beta");
+        assert_eq!(
+            core.document().history_status().node_count,
+            history_before + 1
+        );
+        assert_eq!(
+            core.command_state(view).unwrap().mode(),
+            Mode::VisualCharacter
+        );
+        assert_eq!(
+            core.selection_semantic_style_presentation(view, SemanticInlineStyle::Strong)
+                .unwrap()
+                .state(),
+            SemanticStyleState::On
+        );
+        assert_ne!(
+            core.layout(view).unwrap().snapshot().unwrap().revision,
+            first_layout
+        );
+
+        core.handle(
+            view,
+            CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
+        )
+        .unwrap();
+        assert_eq!(core.document().source_bytes(), b"alpha beta");
+        core.handle(
+            view,
+            CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo),
+        )
+        .unwrap();
+        assert_eq!(core.document().source_bytes(), b"**alpha** beta");
+    }
+
+    #[test]
+    fn semantic_style_rejects_stale_or_non_linear_selection_without_mutation() {
+        let document = Document::from_bytes_with_file_format(
+            b"**bold** plain".to_vec(),
+            Encoding::Utf8,
+            Format::Markdown,
+            FileFormat::Unix,
+        )
+        .unwrap();
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 80.0);
+        core.handle(view, key('v')).unwrap();
+        core.handle(view, key('3')).unwrap();
+        core.handle(view, key('l')).unwrap();
+        let exact = core
+            .selection_semantic_style_presentation(view, SemanticInlineStyle::Strong)
+            .unwrap();
+        assert_eq!(exact.state(), SemanticStyleState::On);
+        assert!(exact.can_clear());
+        let stale = exact.selection().unwrap().clone();
+        core.handle(view, key('l')).unwrap();
+        let source = core.document().source_bytes();
+        let revision = core.document().revision();
+        assert_eq!(
+            core.handle(
+                view,
+                CoreEvent::SetSelectionSemanticStyle {
+                    expected: stale,
+                    style: SemanticInlineStyle::Strong,
+                    enabled: false,
+                },
+            ),
+            Err(CoreError::StaleLogicalSelection)
+        );
+        assert_eq!(core.document().source_bytes(), source);
+        assert_eq!(core.document().revision(), revision);
+
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+            .unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('v'))))
+            .unwrap();
+        let block = core
+            .selection_semantic_style_presentation(view, SemanticInlineStyle::Strong)
+            .unwrap();
+        assert_eq!(block.selection_kind(), LogicalSelectionKind::Block);
+        assert!(block.selection().is_none());
+        assert!(!block.can_set());
+        assert!(!block.can_clear());
+    }
+
+    #[test]
+    fn semantic_style_presentation_reports_plain_disabled_and_markdown_mixed() {
+        let mut plain = Core::new(Document::new("plain"));
+        let plain_view = plain.add_view(MockTextMeasurementProvider::new(), 240.0, 80.0);
+        plain.handle(plain_view, key('v')).unwrap();
+        plain.handle(plain_view, key('4')).unwrap();
+        plain.handle(plain_view, key('l')).unwrap();
+        let unsupported = plain
+            .selection_semantic_style_presentation(plain_view, SemanticInlineStyle::Strong)
+            .unwrap();
+        assert_eq!(unsupported.state(), SemanticStyleState::Off);
+        assert!(!unsupported.can_set());
+        assert!(!unsupported.can_clear());
+
+        let document = Document::from_bytes_with_file_format(
+            b"**bold** plain".to_vec(),
+            Encoding::Utf8,
+            Format::Markdown,
+            FileFormat::Unix,
+        )
+        .unwrap();
+        let mut markdown = Core::new(document);
+        let markdown_view = markdown.add_view(MockTextMeasurementProvider::new(), 240.0, 80.0);
+        markdown.handle(markdown_view, key('v')).unwrap();
+        markdown.handle(markdown_view, key('9')).unwrap();
+        markdown.handle(markdown_view, key('l')).unwrap();
+        let mixed = markdown
+            .selection_semantic_style_presentation(markdown_view, SemanticInlineStyle::Strong)
+            .unwrap();
+        assert_eq!(mixed.state(), SemanticStyleState::Mixed);
+        assert!(!mixed.can_set());
+        assert!(!mixed.can_clear());
+    }
+
+    #[test]
+    fn rejected_native_file_format_is_atomic_and_leaves_open_group_intact() {
+        let document = Document::from_bytes_with_file_format(
+            b"a\rb\n".to_vec(),
+            Encoding::Utf8,
+            Format::PlainText,
+            FileFormat::Unix,
+        )
+        .unwrap();
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 200.0, 48.0);
+        core.handle(view, key('i')).unwrap();
+        core.handle(view, text("x")).unwrap();
+        let revision = core.document().revision();
+        let source = core.document().source_bytes();
+        let group_depth = core.document().edit_group_depth();
+
+        let error = core
+            .handle(
+                view,
+                CoreEvent::SetFileFormat {
+                    document: core.document().id(),
+                    revision,
+                    target: FileFormat::Mac,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            CoreError::Document(DocumentError::LineEndingConversionWouldReinterpretContent)
+        );
+        assert_eq!(core.document().revision(), revision);
+        assert_eq!(core.document().source_bytes(), source);
+        assert_eq!(core.document().edit_group_depth(), group_depth);
+        assert_eq!(core.edit_group_owner, Some(view));
+        assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
+
+        let stale = core
+            .handle(
+                view,
+                CoreEvent::SetFileFormat {
+                    document: core.document().id(),
+                    revision: Revision(revision.0.saturating_sub(1)),
+                    target: FileFormat::Dos,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            stale,
+            CoreError::Document(DocumentError::WrongSnapshot { .. })
+        ));
+        assert_eq!(core.document().edit_group_depth(), group_depth);
+    }
+
+    #[test]
     fn horizontal_origin_is_independent_presentation_state_and_preserves_active_work() {
         let (provider, _, shape_calls, _) =
             InstrumentedCoordinatorProvider::new(ProviderThreading::AnyWorker);
@@ -3943,8 +6540,12 @@ mod tests {
     }
 
     #[test]
-    fn viewport_origin_validation_and_vertical_limitation_are_atomic() {
-        let mut core = Core::new(Document::new("WWWWWWWWWWWWWWWW"));
+    fn viewport_origin_validation_and_vertical_install_are_atomic() {
+        let contents = (0..200)
+            .map(|line| format!("WWWWWWWWWWWWWWWW {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut core = Core::new(Document::new(contents));
         let view = core.add_view(MockTextMeasurementProvider::new(), 40.0, 32.0);
         core.handle(view, CoreEvent::SetWrap(false)).unwrap();
         core.handle(
@@ -3979,23 +6580,191 @@ mod tests {
             ),
             Err(CoreError::Layout(LayoutError::InvalidGeometry))
         );
-        assert_eq!(
-            core.handle(
-                view,
-                CoreEvent::SetViewportOrigin {
-                    left: 30.0,
-                    top: Some(10.0),
-                },
-            ),
-            Err(CoreError::VerticalViewportOriginUnsupported)
-        );
-
         assert_eq!(core.viewport_state(view).unwrap(), initial);
         assert_eq!(
             core.layout(view).unwrap().snapshot().unwrap().revision,
             snapshot_revision
         );
         assert_eq!(core.command_state(view).unwrap().cursor(), cursor);
+
+        let outcome = core
+            .handle(
+                view,
+                CoreEvent::SetViewportOrigin {
+                    left: 30.0,
+                    top: Some(800.0),
+                },
+            )
+            .unwrap();
+        let scrolled = core.viewport_state(view).unwrap();
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+        let vertical = snapshot.coverage.vertical_range().unwrap();
+        assert!(outcome.layout_changed);
+        assert_eq!(scrolled.left(), 30.0);
+        assert!(vertical.start <= scrolled.top());
+        assert!(scrolled.top() + core.layout(view).unwrap().height() <= vertical.end);
+        assert_ne!(snapshot.revision, snapshot_revision);
+        assert_eq!(core.command_state(view).unwrap().cursor(), cursor);
+
+        core.handle(
+            view,
+            CoreEvent::SetViewportOrigin {
+                left: 10.0,
+                top: Some(-100.0),
+            },
+        )
+        .unwrap();
+        let clamped = core.viewport_state(view).unwrap();
+        assert_eq!(clamped.left(), 10.0);
+        assert_eq!(clamped.top(), 0.0);
+        assert_eq!(
+            core.layout(view)
+                .unwrap()
+                .snapshot()
+                .unwrap()
+                .coverage
+                .hard_lines()
+                .start,
+            0
+        );
+    }
+
+    #[test]
+    fn far_vertical_scrolls_are_bounded_and_do_not_layout_the_caret_gap() {
+        const LINE_COUNT: usize = 1_000_000;
+        let (provider, shaped_bytes, _, _) =
+            InstrumentedCoordinatorProvider::new(ProviderThreading::AnyWorker);
+        let mut core = Core::new(Document::layout_test_with_line_count(LINE_COUNT));
+        let view = core.add_view(provider, 320.0, 96.0);
+        let cursor = core.command_state(view).unwrap().cursor();
+
+        for requested_top in [12_000_000.0, 14_000_000.0, 1_000_000.0] {
+            let before = shaped_bytes.load(Ordering::Acquire);
+            let outcome = core
+                .handle(
+                    view,
+                    CoreEvent::SetViewportOrigin {
+                        left: 0.0,
+                        top: Some(requested_top),
+                    },
+                )
+                .unwrap();
+            let layout = core.layout(view).unwrap();
+            let snapshot = layout.snapshot().unwrap();
+            let coverage = snapshot.coverage.hard_lines();
+            let vertical = snapshot.coverage.vertical_range().unwrap();
+            let shaped = shaped_bytes.load(Ordering::Acquire) - before;
+
+            assert!(outcome.layout_changed);
+            assert!(matches!(
+                snapshot.coverage,
+                LayoutCoverage::PartialHardLines { .. }
+            ));
+            assert!(coverage.start > 10_000, "far scroll stayed near the caret");
+            assert!(coverage.end - coverage.start < 100);
+            assert!(shaped < 10_000, "far scroll shaped {shaped} bytes");
+            assert!(vertical.start <= layout.viewport_top());
+            assert!(layout.viewport_top() + layout.height() <= vertical.end);
+            assert!(!core.viewport_state(view).unwrap().top_is_exact());
+            assert_eq!(core.command_state(view).unwrap().cursor(), cursor);
+        }
+
+        let before = shaped_bytes.load(Ordering::Acquire);
+        core.handle(
+            view,
+            CoreEvent::SetViewportOrigin {
+                left: 0.0,
+                top: Some(f32::MAX),
+            },
+        )
+        .unwrap();
+        let layout = core.layout(view).unwrap();
+        let snapshot = layout.snapshot().unwrap();
+        assert_eq!(snapshot.coverage.hard_lines().end, LINE_COUNT);
+        assert!(snapshot.coverage.hard_lines().len() < 100);
+        assert!(shaped_bytes.load(Ordering::Acquire) - before < 10_000);
+        let vertical = snapshot.coverage.vertical_range().unwrap();
+        assert_eq!(
+            layout.viewport_top(),
+            (vertical.end - layout.height()).max(vertical.start)
+        );
+
+        let before = shaped_bytes.load(Ordering::Acquire);
+        core.handle(
+            view,
+            CoreEvent::SetViewportOrigin {
+                left: 0.0,
+                top: Some(-1.0),
+            },
+        )
+        .unwrap();
+        let layout = core.layout(view).unwrap();
+        assert_eq!(layout.viewport_top(), 0.0);
+        assert_eq!(layout.snapshot().unwrap().coverage.hard_lines().start, 0);
+        assert!(shaped_bytes.load(Ordering::Acquire) - before < 10_000);
+    }
+
+    #[test]
+    fn failed_vertical_layout_preserves_snapshot_origin_anchor_and_active_work() {
+        let contents = (0..200)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (provider, fail_next, _, _) = ControlledFailureProvider::new_counted();
+        let mut core = Core::new(Document::new(contents));
+        let view = core.add_view(provider, 200.0, 48.0);
+        core.handle(
+            view,
+            CoreEvent::SetViewportOrigin {
+                left: 20.0,
+                top: None,
+            },
+        )
+        .unwrap();
+        let cancellation = LayoutCancellationToken::new();
+        let request = core
+            .prepare_view_layout_job(
+                view,
+                LayoutJobPriority::Background,
+                LayoutJobRegion::HardLines(HardLineLayoutRegion::new(100..101).unwrap()),
+                cancellation.clone(),
+            )
+            .unwrap();
+        let active_job = request.job_id();
+        let before_state = core.viewport_state(view).unwrap();
+        let before_layout = core.layout(view).unwrap().clone();
+        let before_anchor = core.views.get(&view).unwrap().viewport_anchor;
+        let before_cursor = core.command_state(view).unwrap().cursor();
+
+        fail_next.store(true, Ordering::Release);
+        assert!(matches!(
+            core.handle(
+                view,
+                CoreEvent::SetViewportOrigin {
+                    left: 40.0,
+                    top: Some(1_000.0),
+                },
+            ),
+            Err(CoreError::LayoutJob(LayoutJobError::Layout(
+                LayoutError::Measurement(MeasurementError::Provider(message))
+            ))) if message == "injected post-commit failure"
+        ));
+
+        assert_eq!(core.viewport_state(view).unwrap(), before_state);
+        assert_eq!(core.layout(view).unwrap(), &before_layout);
+        assert_eq!(
+            core.views.get(&view).unwrap().viewport_anchor,
+            before_anchor
+        );
+        assert_eq!(core.command_state(view).unwrap().cursor(), before_cursor);
+        assert!(!cancellation.is_cancelled());
+        assert_eq!(
+            core.views
+                .get(&view)
+                .and_then(|view| view.active_layout_work.as_ref())
+                .map(|work| work.job_id),
+            Some(active_job)
+        );
     }
 
     #[test]
@@ -4964,6 +7733,52 @@ mod tests {
         assert_eq!(core.document().source_bytes(), source);
         assert_eq!(core.document().revision(), revision);
         assert!(!core.document.undo());
+    }
+
+    #[test]
+    fn composition_layout_reflows_suffix_without_full_document_work() {
+        let mut source = String::from("alpha beta gamma delta\n");
+        source.push_str(&"unchanged line\n".repeat(100_000));
+        source.push_str("tail");
+        let mut core = Core::new(Document::new(&source));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 72.0, 48.0);
+        let revision = core.document().revision();
+        let original = core.document().source_bytes();
+
+        core.handle(view, begin_composition(&core, 6..10)).unwrap();
+        core.handle(
+            view,
+            CoreEvent::Composition(CompositionEvent::Update(CompositionUpdate::new(
+                "an intentionally long marked phrase",
+                35..35,
+            ))),
+        )
+        .unwrap();
+
+        let overlay = core.composition_overlay(view).unwrap().unwrap();
+        let layout = core.presentation_layout(view).unwrap();
+        let snapshot = layout.snapshot().unwrap();
+        assert!(!snapshot.coverage.is_full_document());
+        assert!(snapshot.coverage.hard_lines().end < 100);
+        assert!(
+            snapshot
+                .rows
+                .iter()
+                .filter(|row| row.hard_line_index == 0)
+                .count()
+                > 1
+        );
+        assert!(snapshot.rows.iter().any(|row| {
+            row.hard_line_index == 0 && row.text_range.end == overlay.marked_range().end + 12
+        }));
+        assert_eq!(core.document().revision(), revision);
+        assert_eq!(core.document().source_bytes(), original);
+
+        core.handle(view, CoreEvent::Composition(CompositionEvent::Cancel))
+            .unwrap();
+        assert!(core.composition_overlay(view).unwrap().is_none());
+        assert_eq!(core.document().revision(), revision);
+        assert_eq!(core.document().source_bytes(), original);
     }
 
     #[test]
@@ -6552,6 +9367,88 @@ mod tests {
     }
 
     #[test]
+    fn native_history_from_insert_finalizes_the_open_group_and_restores_both_edges() {
+        let mut core = Core::new(Document::new("base"));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 200.0, 48.0);
+        core.handle(view, key('i')).unwrap();
+        core.handle(view, text("xy")).unwrap();
+        assert_eq!(core.document().text(), "xybase");
+        assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
+        assert!(core.document().edit_group_depth() > 0);
+
+        let undo = core
+            .handle(
+                view,
+                CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
+            )
+            .unwrap();
+        assert_eq!(core.document().text(), "base");
+        assert_eq!(core.document().edit_group_depth(), 0);
+        assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
+        assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+        assert!(undo.document_changed);
+        assert!(undo.position_map.is_some());
+        assert!(undo
+            .command
+            .as_ref()
+            .is_some_and(|command| { command.history_navigation && command.mode_changed }));
+
+        let redo = core
+            .handle(
+                view,
+                CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo),
+            )
+            .unwrap();
+        assert_eq!(core.document().text(), "xybase");
+        assert_eq!(core.document().edit_group_depth(), 0);
+        assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
+        assert_eq!(
+            core.command_state(view).unwrap().cursor(),
+            2,
+            "redo restores the Insert boundary recorded when native Undo closed the group"
+        );
+        assert!(redo
+            .command
+            .as_ref()
+            .is_some_and(|command| command.history_navigation));
+    }
+
+    #[test]
+    fn native_history_from_visual_discards_selection_and_uses_recorded_restoration() {
+        let mut core = Core::new(Document::new("base"));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 200.0, 48.0);
+        core.handle(view, key('i')).unwrap();
+        core.handle(view, text("x")).unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+            .unwrap();
+        assert_eq!(core.document().text(), "xbase");
+
+        core.handle(view, key('v')).unwrap();
+        core.handle(view, key('l')).unwrap();
+        assert_eq!(
+            core.command_state(view).unwrap().mode(),
+            Mode::VisualCharacter
+        );
+        assert!(core.command_state(view).unwrap().visual_anchor().is_some());
+
+        let undo = core
+            .handle(
+                view,
+                CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
+            )
+            .unwrap();
+        assert_eq!(core.document().text(), "base");
+        let commands = core.command_state(view).unwrap();
+        assert_eq!(commands.mode(), Mode::Normal);
+        assert_eq!(commands.cursor(), 0);
+        assert_eq!(commands.visual_anchor(), None);
+        assert!(undo
+            .command
+            .as_ref()
+            .is_some_and(|command| command.history_navigation && command.mode_changed));
+    }
+
+    #[test]
     fn headless_layout_motion_is_explicitly_unsupported() {
         let mut document = Document::new("one two three");
         let mut commands = CommandInterpreter::new();
@@ -6566,5 +9463,173 @@ mod tests {
             CommandStatus::Unsupported(message) if message.contains("requires layout context")
         ));
         assert_eq!(commands.cursor(), 0);
+    }
+
+    #[test]
+    fn native_pointer_placement_is_revision_bound_and_owns_visual_selection() {
+        let mut core = Core::new(Document::new("alpha beta"));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 80.0);
+        let revision = core.document().revision();
+
+        let outcome = core
+            .handle(
+                view,
+                CoreEvent::PlaceCursor {
+                    document_revision: revision,
+                    text_offset: 6,
+                    affinity: BoundaryAffinity::Downstream,
+                    extend_selection: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(core.command_state(view).unwrap().cursor(), 6);
+        assert!(outcome.layout_changed);
+
+        core.handle(
+            view,
+            CoreEvent::PlaceCursor {
+                document_revision: revision,
+                text_offset: 9,
+                affinity: BoundaryAffinity::Upstream,
+                extend_selection: true,
+            },
+        )
+        .unwrap();
+        let commands = core.command_state(view).unwrap();
+        assert_eq!(commands.mode(), Mode::VisualCharacter);
+        assert_eq!(commands.visual_anchor(), Some(6));
+        assert_eq!(commands.boundary_affinity(), BoundaryAffinity::Upstream);
+
+        let stale = core.handle(
+            view,
+            CoreEvent::PlaceCursor {
+                document_revision: Revision(revision.0 + 1),
+                text_offset: 0,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            },
+        );
+        assert!(matches!(
+            stale,
+            Err(CoreError::Document(DocumentError::WrongSnapshot { .. }))
+        ));
+        assert_eq!(core.command_state(view).unwrap().cursor(), 9);
+    }
+
+    #[test]
+    fn pointer_at_hard_line_end_canonicalizes_normal_cursor_affinity() {
+        let mut core = Core::new(Document::new("abc"));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 80.0);
+
+        core.handle(
+            view,
+            CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: 3,
+                affinity: BoundaryAffinity::Upstream,
+                extend_selection: false,
+            },
+        )
+        .unwrap();
+
+        let commands = core.command_state(view).unwrap();
+        assert_eq!(
+            commands.cursor(),
+            2,
+            "Normal mode addresses the final grapheme"
+        );
+        assert_eq!(
+            commands.boundary_affinity(),
+            BoundaryAffinity::Downstream,
+            "the normalized start boundary must still associate that final grapheme"
+        );
+
+        core.handle(view, key('x')).unwrap();
+        assert_eq!(core.document().text(), "ab");
+    }
+
+    #[test]
+    fn pointer_motion_breaks_an_insert_undo_group_before_moving() {
+        let mut core = Core::new(Document::new("abc"));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 80.0);
+        core.handle(view, key('i')).unwrap();
+        core.handle(view, text("x")).unwrap();
+        assert_eq!(core.document().text(), "xabc");
+
+        core.handle(
+            view,
+            CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: 2,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            },
+        )
+        .unwrap();
+        core.handle(view, text("y")).unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+            .unwrap();
+        assert_eq!(core.document().text(), "xaybc");
+
+        core.handle(view, key('u')).unwrap();
+        assert_eq!(core.document().text(), "xabc");
+        core.handle(view, key('u')).unwrap();
+        assert_eq!(core.document().text(), "abc");
+    }
+
+    #[test]
+    fn cross_view_pointer_break_records_the_insert_group_owners_restoration() {
+        let mut core = Core::new(Document::new("base"));
+        let owner = core.add_view(MockTextMeasurementProvider::new(), 240.0, 80.0);
+        let invoking = core.add_view(MockTextMeasurementProvider::new(), 240.0, 80.0);
+
+        core.handle(
+            invoking,
+            CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: 3,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            },
+        )
+        .unwrap();
+        core.handle(owner, key('i')).unwrap();
+        core.handle(owner, text("xy")).unwrap();
+        assert_eq!(core.document().text(), "xybase");
+        assert_eq!(core.command_state(owner).unwrap().cursor(), 2);
+        assert_ne!(core.command_state(invoking).unwrap().cursor(), 2);
+        assert!(core.document().edit_group_depth() > 0);
+
+        core.handle(
+            invoking,
+            CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: 4,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(core.document().edit_group_depth(), 0);
+
+        core.handle(
+            invoking,
+            CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
+        )
+        .unwrap();
+        assert_eq!(core.document().text(), "base");
+        assert_eq!(core.command_state(invoking).unwrap().cursor(), 0);
+
+        core.handle(
+            invoking,
+            CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo),
+        )
+        .unwrap();
+        assert_eq!(core.document().text(), "xybase");
+        assert_eq!(
+            core.command_state(invoking).unwrap().cursor(),
+            2,
+            "redo must use the final Insert boundary captured from the owning view"
+        );
     }
 }

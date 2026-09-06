@@ -60,6 +60,19 @@ and terminal frontends, but those frontends are not part of the current scope.
 - Connect frontends to the Rust core through a narrow, stable C ABI. Keep
   ownership explicit and make performance-sensitive exchanges batch-oriented.
 
+### macOS build and packaging
+
+The native macOS frontend and its unit tests use the repository-root Swift
+Package Manager manifest. Its targets mirror the `src/mac` ownership boundaries
+for the C bridge, Core Text provider, editor, AppKit shell, and executable.
+`scripts/build-mac-app.sh` first builds the Rust static library, then the Swift
+targets, and finally assembles and ad-hoc signs `.build/eVim.app` for local
+development and end-to-end testing. A future distribution/archive workflow MAY
+add an Xcode project without changing those source ownership boundaries.
+
+The initial deployment target is macOS 26.0 so the frontend can use the current
+`NSTextInsertionIndicator` API without a second caret implementation.
+
 ## Vocabulary and coordinate systems
 
 Use these terms consistently in code, tests, and documentation:
@@ -710,7 +723,9 @@ Every style sheet defines three distinguished styles:
 - **Base Document** is the root of the block-style hierarchy and has no parent.
   It is the default assignment for the formatted document root. It provides the
   canvas background and padding together with inheritable default character
-  declarations such as font and foreground color.
+  declarations such as font and foreground color. The initial generated Base
+  Document requests **SF Pro at 14 layout units** as its default font; format-
+  backed document styles may override that request through the normal cascade.
 - **Base Paragraph** is a Paragraph-role child of Base Document and provides
   complete paragraph-layout values. It is the default paragraph-style
   assignment when an adapter does not provide a more specific assignment and
@@ -2852,7 +2867,6 @@ Primary macOS caret references:
 Do not silently settle these while implementing an unrelated feature. Record a
 decision in this file or an architecture decision record first:
 
-- build/package layout;
 - which format adapters beyond plain text ship initially;
 - each adapter's default authoring policy, such as Markdown delimiter and HTML
   element/style choices;
@@ -2860,7 +2874,7 @@ decision in this file or an architecture decision record first:
 - exact Unicode word/sentence segmentation tailoring;
 - exact regular-expression syntax supported by `/` and `:substitute`;
 - whether rich system clipboard formats are required for the first release;
-- default Base Document/Base Paragraph/Base Character values, view chrome
-  insets, colors, and other visual design choices;
+- default Base Document/Base Paragraph/Base Character colors and spacing, view
+  chrome insets, and other visual design choices not fixed above;
 - hyphenation and justification; and
 - concrete latency and memory budgets for supported hardware.

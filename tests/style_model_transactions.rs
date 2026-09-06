@@ -2,9 +2,9 @@ use evim_core::document::{
     BlockProperties, BlockRole, BlockStyle, CharacterProperties, CharacterStyle,
     ConfigurationStyleIntent, Document, Encoding, FileFormat, Format, ModelChangeKind,
     ModelTransactionError, PersistedStyleIntent, PipelineCapabilityDecision, PipelineEditIntent,
-    StyleBlockTarget, StyleDefinitionEdit, StyleDefinitionOrigin, StyleError, StyleId,
-    StyleInvalidationEffect, StyleModelIntent, StyleModelRequest, StyleProperty,
-    StyleTransactionError, TextEdit, TextRange, UnsupportedEditReason,
+    StyleBlockTarget, StyleDefinitionEdit, StyleDefinitionMetadata, StyleDefinitionOrigin,
+    StyleError, StyleId, StyleInvalidationEffect, StyleModelIntent, StyleModelRequest,
+    StyleProperty, StyleTransactionError, TextEdit, TextRange, UnsupportedEditReason,
 };
 use std::collections::BTreeSet;
 
@@ -129,7 +129,10 @@ fn failed_and_stale_configuration_edits_publish_nothing() {
     let error = document
         .apply_style_request(configure(
             &document,
-            ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::InsertCharacter(invalid)),
+            ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::InsertCharacter {
+                style: invalid,
+                metadata: StyleDefinitionMetadata::generated("Broken"),
+            }),
         ))
         .unwrap_err();
     assert!(matches!(
@@ -226,13 +229,14 @@ fn dependency_summary_names_descendants_but_not_unrelated_styles() {
         document
             .apply_style_request(configure(
                 &document,
-                ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::InsertCharacter(
-                    CharacterStyle {
+                ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::InsertCharacter {
+                    style: CharacterStyle {
                         id: StyleId::from(id),
                         based_on: Some(parent),
                         properties: CharacterProperties::default(),
                     },
-                )),
+                    metadata: StyleDefinitionMetadata::generated(id),
+                }),
             ))
             .unwrap();
     }
@@ -465,7 +469,10 @@ fn base_definition_and_document_style_assignment_require_configuration_authority
     document
         .apply_style_request(configure(
             &document,
-            ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::InsertBlock(custom)),
+            ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::InsertBlock {
+                style: custom,
+                metadata: StyleDefinitionMetadata::generated("Writing Canvas"),
+            }),
         ))
         .unwrap();
     document
@@ -651,9 +658,10 @@ fn unused_configuration_definitions_support_insert_update_and_delete() {
     document
         .apply_style_request(configure(
             &document,
-            ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::InsertBlock(
-                style.clone(),
-            )),
+            ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::InsertBlock {
+                style: style.clone(),
+                metadata: StyleDefinitionMetadata::generated("Body Indented"),
+            }),
         ))
         .unwrap();
     assert!(document

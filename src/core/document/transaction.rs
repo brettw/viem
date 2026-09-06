@@ -20,9 +20,9 @@ use super::{
     HistoryNodeId, HistoryRestoration, HistoryRestorationSnapshot, HistorySemanticChangeKind,
     HistorySourcePatch, HistoryTransactionSummary, MappingOutcome, PipelineCapabilityDecision,
     PipelineEditIntent, PipelinePolicyRequest, PositionError, PositionMap, Revision,
-    SemanticInlineStyle, SourcePartId, Splice, StyleApplication, StyleDefinitionEdit, StyleError,
-    StyleId, StyleInvalidationEffect, StyleProperty, StyleSheet, StyleSheetRevision, StyleSpan,
-    TextEdit, TextRange, UnsupportedEditReason,
+    SemanticInlineStyle, SourcePartId, Splice, StyleApplication, StyleDefinitionEdit,
+    StyleDefinitionOrigin, StyleError, StyleId, StyleInvalidationEffect, StyleProperty, StyleSheet,
+    StyleSheetRevision, StyleSpan, TextEdit, TextRange, UnsupportedEditReason,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -45,14 +45,6 @@ pub enum HistoryNavigationRequest {
 pub enum StyleBlockTarget {
     DocumentRoot,
     Paragraphs(TextRange),
-}
-
-/// Provenance/editability class of a normalized style definition.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StyleDefinitionOrigin {
-    SourceBacked,
-    GeneratedConfiguration,
-    SyntheticReadOnly,
 }
 
 /// A persisted-content style intention. These are deliberately representable
@@ -2093,61 +2085,12 @@ impl Document {
         style: SemanticInlineStyle,
         enabled: bool,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        self.validate_range(&range)?;
-        if range.is_empty() {
+        let Some(mut source_patches) =
+            self.semantic_style_source_patches(&range, style, enabled)?
+        else {
             return Ok(self.no_op_prepared());
-        }
-        if self.state().format != Format::Markdown {
-            return Err(DocumentError::UnsupportedFormatting.into());
-        }
-
-        let matching = self
-            .projection()
-            .style_spans()
-            .iter()
-            .filter(|span| {
-                span.application == StyleApplication::Semantic(style)
-                    && span.range.start <= range.start
-                    && range.end <= span.range.end
-            })
-            .collect::<Vec<_>>();
-        if enabled && !matching.is_empty() {
-            return Ok(self.no_op_prepared());
-        }
-        if !enabled {
-            let exact_count = matching.iter().filter(|span| span.range == range).count();
-            match exact_count {
-                1 => {}
-                0 => return Err(DocumentError::UnsupportedFormatting.into()),
-                _ => return Err(DocumentError::AmbiguousProjection.into()),
-            }
-        }
-        if enabled
-            && self
-                .projection()
-                .style_spans()
-                .iter()
-                .any(|span| span.range.start < range.end && range.start < span.range.end)
-        {
-            return Err(DocumentError::OverlappingFormatting.into());
-        }
-
-        let source_range = self
-            .projection()
-            .source_range(range.clone())
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let mut source_patches = if enabled {
-            let marker_bytes = self
-                .state()
-                .encoding
-                .encode_fragment(preferred_markdown_style_marker(style))?;
-            vec![
-                SourcePatch::primary(source_range.start..source_range.start, marker_bytes.clone()),
-                SourcePatch::primary(source_range.end..source_range.end, marker_bytes.clone()),
-            ]
-        } else {
-            self.markdown_style_removal_patches(&source_range, style)?
         };
+
         validate_source_patches(&mut source_patches)?;
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let after_revision = Revision(self.next_revision);
@@ -2194,6 +2137,85 @@ impl Document {
             self.next_projected_block_id,
             PreparedPublication::State(candidate),
         ))
+    }
+
+    /// Cheap, source-aware validation for menu and command presentation. It
+    /// performs the exact local capability checks used by preparation without
+    /// constructing or projecting a candidate document.
+    pub(crate) fn semantic_style_edit_capability(
+        &self,
+        range: Range<usize>,
+        style: SemanticInlineStyle,
+        enabled: bool,
+    ) -> Result<(), ModelTransactionError> {
+        self.semantic_style_source_patches(&range, style, enabled)
+            .map(|_| ())
+    }
+
+    /// Return the minimal source patches for an authorized Markdown semantic
+    /// style edit. `None` is an already-satisfied or empty no-op.
+    fn semantic_style_source_patches(
+        &self,
+        range: &Range<usize>,
+        style: SemanticInlineStyle,
+        enabled: bool,
+    ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
+        self.validate_range(range)?;
+        if range.is_empty() {
+            return Ok(None);
+        }
+        if self.state().format != Format::Markdown {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
+
+        let matching = self
+            .projection()
+            .style_spans()
+            .iter()
+            .filter(|span| {
+                span.application == StyleApplication::Semantic(style)
+                    && span.range.start <= range.start
+                    && range.end <= span.range.end
+            })
+            .collect::<Vec<_>>();
+        if enabled && !matching.is_empty() {
+            return Ok(None);
+        }
+        if !enabled {
+            let exact_count = matching.iter().filter(|span| &span.range == range).count();
+            match exact_count {
+                1 => {}
+                0 => return Err(DocumentError::UnsupportedFormatting.into()),
+                _ => return Err(DocumentError::AmbiguousProjection.into()),
+            }
+        }
+        if enabled
+            && self
+                .projection()
+                .style_spans()
+                .iter()
+                .any(|span| span.range.start < range.end && range.start < span.range.end)
+        {
+            return Err(DocumentError::OverlappingFormatting.into());
+        }
+
+        let source_range = self
+            .projection()
+            .source_range(range.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let source_patches = if enabled {
+            let marker_bytes = self
+                .state()
+                .encoding
+                .encode_fragment(preferred_markdown_style_marker(style))?;
+            vec![
+                SourcePatch::primary(source_range.start..source_range.start, marker_bytes.clone()),
+                SourcePatch::primary(source_range.end..source_range.end, marker_bytes.clone()),
+            ]
+        } else {
+            self.markdown_style_removal_patches(&source_range, style)?
+        };
+        Ok(Some(source_patches))
     }
 
     /// Locate the exact delimiter spelling which produced one projected

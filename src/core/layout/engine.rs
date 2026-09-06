@@ -1088,7 +1088,7 @@ fn layout_epsilon(value: f32) -> f32 {
 /// deliberately contains no positioned snapshot, height index, regional cache,
 /// presentation-only horizontal/vertical scroll, errors, or scheduling state.
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct LayoutJobViewConfiguration {
+pub(crate) struct LayoutJobViewConfiguration {
     width: f32,
     height: f32,
     insets: EdgeInsets,
@@ -1333,6 +1333,14 @@ impl ViewLayout {
         self.linebreak
     }
 
+    /// View-local magnification applied during shaping and layout. Document
+    /// style distances remain expressed in unscaled layout units; the scale is
+    /// an independent presentation input and therefore part of the immutable
+    /// layout configuration identity.
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
     pub fn configuration_generation(&self) -> ViewConfigurationGeneration {
         self.configuration_generation
     }
@@ -1506,7 +1514,7 @@ impl ViewLayout {
         }
     }
 
-    pub(super) fn capture_for_regional_layout_job(
+    pub(crate) fn capture_for_regional_layout_job(
         &self,
         text: Range<usize>,
     ) -> LayoutJobViewConfiguration {
@@ -1771,8 +1779,7 @@ fn partial_snapshot_from_region(
             height_as_layout_unit(height_index.prefix_height(line.hard_line_index)?.height())?;
         for relative_row in &line.rows {
             let mut row = relative_row.clone();
-            row.y = checked_layout_sum(row.y, line_top)?;
-            row.baseline = checked_layout_sum(row.baseline, line_top)?;
+            translate_row_vertically(&mut row, line_top)?;
             let row_index = rows.len();
             for caret in &mut row.carets {
                 caret.row_index = row_index;
@@ -1916,8 +1923,7 @@ fn refresh_partial_snapshot_after_height_change(
 
     let mut refreshed = snapshot.clone();
     for row in &mut refreshed.rows {
-        row.y = checked_layout_sum(row.y, delta)?;
-        row.baseline = checked_layout_sum(row.baseline, delta)?;
+        translate_row_vertically(row, delta)?;
     }
     let LayoutCoverage::PartialHardLines {
         vertical_range,
@@ -1949,6 +1955,31 @@ fn checked_layout_sum(left: f32, right: f32) -> Result<f32, ViewHeightIndexError
         Err(ViewHeightIndexError::HeightOverflow)
     } else {
         Ok(sum)
+    }
+}
+
+/// Move every absolute vertical coordinate owned by a positioned row while
+/// preserving cluster-local geometry. Regional layout initially positions
+/// rows relative to their hard-line band; globalization and later height-index
+/// refinements must therefore translate provider bounds along with the row and
+/// baseline used to draw them.
+fn translate_row_vertically(row: &mut VisualRow, delta: f32) -> Result<(), ViewHeightIndexError> {
+    row.y = checked_layout_sum(row.y, delta)?;
+    row.baseline = checked_layout_sum(row.baseline, delta)?;
+    for cluster in &mut row.clusters {
+        cluster.typographic_bounds.y =
+            checked_layout_coordinate_sum(cluster.typographic_bounds.y, delta)?;
+        cluster.ink_bounds.y = checked_layout_coordinate_sum(cluster.ink_bounds.y, delta)?;
+    }
+    Ok(())
+}
+
+fn checked_layout_coordinate_sum(left: f32, right: f32) -> Result<f32, ViewHeightIndexError> {
+    let sum = left + right;
+    if sum.is_finite() {
+        Ok(sum)
+    } else {
+        Err(ViewHeightIndexError::HeightOverflow)
     }
 }
 
@@ -2379,7 +2410,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
     /// U+000A separators), while every externally visible text coordinate
     /// remains relative to the complete formatted document.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn layout_hard_line_region_cancellable(
+    pub(crate) fn layout_hard_line_region_cancellable(
         &mut self,
         document_id: DocumentId,
         document_revision: Revision,
@@ -4662,7 +4693,8 @@ mod tests {
     use super::*;
     use crate::document::{
         Block, BlockKind, BlockProperties, BlockRole, BlockStyle, CharacterProperties, Document,
-        DocumentStyleAssignment, Encoding, FileFormat, Format, StyleId, StyleSheet, TextRange,
+        DocumentStyleAssignment, Encoding, FileFormat, Format, StyleDefinitionMetadata, StyleId,
+        StyleSheet, TextRange,
     };
     use crate::layout::DocumentStyleInput;
     use std::cell::Cell;
@@ -4682,6 +4714,38 @@ mod tests {
         (document, engine, view)
     }
 
+    fn lay_out_regional_line(
+        engine: &mut LayoutEngine<crate::layout::MockTextMeasurementProvider>,
+        document: &Document,
+        view: &ViewLayout,
+        hard_line: usize,
+    ) -> RegionalLayoutSnapshot {
+        let line_range =
+            document.line_start(hard_line).unwrap()..document.line_end(hard_line).unwrap();
+        let following_line_range = (hard_line + 1 < document.line_count()).then(|| {
+            document.line_start(hard_line + 1).unwrap()..document.line_end(hard_line + 1).unwrap()
+        });
+        let styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
+        let captured_view = view.capture_for_regional_layout_job(line_range.clone());
+
+        engine
+            .layout_hard_line_region_cancellable(
+                document.id(),
+                document.revision(),
+                &document.text()[line_range.clone()],
+                line_range.start,
+                std::slice::from_ref(&line_range),
+                hard_line,
+                document.line_count(),
+                document.text().len(),
+                following_line_range,
+                &styles,
+                &captured_view,
+                &NeverCancelled,
+            )
+            .unwrap()
+    }
+
     fn insert_paragraph_style(
         sheet: &mut StyleSheet,
         name: &str,
@@ -4690,14 +4754,17 @@ mod tests {
     ) -> StyleId {
         let id: StyleId = name.into();
         sheet
-            .insert_block_style(BlockStyle {
-                id: id.clone(),
-                based_on: Some(sheet.base_paragraph.clone()),
-                next_paragraph_style: None,
-                role: BlockRole::Paragraph,
-                character,
-                block,
-            })
+            .insert_block_style(
+                BlockStyle {
+                    id: id.clone(),
+                    based_on: Some(sheet.base_paragraph.clone()),
+                    next_paragraph_style: None,
+                    role: BlockRole::Paragraph,
+                    character,
+                    block,
+                },
+                StyleDefinitionMetadata::generated(name),
+            )
             .unwrap();
         id
     }
@@ -4740,6 +4807,86 @@ mod tests {
         let hit = view.hard_line_at_y(0.0).unwrap().unwrap();
         assert_eq!(hit.hard_line(), 0);
         assert!(!hit.line_is_exact());
+    }
+
+    #[test]
+    fn partial_snapshot_globalizes_cluster_bounds_with_their_visual_row() {
+        let document = Document::new("zero\none\ntwo");
+        let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
+        let view = ViewLayout::new(200.0, 100.0);
+        let region = lay_out_regional_line(&mut engine, &document, &view, 2);
+        let relative_row = region.lines()[0].rows()[0].clone();
+        assert!(!relative_row.clusters.is_empty());
+
+        let mut height_index = ViewHeightIndex::new_estimated(document.line_count(), 40.0).unwrap();
+        height_index
+            .set_exact_height(2, region.lines()[0].height())
+            .unwrap();
+        let line_top = height_index.prefix_height(2).unwrap().height() as f32;
+        let snapshot = partial_snapshot_from_region(&region, &height_index).unwrap();
+        let positioned_row = &snapshot.rows[0];
+
+        assert!((positioned_row.y - (relative_row.y + line_top)).abs() < 1.0e-5);
+        assert!((positioned_row.baseline - (relative_row.baseline + line_top)).abs() < 1.0e-5);
+        for (positioned, relative) in positioned_row.clusters.iter().zip(&relative_row.clusters) {
+            assert!(
+                (positioned.typographic_bounds.y - (relative.typographic_bounds.y + line_top))
+                    .abs()
+                    < 1.0e-5
+            );
+            assert!((positioned.ink_bounds.y - (relative.ink_bounds.y + line_top)).abs() < 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn partial_snapshot_height_refresh_moves_cluster_bounds_with_their_visual_row() {
+        let document = Document::new("zero\none\ntwo");
+        let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
+        let view = ViewLayout::new(200.0, 100.0);
+        let visible_region = lay_out_regional_line(&mut engine, &document, &view, 2);
+
+        let mut old_height_index =
+            ViewHeightIndex::new_estimated(document.line_count(), 40.0).unwrap();
+        old_height_index
+            .set_exact_height(2, visible_region.lines()[0].height())
+            .unwrap();
+        let old_snapshot =
+            partial_snapshot_from_region(&visible_region, &old_height_index).unwrap();
+
+        let changed_region = lay_out_regional_line(&mut engine, &document, &view, 0);
+        let mut new_height_index = old_height_index.clone();
+        new_height_index
+            .set_exact_height(0, changed_region.lines()[0].height())
+            .unwrap();
+        let old_start = old_snapshot.coverage.vertical_range().unwrap().start;
+        let new_start = new_height_index.prefix_height(2).unwrap().height() as f32;
+        let delta = new_start - old_start;
+        assert!(delta.abs() > 1.0);
+
+        let refreshed = refresh_partial_snapshot_after_height_change(
+            Some(&old_snapshot),
+            &changed_region,
+            &new_height_index,
+            0..1,
+            LayoutRevision(99),
+        )
+        .unwrap()
+        .unwrap();
+
+        for (new_row, old_row) in refreshed.rows.iter().zip(&old_snapshot.rows) {
+            assert!((new_row.y - (old_row.y + delta)).abs() < 1.0e-5);
+            assert!((new_row.baseline - (old_row.baseline + delta)).abs() < 1.0e-5);
+            for (new_cluster, old_cluster) in new_row.clusters.iter().zip(&old_row.clusters) {
+                assert!(
+                    (new_cluster.typographic_bounds.y - (old_cluster.typographic_bounds.y + delta))
+                        .abs()
+                        < 1.0e-5
+                );
+                assert!(
+                    (new_cluster.ink_bounds.y - (old_cluster.ink_bounds.y + delta)).abs() < 1.0e-5
+                );
+            }
+        }
     }
 
     #[test]
@@ -4913,7 +5060,7 @@ mod tests {
         );
         assert!((snapshot.rows[0].ascent - 24.0 * 0.78).abs() < 0.001);
         assert!((snapshot.rows[1].ascent - 14.0 * 0.78).abs() < 0.001);
-        assert_eq!(snapshot.rows[0].clusters[0].fallback_font, "system-ui");
+        assert_eq!(snapshot.rows[0].clusters[0].fallback_font, "SF Pro");
     }
 
     #[test]
@@ -4984,7 +5131,7 @@ mod tests {
         assert!((view.snapshot().unwrap().rows[0].ascent - 14.0 * 0.78).abs() < 0.001);
         assert_eq!(
             view.snapshot().unwrap().rows[0].clusters[0].fallback_font,
-            "system-ui"
+            "SF Pro"
         );
     }
 

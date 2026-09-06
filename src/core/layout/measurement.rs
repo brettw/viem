@@ -86,7 +86,7 @@ pub struct ResolvedTextStyle {
 impl Default for ResolvedTextStyle {
     fn default() -> Self {
         Self {
-            font_families: vec!["system-ui".to_owned()],
+            font_families: vec!["SF Pro".to_owned()],
             size: 14.0,
             weight: 400.0,
             slant: FontSlant::Upright,
