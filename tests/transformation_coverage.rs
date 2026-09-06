@@ -66,12 +66,14 @@ fn inserted_breaks_use_every_forced_fileformat_in_both_adapters_and_all_encoding
                 let source_text = match format {
                     Format::PlainText => format!("one{delimiter}two"),
                     Format::Markdown => format!("# **one**{delimiter}_two_"),
+                    _ => unreachable!("fixture enumerates plain text and Markdown WYSIWYG"),
                 };
                 let expected_text = match format {
                     Format::PlainText => format!("one{delimiter}new{delimiter}two"),
                     Format::Markdown => {
                         format!("# **one**{delimiter}new{delimiter}_two_")
                     }
+                    _ => unreachable!("fixture enumerates plain text and Markdown WYSIWYG"),
                 };
                 let original = encode(encoding, &source_text, has_bom(encoding));
                 let expected = encode(encoding, &expected_text, has_bom(encoding));
@@ -116,6 +118,7 @@ fn fileformat_conversion_preserves_adapter_syntax_bom_and_history_in_all_encodin
                 let source_text = match format {
                     Format::PlainText => "Hé\r\ntwo\r\n",
                     Format::Markdown => "# **Hé**\r\n_two_\r\n",
+                    _ => unreachable!("fixture enumerates plain text and Markdown WYSIWYG"),
                 };
                 let converted_text = source_text.replace("\r\n", spelling(target));
                 let original = encode(encoding, source_text, has_bom(encoding));
@@ -154,6 +157,7 @@ fn bomless_utf16_stays_bomless_through_local_edits_and_history() {
             let source_text = match format {
                 Format::PlainText => "Hé\r\nnext",
                 Format::Markdown => "# **Hé**\r\nnext",
+                _ => unreachable!("fixture enumerates plain text and Markdown WYSIWYG"),
             };
             let changed_text = source_text.replacen('é', "è", 1);
             let original = encode(encoding, source_text, false);

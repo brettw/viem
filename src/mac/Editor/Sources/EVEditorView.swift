@@ -1170,9 +1170,24 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 return
             }
             guard !value.isEmpty else { return }
-            // Normal and Visual modes retain command ownership. A native text
-            // commit is input to that grammar, never an AppKit-authored splice.
-            surface.performInput { _ = try session.sendText(value) }
+            // AppKit delivers printable keys through insertText even in a
+            // command mode. Normalize them to keys so core's layout preflight
+            // runs for j/k, Visual Block, and other visual commands. Preserve
+            // multi-scalar graphemes as text operands for r/f and IME input.
+            surface.performInput {
+                for character in value {
+                    let scalars = character.unicodeScalars
+                    if scalars.count == 1, let scalar = scalars.first,
+                       session.lastOutcome.mode != UInt32(EVIM_MODE_INSERT),
+                       session.lastOutcome.mode != UInt32(EVIM_MODE_REPLACE),
+                       session.lastOutcome.mode != UInt32(EVIM_MODE_COMMAND_LINE)
+                    {
+                        _ = try session.sendKey(kind: UInt32(EVIM_KEY_CHARACTER), codepoint: scalar.value)
+                    } else {
+                        _ = try session.sendText(String(character))
+                    }
+                }
+            }
         default:
             return
         }
@@ -1248,6 +1263,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         if compositionActive {
             cancelActiveMarkedText(using: session, discardInputContext: true)
         }
+        surface.refreshPresentation()
         guard let snapshot = surface.layoutSnapshot else { return }
         let layoutPoint = layoutPoint(fromViewPoint: local)
         surface.performInput {

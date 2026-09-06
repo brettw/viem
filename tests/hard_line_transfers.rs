@@ -92,6 +92,7 @@ fn mac_copy_preserves_markdown_source_literal_lf_and_all_encodings() {
             let expected_text = match format {
                 Format::PlainText => "**one**\nraw\n# Hé\n**one**\nraw\n_last_",
                 Format::Markdown => "one\nraw\nHé\none\nraw\nlast",
+                _ => unreachable!("fixture enumerates plain text and Markdown WYSIWYG"),
             };
             assert_eq!(all.text(), expected_text);
             // Only the three separators between authoritative lines are
@@ -380,6 +381,7 @@ fn every_valid_gap_reorders_source_lines_without_regeneration() {
             let mut lines = match format {
                 Format::PlainText => vec!["a", "bb", "ccc"],
                 Format::Markdown => vec!["# a", "**bb**", "_ccc_"],
+                _ => unreachable!("fixture enumerates plain text and Markdown WYSIWYG"),
             };
             if trailing_break {
                 lines.push("");

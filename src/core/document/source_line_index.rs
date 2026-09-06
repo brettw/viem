@@ -75,6 +75,39 @@ impl SourceHardLineIndex {
             .expect("validated source hard-line aggregate is representable")
     }
 
+    /// Locate a physical source line through byte aggregates without binary
+    /// searching repeatedly through the ordinal lookup API.
+    pub(crate) fn line_at_offset(&self, offset: usize) -> Option<usize> {
+        let mut remaining = offset.checked_sub(self.content_start)?;
+        if remaining > self.root.byte_len {
+            return None;
+        }
+        let mut node = self.root.as_ref();
+        let mut first_line = 0;
+        loop {
+            match &node.kind {
+                NodeKind::Leaf(lengths) => {
+                    for (index, length) in lengths.iter().enumerate() {
+                        if remaining < *length || index + 1 == lengths.len() {
+                            return Some(first_line + index);
+                        }
+                        remaining -= length;
+                    }
+                    return None;
+                }
+                NodeKind::Branch { left, right } => {
+                    if remaining < left.byte_len {
+                        node = left;
+                    } else {
+                        remaining -= left.byte_len;
+                        first_line += left.line_count;
+                        node = right;
+                    }
+                }
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn replace_ranges(
         &self,

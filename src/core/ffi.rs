@@ -104,6 +104,9 @@ pub const EVIM_ENCODING_UTF16_BE: u32 = 4;
 
 pub const EVIM_FORMAT_PLAIN_TEXT: u32 = 1;
 pub const EVIM_FORMAT_MARKDOWN: u32 = 2;
+pub const EVIM_FORMAT_HTML: u32 = 3;
+pub const EVIM_FORMAT_RTF: u32 = 4;
+pub const EVIM_FORMAT_MARKDOWN_SOURCE: u32 = 5;
 
 /// Detect the line-ending interpretation through the core's shared open
 /// policy.
@@ -1107,6 +1110,8 @@ pub const EVIM_STYLE_CAPABILITY_EDIT_DECLARATIONS: u32 = 1 << 0;
 pub const EVIM_STYLE_CAPABILITY_EDIT_PARENT: u32 = 1 << 1;
 pub const EVIM_STYLE_CAPABILITY_EDIT_NEXT_STYLE: u32 = 1 << 2;
 pub const EVIM_STYLE_CAPABILITY_EDIT_DISPLAY_NAME: u32 = 1 << 3;
+pub const EVIM_STYLE_CAPABILITY_ASSIGN: u32 = 1 << 4;
+pub const EVIM_STYLE_CAPABILITY_DELETE: u32 = 1 << 5;
 
 pub const EVIM_STYLE_PROPERTY_CANVAS_BACKGROUND: u32 = 1;
 pub const EVIM_STYLE_PROPERTY_CANVAS_PADDING_TOP: u32 = 2;
@@ -1361,7 +1366,7 @@ impl Default for EvimStyleEditValueV1 {
     }
 }
 
-/// Exact-revision request to edit one field of one existing generated style.
+/// Exact-revision request to edit one field of an existing editable style.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct EvimStyleEditV1 {
@@ -1859,6 +1864,18 @@ pub struct EvimSetSemanticStyleV1 {
 
 pub const EVIM_SET_SEMANTIC_STYLE_V1_SIZE: u32 = size_of::<EvimSetSemanticStyleV1>() as u32;
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EvimDirectStyleEditV1 {
+    pub struct_size: u32,
+    pub operation: u32,
+    pub property: u32,
+    pub reserved: u32,
+    pub expected_selection: EvimLogicalSelectionIdentityV1,
+    pub value: EvimStyleEditValueV1,
+}
+pub const EVIM_DIRECT_STYLE_EDIT_V1_SIZE: u32 = size_of::<EvimDirectStyleEditV1>() as u32;
+
 pub const EVIM_PLACE_CURSOR_EXTEND_SELECTION: u32 = 1 << 0;
 
 /// Revision-bound pointer-placement intention. `text_offset` is a formatted
@@ -1889,6 +1906,85 @@ pub struct EvimSetFileFormatV1 {
 }
 
 pub const EVIM_SET_FILE_FORMAT_V1_SIZE: u32 = size_of::<EvimSetFileFormatV1>() as u32;
+
+/// Source-format interpretation change bound to one exact document snapshot.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvimSetFormatV1 {
+    pub struct_size: u32,
+    pub format: u32,
+    pub document_id: u64,
+    pub document_revision: u64,
+}
+pub const EVIM_SET_FORMAT_V1_SIZE: u32 = size_of::<EvimSetFormatV1>() as u32;
+
+/// Lossless source transcoding request; automatic detection is not a target.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvimSetEncodingV1 {
+    pub struct_size: u32,
+    pub encoding: u32,
+    pub document_id: u64,
+    pub document_revision: u64,
+}
+pub const EVIM_SET_ENCODING_V1_SIZE: u32 = size_of::<EvimSetEncodingV1>() as u32;
+
+pub const EVIM_LIST_STYLE_NONE: u32 = 0;
+pub const EVIM_LIST_STYLE_BULLET: u32 = 1;
+pub const EVIM_LIST_STYLE_NUMBERED: u32 = 2;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvimSetListStyleV1 {
+    pub struct_size: u32,
+    pub style: u32,
+    pub expected_selection: EvimLogicalSelectionIdentityV1,
+}
+pub const EVIM_SET_LIST_STYLE_V1_SIZE: u32 = size_of::<EvimSetListStyleV1>() as u32;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvimSetParagraphStyleV1 {
+    pub struct_size: u32,
+    /// Zero means Base Paragraph; one through six select a heading.
+    pub level: u32,
+    pub expected_selection: EvimLogicalSelectionIdentityV1,
+}
+pub const EVIM_SET_PARAGRAPH_STYLE_V1_SIZE: u32 = size_of::<EvimSetParagraphStyleV1>() as u32;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct EvimAssignStyleV1 {
+    pub struct_size: u32,
+    pub namespace: u32,
+    pub identity: EvimStyleSheetIdentityV1,
+    pub expected_selection: EvimLogicalSelectionIdentityV1,
+    pub style_id: EvimUtf8Slice,
+}
+pub const EVIM_ASSIGN_STYLE_V1_SIZE: u32 = size_of::<EvimAssignStyleV1>() as u32;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct EvimCreateStyleV1 {
+    pub struct_size: u32,
+    pub namespace: u32,
+    pub identity: EvimStyleSheetIdentityV1,
+    pub style_id: EvimUtf8Slice,
+    pub display_name: EvimUtf8Slice,
+    pub parent_id: EvimUtf8Slice,
+    pub next_style_id: EvimUtf8Slice,
+}
+pub const EVIM_CREATE_STYLE_V1_SIZE: u32 = size_of::<EvimCreateStyleV1>() as u32;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct EvimDeleteStyleV1 {
+    pub struct_size: u32,
+    pub namespace: u32,
+    pub identity: EvimStyleSheetIdentityV1,
+    pub style_id: EvimUtf8Slice,
+}
+pub const EVIM_DELETE_STYLE_V1_SIZE: u32 = size_of::<EvimDeleteStyleV1>() as u32;
 
 impl Default for EvimSetFileFormatV1 {
     fn default() -> Self {
@@ -2169,6 +2265,9 @@ fn parse_format(raw: u32) -> Result<Format, EvimStatus> {
     match raw {
         EVIM_FORMAT_PLAIN_TEXT => Ok(Format::PlainText),
         EVIM_FORMAT_MARKDOWN => Ok(Format::Markdown),
+        EVIM_FORMAT_HTML => Ok(Format::Html),
+        EVIM_FORMAT_RTF => Ok(Format::Rtf),
+        EVIM_FORMAT_MARKDOWN_SOURCE => Ok(Format::MarkdownSource),
         _ => Err(EvimStatus::InvalidFormat),
     }
 }
@@ -2200,6 +2299,9 @@ fn format_to_ffi(format: Format) -> u32 {
     match format {
         Format::PlainText => EVIM_FORMAT_PLAIN_TEXT,
         Format::Markdown => EVIM_FORMAT_MARKDOWN,
+        Format::Html => EVIM_FORMAT_HTML,
+        Format::Rtf => EVIM_FORMAT_RTF,
+        Format::MarkdownSource => EVIM_FORMAT_MARKDOWN_SOURCE,
     }
 }
 
@@ -5319,8 +5421,11 @@ fn generated_style_capabilities(
     origin: StyleDefinitionOrigin,
     is_base: bool,
     role: Option<BlockRole>,
+    source_editable: bool,
 ) -> u32 {
-    if origin != StyleDefinitionOrigin::GeneratedConfiguration {
+    if origin != StyleDefinitionOrigin::GeneratedConfiguration
+        && !(source_editable && origin == StyleDefinitionOrigin::SourceBacked)
+    {
         return 0;
     }
     let mut capabilities =
@@ -5330,6 +5435,15 @@ fn generated_style_capabilities(
     }
     if role == Some(BlockRole::Paragraph) {
         capabilities |= EVIM_STYLE_CAPABILITY_EDIT_NEXT_STYLE;
+    }
+    if source_editable
+        && origin == StyleDefinitionOrigin::SourceBacked
+        && role != Some(BlockRole::Document)
+    {
+        capabilities |= EVIM_STYLE_CAPABILITY_ASSIGN;
+        if !is_base {
+            capabilities |= EVIM_STYLE_CAPABILITY_DELETE;
+        }
     }
     capabilities
 }
@@ -5447,7 +5561,19 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, EvimStatu
                 metadata.origin,
                 is_base_document || is_base_paragraph,
                 Some(style.role),
-            ),
+                matches!(document.format(), Format::Html | Format::Rtf),
+            ) & if document.format() == Format::Html
+                && style
+                    .id
+                    .0
+                    .strip_prefix("Heading")
+                    .and_then(|level| level.parse::<u8>().ok())
+                    .is_some_and(|level| (1..=6).contains(&level))
+            {
+                !EVIM_STYLE_CAPABILITY_DELETE
+            } else {
+                u32::MAX
+            },
             stable_id: push_style_string(&mut strings, &style.id.0)?,
             display_name: push_style_string(&mut strings, &metadata.display_name)?,
             parent_id,
@@ -5500,7 +5626,12 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, EvimStatu
             namespace: EVIM_STYLE_NAMESPACE_CHARACTER,
             role: EVIM_STYLE_ROLE_NONE,
             origin: style_origin_to_ffi(metadata.origin),
-            capabilities: generated_style_capabilities(metadata.origin, is_base, None),
+            capabilities: generated_style_capabilities(
+                metadata.origin,
+                is_base,
+                None,
+                matches!(document.format(), Format::Html | Format::Rtf),
+            ),
             stable_id: push_style_string(&mut strings, &style.id.0)?,
             display_name: push_style_string(&mut strings, &metadata.display_name)?,
             parent_id,
@@ -9244,6 +9375,444 @@ pub unsafe extern "C" fn evim_core_view_set_file_format(
     })
 }
 
+/// Change source interpretation without rewriting the source bytes.
+///
+/// # Safety
+/// Request and outcome must be distinct aligned readable/writable values.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_set_format(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    request: *const EvimSetFormatV1,
+    out_outcome: *mut EvimCoreOutcomeV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let request = unsafe { read_core_request(request, out_outcome)? };
+        if request.struct_size < EVIM_SET_FORMAT_V1_SIZE {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        unsafe { clear_outcome(out_outcome)? };
+        let target = parse_format(request.format)?;
+        let outcome = with_core_mut(handle, |core| {
+            dispatch_event(
+                core,
+                view,
+                CoreEvent::SetFormat {
+                    document: DocumentId(request.document_id),
+                    revision: Revision(request.document_revision),
+                    target,
+                },
+            )
+        })?;
+        unsafe { out_outcome.write(outcome) };
+        Ok(())
+    })
+}
+
+/// Transcode source syntax without losing malformed or unrepresentable data.
+///
+/// # Safety
+/// Request and outcome must be distinct aligned readable/writable values.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_set_encoding(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    request: *const EvimSetEncodingV1,
+    out_outcome: *mut EvimCoreOutcomeV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let request = unsafe { read_core_request(request, out_outcome)? };
+        if request.struct_size < EVIM_SET_ENCODING_V1_SIZE {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        unsafe { clear_outcome(out_outcome)? };
+        let target = parse_encoding(request.encoding)?.ok_or(EvimStatus::InvalidEncoding)?;
+        let outcome = with_core_mut(handle, |core| {
+            dispatch_event(
+                core,
+                view,
+                CoreEvent::SetEncoding {
+                    document: DocumentId(request.document_id),
+                    revision: Revision(request.document_revision),
+                    target,
+                },
+            )
+        })?;
+        unsafe { out_outcome.write(outcome) };
+        Ok(())
+    })
+}
+
+/// Query an exact list-action target without requiring current layout.
+///
+/// # Safety
+/// The output must identify an aligned writable selection identity.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_list_selection(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    out_selection: *mut EvimLogicalSelectionIdentityV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(out_selection, 1)?;
+        unsafe { out_selection.write(EvimLogicalSelectionIdentityV1::default()) };
+        let selection = with_core(handle, |core| {
+            logical_selection_identity_to_ffi(
+                &core
+                    .list_selection_identity(ViewId(view))
+                    .map_err(core_status)?,
+            )
+        })?;
+        unsafe { out_selection.write(selection) };
+        Ok(())
+    })
+}
+
+/// Set/remove list markers on the selected paragraphs as one undo unit.
+///
+/// # Safety
+/// Request and outcome must be distinct aligned readable/writable values.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_set_list_style(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    request: *const EvimSetListStyleV1,
+    out_outcome: *mut EvimCoreOutcomeV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let request = unsafe { read_core_request(request, out_outcome)? };
+        if request.struct_size < EVIM_SET_LIST_STYLE_V1_SIZE {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let style = match request.style {
+            EVIM_LIST_STYLE_NONE => None,
+            EVIM_LIST_STYLE_BULLET => Some(crate::document::ListStyle::Bullet),
+            EVIM_LIST_STYLE_NUMBERED => Some(crate::document::ListStyle::Numbered),
+            _ => return Err(EvimStatus::InvalidArgument),
+        };
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            let expected = core
+                .list_selection_identity(ViewId(view))
+                .map_err(core_status)?;
+            validate_logical_selection_identity(
+                request.expected_selection,
+                logical_selection_identity_to_ffi(&expected)?,
+            )?;
+            dispatch_event(core, view, CoreEvent::SetListStyle { expected, style })
+        })?;
+        unsafe { out_outcome.write(outcome) };
+        Ok(())
+    })
+}
+
+/// Set a paragraph/heading style using an exact native paragraph target.
+///
+/// # Safety
+/// Request and outcome must be distinct aligned readable/writable values.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_set_paragraph_style(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    request: *const EvimSetParagraphStyleV1,
+    out_outcome: *mut EvimCoreOutcomeV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let request = unsafe { read_core_request(request, out_outcome)? };
+        if request.struct_size < EVIM_SET_PARAGRAPH_STYLE_V1_SIZE || request.level > 6 {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            let expected = core
+                .list_selection_identity(ViewId(view))
+                .map_err(core_status)?;
+            validate_logical_selection_identity(
+                request.expected_selection,
+                logical_selection_identity_to_ffi(&expected)?,
+            )?;
+            let style = if request.level == 0 {
+                StyleId("Paragraph".into())
+            } else {
+                StyleId(format!("Heading{}", request.level))
+            };
+            dispatch_event(core, view, CoreEvent::SetParagraphStyle { expected, style })
+        })?;
+        unsafe { out_outcome.write(outcome) };
+        Ok(())
+    })
+}
+
+/// Assign an existing paragraph or character style at exact source, style-sheet,
+/// and logical-selection identities. Character assignment requires Visual mode;
+/// paragraph assignment also accepts the current paragraph target.
+///
+/// # Safety
+/// Request, its UTF-8 slice, and outcome must be valid and not overlap output.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_assign_style(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    request: *const EvimAssignStyleV1,
+    out_outcome: *mut EvimCoreOutcomeV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let request = unsafe { read_core_request(request, out_outcome)? };
+        if request.struct_size < EVIM_ASSIGN_STYLE_V1_SIZE {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let namespace = parse_style_namespace(request.namespace)?;
+        let style = unsafe { composition_utf8(request.style_id, out_outcome)? };
+        if style.is_empty() || style.contains('\0') {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            validate_style_sheet_identity(request.identity, core.document())?;
+            let expected = core
+                .list_selection_identity(ViewId(view))
+                .map_err(core_status)?;
+            validate_logical_selection_identity(
+                request.expected_selection,
+                logical_selection_identity_to_ffi(&expected)?,
+            )?;
+            dispatch_event(
+                core,
+                view,
+                CoreEvent::AssignNamedStyle {
+                    expected,
+                    style_sheet_revision: StyleSheetRevision(request.identity.style_sheet_revision),
+                    namespace,
+                    style: StyleId(style),
+                },
+            )
+        })?;
+        unsafe { out_outcome.write(outcome) };
+        Ok(())
+    })
+}
+
+/// Apply one direct declaration through exact source/selection verification.
+/// # Safety
+/// All request, nested value, and output pointers must be valid and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_edit_direct_style(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    request: *const EvimDirectStyleEditV1,
+    out_outcome: *mut EvimCoreOutcomeV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let request = unsafe { read_core_request(request, out_outcome)? };
+        if request.struct_size < EVIM_DIRECT_STYLE_EDIT_V1_SIZE || request.reserved != 0 {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let property = parse_style_property(request.property)?;
+        if property < StyleProperty::ParagraphSpacingBefore {
+            return Err(EvimStatus::UnsupportedOperation);
+        }
+        let value = match request.operation {
+            EVIM_STYLE_EDIT_SET_DECLARATION => {
+                Some(unsafe { parse_style_property_value(property, &request.value, out_outcome)? })
+            }
+            EVIM_STYLE_EDIT_CLEAR_DECLARATION
+                if request.value.struct_size >= EVIM_STYLE_EDIT_VALUE_V1_SIZE
+                    && request.value.kind == EVIM_STYLE_VALUE_NONE
+                    && request.value.reserved == 0
+                    && request.value.item_count == 0
+                    && request.value.text.length == 0 =>
+            {
+                None
+            }
+            _ => return Err(EvimStatus::InvalidArgument),
+        };
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            let expected = core
+                .list_selection_identity(ViewId(view))
+                .map_err(core_status)?;
+            validate_logical_selection_identity(
+                request.expected_selection,
+                logical_selection_identity_to_ffi(&expected)?,
+            )?;
+            dispatch_event(
+                core,
+                view,
+                CoreEvent::EditDirectProperty {
+                    expected,
+                    property,
+                    value,
+                },
+            )
+        })?;
+        unsafe { out_outcome.write(outcome) };
+        Ok(())
+    })
+}
+
+/// Query decoration toggle state using the exact current logical selection.
+/// # Safety
+/// out_state must point to writable, aligned u32 storage for this call.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_decoration_state(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    property: u32,
+    out_state: *mut u32,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(out_state, 1)?;
+        let strike = match parse_style_property(property)? {
+            StyleProperty::CharacterUnderline => false,
+            StyleProperty::CharacterStrikethrough => true,
+            _ => return Err(EvimStatus::InvalidArgument),
+        };
+        let state = with_core(handle, |core| {
+            core.selection_decoration_state(ViewId(view), strike)
+                .map(semantic_style_state_to_ffi)
+                .map_err(core_status)
+        })?;
+        unsafe { out_state.write(state) };
+        Ok(())
+    })
+}
+
+/// Create one sparse source-backed paragraph or character definition. Empty
+/// parent selects its namespace base; empty next-style means no explicit next.
+///
+/// # Safety
+/// Request, nested UTF-8 slices, and outcome must be valid and not overlap output.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_create_style(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    request: *const EvimCreateStyleV1,
+    out_outcome: *mut EvimCoreOutcomeV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let request = unsafe { read_core_request(request, out_outcome)? };
+        if request.struct_size < EVIM_CREATE_STYLE_V1_SIZE {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let namespace = parse_style_namespace(request.namespace)?;
+        let id = unsafe { composition_utf8(request.style_id, out_outcome)? };
+        let name = unsafe { composition_utf8(request.display_name, out_outcome)? };
+        let parent = unsafe { composition_utf8(request.parent_id, out_outcome)? };
+        let next = unsafe { composition_utf8(request.next_style_id, out_outcome)? };
+        if id.is_empty()
+            || name.is_empty()
+            || [&id, &name, &parent, &next]
+                .iter()
+                .any(|value| value.contains('\0'))
+        {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        if namespace == StyleNamespace::Character && !next.is_empty() {
+            return Err(EvimStatus::InvalidStyleRelationship);
+        }
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            validate_style_sheet_identity(request.identity, core.document())?;
+            let sheet = core.document().projection().style_sheet();
+            let parent = if parent.is_empty() {
+                match namespace {
+                    StyleNamespace::Block => sheet.base_paragraph.clone(),
+                    StyleNamespace::Character => sheet.base_character.clone(),
+                }
+            } else {
+                StyleId(parent)
+            };
+            let metadata = crate::document::StyleDefinitionMetadata {
+                display_name: name,
+                origin: StyleDefinitionOrigin::SourceBacked,
+            };
+            let edit = match namespace {
+                StyleNamespace::Block => crate::document::StyleDefinitionEdit::InsertBlock {
+                    style: crate::document::BlockStyle {
+                        id: StyleId(id),
+                        based_on: Some(parent),
+                        next_paragraph_style: (!next.is_empty()).then_some(StyleId(next)),
+                        role: BlockRole::Paragraph,
+                        character: CharacterProperties::default(),
+                        block: BlockProperties::default(),
+                    },
+                    metadata,
+                },
+                StyleNamespace::Character => {
+                    crate::document::StyleDefinitionEdit::InsertCharacter {
+                        style: crate::document::CharacterStyle {
+                            id: StyleId(id),
+                            based_on: Some(parent),
+                            properties: CharacterProperties::default(),
+                        },
+                        metadata,
+                    }
+                }
+            };
+            dispatch_event(
+                core,
+                view,
+                CoreEvent::EditNamedStyleDefinition {
+                    document: DocumentId(request.identity.document_id),
+                    revision: Revision(request.identity.document_revision),
+                    style_sheet_revision: StyleSheetRevision(request.identity.style_sheet_revision),
+                    edit,
+                },
+            )
+        })?;
+        unsafe { out_outcome.write(outcome) };
+        Ok(())
+    })
+}
+
+/// Delete a source-backed style and rebase its assignments and references in the
+/// same undoable source transaction.
+///
+/// # Safety
+/// Request, its UTF-8 slice, and outcome must be valid and not overlap output.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_delete_style(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    request: *const EvimDeleteStyleV1,
+    out_outcome: *mut EvimCoreOutcomeV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let request = unsafe { read_core_request(request, out_outcome)? };
+        if request.struct_size < EVIM_DELETE_STYLE_V1_SIZE {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let namespace = parse_style_namespace(request.namespace)?;
+        let id = unsafe { composition_utf8(request.style_id, out_outcome)? };
+        if id.is_empty() || id.contains('\0') {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            validate_style_sheet_identity(request.identity, core.document())?;
+            dispatch_event(
+                core,
+                view,
+                CoreEvent::EditNamedStyleDefinition {
+                    document: DocumentId(request.identity.document_id),
+                    revision: Revision(request.identity.document_revision),
+                    style_sheet_revision: StyleSheetRevision(request.identity.style_sheet_revision),
+                    edit: match namespace {
+                        StyleNamespace::Block => {
+                            crate::document::StyleDefinitionEdit::DeleteBlock(StyleId(id))
+                        }
+                        StyleNamespace::Character => {
+                            crate::document::StyleDefinitionEdit::DeleteCharacter(StyleId(id))
+                        }
+                    },
+                },
+            )
+        })?;
+        unsafe { out_outcome.write(outcome) };
+        Ok(())
+    })
+}
+
 /// Begin one explicit frontend-owned live style-edit group at an exact style
 /// sheet identity. A core permits one active style group. A group containing
 /// no successful edits creates no history entry.
@@ -9288,9 +9857,10 @@ pub unsafe extern "C" fn evim_core_view_begin_style_edit_group(
     })
 }
 
-/// Atomically edit one field of an existing generated-configuration style.
-/// Source-backed and synthetic definitions are rejected from core-owned
-/// metadata; each successful non-no-op call is one standalone undo unit.
+/// Atomically edit one field of an existing style through its core-owned
+/// authority: source-backed HTML/RTF definitions patch source, while generated
+/// definitions update configuration. Synthetic definitions remain read-only.
+/// Each successful non-no-op call is one standalone undo unit.
 ///
 /// # Safety
 ///
@@ -10376,8 +10946,8 @@ mod tests {
             unsafe { evim_core_style_sheet_info(handle, &mut info) },
             EvimStatus::Ok
         );
-        assert_eq!(info.definition_count, 9);
-        assert_eq!(info.property_count, 178);
+        assert_eq!(info.definition_count, 25);
+        assert_eq!(info.property_count, 514);
         assert_ne!(info.string_bytes, 0);
 
         let mut count_info = EvimStyleSheetInfoV1::default();

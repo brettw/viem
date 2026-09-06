@@ -386,13 +386,13 @@ impl TransformationPipelineSnapshot {
                         }
                     }
                     TransformationStageRole::LosslessFormatProjection => {
-                        if self.configuration.format == Format::Markdown
+                        if self.configuration.format != Format::PlainText
                             || change.decoder_state_may_change
                             || change.hard_lines_may_change
                         {
                             let mut reasons =
                                 vec![PipelineInvalidationReason::UpstreamProjectionChanged];
-                            if self.configuration.format == Format::Markdown {
+                            if self.configuration.format != Format::PlainText {
                                 reasons.push(PipelineInvalidationReason::FormatStateMayChange);
                             }
                             (
@@ -411,7 +411,7 @@ impl TransformationPipelineSnapshot {
                         }
                     }
                     TransformationStageRole::FormattedDocumentAssembly => (
-                        if self.configuration.format == Format::Markdown
+                        if self.configuration.format != Format::PlainText
                             || change.decoder_state_may_change
                             || change.hard_lines_may_change
                         {
@@ -480,6 +480,11 @@ impl TransformationPipelineSnapshot {
             },
             TransformationStageRole::EncodingProjection => match intent {
                 PipelineEditIntent::ReplaceText { replacement } => {
+                    if matches!(self.configuration.format, Format::Html | Format::Rtf) {
+                        // The format emits exact Unicode escapes before this
+                        // encoding stage sees newly authored syntax.
+                        return StageEditDisposition::PassThrough;
+                    }
                     match self.configuration.encoding.encode_fragment(replacement) {
                         Ok(_) => StageEditDisposition::Translated,
                         Err(DocumentError::UnrepresentableCharacter {
@@ -505,6 +510,17 @@ impl TransformationPipelineSnapshot {
     }
 
     fn format_stage_disposition(&self, intent: &PipelineEditIntent) -> StageEditDisposition {
+        if self.configuration.format == Format::Rtf
+            && matches!(
+                intent,
+                PipelineEditIntent::AssignBlockStyle { .. }
+                    | PipelineEditIntent::AssignCharacterStyle { .. }
+                    | PipelineEditIntent::EditBlockStyleDefinition { .. }
+                    | PipelineEditIntent::EditCharacterStyleDefinition { .. }
+            )
+        {
+            return StageEditDisposition::Translated;
+        }
         match intent {
             PipelineEditIntent::ReplaceText { .. } | PipelineEditIntent::InsertHardBreak => {
                 StageEditDisposition::Translated
@@ -516,14 +532,40 @@ impl TransformationPipelineSnapshot {
             | PipelineEditIntent::ConfigureDocumentDefaultCharacter => {
                 StageEditDisposition::PassThrough
             }
-            PipelineEditIntent::SetSemanticInlineStyle { .. } => {
-                if self.configuration.format == Format::Markdown {
+            PipelineEditIntent::SetSemanticInlineStyle { style, .. } => {
+                if matches!(
+                    self.configuration.format,
+                    Format::Markdown | Format::MarkdownSource
+                ) || (matches!(self.configuration.format, Format::Html | Format::Rtf)
+                    && *style != SemanticInlineStyle::Code)
+                {
                     StageEditDisposition::Translated
                 } else {
                     StageEditDisposition::Unsupported(
                         UnsupportedEditReason::PlainTextHasNoRichStyleStorage,
                     )
                 }
+            }
+            PipelineEditIntent::AssignBlockStyle { .. }
+            | PipelineEditIntent::AssignCharacterStyle { .. }
+            | PipelineEditIntent::EditBlockStyleDefinition { .. }
+            | PipelineEditIntent::EditCharacterStyleDefinition { .. }
+                if matches!(self.configuration.format, Format::Html | Format::Rtf) =>
+            {
+                StageEditDisposition::Translated
+            }
+            PipelineEditIntent::AssignBlockStyle { style }
+                if matches!(
+                    self.configuration.format,
+                    Format::Markdown | Format::MarkdownSource
+                ) && (style.0 == "Paragraph"
+                    || style
+                        .0
+                        .strip_prefix("Heading")
+                        .and_then(|level| level.parse::<u8>().ok())
+                        .is_some_and(|level| (1..=6).contains(&level))) =>
+            {
+                StageEditDisposition::Translated
             }
             PipelineEditIntent::AssignBlockStyle { .. }
             | PipelineEditIntent::AssignCharacterStyle { .. } => StageEditDisposition::Unsupported(
@@ -533,6 +575,12 @@ impl TransformationPipelineSnapshot {
                     UnsupportedEditReason::FormatHasNoNamedStyleStorage
                 },
             ),
+            PipelineEditIntent::SetDirectProperty { .. }
+            | PipelineEditIntent::ClearDirectProperty { .. }
+                if matches!(self.configuration.format, Format::Html | Format::Rtf) =>
+            {
+                StageEditDisposition::Translated
+            }
             PipelineEditIntent::SetDirectProperty { .. }
             | PipelineEditIntent::ClearDirectProperty { .. } => StageEditDisposition::Unsupported(
                 if self.configuration.format == Format::PlainText {
@@ -593,6 +641,9 @@ impl Document {
                     name: match self.format() {
                         Format::PlainText => "builtin.plain-text",
                         Format::Markdown => "builtin.markdown",
+                        Format::MarkdownSource => "builtin.markdown-source",
+                        Format::Html => "builtin.html",
+                        Format::Rtf => "builtin.rtf",
                     },
                     version: 1,
                 },
@@ -614,6 +665,10 @@ impl Document {
             ),
         ]
         .into_iter()
+        .filter(|(_, role, _)| {
+            self.format() != Format::Rtf
+                || *role != TransformationStageRole::LineEndingInterpretation
+        })
         .map(
             |(identity, role, configuration)| TransformationStageSnapshot {
                 identity,

@@ -200,7 +200,18 @@ impl DocumentLayoutStyles {
                 spacing_before: paragraph.spacing_before,
                 spacing_after: paragraph.spacing_after,
                 line_spacing: paragraph.line_spacing,
-                first_line_indent: paragraph.first_line_indent,
+                first_line_indent: if matches!(
+                    block.kind,
+                    crate::document::BlockKind::ListItem {
+                        item_start: false,
+                        ..
+                    }
+                ) && block.direct_paragraph.first_line_indent.is_none()
+                {
+                    0.0
+                } else {
+                    paragraph.first_line_indent
+                },
                 leading_indent: paragraph.leading_indent,
                 trailing_indent: paragraph.trailing_indent,
                 alignment: paragraph.alignment,

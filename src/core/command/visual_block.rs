@@ -681,6 +681,50 @@ mod tests {
     }
 
     #[test]
+    fn nearest_proportional_boundaries_can_exclude_a_partially_overlapped_character() {
+        let (document, snapshot) = layout("WWW", 500.0);
+        let row = &snapshot.rows[0];
+        let width = row.clusters[0].advance;
+        for (fraction, expected) in [(0.49, vec![0..1]), (0.51, vec![1..1])] {
+            let selection =
+                BlockSelection::new(endpoint(row), endpoint(row), width * fraction, width * 1.49)
+                    .unwrap();
+            let resolved = resolve_block_selection(&selection, &snapshot, document.text()).unwrap();
+            assert_eq!(resolved.rows[0].ranges, expected);
+        }
+    }
+
+    #[test]
+    fn mixed_direction_rectangle_keeps_discontiguous_logical_ranges_atomic() {
+        let (mut document, snapshot) = layout("abאבcd", 500.0);
+        let row = &snapshot.rows[0];
+        let latin = row
+            .clusters
+            .iter()
+            .find(|cluster| cluster.text_range == (1..2))
+            .unwrap();
+        let hebrew = row
+            .clusters
+            .iter()
+            .find(|cluster| cluster.text_range == (4..6))
+            .unwrap();
+        let selection = BlockSelection::new(
+            endpoint(row),
+            endpoint(row),
+            latin.x,
+            hebrew.x + hebrew.advance,
+        )
+        .unwrap();
+        let resolved = resolve_block_selection(&selection, &snapshot, document.text()).unwrap();
+        assert_eq!(resolved.rows[0].ranges, vec![1..2, 4..6]);
+        apply_block_edits(&mut document, delete_text_edits(&resolved)).unwrap();
+        assert_eq!(document.text(), "aאcd");
+        assert!(document.undo());
+        assert_eq!(document.text(), "abאבcd");
+        assert!(!document.undo());
+    }
+
+    #[test]
     fn short_and_empty_rows_produce_legal_empty_ranges() {
         let (document, snapshot) = layout("long row\nx\n\ntail", 500.0);
         let selection = BlockSelection::new(

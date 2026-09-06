@@ -745,7 +745,7 @@ impl fmt::Display for ExExecuteError {
 
 impl std::error::Error for ExExecuteError {}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ExMutation {
     None,
     Model(ModelRequest),
@@ -753,7 +753,7 @@ pub enum ExMutation {
 }
 
 /// A revision-bound, fully validated command plan.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ExPlan {
     document_id: DocumentId,
     expected_revision: Revision,
@@ -2182,7 +2182,9 @@ fn prepare_set(
                     ExOptionValue::Boolean(false),
                 ));
             }
-            if values.file_format != FileFormat::Unix {
+            if document.format() != crate::document::Format::Rtf
+                && values.file_format != FileFormat::Unix
+            {
                 shown.push(display(
                     ExOptionName::FileFormat,
                     ExOptionValue::FileFormat(values.file_format),
@@ -2202,12 +2204,23 @@ fn prepare_set(
             plan.outcome
                 .frontend_requests
                 .push(ExFrontendRequest::Info(ExInfoRequest::Options(
-                    all_option_values(&values),
+                    all_option_values(&values)
+                        .into_iter()
+                        .filter(|option| {
+                            document.format() != crate::document::Format::Rtf
+                                || option.name != ExOptionName::FileFormat
+                        })
+                        .collect(),
                 )));
         }
         SetOperation::Options(operations) => {
             let original_file_format = values.file_format;
             for operation in operations {
+                if document.format() == crate::document::Format::Rtf
+                    && matches!(operation.name.as_str(), "fileformat" | "ff")
+                {
+                    return Err(ExExecuteError::UnsupportedOption(operation.name.clone()));
+                }
                 apply_option_operation(scope, operation, &mut values, plan)?;
             }
             if values.file_format != original_file_format {

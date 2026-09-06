@@ -7,6 +7,19 @@
 mod encoding;
 mod formatted_text;
 mod history;
+mod html;
+mod html5_tree;
+mod html_direct;
+mod html_paragraph;
+mod html_styles;
+mod lists;
+mod rich_text;
+mod rtf;
+mod rtf_direct;
+mod rtf_lists;
+mod rtf_structure;
+mod rtf_styles;
+pub use lists::{ListIdentity, ListItemNode, ListNode, ListStructure};
 mod line_endings;
 mod persistence;
 mod pipeline;
@@ -16,6 +29,7 @@ mod range_index;
 mod source;
 mod source_line_index;
 mod style;
+pub(crate) use style::is_character_property;
 mod transaction;
 mod transfer;
 
@@ -57,8 +71,8 @@ pub use position::{
 };
 pub use projection::{
     Block, BlockKind, Format, FormattedDocument, FormattedPayloadError, FormattedTextPayload,
-    HardLineInfo, HardLineQueryError, HardLineSnapshot, ProjectedSourceBoundary, ProvenanceSpan,
-    SourceBoundaryRelation, SourceToTextError, StyleSpan,
+    HardLineInfo, HardLineQueryError, HardLineSnapshot, ListStyle, ProjectedSourceBoundary,
+    ProvenanceSpan, SourceBoundaryRelation, SourceToTextError, StyleSpan,
 };
 pub use source::SourceArtifactDigest;
 pub use style::{
@@ -354,11 +368,23 @@ impl HardLineSourceImage {
 pub struct FormattedPayloadEdit {
     range: Range<usize>,
     payload: FormattedTextPayload,
+    boundary_affinity: Option<BoundaryAffinity>,
 }
 
 impl FormattedPayloadEdit {
     pub fn new(range: Range<usize>, payload: FormattedTextPayload) -> Self {
-        Self { range, payload }
+        Self {
+            range,
+            payload,
+            boundary_affinity: None,
+        }
+    }
+
+    /// Selects the source-side typing context independently of insertion
+    /// association, which still controls caret remapping after publication.
+    pub fn with_boundary_affinity(mut self, affinity: BoundaryAffinity) -> Self {
+        self.boundary_affinity = Some(affinity);
+        self
     }
 
     pub fn range(&self) -> Range<usize> {
@@ -894,7 +920,14 @@ impl Document {
         // persistent source tree. Besides avoiding a whole-source copy at
         // open, the same decoded value is consumed by detection and state
         // construction, so opening performs exactly one decoder pass.
-        let decoded = encoding.decode(&bytes)?;
+        // RTF owns decoding through its grammar, code-page and Unicode state.
+        // Latin-1 here is a reversible byte transport to that grammar, not the
+        // selected body text encoding.
+        let decoded = if format == Format::Rtf {
+            Encoding::Latin1.decode(&bytes)?
+        } else {
+            encoding.decode(&bytes)?
+        };
         Self::from_decoded_source(bytes, decoded, format, line_endings)
     }
 
@@ -906,7 +939,11 @@ impl Document {
         // Detection and decoding share their strict UTF-8 validation pass, so
         // automatic opening has the same bounded opening work as a forced
         // encoding while still retaining the original source bytes.
-        let decoded = Encoding::detect_and_decode(&bytes)?;
+        let decoded = if format == Format::Rtf {
+            Encoding::Latin1.decode(&bytes)?
+        } else {
+            Encoding::detect_and_decode(&bytes)?
+        };
         Self::from_decoded_source(bytes, decoded, format, line_endings)
     }
 
@@ -1427,6 +1464,139 @@ impl Document {
         })
     }
 
+    /// Set list markers for every paragraph touched by a half-open selection.
+    /// An empty range changes its containing paragraph. All marker changes are
+    /// one source transaction and one undo unit.
+    pub fn set_list_style(
+        &mut self,
+        range: Range<usize>,
+        style: Option<ListStyle>,
+    ) -> Result<(), DocumentError> {
+        self.execute_compat_request(ModelRequest::SetListStyle {
+            document: self.id,
+            revision: self.revision(),
+            range,
+            style,
+        })
+    }
+
+    pub fn set_paragraph_style(
+        &mut self,
+        range: Range<usize>,
+        style: StyleId,
+    ) -> Result<(), DocumentError> {
+        self.execute_compat_request(ModelRequest::SetParagraphStyle {
+            document: self.id,
+            revision: self.revision(),
+            range,
+            style,
+        })
+    }
+
+    /// Word-processor Enter behavior, expressed in portable formatted ranges.
+    /// Continue the current list; a second Enter on an empty item ends it.
+    pub(crate) fn list_enter_edit(&self, at: usize) -> Result<Option<TextEdit>, DocumentError> {
+        self.validate_range(&(at..at))?;
+        let index = self
+            .projection()
+            .hard_line_at_offset(at)
+            .ok_or(DocumentError::VerificationFailed)?;
+        let line = self
+            .projection()
+            .hard_line_range(index)
+            .ok_or(DocumentError::VerificationFailed)?;
+        let text = self
+            .projection()
+            .text_tree()
+            .slice(line.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        if matches!(self.format(), Format::Html | Format::Rtf) {
+            let block = self
+                .projection()
+                .blocks_for_region(&(at..at))
+                .into_iter()
+                .find(|block| block.range.start <= at && at <= block.range.end)
+                .ok_or(DocumentError::VerificationFailed)?;
+            let BlockKind::ListItem {
+                ordered,
+                ordinal,
+                item_start,
+                ..
+            } = block.kind
+            else {
+                if self.format() == Format::Html
+                    || (self.format() == Format::Rtf
+                        && at == block.range.end
+                        && self
+                            .projection()
+                            .style_sheet()
+                            .block_style(&block.style)
+                            .and_then(|style| style.next_paragraph_style.as_ref())
+                            .is_some_and(|next| next != &block.style))
+                {
+                    return Ok(Some(TextEdit::new(at..at, "\n")));
+                }
+                return Ok(None);
+            };
+            let line = block.range;
+            let text = self
+                .projection()
+                .text_tree()
+                .slice(line.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            let prefix_len = if !item_start {
+                0
+            } else if ordered {
+                format!("{ordinal}. ").len()
+            } else {
+                "• ".len()
+            };
+            if at < line.start + prefix_len {
+                return Ok(None);
+            }
+            if item_start && text[prefix_len..].trim().is_empty() {
+                return Ok(Some(TextEdit::new(line, "")));
+            }
+            let marker = if ordered {
+                format!("{}. ", ordinal.saturating_add(1))
+            } else {
+                "• ".to_owned()
+            };
+            return Ok(Some(TextEdit::new(at..at, format!("\n{marker}"))));
+        }
+        let (prefix_len, kind) = projection::markdown_block_prefix(&text, 0, text.len());
+        let BlockKind::ListItem {
+            ordered, ordinal, ..
+        } = kind
+        else {
+            return Ok(None);
+        };
+        if at < line.start + prefix_len {
+            return Ok(None);
+        }
+        let indent = text.bytes().take_while(|byte| *byte == b' ').count();
+        if text[prefix_len..].trim().is_empty() {
+            return Ok(Some(TextEdit::new(line.clone(), " ".repeat(indent))));
+        }
+        let marker = if ordered {
+            let next = ordinal
+                .checked_add(1)
+                .ok_or(DocumentError::VerificationFailed)?;
+            format!("{}{next}. ", " ".repeat(indent))
+        } else {
+            text[..prefix_len].to_owned()
+        };
+        Ok(Some(TextEdit::new(at..at, format!("\n{marker}"))))
+    }
+
+    pub(crate) fn continue_rich_list(&mut self, at: usize) -> Result<(), DocumentError> {
+        self.execute_compat_request(ModelRequest::ContinueList {
+            document: self.id,
+            revision: self.revision(),
+            at,
+        })
+    }
+
     /// Apply non-overlapping edits expressed in the current formatted
     /// snapshot. All source patches and verification commit as one undo unit.
     pub fn apply_edits(&mut self, edits: Vec<TextEdit>) -> Result<(), DocumentError> {
@@ -1760,6 +1930,25 @@ impl Document {
     /// retained and the formatted projection must remain identical.
     pub fn set_file_format(&mut self, target: FileFormat) -> Result<(), DocumentError> {
         self.execute_compat_request(ModelRequest::SetFileFormat {
+            document: self.id,
+            revision: self.revision(),
+            target,
+        })
+    }
+
+    /// Reproject the existing source through another format as one undo unit.
+    pub fn set_format(&mut self, target: Format) -> Result<(), DocumentError> {
+        self.execute_compat_request(ModelRequest::SetFormat {
+            document: self.id,
+            revision: self.revision(),
+            target,
+        })
+    }
+
+    /// Transcode the complete source without substituting unrepresentable or
+    /// malformed content. An explicit encoding change is one undo unit.
+    pub fn set_encoding(&mut self, target: Encoding) -> Result<(), DocumentError> {
+        self.execute_compat_request(ModelRequest::SetEncoding {
             document: self.id,
             revision: self.revision(),
             target,
@@ -2280,6 +2469,7 @@ mod tests {
                 let source_text = match format {
                     Format::PlainText => "a\rb\nc",
                     Format::Markdown => "# a\r# b\nc",
+                    _ => unreachable!("fixture contains only plain text and WYSIWYG Markdown"),
                 };
                 let mut bytes = encoding.encode_fragment(source_text).unwrap();
                 if matches!(encoding, Encoding::Utf16Le | Encoding::Utf16Be) {
@@ -2555,6 +2745,7 @@ mod tests {
                 let source_text = match format {
                     Format::PlainText => "a\rb\nc",
                     Format::Markdown => "# a\r# b\nc",
+                    _ => unreachable!("fixture contains only plain text and WYSIWYG Markdown"),
                 };
                 let mut bytes = encoding.encode_fragment(source_text).unwrap();
                 if matches!(encoding, Encoding::Utf16Le | Encoding::Utf16Be) {
@@ -2726,6 +2917,163 @@ mod tests {
         document.replace(6..11, "earth").unwrap();
         assert_eq!(document.text(), "Hello earth!\n");
         assert_eq!(document.source_bytes(), b"# Hello **earth**!\n");
+    }
+
+    #[test]
+    fn markdown_source_keeps_syntax_visible_and_reparses_marker_edits() {
+        let bytes = b"## Heading\r\n__bold__ and \\*literal\\*".to_vec();
+        let mut document =
+            Document::from_bytes(bytes.clone(), Encoding::Utf8, Format::MarkdownSource).unwrap();
+        assert_eq!(document.text(), "## Heading\n__bold__ and \\*literal\\*");
+        assert_eq!(document.source_bytes(), bytes);
+        assert_eq!(
+            document.projection().blocks()[0].kind,
+            BlockKind::Heading(2)
+        );
+        assert!(document
+            .projection()
+            .style_spans()
+            .iter()
+            .any(|span| span.range == (11..19)
+                && span.application == StyleApplication::Semantic(SemanticInlineStyle::Strong)));
+        document.replace(11..13, "**").unwrap();
+        assert!(!document.projection().style_spans().iter().any(
+            |span| span.application == StyleApplication::Semantic(SemanticInlineStyle::Strong)
+        ));
+        document.replace(17..19, "**").unwrap();
+        assert!(document
+            .projection()
+            .style_spans()
+            .iter()
+            .any(|span| span.range == (11..19)
+                && span.application == StyleApplication::Semantic(SemanticInlineStyle::Strong)));
+        assert!(document.undo());
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), bytes);
+    }
+
+    #[test]
+    fn markdown_source_format_actions_edit_markers_atomically() {
+        for encoding in [
+            Encoding::Utf8,
+            Encoding::Latin1,
+            Encoding::Utf16Le,
+            Encoding::Utf16Be,
+        ] {
+            let bytes = encoding.encode_fragment("alpha beta").unwrap();
+            let mut document =
+                Document::from_bytes(bytes.clone(), encoding, Format::MarkdownSource).unwrap();
+            document
+                .set_semantic_style(0..5, SemanticInlineStyle::Strong, true)
+                .unwrap();
+            assert_eq!(document.text(), "**alpha** beta");
+            assert_eq!(document.projection().style_spans()[0].range, 0..9);
+            document
+                .set_semantic_style(2..7, SemanticInlineStyle::Strong, false)
+                .unwrap();
+            assert_eq!(document.text(), "alpha beta");
+            assert!(document.undo());
+            assert_eq!(document.text(), "**alpha** beta");
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), bytes);
+            assert!(document.redo());
+            assert_eq!(document.text(), "**alpha** beta");
+        }
+    }
+
+    #[test]
+    fn list_actions_change_all_selected_paragraphs_and_undo_exact_source() {
+        for format in [Format::PlainText, Format::Markdown, Format::MarkdownSource] {
+            let bytes = b"alpha\r\nbeta\r\nthird".to_vec();
+            let mut document = Document::from_bytes(bytes.clone(), Encoding::Utf8, format).unwrap();
+            document
+                .set_list_style(0..10, Some(ListStyle::Bullet))
+                .unwrap();
+            assert_eq!(document.text(), "- alpha\n- beta\nthird");
+            assert_eq!(document.source_bytes(), b"- alpha\r\n- beta\r\nthird");
+            if format != Format::PlainText {
+                assert_eq!(
+                    document.projection().blocks()[0].kind,
+                    BlockKind::ListItem {
+                        ordered: false,
+                        ordinal: 1,
+                        level: 0,
+                        container_start: false,
+                        item_start: true
+                    }
+                );
+                assert_eq!(
+                    document.projection().blocks()[0].style,
+                    StyleId::from("List1")
+                );
+            }
+            document
+                .set_list_style(0..14, Some(ListStyle::Numbered))
+                .unwrap();
+            assert_eq!(document.text(), "1. alpha\n2. beta\nthird");
+            document.set_list_style(0..16, None).unwrap();
+            assert_eq!(document.text(), "alpha\nbeta\nthird");
+            assert!(document.undo());
+            assert!(document.undo());
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), bytes);
+        }
+    }
+
+    #[test]
+    fn list_actions_preserve_hidden_markdown_syntax_and_nested_indentation() {
+        let mut document = Document::from_bytes(
+            b"**bold**\n  child\n# Heading".to_vec(),
+            Encoding::Utf8,
+            Format::Markdown,
+        )
+        .unwrap();
+        document
+            .set_list_style(0..document.text().len(), Some(ListStyle::Bullet))
+            .unwrap();
+        assert_eq!(document.source_bytes(), b"- **bold**\n  - child\n- Heading");
+        assert_eq!(document.text(), "- bold\n  - child\n- Heading");
+        assert_eq!(
+            document.projection().blocks()[1].kind,
+            BlockKind::ListItem {
+                ordered: false,
+                ordinal: 1,
+                level: 1,
+                container_start: false,
+                item_start: true
+            }
+        );
+        document
+            .set_list_style(9..9, Some(ListStyle::Numbered))
+            .unwrap();
+        assert_eq!(
+            document.source_bytes(),
+            b"- **bold**\n  1. child\n- Heading"
+        );
+    }
+
+    #[test]
+    fn markdown_source_marker_change_in_large_document_projects_only_its_line() {
+        let bytes = "unchanged line\n".repeat(20_000).into_bytes();
+        let mut document =
+            Document::from_bytes(bytes, Encoding::Utf8, Format::MarkdownSource).unwrap();
+        let prepared = document
+            .prepare_model_request(ModelRequest::ApplyTextEdits {
+                document: document.id(),
+                revision: document.revision(),
+                edits: vec![TextEdit::new(0..0, "# ")],
+            })
+            .unwrap();
+        assert_eq!(
+            prepared.summary().projection_work().projected_hard_lines(),
+            1
+        );
+        document.commit_model_transaction(prepared).unwrap();
+        assert_eq!(
+            document.projection().blocks()[0].kind,
+            BlockKind::Heading(1)
+        );
+        assert_eq!(document.projection().blocks()[1].kind, BlockKind::Paragraph);
     }
 
     #[test]
@@ -3767,6 +4115,7 @@ mod tests {
                 let source_text = match format {
                     Format::PlainText => "first\nsecond\nthird",
                     Format::Markdown => "first\n**second**\nthird",
+                    _ => unreachable!("fixture contains only plain text and WYSIWYG Markdown"),
                 };
                 let bytes = encoding.encode_fragment(source_text).unwrap();
                 let mut document =

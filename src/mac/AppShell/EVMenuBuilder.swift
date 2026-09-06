@@ -358,6 +358,11 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         lineSpacing.addItem(coreItem("Double", command: .lineSpacingDouble))
         lineSpacing.addItem(coreItem("Custom…", command: .lineSpacingCustom))
         paragraph.addItem(submenuItem("Line Spacing", submenu: lineSpacing))
+        let lists = NSMenu(title: "List")
+        lists.addItem(coreItem("Bulleted List", command: .bulletedList))
+        lists.addItem(coreItem("Numbered List", command: .numberedList))
+        lists.addItem(coreItem("Remove List", command: .removeList))
+        paragraph.addItem(submenuItem("List", submenu: lists))
         menu.addItem(submenuItem("Paragraph", submenu: paragraph))
 
         menu.addItem(.separator())

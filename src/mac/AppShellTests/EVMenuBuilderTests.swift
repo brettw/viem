@@ -179,7 +179,7 @@ final class EVMenuBuilderTests: XCTestCase {
         let paragraph = try submenu("Paragraph", of: format)
         XCTAssertEqual(tokens(in: paragraph), [
             "Alignment", "Writing Direction", "Increase Indent", "Decrease Indent",
-            "Paragraph Spacing…", "Line Spacing",
+            "Paragraph Spacing…", "Line Spacing", "List",
         ])
         XCTAssertEqual(tokens(in: try submenu("Alignment", of: paragraph)), [
             "Start", "Center", "End",
@@ -463,7 +463,7 @@ final class EVMenuBuilderTests: XCTestCase {
         let paragraph = try submenu("Paragraph", of: format)
         XCTAssertEqual(titles(in: paragraph), [
             "Alignment", "Writing Direction", "Increase Indent", "Decrease Indent",
-            "Paragraph Spacing…", "Line Spacing",
+            "Paragraph Spacing…", "Line Spacing", "List",
         ])
         XCTAssertEqual(try titles(in: submenu("Alignment", of: paragraph)), [
             "Start", "Center", "End",

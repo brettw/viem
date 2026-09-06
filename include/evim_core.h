@@ -76,6 +76,11 @@ typedef uint32_t EvimStatus;
 
 #define EVIM_FORMAT_PLAIN_TEXT 1u
 #define EVIM_FORMAT_MARKDOWN 2u
+#define EVIM_FORMAT_HTML 3u
+#define EVIM_FORMAT_RTF 4u
+#define EVIM_FORMAT_HTML 3u
+#define EVIM_FORMAT_RTF 4u
+#define EVIM_FORMAT_MARKDOWN_SOURCE 5u
 
 #define EVIM_FILE_FORMAT_DETECT 0u
 #define EVIM_FILE_FORMAT_UNIX 1u
@@ -806,6 +811,8 @@ typedef struct EvimRgbaV1 {
 #define EVIM_STYLE_CAPABILITY_EDIT_PARENT (1u << 1)
 #define EVIM_STYLE_CAPABILITY_EDIT_NEXT_STYLE (1u << 2)
 #define EVIM_STYLE_CAPABILITY_EDIT_DISPLAY_NAME (1u << 3)
+#define EVIM_STYLE_CAPABILITY_ASSIGN (1u << 4)
+#define EVIM_STYLE_CAPABILITY_DELETE (1u << 5)
 
 #define EVIM_STYLE_PROPERTY_CANVAS_BACKGROUND 1u
 #define EVIM_STYLE_PROPERTY_CANVAS_PADDING_TOP 2u
@@ -1412,6 +1419,20 @@ typedef struct EvimSetSemanticStyleV1 {
   EvimLogicalSelectionIdentityV1 expected_selection;
 } EvimSetSemanticStyleV1;
 
+/* One checked direct property edit. Uses SET_DECLARATION/CLEAR_DECLARATION;
+ * character properties require a linear Visual selection, paragraph properties
+ * also accept the current paragraph from evim_core_view_list_selection. */
+typedef struct EvimDirectStyleEditV1 {
+  uint32_t struct_size;
+  uint32_t operation;
+  uint32_t property;
+  uint32_t reserved;
+  EvimLogicalSelectionIdentityV1 expected_selection;
+  EvimStyleEditValueV1 value;
+} EvimDirectStyleEditV1;
+#define EVIM_DIRECT_STYLE_EDIT_V1_SIZE ((uint32_t)sizeof(EvimDirectStyleEditV1))
+
+
 #define EVIM_SET_SEMANTIC_STYLE_V1_SIZE \
   ((uint32_t)sizeof(EvimSetSemanticStyleV1))
 
@@ -1438,6 +1459,73 @@ typedef struct EvimSetFileFormatV1 {
 
 #define EVIM_SET_FILE_FORMAT_V1_SIZE \
   ((uint32_t)sizeof(EvimSetFileFormatV1))
+
+/* Source interpretation and lossless transcoding, with exact identity. */
+typedef struct EvimSetFormatV1 {
+  uint32_t struct_size;
+  uint32_t format;
+  uint64_t document_id;
+  uint64_t document_revision;
+} EvimSetFormatV1;
+#define EVIM_SET_FORMAT_V1_SIZE ((uint32_t)sizeof(EvimSetFormatV1))
+
+typedef struct EvimSetEncodingV1 {
+  uint32_t struct_size;
+  uint32_t encoding;
+  uint64_t document_id;
+  uint64_t document_revision;
+} EvimSetEncodingV1;
+#define EVIM_SET_ENCODING_V1_SIZE ((uint32_t)sizeof(EvimSetEncodingV1))
+
+#define EVIM_LIST_STYLE_NONE 0u
+#define EVIM_LIST_STYLE_BULLET 1u
+#define EVIM_LIST_STYLE_NUMBERED 2u
+typedef struct EvimSetListStyleV1 {
+  uint32_t struct_size;
+  uint32_t style;
+  EvimLogicalSelectionIdentityV1 expected_selection;
+} EvimSetListStyleV1;
+#define EVIM_SET_LIST_STYLE_V1_SIZE ((uint32_t)sizeof(EvimSetListStyleV1))
+
+typedef struct EvimSetParagraphStyleV1 {
+  uint32_t struct_size;
+  uint32_t level; /* 0 = Base Paragraph, 1..6 = heading. */
+  EvimLogicalSelectionIdentityV1 expected_selection;
+} EvimSetParagraphStyleV1;
+#define EVIM_SET_PARAGRAPH_STYLE_V1_SIZE ((uint32_t)sizeof(EvimSetParagraphStyleV1))
+
+/* Named paragraph or character style assignment. Character assignment requires
+ * a linear Visual selection; paragraph assignment also accepts the current
+ * paragraph identity returned by evim_core_view_list_selection. */
+typedef struct EvimAssignStyleV1 {
+  uint32_t struct_size;
+  uint32_t namespace;
+  EvimStyleSheetIdentityV1 identity;
+  EvimLogicalSelectionIdentityV1 expected_selection;
+  EvimUtf8Slice style_id;
+} EvimAssignStyleV1;
+#define EVIM_ASSIGN_STYLE_V1_SIZE ((uint32_t)sizeof(EvimAssignStyleV1))
+
+/* New sparse source-backed definition. Empty parent uses the namespace base;
+ * empty next style leaves it absent. RTF IDs use RtfP<N>/RtfC<N> native handles. */
+typedef struct EvimCreateStyleV1 {
+  uint32_t struct_size;
+  uint32_t namespace;
+  EvimStyleSheetIdentityV1 identity;
+  EvimUtf8Slice style_id;
+  EvimUtf8Slice display_name;
+  EvimUtf8Slice parent_id;
+  EvimUtf8Slice next_style_id;
+} EvimCreateStyleV1;
+#define EVIM_CREATE_STYLE_V1_SIZE ((uint32_t)sizeof(EvimCreateStyleV1))
+
+typedef struct EvimDeleteStyleV1 {
+  uint32_t struct_size;
+  uint32_t namespace;
+  EvimStyleSheetIdentityV1 identity;
+  EvimUtf8Slice style_id;
+} EvimDeleteStyleV1;
+#define EVIM_DELETE_STYLE_V1_SIZE ((uint32_t)sizeof(EvimDeleteStyleV1))
 
 /* Exact acknowledgement of a successfully persisted native snapshot. */
 typedef struct EvimMarkSavedV1 {
@@ -1916,6 +2004,30 @@ EvimStatus evim_core_view_set_linebreak(EvimCoreHandle core, EvimViewId view,
 EvimStatus evim_core_view_set_file_format(
     EvimCoreHandle core, EvimViewId view,
     const EvimSetFileFormatV1 *request, EvimCoreOutcomeV1 *out_outcome);
+EvimStatus evim_core_view_set_format(
+    EvimCoreHandle core, EvimViewId view,
+    const EvimSetFormatV1 *request, EvimCoreOutcomeV1 *out_outcome);
+EvimStatus evim_core_view_set_encoding(
+    EvimCoreHandle core, EvimViewId view,
+    const EvimSetEncodingV1 *request, EvimCoreOutcomeV1 *out_outcome);
+EvimStatus evim_core_view_list_selection(
+    EvimCoreHandle core, EvimViewId view,
+    EvimLogicalSelectionIdentityV1 *out_selection);
+EvimStatus evim_core_view_set_list_style(
+    EvimCoreHandle core, EvimViewId view,
+    const EvimSetListStyleV1 *request, EvimCoreOutcomeV1 *out_outcome);
+EvimStatus evim_core_view_set_paragraph_style(
+    EvimCoreHandle core, EvimViewId view,
+    const EvimSetParagraphStyleV1 *request, EvimCoreOutcomeV1 *out_outcome);
+EvimStatus evim_core_view_assign_style(
+    EvimCoreHandle handle, EvimViewId view,
+    const EvimAssignStyleV1 *request, EvimCoreOutcomeV1 *out_outcome);
+EvimStatus evim_core_view_create_style(
+    EvimCoreHandle handle, EvimViewId view,
+    const EvimCreateStyleV1 *request, EvimCoreOutcomeV1 *out_outcome);
+EvimStatus evim_core_view_delete_style(
+    EvimCoreHandle handle, EvimViewId view,
+    const EvimDeleteStyleV1 *request, EvimCoreOutcomeV1 *out_outcome);
 
 /*
  * Begin one exact frontend-owned style gesture. Only one may be active in a
@@ -1927,7 +2039,8 @@ EvimStatus evim_core_view_begin_style_edit_group(
     EvimCoreHandle core, EvimViewId view,
     const EvimStyleSheetIdentityV1 *expected,
     EvimStyleEditGroupV1 *out_group);
-/* One exact generated-definition field edit and standalone undo unit. */
+/* One exact editable-definition field edit through its source/configuration
+ * authority, with a standalone undo unit. */
 EvimStatus evim_core_view_edit_style(
     EvimCoreHandle core, EvimViewId view,
     const EvimStyleEditV1 *request, EvimCoreOutcomeV1 *out_outcome);
@@ -1947,6 +2060,12 @@ EvimStatus evim_core_view_edit_style_in_group(
 EvimStatus evim_core_view_end_style_edit_group(
     EvimCoreHandle core, EvimViewId view,
     const EvimStyleEditGroupV1 *group);
+
+EvimStatus evim_core_view_edit_direct_style(EvimCoreHandle handle, EvimViewId view,
+    const EvimDirectStyleEditV1 *request, EvimCoreOutcomeV1 *out_outcome);
+/* Returns the semantic Off/On/Mixed constants for underline/strike. */
+EvimStatus evim_core_view_decoration_state(EvimCoreHandle handle, EvimViewId view,
+    uint32_t property, uint32_t *out_state);
 
 EvimStatus evim_core_copy_source_bytes(EvimCoreHandle core,
                                        uint64_t expected_revision,

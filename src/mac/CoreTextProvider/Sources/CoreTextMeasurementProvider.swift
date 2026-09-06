@@ -609,7 +609,7 @@ private func makeAttributedString(
   return attributed
 }
 
-private func resolveFont(
+func resolveFont(
   families: [String],
   size: CGFloat,
   cssWeight: CGFloat,
@@ -660,8 +660,17 @@ private func resolveFont(
     }
   }
 
+  // A named face such as Helvetica carries a PostScript-name constraint.
+  // Numeric descriptor traits alone cannot change that face to Bold/Oblique.
+  // Resolve the requested family member before adding features and cascade.
+  var symbolic: CTFontSymbolicTraits = []
+  if cssWeight >= 600 { symbolic.insert(.traitBold) }
+  if slant != UInt32(EVIM_FONT_SLANT_UPRIGHT) { symbolic.insert(.traitItalic) }
+  let member = CTFontCreateCopyWithSymbolicTraits(
+    base, size, nil, symbolic, [.traitBold, .traitItalic]
+  ) ?? base
   let descriptor = CTFontDescriptorCreateCopyWithAttributes(
-    CTFontCopyFontDescriptor(base),
+    CTFontCopyFontDescriptor(member),
     descriptorAttributes as CFDictionary
   )
   return CTFontCreateWithFontDescriptor(descriptor, size, nil)

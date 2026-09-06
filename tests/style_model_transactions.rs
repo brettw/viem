@@ -493,6 +493,7 @@ fn persisted_style_capabilities_are_explicit_for_plain_and_markdown() {
     for (format, bytes) in [
         (Format::PlainText, b"plain".as_slice()),
         (Format::Markdown, b"markdown".as_slice()),
+        (Format::MarkdownSource, b"markdown".as_slice()),
     ] {
         let mut document = Document::from_bytes(bytes.to_vec(), Encoding::Utf8, format).unwrap();
         let range = whole_document(&document);
@@ -524,6 +525,15 @@ fn persisted_style_capabilities_are_explicit_for_plain_and_markdown() {
                 UnsupportedEditReason::FormatHasNoEditableStyleDefinitions,
             ),
         ] {
+            if format != Format::PlainText
+                && matches!(&intent, PipelineEditIntent::AssignBlockStyle { style } if style.0 == "Paragraph")
+            {
+                assert_eq!(
+                    pipeline.capabilities(range, &intent).unwrap().decision,
+                    PipelineCapabilityDecision::Supported
+                );
+                continue;
+            }
             let expected_reason = if format == Format::PlainText {
                 plain_reason
             } else {

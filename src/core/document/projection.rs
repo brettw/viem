@@ -22,12 +22,29 @@ use std::sync::{Arc, OnceLock};
 pub enum Format {
     PlainText,
     Markdown,
+    /// Editable Markdown source with formatting applied to visible syntax.
+    MarkdownSource,
+    Html,
+    Rtf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BlockKind {
     Paragraph,
     Heading(u8),
+    ListItem {
+        ordered: bool,
+        ordinal: u64,
+        level: u8,
+        container_start: bool,
+        item_start: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ListStyle {
+    Bullet,
+    Numbered,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -884,6 +901,14 @@ pub struct ProvenanceSpan {
     pub source: Range<usize>,
 }
 
+impl ProvenanceSpan {
+    /// Generated content retains its recoverable source boundary but has no
+    /// source-byte interior. Reverse edits must use its structural intention.
+    pub fn is_synthetic(&self) -> bool {
+        !self.formatted.is_empty() && self.source.is_empty()
+    }
+}
+
 /// One monotonic source-backed run of visible formatted content. Hidden
 /// format syntax between adjacent runs is intentionally absent.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1180,7 +1205,7 @@ impl LogicalGraphemeSnapshot for FormattedDocument {
 
 impl FormattedDocument {
     #[allow(clippy::too_many_arguments)]
-    fn from_parts(
+    pub(crate) fn from_parts(
         revision: Revision,
         flat_text: String,
         blocks: Vec<Block>,
@@ -1537,6 +1562,23 @@ impl FormattedDocument {
         Ok(())
     }
 
+    /// Rich adapters supply an independent paragraph partition after seeding
+    /// their explicit hard-line records. Literal source newline characters in
+    /// other adapters are never reinterpreted by this operation.
+    pub(crate) fn install_paragraph_partition(&mut self, paragraphs: Vec<Block>) {
+        validate_block_partition(self.text(), &paragraphs)
+            .expect("rich projectors emit a valid paragraph partition");
+        self.blocks = OrderedRangeStore::new(paragraphs);
+    }
+
+    pub(crate) fn install_hard_line_partition(&mut self, ranges: Vec<Range<usize>>) {
+        let line_blocks = blocks_for_hard_line_ranges(&ranges);
+        self.hard_lines = OrderedRangeStore::new(
+            seed_hard_lines_from_current_blocks(&line_blocks, self.text())
+                .expect("regional rich edits preserve a valid hard-line partition"),
+        );
+    }
+
     fn rebuild_hard_lines_from_blocks(
         &mut self,
         previous: Option<&Self>,
@@ -1550,6 +1592,121 @@ impl FormattedDocument {
         Ok(())
     }
 
+    fn assign_initial_hard_line_ids(
+        &mut self,
+        mut next_id: u64,
+    ) -> Result<u64, BlockIdentityError> {
+        if self.blocks.len() == self.hard_lines.len() {
+            self.rebuild_hard_lines_from_blocks(None)?;
+            return Ok(next_id);
+        }
+        let blocks = self.blocks.to_vec();
+        let mut lines = self.hard_lines.to_vec();
+        for line in &mut lines {
+            if let Some(block) = blocks
+                .get(blocks.partition_point(|block| block.range.start < line.range.start))
+                .filter(|block| block.range.start == line.range.start)
+            {
+                line.id = block.id;
+            } else {
+                line.id = next_id;
+                next_id = next_id
+                    .checked_add(1)
+                    .ok_or(BlockIdentityError::Exhausted)?;
+            }
+        }
+        self.hard_lines = OrderedRangeStore::new(lines);
+        Ok(next_id)
+    }
+
+    fn install_unchanged_hard_line_ids(
+        &mut self,
+        previous: &Self,
+    ) -> Result<(), BlockIdentityError> {
+        let mut lines = self.hard_lines.to_vec();
+        let old_lines = previous.hard_lines.to_vec();
+        if lines.len() != old_lines.len()
+            || lines.iter().zip(&old_lines).any(|(new, old)| {
+                new.range != old.range || new.separator_length != old.separator_length
+            })
+        {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+        for (line, old) in lines.iter_mut().zip(old_lines) {
+            line.id = old.id;
+        }
+        self.hard_lines = OrderedRangeStore::new(lines);
+        self.hard_lines.reuse_equal_chunks(&previous.hard_lines);
+        Ok(())
+    }
+
+    fn reconcile_hard_line_ids(
+        &mut self,
+        previous: &Self,
+        edits: &[TextEdit],
+        mut next_id: u64,
+    ) -> Result<u64, BlockIdentityError> {
+        if self.blocks.len() == self.hard_lines.len()
+            && previous.blocks.len() == previous.hard_lines.len()
+        {
+            self.rebuild_hard_lines_from_blocks(Some(previous))?;
+            return Ok(next_id);
+        }
+        let old_lines = previous.hard_lines.to_vec();
+        let mut lines = self.hard_lines.to_vec();
+        let mut line_blocks = blocks_for_hard_line_ranges(
+            &lines
+                .iter()
+                .map(|line| line.range.clone())
+                .collect::<Vec<_>>(),
+        );
+        let mappings = build_edit_mappings(previous.text().len(), self.text().len(), edits)?;
+        for old in &old_lines {
+            let block = Block {
+                id: old.id,
+                range: old.range.clone(),
+                kind: BlockKind::Paragraph,
+                style: "Paragraph".into(),
+                direct_paragraph: BlockProperties::default(),
+                direct_default_character: CharacterProperties::default(),
+            };
+            let target = if let Some(witness) =
+                block_identity_witness(previous.text(), &block, &mappings)?
+            {
+                let mapped = map_surviving_byte(witness, &mappings)?;
+                block_index_for_witness(
+                    self.text(),
+                    &line_blocks,
+                    mapped,
+                    witness_side(previous.text(), &block, witness),
+                )?
+            } else if let Some(mapped) =
+                deleted_empty_join_boundary(previous.text(), &block, &mappings)
+            {
+                block_index_for_witness(
+                    self.text(),
+                    &line_blocks,
+                    mapped,
+                    BlockWitnessSide::PrecedingBreak,
+                )?
+            } else if old_lines.len() == 1 {
+                0
+            } else {
+                continue;
+            };
+            if line_blocks[target].id == 0 {
+                line_blocks[target].id = old.id;
+            }
+        }
+        next_id = allocate_unassigned_block_ids(&mut line_blocks, next_id)?;
+        for (line, block) in lines.iter_mut().zip(line_blocks) {
+            line.id = block.id;
+        }
+        self.hard_lines = OrderedRangeStore::new(lines);
+        self.hard_lines.reuse_equal_chunks(&previous.hard_lines);
+        Ok(next_id)
+    }
+
     /// Assign identities to an initial projection. Zero is reserved for the
     /// projector's unpublished provisional blocks.
     pub(crate) fn assign_initial_block_ids(
@@ -1560,7 +1717,7 @@ impl FormattedDocument {
         validate_block_partition(self.text(), &blocks)?;
         let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
         self.blocks = OrderedRangeStore::new(blocks);
-        self.rebuild_hard_lines_from_blocks(None)?;
+        let next_id = self.assign_initial_hard_line_ids(next_id)?;
         Ok(next_id)
     }
 
@@ -1592,8 +1749,29 @@ impl FormattedDocument {
         self.document_style = previous.document_style.clone();
         self.blocks = OrderedRangeStore::new(blocks);
         self.blocks.reuse_equal_chunks(&previous.blocks);
-        self.rebuild_hard_lines_from_blocks(Some(previous))?;
+        self.install_unchanged_hard_line_ids(previous)?;
         self.styles.reuse_equal_chunks(&previous.styles);
+        Ok(())
+    }
+
+    /// Retain block identity while publishing properties and definitions newly
+    /// parsed from an authoritative rich source rather than configuration.
+    pub(crate) fn install_source_block_ids(
+        &mut self,
+        previous: &Self,
+    ) -> Result<(), BlockIdentityError> {
+        let parsed_blocks = self.blocks.to_vec();
+        let parsed_sheet = self.style_sheet.clone();
+        let parsed_document = self.document_style.clone();
+        self.install_unchanged_block_ids(previous)?;
+        let mut blocks = self.blocks.to_vec();
+        for (block, parsed) in blocks.iter_mut().zip(parsed_blocks) {
+            block.direct_paragraph = parsed.direct_paragraph;
+            block.direct_default_character = parsed.direct_default_character;
+        }
+        self.blocks = OrderedRangeStore::new(blocks);
+        self.style_sheet = parsed_sheet;
+        self.document_style = parsed_document;
         Ok(())
     }
 
@@ -1684,7 +1862,7 @@ impl FormattedDocument {
         let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
         self.blocks = OrderedRangeStore::new(blocks);
         self.blocks.reuse_equal_chunks(&previous.blocks);
-        self.rebuild_hard_lines_from_blocks(Some(previous))?;
+        let next_id = self.reconcile_hard_line_ids(previous, edits, next_id)?;
         self.styles.reuse_equal_chunks(&previous.styles);
         Ok(next_id)
     }
@@ -1693,6 +1871,44 @@ impl FormattedDocument {
     /// hard-line transfer. The initial adapters publish exactly one block per
     /// hard line; refusing any other shape keeps this temporary contract
     /// explicit until nested/multi-line block transfer is modeled directly.
+    pub(crate) fn install_reconciled_format_block_ids(
+        &mut self,
+        format: Format,
+        previous: &Self,
+        edits: &[TextEdit],
+        position_map: &PositionMap,
+        next_id: u64,
+    ) -> Result<u64, BlockIdentityError> {
+        if !matches!(format, Format::Html | Format::Rtf) {
+            return self.install_reconciled_block_ids(previous, edits, position_map, next_id);
+        }
+        self.install_reconciled_source_block_ids(previous, edits, position_map, next_id)
+    }
+
+    /// Reprojection may replace the format's complete style interpretation.
+    /// Preserve newly parsed properties while recovering logical identities.
+    pub(crate) fn install_reconciled_source_block_ids(
+        &mut self,
+        previous: &Self,
+        edits: &[TextEdit],
+        position_map: &PositionMap,
+        next_id: u64,
+    ) -> Result<u64, BlockIdentityError> {
+        let parsed_blocks = self.blocks.to_vec();
+        let parsed_sheet = self.style_sheet.clone();
+        let parsed_document = self.document_style.clone();
+        let next_id = self.install_reconciled_block_ids(previous, edits, position_map, next_id)?;
+        let mut blocks = self.blocks.to_vec();
+        for (block, parsed) in blocks.iter_mut().zip(parsed_blocks) {
+            block.direct_paragraph = parsed.direct_paragraph;
+            block.direct_default_character = parsed.direct_default_character;
+        }
+        self.blocks = OrderedRangeStore::new(blocks);
+        self.style_sheet = parsed_sheet;
+        self.document_style = parsed_document;
+        Ok(next_id)
+    }
+
     pub(crate) fn install_transferred_block_ids(
         &mut self,
         previous: &Self,
@@ -2039,6 +2255,10 @@ impl FormattedDocument {
 
     pub fn provenance(&self) -> &[ProvenanceSpan] {
         self.provenance.as_slice()
+    }
+
+    pub(crate) fn provenance_for_region(&self, range: &Range<usize>) -> Vec<ProvenanceSpan> {
+        self.provenance.query_overlapping(range)
     }
 
     /// Malformed source ranges represented by visible opaque replacement
@@ -2662,6 +2882,26 @@ pub(crate) fn project(
             revision,
             source_content_start,
             source_content_end,
+            false,
+        ),
+        Format::MarkdownSource => project_markdown(
+            normalized,
+            revision,
+            source_content_start,
+            source_content_end,
+            true,
+        ),
+        Format::Html => super::html::project(
+            normalized,
+            revision,
+            source_content_start,
+            source_content_end,
+        ),
+        Format::Rtf => super::rtf::project(
+            normalized,
+            revision,
+            source_content_start,
+            source_content_end,
         ),
     }
 }
@@ -2710,8 +2950,7 @@ pub(crate) fn splice_line_local_projection(
         || regional.source_content_start != new_source.start
         || regional.source_content_end != new_source.end
         || old_hard_lines.start >= old_hard_lines.end
-        || old_hard_lines.end > previous.blocks.len()
-        || previous.blocks.len() != previous.hard_lines.len()
+        || old_hard_lines.end > previous.hard_lines.len()
         || old_formatted.start > old_formatted.end
         || old_formatted.end > previous.text.byte_len()
         || old_source.start > old_source.end
@@ -2722,10 +2961,27 @@ pub(crate) fn splice_line_local_projection(
         return Err(BlockIdentityError::InvalidProjection);
     }
 
+    let first_block = previous
+        .blocks
+        .index_touching_point(old_formatted.start)
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+    let last_block = previous
+        .blocks
+        .index_touching_point(old_formatted.end)
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+    let old_block_indices = first_block..last_block + 1;
     let previous_region_blocks = previous
         .blocks
-        .get_range(&old_hard_lines)
+        .get_range(&old_block_indices)
         .ok_or(BlockIdentityError::InvalidProjection)?;
+    if previous_region_blocks
+        .first()
+        .map(|block| block.range.start)
+        != Some(old_formatted.start)
+        || previous_region_blocks.last().map(|block| block.range.end) != Some(old_formatted.end)
+    {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
     let mut regional_blocks = regional.blocks.to_vec();
     if regional_blocks.len() != previous_region_blocks.len() {
         return Err(BlockIdentityError::InvalidProjection);
@@ -2762,7 +3018,7 @@ pub(crate) fn splice_line_local_projection(
     let blocks = previous
         .blocks
         .splice(
-            old_hard_lines.clone(),
+            old_block_indices,
             regional_blocks.clone(),
             old_formatted.end,
             new_formatted_end,
@@ -2770,17 +3026,25 @@ pub(crate) fn splice_line_local_projection(
         )
         .ok_or(BlockIdentityError::InvalidProjection)?;
 
-    let regional_hard_lines = regional_blocks
+    let old_lines = previous
+        .hard_lines
+        .get_range(&old_hard_lines)
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+    let regional_lines = regional.hard_lines.to_vec();
+    if regional_lines.len() != old_lines.len() {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+    let regional_hard_lines = regional_lines
         .iter()
-        .enumerate()
-        .map(|(relative, block)| HardLine {
-            id: block.id,
-            range: block.range.clone(),
-            separator_length: usize::from(
-                old_hard_lines.start + relative + 1 != previous.hard_lines.len(),
-            ),
+        .zip(&old_lines)
+        .map(|(line, old)| {
+            Ok(HardLine {
+                id: old.id,
+                range: shift_region_range(&line.range, old_formatted.start)?,
+                separator_length: old.separator_length,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, BlockIdentityError>>()?;
     let hard_lines = previous
         .hard_lines
         .splice(
@@ -3104,6 +3368,7 @@ fn project_markdown(
     revision: Revision,
     source_content_start: usize,
     source_content_end: usize,
+    preserve_markers: bool,
 ) -> FormattedDocument {
     let mut builder = MarkdownBuilder::new(
         &normalized.text,
@@ -3111,16 +3376,23 @@ fn project_markdown(
         normalized.encoding,
         revision,
     );
+    builder.preserve_markers = preserve_markers;
     let input_lines = normalized_hard_line_ranges(normalized);
 
     for (line_index, line) in input_lines.into_iter().enumerate() {
         let output_start = builder.output.len();
-        let (content_start, kind) = heading_prefix(&normalized.text, line.start, line.end);
+        let (content_start, kind) = markdown_block_prefix(&normalized.text, line.start, line.end);
+        if preserve_markers || matches!(kind, BlockKind::ListItem { .. }) {
+            builder.emit_range(line.start, content_start);
+        }
         builder.parse_inline(content_start, line.end);
         let output_end = builder.output.len();
         let style = match kind {
             BlockKind::Heading(level) => format!("Heading{level}").as_str().into(),
             BlockKind::Paragraph => "Paragraph".into(),
+            BlockKind::ListItem { level, .. } => {
+                format!("List{}", u16::from(level) + 1).as_str().into()
+            }
         };
         builder.blocks.push(Block {
             id: 0,
@@ -3148,17 +3420,51 @@ fn project_markdown(
     )
 }
 
-fn heading_prefix(text: &str, start: usize, end: usize) -> (usize, BlockKind) {
+pub(crate) fn markdown_block_prefix(text: &str, start: usize, end: usize) -> (usize, BlockKind) {
     let line = &text.as_bytes()[start..end];
     let hashes = line.iter().take_while(|byte| **byte == b'#').count();
     if (1..=6).contains(&hashes) && line.get(hashes) == Some(&b' ') {
         (start + hashes + 1, BlockKind::Heading(hashes as u8))
     } else {
+        let indent = line.iter().take_while(|byte| **byte == b' ').count();
+        let body = &line[indent..];
+        let level = u8::try_from(indent / 2).unwrap_or(u8::MAX).min(15);
+        if matches!(body.first(), Some(b'-' | b'+' | b'*')) && body.get(1) == Some(&b' ') {
+            return (
+                start + indent + 2,
+                BlockKind::ListItem {
+                    ordered: false,
+                    ordinal: 1,
+                    level,
+                    container_start: false,
+                    item_start: true,
+                },
+            );
+        }
+        let digits = body.iter().take_while(|byte| byte.is_ascii_digit()).count();
+        if digits > 0
+            && matches!(body.get(digits), Some(b'.' | b')'))
+            && body.get(digits + 1) == Some(&b' ')
+        {
+            if let Ok(ordinal) = text[start + indent..start + indent + digits].parse() {
+                return (
+                    start + indent + digits + 2,
+                    BlockKind::ListItem {
+                        ordered: true,
+                        ordinal,
+                        level,
+                        container_start: false,
+                        item_start: true,
+                    },
+                );
+            }
+        }
         (start, BlockKind::Paragraph)
     }
 }
 
 struct MarkdownBuilder<'a> {
+    preserve_markers: bool,
     source_text: &'a str,
     units: &'a [LogicalUnit],
     output: String,
@@ -3178,6 +3484,7 @@ impl<'a> MarkdownBuilder<'a> {
         revision: Revision,
     ) -> Self {
         Self {
+            preserve_markers: false,
             source_text,
             units,
             output: String::new(),
@@ -3198,7 +3505,11 @@ impl<'a> MarkdownBuilder<'a> {
                     if next < end {
                         let escaped = self.source_text[next..].chars().next().unwrap();
                         if matches!(escaped, '\\' | '*' | '_' | '`' | '#') {
-                            self.emit_escaped(at, next);
+                            if self.preserve_markers {
+                                self.emit_range(at, next + escaped.len_utf8());
+                            } else {
+                                self.emit_escaped(at, next);
+                            }
                             at = next + escaped.len_utf8();
                             continue;
                         }
@@ -3209,7 +3520,11 @@ impl<'a> MarkdownBuilder<'a> {
             if self.source_text[at..].starts_with('`') {
                 if let Some(close) = self.find_marker(at + 1, end, "`") {
                     let output_start = self.output.len();
-                    self.emit_range(at + 1, close);
+                    if self.preserve_markers {
+                        self.emit_range(at, close + 1);
+                    } else {
+                        self.emit_range(at + 1, close);
+                    }
                     self.push_semantic_style(output_start, SemanticInlineStyle::Code);
                     at = close + 1;
                     continue;
@@ -3227,7 +3542,11 @@ impl<'a> MarkdownBuilder<'a> {
                 let inner = at + marker.len();
                 if let Some(close) = self.find_marker(inner, end, marker) {
                     let output_start = self.output.len();
-                    self.emit_range_with_escapes(inner, close);
+                    if self.preserve_markers {
+                        self.emit_range(at, close + marker.len());
+                    } else {
+                        self.emit_range_with_escapes(inner, close);
+                    }
                     self.push_semantic_style(output_start, SemanticInlineStyle::Strong);
                     at = close + marker.len();
                     continue;
@@ -3245,7 +3564,11 @@ impl<'a> MarkdownBuilder<'a> {
                 let inner = at + 1;
                 if let Some(close) = self.find_marker(inner, end, marker) {
                     let output_start = self.output.len();
-                    self.emit_range_with_escapes(inner, close);
+                    if self.preserve_markers {
+                        self.emit_range(at, close + marker.len());
+                    } else {
+                        self.emit_range_with_escapes(inner, close);
+                    }
                     self.push_semantic_style(output_start, SemanticInlineStyle::Emphasis);
                     at = close + 1;
                     continue;

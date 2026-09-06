@@ -35,6 +35,7 @@ fn mac_capture_and_paste_preserve_literal_lf_in_all_text_encodings() {
             let source = match format {
                 Format::PlainText => "a\rb\nc",
                 Format::Markdown => "# a\r# b\nc",
+                _ => unreachable!("fixture enumerates plain text and Markdown WYSIWYG"),
             };
             let original = encoded(source, encoding);
             let mut document = Document::from_bytes_with_file_format(

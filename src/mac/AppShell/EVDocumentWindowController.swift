@@ -473,6 +473,8 @@ private extension EVDocumentWindowController {
     func documentType(for url: URL, fallback: String?) -> String {
         switch url.pathExtension.lowercased() {
         case "md", "markdown", "mdown": EVDocument.markdownType
+        case "html", "htm": EVDocument.htmlType
+        case "rtf": EVDocument.rtfType
         case "txt", "text": EVDocument.plainTextType
         default: fallback ?? EVDocument.plainTextType
         }
@@ -523,6 +525,12 @@ final class EVDocumentContentViewController: NSViewController,
 
         editorSurface.statusBarStateDidChange = { [weak self] state in
             self?.statusBar.apply(state)
+        }
+        statusBar.optionDidChange = { [weak self] option in
+            guard let self else { return }
+            self.editorSurface.perform(statusOption: option)
+            self.statusBar.apply(self.editorSurface.statusBarState)
+            self.view.window?.makeFirstResponder(self.editorSurface.viewController.view)
         }
     }
 

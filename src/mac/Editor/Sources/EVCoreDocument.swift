@@ -17,7 +17,20 @@ public enum EVCoreFrontendError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case let .core(operation, status):
-            "\(operation) failed (eVim core status \(status))."
+            switch status {
+            case UInt32(EVIM_STATUS_VERIFICATION_FAILED):
+                "This edit cannot preserve the format's text and structure."
+            case UInt32(EVIM_STATUS_AMBIGUOUS_PROJECTION):
+                "This selection has no unambiguous editable source range."
+            case UInt32(EVIM_STATUS_UNREPRESENTABLE_CHARACTER):
+                "This character cannot be represented in the document's encoding."
+            case UInt32(EVIM_STATUS_UNSUPPORTED_OPERATION):
+                "This operation is not supported for the current format or selection."
+            case UInt32(EVIM_STATUS_POLICY_REQUIRED):
+                "This change needs a format or encoding policy before it can be applied."
+            default:
+                "\(operation) failed (eVim core status \(status))."
+            }
         case let .command(operation, status):
             "\(operation) was rejected (eVim command status \(status))."
         case .invalidUTF8:
@@ -266,7 +279,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     }
 
     var formatLabel: String {
-        currentDocumentState.format == UInt32(EVIM_FORMAT_MARKDOWN) ? "Markdown" : "Plain Text"
+        sourceFormat.displayName
     }
 
     var lineEndingLabel: String {
@@ -497,7 +510,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         guard let requestedFormat = EVDocument.sourceFormat(forTypeName: typeName) else {
             throw EVDocumentSerializationError.unsupportedWritableType(typeName)
         }
-        guard requestedFormat == currentFormat else {
+        guard requestedFormat.hasSameSerialization(as: currentFormat) else {
             throw EVDocumentSerializationError.formatConversionUnavailable(
                 current: currentFormat,
                 requested: requestedFormat
@@ -506,13 +519,25 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     }
 
     private static func sourceFormat(from state: EvimDocumentStateV1) -> EVSourceFormat {
-        state.format == UInt32(EVIM_FORMAT_MARKDOWN) ? .markdown : .plainText
+        switch state.format {
+        case UInt32(EVIM_FORMAT_MARKDOWN): .markdown
+        case UInt32(EVIM_FORMAT_MARKDOWN_SOURCE): .markdownSource
+        case UInt32(EVIM_FORMAT_HTML): .html
+        case UInt32(EVIM_FORMAT_RTF): .rtf
+        default: .plainText
+        }
     }
 
     private static func formatOption(typeName: String) -> UInt32 {
         switch EVDocument.sourceFormat(forTypeName: typeName) {
         case .markdown:
             UInt32(EVIM_FORMAT_MARKDOWN)
+        case .markdownSource:
+            UInt32(EVIM_FORMAT_MARKDOWN_SOURCE)
+        case .html:
+            UInt32(EVIM_FORMAT_HTML)
+        case .rtf:
+            UInt32(EVIM_FORMAT_RTF)
         case .plainText, nil:
             UInt32(EVIM_FORMAT_PLAIN_TEXT)
         }
@@ -526,6 +551,7 @@ final class EVCoreViewSession {
     private nonisolated let coreHandle: EvimCoreHandle
     private(set) var viewID: EvimViewId = 0
     private(set) var lastOutcome = EvimCoreOutcomeV1()
+    private var viewportSize = CGSize(width: 1, height: 1)
     private(set) var hasActiveComposition = false
     weak var commandTurnHost: (any EVCommandTurnHost)?
     var hostEffectAccessCounters = EVHostEffectAccessCounters()
@@ -570,6 +596,7 @@ final class EVCoreViewSession {
             operation: "Attach editor view"
         )
         viewID = newView
+        viewportSize = CGSize(width: max(width, 1), height: max(height, 1))
         lastOutcome = outcome
     }
 
@@ -671,6 +698,7 @@ final class EVCoreViewSession {
             evim_core_view_resize(document.core, viewID, Float(max(width, 1)), Float(max(height, 1)), &outcome),
             operation: "Resize editor view"
         )
+        viewportSize = CGSize(width: max(width, 1), height: max(height, 1))
         finish(outcome, composition: .cancelIfChanged)
         return outcome
     }
@@ -807,6 +835,137 @@ final class EVCoreViewSession {
         return outcome
     }
 
+    func listSelection() throws -> EvimLogicalSelectionIdentityV1 {
+        var selection = EvimLogicalSelectionIdentityV1()
+        selection.struct_size = UInt32(MemoryLayout<EvimLogicalSelectionIdentityV1>.size)
+        try checked(evim_core_view_list_selection(document.core, viewID, &selection), operation: "Read list selection")
+        return selection
+    }
+
+    @discardableResult
+    func setListStyle(_ style: UInt32, expected selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
+        var request = EvimSetListStyleV1()
+        request.struct_size = UInt32(MemoryLayout<EvimSetListStyleV1>.size)
+        request.style = style
+        request.expected_selection = selection
+        var outcome = EvimCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        try checked(evim_core_view_set_list_style(document.core, viewID, &request, &outcome), operation: "Change paragraph list")
+        finish(outcome, composition: .cancelIfChanged)
+        return outcome
+    }
+
+    @discardableResult
+    func createStyle(_ key: EVStyleKey, name: String, identity: EVStyleSheetIdentity) throws -> EvimCoreOutcomeV1 {
+        var request = EvimCreateStyleV1()
+        request.struct_size = UInt32(MemoryLayout<EvimCreateStyleV1>.size)
+        request.namespace = key.namespace.rawValue
+        request.identity = identity.abiValue
+        var outcome = EvimCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        let idBytes = Array(key.id.rawValue.utf8)
+        let nameBytes = Array(name.utf8)
+        let status = idBytes.withUnsafeBufferPointer { id in
+            nameBytes.withUnsafeBufferPointer { name in
+                request.style_id.data = id.baseAddress
+                request.style_id.length = UInt64(id.count)
+                request.display_name.data = name.baseAddress
+                request.display_name.length = UInt64(name.count)
+                return evim_core_view_create_style(document.core, viewID, &request, &outcome)
+            }
+        }
+        try checked(status, operation: "Create named style")
+        finish(outcome, composition: .cancelIfChanged)
+        return outcome
+    }
+
+    @discardableResult
+    func deleteStyle(_ key: EVStyleKey, identity: EVStyleSheetIdentity) throws -> EvimCoreOutcomeV1 {
+        var request = EvimDeleteStyleV1()
+        request.struct_size = UInt32(MemoryLayout<EvimDeleteStyleV1>.size)
+        request.namespace = key.namespace.rawValue
+        request.identity = identity.abiValue
+        var outcome = EvimCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        let bytes = Array(key.id.rawValue.utf8)
+        let status = bytes.withUnsafeBufferPointer { buffer in
+            request.style_id.data = buffer.baseAddress
+            request.style_id.length = UInt64(buffer.count)
+            return evim_core_view_delete_style(document.core, viewID, &request, &outcome)
+        }
+        try checked(status, operation: "Delete named style")
+        finish(outcome, composition: .cancelIfChanged)
+        return outcome
+    }
+
+    @discardableResult
+    func assignStyle(_ key: EVStyleKey, identity: EVStyleSheetIdentity,
+                     expected selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
+        var request = EvimAssignStyleV1()
+        request.struct_size = UInt32(MemoryLayout<EvimAssignStyleV1>.size)
+        request.namespace = key.namespace.rawValue
+        request.identity = identity.abiValue
+        request.expected_selection = selection
+        var outcome = EvimCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        let bytes = Array(key.id.rawValue.utf8)
+        let status = bytes.withUnsafeBufferPointer { buffer in
+            request.style_id.data = buffer.baseAddress
+            request.style_id.length = UInt64(buffer.count)
+            return evim_core_view_assign_style(document.core, viewID, &request, &outcome)
+        }
+        try checked(status, operation: "Assign named style")
+        finish(outcome, composition: .cancelIfChanged)
+        return outcome
+    }
+
+    @discardableResult
+    func setParagraphStyle(level: UInt32, expected selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
+        var request = EvimSetParagraphStyleV1()
+        request.struct_size = UInt32(MemoryLayout<EvimSetParagraphStyleV1>.size)
+        request.level = level
+        request.expected_selection = selection
+        var outcome = EvimCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        try checked(evim_core_view_set_paragraph_style(document.core, viewID, &request, &outcome), operation: "Change paragraph style")
+        finish(outcome, composition: .cancelIfChanged)
+        return outcome
+    }
+
+    @discardableResult
+    func setFormat(_ format: EVSourceFormat, expected state: EvimDocumentStateV1) throws -> EvimCoreOutcomeV1 {
+        var request = EvimSetFormatV1()
+        request.struct_size = UInt32(MemoryLayout<EvimSetFormatV1>.size)
+        request.format = switch format {
+        case .plainText: UInt32(EVIM_FORMAT_PLAIN_TEXT)
+        case .markdown: UInt32(EVIM_FORMAT_MARKDOWN)
+        case .markdownSource: UInt32(EVIM_FORMAT_MARKDOWN_SOURCE)
+        case .html: UInt32(EVIM_FORMAT_HTML)
+        case .rtf: UInt32(EVIM_FORMAT_RTF)
+        }
+        request.document_id = state.document_id
+        request.document_revision = state.document_revision
+        var outcome = EvimCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        try checked(evim_core_view_set_format(document.core, viewID, &request, &outcome), operation: "Change document format")
+        finish(outcome, composition: .cancelIfChanged)
+        return outcome
+    }
+
+    @discardableResult
+    func setEncoding(_ encoding: UInt32, expected state: EvimDocumentStateV1) throws -> EvimCoreOutcomeV1 {
+        var request = EvimSetEncodingV1()
+        request.struct_size = UInt32(MemoryLayout<EvimSetEncodingV1>.size)
+        request.encoding = encoding
+        request.document_id = state.document_id
+        request.document_revision = state.document_revision
+        var outcome = EvimCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        try checked(evim_core_view_set_encoding(document.core, viewID, &request, &outcome), operation: "Change document encoding")
+        finish(outcome, composition: .cancelIfChanged)
+        return outcome
+    }
+
     @discardableResult
     func undo() throws -> EvimCoreOutcomeV1 {
         var outcome = EvimCoreOutcomeV1()
@@ -920,6 +1079,20 @@ final class EVCoreViewSession {
         }
         try checked(copied, operation: "Copy layout snapshot")
         return EVLayoutExport(info: copiedInfo, rows: rows, clusters: clusters, carets: carets)
+    }
+
+    /// Font registration can retire the presentation while the view is idle.
+    /// Refresh through an explicit core presentation event before requesting
+    /// a new identity; never reuse an old hit-test identity or replay an edit.
+    func refreshLayoutIfNeeded() throws {
+        var info = EvimLayoutSnapshotInfoV1()
+        info.struct_size = UInt32(MemoryLayout<EvimLayoutSnapshotInfoV1>.size)
+        let status = evim_core_view_layout_snapshot_info(document.core, viewID, &info)
+        guard status == Status.layoutUnavailable else {
+            try checked(status, operation: "Validate editor layout")
+            return
+        }
+        _ = try resize(width: viewportSize.width, height: viewportSize.height)
     }
 
     func hitTest(_ point: CGPoint, in snapshot: EvimLayoutSnapshotInfoV1) throws -> EvimLayoutCaretPointV1 {

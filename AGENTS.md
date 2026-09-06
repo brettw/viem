@@ -911,19 +911,26 @@ uses it for the new paragraph. Joining paragraphs keeps the first paragraph's
 style for the result unless the format adapter reports that source semantics
 require an explicit policy choice.
 
-#### Future structured blocks
+#### Lists and future structured blocks
 
 Lists are document structure, not a bullet character embedded in text and not
-merely a paragraph-style flag. The formatted block tree is designed to add List
-and List Item nodes carrying list identity, nesting level, marker/numbering
-policy, and optional style references. List-role styles use the same block-style
-record and inheritance mechanism, while the property schema permits list-only
-marker and numbering declarations for that role and rejects them for Document
-or Paragraph roles. Paragraphs inside an item continue to use Paragraph-role
-block styles. A list style may contribute hanging indentation and spacing at the
-reserved structural cascade layer and may reference a character style for its
-generated marker. Generated markers have explicit synthetic provenance and
-caret/edit rules.
+merely a paragraph-style flag. The formatted document exposes a snapshot-bound
+list-structure query with List and List Item nodes carrying stable item and list
+identities, nesting level, parent/child relationships, marker/numbering policy,
+and explicitly tagged marker ranges. Each item records every paragraph it
+contains; only its first paragraph carries the generated marker. Independent
+source list containers remain distinct even when adjacent. The initial list
+container follows its first item's identity; surviving item identities support
+recovery when that item is deleted. Paragraphs inside an item continue to use
+Paragraph-role block styles. Generated `List1` through `List16` Paragraph styles
+provide initial indentation; supported source list properties can override it.
+Generated markers have explicit synthetic provenance and caret/edit rules.
+
+Future List-role styles will use the same block-style record and inheritance
+mechanism, with list-only marker and numbering declarations rejected for
+Document and Paragraph roles. They may contribute indentation and spacing at
+the reserved structural cascade layer and reference a Character style for the
+generated marker.
 
 The same structural contribution mechanism may later support quotations,
 tables, callouts, or other block containers without adding format-specific
@@ -1196,6 +1203,16 @@ and lowercase property names in schema order. It does not claim to preserve the
 semantics of arbitrary CSS shorthand, variables, `calc()`, viewport units,
 media queries, or selector cascades.
 
+For `vertical-align`, eVim normalizes `super` to an upward baseline shift of
+one third of the element's effective font size and `sub` to a downward shift of
+one fifth of that size. `baseline` is an explicit zero shift. The effective
+font size includes the document, paragraph, named character, inherited inline,
+and element's own valid declarations, independently of CSS declaration order.
+This deterministic import policy does not depend on browser or platform font
+metrics. The resulting normalized property is an absolute point length;
+authored direct formatting writes that length in `pt`, and reprojecting an
+unchanged keyword reevaluates it against the then-effective font size.
+
 Element semantics and style sources resolve in this order, with later sources
 winning for supported properties:
 
@@ -1234,6 +1251,12 @@ Untouched ancestors, descendants outside the formatted range, and sibling
 attributes remain original bytes. Partial-range edits split wrappers as needed,
 preserving the original wrapper bytes around unaffected left/right content when
 their source structure can remain valid.
+
+The reversible `white-space: pre-wrap` inline value is additionally supported.
+When an edit requires a leading, trailing, or repeated ordinary space that HTML
+would otherwise collapse, the writer may enclose only the affected spacing in
+`<span style="white-space: pre-wrap">` and declare that supporting patch. It
+preserves ordinary U+0020 text rather than substituting nonbreaking spaces.
 
 New text is escaped canonically for its HTML context. Existing character
 references such as `&amp;`, `&#38;`, and `&#x26;` retain their original spelling
@@ -1284,6 +1307,30 @@ context into a Character style. Base defaults are emitted through the owned
 `body`, `p`, and heading rules so normal CSS inheritance preserves the intended
 Document -> Paragraph -> Character order. Editing a base style updates any
 canonical descendant rules whose materialized browser CSS changes.
+
+Version 1 encodes a class stable-ID suffix as lowercase hexadecimal UTF-8
+bytes. Every namespaced value is a CSS double-quoted string; control characters,
+quote, backslash, and `<`, `>`, `{`, `}` use lowercase hexadecimal CSS escapes
+followed by one space. Normalized lengths are decimal point values; derived
+standard CSS lengths use `pt`. Colors are four space-separated decimal RGBA
+components in `[0, 1]`; booleans are `true`/`false`; directions are
+`natural`/`ltr`/`rtl`; slants are `normal`/`italic`/`oblique`. Line spacing is
+`normal`, `multiplier N`, `at-least N`, or `exact N`. Family lists use quoted
+strings separated by comma-space; feature lists use quoted four-byte tags and
+unsigned values in tag order.
+
+After ID, name, role, optional parent, and optional next-style declarations,
+normalized properties occur in this schema order: Character font families,
+size, weight, slant, foreground, background, underline, strikethrough, language,
+direction, OpenType features, letter spacing, baseline shift; Paragraph spacing
+before, spacing after, line spacing, first-line indent, leading indent,
+trailing indent, alignment, base direction; Canvas background and top, right,
+bottom, left padding. Their keys use the corresponding lowercase hyphenated
+`character-`, `paragraph-`, and `canvas-` spellings. A rule uses `selector {`, a
+newline, two-space-indented declarations ending in semicolon-newline, then
+`}` and a newline. The writer's version-one golden fixtures fix exact spelling
+and derived CSS order. Unsupported rule syntax and unsupported versions stay
+opaque.
 
 The CSS-safe stable-ID encoding, normalized property schema keys, value grammar,
 derived CSS mapping, declaration order, whitespace, quoting, and escaping are
@@ -1373,6 +1420,11 @@ adapter heading identities when doing so is unambiguous. Section and table
 styles remain opaque until their normalized block roles are specified.
 
 Style handles, rather than names or source order, provide stable identity.
+The initial stable IDs are `RtfP<N>` and `RtfC<N>` for native Paragraph and
+Character handles respectively, with `\s0` represented by `Paragraph`.
+The standard Heading 1 through Heading 6 actions resolve a unique matching
+native heading style, or create one with an unused handle when absent. Renaming
+a heading keeps its native handle and stable identity.
 Effective RTF style selection follows the RTF formatting-state stream; it is not
 treated as an unordered list of classes. Direct controls after style selection
 become direct declarations over the affected formatted ranges.
@@ -1772,7 +1824,7 @@ IME commits create deterministic undo breaks.
 
 ### Visual modes
 
-Required commands are `v`, `V`, `Ctrl-V`, `gv`, `o`, `O`, Escape, all supported
+Required commands are `v`, `V`, `Ctrl-V`, `Ctrl-Q`, `gv`, `o`, `O`, Escape, all supported
 motions, supported operators, `x`, `s`, `r`, `J`, `~`, `u`, `U`, `>`, `<`,
 `y`, `d`, `c`, `p`, and `P`. Visual selection is inclusive in Normal/Visual
 Vim terms while internal APIs use explicit half-open ranges.
@@ -3304,8 +3356,7 @@ Do not silently settle these while implementing an unrelated feature. Record a
 decision in this file or an architecture decision record first:
 
 - which format adapters beyond plain text ship initially;
-- Markdown's default delimiter/authoring policy and the canonical syntax of
-  any future adapter not specified above;
+- the canonical syntax of any future adapter not specified above;
 - user policy for Unicode edits not representable in the source encoding;
 - exact Unicode word/sentence segmentation tailoring;
 - exact regular-expression syntax supported by `/` and `:substitute`;
@@ -3315,16 +3366,80 @@ decision in this file or an architecture decision record first:
 - hyphenation and justification; and
 - concrete latency and memory budgets for supported hardware.
 
-## Bugs and feature requests to fix
+## Format controls, Markdown authoring, and lists
 
-Support vim's control-q block selection mode (same as control-v) where one can select a visual block that is logically discontiguous. Use the nearest character boundary since we have proportional fonts.
+The status bar exposes native popup controls for source format, encoding, and
+line endings. Each retains the minimal status-bar appearance, adds a small
+vertical triangle, and highlights on hover. A choice is a checked core
+transaction shared by the buffer's views and reversible with undo. Format
+selection changes the source interpretation without rewriting source bytes.
+Encoding selection transcodes the source syntax only when every character is
+representable and the new projection verifies. Line-ending selection delegates
+to the shared conversion component. RTF disables the generic encoding and
+line-ending controls because its grammar owns those interpretations.
 
-Support bulleted and numbered lists as in html or MS word.
+The two Markdown views share one physical Markdown serialization:
 
-In the status line, the items with options like the "plain text" and encodings should be selects. Keep the style minimal like now, buit add a small vertically pointing triangle to the right of the element, and a hover effect. When selected, pop up a native system select popup for the options for that thing to allow it to be changed.
+- **Markdown WYSIWYG** is the existing projection with formatting delimiters
+  hidden.
+- **Markdown** preserves every decoded source character, including formatting
+  delimiters, in editable display text. Parsed styles apply to the associated
+  source spans, including heading and emphasis delimiters. Editing a delimiter
+  reparses and updates formatting immediately. Formatting commands update the
+  source delimiters, and switching between these views preserves source bytes.
 
-Add a new markdown format. Rename the current format "Markdown WYSIWYG" and call the new one "Markdown" This format will preserve all characters in the original text on the screen, but still reflect their formatting. So `__foo bar__` will appear literally and be editable, and for headings `## Heading 2` but the style will apply to the whole span. If I add or change formatting in the UI, update the format markers. If I interactively change the format markers, update the style using the latest parsing of the text.
+Opening a Markdown file retains the existing WYSIWYG default. The status popup
+can select the source-visible Markdown view. New bold uses `**`, italic uses
+`*`, and headings use one through six `#` characters followed by one space.
+Untouched alternative delimiters and physical line endings remain exact.
 
-In some editing, I was able to get "hit test editor failed (eVim core status 28)" and also input even send failedpretty easily. Do some reliability testing to track these down and validate.
+The Format > Paragraph > List menu applies bulleted or numbered lists, changes
+between them, or removes list structure from the current paragraph or selected
+paragraphs. Enter continues an item; Enter on an empty item exits the list.
+Numbered continuation and repeat calculate the next ordinal from current
+structure. One list action and its supporting source patches form one undo unit.
+New plain-text and Markdown lists use `- ` or decimal `1. ` markers, with
+sequential numbers across the selected items. Source-visible Markdown displays
+and edits those markers. Rich HTML/RTF markers are generated, have synthetic
+provenance, and are not independently editable source characters.
 
+Deleting complete rich list items consumes their generated labels and selected
+paragraph boundaries as one structural edit. Surviving items retain their
+displayed ordinals. The transaction may add explicit HTML `li value` attributes
+or scoped RTF numbering overrides to preserve those ordinals; source tables and
+unrelated opaque content remain untouched. Partial deletion of a generated
+label remains unsupported. Enter advances following item numbers within the
+same list until an explicit restart or container boundary. HTML `li value`
+restarts bound that change; RTF updates the affected legacy numbering controls
+or adds scoped overrides while preserving table handles. New RTF paragraphs
+clear inherited modern numbering with `\ls0`; the original selector resumes
+at the existing following-paragraph boundary when necessary.
 
+HTML lists use `ul`/`ol` and `li`, retaining unrelated attributes and descendant
+markup. Canonical RTF list paragraphs use scoped groups with `\ls0\li400\fi-200`,
+`\pntext`, and the standard `\pn` destination: `\pnlvlblt` for bullets or
+`\pnlvlbody\pndec\pnstartN` with `\pntxta .` for decimal numbering. Clearing a
+list uses a scoped `\ls0\li0\fi0` and `\pnlvlbody` reset. The scope includes
+the existing paragraph terminator when present so independent RTF readers apply
+its paragraph properties consistently. Existing source outside
+the declared list-control patches remains byte-identical.
+
+Word-style RTF `\listtable` and `\listoverridetable` definitions also project
+decimal and bullet levels selected by `\lsN` and `\ilvlN`. Decimal levels use
+the current level's number followed by a period. Start-at and format overrides,
+nested level restarts, and list indentation are interpreted from their table
+definitions. Cached `\listtext` remains untouched source and does not duplicate
+the generated marker. Body edits retain both tables and their original handles.
+
+Ctrl-Q is an alias for Ctrl-V in every supported Visual Block entry and toggle
+path. Its rectangle resolves each proportional-font row to the nearest legal
+caret/grapheme boundary and produces a logically discontiguous range set.
+Counts, registers, operator execution, repeat, and undo follow the same path as
+Ctrl-V.
+
+Reliability validation includes native input and pointer interaction after font
+metrics invalidation, resizing, wrapping, format changes, and undo/redo. A
+metrics-generation change during layout retries only disposable layout work;
+it never replays an input event or source transaction. Blank canvas beyond a
+fully materialized document edge resolves to that edge. A genuinely missing
+layout region remains an explicit coverage error.

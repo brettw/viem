@@ -115,6 +115,8 @@ struct EVStyleCapabilities: OptionSet, Equatable {
     static let parent = Self(rawValue: UInt32(EVIM_STYLE_CAPABILITY_EDIT_PARENT))
     static let nextStyle = Self(rawValue: UInt32(EVIM_STYLE_CAPABILITY_EDIT_NEXT_STYLE))
     static let displayName = Self(rawValue: UInt32(EVIM_STYLE_CAPABILITY_EDIT_DISPLAY_NAME))
+    static let assign = Self(rawValue: UInt32(EVIM_STYLE_CAPABILITY_ASSIGN))
+    static let delete = Self(rawValue: UInt32(EVIM_STYLE_CAPABILITY_DELETE))
 }
 
 enum EVStyleOrigin: UInt32, Equatable {
@@ -438,6 +440,24 @@ extension EVCoreViewSession {
     }
 
     @discardableResult
+    func editDirectProperty(_ property: EVStyleProperty, value: EVStyleValue?,
+                            expected selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
+        let outcome = try EVCoreStyleBridge.applyDirect(core: document.core, view: viewID,
+            property: property, value: value, selection: selection)
+        finishStyleEdit(outcome)
+        return outcome
+    }
+
+    func decorationState(_ property: EVStyleProperty) throws -> UInt32 {
+        var state: UInt32 = 0
+        let status = evim_core_view_decoration_state(document.core, viewID, property.rawValue, &state)
+        guard status == UInt32(EVIM_STATUS_OK) else {
+            throw EVCoreFrontendError.core(operation: "Read decoration state", status: status)
+        }
+        return state
+    }
+
+    @discardableResult
     func editStyle(
         key: EVStyleKey,
         expected: EVStyleSheetIdentity,
@@ -754,6 +774,32 @@ private enum EVCoreStyleBridge {
             ))
         }
         return EVStyleSheetSnapshot(identity: EVStyleSheetIdentity(info.identity), definitions: decodedDefinitions)
+    }
+
+    static func applyDirect(core: EvimCoreHandle, view: EvimViewId,
+                            property: EVStyleProperty, value: EVStyleValue?,
+                            selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
+        let mutation: EVStyleMutation = value.map { .setDeclaration(property, $0) } ?? .clearDeclaration(property)
+        // Reuse the typed property's arena encoding; no named-style identity is
+        // sent to the direct-edit endpoint.
+        let encoded = EncodedMutation(key: .baseParagraph,
+            expected: EVStyleSheetIdentity(documentID: selection.document_id,
+                documentRevision: selection.document_revision, styleSheetRevision: 0), mutation: mutation)
+        var outcome = EvimCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        let status = encoded.withRequest { encoded in
+            var request = EvimDirectStyleEditV1()
+            request.struct_size = UInt32(MemoryLayout<EvimDirectStyleEditV1>.size)
+            request.operation = encoded.operation
+            request.property = encoded.property
+            request.value = encoded.value
+            request.expected_selection = selection
+            return evim_core_view_edit_direct_style(core, view, &request, &outcome)
+        }
+        guard status == UInt32(EVIM_STATUS_OK) else {
+            throw EVCoreFrontendError.core(operation: "Change direct formatting", status: status)
+        }
+        return outcome
     }
 
     private struct EncodedMutation {

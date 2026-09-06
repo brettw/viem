@@ -775,7 +775,21 @@ impl LayoutSnapshot {
             return Err(LayoutError::InvalidGeometry);
         }
         if !self.coverage.contains_y(point.y) {
-            return Err(LayoutError::OutsideMaterializedCoverage);
+            // The blank canvas before/after the document belongs to its
+            // first/last row. Partial viewport snapshots often contain an
+            // entire short document but retain PartialHardLines coverage.
+            // Only extend hit testing when the actual text endpoint is exact;
+            // missing off-screen text must still request materialization.
+            let before_start = self
+                .rows
+                .first()
+                .is_some_and(|row| row.text_range.start == 0 && point.y < row.y);
+            let after_end = self.rows.last().is_some_and(|row| {
+                row.text_range.end == self.text_len && point.y >= row.y + row.height()
+            });
+            if !before_start && !after_end {
+                return Err(LayoutError::OutsideMaterializedCoverage);
+            }
         }
         let row = self.closest_row(point.y).ok_or(LayoutError::NoRows)?;
         row.carets
@@ -5061,6 +5075,33 @@ mod tests {
         assert!((snapshot.rows[0].ascent - 24.0 * 0.78).abs() < 0.001);
         assert!((snapshot.rows[1].ascent - 14.0 * 0.78).abs() < 0.001);
         assert_eq!(snapshot.rows[0].clusters[0].fallback_font, "SF Pro");
+    }
+
+    #[test]
+    fn markdown_source_marker_edits_invalidate_heading_and_list_layout() {
+        let mut document = Document::from_bytes(
+            "body text\n".repeat(10_000).into_bytes(),
+            Encoding::Utf8,
+            Format::MarkdownSource,
+        )
+        .unwrap();
+        let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
+        let mut view = ViewLayout::new(500.0, 200.0);
+        engine.relayout(&document, &mut view).unwrap();
+        assert!((view.snapshot().unwrap().rows[0].ascent - 14.0 * 0.78).abs() < 0.001);
+        document.insert(0, "# ").unwrap();
+        engine.relayout(&document, &mut view).unwrap();
+        assert!((view.snapshot().unwrap().rows[0].ascent - 24.0 * 0.78).abs() < 0.001);
+        assert!((view.snapshot().unwrap().rows[1].ascent - 14.0 * 0.78).abs() < 0.001);
+        document
+            .set_list_style(0..0, Some(crate::document::ListStyle::Bullet))
+            .unwrap();
+        engine.relayout(&document, &mut view).unwrap();
+        assert!((view.snapshot().unwrap().rows[0].ascent - 14.0 * 0.78).abs() < 0.001);
+        assert_eq!(
+            document.projection().blocks()[0].style,
+            crate::document::StyleId::from("List1")
+        );
     }
 
     #[test]

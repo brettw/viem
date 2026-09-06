@@ -49,6 +49,17 @@ final class EVApplicationDelegate: NSObject,
         false
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            if let document = NSDocumentController.shared.documents.first {
+                document.showWindows()
+            } else {
+                createUntitledDocument()
+            }
+        }
+        return true
+    }
+
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
         var openedAny = false
         for filename in filenames {
@@ -70,6 +81,8 @@ final class EVApplicationDelegate: NSObject,
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [
             .plainText,
+            .html,
+            .rtf,
             UTType(filenameExtension: "md") ?? .plainText,
         ]
         panel.begin { [weak self] response in
@@ -168,6 +181,10 @@ final class EVApplicationDelegate: NSObject,
         switch url.pathExtension.lowercased() {
         case "md", "markdown", "mdown", "mkd":
             EVDocument.markdownType
+        case "html", "htm":
+            EVDocument.htmlType
+        case "rtf":
+            EVDocument.rtfType
         default:
             EVDocument.plainTextType
         }

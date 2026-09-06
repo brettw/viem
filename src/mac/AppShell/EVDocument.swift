@@ -1,15 +1,26 @@
 import AppKit
 import UniformTypeIdentifiers
 
-public enum EVSourceFormat: String, Equatable, Sendable {
+public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable {
     case plainText
     case markdown
+    case markdownSource
+    case html
+    case rtf
 
     public var displayName: String {
         switch self {
         case .plainText: "Plain Text"
-        case .markdown: "Markdown"
+        case .markdown: "Markdown WYSIWYG"
+        case .markdownSource: "Markdown"
+        case .html: "HTML"
+        case .rtf: "RTF"
         }
+    }
+
+    public func hasSameSerialization(as other: Self) -> Bool {
+        self == other || ([Self.markdown, .markdownSource].contains(self)
+            && [Self.markdown, .markdownSource].contains(other))
     }
 }
 
@@ -32,6 +43,9 @@ public final class EVDocument: NSDocument {
     public static let plainTextType = UTType.plainText.identifier
     public static let markdownType = UTType(filenameExtension: "md")?.identifier
         ?? "net.daringfireball.markdown"
+    public static let markdownSourceType = "com.evim.markdown-source"
+    public static let htmlType = UTType.html.identifier
+    public static let rtfType = UTType.rtf.identifier
 
     nonisolated(unsafe) public let editorBackend: any EVDocumentBackend
     private struct ActiveSave {
@@ -59,11 +73,30 @@ public final class EVDocument: NSDocument {
     }
 
     public override class var readableTypes: [String] {
-        [plainTextType, markdownType]
+        [plainTextType, markdownType, htmlType, rtfType]
     }
 
     public override class var writableTypes: [String] {
         readableTypes
+    }
+
+    public override class func isNativeType(_ type: String) -> Bool {
+        readableTypes.contains(type)
+    }
+
+    public override nonisolated func writableTypes(for saveOperation: NSDocument.SaveOperationType) -> [String] {
+        // The format selector owns adapter changes. A native Save panel must
+        // offer the current serialization type, not imply a lossy conversion.
+        (try? onMainActor { [Self.typeName(for: self.editorBackend.sourceFormat)] }) ?? []
+    }
+
+    private static func typeName(for format: EVSourceFormat) -> String {
+        switch format {
+        case .plainText: plainTextType
+        case .markdown, .markdownSource: markdownType
+        case .html: htmlType
+        case .rtf: rtfType
+        }
     }
 
     /// Interactive eVim layout is deliberately continuous and unpaginated.
@@ -248,11 +281,20 @@ public final class EVDocument: NSDocument {
 
     public static func sourceFormat(forTypeName typeName: String) -> EVSourceFormat? {
         let lowered = typeName.lowercased()
+        if lowered == markdownSourceType { return .markdownSource }
+        if [".html", ".htm", htmlType].contains(lowered) || lowered.hasSuffix(".html") {
+            return .html
+        }
+        if lowered == rtfType || lowered == ".rtf" || lowered.hasSuffix(".rtf") {
+            return .rtf
+        }
         if lowered.contains("markdown") || lowered == ".md" || lowered.hasSuffix(".md") {
             return .markdown
         }
 
         if let type = UTType(typeName) {
+            if type.conforms(to: .html) { return .html }
+            if type.conforms(to: .rtf) { return .rtf }
             if let markdown = UTType(filenameExtension: "md"),
                type == markdown || type.conforms(to: markdown)
             {
@@ -281,7 +323,7 @@ public final class EVDocument: NSDocument {
         guard let requestedFormat = sourceFormat(forTypeName: typeName) else {
             throw EVDocumentSerializationError.unsupportedWritableType(typeName)
         }
-        guard requestedFormat == currentFormat else {
+        guard requestedFormat.hasSameSerialization(as: currentFormat) else {
             throw EVDocumentSerializationError.formatConversionUnavailable(
                 current: currentFormat,
                 requested: requestedFormat
@@ -301,6 +343,9 @@ public final class EVDocument: NSDocument {
     }
 
     private func synchronizeEditedState(_ state: EVDocumentPersistenceState) {
+        // The source adapter can change through an undoable status option.
+        // Native save validation must follow that current buffer state.
+        fileType = Self.typeName(for: editorBackend.sourceFormat)
         if state.isDirty {
             if !isDocumentEdited {
                 updateChangeCount(.changeDone)

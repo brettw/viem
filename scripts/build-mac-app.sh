@@ -44,7 +44,10 @@ macos_dir="$contents_dir/MacOS"
 resources_dir="$contents_dir/Resources"
 
 mkdir -p "$macos_dir" "$resources_dir"
-cp "$swift_bin_dir/eVim" "$macos_dir/eVim"
+# A previous development build may still be running. Replace its executable
+# inode atomically instead of truncating bytes mapped by that process.
+cp "$swift_bin_dir/eVim" "$macos_dir/eVim.new"
+mv -f "$macos_dir/eVim.new" "$macos_dir/eVim"
 cp "$project_dir/src/mac/App/Resources/Info.plist" "$contents_dir/Info.plist"
 
 codesign --force --sign - "$app_bundle"

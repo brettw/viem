@@ -1,6 +1,12 @@
 import AppKit
 import Foundation
 
+public enum EVStatusBarOption: Equatable, Sendable {
+    case format(EVSourceFormat)
+    case encoding(UInt32)
+    case lineEnding(UInt32)
+}
+
 /// Presentation-only values shown by the window's status bar.
 public struct EVStatusBarState: Equatable, Sendable {
     public var mode: String
@@ -180,6 +186,11 @@ public protocol EVEditorSurface: AnyObject {
 
     func perform(menuCommand: EVMenuCommand, sender: Any?)
     func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation
+    func perform(statusOption: EVStatusBarOption)
+}
+
+public extension EVEditorSurface {
+    func perform(statusOption: EVStatusBarOption) {}
 }
 
 /// One source-backed document/buffer. Multiple surfaces may share it.

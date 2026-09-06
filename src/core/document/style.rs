@@ -407,6 +407,24 @@ impl Default for StyleSheet {
                 },
             );
         }
+        for level in 1..=16 {
+            let id: StyleId = format!("List{level}").as_str().into();
+            block_styles.insert(
+                id.clone(),
+                BlockStyle {
+                    id,
+                    based_on: Some(paragraph.clone()),
+                    next_paragraph_style: None,
+                    role: BlockRole::Paragraph,
+                    character: CharacterProperties::default(),
+                    block: BlockProperties {
+                        leading_indent: Some(20.0 * level as f32),
+                        first_line_indent: Some(-20.0),
+                        ..BlockProperties::default()
+                    },
+                },
+            );
+        }
         let mut character_styles = BTreeMap::new();
         character_styles.insert(
             character.clone(),
@@ -429,6 +447,12 @@ impl Default for StyleSheet {
             block_metadata.insert(
                 StyleId(format!("Heading{level}")),
                 StyleDefinitionMetadata::generated(format!("Heading {level}")),
+            );
+        }
+        for level in 1..=16 {
+            block_metadata.insert(
+                StyleId(format!("List{level}")),
+                StyleDefinitionMetadata::generated(format!("List Level {level}")),
             );
         }
         let mut character_metadata = BTreeMap::new();
@@ -949,12 +973,36 @@ impl StyleSheet {
         id: &StyleId,
         edit: &StyleDefinitionFieldEdit,
     ) -> Result<StyleDefinitionEdit, StyleError> {
+        self.prepare_definition_field_edit(
+            namespace,
+            id,
+            edit,
+            StyleDefinitionOrigin::GeneratedConfiguration,
+        )
+    }
+
+    pub(crate) fn prepare_source_field_edit(
+        &self,
+        namespace: StyleNamespace,
+        id: &StyleId,
+        edit: &StyleDefinitionFieldEdit,
+    ) -> Result<StyleDefinitionEdit, StyleError> {
+        self.prepare_definition_field_edit(namespace, id, edit, StyleDefinitionOrigin::SourceBacked)
+    }
+
+    fn prepare_definition_field_edit(
+        &self,
+        namespace: StyleNamespace,
+        id: &StyleId,
+        edit: &StyleDefinitionFieldEdit,
+        required_origin: StyleDefinitionOrigin,
+    ) -> Result<StyleDefinitionEdit, StyleError> {
         let metadata = match namespace {
             StyleNamespace::Block => self.block_style_metadata(id),
             StyleNamespace::Character => self.character_style_metadata(id),
         }
         .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?;
-        if metadata.origin != StyleDefinitionOrigin::GeneratedConfiguration {
+        if metadata.origin != required_origin {
             return Err(StyleError::DefinitionNotGeneratedConfiguration {
                 style: id.clone(),
                 origin: metadata.origin,
@@ -1007,6 +1055,35 @@ impl StyleSheet {
         revision: StyleSheetRevision,
         has_assignment: bool,
     ) -> Result<bool, StyleError> {
+        self.apply_definition_edit(
+            edit,
+            revision,
+            has_assignment,
+            StyleDefinitionOrigin::GeneratedConfiguration,
+        )
+    }
+
+    pub(crate) fn apply_source_edit(
+        &mut self,
+        edit: &StyleDefinitionEdit,
+        revision: StyleSheetRevision,
+        has_assignment: bool,
+    ) -> Result<bool, StyleError> {
+        self.apply_definition_edit(
+            edit,
+            revision,
+            has_assignment,
+            StyleDefinitionOrigin::SourceBacked,
+        )
+    }
+
+    fn apply_definition_edit(
+        &mut self,
+        edit: &StyleDefinitionEdit,
+        revision: StyleSheetRevision,
+        has_assignment: bool,
+        required_origin: StyleDefinitionOrigin,
+    ) -> Result<bool, StyleError> {
         let (origin, id) = match edit {
             StyleDefinitionEdit::InsertBlock { style, metadata } => (metadata.origin, &style.id),
             StyleDefinitionEdit::InsertCharacter { style, metadata } => {
@@ -1046,7 +1123,7 @@ impl StyleSheet {
                 id,
             ),
         };
-        if origin != StyleDefinitionOrigin::GeneratedConfiguration {
+        if origin != required_origin {
             return Err(StyleError::DefinitionNotGeneratedConfiguration {
                 style: id.clone(),
                 origin,
@@ -1111,6 +1188,9 @@ impl StyleSheet {
                 id,
                 metadata,
             } => {
+                if metadata.origin != origin {
+                    return Err(StyleError::InvalidDefinitionMetadata(id.clone()));
+                }
                 validate_definition_metadata(id, metadata)?;
                 let current = match namespace {
                     StyleNamespace::Block => candidate.block_metadata.get_mut(id),
@@ -1131,6 +1211,140 @@ impl StyleSheet {
         candidate.revision = revision;
         *self = candidate;
         Ok(true)
+    }
+
+    /// Import a complete native definition graph before validating references,
+    /// so source order never controls parent/next-style resolution.
+    pub(crate) fn install_source_definitions(
+        &mut self,
+        definitions: &[StyleDefinitionEdit],
+    ) -> Result<(), StyleError> {
+        let mut candidate = self.clone();
+        for definition in definitions {
+            match definition {
+                StyleDefinitionEdit::InsertBlock { style, metadata } => {
+                    validate_definition_metadata(&style.id, metadata)?;
+                    candidate
+                        .block_styles
+                        .insert(style.id.clone(), style.clone());
+                    candidate
+                        .block_metadata
+                        .insert(style.id.clone(), metadata.clone());
+                }
+                StyleDefinitionEdit::InsertCharacter { style, metadata } => {
+                    validate_definition_metadata(&style.id, metadata)?;
+                    candidate
+                        .character_styles
+                        .insert(style.id.clone(), style.clone());
+                    candidate
+                        .character_metadata
+                        .insert(style.id.clone(), metadata.clone());
+                }
+                _ => {
+                    return Err(StyleError::InvalidDefinitionMetadata(
+                        definition.style_id().clone(),
+                    ))
+                }
+            }
+        }
+        for style in candidate.block_styles.values() {
+            validate_character_properties(&style.id, &style.character)?;
+            validate_block_properties(style)?;
+            if style.id != candidate.base_document {
+                candidate.validate_block_parent(style)?;
+            }
+            candidate.validate_next_paragraph_style(style)?;
+        }
+        for style in candidate.character_styles.values() {
+            validate_character_properties(&style.id, &style.properties)?;
+            if let Some(parent) = &style.based_on {
+                if !candidate.character_styles.contains_key(parent) {
+                    return Err(StyleError::UnknownStyle(parent.clone()));
+                }
+            }
+        }
+        candidate.validate_block_cycles()?;
+        candidate.validate_character_cycles()?;
+        *self = candidate;
+        Ok(())
+    }
+
+    pub(crate) fn mark_html_base_styles_source_backed(&mut self) {
+        for (id, metadata) in &mut self.block_metadata {
+            if id == &self.base_document
+                || id == &self.base_paragraph
+                || id.0.starts_with("Heading")
+            {
+                metadata.origin = StyleDefinitionOrigin::SourceBacked;
+            }
+        }
+    }
+
+    /// A source-backed deletion removes references in the same transaction.
+    /// Children inherit from the deleted style's parent; following-paragraph
+    /// references use its declared successor or Base Paragraph.
+    pub(crate) fn rebase_source_references_for_delete(
+        &mut self,
+        edit: &StyleDefinitionEdit,
+        revision: StyleSheetRevision,
+    ) -> Result<(), StyleError> {
+        match edit {
+            StyleDefinitionEdit::DeleteCharacter(id) => {
+                let parent = self
+                    .character_style(id)
+                    .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?
+                    .based_on
+                    .clone();
+                let changed = self
+                    .character_styles()
+                    .filter(|style| style.based_on.as_ref() == Some(id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for mut style in changed {
+                    style.based_on = parent.clone();
+                    self.apply_source_edit(
+                        &StyleDefinitionEdit::UpdateCharacter(style),
+                        revision,
+                        false,
+                    )?;
+                }
+            }
+            StyleDefinitionEdit::DeleteBlock(id) => {
+                let deleted = self
+                    .block_style(id)
+                    .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?;
+                let parent = deleted.based_on.clone();
+                let next = deleted
+                    .next_paragraph_style
+                    .clone()
+                    .filter(|next| next != id)
+                    .or_else(|| Some(self.base_paragraph.clone()));
+                let changed = self
+                    .block_styles()
+                    .filter(|style| {
+                        &style.id != id
+                            && (style.based_on.as_ref() == Some(id)
+                                || style.next_paragraph_style.as_ref() == Some(id))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for mut style in changed {
+                    if style.based_on.as_ref() == Some(id) {
+                        style.based_on = parent.clone();
+                    }
+                    if style.next_paragraph_style.as_ref() == Some(id) {
+                        style.next_paragraph_style = next.clone();
+                    }
+                    self.apply_source_edit(
+                        &StyleDefinitionEdit::UpdateBlock(style),
+                        revision,
+                        false,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Build the transitive reverse-inheritance index for this immutable style
@@ -1899,7 +2113,7 @@ fn apply_character_field_edit(
     }
 }
 
-fn is_character_property(property: StyleProperty) -> bool {
+pub(crate) fn is_character_property(property: StyleProperty) -> bool {
     CHARACTER_STYLE_PROPERTIES.contains(&property)
 }
 
@@ -1917,7 +2131,7 @@ fn inapplicable_style_property(style: &StyleId, property: StyleProperty) -> Styl
     }
 }
 
-fn set_character_property(
+pub(super) fn set_character_property(
     style: &StyleId,
     properties: &mut CharacterProperties,
     property: StyleProperty,
@@ -1971,7 +2185,7 @@ fn set_character_property(
     Ok(())
 }
 
-fn clear_character_property(
+pub(super) fn clear_character_property(
     style: &StyleId,
     properties: &mut CharacterProperties,
     property: StyleProperty,
@@ -1995,7 +2209,7 @@ fn clear_character_property(
     Ok(())
 }
 
-fn set_block_property(
+pub(super) fn set_block_property(
     style: &StyleId,
     properties: &mut BlockProperties,
     property: StyleProperty,
@@ -2049,7 +2263,7 @@ fn set_block_property(
     Ok(())
 }
 
-fn clear_block_property(
+pub(super) fn clear_block_property(
     style: &StyleId,
     properties: &mut BlockProperties,
     property: StyleProperty,
@@ -2073,7 +2287,7 @@ fn clear_block_property(
     Ok(())
 }
 
-fn validate_character_properties(
+pub(super) fn validate_character_properties(
     id: &StyleId,
     properties: &CharacterProperties,
 ) -> Result<(), StyleError> {
@@ -2142,7 +2356,10 @@ fn validate_block_properties(style: &BlockStyle) -> Result<(), StyleError> {
     validate_block_property_values(&style.id, block)
 }
 
-fn validate_block_property_values(id: &StyleId, block: &BlockProperties) -> Result<(), StyleError> {
+pub(super) fn validate_block_property_values(
+    id: &StyleId,
+    block: &BlockProperties,
+) -> Result<(), StyleError> {
     let finite = [
         block.spacing_before,
         block.spacing_after,

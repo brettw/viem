@@ -1188,6 +1188,403 @@ fn core_create_detects_encoding_losslessly_and_explicit_values_remain_forced() {
 }
 
 #[test]
+fn native_named_style_create_delete_are_sparse_revision_bound_and_undoable() {
+    for (format, original, prefix) in [
+        (
+            EVIM_FORMAT_HTML,
+            b"<p data-x='keep'>Text</p>".as_slice(),
+            "Custom",
+        ),
+        (EVIM_FORMAT_RTF, br"{\rtf1 Text}".as_slice(), "Rtf"),
+    ] {
+        let core = create_core(
+            original,
+            EvimDocumentOptions {
+                format,
+                ..Default::default()
+            },
+        );
+        let mut provider = Box::new(FakeProviderContext::new(core.handle));
+        let (view, mut outcome) = add_test_view(&core, provider.as_mut());
+        let query = || {
+            let mut info = EvimStyleSheetInfoV1::default();
+            assert_eq!(
+                unsafe { evim_core_style_sheet_info(core.handle, &mut info) },
+                EvimStatus::Ok
+            );
+            info.identity
+        };
+        for (namespace, suffix) in [
+            (EVIM_STYLE_NAMESPACE_BLOCK, "P7"),
+            (EVIM_STYLE_NAMESPACE_CHARACTER, "C4"),
+        ] {
+            let id = format!("{prefix}{suffix}");
+            let request = EvimCreateStyleV1 {
+                struct_size: EVIM_CREATE_STYLE_V1_SIZE,
+                namespace,
+                identity: query(),
+                style_id: utf8_slice(id.as_bytes()),
+                display_name: utf8_slice("Sparse α".as_bytes()),
+                parent_id: EvimUtf8Slice::default(),
+                next_style_id: EvimUtf8Slice::default(),
+            };
+            assert_eq!(
+                unsafe { evim_core_view_create_style(core.handle, view, &request, &mut outcome) },
+                EvimStatus::Ok,
+                "format {format}"
+            );
+            assert_eq!(
+                unsafe { evim_core_view_create_style(core.handle, view, &request, &mut outcome) },
+                EvimStatus::StaleRevision
+            );
+            let created = copy_core_bytes(
+                evim_core_copy_source_bytes,
+                &core,
+                document_state(&core).document_revision,
+            );
+            assert_ne!(created, original);
+            assert_eq!(
+                copy_core_bytes(
+                    evim_core_copy_formatted_utf8,
+                    &core,
+                    document_state(&core).document_revision
+                ),
+                b"Text"
+            );
+            let deletion = EvimDeleteStyleV1 {
+                struct_size: EVIM_DELETE_STYLE_V1_SIZE,
+                namespace,
+                identity: query(),
+                style_id: utf8_slice(id.as_bytes()),
+            };
+            assert_eq!(
+                unsafe { evim_core_view_delete_style(core.handle, view, &deletion, &mut outcome) },
+                EvimStatus::Ok,
+                "format {format}"
+            );
+            assert_eq!(
+                unsafe { evim_core_view_delete_style(core.handle, view, &deletion, &mut outcome) },
+                EvimStatus::StaleRevision
+            );
+            assert_eq!(
+                unsafe { evim_core_view_undo(core.handle, view, &mut outcome) },
+                EvimStatus::Ok
+            );
+            assert_eq!(
+                copy_core_bytes(
+                    evim_core_copy_source_bytes,
+                    &core,
+                    document_state(&core).document_revision
+                ),
+                created
+            );
+            assert_eq!(
+                unsafe { evim_core_view_undo(core.handle, view, &mut outcome) },
+                EvimStatus::Ok
+            );
+            assert_eq!(
+                copy_core_bytes(
+                    evim_core_copy_source_bytes,
+                    &core,
+                    document_state(&core).document_revision
+                ),
+                original
+            );
+        }
+    }
+}
+
+#[test]
+fn native_named_style_assignment_checks_selection_sheet_and_preserves_history() {
+    use evim_core::document::*;
+    let mut source = Document::from_bytes(
+        b"<p data-x='keep'>Alpha</p><p>Beta</p>".to_vec(),
+        Encoding::Utf8,
+        Format::Html,
+    )
+    .unwrap();
+    source
+        .apply_style_request(StyleModelRequest::new(
+            source.id(),
+            source.revision(),
+            StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
+                origin: StyleDefinitionOrigin::SourceBacked,
+                edit: StyleDefinitionEdit::InsertCharacter {
+                    style: CharacterStyle {
+                        id: "Accent".into(),
+                        based_on: Some("Character".into()),
+                        properties: CharacterProperties {
+                            underline: Some(true),
+                            ..Default::default()
+                        },
+                    },
+                    metadata: StyleDefinitionMetadata {
+                        display_name: "Accent".into(),
+                        origin: StyleDefinitionOrigin::SourceBacked,
+                    },
+                },
+            }),
+        ))
+        .unwrap();
+    let original = source.source_bytes();
+    let core = create_core(
+        &original,
+        EvimDocumentOptions {
+            format: EVIM_FORMAT_HTML,
+            ..Default::default()
+        },
+    );
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, mut outcome) = add_test_view(&core, provider.as_mut());
+    let query = || {
+        let mut sheet = EvimStyleSheetInfoV1::default();
+        let mut selection = EvimLogicalSelectionIdentityV1::default();
+        assert_eq!(
+            unsafe { evim_core_style_sheet_info(core.handle, &mut sheet) },
+            EvimStatus::Ok
+        );
+        assert_eq!(
+            unsafe { evim_core_view_list_selection(core.handle, view, &mut selection) },
+            EvimStatus::Ok
+        );
+        (sheet.identity, selection)
+    };
+    let (identity, expected_selection) = query();
+    let heading = b"Heading2";
+    let request = EvimAssignStyleV1 {
+        struct_size: EVIM_ASSIGN_STYLE_V1_SIZE,
+        namespace: EVIM_STYLE_NAMESPACE_BLOCK,
+        identity,
+        expected_selection,
+        style_id: EvimUtf8Slice {
+            data: heading.as_ptr(),
+            length: heading.len() as u64,
+        },
+    };
+    let mut stale = request;
+    stale.identity.style_sheet_revision += 1;
+    assert_eq!(
+        unsafe { evim_core_view_assign_style(core.handle, view, &stale, &mut outcome) },
+        EvimStatus::StaleRevision
+    );
+    assert_eq!(
+        unsafe { evim_core_view_assign_style(core.handle, view, &request, &mut outcome) },
+        EvimStatus::Ok
+    );
+    let state = document_state(&core);
+    let rewritten = copy_core_bytes(evim_core_copy_source_bytes, &core, state.document_revision);
+    assert!(String::from_utf8(rewritten.clone())
+        .unwrap()
+        .contains("<h2 data-x='keep'>Alpha</h2><p>Beta</p>"));
+    assert_eq!(
+        unsafe { evim_core_view_assign_style(core.handle, view, &request, &mut outcome) },
+        EvimStatus::StaleRevision
+    );
+    assert_eq!(
+        unsafe { evim_core_view_undo(core.handle, view, &mut outcome) },
+        EvimStatus::Ok
+    );
+    assert_eq!(
+        copy_core_bytes(
+            evim_core_copy_source_bytes,
+            &core,
+            document_state(&core).document_revision
+        ),
+        original
+    );
+
+    for character in ['v', 'l'] {
+        assert_eq!(
+            unsafe {
+                evim_core_view_send_key(
+                    core.handle,
+                    view,
+                    &key(EVIM_KEY_CHARACTER, character as u32),
+                    &mut outcome,
+                )
+            },
+            EvimStatus::Ok
+        );
+    }
+    let (identity, expected_selection) = query();
+    let accent = b"Accent";
+    let request = EvimAssignStyleV1 {
+        namespace: EVIM_STYLE_NAMESPACE_CHARACTER,
+        identity,
+        expected_selection,
+        style_id: EvimUtf8Slice {
+            data: accent.as_ptr(),
+            length: accent.len() as u64,
+        },
+        ..request
+    };
+    assert_eq!(
+        unsafe {
+            evim_core_view_send_key(core.handle, view, &key(EVIM_KEY_RIGHT, 0), &mut outcome)
+        },
+        EvimStatus::Ok
+    );
+    assert_eq!(
+        unsafe { evim_core_view_assign_style(core.handle, view, &request, &mut outcome) },
+        EvimStatus::StaleRevision
+    );
+    let (_, expected_selection) = query();
+    let request = EvimAssignStyleV1 {
+        expected_selection,
+        ..request
+    };
+    assert_eq!(
+        unsafe { evim_core_view_assign_style(core.handle, view, &request, &mut outcome) },
+        EvimStatus::Ok
+    );
+    let rewritten = copy_core_bytes(
+        evim_core_copy_source_bytes,
+        &core,
+        document_state(&core).document_revision,
+    );
+    assert!(String::from_utf8(rewritten)
+        .unwrap()
+        .contains("<span class=\"evim-c-416363656e74\">Alp</span>ha"));
+    assert_eq!(
+        unsafe { evim_core_view_undo(core.handle, view, &mut outcome) },
+        EvimStatus::Ok
+    );
+    assert_eq!(
+        copy_core_bytes(
+            evim_core_copy_source_bytes,
+            &core,
+            document_state(&core).document_revision
+        ),
+        original
+    );
+}
+
+#[test]
+fn native_paragraph_style_request_is_revision_and_selection_checked() {
+    let core = create_core(
+        b"Heading\nBody",
+        EvimDocumentOptions {
+            format: EVIM_FORMAT_MARKDOWN_SOURCE,
+            ..Default::default()
+        },
+    );
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, _) = add_test_view(&core, provider.as_mut());
+    let mut selection = EvimLogicalSelectionIdentityV1::default();
+    assert_eq!(
+        unsafe { evim_core_view_list_selection(core.handle, view, &mut selection) },
+        EvimStatus::Ok
+    );
+    let mut outcome = EvimCoreOutcomeV1::default();
+    let request = EvimSetParagraphStyleV1 {
+        struct_size: EVIM_SET_PARAGRAPH_STYLE_V1_SIZE,
+        level: 2,
+        expected_selection: selection,
+    };
+    assert_eq!(
+        unsafe { evim_core_view_set_paragraph_style(core.handle, view, &request, &mut outcome) },
+        EvimStatus::Ok
+    );
+    let state = document_state(&core);
+    assert_eq!(
+        copy_core_bytes(
+            evim_core_copy_formatted_utf8,
+            &core,
+            state.document_revision
+        ),
+        b"## Heading\nBody"
+    );
+    assert_eq!(
+        unsafe { evim_core_view_set_paragraph_style(core.handle, view, &request, &mut outcome) },
+        EvimStatus::StaleRevision
+    );
+    let invalid = EvimSetParagraphStyleV1 {
+        level: 7,
+        ..request
+    };
+    assert_eq!(
+        unsafe { evim_core_view_set_paragraph_style(core.handle, view, &invalid, &mut outcome) },
+        EvimStatus::InvalidArgument
+    );
+}
+
+#[test]
+fn native_format_encoding_and_list_requests_validate_exact_identity() {
+    let core = create_core(b"__alpha__\nbeta", EvimDocumentOptions::default());
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, _) = add_test_view(&core, provider.as_mut());
+    let state = document_state(&core);
+    let mut outcome = EvimCoreOutcomeV1::default();
+    let format = EvimSetFormatV1 {
+        struct_size: EVIM_SET_FORMAT_V1_SIZE,
+        format: EVIM_FORMAT_MARKDOWN,
+        document_id: state.document_id,
+        document_revision: state.document_revision,
+    };
+    assert_eq!(
+        unsafe { evim_core_view_set_format(core.handle, view, &format, &mut outcome) },
+        EvimStatus::Ok
+    );
+    let changed = document_state(&core);
+    assert_eq!(changed.format, EVIM_FORMAT_MARKDOWN);
+    assert_eq!(
+        copy_core_bytes(
+            evim_core_copy_source_bytes,
+            &core,
+            changed.document_revision
+        ),
+        b"__alpha__\nbeta"
+    );
+    assert_eq!(
+        copy_core_bytes(
+            evim_core_copy_formatted_utf8,
+            &core,
+            changed.document_revision
+        ),
+        b"alpha\nbeta"
+    );
+    assert_eq!(
+        unsafe { evim_core_view_set_format(core.handle, view, &format, &mut outcome) },
+        EvimStatus::StaleRevision
+    );
+    let encoding = EvimSetEncodingV1 {
+        struct_size: EVIM_SET_ENCODING_V1_SIZE,
+        encoding: EVIM_ENCODING_UTF16_LE,
+        document_id: changed.document_id,
+        document_revision: changed.document_revision,
+    };
+    assert_eq!(
+        unsafe { evim_core_view_set_encoding(core.handle, view, &encoding, &mut outcome) },
+        EvimStatus::Ok
+    );
+    let changed = document_state(&core);
+    assert_eq!(changed.encoding, EVIM_ENCODING_UTF16_LE);
+    let mut selection = EvimLogicalSelectionIdentityV1::default();
+    assert_eq!(
+        unsafe { evim_core_view_list_selection(core.handle, view, &mut selection) },
+        EvimStatus::Ok
+    );
+    assert_eq!(selection.kind, EVIM_LOGICAL_SELECTION_KIND_NONE);
+    let list = EvimSetListStyleV1 {
+        struct_size: EVIM_SET_LIST_STYLE_V1_SIZE,
+        style: EVIM_LIST_STYLE_BULLET,
+        expected_selection: selection,
+    };
+    assert_eq!(
+        unsafe { evim_core_view_set_list_style(core.handle, view, &list, &mut outcome) },
+        EvimStatus::Ok
+    );
+    assert_eq!(
+        unsafe { evim_core_view_set_list_style(core.handle, view, &list, &mut outcome) },
+        EvimStatus::StaleRevision
+    );
+    assert_eq!(
+        unsafe { evim_core_view_set_format(core.handle, view, ptr::null(), &mut outcome) },
+        EvimStatus::NullPointer
+    );
+}
+
+#[test]
 fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
     let source = "\u{feff}**a**\r\n"
         .encode_utf16()
@@ -3759,6 +4156,12 @@ fn public_c_header_typechecks_every_v3_layout_against_rust() {
 #include "evim_core.h"
 #include <stddef.h>
 _Static_assert(EVIM_CORE_ABI_VERSION == {abi}, "ABI version");
+_Static_assert(sizeof(EvimDirectStyleEditV1) == {direct_style_edit}, "direct style size");
+_Static_assert(_Alignof(EvimDirectStyleEditV1) == {direct_style_align}, "direct style alignment");
+_Static_assert(offsetof(EvimDirectStyleEditV1, expected_selection) == {direct_style_selection}, "direct style selection offset");
+_Static_assert(offsetof(EvimDirectStyleEditV1, value) == {direct_style_value}, "direct style value offset");
+static EvimStatus (*direct_style)(EvimCoreHandle, EvimViewId, const EvimDirectStyleEditV1 *, EvimCoreOutcomeV1 *) = evim_core_view_edit_direct_style;
+static EvimStatus (*decoration_state)(EvimCoreHandle, EvimViewId, uint32_t, uint32_t *) = evim_core_view_decoration_state;
 _Static_assert(EVIM_ENCODING_DETECT == 0u, "automatic encoding choice");
 _Static_assert(EVIM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V1 == 1u,
     "provider ABI v1");
@@ -4059,6 +4462,12 @@ _Static_assert(sizeof(EvimVisualSelectionRectangleV1) == {visual_selection_recta
 _Static_assert(EVIM_VISUAL_SELECTION_RECTANGLE_V1_SIZE == sizeof(EvimVisualSelectionRectangleV1),
     "Visual-selection rectangle size macro");
 _Static_assert(sizeof(EvimPlaceCursorV1) == {place_cursor}, "place cursor");
+_Static_assert(sizeof(EvimAssignStyleV1) == {assign_style}, "assign style");
+_Static_assert(EVIM_ASSIGN_STYLE_V1_SIZE == sizeof(EvimAssignStyleV1), "assign style size macro");
+_Static_assert(sizeof(EvimCreateStyleV1) == {create_style}, "create style");
+_Static_assert(EVIM_CREATE_STYLE_V1_SIZE == sizeof(EvimCreateStyleV1), "create style size macro");
+_Static_assert(sizeof(EvimDeleteStyleV1) == {delete_style}, "delete style");
+_Static_assert(EVIM_DELETE_STYLE_V1_SIZE == sizeof(EvimDeleteStyleV1), "delete style size macro");
 _Static_assert(sizeof(EvimSetFileFormatV1) == {set_file_format},
     "set file format");
 _Static_assert(EVIM_SET_FILE_FORMAT_V1_SIZE == sizeof(EvimSetFileFormatV1),
@@ -4171,6 +4580,12 @@ static void typecheck(void) {{
   EvimStatus (*edit_style)(EvimCoreHandle, EvimViewId,
       const EvimStyleEditV1 *, EvimCoreOutcomeV1 *) =
       evim_core_view_edit_style;
+  EvimStatus (*assign_style)(EvimCoreHandle, EvimViewId,
+      const EvimAssignStyleV1 *, EvimCoreOutcomeV1 *) = evim_core_view_assign_style;
+  EvimStatus (*create_style)(EvimCoreHandle, EvimViewId,
+      const EvimCreateStyleV1 *, EvimCoreOutcomeV1 *) = evim_core_view_create_style;
+  EvimStatus (*delete_style)(EvimCoreHandle, EvimViewId,
+      const EvimDeleteStyleV1 *, EvimCoreOutcomeV1 *) = evim_core_view_delete_style;
   EvimStatus (*begin_style_group)(EvimCoreHandle, EvimViewId,
       const EvimStyleSheetIdentityV1 *, EvimStyleEditGroupV1 *) =
       evim_core_view_begin_style_edit_group;
@@ -4245,6 +4660,8 @@ static void typecheck(void) {{
   (void)set_viewport_origin; (void)set_scale;
   (void)set_linebreak; (void)set_file_format;
   (void)edit_style; (void)begin_style_group; (void)edit_style_in_group;
+  (void)assign_style;
+  (void)create_style; (void)delete_style;
   (void)end_style_group;
   (void)send_key;
   (void)send_text; (void)send_key_with_host_context;
@@ -4257,6 +4674,10 @@ static void typecheck(void) {{
 }}
 "#,
         abi = EVIM_CORE_ABI_VERSION,
+        direct_style_edit = std::mem::size_of::<EvimDirectStyleEditV1>(),
+        direct_style_align = std::mem::align_of::<EvimDirectStyleEditV1>(),
+        direct_style_selection = std::mem::offset_of!(EvimDirectStyleEditV1, expected_selection),
+        direct_style_value = std::mem::offset_of!(EvimDirectStyleEditV1, value),
         document_options = std::mem::size_of::<EvimDocumentOptions>(),
         document_state = std::mem::size_of::<EvimDocumentStateV1>(),
         formatted_identity = std::mem::size_of::<EvimFormattedSnapshotIdentityV1>(),
@@ -4328,6 +4749,9 @@ static void typecheck(void) {{
         visual_selection_segment = std::mem::size_of::<EvimVisualSelectionSegmentV1>(),
         visual_selection_rectangle = std::mem::size_of::<EvimVisualSelectionRectangleV1>(),
         place_cursor = std::mem::size_of::<EvimPlaceCursorV1>(),
+        assign_style = std::mem::size_of::<EvimAssignStyleV1>(),
+        create_style = std::mem::size_of::<EvimCreateStyleV1>(),
+        delete_style = std::mem::size_of::<EvimDeleteStyleV1>(),
         set_file_format = std::mem::size_of::<EvimSetFileFormatV1>(),
         mark_saved = std::mem::size_of::<EvimMarkSavedV1>(),
         key = std::mem::size_of::<EvimKeyInputV1>(),
@@ -4352,5 +4776,565 @@ static void typecheck(void) {{
         output.status.success(),
         "header did not match Rust ABI:\n{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn native_direct_properties_and_decoration_queries_are_typed_exact_and_undoable() {
+    use evim_core::document::{Document, Encoding, Format, ParagraphAlignment};
+    for (format, source, adapter) in [
+        (
+            EVIM_FORMAT_HTML,
+            "<p data-x='keep'>Alpha</p><p>Beta</p>",
+            Format::Html,
+        ),
+        (EVIM_FORMAT_RTF, r"{\rtf1 Alpha\par Beta}", Format::Rtf),
+    ] {
+        let core = create_core(
+            source.as_bytes(),
+            EvimDocumentOptions {
+                format,
+                ..Default::default()
+            },
+        );
+        let mut provider = Box::new(FakeProviderContext::new(core.handle));
+        let (view, mut outcome) = add_test_view(&core, provider.as_mut());
+        let selection = || {
+            let mut value = EvimLogicalSelectionIdentityV1::default();
+            assert_eq!(
+                unsafe { evim_core_view_list_selection(core.handle, view, &mut value) },
+                EvimStatus::Ok
+            );
+            value
+        };
+        let bytes = || {
+            copy_core_bytes(
+                evim_core_copy_source_bytes,
+                &core,
+                document_state(&core).document_revision,
+            )
+        };
+        let mut request = EvimDirectStyleEditV1 {
+            struct_size: EVIM_DIRECT_STYLE_EDIT_V1_SIZE,
+            operation: EVIM_STYLE_EDIT_SET_DECLARATION,
+            property: EVIM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT,
+            expected_selection: selection(),
+            value: EvimStyleEditValueV1 {
+                kind: EVIM_STYLE_VALUE_PARAGRAPH_ALIGNMENT,
+                enum_value: EVIM_STYLE_PARAGRAPH_ALIGNMENT_CENTER,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut invalid = request;
+        invalid.value.kind = EVIM_STYLE_VALUE_BOOLEAN;
+        assert_eq!(
+            unsafe { evim_core_view_edit_direct_style(core.handle, view, &invalid, &mut outcome) },
+            EvimStatus::InvalidStyleValue
+        );
+        invalid = request;
+        invalid.property = u32::MAX;
+        assert_eq!(
+            unsafe { evim_core_view_edit_direct_style(core.handle, view, &invalid, &mut outcome) },
+            EvimStatus::InvalidStyleValue
+        );
+        invalid = request;
+        invalid.reserved = 1;
+        assert_eq!(
+            unsafe { evim_core_view_edit_direct_style(core.handle, view, &invalid, &mut outcome) },
+            EvimStatus::InvalidArgument
+        );
+        assert_eq!(bytes(), source.as_bytes());
+        assert_eq!(
+            unsafe { evim_core_view_edit_direct_style(core.handle, view, &request, &mut outcome) },
+            EvimStatus::Ok,
+            "format {format}"
+        );
+        let reopened = Document::from_bytes(bytes(), Encoding::Utf8, adapter).unwrap();
+        assert_eq!(
+            reopened.projection().blocks()[0].direct_paragraph.alignment,
+            Some(ParagraphAlignment::Center)
+        );
+        assert_eq!(
+            reopened.projection().blocks()[1].direct_paragraph.alignment,
+            None
+        );
+        assert_eq!(
+            unsafe { evim_core_view_edit_direct_style(core.handle, view, &request, &mut outcome) },
+            EvimStatus::StaleRevision
+        );
+        assert_eq!(
+            unsafe { evim_core_view_undo(core.handle, view, &mut outcome) },
+            EvimStatus::Ok
+        );
+        assert_eq!(bytes(), source.as_bytes());
+        for character in ['v', 'l'] {
+            assert_eq!(
+                unsafe {
+                    evim_core_view_send_key(
+                        core.handle,
+                        view,
+                        &key(EVIM_KEY_CHARACTER, character as u32),
+                        &mut outcome,
+                    )
+                },
+                EvimStatus::Ok
+            );
+        }
+        request.expected_selection = selection();
+        request.property = EVIM_STYLE_PROPERTY_CHARACTER_UNDERLINE;
+        request.value = EvimStyleEditValueV1 {
+            kind: EVIM_STYLE_VALUE_BOOLEAN,
+            enum_value: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            unsafe {
+                evim_core_view_send_key(core.handle, view, &key(EVIM_KEY_RIGHT, 0), &mut outcome)
+            },
+            EvimStatus::Ok
+        );
+        assert_eq!(
+            unsafe { evim_core_view_edit_direct_style(core.handle, view, &request, &mut outcome) },
+            EvimStatus::StaleRevision
+        );
+        assert_eq!(bytes(), source.as_bytes());
+        for property in [
+            EVIM_STYLE_PROPERTY_CHARACTER_UNDERLINE,
+            EVIM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH,
+        ] {
+            assert_eq!(
+                unsafe {
+                    evim_core_view_send_key(
+                        core.handle,
+                        view,
+                        &key(EVIM_KEY_ESCAPE, 0),
+                        &mut outcome,
+                    )
+                },
+                EvimStatus::Ok
+            );
+            for character in ['0', 'v', 'l', 'l'] {
+                assert_eq!(
+                    unsafe {
+                        evim_core_view_send_key(
+                            core.handle,
+                            view,
+                            &key(EVIM_KEY_CHARACTER, character as u32),
+                            &mut outcome,
+                        )
+                    },
+                    EvimStatus::Ok
+                );
+            }
+            request.expected_selection = selection();
+            request.property = property;
+            request.value.enum_value = 1;
+            let mut state = u32::MAX;
+            assert_eq!(
+                unsafe { evim_core_view_decoration_state(core.handle, view, property, &mut state) },
+                EvimStatus::Ok
+            );
+            assert_eq!(state, EVIM_SEMANTIC_STYLE_STATE_OFF);
+            assert_eq!(
+                unsafe {
+                    evim_core_view_edit_direct_style(core.handle, view, &request, &mut outcome)
+                },
+                EvimStatus::Ok,
+                "format {format} property {property}"
+            );
+            assert_eq!(
+                unsafe { evim_core_view_decoration_state(core.handle, view, property, &mut state) },
+                EvimStatus::Ok
+            );
+            assert_eq!(state, EVIM_SEMANTIC_STYLE_STATE_ON);
+            assert_eq!(
+                unsafe {
+                    evim_core_view_send_key(
+                        core.handle,
+                        view,
+                        &key(EVIM_KEY_RIGHT, 0),
+                        &mut outcome,
+                    )
+                },
+                EvimStatus::Ok
+            );
+            assert_eq!(
+                unsafe { evim_core_view_decoration_state(core.handle, view, property, &mut state) },
+                EvimStatus::Ok
+            );
+            assert_eq!(
+                state,
+                EVIM_SEMANTIC_STYLE_STATE_MIXED,
+                "format {format} property {property} selection {:?} source {}",
+                selection(),
+                String::from_utf8_lossy(&bytes())
+            );
+            assert_eq!(
+                unsafe {
+                    evim_core_view_send_key(core.handle, view, &key(EVIM_KEY_LEFT, 0), &mut outcome)
+                },
+                EvimStatus::Ok
+            );
+            request.expected_selection = selection();
+            request.value.enum_value = 0;
+            assert_eq!(
+                unsafe {
+                    evim_core_view_edit_direct_style(core.handle, view, &request, &mut outcome)
+                },
+                EvimStatus::Ok
+            );
+            assert_eq!(
+                unsafe { evim_core_view_decoration_state(core.handle, view, property, &mut state) },
+                EvimStatus::Ok
+            );
+            assert_eq!(state, EVIM_SEMANTIC_STYLE_STATE_OFF);
+            assert_eq!(
+                unsafe { evim_core_view_undo(core.handle, view, &mut outcome) },
+                EvimStatus::Ok
+            );
+            for character in ['0', 'v', 'l', 'l'] {
+                assert_eq!(
+                    unsafe {
+                        evim_core_view_send_key(
+                            core.handle,
+                            view,
+                            &key(EVIM_KEY_CHARACTER, character as u32),
+                            &mut outcome,
+                        )
+                    },
+                    EvimStatus::Ok
+                );
+            }
+            assert_eq!(
+                unsafe { evim_core_view_decoration_state(core.handle, view, property, &mut state) },
+                EvimStatus::Ok
+            );
+            assert_eq!(state, EVIM_SEMANTIC_STYLE_STATE_ON);
+            assert_eq!(
+                unsafe { evim_core_view_undo(core.handle, view, &mut outcome) },
+                EvimStatus::Ok
+            );
+            assert_eq!(bytes(), source.as_bytes());
+        }
+        let mut sentinel = 919u32;
+        assert_eq!(
+            unsafe {
+                evim_core_view_decoration_state(
+                    core.handle,
+                    view,
+                    EVIM_STYLE_PROPERTY_CHARACTER_WEIGHT,
+                    &mut sentinel,
+                )
+            },
+            EvimStatus::InvalidArgument
+        );
+        assert_eq!(sentinel, 919);
+        assert_eq!(
+            unsafe {
+                evim_core_view_decoration_state(
+                    core.handle,
+                    view,
+                    EVIM_STYLE_PROPERTY_CHARACTER_UNDERLINE,
+                    std::ptr::null_mut(),
+                )
+            },
+            EvimStatus::NullPointer
+        );
+    }
+}
+
+#[test]
+fn rich_bold_and_italic_toggle_states_include_default_gaps() {
+    for (format, source) in [
+        (EVIM_FORMAT_HTML, "<p><b><i>A</i></b>B</p>"),
+        (EVIM_FORMAT_RTF, r"{\rtf1{\b\i A}B}"),
+    ] {
+        let core = create_core(
+            source.as_bytes(),
+            EvimDocumentOptions {
+                format,
+                ..Default::default()
+            },
+        );
+        let mut provider = Box::new(FakeProviderContext::new(core.handle));
+        let (view, mut outcome) = add_test_view(&core, provider.as_mut());
+        for character in ['v', 'l'] {
+            assert_eq!(
+                unsafe {
+                    evim_core_view_send_key(
+                        core.handle,
+                        view,
+                        &key(EVIM_KEY_CHARACTER, character as u32),
+                        &mut outcome,
+                    )
+                },
+                EvimStatus::Ok
+            );
+        }
+        for style in [EVIM_SEMANTIC_STYLE_STRONG, EVIM_SEMANTIC_STYLE_EMPHASIS] {
+            let mut presentation = EvimSemanticStylePresentationV1::default();
+            assert_eq!(
+                unsafe {
+                    evim_core_view_semantic_style_presentation(
+                        core.handle,
+                        view,
+                        style,
+                        &mut presentation,
+                    )
+                },
+                EvimStatus::Ok
+            );
+            assert_eq!(
+                presentation.state, EVIM_SEMANTIC_STYLE_STATE_MIXED,
+                "format {format} style {style}"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_select_all_nested_html_decoration_round_trips_query_state() {
+    let source = "<p><b data-keep='yes'>Words</b></p><!--keep-->";
+    let core = create_core(
+        source.as_bytes(),
+        EvimDocumentOptions {
+            format: EVIM_FORMAT_HTML,
+            ..Default::default()
+        },
+    );
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, mut outcome) = add_test_view(&core, provider.as_mut());
+    for character in ['g', 'g', 'V', 'G'] {
+        assert_eq!(
+            unsafe {
+                evim_core_view_send_key(
+                    core.handle,
+                    view,
+                    &key(EVIM_KEY_CHARACTER, character as u32),
+                    &mut outcome,
+                )
+            },
+            EvimStatus::Ok
+        );
+    }
+    for property in [
+        EVIM_STYLE_PROPERTY_CHARACTER_UNDERLINE,
+        EVIM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH,
+    ] {
+        let mut selection = EvimLogicalSelectionIdentityV1::default();
+        assert_eq!(
+            unsafe { evim_core_view_list_selection(core.handle, view, &mut selection) },
+            EvimStatus::Ok
+        );
+        let request = EvimDirectStyleEditV1 {
+            struct_size: EVIM_DIRECT_STYLE_EDIT_V1_SIZE,
+            operation: EVIM_STYLE_EDIT_SET_DECLARATION,
+            property,
+            expected_selection: selection,
+            value: EvimStyleEditValueV1 {
+                kind: EVIM_STYLE_VALUE_BOOLEAN,
+                enum_value: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            unsafe { evim_core_view_edit_direct_style(core.handle, view, &request, &mut outcome) },
+            EvimStatus::Ok
+        );
+        let mut state = u32::MAX;
+        assert_eq!(
+            unsafe { evim_core_view_decoration_state(core.handle, view, property, &mut state) },
+            EvimStatus::Ok
+        );
+        assert_eq!(state, EVIM_SEMANTIC_STYLE_STATE_ON);
+    }
+}
+
+#[test]
+fn rich_decoration_state_remains_on_after_select_all_linewise_toggle() {
+    for (format, source) in [
+        (
+            EVIM_FORMAT_HTML,
+            "<p><b data-keep='yes'>Words</b></p><!--keep-->",
+        ),
+        (EVIM_FORMAT_RTF, r"{\rtf1{\b Words}{\*\opaque keep}}"),
+    ] {
+        let core = create_core(
+            source.as_bytes(),
+            EvimDocumentOptions {
+                format,
+                ..Default::default()
+            },
+        );
+        let mut provider = Box::new(FakeProviderContext::new(core.handle));
+        let (view, mut outcome) = add_test_view(&core, provider.as_mut());
+        for character in ['g', 'g', 'V', 'G'] {
+            assert_eq!(
+                unsafe {
+                    evim_core_view_send_key(
+                        core.handle,
+                        view,
+                        &key(EVIM_KEY_CHARACTER, character as u32),
+                        &mut outcome,
+                    )
+                },
+                EvimStatus::Ok
+            );
+        }
+        let mut expected = EvimLogicalSelectionIdentityV1::default();
+        assert_eq!(
+            unsafe { evim_core_view_list_selection(core.handle, view, &mut expected) },
+            EvimStatus::Ok
+        );
+        let request = EvimDirectStyleEditV1 {
+            struct_size: EVIM_DIRECT_STYLE_EDIT_V1_SIZE,
+            operation: EVIM_STYLE_EDIT_SET_DECLARATION,
+            property: EVIM_STYLE_PROPERTY_CHARACTER_UNDERLINE,
+            expected_selection: expected,
+            value: EvimStyleEditValueV1 {
+                kind: EVIM_STYLE_VALUE_BOOLEAN,
+                enum_value: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            unsafe { evim_core_view_edit_direct_style(core.handle, view, &request, &mut outcome) },
+            EvimStatus::Ok
+        );
+        let mut state = u32::MAX;
+        assert_eq!(
+            unsafe {
+                evim_core_view_decoration_state(core.handle, view, request.property, &mut state)
+            },
+            EvimStatus::Ok
+        );
+        assert_eq!(state, EVIM_SEMANTIC_STYLE_STATE_ON, "format {format}");
+    }
+}
+
+#[test]
+fn native_scalar_visual_change_keeps_the_entire_html_inline_style() {
+    let source = "<p>Bold <b foo='keep'>words</b> and &#x26; text.</p><!--keep-->";
+    let core = create_core(
+        source.as_bytes(),
+        EvimDocumentOptions {
+            format: EVIM_FORMAT_HTML,
+            ..Default::default()
+        },
+    );
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, mut outcome) = add_test_view(&core, provider.as_mut());
+    for character in "wvecORDS".chars() {
+        let text = character.to_string();
+        assert_eq!(
+            unsafe {
+                evim_core_view_send_text(
+                    core.handle,
+                    view,
+                    text.as_ptr(),
+                    text.len() as u64,
+                    &mut outcome,
+                )
+            },
+            EvimStatus::Ok
+        );
+    }
+    assert_eq!(
+        unsafe {
+            evim_core_view_send_key(core.handle, view, &key(EVIM_KEY_ESCAPE, 0), &mut outcome)
+        },
+        EvimStatus::Ok
+    );
+    let bytes = copy_core_bytes(
+        evim_core_copy_source_bytes,
+        &core,
+        document_state(&core).document_revision,
+    );
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("<b foo='keep'>ORDS</b>"),
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(
+        unsafe { evim_core_view_undo(core.handle, view, &mut outcome) },
+        EvimStatus::Ok
+    );
+    assert_eq!(
+        copy_core_bytes(
+            evim_core_copy_source_bytes,
+            &core,
+            document_state(&core).document_revision
+        ),
+        source.as_bytes()
+    );
+}
+
+#[test]
+fn native_scalar_typing_after_html_heading_enter_uses_the_new_paragraph() {
+    let source = "<h2>Heading</h2><p>Tail</p>";
+    let core = create_core(
+        source.as_bytes(),
+        EvimDocumentOptions {
+            format: EVIM_FORMAT_HTML,
+            ..Default::default()
+        },
+    );
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, mut outcome) = add_test_view(&core, provider.as_mut());
+    assert_eq!(
+        unsafe { evim_core_view_send_text(core.handle, view, b"A".as_ptr(), 1, &mut outcome) },
+        EvimStatus::Ok
+    );
+    assert_eq!(
+        unsafe {
+            evim_core_view_send_key(core.handle, view, &key(EVIM_KEY_ENTER, 0), &mut outcome)
+        },
+        EvimStatus::Ok
+    );
+    for character in "Body".chars() {
+        let text = character.to_string();
+        assert_eq!(
+            unsafe {
+                evim_core_view_send_text(
+                    core.handle,
+                    view,
+                    text.as_ptr(),
+                    text.len() as u64,
+                    &mut outcome,
+                )
+            },
+            EvimStatus::Ok
+        );
+    }
+    assert_eq!(
+        unsafe {
+            evim_core_view_send_key(core.handle, view, &key(EVIM_KEY_ESCAPE, 0), &mut outcome)
+        },
+        EvimStatus::Ok
+    );
+    let bytes = copy_core_bytes(
+        evim_core_copy_source_bytes,
+        &core,
+        document_state(&core).document_revision,
+    );
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("</h2><p>Body</p>"),
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(
+        unsafe { evim_core_view_undo(core.handle, view, &mut outcome) },
+        EvimStatus::Ok
+    );
+    assert_eq!(
+        copy_core_bytes(
+            evim_core_copy_source_bytes,
+            &core,
+            document_state(&core).document_revision
+        ),
+        source.as_bytes()
     );
 }

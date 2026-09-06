@@ -1,6 +1,7 @@
 import AppKit
 import CEvimCore
 import CoreGraphics
+import CoreText
 import Foundation
 import Testing
 
@@ -8,6 +9,26 @@ import Testing
 
 @Suite("Core Text measurement provider")
 struct CoreTextMeasurementProviderTests {
+  @Test("Explicit font families resolve bold and italic faces")
+  func explicitFamilyTraits() {
+    for family in ["Helvetica", "Times New Roman", "SF Pro"] {
+      let normal = resolveFont(families: [family], size: 14, cssWeight: 400,
+        slant: UInt32(EVIM_FONT_SLANT_UPRIGHT), features: [])
+      let bold = resolveFont(families: [family], size: 14, cssWeight: 700,
+        slant: UInt32(EVIM_FONT_SLANT_UPRIGHT), features: [])
+      let italic = resolveFont(families: [family], size: 14, cssWeight: 400,
+        slant: UInt32(EVIM_FONT_SLANT_ITALIC), features: [])
+      let both = resolveFont(families: [family], size: 14, cssWeight: 700,
+        slant: UInt32(EVIM_FONT_SLANT_ITALIC), features: [])
+      #expect(!CTFontGetSymbolicTraits(normal).contains(.traitBold))
+      #expect(!CTFontGetSymbolicTraits(normal).contains(.traitItalic))
+      #expect(CTFontGetSymbolicTraits(bold).contains(.traitBold))
+      #expect(CTFontGetSymbolicTraits(italic).contains(.traitItalic))
+      #expect(CTFontGetSymbolicTraits(both).contains([.traitBold, .traitItalic]))
+      #expect(CTFontCopyPostScriptName(normal) != CTFontCopyPostScriptName(bold))
+    }
+  }
+
   @Test("SF Pro 14 is the declared frontend default")
   func declaredDefault() {
     #expect(CoreTextMeasurementProvider.defaultFontFamily == "SF Pro")

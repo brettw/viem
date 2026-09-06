@@ -280,7 +280,7 @@ impl<'a> CommandContext<'a> {
 ///
 /// Structured text payloads preserve the distinction between a semantic hard
 /// break and a literal U+000A, which a flat `TextEdit` cannot express.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum CommandModelRequest {
     Model(ModelRequest),
     FormattedPayload(FormattedPayloadEditRequest),
@@ -757,6 +757,7 @@ struct EditSessionProgram {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum EditSessionStep {
     Text(RegisterValue),
+    ListEnter,
     Backspace,
     Delete,
     DeleteWord,
@@ -1859,14 +1860,17 @@ impl CommandInterpreter {
         }
         if self.mode == Mode::Normal
             && self.count.is_some()
-            && matches!(*key, Key::Char('v' | 'V') | Key::Ctrl('v' | 'V'))
+            && matches!(
+                *key,
+                Key::Char('v' | 'V') | Key::Ctrl('v' | 'V' | 'q' | 'Q')
+            )
             && self
                 .last_visual
                 .is_some_and(|memory| memory.mode == Mode::VisualBlock)
         {
             return true;
         }
-        if matches!(*key, Key::Ctrl('v' | 'V'))
+        if matches!(*key, Key::Ctrl('v' | 'V' | 'q' | 'Q'))
             && matches!(
                 self.mode,
                 Mode::Normal | Mode::VisualCharacter | Mode::VisualLine
@@ -2926,12 +2930,22 @@ impl CommandInterpreter {
             }
             _ => {}
         }
+        let list_enter =
+            if self.mode == Mode::Insert && matches!(event, InputEvent::Key(Key::Enter)) {
+                document.list_enter_edit(self.cursor)?
+            } else {
+                None
+            };
         let value = match event {
             InputEvent::Text(input) => external_text_register_value(document, input),
             InputEvent::Key(Key::Char(character)) => {
                 RegisterValue::characterwise(character.to_string())
             }
-            InputEvent::Key(Key::Enter) => RegisterValue::characterwise("\n"),
+            InputEvent::Key(Key::Enter) => RegisterValue::characterwise(
+                list_enter
+                    .as_ref()
+                    .map_or("\n", |edit| edit.replacement.as_str()),
+            ),
             InputEvent::Key(Key::Tab) => RegisterValue::characterwise("\t"),
             _ => return Ok(None),
         };
@@ -2942,16 +2956,25 @@ impl CommandInterpreter {
             next.invalidate_replace_restoration();
         }
         let input = value.text.as_str();
-        if input.is_empty() {
+        if input.is_empty()
+            && list_enter
+                .as_ref()
+                .map_or(true, |edit| edit.range.is_empty())
+        {
             return Ok(Some(
                 next.non_mutating_plan(document, CommandOutput::complete()),
             ));
         }
 
         let snapshot = document.hard_line_snapshot();
-        let start = self.cursor;
+        let start = list_enter
+            .as_ref()
+            .map_or(self.cursor, |edit| edit.range.start);
         let (end, post_commit) = if self.mode == Mode::Insert {
-            (start, PlannedPostCommit::None)
+            (
+                list_enter.as_ref().map_or(start, |edit| edit.range.end),
+                PlannedPostCommit::None,
+            )
         } else {
             next.plan_replace_payload_state(document, &snapshot, &value)
         };
@@ -2961,18 +2984,35 @@ impl CommandInterpreter {
             value.hard_break_offsets().to_vec(),
         )
         .expect("command register payload carries validated semantic hard breaks");
-        let model = CommandModelRequest::FormattedPayload(FormattedPayloadEditRequest::new(
-            document.id(),
-            document.revision(),
-            vec![FormattedPayloadEdit::new(start..end, payload)],
-        ));
+        let model = if list_enter.is_some()
+            && matches!(
+                document.format(),
+                crate::document::Format::Html | crate::document::Format::Rtf
+            ) {
+            CommandModelRequest::Model(ModelRequest::ContinueList {
+                document: document.id(),
+                revision: document.revision(),
+                at: self.cursor,
+            })
+        } else {
+            CommandModelRequest::FormattedPayload(FormattedPayloadEditRequest::new(
+                document.id(),
+                document.revision(),
+                vec![FormattedPayloadEdit::new(start..end, payload)
+                    .with_boundary_affinity(self.insertion_boundary_affinity())],
+            ))
+        };
 
         next.cursor = start + input.len();
         if let Some(session) = next.insert_session.as_mut() {
             if !session.replaying_program {
                 session.preserve_normal_repeat = false;
                 if let Some(program) = session.repeat_program.as_mut() {
-                    program.append_text(&value);
+                    if list_enter.is_some() {
+                        program.push(EditSessionStep::ListEnter);
+                    } else {
+                        program.append_text(&value);
+                    }
                 }
                 session.last_inserted.append_inserted_payload(&value);
             }
@@ -4689,7 +4729,7 @@ impl CommandInterpreter {
         }
         if self.mode == Mode::Normal
             && self.count.is_some()
-            && matches!(key, Key::Char('v' | 'V') | Key::Ctrl('v' | 'V'))
+            && matches!(key, Key::Char('v' | 'V') | Key::Ctrl('v' | 'V' | 'q' | 'Q'))
         {
             if let Some(memory) = self.last_visual {
                 let count = self.count.take().unwrap_or(1).max(1);
@@ -4698,7 +4738,7 @@ impl CommandInterpreter {
                 )));
             }
         }
-        if (key == Key::Ctrl('v') || key == Key::Ctrl('V'))
+        if matches!(key, Key::Ctrl('v' | 'V' | 'q' | 'Q'))
             && matches!(
                 self.mode,
                 Mode::Normal | Mode::VisualCharacter | Mode::VisualLine
@@ -5234,7 +5274,7 @@ impl CommandInterpreter {
                 ..CommandOutput::complete()
             });
         }
-        if key == Key::Escape || matches!(key, Key::Ctrl('v' | 'V')) {
+        if key == Key::Escape || matches!(key, Key::Ctrl('v' | 'V' | 'q' | 'Q')) {
             self.leave_visual_block();
             return Ok(CommandOutput {
                 status: CommandStatus::Cancelled,
@@ -7811,7 +7851,7 @@ impl CommandInterpreter {
                         status: CommandStatus::Cancelled,
                         ..CommandOutput::complete()
                     })
-                } else if key == Key::Escape || matches!(key, Key::Ctrl('v' | 'V')) {
+                } else if key == Key::Escape || matches!(key, Key::Ctrl('v' | 'V' | 'q' | 'Q')) {
                     self.leave_visual_block();
                     Ok(CommandOutput {
                         status: CommandStatus::Cancelled,
@@ -8230,7 +8270,7 @@ impl CommandInterpreter {
             | Key::Ctrl('f' | 'F' | 'b' | 'B' | 'd' | 'D' | 'u' | 'U' | 'e' | 'E' | 'y' | 'Y')
             | Key::PageUp
             | Key::PageDown => Ok(layout_required("viewport command")),
-            Key::Ctrl('v' | 'V') => Ok(layout_required("visual block command")),
+            Key::Ctrl('v' | 'V' | 'q' | 'Q') => Ok(layout_required("visual block command")),
             Key::Ctrl(_) => {
                 self.requested_register = None;
                 Ok(CommandOutput::unsupported(format!("normal key {key:?}")))
@@ -9879,7 +9919,44 @@ impl CommandInterpreter {
             Key::Enter => {
                 self.invalidate_replace_restoration();
                 if self.mode == Mode::Insert {
-                    self.insert_text(document, "\n")
+                    if let Some(edit) = document.list_enter_edit(self.cursor)? {
+                        if matches!(
+                            document.format(),
+                            crate::document::Format::Html | crate::document::Format::Rtf
+                        ) {
+                            document.continue_rich_list(self.cursor)?;
+                        } else if edit.range.is_empty() {
+                            let value = RegisterValue::characterwise(&edit.replacement);
+                            let payload = FormattedTextPayload::new(
+                                &document.hard_line_snapshot(),
+                                &edit.replacement,
+                                value.hard_break_offsets().to_vec(),
+                            )
+                            .expect("list Enter carries one explicit semantic break");
+                            document.insert_formatted_payload(self.cursor, payload)?;
+                        } else {
+                            document.replace(edit.range.clone(), &edit.replacement)?;
+                        }
+                        self.cursor = edit.range.start + edit.replacement.len();
+                        if let Some(session) = self.insert_session.as_mut() {
+                            if !session.replaying_program {
+                                session.preserve_normal_repeat = false;
+                                if let Some(program) = session.repeat_program.as_mut() {
+                                    program.push(EditSessionStep::ListEnter);
+                                }
+                                session.last_inserted.append_inserted_payload(
+                                    &RegisterValue::characterwise(&edit.replacement),
+                                );
+                            }
+                        }
+                        Ok(CommandOutput {
+                            document_changed: true,
+                            cursor_moved: true,
+                            ..CommandOutput::complete()
+                        })
+                    } else {
+                        self.insert_text(document, "\n")
+                    }
                 } else {
                     self.replace_text(document, "\n")
                 }
@@ -10286,7 +10363,19 @@ impl CommandInterpreter {
         let lines = document.hard_line_snapshot();
         let payload = FormattedTextPayload::new(&lines, input, value.hard_break_offsets().to_vec())
             .expect("insert register payload has validated semantic breaks");
-        document.insert_formatted_payload(self.cursor, payload)?;
+        if matches!(
+            document.format(),
+            crate::document::Format::Html | crate::document::Format::Rtf
+        ) {
+            let affinity = self.insertion_boundary_affinity();
+            document.apply_formatted_payload_edits(vec![FormattedPayloadEdit::new(
+                self.cursor..self.cursor,
+                payload,
+            )
+            .with_boundary_affinity(affinity)])?;
+        } else {
+            document.insert_formatted_payload(self.cursor, payload)?;
+        }
         self.cursor += input.len();
         if let Some(session) = self.insert_session.as_mut() {
             if !session.replaying_program {
@@ -10302,6 +10391,31 @@ impl CommandInterpreter {
             cursor_moved: true,
             ..CommandOutput::complete()
         })
+    }
+
+    fn insertion_boundary_affinity(&self) -> BoundaryAffinity {
+        if self
+            .insert_session
+            .as_ref()
+            .is_some_and(|session| session.last_inserted.text.ends_with('\n'))
+        {
+            // Enter creates a new paragraph context. Its first character
+            // belongs to that empty paragraph; subsequent typing associates
+            // with the newly inserted content on the upstream side.
+            return BoundaryAffinity::Downstream;
+        }
+        let continuing = self.insert_session.as_ref().is_some_and(|session| {
+            !session.last_inserted.text.is_empty()
+                || matches!(
+                    session.placement,
+                    InsertPlacement::After | InsertPlacement::LineEnd
+                )
+        });
+        if continuing {
+            BoundaryAffinity::Upstream
+        } else {
+            BoundaryAffinity::Downstream
+        }
     }
 
     fn invalidate_replace_restoration(&mut self) {
@@ -10578,6 +10692,15 @@ impl CommandInterpreter {
         document: &Document,
         program: &EditSessionProgram,
     ) -> Result<(), DocumentError> {
+        if matches!(
+            document.format(),
+            crate::document::Format::Html | crate::document::Format::Rtf
+        ) {
+            // Rich adapters serialize otherwise unrepresentable scalars as
+            // exact character references or Unicode controls. The source
+            // transaction validates that escaped representation atomically.
+            return Ok(());
+        }
         for step in &program.steps {
             if let EditSessionStep::Text(value) = step {
                 // Encoding failure is deterministic and must be discovered
@@ -10674,6 +10797,9 @@ impl CommandInterpreter {
                         EditSessionStep::Delete => self.edit_mode_delete(document)?,
                         EditSessionStep::DeleteWord => self.insert_ctrl_w(document)?,
                         EditSessionStep::DeleteToLineStart => self.insert_ctrl_u(document)?,
+                        EditSessionStep::ListEnter => {
+                            self.handle_edit_mode_key(document, Key::Enter)?
+                        }
                     };
                     output.merge(next);
                 }
@@ -15910,6 +16036,46 @@ mod tests {
     }
 
     #[test]
+    fn insert_enter_continues_lists_and_empty_item_ends_list_in_one_undo_group() {
+        for format in [Format::PlainText, Format::Markdown, Format::MarkdownSource] {
+            for source in ["- first", "3. first"] {
+                let mut document =
+                    Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format)
+                        .unwrap();
+                let mut commands = CommandInterpreter::new();
+                keys(&mut commands, &mut document, "A");
+                key(&mut commands, &mut document, Key::Enter);
+                assert_eq!(
+                    document.text(),
+                    if source.starts_with('-') {
+                        "- first\n- "
+                    } else {
+                        "3. first\n4. "
+                    }
+                );
+                commands
+                    .handle(&mut document, InputEvent::text("second"))
+                    .unwrap();
+                key(&mut commands, &mut document, Key::Enter);
+                key(&mut commands, &mut document, Key::Enter);
+                assert_eq!(
+                    document.text(),
+                    if source.starts_with('-') {
+                        "- first\n- second\n"
+                    } else {
+                        "3. first\n4. second\n"
+                    }
+                );
+                key(&mut commands, &mut document, Key::Escape);
+                keys(&mut commands, &mut document, "u");
+                assert_eq!(document.source_bytes(), source.as_bytes());
+                key(&mut commands, &mut document, Key::Ctrl('r'));
+                assert!(document.text().ends_with("second\n"));
+            }
+        }
+    }
+
+    #[test]
     fn failed_latin1_replace_event_preserves_the_existing_restore_journal() {
         use crate::document::{Encoding, Format};
 
@@ -18225,6 +18391,82 @@ mod tests {
             );
         }
         assert_eq!(document.text(), "one o three");
+    }
+
+    #[test]
+    fn control_q_alias_preserves_block_counts_registers_and_atomic_operators() {
+        for control in ['q', 'Q', 'v', 'V'] {
+            for operator in ['d', 'y', 'r'] {
+                let mut document = Document::new("abcd\nefgh\nopqr");
+                let mut commands = CommandInterpreter::new();
+                let snapshot = layout_snapshot(&document, 500.0);
+                let mut context =
+                    LayoutCommandContext::new(&snapshot, true, Viewport::new(0.0, 500.0).unwrap());
+                for input in [
+                    Key::Char('2'),
+                    Key::Ctrl(control),
+                    Key::Char('2'),
+                    Key::Char('j'),
+                ] {
+                    layout_key(&mut commands, &mut document, &mut context, input);
+                }
+                assert_eq!(commands.mode(), Mode::VisualBlock);
+                for input in [Key::Char('"'), Key::Char('a'), Key::Char(operator)] {
+                    layout_key(&mut commands, &mut document, &mut context, input);
+                }
+                if operator == 'r' {
+                    layout_key(&mut commands, &mut document, &mut context, Key::Char('X'));
+                    assert_eq!(document.text(), "XXcd\nXXgh\nXXqr");
+                    assert!(commands.register('a').is_none());
+                } else {
+                    let value = commands.register('a').unwrap();
+                    assert_eq!(value.kind, RegisterKind::Blockwise);
+                    assert_eq!(value.text, "ab\nef\nop");
+                    assert_eq!(
+                        document.text(),
+                        if operator == 'd' {
+                            "cd\ngh\nqr"
+                        } else {
+                            "abcd\nefgh\nopqr"
+                        }
+                    );
+                }
+                assert_eq!(commands.mode(), Mode::Normal);
+                if operator != 'y' {
+                    assert!(document.undo());
+                    assert_eq!(document.text(), "abcd\nefgh\nopqr");
+                    assert!(document.redo());
+                    assert!(document.undo());
+                }
+                assert!(!document.undo());
+            }
+        }
+    }
+
+    #[test]
+    fn control_q_requests_layout_and_toggles_from_each_visual_mode() {
+        for previous in [None, Some('v'), Some('V')] {
+            let mut document = Document::new("a\u{301}b\n\n😀z");
+            let mut commands = CommandInterpreter::new();
+            if let Some(previous) = previous {
+                key(&mut commands, &mut document, Key::Char(previous));
+            }
+            assert!(commands.requires_layout_for_input(
+                &document,
+                &InputEvent::Key(Key::Ctrl('q')),
+                None
+            ));
+            let snapshot = layout_snapshot(&document, 500.0);
+            let mut context =
+                LayoutCommandContext::new(&snapshot, true, Viewport::new(0.0, 500.0).unwrap());
+            layout_key(&mut commands, &mut document, &mut context, Key::Ctrl('q'));
+            assert_eq!(commands.mode(), Mode::VisualBlock);
+            let cancelled = layout_key(&mut commands, &mut document, &mut context, Key::Ctrl('q'));
+            assert_eq!(cancelled.status, CommandStatus::Cancelled);
+            assert_eq!(commands.mode(), Mode::Normal);
+            assert_eq!(document.text(), "a\u{301}b\n\n😀z");
+            assert!(!document.undo());
+        }
     }
 
     #[test]

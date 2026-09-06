@@ -85,6 +85,9 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case clearDirectCharacterFormatting
     case clearDirectParagraphFormatting
     case clearAllDirectFormatting
+    case bulletedList
+    case numberedList
+    case removeList
 
     case wordWrap = 400
     case wrapAtWordBoundaries

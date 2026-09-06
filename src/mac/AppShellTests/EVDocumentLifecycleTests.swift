@@ -85,6 +85,16 @@ final class EVDocumentLifecycleTests: XCTestCase {
         }
     }
 
+    func testNativeSavePanelHasCurrentWritableType() throws {
+        let backend = Backend()
+        let document = EVDocument(editorBackend: backend)
+        XCTAssertEqual(document.fileType, EVDocument.plainTextType)
+        XCTAssertTrue(EVDocument.isNativeType(EVDocument.plainTextType))
+        XCTAssertEqual(document.writableTypes(for: .saveAsOperation), [EVDocument.plainTextType])
+        try document.read(from: Data("# text".utf8), ofType: EVDocument.markdownType)
+        XCTAssertEqual(document.writableTypes(for: .saveAsOperation), [EVDocument.markdownType])
+    }
+
     func testNSDocumentDataOverridesDelegateReadAndSameFormatSerializationToSourceBackend() throws {
         let backend = Backend()
         backend.serializedData = Data("serialized source".utf8)

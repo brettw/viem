@@ -142,6 +142,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     func refreshPresentation() {
         guard let session else { return }
         do {
+            try session.refreshLayoutIfNeeded()
             let nextDocumentState = try backend.documentState()
             let nextFormattedSnapshot = try backend.formattedSnapshot()
             let nextPresentation = try session.presentation()
@@ -319,6 +320,18 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
     }
 
+    public func perform(statusOption: EVStatusBarOption) {
+        guard let session else { return }
+        let expected = documentState
+        performInput {
+            switch statusOption {
+            case let .format(format): _ = try session.setFormat(format, expected: expected)
+            case let .encoding(encoding): _ = try session.setEncoding(encoding, expected: expected)
+            case let .lineEnding(ending): _ = try session.setFileFormat(ending, expected: expected)
+            }
+        }
+    }
+
     public func perform(menuCommand: EVMenuCommand, sender: Any?) {
         guard let session else { return }
         switch menuCommand {
@@ -398,10 +411,31 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             setZoom(adjacentTo: zoomScale, increasing: false, session: session)
         case .actualSize:
             setZoom(1, session: session)
+        case .bulletedList, .numberedList, .removeList:
+            performInput {
+                let selection = try session.listSelection()
+                let style: UInt32 = menuCommand == .bulletedList ? UInt32(EVIM_LIST_STYLE_BULLET)
+                    : menuCommand == .numberedList ? UInt32(EVIM_LIST_STYLE_NUMBERED) : UInt32(EVIM_LIST_STYLE_NONE)
+                _ = try session.setListStyle(style, expected: selection)
+            }
         case .bold:
             toggleSemanticStyle(UInt32(EVIM_SEMANTIC_STYLE_STRONG), session: session)
         case .italic:
             toggleSemanticStyle(UInt32(EVIM_SEMANTIC_STYLE_EMPHASIS), session: session)
+        case .underline, .strikethrough:
+            let property: EVStyleProperty = menuCommand == .underline ? .characterUnderline : .characterStrikethrough
+            performInput {
+                let state = try session.decorationState(property)
+                _ = try session.editDirectProperty(property,
+                    value: .boolean(state != UInt32(EVIM_SEMANTIC_STYLE_STATE_ON)),
+                    expected: session.listSelection())
+            }
+        case .alignStart, .alignCenter, .alignEnd,
+             .directionAutomatic, .directionLeftToRight, .directionRightToLeft,
+             .lineSpacingNormal, .lineSpacingSingle, .lineSpacingOneAndHalf, .lineSpacingDouble:
+            if let (property, value) = directParagraphEdit(for: menuCommand) {
+                performInput { _ = try session.editDirectProperty(property, value: value, expected: session.listSelection()) }
+            }
         case .editCharacterStyles:
             EVStyleEditorCoordinator.shared.show(
                 document: self,
@@ -440,6 +474,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     public func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation {
         switch menuCommand {
+        case .bulletedList, .numberedList, .removeList:
+            EVMenuItemPresentation(isEnabled: (try? session?.listSelection()) != nil)
         case .save, .saveAs, .pageSetup,
              .selectAll, .selectWord, .selectSentence, .selectParagraph,
              .selectHardLine, .selectVisualRow, .find, .findAndReplace,
@@ -507,6 +543,18 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 UInt32(EVIM_SEMANTIC_STYLE_EMPHASIS),
                 session: session
             )
+        case .underline, .strikethrough:
+            if [.html, .rtf].contains(backend.sourceFormat), let session,
+               let state = try? session.decorationState(menuCommand == .underline ? .characterUnderline : .characterStrikethrough) {
+                EVMenuItemPresentation(isEnabled: true,
+                    state: state == UInt32(EVIM_SEMANTIC_STYLE_STATE_ON) ? .on
+                        : state == UInt32(EVIM_SEMANTIC_STYLE_STATE_MIXED) ? .mixed : .off)
+            } else { .disabled }
+        case .alignStart, .alignCenter, .alignEnd,
+             .directionAutomatic, .directionLeftToRight, .directionRightToLeft,
+             .lineSpacingNormal, .lineSpacingSingle, .lineSpacingOneAndHalf, .lineSpacingDouble:
+            EVMenuItemPresentation(isEnabled: [.html, .rtf].contains(backend.sourceFormat)
+                && (try? session?.listSelection()) != nil)
         case .editCharacterStyles, .editParagraphStyles, .editDocumentStyles:
             .enabled
         case .printDocument:
@@ -522,6 +570,22 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             true
         default:
             false
+        }
+    }
+
+    private func directParagraphEdit(for command: EVMenuCommand) -> (EVStyleProperty, EVStyleValue)? {
+        switch command {
+        case .alignStart: (.paragraphAlignment, .paragraphAlignment(UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_START)))
+        case .alignCenter: (.paragraphAlignment, .paragraphAlignment(UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_CENTER)))
+        case .alignEnd: (.paragraphAlignment, .paragraphAlignment(UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_END)))
+        case .directionAutomatic: (.paragraphBaseDirection, .writingDirection(0))
+        case .directionLeftToRight: (.paragraphBaseDirection, .writingDirection(1))
+        case .directionRightToLeft: (.paragraphBaseDirection, .writingDirection(2))
+        case .lineSpacingNormal: (.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(EVIM_STYLE_LINE_SPACING_NORMAL), value: 0)))
+        case .lineSpacingSingle, .lineSpacingOneAndHalf, .lineSpacingDouble:
+            (.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(EVIM_STYLE_LINE_SPACING_MULTIPLIER),
+                value: command == .lineSpacingSingle ? 1 : command == .lineSpacingOneAndHalf ? 1.5 : 2)))
+        default: nil
         }
     }
 
@@ -907,7 +971,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     private func fileFormatPresentation(_ target: UInt32) -> EVMenuItemPresentation {
         EVMenuItemPresentation(
-            isEnabled: true,
+            isEnabled: backend.sourceFormat != .rtf,
             state: documentState.file_format == target ? .on : .off
         )
     }
