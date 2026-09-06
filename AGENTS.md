@@ -685,10 +685,12 @@ expresses semantic block and character styling without exposing CSS, AppKit,
 Core Text, RTF, or another source format's object model to general core code.
 Format adapters project their native styling systems into this model and retain
 the original syntax and provenance needed for lossless reverse edits.
-Source-language cascade rules remain adapter responsibilities: for example, an
-HTML adapter resolves selectors, specificity, and CSS inheritance before
-exposing normalized declarations and dependencies. The generic style resolver
-does not reinterpret source CSS or RTF control state.
+Source-language cascade rules remain adapter responsibilities to the extent an
+adapter claims them. The initial HTML adapter deliberately supports only the
+element mappings, eVim-owned class rules, and inline declarations specified in
+"HTML and RTF import and round-trip adapters"; it does not claim general CSS
+selector or cascade support. The generic style resolver does not reinterpret
+source CSS or RTF control state.
 
 The style sheet has a revision identity, stable style identities, and two
 namespaces:
@@ -1019,6 +1021,433 @@ can translate it.
 - Pipeline stages may be reordered only when their contracts declare that the
   result and reverse-edit semantics commute. Transformation order is otherwise
   document configuration and part of the projection identity.
+
+## HTML and RTF import and round-trip adapters
+
+HTML and RTF are editable source formats, not lossy import/export filters.
+Their adapters obey the source-authority, preservation, semantic-intention,
+and verified reverse-projection requirements above. Opening either format,
+including malformed or partially unsupported input, never grants permission to
+normalize or regenerate the file.
+
+Both adapters maintain two related structures:
+
+1. a lossless concrete syntax representation containing every original byte,
+   delimiter, escape, spelling choice, comment, unknown construct, error, and
+   opaque payload; and
+2. a semantic interpretation containing only the visible text, blocks, styles,
+   objects, and dependencies that eVim understands.
+
+The semantic interpretation may use repaired, implied, or inherited structure,
+but provenance always returns to the concrete source nodes that produced it.
+Untouched concrete nodes serialize from their original byte slices. Unsupported
+syntax may affect neither display nor editing, but it is never discarded.
+
+### Common safety and edit-boundary rules
+
+- Import is passive. The adapters MUST NOT execute scripts, macros, fields, OLE
+  objects, event handlers, or other active content; fetch URLs, stylesheets,
+  fonts, images, templates, or subdocuments; or instantiate a browser/web view
+  to determine formatted output.
+- Nonprinting and unsupported content remains in the lossless tree with stable
+  source anchors. Ordinary edits to nearby visible text do not delete or move
+  it. A visible edit whose reverse mapping would cross or consume hidden opaque
+  content returns a structured ambiguous/unsupported result unless the adapter
+  can preserve that content at an equivalent boundary.
+- A source construct has an explicit canonicalization boundary. Editing only
+  descendant text does not touch its tags, attributes, controls, or other
+  metadata. Editing a formatting property contributed by that construct may
+  replace the smallest declared formatting construct with the adapter's
+  canonical representation. Source inside that declared replacement is part of
+  the reported patch set and no longer receives the untouched-byte guarantee.
+- Canonicalization never expands to an ancestor, sibling, unrelated style
+  definition, or whole document merely for serializer convenience. Required
+  shared-table changes and style dependents are explicit supporting patches in
+  the same atomic transaction.
+- All reverse edits are tentatively reparsed and reprojected before commit.
+  They commit only if visible text, block boundaries, style assignments,
+  effective supported properties, opaque-content anchors, and source
+  well-formedness expectations satisfy the intention.
+
+### HTML adapter
+
+#### Parsing, preservation, and active content
+
+The HTML adapter uses `text/html` parsing semantics, including error recovery,
+implied elements, optional tags, raw-text elements, and character references.
+A browser-like semantic tree is not sufficient for round trip, because HTML
+parsing can repair structure and discard syntax distinctions. The adapter
+therefore retains a separate lossless token/concrete tree containing original
+tag-name case, start/end-tag presence, attribute order, duplicate attributes,
+quote style, whitespace, comments, doctypes, character-reference spelling,
+parse errors, and bytes outside the document element.
+
+`script` and `style` are raw-text elements. Script contents and all event-handler
+attributes are preserved but never executed. `head` metadata, comments,
+`template` content, scripts, non-eVim style elements, linked stylesheets, and
+other nonprinting nodes produce no editable body text. Unsupported visible
+elements retain their source structure; their unambiguous visible descendant
+text may still be projected using supported inline semantics. Unsupported
+atomic content may instead appear as a read-only opaque object when omitting it
+would conceal a visible document item.
+
+The adapter does not apply external stylesheets, arbitrary selectors, layout
+scripts, or browser default CSS. It interprets only:
+
+- the element-to-structure and element-to-format mappings in this section;
+- the first applicable eVim-owned class named on an element;
+- supported declarations in an element's inline `style` attribute; and
+- the canonical eVim-owned inline stylesheet described below.
+
+All other CSS, including unknown properties, unsupported values, `@` rules,
+selectors outside the canonical subset, and additional style elements, is
+opaque source. It is preserved byte-for-byte while untouched and ignored by
+the formatted projection.
+
+#### HTML block and inline projection
+
+The initial structural mapping is:
+
+- `body` supplies the formatted document's body content;
+- `p` creates a paragraph assigned Base Paragraph unless an applicable
+  eVim-owned paragraph class overrides that assignment;
+- `h1` through `h6` create paragraphs assigned the adapter-provided Heading 1
+  through Heading 6 paragraph styles respectively, again subject to an
+  applicable eVim-owned paragraph class;
+- `br` creates a formatted hard-line boundary inside the current paragraph;
+- visible phrasing content outside an explicit supported paragraph is grouped
+  into the minimum anonymous Base Paragraph blocks necessary to represent it;
+  and
+- unsupported containers are structurally transparent only when their visible
+  descendant text and boundaries can be projected without ambiguity.
+
+Heading 1 through Heading 6 have stable adapter-defined style identities,
+derive from Base Paragraph, and exist even when no eVim stylesheet is present.
+Changing a paragraph's block kind between Base Paragraph and a heading rewrites
+the corresponding `p`/`h1`…`h6` tags. Editing a heading style definition writes
+or updates its canonical rule in the eVim-owned stylesheet; it does not replace
+heading elements with generic paragraphs.
+
+In normal HTML text contexts, source whitespace that HTML treats as
+collapsible projects to the corresponding visible spacing with many-to-one
+provenance. Original whitespace spelling remains untouched until an edit
+necessarily replaces that source range. Preformatted or otherwise unsupported
+whitespace behavior is preserved as opaque/read-only unless the adapter has an
+explicit reversible mapping for it.
+
+The initial semantic inline element mappings are:
+
+- `b` and `strong` contribute bold weight;
+- `i` and `em` contribute italic slant;
+- `u` contributes underline;
+- `s`, `strike`, and `del` contribute strike decoration; and
+- `span` contributes no property by itself but can carry a supported class or
+  inline declaration.
+
+`lang` contributes the supported language property and `dir` contributes the
+supported writing-direction override when their values are understood. Other
+attributes do not affect the normalized projection unless this section later
+adds an explicit mapping.
+
+For example, `<b foo="bar">text</b>` projects `text` as bold. The unknown
+`foo` attribute remains byte-identical through text edits inside the element
+and through unrelated edits elsewhere. If a style operation changes the
+formatting contributed by that exact `b` element, its start/end tags form the
+canonicalization boundary and may be replaced by canonical markup; `foo` is
+then inside the declared patch and need not be retained.
+
+#### Supported inline CSS
+
+An inline `style` attribute is parsed as a CSS declaration list using
+forward-compatible parsing. Only declarations that convert exactly to the
+normalized property schema are applied. Invalid declarations, unsupported
+properties, unsupported values, and declarations using units or expressions
+that cannot be reversibly represented are ignored semantically and preserved
+as source while the formatting construct remains untouched.
+
+The initial supported Character-property mappings are:
+
+- `font-family` -> ordered font-family/fallback request;
+- `font-size` -> font size;
+- `font-weight` -> numeric weight;
+- `font-style` -> slant;
+- `color` and `background-color` -> foreground and background color;
+- `text-decoration-line` -> underline and strike decoration;
+- `letter-spacing` -> letter spacing;
+- `vertical-align`, for supported length, `super`, and `sub` values -> baseline
+  shift;
+- `font-feature-settings` -> OpenType feature settings; and
+- `direction` -> writing-direction override.
+
+The CSS property is `font-family`; `font-face` is not a supported declaration
+(`@font-face` is a stylesheet rule) and is preserved but ignored. The initial
+supported Paragraph-property mappings are:
+
+- `margin-block-start` and `margin-block-end` -> space before and after;
+- `margin-inline-start` and `margin-inline-end` -> logical start and end
+  indents;
+- `text-indent` -> first-line indent;
+- `line-height` -> the supported line-spacing kind/value;
+- `text-align` values `start`, `center`, and `end` -> logical alignment; and
+- `direction` -> base writing direction.
+
+The canonical writer uses one documented absolute unit for each length domain
+and lowercase property names in schema order. It does not claim to preserve the
+semantics of arbitrary CSS shorthand, variables, `calc()`, viewport units,
+media queries, or selector cascades.
+
+Element semantics and style sources resolve in this order, with later sources
+winning for supported properties:
+
+1. adapter defaults and the `p`/heading/inline-element mapping;
+2. the selected eVim-owned paragraph or character style; and
+3. supported inline `style` and `lang`/`dir` declarations.
+
+If duplicate attributes or otherwise malformed syntax reports more than one
+candidate under HTML parsing semantics, the semantic projection uses the first
+effective attribute while the lossless tree preserves them all.
+
+#### Canonical direct formatting
+
+New direct inline formatting uses a deterministic wrapper:
+
+- bold as the primary conventional property uses `b`;
+- italic uses `i`;
+- underline uses `u`;
+- strike uses `s`; and
+- when other or multiple Character properties are required, the first
+  applicable conventional wrapper above is retained and remaining properties
+  are written in one canonical `style` attribute; if no conventional wrapper
+  applies, use `span style="…"`.
+
+Thus bold plus a font request may be written as
+`<b style="font-family: …">…</b>`. Removing bold while retaining that font
+rewrites it canonically as `<span style="font-family: …">…</span>`. Paragraph
+direct formatting is written on the existing paragraph-bearing element's
+`style` attribute.
+
+When a supported formatting change targets an existing formatting element or
+`style` attribute, the adapter may rewrite that declared canonicalization
+boundary using only supported canonical attributes/declarations. Unknown
+attributes or declarations inside that boundary may therefore be removed.
+Untouched ancestors, descendants outside the formatted range, and sibling
+attributes remain original bytes. Partial-range edits split wrappers as needed,
+preserving the original wrapper bytes around unaffected left/right content when
+their source structure can remain valid.
+
+New text is escaped canonically for its HTML context. Existing character
+references such as `&amp;`, `&#38;`, and `&#x26;` retain their original spelling
+until their source range is edited.
+
+#### Canonical eVim style sheet and classes
+
+User-created named Paragraph and Character styles map to CSS classes. eVim owns
+only a style element bearing the exact marker
+`<style id="evim-styles" data-evim-version="1">`. A style element without that
+marker, or content outside the supported grammar inside an otherwise marked
+element, is not silently adopted or rewritten.
+
+The owned style element is inline near the beginning of `head`, after any
+encoding declaration whose placement is constrained. If a full document lacks
+`head`, the first style-creation transaction inserts the minimum valid explicit
+head and the owned style element. For an accepted HTML fragment, it inserts the
+owned style element at the fragment's beginning. Merely opening a document or
+editing text does not insert it.
+
+Canonical owned rules use only these selectors:
+
+- `body` for source-backed Base Document Character declarations;
+- `p` for source-backed Base Paragraph declarations;
+- `h1` through `h6` for Heading 1 through Heading 6;
+- `.evim-p-<stable-id>` for a user-created Paragraph style; and
+- `.evim-c-<stable-id>` for a user-created Character style.
+
+Class names derive from stable style identity, not the editable display name,
+so renaming a style does not rewrite every assignment. Each canonical rule
+uses these eVim-namespaced CSS custom properties:
+
+- `--evim-style-id` for its stable document-local ID;
+- `--evim-style-name` for its escaped display name;
+- `--evim-style-role` with `document`, `paragraph`, or `character`;
+- `--evim-based-on` for an optional parent stable ID;
+- `--evim-next-style` for an optional following-paragraph stable ID; and
+- one `--evim-prop-<schema-key>` declaration for each normalized property that
+  is explicit at this style layer. Absence means inherited; explicit normal,
+  none, zero, and transparent values have canonical nonempty spellings.
+
+These namespaced declarations are the authoritative representation used to
+reconstruct eVim's sparse normalized style. Standard CSS declarations in the
+same rule are derived interoperability output for ordinary browsers. They
+materialize the context-independent values contributed by that style's named
+ancestor chain; they do not flatten direct formatting or a paragraph-specific
+context into a Character style. Base defaults are emitted through the owned
+`body`, `p`, and heading rules so normal CSS inheritance preserves the intended
+Document -> Paragraph -> Character order. Editing a base style updates any
+canonical descendant rules whose materialized browser CSS changes.
+
+The CSS-safe stable-ID encoding, normalized property schema keys, value grammar,
+derived CSS mapping, declaration order, whitespace, quoting, and escaping are
+fixed by `data-evim-version="1"` and golden fixtures. A writer change that would
+alter their interpretation requires a version increment; readers do not guess
+at unsupported versions.
+
+On import, only rules matching that canonical grammar become normalized named
+styles. Other rules pass through unchanged. Editing a style definition patches
+its rule and any canonical descendant rules whose materialized browser CSS
+changes. It may append the owned style element if absent, but it never rewrites
+an unrelated stylesheet. Creating or deleting a style inserts or removes only
+its canonical rule plus necessary assignment patches.
+
+A Paragraph style class is written on the paragraph-bearing element. A
+Character style class is written on a `span` enclosing the assigned range. When
+an element has multiple class tokens that identify supported eVim styles of the
+applicable role, the first such token in source order supplies the one
+normalized style assignment; later supported tokens have no semantic effect.
+All unsupported class tokens are preserved. Changing the named-style assignment
+removes all supported eVim class tokens of that role, inserts the selected class
+as the first class token, and retains unsupported tokens in their original
+relative order.
+
+### RTF adapter
+
+#### Parsing, state, preservation, and safety
+
+The RTF adapter follows RTF 1.9.1's group stack, control-word/control-symbol,
+destination, binary-data, code-page, Unicode escape, and property-state rules.
+It builds a lossless token/group tree in addition to its semantic formatting
+state. Original brace placement, control-word spelling and delimiter, numeric
+spelling, insignificant source line breaks, escaped characters, fallback bytes,
+unknown controls, destinations, and binary payloads remain exact source.
+
+RTF text decoding depends on header code page, font character set, `\ucN`
+fallback count, and `\uN` escapes. The RTF adapter may fuse grammar-aware
+decoding with its format projection, but it must still expose the revision,
+valid UTF-8, byte provenance, invalid-byte preservation, and reverse-encoding
+behavior required of the conceptual EncodingProjection. RTF does not use the
+shared TextLineEndingProjection: source CR/LF used to format the RTF stream is
+not document content; `\par` and `\line` carry formatted break semantics.
+
+Recognized non-body destinations such as `\fonttbl`, `\colortbl`,
+`\stylesheet`, and `\info` are parsed for supported dependencies but do not
+emit body text. Unknown ignorable destinations beginning with `{\*` are
+retained as opaque groups and skipped semantically. Unknown non-ignorable
+controls follow RTF state rules while remaining in the lossless tree.
+Pictures, objects, fields, headers/footers, annotations, macros, data stores,
+and other unsupported destinations are never executed, updated, fetched, or
+instantiated. An unsupported item that is visibly positioned in body content
+may project as a read-only atomic opaque object.
+
+For fields, eVim may display an unambiguous stored result destination, but it
+never evaluates or refreshes the instruction. A visible edit that would make
+the preserved instruction and result inconsistent is rejected unless a future
+field-edit policy explicitly owns both.
+
+#### RTF body and formatting projection
+
+The adapter evaluates supported formatting as scoped state:
+
+- opening/closing braces push and restore state;
+- `\plain` and `\pard` reset Character and Paragraph state respectively;
+- `\par` ends a paragraph and `\line` inserts a hard line within a paragraph;
+- `\b`/`\b0`, `\i`/`\i0`, underline controls, and strike controls map to
+  weight, slant, underline, and strike;
+- `\fN` and `\fsN` map through the font table to font request and size;
+- `\cfN` and supported background/highlight controls map through the color
+  table;
+- supported language, direction, character-spacing, baseline, and feature
+  controls map to their corresponding Character properties; and
+- `\liN`, `\riN`, `\fiN`, `\sbN`, `\saN`, `\slN`/`\slmultN`,
+  `\ql`/`\qc`/`\qr`, and paragraph-direction controls map to the supported
+  Paragraph properties when exactly representable.
+
+Unsupported controls and values remain source but contribute no normalized
+property. Justification and other reserved properties are not approximated as
+a supported alignment.
+
+The RTF `\stylesheet` destination supplies named styles. Paragraph style
+`\s0` maps to Base Paragraph. Other `\sN` definitions map to Paragraph
+styles; `\*\csN` definitions map to Character styles. `\sbasedonN` and
+`\snextN` map to parent and following-paragraph relationships when valid.
+Recognized styles named Heading 1 through Heading 6 map to the corresponding
+adapter heading identities when doing so is unambiguous. Section and table
+styles remain opaque until their normalized block roles are specified.
+
+Style handles, rather than names or source order, provide stable identity.
+Effective RTF style selection follows the RTF formatting-state stream; it is not
+treated as an unordered list of classes. Direct controls after style selection
+become direct declarations over the affected formatted ranges.
+
+#### RTF canonical writing and targeted edits
+
+New RTF syntax and any formatting construct that must be regenerated use one
+versioned canonical RTF 1.9.1 representation:
+
+- balanced groups with deterministic control ordering and delimiters;
+- standard `\sN` and `\*\csN` stylesheet entries for Paragraph and Character
+  styles;
+- `\sbasedonN` and `\snextN` when those relationships are present;
+- direct formatting as the smallest balanced group or explicit property delta
+  that scopes exactly to the intended range; and
+- canonical escaped text/`\uN` output with the document's declared code-page
+  and `\ucN` policy.
+
+Existing font, color, and style-table entries retain their order, numbering,
+spelling, and unused entries. A new font, color, or style uses a previously
+unused handle/index and is appended canonically; existing entries are never
+renumbered merely to compact a table. The body patch and required table patch
+commit together.
+
+Where safe, changing one supported direct property patches or inserts only its
+control word and preserves unrelated or unknown controls in the same group. If
+RTF state interactions make that ambiguous, the adapter wraps the selected
+range in a new canonical group with an explicit override rather than
+regenerating surrounding content. It rejects the edit if neither operation can
+preserve the required group/destination semantics.
+
+Editing a supported style definition may canonicalize that one style-definition
+group. Unsupported controls inside that group are part of the declared
+canonicalization boundary and may be removed; other style definitions and
+header destinations remain original bytes. Descendant style groups are patched
+only when the canonical representation materializes a changed dependent value.
+Applying, removing, or changing a named style patches the smallest applicable
+`\sN` or `\csN` body control region.
+
+### HTML and RTF conformance tests
+
+Each adapter has corpus, property, and targeted golden tests. At minimum:
+
+- Opening and immediately saving complex browser/author-generated HTML and
+  Word/other-writer RTF is byte-identical, including malformed syntax, mixed
+  encodings, unknown controls, comments, duplicate/oddly quoted attributes,
+  scripts, arbitrary CSS, ignorable destinations, binary data, fields, and
+  embedded-object groups.
+- A targeted body-text edit changes only its declared source range and required
+  escaping bytes. Surrounding tags, attributes, scripts, CSS, RTF controls,
+  destinations, tables, and original whitespace remain byte-identical.
+- Editing text inside `<b foo="bar">…</b>` preserves both tags and `foo`.
+  Changing the bold formatting exercises the declared HTML
+  canonicalization boundary and produces the canonical expected markup.
+- Supported inline CSS properties project to the correct normalized direct
+  declarations; unsupported properties remain unchanged and have no layout
+  effect. Multiple applicable eVim class tokens select the first, while
+  unrelated class tokens survive assignment changes.
+- Creating, renaming, rebasing, editing, applying, and deleting canonical
+  eVim HTML class styles update only the owned style rules, affected
+  assignments, and materialized dependent rules. Reopening reconstructs the
+  same stable identities, sparse declarations, parent/next links, and effective
+  values.
+- RTF tests cover nested state, `\plain`/`\pard` resets, font/color tables,
+  Unicode and code-page text, `\par`/`\line`, paragraph and character style
+  definitions, based-on/next relationships, and unknown controls adjacent to
+  supported ones.
+- Editing an RTF style definition changes only its declared style group and
+  necessary dependent/table patches. Applying a style or direct property
+  preserves unrelated group state and opaque destinations.
+- No test may observe script, field, macro, object, external resource, or
+  embedded payload execution or network/file access.
+- Incremental parsing/projection after every edit equals a clean projection of
+  the patched source, and undo/redo restores exact source bytes and formatted
+  state.
 
 ## Required user-visible behavior
 
@@ -2857,6 +3286,13 @@ Primary source-preservation and transformation references:
 - [ICU character conversion behavior](https://unicode-org.github.io/icu/userguide/conversion/converters.html)
 - [Bidirectional lens round-trip laws](https://www.cis.upenn.edu/~bcpierce/papers/wagner-thesis.pdf)
 
+Primary HTML and RTF adapter references:
+
+- [WHATWG HTML syntax](https://html.spec.whatwg.org/multipage/syntax.html)
+- [WHATWG HTML parsing](https://html.spec.whatwg.org/multipage/parsing.html)
+- [W3C CSS Style Attributes](https://www.w3.org/TR/css-style-attr/)
+- [Microsoft RTF 1.9.1 specification](https://officeprotocoldoc.z19.web.core.windows.net/files/Archive_References/%5BMSFT-RTF%5D.pdf)
+
 Primary macOS caret references:
 
 - [Adopting the system text cursor in custom text views](https://developer.apple.com/documentation/appkit/adopting-the-system-text-cursor-in-custom-text-views)
@@ -2868,8 +3304,8 @@ Do not silently settle these while implementing an unrelated feature. Record a
 decision in this file or an architecture decision record first:
 
 - which format adapters beyond plain text ship initially;
-- each adapter's default authoring policy, such as Markdown delimiter and HTML
-  element/style choices;
+- Markdown's default delimiter/authoring policy and the canonical syntax of
+  any future adapter not specified above;
 - user policy for Unicode edits not representable in the source encoding;
 - exact Unicode word/sentence segmentation tailoring;
 - exact regular-expression syntax supported by `/` and `:substitute`;
@@ -2878,3 +3314,17 @@ decision in this file or an architecture decision record first:
   chrome insets, and other visual design choices not fixed above;
 - hyphenation and justification; and
 - concrete latency and memory budgets for supported hardware.
+
+## Bugs and feature requests to fix
+
+Support vim's control-q block selection mode (same as control-v) where one can select a visual block that is logically discontiguous. Use the nearest character boundary since we have proportional fonts.
+
+Support bulleted and numbered lists as in html or MS word.
+
+In the status line, the items with options like the "plain text" and encodings should be selects. Keep the style minimal like now, buit add a small vertically pointing triangle to the right of the element, and a hover effect. When selected, pop up a native system select popup for the options for that thing to allow it to be changed.
+
+Add a new markdown format. Rename the current format "Markdown WYSIWYG" and call the new one "Markdown" This format will preserve all characters in the original text on the screen, but still reflect their formatting. So `__foo bar__` will appear literally and be editable, and for headings `## Heading 2` but the style will apply to the whole span. If I add or change formatting in the UI, update the format markers. If I interactively change the format markers, update the style using the latest parsing of the text.
+
+In some editing, I was able to get "hit test editor failed (eVim core status 28)" and also input even send failedpretty easily. Do some reliability testing to track these down and validate.
+
+
