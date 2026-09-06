@@ -659,8 +659,9 @@ public func resolveFont(
     let nativeWeight = anchors.min {
       abs(Int($0.0) - Int(targetWeight)) < abs(Int($1.0) - Int(targetWeight))
     }!.1
-    member =
-      NSFont.systemFont(ofSize: size, weight: NSFont.Weight(rawValue: nativeWeight)) as CTFont
+    member = CTFontGetSymbolicTraits(base).contains(.traitMonoSpace)
+      ? NSFont.monospacedSystemFont(ofSize: size, weight: NSFont.Weight(rawValue: nativeWeight)) as CTFont
+      : NSFont.systemFont(ofSize: size, weight: NSFont.Weight(rawValue: nativeWeight)) as CTFont
     if wantsItalic {
       member =
         CTFontCreateCopyWithSymbolicTraits(member, size, nil, .traitItalic, .traitItalic) ?? member

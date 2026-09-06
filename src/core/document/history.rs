@@ -508,6 +508,19 @@ impl<T, M> History<T, M> {
         }
     }
 
+    /// Install initial projection-only configuration without changing the
+    /// root/savepoint identities or creating a history unit.
+    pub(crate) fn initialize_projection(&mut self, state: T) {
+        assert!(self.nodes.len() == 1 && self.current == 0 && self.next_change_number == 1);
+        if let Some(accounting) = &self.accounting {
+            assert_eq!(
+                (accounting.digest)(&self.nodes[0].state),
+                (accounting.digest)(&state)
+            );
+        }
+        self.nodes[0].state = Arc::new(state);
+    }
+
     pub(crate) fn current(&self) -> &Arc<T> {
         &self.nodes[self.current].state
     }

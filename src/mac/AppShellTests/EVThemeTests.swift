@@ -8,9 +8,12 @@ final class EVThemeTests: XCTestCase {
   func testThemePersistsSeparatelyAndRejectsInvalidSettings() throws {
     let name = "com.evim.tests.theme.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-config-test-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
+    let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
     defer { defaults.removePersistentDomain(forName: name) }
     let center = NotificationCenter()
-    let store = EVThemeStore(defaults: defaults, center: center)
+    let store = EVThemeStore(configuration: configuration, center: center)
     var notifications = 0
     let observer = center.addObserver(forName: .evimThemeDidChange, object: nil, queue: .main) {
       _ in notifications += 1
@@ -22,7 +25,7 @@ final class EVThemeTests: XCTestCase {
     theme.padding = EVThemePadding(top: 12, left: 24, bottom: 36, right: 48)
     store.update(theme)
     XCTAssertEqual(notifications, 1)
-    XCTAssertEqual(EVThemeStore(defaults: defaults).theme, theme)
+    XCTAssertEqual(EVThemeStore(configuration: EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)).theme, theme)
     XCTAssertEqual(store.theme.statusFont.pointSize, 16)
     let generation = store.generation
     store.update(theme)
@@ -43,9 +46,12 @@ final class EVThemeTests: XCTestCase {
   func testMalformedSavedThemeFallsBackAndSettingsWindowFits() throws {
     let name = "com.evim.tests.theme.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-config-test-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
+    let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
     defer { defaults.removePersistentDomain(forName: name) }
     defaults.set(Data("invalid json".utf8), forKey: "EVApplicationTheme.v1")
-    let store = EVThemeStore(defaults: defaults)
+    let store = EVThemeStore(configuration: configuration)
     XCTAssertEqual(store.theme, .paper)
     let settings = EVSettingsWindowController(store: store)
     defer { settings.close() }

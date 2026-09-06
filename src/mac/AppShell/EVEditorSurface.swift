@@ -74,9 +74,11 @@ public struct EVDocumentSaveSnapshot: Equatable, Sendable {
   public let data: Data
   public let documentID: UInt64
   public let documentRevision: UInt64
+  public let isCompleteSource: Bool
 
-  public init(data: Data, documentID: UInt64, documentRevision: UInt64) {
+  public init(data: Data, documentID: UInt64, documentRevision: UInt64, isCompleteSource: Bool = true) {
     self.data = data
+    self.isCompleteSource = isCompleteSource
     self.documentID = documentID
     self.documentRevision = documentRevision
   }
@@ -112,6 +114,10 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
   public enum Kind: Equatable, Sendable {
     case split
     case edit
+    case editNewWindow
+    case printWorkingDirectory
+    case checkTime
+    case changeDirectory
     case new
     case write
     case saveAs
@@ -170,6 +176,8 @@ public enum EVDocumentHostError: LocalizedError, Equatable {
   case operationAlreadyInProgress
   case noDocumentURL
   case invalidPath(String)
+  case destinationExists(String)
+  case partialWriteRequiresForce
   case saveCancelledOrFailed
   case preparedWriteUnavailable
   case unsupportedRequest
@@ -186,10 +194,14 @@ public enum EVDocumentHostError: LocalizedError, Equatable {
       "The document does not have a file location."
     case .invalidPath(let path):
       "The file path is invalid: \(path)"
+    case .partialWriteRequiresForce:
+      "Partial write to the current file requires !; the buffer remains modified."
+    case .destinationExists(let path):
+      "The file already exists: \(path). Add ! to overwrite it."
     case .saveCancelledOrFailed:
       "The document was not saved."
     case .preparedWriteUnavailable:
-      "Ranged and alternate-path writes require the prepared-write lifecycle, which is not available yet."
+      "This formatted line range cannot be written as exact source bytes. Use a full-document write."
     case .unsupportedRequest:
       "That document request is not supported by the native frontend."
     }
@@ -206,10 +218,12 @@ public protocol EVEditorSurface: AnyObject {
   func perform(menuCommand: EVMenuCommand, sender: Any?)
   func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation
   func perform(statusOption: EVStatusBarOption)
+  func showDocumentMessage(_ message: String)
 }
 
 extension EVEditorSurface {
   public func perform(statusOption: EVStatusBarOption) {}
+  public func showDocumentMessage(_ message: String) {}
 }
 
 /// One source-backed document/buffer. Multiple surfaces may share it.
@@ -224,6 +238,7 @@ public protocol EVDocumentBackend: AnyObject {
   func read(source: Data, typeName: String) throws
   func serializedSource(typeName: String) throws -> Data
   func nativeSaveSnapshot(typeName: String) throws -> EVDocumentSaveSnapshot
+  func nativeSaveSnapshot(typeName: String, hardLineRange: ClosedRange<UInt64>) throws -> EVDocumentSaveSnapshot
   func acknowledgeNativeSave(_ snapshot: EVDocumentSaveSnapshot) throws
   func recoverySnapshot() throws -> EVRecoverySnapshot
   func restoreRecovery(_ snapshot: EVRecoverySnapshot) throws
@@ -231,6 +246,7 @@ public protocol EVDocumentBackend: AnyObject {
 }
 
 extension EVDocumentBackend {
+  public func nativeSaveSnapshot(typeName: String, hardLineRange: ClosedRange<UInt64>) throws -> EVDocumentSaveSnapshot { throw EVDocumentHostError.preparedWriteUnavailable }
   public func recoverySnapshot() throws -> EVRecoverySnapshot {
     throw EVRecoveryError.backendUnavailable
   }

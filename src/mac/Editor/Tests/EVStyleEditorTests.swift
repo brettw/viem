@@ -91,7 +91,7 @@ final class EVStyleEditorTests: XCTestCase {
         _ = backend
         defer { withExtendedLifetime(surface) {} }
 
-        XCTAssertEqual(editor.inspection.styleCount, 12)
+        XCTAssertEqual(editor.inspection.styleCount, 14)
         XCTAssertEqual(editor.inspection.selectedKind, .paragraph)
         XCTAssertEqual(editor.inspection.characterPropertyCount, 14)
         XCTAssertEqual(editor.inspection.paragraphPropertyCount, 8)
@@ -629,8 +629,11 @@ final class EVStyleEditorTests: XCTestCase {
         let editor = EVStyleEditorViewController()
         let themeSuite = "evim-style-editor-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: themeSuite))
+        let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-config-test-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
+        let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
         addTeardownBlock { defaults.removePersistentDomain(forName: themeSuite) }
-        editor.themeStore = EVThemeStore(defaults: defaults)
+        editor.themeStore = EVThemeStore(configuration: configuration)
         editor.retarget(document: surface, styleKey: style)
         return (backend, surface, editor)
     }

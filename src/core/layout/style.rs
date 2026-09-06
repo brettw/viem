@@ -502,10 +502,9 @@ fn semantic_properties(style: SemanticInlineStyle) -> CharacterProperties {
             slant: Some(FontSlant::Italic),
             ..CharacterProperties::default()
         },
-        SemanticInlineStyle::Code => CharacterProperties {
-            font_families: Some(vec!["monospace".to_owned()]),
-            ..CharacterProperties::default()
-        },
+        // Code is assigned a named style by the format adapter. Keeping the
+        // semantic marker sparse lets users edit that named font and color.
+        SemanticInlineStyle::Code => CharacterProperties::default(),
     }
 }
 

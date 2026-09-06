@@ -5,10 +5,13 @@
 //! the candidate state needed for publication.  Commit only rechecks the
 //! captured model preconditions and installs that already-verified candidate.
 
+#[path = "fragments.rs"]
+mod fragments;
 #[path = "replacement.rs"]
 mod replacement;
 #[path = "typing.rs"]
 mod typing;
+pub use fragments::{FragmentEdit, ReplacementFragment};
 pub(crate) use replacement::RecordedReplacement;
 
 use super::formatted_text::{FormattedTextSpliceStats, LogicalGraphemeSnapshot};
@@ -157,6 +160,11 @@ impl StyleModelRequest {
 /// rather than silently rebasing it to the current state.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelRequest {
+    ApplyFragmentEdits {
+        document: DocumentId,
+        revision: Revision,
+        edits: Vec<FragmentEdit>,
+    },
     SetDirectCharacterProperties {
         document: DocumentId,
         revision: Revision,
@@ -222,7 +230,8 @@ pub enum ModelRequest {
         revision: Revision,
         target: FileFormat,
     },
-    /// Change source interpretation without changing any authoritative bytes.
+    /// Switch interpretation losslessly within a family or to plain text;
+    /// explicitly convert formatted semantics between HTML and Markdown.
     SetFormat {
         document: DocumentId,
         revision: Revision,
@@ -265,7 +274,8 @@ impl ModelRequest {
             Self::SetDirectCharacterProperties { document, .. } => *document,
             Self::EditDirectProperty { document, .. } => *document,
             Self::ReplacePhysicalSource { document, .. } => *document,
-            Self::ApplyTextEdits { document, .. }
+            Self::ApplyFragmentEdits { document, .. }
+            | Self::ApplyTextEdits { document, .. }
             | Self::SetSemanticStyle { document, .. }
             | Self::SetListStyle { document, .. }
             | Self::SetParagraphStyle { document, .. }
@@ -286,7 +296,8 @@ impl ModelRequest {
             Self::SetDirectCharacterProperties { revision, .. } => *revision,
             Self::EditDirectProperty { revision, .. } => *revision,
             Self::ReplacePhysicalSource { revision, .. } => *revision,
-            Self::ApplyTextEdits { revision, .. }
+            Self::ApplyFragmentEdits { revision, .. }
+            | Self::ApplyTextEdits { revision, .. }
             | Self::SetSemanticStyle { revision, .. }
             | Self::SetListStyle { revision, .. }
             | Self::SetParagraphStyle { revision, .. }
@@ -581,9 +592,14 @@ pub struct ModelChangeSummary {
     formatted_splices: Vec<Splice>,
     projection_work: ProjectionWorkStatistics,
     style_change: Option<StyleChangeSummary>,
+    conversion_warnings: Vec<super::ConversionWarning>,
 }
 
 impl ModelChangeSummary {
+    pub fn conversion_warnings(&self) -> &[super::ConversionWarning] {
+        &self.conversion_warnings
+    }
+
     pub fn kind(&self) -> ModelChangeKind {
         self.kind
     }
@@ -661,6 +677,7 @@ const MAX_LINE_LOCAL_PROJECTION_HARD_LINES: usize = 64;
 struct LineLocalProjectionRegion {
     inherit_html_context: bool,
     hard_lines: Range<usize>,
+    source_lines: Range<usize>,
     old_formatted: Range<usize>,
     old_source: Range<usize>,
 }
@@ -862,6 +879,7 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_request_target(&request)?;
         match request {
+            ModelRequest::ApplyFragmentEdits { edits, .. } => self.prepare_fragment_edits(edits),
             ModelRequest::SetDirectCharacterProperties { range, values, .. } => {
                 let range =
                     TextRange::new(self.text_point(range.start)?, self.text_point(range.end)?)?;
@@ -1287,6 +1305,7 @@ impl Document {
                 formatted_splices: Vec::new(),
                 projection_work,
                 style_change: None,
+                conversion_warnings: Vec::new(),
             },
             text_position_map,
             None,
@@ -1395,6 +1414,7 @@ impl Document {
                 formatted_splices: Vec::new(),
                 projection_work: ProjectionWorkStatistics::none(),
                 style_change: None,
+                conversion_warnings: Vec::new(),
             },
             PositionMap::identity(
                 self.id,
@@ -1616,6 +1636,22 @@ impl Document {
         let converter = super::rich_text::Builder::new(&normalized, revision);
         let before = self.projection().style_sheet();
         let mut expected = before.clone();
+        let default_assignment = match &intent {
+            PersistedStyleIntent::AssignCharacterStyle { style, .. }
+                if before.has_user_default(style, true) =>
+            {
+                Some((style.clone(), true))
+            }
+            PersistedStyleIntent::AssignBlockStyle { style, .. }
+                if before.has_user_default(style, false) =>
+            {
+                Some((style.clone(), false))
+            }
+            _ => None,
+        };
+        if let Some((style, character)) = &default_assignment {
+            expected.materialize_default_definition(style, *character);
+        }
         let syntax = match &intent {
             PersistedStyleIntent::EditStyleDefinition { edit, .. } => {
                 let deleting = matches!(
@@ -1727,7 +1763,7 @@ impl Document {
                     before,
                     style,
                 )?;
-                if style.0.starts_with("List") {
+                if style.0.starts_with("List") && default_assignment.is_none() {
                     let owned = super::html_styles::read(&normalized.text);
                     if !owned.rules.iter().any(|rule| {
                         rule.definition.is_block() && rule.definition.style_id() == style
@@ -1758,6 +1794,43 @@ impl Document {
             _ => return Err(DocumentError::UnsupportedFormatting.into()),
         };
         let mut syntax = syntax;
+        if let Some((style, character)) = default_assignment {
+            let owned = super::html_styles::read(&normalized.text);
+            if !owned.rules.iter().any(|rule| {
+                rule.definition.is_block() != character && rule.definition.style_id() == &style
+            }) {
+                let supporting = if let Some(at) = owned.close {
+                    let mut rules = String::new();
+                    let mut current = Some(style);
+                    while let Some(id) = current {
+                        if !owned.rules.iter().any(|rule| {
+                            rule.definition.is_block() != character
+                                && rule.definition.style_id() == &id
+                        }) {
+                            rules.push_str(
+                                &super::html_styles::write_rule(&expected, &id, character)
+                                    .ok_or(DocumentError::UnsupportedFormatting)?,
+                            );
+                        }
+                        current = if character {
+                            expected
+                                .character_style(&id)
+                                .and_then(|s| s.based_on.clone())
+                        } else {
+                            expected.block_style(&id).and_then(|s| s.based_on.clone())
+                        };
+                    }
+                    vec![(at..at, rules)]
+                } else {
+                    super::html_styles::definition_patches(&normalized.text, before, &expected)?
+                };
+                syntax.extend(
+                    supporting
+                        .into_iter()
+                        .map(|(range, text)| (converter.source_range(range), text)),
+                );
+            }
+        }
         syntax.sort_by_key(|(range, _)| (range.start, range.end));
         let mut merged: Vec<(Range<usize>, String)> = Vec::new();
         for (range, text) in syntax {
@@ -1799,7 +1872,7 @@ impl Document {
             return Err(DocumentError::VerificationFailed.into());
         }
         let mut actual = candidate.projection.style_sheet().clone();
-        actual.retain_internal_styles(&expected);
+        actual.retain_configuration_deletions(&expected);
         actual.set_configuration_revision(expected.revision);
         if actual != expected {
             return Err(DocumentError::VerificationFailed.into());
@@ -1849,6 +1922,7 @@ impl Document {
                 formatted_splices: Vec::new(),
                 projection_work: work,
                 style_change: None,
+                conversion_warnings: Vec::new(),
             },
             map,
             None,
@@ -1868,6 +1942,23 @@ impl Document {
         let mut expected = before.clone();
         let mut intent = intent;
         let mut supporting = Vec::new();
+        let default_assignment = match &intent {
+            PersistedStyleIntent::AssignCharacterStyle { style, .. }
+                if style.0.starts_with("RtfC") && before.has_user_default(style, true) =>
+            {
+                Some((style.clone(), true))
+            }
+            PersistedStyleIntent::AssignBlockStyle { style, .. }
+                if style.0.starts_with("RtfP") && before.has_user_default(style, false) =>
+            {
+                Some((style.clone(), false))
+            }
+            _ => None,
+        };
+        if let Some((style, character)) = default_assignment {
+            expected.materialize_default_definition(&style, character);
+            supporting = super::rtf_styles::definition_patches(&input, before, &expected)?;
+        }
         if let PersistedStyleIntent::AssignBlockStyle { style, .. } = &mut intent {
             if StyleSheet::builtin_block(style) {
                 let native = super::rtf_styles::read(&input);
@@ -2038,7 +2129,7 @@ impl Document {
             return Err(DocumentError::VerificationFailed.into());
         }
         let mut actual = candidate.projection.style_sheet().clone();
-        actual.retain_internal_styles(&expected);
+        actual.retain_configuration_deletions(&expected);
         actual.set_configuration_revision(expected.revision);
         if actual != expected {
             return Err(DocumentError::VerificationFailed.into());
@@ -2144,6 +2235,7 @@ impl Document {
                 formatted_splices: Vec::new(),
                 projection_work: work,
                 style_change: None,
+                conversion_warnings: Vec::new(),
             },
             map,
             None,
@@ -2293,12 +2385,56 @@ impl Document {
                 formatted_splices: Vec::new(),
                 projection_work: ProjectionWorkStatistics::none(),
                 style_change: Some(style_change),
+                conversion_warnings: Vec::new(),
             },
             text_position_map,
             None,
             self.next_projected_block_id,
             PreparedPublication::State(candidate),
         ))
+    }
+
+    fn markdown_empty_code_patches(
+        &self,
+        range: &Range<usize>,
+        text: &str,
+    ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
+        if self.format() != Format::Markdown
+            || !range.is_empty()
+            || !self
+                .projection()
+                .blocks_for_region(range)
+                .iter()
+                .any(|block| block.range == *range && block.style.0 == "Code Block")
+        {
+            return Ok(None);
+        }
+        let at = self
+            .projection()
+            .provenance()
+            .iter()
+            .find(|span| span.formatted == *range && span.source.is_empty())
+            .map(|span| span.source.start)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let decoded = self.encoding().decode(&self.source_bytes())?;
+        let input = normalize(&decoded, self.file_format());
+        let normalized = input
+            .units
+            .iter()
+            .find(|unit| unit.source.start == at)
+            .map_or(input.text.len(), |unit| unit.normalized.start);
+        let mut syntax = String::new();
+        if normalized > 0 && !input.text[..normalized].ends_with('\n') {
+            syntax.push_str(self.file_format().spelling());
+        }
+        syntax.push_str(&text.replace('\n', self.file_format().spelling()));
+        if normalized < input.text.len() {
+            syntax.push_str(self.file_format().spelling());
+        }
+        Ok(Some(vec![SourcePatch::primary(
+            at..at,
+            self.encoding().encode_fragment(&syntax)?,
+        )]))
     }
 
     fn prepare_text_edits(
@@ -2364,6 +2500,27 @@ impl Document {
             source_patches = patches;
         } else {
             for edit in &edits {
+                if let Some(patches) =
+                    super::markdown_code::patches(self, &edit.range, &edit.replacement)?
+                {
+                    source_patches.extend(
+                        patches
+                            .into_iter()
+                            .map(|(range, syntax)| {
+                                self.encoding()
+                                    .encode_fragment(&syntax)
+                                    .map(|bytes| SourcePatch::primary(range, bytes))
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                    );
+                    continue;
+                }
+                if let Some(patches) =
+                    self.markdown_empty_code_patches(&edit.range, &edit.replacement)?
+                {
+                    source_patches.extend(patches);
+                    continue;
+                }
                 if matches!(self.format(), Format::Html | Format::Rtf) {
                     if self.format() == Format::Rtf
                         && !edit.range.is_empty()
@@ -2645,6 +2802,7 @@ impl Document {
                 formatted_splices,
                 projection_work,
                 style_change: None,
+                conversion_warnings: Vec::new(),
             },
             text_position_map,
             None,
@@ -2813,6 +2971,27 @@ impl Document {
 
         let mut source_patches = Vec::with_capacity(edits.len());
         for edit in &edits {
+            if let Some(patches) =
+                super::markdown_code::patches(self, &edit.range, edit.payload.text())?
+            {
+                source_patches.extend(
+                    patches
+                        .into_iter()
+                        .map(|(range, syntax)| {
+                            self.encoding()
+                                .encode_fragment(&syntax)
+                                .map(|bytes| SourcePatch::primary(range, bytes))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+                continue;
+            }
+            if let Some(patches) =
+                self.markdown_empty_code_patches(&edit.range, edit.payload.text())?
+            {
+                source_patches.extend(patches);
+                continue;
+            }
             if matches!(self.format(), Format::Html | Format::Rtf) {
                 let mut runs = super::rich_text::text_source_runs(self, &edit.range)?;
                 if self.format() == Format::Rtf && edit.range.is_empty() {
@@ -2949,6 +3128,7 @@ impl Document {
                 formatted_splices,
                 projection_work,
                 style_change: None,
+                conversion_warnings: Vec::new(),
             },
             text_position_map,
             None,
@@ -3026,6 +3206,7 @@ impl Document {
                 formatted_splices,
                 projection_work,
                 style_change: None,
+                conversion_warnings: Vec::new(),
             },
             text_position_map,
             None,
@@ -3190,6 +3371,7 @@ impl Document {
                 formatted_splices,
                 projection_work,
                 style_change: None,
+                conversion_warnings: Vec::new(),
             },
             text_position_map,
             None,
@@ -3236,6 +3418,7 @@ impl Document {
                 formatted_splices: Vec::new(),
                 projection_work: work,
                 style_change: None,
+                conversion_warnings: Vec::new(),
             },
             map,
             None,
@@ -4267,6 +4450,7 @@ impl Document {
                 formatted_splices: Vec::new(),
                 projection_work,
                 style_change: None,
+                conversion_warnings: Vec::new(),
             },
             text_position_map,
             None,
@@ -4448,7 +4632,7 @@ impl Document {
                 }) {
                     patches
                 } else {
-                    if authored.bold.is_some() && authored.weight.is_none() {
+                    if authored.bold == Some(false) && authored.weight.is_none() {
                         let at = self
                             .projection()
                             .provenance_for_region(range)
@@ -4571,6 +4755,7 @@ impl Document {
                     formatted_splices: Vec::new(),
                     projection_work: work,
                     style_change: None,
+                    conversion_warnings: Vec::new(),
                 },
                 map,
                 None,
@@ -4664,6 +4849,14 @@ impl Document {
         source_range: &Range<usize>,
         style: SemanticInlineStyle,
     ) -> Result<Vec<SourcePatch>, ModelTransactionError> {
+        if style == SemanticInlineStyle::Code {
+            let (opening, closing) = super::markdown_code::delimiter_ranges(self, source_range)?
+                .ok_or(DocumentError::UnsupportedFormatting)?;
+            return Ok(vec![
+                SourcePatch::primary(opening, Vec::new()),
+                SourcePatch::primary(closing, Vec::new()),
+            ]);
+        }
         let mut matches = Vec::new();
         for marker in markdown_style_markers(style) {
             let marker_bytes = self.state().encoding.encode_fragment(marker)?;
@@ -4809,6 +5002,7 @@ impl Document {
                 formatted_splices,
                 projection_work: work,
                 style_change: None,
+                conversion_warnings: Vec::new(),
             },
             map,
             None,
@@ -4825,9 +5019,52 @@ impl Document {
             return Ok(self.no_op_prepared());
         }
         let revision = Revision(self.next_revision);
-        let decoded = self.state().encoding.decode(&self.state().source.bytes())?;
+        let mut conversion_warnings = Vec::new();
+        let source_patches;
+        let (source, decoded) = if super::conversion::crosses_markup_family(self.format(), target) {
+            let conversion = super::conversion::convert(self, target)?;
+            conversion_warnings = conversion.warnings;
+            let spelling = conversion
+                .source
+                .replace('\n', self.file_format().spelling());
+            let mut bytes = if self.state().has_bom {
+                self.encoding().bom_bytes().to_vec()
+            } else {
+                Vec::new()
+            };
+            let authored = if self.encoding() == super::Encoding::Latin1 {
+                let count = spelling.chars().filter(|c| *c as u32 > 255).count();
+                if count > 0 {
+                    conversion_warnings.push(super::ConversionWarning::UnrepresentableCharacters {
+                        encoding: self.encoding(),
+                        count,
+                    });
+                }
+                spelling
+                    .chars()
+                    .map(|c| if c as u32 > 255 { '?' } else { c })
+                    .collect::<String>()
+            } else {
+                spelling
+            };
+            bytes.extend(self.encoding().encode_fragment(&authored)?);
+            source_patches = vec![SourcePatch::primary(
+                0..self.state().source.len(),
+                bytes.clone(),
+            )];
+            (
+                apply_source_patches(&self.state().source, &source_patches)?,
+                self.encoding().decode(&bytes)?,
+            )
+        } else {
+            source_patches = Vec::new();
+            (
+                self.state().source.clone(),
+                self.state().encoding.decode(&self.state().source.bytes())?,
+            )
+        };
         let mut candidate = build_state_from_decoded(
-            self.state().source.clone(),
+            source,
             decoded,
             target,
             self.state().file_format,
@@ -4835,7 +5072,11 @@ impl Document {
             self.state().line_ending_evidence,
             revision,
         )?;
-        let edits = source_backed_reprojection_edits(self.projection(), &candidate.projection);
+        let edits = if source_patches.is_empty() {
+            source_backed_reprojection_edits(self.projection(), &candidate.projection)
+        } else {
+            formatted_text_difference(self.text(), candidate.projection.text())
+        };
         candidate
             .projection
             .install_persistent_text_edits(self.projection(), &edits)
@@ -4871,10 +5112,11 @@ impl Document {
             revision,
             ModelChangeSummary {
                 kind: ModelChangeKind::SourceMetadata,
-                source_patches: Vec::new(),
+                source_patches,
                 formatted_splices,
                 projection_work: work,
                 style_change: None,
+                conversion_warnings,
             },
             map,
             None,
@@ -4903,12 +5145,28 @@ impl Document {
         } else {
             Vec::new()
         };
-        bytes.extend(target.encode_fragment(&decoded.text)?);
+        // Explicit conversion to Latin-1 authorizes substitution. Ordinary
+        // edits continue using the strict encoder and never substitute.
+        let lost = if target == super::Encoding::Latin1 {
+            decoded.text.chars().filter(|c| *c as u32 > 255).count()
+        } else {
+            0
+        };
+        let converted_text = if lost > 0 {
+            decoded
+                .text
+                .chars()
+                .map(|c| if c as u32 > 255 { '?' } else { c })
+                .collect::<String>()
+        } else {
+            decoded.text.clone()
+        };
+        bytes.extend(target.encode_fragment(&converted_text)?);
         let source_patches = byte_difference(&original, &bytes);
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let revision = Revision(self.next_revision);
         let new_decoded = target.decode(&bytes)?;
-        if new_decoded.text != decoded.text {
+        if new_decoded.text != converted_text {
             return Err(DocumentError::VerificationFailed.into());
         }
         let mut candidate = build_state_from_decoded(
@@ -4920,42 +5178,53 @@ impl Document {
             self.state().line_ending_evidence,
             revision,
         )?;
-        if candidate.projection.text() != self.text()
-            || !candidate
-                .projection
-                .has_same_hard_line_structure(self.projection())
-        {
-            return Err(DocumentError::VerificationFailed.into());
-        }
+        let edits = formatted_text_difference(self.text(), candidate.projection.text());
         candidate
             .projection
-            .install_unchanged_text_storage(self.projection())
+            .install_persistent_text_edits(self.projection(), &edits)
             .map_err(DocumentError::FormattedTextStorage)?;
-        candidate
-            .projection
-            .install_unchanged_block_ids(self.projection())
-            .map_err(super::block_identity_document_error)?;
+        let formatted_splices = edits
+            .iter()
+            .map(|edit| Splice::new(edit.range.clone(), edit.replacement.len()))
+            .collect::<Result<Vec<_>, _>>()?;
         let map = PositionMap::for_text_snapshots(
             self.id,
             self.revision(),
             revision,
             self.projection(),
             &candidate.projection,
-            Vec::new(),
+            formatted_splices.clone(),
         )?;
+        let next_id = candidate
+            .projection
+            .install_reconciled_source_block_ids(
+                self.projection(),
+                &edits,
+                &map,
+                self.next_projected_block_id,
+            )
+            .map_err(super::block_identity_document_error)?;
         let work = ProjectionWorkStatistics::full(&candidate);
         Ok(self.prepared(
             revision,
             ModelChangeSummary {
                 kind: ModelChangeKind::SourceMetadata,
                 source_patches,
-                formatted_splices: Vec::new(),
+                formatted_splices,
                 projection_work: work,
                 style_change: None,
+                conversion_warnings: if lost == 0 {
+                    Vec::new()
+                } else {
+                    vec![super::ConversionWarning::UnrepresentableCharacters {
+                        encoding: target,
+                        count: lost,
+                    }]
+                },
             },
             map,
             None,
-            self.next_projected_block_id,
+            next_id,
             PreparedPublication::State(candidate),
         ))
     }
@@ -5015,6 +5284,7 @@ impl Document {
                 formatted_splices: Vec::new(),
                 projection_work,
                 style_change: None,
+                conversion_warnings: Vec::new(),
             },
             text_position_map,
             None,
@@ -5090,6 +5360,7 @@ impl Document {
                 formatted_splices,
                 projection_work: ProjectionWorkStatistics::none(),
                 style_change: None,
+                conversion_warnings: Vec::new(),
             },
             text_position_map,
             Some(navigation),
@@ -5243,7 +5514,7 @@ impl Document {
             }
 
             let source_hard_lines = region
-                .hard_lines
+                .source_lines
                 .clone()
                 .map(|line| {
                     let old = self
@@ -5268,7 +5539,7 @@ impl Document {
             let (source_hard_lines, source_line_work) = self
                 .state()
                 .source_hard_lines
-                .replace_ranges_with_stats(region.hard_lines.clone(), &source_hard_lines)
+                .replace_ranges_with_stats(region.source_lines.clone(), &source_hard_lines)
                 .ok_or(DocumentError::VerificationFailed)?;
             if source_hard_lines.source_end() != source.len() {
                 return Err(DocumentError::VerificationFailed.into());
@@ -5341,7 +5612,7 @@ impl Document {
         edits: &[TextEdit],
         patches: &[SourcePatch],
     ) -> Result<Option<TextEditCandidate>, ModelTransactionError> {
-        if !matches!(self.format(), Format::Html | Format::Rtf)
+        if !matches!(self.format(), Format::Html | Format::Rtf | Format::Markdown)
             || edits.len() != 1
             || patches.len() != 1
         {
@@ -5349,6 +5620,17 @@ impl Document {
         }
         let edit = &edits[0];
         let patch = &patches[0];
+        let markdown_code = self.format() == Format::Markdown;
+        if markdown_code
+            && (!self
+                .projection()
+                .blocks_for_region(&edit.range)
+                .iter()
+                .any(|block| block.style.0 == "Code Block")
+                || edit.replacement.contains(['`', '~']))
+        {
+            return Ok(None);
+        }
         // Explicit/inverse patches may restore plain text while removing its
         // old formatting wrapper. Escaped replacement syntax alone does not
         // prove that the removed bytes preserve parser state. Require one
@@ -5381,6 +5663,8 @@ impl Document {
         // enclosing state, and must pass through a structural reparse.
         let canonical = if self.format() == Format::Html {
             super::rich_text::escape_html_source_edit(self, patch.range.start, &edit.replacement)?
+        } else if markdown_code {
+            edit.replacement.clone()
         } else {
             super::rtf::escape(&edit.replacement)
         };
@@ -5521,12 +5805,21 @@ impl Document {
                 .encoding
                 .decode_region(&patch.replacement, patch.range.start)?;
             let normalized = normalize(&decoded, self.state().file_format);
-            let parsed = super::rtf::project(
-                &normalized,
-                revision,
-                patch.range.start,
-                patch.range.start + patch.replacement.len(),
-            );
+            let parsed = if markdown_code {
+                super::projection::project_plain(
+                    &normalized,
+                    revision,
+                    patch.range.start,
+                    patch.range.start + patch.replacement.len(),
+                )
+            } else {
+                super::rtf::project(
+                    &normalized,
+                    revision,
+                    patch.range.start,
+                    patch.range.start + patch.replacement.len(),
+                )
+            };
             if parsed.text() != edit.replacement {
                 return Ok(None);
             }
@@ -5710,6 +6003,18 @@ impl Document {
         edits: &[TextEdit],
         source_patches: &[SourcePatch],
     ) -> Result<Option<LineLocalProjectionRegion>, ModelTransactionError> {
+        if matches!(self.format(), Format::Markdown | Format::MarkdownSource)
+            && edits.iter().any(|edit| {
+                edit.replacement.contains(['`', '~'])
+                    || self
+                        .projection()
+                        .blocks_for_region(&edit.range)
+                        .iter()
+                        .any(|block| block.style.0 == "Code Block")
+            })
+        {
+            return Ok(None);
+        }
         // Stateful HTML/RTF parsing cannot restart at a physical source line.
         if edits.is_empty() || matches!(self.format(), Format::Html | Format::Rtf) {
             return Ok(None);
@@ -5746,10 +6051,7 @@ impl Document {
             last_line = last_line.max(line);
         }
         let hard_lines = first_line..last_line.saturating_add(1);
-        if hard_lines.is_empty()
-            || hard_lines.len() > MAX_LINE_LOCAL_PROJECTION_HARD_LINES
-            || self.state().source_hard_lines.len() != self.projection().hard_line_count()
-        {
+        if hard_lines.is_empty() || hard_lines.len() > MAX_LINE_LOCAL_PROJECTION_HARD_LINES {
             return Ok(None);
         }
 
@@ -5762,16 +6064,45 @@ impl Document {
             .hard_line_range(last_line)
             .ok_or(DocumentError::VerificationFailed)?;
         let old_formatted = first_formatted.start..last_formatted.end;
+        let source_lines =
+            if self.state().source_hard_lines.len() == self.projection().hard_line_count() {
+                hard_lines.clone()
+            } else if self.format() == Format::Markdown {
+                let provenance = self.projection().provenance_for_region(&old_formatted);
+                let (Some(first), Some(last)) = (provenance.first(), provenance.last()) else {
+                    return Ok(None);
+                };
+                let Some(first) = self
+                    .state()
+                    .source_hard_lines
+                    .line_at_offset(first.source.start)
+                else {
+                    return Ok(None);
+                };
+                let Some(last) = self
+                    .state()
+                    .source_hard_lines
+                    .line_at_offset(last.source.end.saturating_sub(1))
+                else {
+                    return Ok(None);
+                };
+                if last + 1 - first != hard_lines.len() {
+                    return Ok(None);
+                }
+                first..last + 1
+            } else {
+                return Ok(None);
+            };
         let old_source_start = self
             .state()
             .source_hard_lines
-            .get(first_line)
+            .get(source_lines.start)
             .ok_or(DocumentError::VerificationFailed)?
             .start;
         let old_source_end = if last_line + 1 == self.projection().hard_line_count() {
             self.state()
                 .source_hard_lines
-                .get(last_line)
+                .get(source_lines.end - 1)
                 .ok_or(DocumentError::VerificationFailed)?
                 .end
         } else {
@@ -5847,6 +6178,7 @@ impl Document {
         Ok(Some(LineLocalProjectionRegion {
             inherit_html_context,
             hard_lines,
+            source_lines,
             old_formatted,
             old_source,
         }))
@@ -6252,6 +6584,19 @@ fn semantic_style_edit_was_exactly_projected(
         return false;
     }
 
+    // Named Code is the editable appearance of the semantic code marker.
+    // Its assignment is created/removed by the same source delimiters.
+    if style == SemanticInlineStyle::Code {
+        let named = StyleSpan {
+            range: range.clone(),
+            application: StyleApplication::Named("Code".into()),
+        };
+        if enabled {
+            expected.push(named);
+        } else if let Some(index) = expected.iter().position(|span| span == &named) {
+            expected.remove(index);
+        }
+    }
     if expected.len() != after.len() {
         return false;
     }
@@ -6848,5 +7193,13 @@ mod rich_reverse_patch_tests {
             assert!(document.undo());
             assert_eq!(document.source_bytes(), original.as_bytes());
         }
+    }
+}
+
+fn formatted_text_difference(before: &str, after: &str) -> Vec<TextEdit> {
+    if before == after {
+        Vec::new()
+    } else {
+        vec![TextEdit::new(0..before.len(), after)]
     }
 }

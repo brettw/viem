@@ -4,6 +4,8 @@
 //! UTF-8 is an immutable derived projection and is always regenerated and
 //! verified before a source transaction is committed.
 
+mod conversion;
+pub use conversion::{ConversionLoss, ConversionWarning};
 mod encoding;
 mod formatted_text;
 mod history;
@@ -14,6 +16,7 @@ mod html_paragraph;
 mod html_source;
 mod html_styles;
 mod lists;
+mod markdown_code;
 mod rich_text;
 mod rtf;
 mod rtf_direct;
@@ -85,18 +88,18 @@ pub use style::{
     ConfigurationStyleIntent, DocumentStyleAssignment, FontSlant, LineSpacing, ParagraphAlignment,
     ResolvedCharacterStyle, ResolvedDocumentStyle, ResolvedParagraphStyle, ResolvedStyle,
     SemanticInlineStyle, StyleApplication, StyleContribution, StyleContributionOrigin,
-    StyleDefinitionEdit, StyleDefinitionFieldEdit, StyleDefinitionMetadata, StyleDefinitionOrigin,
-    StyleDependency, StyleDependencyIndex, StyleError, StyleId, StyleInvalidationEffect,
-    StyleNamespace, StyleProperty, StylePropertyValue, StyleSheet, StyleSheetRevision,
-    WritingDirection,
+    StyleDefaultsError, StyleDefinitionEdit, StyleDefinitionFieldEdit, StyleDefinitionMetadata,
+    StyleDefinitionOrigin, StyleDependency, StyleDependencyIndex, StyleError, StyleId,
+    StyleInvalidationEffect, StyleNamespace, StyleProperty, StylePropertyValue, StyleSheet,
+    StyleSheetRevision, WritingDirection,
 };
 pub(crate) use transaction::RecordedReplacement;
 pub use transaction::{
-    CommittedModelTransaction, HistoryNavigationRequest, ModelChangeKind, ModelChangeSummary,
-    ModelRequest, ModelTransactionError, PersistedStyleIntent, PreparedModelTransaction,
-    ProjectionWorkScope, ProjectionWorkStatistics, SourcePatch, StyleBlockTarget,
-    StyleChangeSummary, StyleModelIntent, StyleModelRequest, StylePropertyTarget,
-    StyleTransactionError,
+    CommittedModelTransaction, FragmentEdit, HistoryNavigationRequest, ModelChangeKind,
+    ModelChangeSummary, ModelRequest, ModelTransactionError, PersistedStyleIntent,
+    PreparedModelTransaction, ProjectionWorkScope, ProjectionWorkStatistics, ReplacementFragment,
+    SourcePatch, StyleBlockTarget, StyleChangeSummary, StyleModelIntent, StyleModelRequest,
+    StylePropertyTarget, StyleTransactionError,
 };
 pub use transfer::HardLineTransfer;
 
@@ -764,6 +767,37 @@ impl Default for Document {
 }
 
 impl Document {
+    /// Install immutable user defaults before the first view/edit. Source bytes,
+    /// projection identity, savepoint, and undo depth remain unchanged.
+    pub fn initialize_style_defaults(&mut self, json: &[u8]) -> Result<(), StyleDefaultsError> {
+        if self.revision().0 != 0 || self.history_status().node_count != 1 {
+            return Err(StyleDefaultsError::NotPristine);
+        }
+        let mut sheet = self.projection().style_sheet().with_default_json(json)?;
+        let generation = sheet
+            .revision
+            .0
+            .checked_add(1)
+            .ok_or_else(|| StyleDefaultsError::Json("style generation exhausted".into()))?;
+        sheet.set_configuration_revision(StyleSheetRevision(generation));
+        let mut state = self.state().clone();
+        let assignment = state.projection.document_style().clone();
+        state
+            .projection
+            .install_configuration_styles(state.revision, sheet, assignment);
+        self.history.initialize_projection(state);
+        // Reserve the consumed style generation so the next source/model
+        // transaction still advances both style and projection identities.
+        self.next_revision = self.next_revision.max(generation);
+        Ok(())
+    }
+
+    pub fn export_style_defaults(&self) -> Result<Vec<u8>, StyleDefaultsError> {
+        self.projection()
+            .style_sheet()
+            .default_configuration_json(self.projection().document_style())
+    }
+
     /// Create a UTF-8, Unix-line-ending plain-text document.
     pub fn new(text: impl Into<String>) -> Self {
         Self::try_new(text).expect("process-wide document identities were exhausted")

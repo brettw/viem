@@ -6,6 +6,25 @@ import Testing
 
 @Suite("Font face and OpenType catalog")
 struct EVFontCatalogTests {
+  @Test func portableMonospaceResolvesFixedPitchAcrossTraitsAndGenerationChanges() {
+    for bold in [false, true] {
+      for slant in [EVIM_FONT_SLANT_UPRIGHT, EVIM_FONT_SLANT_ITALIC] {
+        let font = resolveFont(families: ["monospace"], size: 14,
+          cssWeight: bold ? 700 : 400, slant: UInt32(slant), features: [], relativeBold: bold)
+        #expect(CTFontGetSymbolicTraits(font).contains(.traitMonoSpace))
+        var characters: [UniChar] = [0x69, 0x57] // i and W have equal advances.
+        var glyphs = [CGGlyph](repeating: 0, count: 2)
+        #expect(CTFontGetGlyphsForCharacters(font, &characters, &glyphs, 2))
+        var advances = [CGSize](repeating: .zero, count: 2)
+        CTFontGetAdvancesForGlyphs(font, .horizontal, &glyphs, &advances, 2)
+        #expect(abs(advances[0].width - advances[1].width) < 0.001)
+      }
+    }
+    let before = EVFontCatalog.faces(for: "monospace")
+    EVFontCatalog.invalidate()
+    #expect(EVFontCatalog.faces(for: "monospace") == before)
+    #expect(!before.isEmpty)
+  }
   @Test func systemFaceDisplayNameKeepsPrivateFaceIdentity() throws {
     let face = try #require(
       EVFontCatalog.faces(for: "SF Pro").first { $0.postScriptName.hasPrefix(".SFNS") })

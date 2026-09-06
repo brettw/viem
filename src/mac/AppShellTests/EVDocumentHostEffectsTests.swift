@@ -28,6 +28,8 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         var snapshots: [EVDocumentSaveSnapshot] = []
         var acknowledgements: [EVDocumentSaveSnapshot] = []
         var events: [String] = []
+        var rangedData: Data?
+        var requestedRanges: [ClosedRange<UInt64>] = []
         var onAcknowledge: (() -> Void)?
 
         init(
@@ -57,6 +59,17 @@ final class EVDocumentHostEffectsTests: XCTestCase {
                 documentID: persistenceState.documentID,
                 documentRevision: persistenceState.documentRevision
             )
+            snapshots.append(snapshot)
+            return snapshot
+        }
+        func nativeSaveSnapshot(typeName: String, hardLineRange: ClosedRange<UInt64>) throws -> EVDocumentSaveSnapshot {
+            guard let data = rangedData else { throw EVDocumentHostError.preparedWriteUnavailable }
+            events.append("ranged snapshot")
+            requestedRanges.append(hardLineRange)
+            let snapshot = EVDocumentSaveSnapshot(data: data,
+                documentID: persistenceState.documentID,
+                documentRevision: persistenceState.documentRevision,
+                isCompleteSource: false)
             snapshots.append(snapshot)
             return snapshot
         }
@@ -182,7 +195,7 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         XCTAssertEqual(backend.events, ["snapshot", "acknowledge"])
     }
 
-    func testSaveAsRejectsCrossFormatExtensionBeforeNativeSerialization() throws {
+    func testSaveAsPreservesSourceFormatAndBytesRegardlessOfFilenameExtension() throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let original = directory.appendingPathComponent("original.txt")
@@ -199,7 +212,7 @@ final class EVDocumentHostEffectsTests: XCTestCase {
             path: destination.path
         )
 
-        let completion = expectation(description: "cross-format saveas rejected")
+        let completion = expectation(description: "source-preserving saveas")
         var result: Result<String?, Error>?
         controller.perform(documentHostRequests: [request]) {
             result = $0
@@ -207,19 +220,16 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         }
         wait(for: [completion], timeout: 2)
 
-        XCTAssertThrowsError(try result?.get()) { error in
-            XCTAssertEqual(
-                error as? EVDocumentSerializationError,
-                .formatConversionUnavailable(current: .plainText, requested: .markdown)
-            )
-        }
-        XCTAssertEqual(document.fileURL?.standardizedFileURL, original.standardizedFileURL)
+        XCTAssertNoThrow(try result?.get())
+        XCTAssertEqual(document.fileURL?.standardizedFileURL, destination.standardizedFileURL)
         XCTAssertEqual(document.fileType, EVDocument.plainTextType)
+        XCTAssertEqual(backend.sourceFormat, .plainText)
         XCTAssertEqual(try Data(contentsOf: original), Data("original source".utf8))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
-        XCTAssertTrue(backend.events.isEmpty)
-        XCTAssertTrue(backend.snapshots.isEmpty)
-        XCTAssertTrue(backend.acknowledgements.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: destination), backend.serializedData)
+        XCTAssertEqual(backend.events, ["snapshot", "acknowledge"])
+        XCTAssertEqual(backend.acknowledgements, backend.snapshots)
+        XCTAssertFalse(backend.persistenceState.isDirty)
+        XCTAssertFalse(document.isDocumentEdited)
     }
 
     func testXitSkipsWriteWhenCleanAndSavesBeforeClosingWhenDirty() throws {
@@ -338,9 +348,15 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         XCTAssertTrue(backend.events.isEmpty)
     }
 
-    func testStaleAndUnpreparedWritesFailBeforeNativeSerialization() throws {
-        let backend = Backend(data: Data("bytes".utf8))
-        let (_, controller) = makeController(backend: backend)
+    func testStaleWritesFailAndAlternateAndRangedWritesPreserveBindingAndSavePoint() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = directory.appendingPathComponent("original.txt")
+        let originalBytes = Data("original source".utf8)
+        try originalBytes.write(to: original)
+        let backend = Backend(data: Data("first\r\nsecond\r\nthird".utf8))
+        backend.rangedData = Data("second\r\n".utf8)
+        let (document, controller) = makeController(backend: backend, fileURL: original)
         defer { controller.close() }
 
         let stale = EVDocumentHostRequest(
@@ -349,23 +365,50 @@ final class EVDocumentHostEffectsTests: XCTestCase {
             documentRevision: backend.persistenceState.documentRevision - 1
         )
         assertFailure(.staleRequest, from: controller, request: stale)
+        XCTAssertTrue(backend.events.isEmpty)
 
+        let alternateURL = directory.appendingPathComponent("alternate.txt")
         let alternate = EVDocumentHostRequest(
             kind: .write,
             documentID: backend.persistenceState.documentID,
             documentRevision: backend.persistenceState.documentRevision,
-            path: "alternate.txt"
+            path: alternateURL.path
         )
-        assertFailure(.preparedWriteUnavailable, from: controller, request: alternate)
+        let alternateCompletion = expectation(description: "alternate write completed")
+        var alternateResult: Result<String?, Error>?
+        controller.perform(documentHostRequests: [alternate]) {
+            alternateResult = $0
+            alternateCompletion.fulfill()
+        }
+        wait(for: [alternateCompletion], timeout: 5)
+        XCTAssertNoThrow(try alternateResult?.get())
+        XCTAssertEqual(try Data(contentsOf: alternateURL), backend.serializedData)
+        XCTAssertEqual(backend.events, ["snapshot"])
 
+        let rangedURL = directory.appendingPathComponent("range.txt")
         let ranged = EVDocumentHostRequest(
-            kind: .writeQuit,
+            kind: .write,
             documentID: backend.persistenceState.documentID,
             documentRevision: backend.persistenceState.documentRevision,
-            hardLineRange: 0 ... 1
+            path: rangedURL.path,
+            hardLineRange: 1 ... 1
         )
-        assertFailure(.preparedWriteUnavailable, from: controller, request: ranged)
-        XCTAssertTrue(backend.events.isEmpty)
+        let rangedCompletion = expectation(description: "ranged write completed")
+        var rangedResult: Result<String?, Error>?
+        controller.perform(documentHostRequests: [ranged]) {
+            rangedResult = $0
+            rangedCompletion.fulfill()
+        }
+        wait(for: [rangedCompletion], timeout: 5)
+        XCTAssertNoThrow(try rangedResult?.get())
+        XCTAssertEqual(try Data(contentsOf: rangedURL), backend.rangedData)
+        XCTAssertEqual(backend.requestedRanges, [1 ... 1])
+        XCTAssertEqual(backend.events, ["snapshot", "ranged snapshot"])
+        XCTAssertEqual(try Data(contentsOf: original), originalBytes)
+        XCTAssertEqual(document.fileURL?.standardizedFileURL, original.standardizedFileURL)
+        XCTAssertTrue(backend.acknowledgements.isEmpty)
+        XCTAssertTrue(backend.persistenceState.isDirty)
+        XCTAssertTrue(document.isDocumentEdited)
     }
 
     private func makeController(

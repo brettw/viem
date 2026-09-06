@@ -1559,6 +1559,31 @@ coordinates, so scrolling carries it off the visible edge; it is additive with
 explicit document-style padding and invalidates only affected view geometry.
 Padding changes preserve viewport anchors and keep large-document layout local.
 
+Application preferences have one versioned JSON authority at
+`~/.evim/config.json`. Theme, Smart Quotes, and status-bar visibility use this
+store; Settings controls write the same values. Valid legacy preferences migrate
+once. Reads validate the complete configuration, writes are atomic, and unknown
+keys survive updates. Invalid or unsupported versions are reported without
+overwriting the user's file. `EVIM_CONFIG_DIR` may override the directory for
+isolated development and testing.
+
+Format defaults live beside it in `text_style.json`, `html_style.json`,
+`markdown_style.json`, and `rtf_style.json`. A document loads the matching sparse
+style defaults before source declarations are applied. The cascade is built-in
+styles, user format defaults, source definitions/assignments, then direct
+formatting. An inherited default remains unset in source: changing an unrelated
+property must not serialize an inherited font, color, or other declaration.
+Explicit assignment of a custom default style materializes only declarations
+needed to represent that assignment in a source-backed format. Source and
+WYSIWYG variants share their format's defaults. Loading defaults is presentation
+configuration and never changes source bytes, dirty state, or undo history.
+
+Format > Style contains Edit document style and Save as default <format> style.
+Saving defaults exports the current style configuration to the corresponding
+JSON file. Existing open buffers keep their current configuration; subsequently
+opened buffers load the saved defaults.
+
+
 ### Continuous canvas and paragraph layout
 
 The editor canvas is an unpaginated continuous surface. It has a finite usable
@@ -1786,10 +1811,208 @@ Required search commands are `/pattern`, `?pattern`, `n`, `N`, `*`, `#`,
 `g*`, and `g#`. Search operates on logical UTF-8 text in the formatted
 projection and is independent of wrapping. Matches may cross style boundaries.
 Search/replace changes are reverse-projected like other edits. The first
-implementation may use a clearly
-documented Unicode regular-expression dialect rather than Vim's full regex
-dialect; incompatible Vim atoms must produce an error rather than be
-misinterpreted. Search history belongs in core state.
+implementation uses the eVim Regex v1 dialect below rather than Vim's full
+regular-expression language. Search history belongs in core state.
+
+#### eVim Regex v1
+
+eVim Regex v1 is the sole pattern language for `/`, `?`, operator-pending
+searches, `:substitute`, and any later command documented as accepting a search
+pattern. It is a stable product interface, not an alias for whatever syntax a
+particular regex library version happens to accept. The implementation may use
+the Rust `regex` crate or another engine only when it produces the behavior
+defined here.
+
+Patterns are valid UTF-8 and Unicode mode is mandatory. The matching atom is a
+Unicode scalar value, not a source byte, UTF-8 code unit, grapheme cluster,
+shaping cluster, glyph, or terminal cell. Disabling Unicode or enabling a byte
+mode is unsupported. Pattern source is retained exactly for history, repeat,
+register inspection, diagnostics, and any future persistence; compiled engine
+state is disposable.
+
+The supported pattern syntax is:
+
+- literal Unicode scalar values and a backslash escape for a metacharacter;
+- `.` for one scalar other than U+000A;
+- bracketed classes, negated classes, scalar ranges, and nested class union,
+  intersection (`&&`), difference (`--`), and symmetric difference (`~~`);
+- Unicode-aware `\d`, `\D`, `\s`, `\S`, `\w`, and `\W`;
+- Unicode general-category, script, binary-property, and property-negation
+  forms such as `\p{Letter}`, `\p{Script=Greek}`, and `\P{Whitespace}`;
+- greedy quantifiers `?`, `*`, `+`, `{n}`, `{n,}`, and `{n,m}`, with a trailing
+  `?` for the corresponding lazy form;
+- capturing groups `(pattern)`, noncapturing groups `(?:pattern)`, named groups
+  `(?P<name>pattern)` and `(?<name>pattern)`, and alternation `|`;
+- Unicode word-boundary assertions `\b` and `\B`;
+- `^` and `$` as zero-width formatted hard-line start and end assertions at
+  every pattern position, and `\A` and `\z` as logical-document start and end;
+- escapes `\t`, `\r`, `\n`, `\xNN`, and `\u{scalar-value}`; and
+- inline or scoped `i`, `s`, and `x` flags, such as `(?i)word`, `(?-i:Word)`,
+  `(?s:.)`, and `(?x: a \s+ phrase )`. `s` permits `.` to match U+000A and
+  `x` ignores unescaped pattern whitespace, including inside a class, and
+  treats an unescaped `#` outside a class through the next pattern U+000A or
+  pattern end as a comment.
+
+No other inline flag is part of version 1. In particular, `m` is unnecessary
+because `^` and `$` always use formatted hard-line semantics, and an inline
+flag may not disable Unicode mode. A literal `^` or `$` is written `\^` or
+`\$`. An unsupported escape or construct is an error; it is never treated as
+literal merely because the selected engine would do so.
+
+The following Vim pattern families are deliberately unsupported:
+
+- magic and case switches `\v`, `\m`, `\M`, `\V`, `\c`, and `\C`;
+- escaped capture/group, alternation, conjunction, and quantifier spellings
+  such as `\(`, `\)`, `\%(`, `\z(`, `\|`, `\&`, `\+`, `\=`, `\?`,
+  `\{n,m}`, and shortest-match `\{-...}` forms;
+- pattern backreferences `\1` through `\9` and syntax-highlight external
+  captures `\z1` through `\z9`;
+- lookaround and atomic postfixes `\@=`, `\@!`, `\@<=`, `\@<!`, bounded
+  lookbehind forms such as `\@123<=`, and `\@>`;
+- match-boundary controls `\zs` and `\ze`;
+- Vim keyword boundaries `\<` and `\>`; eVim's `\b` and `\B` use the
+  Unicode regex word definition and are independent of word-motion tailoring;
+- end-of-line-inclusive `\_x` forms, including `\_.`, `\_^`, `\_$`,
+  `\_[...]`, and `\_`-prefixed character classes;
+- buffer-relative assertions beginning with `\%`, including document,
+  Visual-selection, cursor, mark, line, byte-column, and virtual-column
+  assertions;
+- other `\%` forms including `\%[...]`, numeric character escapes,
+  `\%C`, and Vim regex-engine selection with `\%#=`;
+- the Vim class meanings of `\i`, `\I`, `\k`, `\K`, `\f`, `\F`, `\p`,
+  `\P`, `\x`, `\X`, `\o`, `\O`, `\h`, `\H`, `\a`, `\A`, `\l`, `\L`,
+  `\u`, and `\U`, plus Vim-only bracket classes such as `[:ident:]`,
+  `[:keyword:]`, and `[:fname:]`; eVim accepts only the separately specified
+  `\A`, `\p{...}`, `\P{...}`, `\xNN`, and `\u{...}` forms and meanings;
+- `\Z` combining-character-insensitive matching, Vim equivalence classes,
+  Vim collation elements, and Vim's automatic composing-character inclusion;
+  and
+- `~` as the previous substitute string. In eVim Regex v1, `~` is literal.
+
+Some accepted spellings intentionally differ from Vim and therefore require
+specific compatibility tests and documentation:
+
+- `\b` is a Unicode word boundary, not a Backspace character;
+- `\A` is logical-document start, not Vim's nonalphabetic class;
+- `\w`, `\d`, and `\s` and their negations are Unicode-aware rather than
+  Vim's ASCII- or option-specific classes; and
+- `^` and `$` are hard-line assertions wherever they occur, rather than Vim's
+  context-sensitive magic tokens.
+
+A compatibility validator must recognize the complete unsupported families
+before engine compilation. It must return `UnsupportedRegexAtom` naming the
+first offending atom even when the underlying engine would accept that
+spelling with a different meaning. A substring blacklist is insufficient.
+
+#### Matching domain and hard lines
+
+The matcher consumes the flat logical UTF-8 representation of one exact
+formatted projection snapshot. Each semantic hard-line item contributes one
+U+000A, as defined by the position algebra. A literal U+000A formatted scalar
+has the same regex scalar value but retains different typed provenance for any
+later edit. Soft wraps contribute nothing. Style boundaries contribute
+nothing. An atomic object contributes its object-kind-specific plain-text
+search representation.
+
+By default `.` does not match U+000A; `(?s:.)` does. `\n` matches U+000A,
+whether it represents a hard-line item or literal formatted content. `^` and
+`$` consult formatted hard-line structure rather than testing source bytes or
+assuming every U+000A is a hard line. `\A` and `\z` refer to the logical
+formatted document, not one source-artifact part.
+
+Search can cross character-style, direct-formatting, paragraph-style, and
+source-piece boundaries. It crosses a hard-line or paragraph boundary only
+when the pattern explicitly consumes its U+000A or uses dot-all mode. A search
+never sees HTML tags, Markdown delimiters, RTF controls, or other source syntax
+that has no formatted representation.
+
+An addressed `:substitute` uses the same matcher and logical stream. A selected
+match must be wholly contained in the addressed hard-line span. Without `g`,
+the first non-overlapping match whose start belongs to each addressed hard line
+is selected; with `g`, every non-overlapping contained match is selected. A
+multiline match belongs to the hard line containing its start and is never
+selected a second time for a later line.
+
+#### Case behavior
+
+Matching is case-sensitive by default. When the corresponding options are
+implemented, `ignorecase` makes the pattern case-insensitive and `smartcase`
+restores case-sensitive matching when the pattern contains an unescaped
+literal scalar with the Unicode `Uppercase` property outside a character
+class. Character-class contents and property names do not trigger smart case.
+
+The `i` or `I` flag on `:substitute` overrides the option-derived default for
+the whole pattern. An inline `(?i)` or `(?-i)` then overrides that default in
+its lexical scope. Case-insensitive matching uses Unicode simple case folding;
+it does not perform locale-specific casing or normalization.
+
+#### Grapheme-boundary safety
+
+Raw matching is scalar-based, but it may not weaken the document's
+grapheme-boundary invariants. A navigation result is usable only when its start
+resolves to a legal `TextPoint`; the search continues past unusable candidates.
+Search decoration may represent a scalar-level match inside a grapheme, but
+drawing uses the containing shaping-cluster geometry and does not create a
+cursor, selection endpoint, or editing range there.
+
+Every source-changing selected match, including a zero-width match, must have
+start and end at legal formatted extended-grapheme boundaries. Preparation
+validates all selected matches before producing any patches. If one fails, the
+entire command returns `RegexMatchSplitsGraphemeCluster` without changing the
+source, histories, registers, cursor, selection, or undo state; endpoints are
+never rounded or expanded. Iteration after an empty match advances to the next
+legal logical boundary and must always make progress.
+
+#### Substitute replacement language
+
+The pattern and replacement are different languages. eVim Regex v1 defines
+this replacement syntax for `:substitute`:
+
+- ordinary Unicode text inserts itself;
+- `&` and `\0` insert the complete match;
+- `\1` through `\9` insert the corresponding numbered capture;
+- `\g{name}` inserts a named capture;
+- `\\` inserts one backslash and `\&` inserts one literal ampersand;
+- `\t` inserts U+0009;
+- `\n` inserts a literal U+000A formatted scalar with no hard-break marker;
+  and
+- `\r` inserts one semantic formatted hard-line item.
+
+Captured text retains typed hard-line markers, object representations where
+permitted, styles, and provenance when inserted; it is not flattened and then
+re-inferred from U+000A bytes. A missing optional capture inserts nothing. A
+reference to a capture not declared by the compiled pattern is an error.
+
+Dollar-form references such as `$1`, Vim's previous-replacement `~`, case
+conversion escapes, expression replacement with `\=`, literal control-key
+spellings, and every unlisted backslash escape are unsupported in version 1.
+They return `UnsupportedReplacementAtom`; an unknown escape never silently
+drops its backslash.
+
+#### Compilation, execution, and caching
+
+Matching must be linear in the searched input for a fixed compiled pattern,
+with an `O(m * n)` worst-case bound where `m` is compiled-pattern size and `n`
+is searched-input length; no version-1 feature may add input-dependent
+backtracking. The core enforces configurable pattern-length,
+compiled-program-size, capture-count, and search-work limits. Resource-limit
+failure and user cancellation are non-destructive structured results.
+
+Compiled patterns may be cached by exact pattern text, dialect version, and
+effective compile flags. Match results, incremental-search state, and search
+decorations are bound to an exact projection snapshot and cannot be reused
+after a relevant edit without a validated change map or rescan. Searching may
+scan the requested document range, but an ordinary edit must not synchronously
+rescan the whole document merely because match highlighting is enabled.
+
+Required structured failures include `InvalidRegex`, `UnsupportedRegexAtom`,
+`UnsupportedReplacementAtom`, `RegexResourceLimit`,
+`RegexMatchSplitsGraphemeCluster`, `StaleProjection`, and `Cancelled`. Tests
+cover every accepted construct, every unsupported Vim family, the accepted
+spellings whose Vim meanings differ, Unicode properties and case folding,
+decomposed graphemes, empty matches, hard lines versus literal U+000A, matches
+across style/source-piece boundaries, multiline substitution, cancellation,
+resource limits, snapshot invalidation, and atomic reverse-projection failure.
 
 ### Operators, changes, and insertion entry points
 
@@ -2102,7 +2325,28 @@ document.
 ### Command-line and Ex commands
 
 Required command-line editing includes left/right movement, Home/End,
-Backspace/Delete, history Up/Down, Escape, and Enter.
+Backspace/Delete, history Up/Down, Escape, and Enter. Prompt text supports
+mouse selection, Shift+arrow selection, and the native Cut/Copy/Paste/Select All
+commands. Prompt edits use validated prompt identity and never target the
+document behind the prompt. Command output replaces the prompt with selectable,
+read-only text and an explicit close button. A new `:` replaces that output with
+an editable prompt; ordinary editor input dismisses the output.
+
+`:e`/`:edit` replaces the active pane after the usual unsaved-change review.
+The case-sensitive `:E` opens a document in a new native window. `:pwd` displays
+the working directory; `:cd`/`:chdir` changes the application's directory for
+relative file requests. `:update` writes only a modified buffer. `:s` remains
+substitute; filename-like misuse reports `:w` and `:saveas` as the save commands.
+`:checktime` and window activation compare the bound artifact with the exact
+last-loaded/saved fingerprint off the main thread. Changed, replaced, deleted,
+or unreadable files produce non-destructive output. Ordinary saves guard against
+external overwrite; `:e!` explicitly reloads and `:w!` authorizes overwrite or
+recreation. A successful reload/save refreshes the baseline. Native saves may
+ask for an explicit overwrite choice; automatic checks never reload a buffer.
+
+The editor provides a native contextual Cut/Copy/Paste menu through right-click,
+Control-click, and keyboard contextual-menu access. Wheel deltas use AppKit's
+already preference-adjusted direction exactly once.
 
 Required Ex commands and common unambiguous abbreviations are:
 
@@ -2113,13 +2357,20 @@ Required Ex commands and common unambiguous abbreviations are:
   `:copy`, `:move`, and `:normal` for the supported Normal command subset;
 - search/change: `:substitute` with ranges and repeat flags, `:&`, and `:~`;
 - navigation/info: numeric line addresses, `:goto`, `:marks`, `:registers`,
-  and `:jumps`; and
+  `:jumps`, and `:pwd`; and
 - options: `:set`, `:setlocal`, `:set wrap`, `:set nowrap`, `:set linebreak`,
   `:set nolinebreak`, `:set fileformat?`, and
   `:set fileformat=unix|dos|mac` (where one value is supplied), including the
   `ff` abbreviation and corresponding `:setlocal` forms. The global
   `fileformats` open-policy option supports query and ordered assignment even
   though changing it does not reinterpret an already open buffer.
+
+Search switches `ignorecase` (`ic`), `smartcase` (`sc`), and `wrapscan` (`ws`)
+are buffer-shared Boolean policy, defaulting to false, false, and true. Their
+`:set` and `:setlocal` forms support enable/disable, toggle, query, and reset.
+A compound option command validates atomically before publishing any changes.
+They follow Regex v1 case rules and affect searches, repeats, and substitute;
+`wrapscan` controls navigation wrapping. They do not change persisted source.
 
 Ranges always use hard lines. File dialogs, unsaved-change prompts, and error
 presentation are frontend responsibilities driven by typed core requests and
@@ -3430,6 +3681,7 @@ Primary references:
 - [Vim command index](https://github.com/vim/vim/blob/master/runtime/doc/index.txt)
 - [Vim motions and operators](https://github.com/vim/vim/blob/master/runtime/doc/motion.txt)
 - [Vim changes](https://github.com/vim/vim/blob/master/runtime/doc/change.txt)
+- [Vim regular-expression patterns](https://github.com/vim/vim/blob/master/runtime/doc/pattern.txt)
 - [Vim Visual mode](https://github.com/vim/vim/blob/master/runtime/doc/visual.txt)
 - [Vim development design decisions](https://github.com/vim/vim/blob/master/runtime/doc/develop.txt)
 - [Vim Normal command dispatcher](https://github.com/vim/vim/blob/master/src/normal.c)
@@ -3437,6 +3689,7 @@ Primary references:
 - [Vim screen cache](https://github.com/vim/vim/blob/master/src/screen.c)
 - [Vim window redraw/invalidation](https://github.com/vim/vim/blob/master/src/drawscreen.c)
 - [Vim undo branches](https://github.com/vim/vim/blob/master/src/undo.c)
+- [Rust `regex` syntax and execution guarantees](https://docs.rs/regex/latest/regex/)
 
 Primary source-preservation and transformation references:
 
@@ -3471,7 +3724,6 @@ decision in this file or an architecture decision record first:
 - the canonical syntax of any future adapter not specified above;
 - user policy for Unicode edits not representable in the source encoding;
 - exact Unicode word/sentence segmentation tailoring;
-- exact regular-expression syntax supported by `/` and `:substitute`;
 - whether rich system clipboard formats are required for the first release;
 - additional style defaults and visual design choices not fixed above;
 - hyphenation and justification; and
@@ -3483,9 +3735,18 @@ The status bar exposes native popup controls for source format, encoding, and
 line endings. Each retains the minimal status-bar appearance, adds a small
 vertical triangle, and highlights on hover. A choice is a checked core
 transaction shared by the buffer's views and reversible with undo. Format
-selection changes the source interpretation without rewriting source bytes.
-Encoding selection transcodes the source syntax only when every character is
-representable and the new projection verifies. Line-ending selection delegates
+selection within a format family or to plain text changes interpretation while
+preserving source bytes. An explicit HTML-to-Markdown or Markdown-to-HTML
+conversion instead translates the formatted text and representable styling to
+new source syntax as one undoable transaction, including source-visible variants.
+This explicitly requested conversion may replace the entire source and reports
+lost unsupported information through the command output bar. It is distinct
+from no-op saves and ordinary local edits, which remain lossless.
+Encoding selection transcodes source syntax and verifies the new projection.
+An explicit conversion to Latin-1 may replace unrepresentable scalars with `?`,
+reporting the count in the output bar; undo restores the exact original bytes.
+Ordinary typing in an existing Latin-1 document remains strict and must never
+silently substitute. Line-ending selection delegates
 to the shared conversion component. RTF disables the generic encoding and
 line-ending controls because its grammar owns those interpretations.
 
@@ -3503,6 +3764,14 @@ Opening a Markdown file retains the existing WYSIWYG default. The status popup
 can select the source-visible Markdown view. New bold uses `**`, italic uses
 `*`, and headings use one through six `#` characters followed by one space.
 Untouched alternative delimiters and physical line endings remain exact.
+
+The built-in Code character style and Code Block paragraph style use the system
+monospace family and dark green (`#006400`). HTML `<code>` and `<pre>` and
+Markdown inline/fenced backticks project to these roles; code whitespace remains
+editable and preserved. New simple HTML bold and italic formatting uses `<b>`
+and `<i>` where those tags express the requested change. More complex or
+interacting properties use sparse CSS declarations as needed. Existing untouched
+HTML spelling remains exact.
 
 The two HTML views similarly share one physical HTML serialization:
 

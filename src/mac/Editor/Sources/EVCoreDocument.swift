@@ -81,7 +81,12 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     private var isRefreshingSurfaces = false
     private var pendingSourceChangeOrigins: [EvimViewId] = []
 
-    public init() {
+    let configuration: EVConfigurationStore
+    public private(set) var configurationWarning: String?
+
+    public init(configuration: EVConfigurationStore? = nil) {
+        let configuration = configuration ?? .shared
+        self.configuration = configuration
         do {
             try createCore()
         } catch {
@@ -166,7 +171,29 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         )
     }
 
+    public func nativeSaveSnapshot(typeName: String, hardLineRange: ClosedRange<UInt64>) throws -> EVDocumentSaveSnapshot {
+        let state = try documentState()
+        try validateSerializationType(typeName, currentFormat: Self.sourceFormat(from: state))
+        guard hardLineRange.upperBound < UInt64.max else { throw EVCoreFrontendError.invalidHostEffect }
+        var count: UInt64 = 0
+        var complete: UInt32 = 0
+        let status = evim_core_copy_hard_line_source_bytes(core, state.document_id, state.document_revision,
+            hardLineRange.lowerBound, hardLineRange.upperBound + 1, nil, 0, &count, &complete)
+        if status == EVIM_STATUS_POLICY_REQUIRED { throw EVDocumentHostError.preparedWriteUnavailable }
+        guard status == EVIM_STATUS_OK || status == EVIM_STATUS_BUFFER_TOO_SMALL, count <= UInt64(Int.max) else {
+            throw EVCoreFrontendError.core(operation: "Prepare ranged source write", status: status)
+        }
+        var data = Data(count: Int(count))
+        let copied = data.withUnsafeMutableBytes { buffer in
+            evim_core_copy_hard_line_source_bytes(core, state.document_id, state.document_revision,
+                hardLineRange.lowerBound, hardLineRange.upperBound + 1, buffer.bindMemory(to: UInt8.self).baseAddress, count, &count, &complete)
+        }
+        try checked(copied, operation: "Copy ranged source write")
+        return EVDocumentSaveSnapshot(data: data, documentID: state.document_id, documentRevision: state.document_revision, isCompleteSource: complete != 0)
+    }
+
     public func acknowledgeNativeSave(_ snapshot: EVDocumentSaveSnapshot) throws {
+        guard snapshot.isCompleteSource else { throw EVDocumentHostError.preparedWriteUnavailable }
         var request = EvimMarkSavedV1()
         request.struct_size = UInt32(MemoryLayout<EvimMarkSavedV1>.size)
         request.document_id = snapshot.documentID
@@ -367,6 +394,33 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         core = handle
         source.removeAll(keepingCapacity: false)
         _ = try documentState()
+        configurationWarning = configuration.lastError
+        do {
+            if let defaults = try configuration.styleDefaults(named: sourceFormat.defaultStyleName) {
+                let result = defaults.withUnsafeBytes { raw in
+                    evim_core_initialize_style_defaults(core, currentDocumentState.document_revision,
+                        raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count))
+                }
+                try checked(result, operation: "Load default style")
+            }
+        } catch { configurationWarning = error.localizedDescription }
+    }
+
+    func saveDefaultStyle() throws -> URL {
+        let state = try documentState()
+        var required: UInt64 = 0
+        let first = evim_core_export_style_defaults(core, state.document_revision, nil, 0, &required)
+        guard first == Status.ok || first == Status.bufferTooSmall, required <= UInt64(Int.max) else {
+            throw EVCoreFrontendError.core(operation: "Read default style", status: first)
+        }
+        var data = Data(count: Int(required))
+        let copied = data.withUnsafeMutableBytes { raw in
+            evim_core_export_style_defaults(core, state.document_revision,
+                raw.bindMemory(to: UInt8.self).baseAddress, required, &required)
+        }
+        try checked(copied, operation: "Read default style")
+        try configuration.saveStyleDefaults(data, named: sourceFormat.defaultStyleName)
+        return configuration.directory.appendingPathComponent("\(sourceFormat.defaultStyleName)_style.json")
     }
 
     private func copySourceBytes(expectedRevision: UInt64) throws -> Data {
@@ -1018,8 +1072,9 @@ final class EVCoreViewSession {
         request.document_revision = state.document_revision
         var outcome = EvimCoreOutcomeV1()
         outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
-        try checked(evim_core_view_set_format(document.core, viewID, &request, &outcome), operation: "Change document format")
-        finish(outcome, composition: .cancelIfChanged)
+        var effects: EvimEffectBatchHandle = 0
+        let status = evim_core_view_set_format_with_effects(document.core, viewID, &request, &outcome, &effects)
+        try finishHostContextTurn(status: status, outcome: outcome, effectBatch: effects, operation: "Change document format")
         return outcome
     }
 
@@ -1032,8 +1087,9 @@ final class EVCoreViewSession {
         request.document_revision = state.document_revision
         var outcome = EvimCoreOutcomeV1()
         outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
-        try checked(evim_core_view_set_encoding(document.core, viewID, &request, &outcome), operation: "Change document encoding")
-        finish(outcome, composition: .cancelIfChanged)
+        var effects: EvimEffectBatchHandle = 0
+        let status = evim_core_view_set_encoding_with_effects(document.core, viewID, &request, &outcome, &effects)
+        try finishHostContextTurn(status: status, outcome: outcome, effectBatch: effects, operation: "Change document encoding")
         return outcome
     }
 

@@ -430,6 +430,11 @@ pub const EVIM_EX_FRONTEND_OPTIONS: u32 = 13;
 pub const EVIM_EX_FRONTEND_PRINT_LINES: u32 = 14;
 pub const EVIM_EX_FRONTEND_NORMAL: u32 = 15;
 pub const EVIM_EX_FRONTEND_SPLIT: u32 = 16;
+pub const EVIM_EX_FRONTEND_MESSAGE: u32 = 17;
+pub const EVIM_EX_FRONTEND_EDIT_NEW_WINDOW: u32 = 18;
+pub const EVIM_EX_FRONTEND_PWD: u32 = 19;
+pub const EVIM_EX_FRONTEND_CD: u32 = 20;
+pub const EVIM_EX_FRONTEND_CHECKTIME: u32 = 21;
 
 pub const EVIM_EX_FRONTEND_FORCE: u32 = 1 << 0;
 pub const EVIM_EX_FRONTEND_HAS_PATH: u32 = 1 << 1;
@@ -442,6 +447,9 @@ pub const EVIM_EX_OPTION_WRAP: u32 = 1;
 pub const EVIM_EX_OPTION_LINEBREAK: u32 = 2;
 pub const EVIM_EX_OPTION_FILE_FORMAT: u32 = 3;
 pub const EVIM_EX_OPTION_FILE_FORMATS: u32 = 4;
+pub const EVIM_EX_OPTION_IGNORECASE: u32 = 5;
+pub const EVIM_EX_OPTION_SMARTCASE: u32 = 6;
+pub const EVIM_EX_OPTION_WRAPSCAN: u32 = 7;
 
 pub const EVIM_EX_OPTION_VALUE_BOOLEAN: u32 = 1;
 pub const EVIM_EX_OPTION_VALUE_FILE_FORMAT: u32 = 2;
@@ -3317,6 +3325,7 @@ fn capture_ex_info_payloads(
                 ))
             }
             ExFrontendRequest::Info(ExInfoRequest::Options(_))
+            | ExFrontendRequest::Info(ExInfoRequest::Message(_))
             | ExFrontendRequest::File(_)
             | ExFrontendRequest::Normal(_) => None,
         })
@@ -3330,7 +3339,18 @@ impl OwnedEffectBatch {
         clipboard: &ClipboardCommandContext,
         command: Option<CommandOutput>,
     ) -> Option<Self> {
-        let command = command?;
+        let mut command = command?;
+        if let CommandStatus::ExError(error) = &command.status {
+            let message = match error {
+                crate::command::ExCommandError::Parse(error) => error.to_string(),
+                crate::command::ExCommandError::Execute(error) => error.to_string(),
+            };
+            command
+                .ex_outcome
+                .get_or_insert_with(ExOutcome::default)
+                .frontend_requests
+                .push(ExFrontendRequest::Info(ExInfoRequest::Message(message)));
+        }
         if command.ex_outcome.is_none() && command.clipboard_writes.is_empty() {
             return None;
         }
@@ -3392,6 +3412,9 @@ fn ex_option_name_to_ffi(name: &ExOptionName) -> u32 {
         ExOptionName::LineBreak => EVIM_EX_OPTION_LINEBREAK,
         ExOptionName::FileFormat => EVIM_EX_OPTION_FILE_FORMAT,
         ExOptionName::FileFormats => EVIM_EX_OPTION_FILE_FORMATS,
+        ExOptionName::IgnoreCase => EVIM_EX_OPTION_IGNORECASE,
+        ExOptionName::SmartCase => EVIM_EX_OPTION_SMARTCASE,
+        ExOptionName::WrapScan => EVIM_EX_OPTION_WRAPSCAN,
     }
 }
 
@@ -3465,6 +3488,20 @@ fn export_ex_frontend_request(
     };
     match request {
         ExFrontendRequest::File(request) => match request {
+            ExFileRequest::EditNewWindow { path } => {
+                output.kind = EVIM_EX_FRONTEND_EDIT_NEW_WINDOW;
+                set_ex_path(&mut output, strings, path.as_deref())?;
+            }
+            ExFileRequest::CheckTime => {
+                output.kind = EVIM_EX_FRONTEND_CHECKTIME;
+            }
+            ExFileRequest::PrintWorkingDirectory => {
+                output.kind = EVIM_EX_FRONTEND_PWD;
+            }
+            ExFileRequest::ChangeDirectory { path } => {
+                output.kind = EVIM_EX_FRONTEND_CD;
+                set_ex_path(&mut output, strings, path.as_deref())?;
+            }
             ExFileRequest::Split { path } => {
                 output.kind = EVIM_EX_FRONTEND_SPLIT;
                 set_ex_path(&mut output, strings, path.as_deref())?;
@@ -3514,6 +3551,10 @@ fn export_ex_frontend_request(
             }
         },
         ExFrontendRequest::Info(request) => match request {
+            ExInfoRequest::Message(message) => {
+                output.kind = EVIM_EX_FRONTEND_MESSAGE;
+                output.text = push_effect_text(strings, message)?;
+            }
             ExInfoRequest::Marks(names) => {
                 output.kind = EVIM_EX_FRONTEND_MARKS;
                 let names: String = names.iter().collect();
@@ -5604,7 +5645,15 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, EvimStatu
                     document.format(),
                     Format::Html | Format::HtmlSource | Format::Rtf
                 ),
-            ) | if document.format() == Format::Rtf
+            ) | if sheet.has_user_default(&style.id, false)
+                && style.role == BlockRole::Paragraph
+                && (matches!(document.format(), Format::Html | Format::HtmlSource)
+                    || (document.format() == Format::Rtf && style.id.0.starts_with("RtfP")))
+            {
+                EVIM_STYLE_CAPABILITY_ASSIGN
+            } else {
+                0
+            } | if document.format() == Format::Rtf
                 && style.id.0.starts_with("List")
                 && crate::document::StyleSheet::builtin_block(&style.id)
             {
@@ -5678,7 +5727,14 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, EvimStatu
                         document.format(),
                         Format::Html | Format::HtmlSource | Format::Rtf
                     ),
-                )
+                ) | if sheet.has_user_default(&style.id, true)
+                    && (matches!(document.format(), Format::Html | Format::HtmlSource)
+                        || (document.format() == Format::Rtf && style.id.0.starts_with("RtfC")))
+                {
+                    EVIM_STYLE_CAPABILITY_ASSIGN
+                } else {
+                    0
+                }
             },
             stable_id: push_style_string(&mut strings, &style.id.0)?,
             display_name: push_style_string(&mut strings, &metadata.display_name)?,
@@ -5829,6 +5885,10 @@ fn export_command_line(
     material.extend_from_slice(&kind.to_le_bytes());
     material.extend_from_slice(&utf8_length.to_le_bytes());
     material.extend_from_slice(&cursor_utf8_offset.to_le_bytes());
+    let anchor = state
+        .command_line_snapshot()
+        .map_or(cursor, |snapshot| snapshot.anchor);
+    material.extend_from_slice(&(anchor as u64).to_le_bytes());
     material.extend_from_slice(&bytes);
     let identity = EvimCommandLineIdentityV1 {
         struct_size: EVIM_COMMAND_LINE_IDENTITY_V1_SIZE,
@@ -7074,13 +7134,16 @@ fn dispatch_input_with_effects(
     let outcome = core
         .handle(view_id, CoreEvent::InputWithClipboard { input, clipboard })
         .map_err(core_status)?;
-    let summary = summarize_core_outcome(core, view_id, Some(&outcome))?;
+    let mut summary = summarize_core_outcome(core, view_id, Some(&outcome))?;
     let effects = OwnedEffectBatch::from_command(
         core.document(),
         core.command_state(view_id).ok_or(EvimStatus::InvalidView)?,
         &effect_clipboard,
         outcome.command,
     );
+    if effects.is_some() {
+        summary.flags |= EVIM_OUTCOME_HAS_EXTERNAL_EFFECTS;
+    }
     Ok((summary, effects))
 }
 
@@ -9470,7 +9533,8 @@ pub unsafe extern "C" fn evim_core_view_set_file_format(
     })
 }
 
-/// Change source interpretation without rewriting the source bytes.
+/// Change format using the document conversion policy. Native callers should
+/// use the with-effects variant to present conversion-loss diagnostics.
 ///
 /// # Safety
 /// Request and outcome must be distinct aligned readable/writable values.
@@ -9504,7 +9568,8 @@ pub unsafe extern "C" fn evim_core_view_set_format(
     })
 }
 
-/// Transcode source syntax without losing malformed or unrepresentable data.
+/// Explicitly transcode source syntax. Latin-1 conversion may substitute
+/// unrepresentable scalars; the effects variant also returns the warning.
 ///
 /// # Safety
 /// Request and outcome must be distinct aligned readable/writable values.
@@ -11215,8 +11280,8 @@ mod tests {
             unsafe { evim_core_style_sheet_info(handle, &mut info) },
             EvimStatus::Ok
         );
-        assert_eq!(info.definition_count, 12);
-        assert_eq!(info.property_count, 253);
+        assert_eq!(info.definition_count, 14);
+        assert_eq!(info.property_count, 289);
         assert_ne!(info.string_bytes, 0);
 
         let mut count_info = EvimStyleSheetInfoV1::default();
@@ -13235,6 +13300,378 @@ pub unsafe extern "C" fn evim_core_view_selected_styles_export(
         if !bytes.is_empty() {
             unsafe {
                 std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8, bytes.len());
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Load validated JSON defaults only before a core has views or edits. No source mutation.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_initialize_style_defaults(
+    handle: EvimCoreHandle,
+    expected_revision: u64,
+    json: *const u8,
+    length: u64,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let bytes = unsafe { input_bytes(json, length)? };
+        with_core_mut(handle, |core| {
+            validate_revision(core.document(), expected_revision)?;
+            core.initialize_style_defaults(bytes)
+                .map_err(|_| EvimStatus::InvalidArgument)
+        })
+    })
+}
+
+/// Two-pass JSON export of sparse defaults plus explicit document declarations.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_export_style_defaults(
+    handle: EvimCoreHandle,
+    expected_revision: u64,
+    output: *mut u8,
+    capacity: u64,
+    required: *mut u64,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        if required.is_null() {
+            return Err(EvimStatus::NullPointer);
+        }
+        unsafe { required.write(0) };
+        let bytes = with_core(handle, |core| {
+            validate_revision(core.document(), expected_revision)?;
+            core.document()
+                .export_style_defaults()
+                .map_err(|_| EvimStatus::InvalidArgument)
+        })?;
+        unsafe { required.write(bytes.len() as u64) };
+        if capacity < bytes.len() as u64 {
+            return Err(EvimStatus::BufferTooSmall);
+        }
+        if !bytes.is_empty() {
+            if output.is_null() {
+                return Err(EvimStatus::NullPointer);
+            }
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len()) };
+        }
+        Ok(())
+    })
+}
+
+/// Directed, revision-checked command prompt selection (offsets exclude the prompt).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EvimCommandLineSelectionV1 {
+    pub struct_size: u32,
+    pub reserved: u32,
+    pub anchor_utf8_offset: u64,
+    pub active_utf8_offset: u64,
+}
+
+/// # Safety
+/// `expected` and `out_selection` must be aligned and disjoint readable/writable records.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_command_line_selection(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    expected: *const EvimCommandLineIdentityV1,
+    out_selection: *mut EvimCommandLineSelectionV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let a = typed_pointer_region(expected, 1)?;
+        let b = typed_pointer_region(out_selection, 1)?;
+        if regions_overlap(a, b) {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let expected = unsafe { read_command_line_identity(expected)? };
+        unsafe {
+            out_selection.write(EvimCommandLineSelectionV1::default());
+        }
+        let selection = with_core(handle, |core| {
+            validate_command_line_identity(
+                expected,
+                export_command_line(core, ViewId(view))?.info.identity,
+            )?;
+            let snapshot = core
+                .command_state(ViewId(view))
+                .and_then(|s| s.command_line_snapshot());
+            Ok(EvimCommandLineSelectionV1 {
+                struct_size: size_of::<EvimCommandLineSelectionV1>() as u32,
+                reserved: 0,
+                anchor_utf8_offset: snapshot.as_ref().map_or(0, |s| s.anchor as u64),
+                active_utf8_offset: snapshot.as_ref().map_or(0, |s| s.active as u64),
+            })
+        })?;
+        unsafe {
+            out_selection.write(selection);
+        }
+        Ok(())
+    })
+}
+
+/// Select (operation=0, text empty) or replace a range (operation=1) in one exact
+/// command prompt snapshot. Selection endpoints are directed; replacement ranges
+/// are ordered and half-open. Source/document history remains untouched.
+/// # Safety
+/// All records/buffers must be valid and mutually disjoint for their stated sizes.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_edit_command_line(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    expected: *const EvimCommandLineIdentityV1,
+    operation: u32,
+    start: u64,
+    end: u64,
+    text: *const u8,
+    length: u64,
+    out_outcome: *mut EvimCoreOutcomeV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let a = typed_pointer_region(expected, 1)?;
+        let b = typed_pointer_region(text, length)?;
+        let c = typed_pointer_region(out_outcome, 1)?;
+        if regions_overlap(a, b) || regions_overlap(a, c) || regions_overlap(b, c) {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let expected = unsafe { read_command_line_identity(expected)? };
+        let text = std::str::from_utf8(unsafe { input_bytes(text, length)? })
+            .map_err(|_| EvimStatus::InvalidUtf8)?
+            .to_owned();
+        let start = usize::try_from(start).map_err(|_| EvimStatus::LengthOverflow)?;
+        let end = usize::try_from(end).map_err(|_| EvimStatus::LengthOverflow)?;
+        let action = match operation {
+            0 if text.is_empty() => crate::command::CommandLineEditAction::Select {
+                anchor: start,
+                active: end,
+            },
+            1 => crate::command::CommandLineEditAction::Replace {
+                range: start..end,
+                text,
+            },
+            _ => return Err(EvimStatus::InvalidArgument),
+        };
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            validate_command_line_identity(
+                expected,
+                export_command_line(core, ViewId(view))?.info.identity,
+            )?;
+            let snapshot = core
+                .command_state(ViewId(view))
+                .and_then(|s| s.command_line_snapshot())
+                .ok_or(EvimStatus::InvalidArgument)?;
+            dispatch_event(
+                core,
+                view,
+                CoreEvent::EditCommandLine(crate::command::CommandLineEditRequest {
+                    document: core.document().id(),
+                    revision: core.document().revision(),
+                    expected: snapshot,
+                    action,
+                }),
+            )
+        })?;
+        unsafe {
+            out_outcome.write(outcome);
+        }
+        Ok(())
+    })
+}
+
+/// Change format and return an owned immutable warning/effect batch.
+/// # Safety
+/// All request/output regions must be aligned, valid and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_set_format_with_effects(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    request: *const EvimSetFormatV1,
+    out_outcome: *mut EvimCoreOutcomeV1,
+    out_effects: *mut EvimEffectBatchHandle,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let regions = [
+            typed_pointer_region(request, 1)?,
+            typed_pointer_region(out_outcome, 1)?,
+            typed_pointer_region(out_effects, 1)?,
+        ];
+        for a in 0..regions.len() {
+            for b in a + 1..regions.len() {
+                if regions_overlap(regions[a], regions[b]) {
+                    return Err(EvimStatus::InvalidArgument);
+                }
+            }
+        }
+        let request = unsafe { request.read() };
+        if request.struct_size < EVIM_SET_FORMAT_V1_SIZE {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        unsafe {
+            clear_outcome(out_outcome)?;
+            out_effects.write(0);
+        }
+        let target = parse_format(request.format)?;
+        let reservation = reserve_effect_batch()?;
+        let (summary, effects) = with_core_mut(handle, |core| {
+            let view = ViewId(view);
+            let outcome = core
+                .handle(
+                    view,
+                    CoreEvent::SetFormat {
+                        document: DocumentId(request.document_id),
+                        revision: Revision(request.document_revision),
+                        target,
+                    },
+                )
+                .map_err(core_status)?;
+            let summary = summarize_core_outcome(core, view, Some(&outcome))?;
+            let effects = OwnedEffectBatch::from_command(
+                core.document(),
+                core.command_state(view).ok_or(EvimStatus::InvalidView)?,
+                &ClipboardCommandContext::default(),
+                outcome.command,
+            );
+            Ok((summary, effects))
+        })?;
+        let effects = if let Some(effects) = effects {
+            reservation.commit(effects)?
+        } else {
+            drop(reservation);
+            0
+        };
+        unsafe {
+            out_outcome.write(summary);
+            out_effects.write(effects);
+        }
+        Ok(())
+    })
+}
+
+/// Change encoding and return an owned immutable warning/effect batch.
+/// # Safety
+/// All request/output regions must be aligned, valid and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_set_encoding_with_effects(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    request: *const EvimSetEncodingV1,
+    out_outcome: *mut EvimCoreOutcomeV1,
+    out_effects: *mut EvimEffectBatchHandle,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let regions = [
+            typed_pointer_region(request, 1)?,
+            typed_pointer_region(out_outcome, 1)?,
+            typed_pointer_region(out_effects, 1)?,
+        ];
+        for a in 0..regions.len() {
+            for b in a + 1..regions.len() {
+                if regions_overlap(regions[a], regions[b]) {
+                    return Err(EvimStatus::InvalidArgument);
+                }
+            }
+        }
+        let request = unsafe { request.read() };
+        if request.struct_size < EVIM_SET_ENCODING_V1_SIZE {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        unsafe {
+            clear_outcome(out_outcome)?;
+            out_effects.write(0);
+        }
+        let target = parse_encoding(request.encoding)?.ok_or(EvimStatus::InvalidEncoding)?;
+        let reservation = reserve_effect_batch()?;
+        let (summary, effects) = with_core_mut(handle, |core| {
+            let view = ViewId(view);
+            let outcome = core
+                .handle(
+                    view,
+                    CoreEvent::SetEncoding {
+                        document: DocumentId(request.document_id),
+                        revision: Revision(request.document_revision),
+                        target,
+                    },
+                )
+                .map_err(core_status)?;
+            let summary = summarize_core_outcome(core, view, Some(&outcome))?;
+            let effects = OwnedEffectBatch::from_command(
+                core.document(),
+                core.command_state(view).ok_or(EvimStatus::InvalidView)?,
+                &ClipboardCommandContext::default(),
+                outcome.command,
+            );
+            Ok((summary, effects))
+        })?;
+        let effects = if let Some(effects) = effects {
+            reservation.commit(effects)?
+        } else {
+            drop(reservation);
+            0
+        };
+        unsafe {
+            out_outcome.write(summary);
+            out_effects.write(effects);
+        }
+        Ok(())
+    })
+}
+
+/// Copy exact source bytes for an explicit semantic hard-line range.
+/// # Safety
+/// Outputs must be aligned writable and disjoint; nonzero capacity needs bytes.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_copy_hard_line_source_bytes(
+    handle: EvimCoreHandle,
+    document: u64,
+    revision: u64,
+    first_line: u64,
+    end_line: u64,
+    output: *mut u8,
+    capacity: u64,
+    out_required: *mut u64,
+    out_complete: *mut u32,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let regions = [
+            typed_pointer_region(output, capacity)?,
+            typed_pointer_region(out_required, 1)?,
+            typed_pointer_region(out_complete, 1)?,
+        ];
+        for a in 0..regions.len() {
+            for b in a + 1..regions.len() {
+                if regions_overlap(regions[a], regions[b]) {
+                    return Err(EvimStatus::InvalidArgument);
+                }
+            }
+        }
+        unsafe {
+            out_required.write(0);
+            out_complete.write(0);
+        }
+        let (bytes, complete) = with_core(handle, |core| {
+            let doc = core.document();
+            if doc.id() != DocumentId(document) {
+                return Err(EvimStatus::InvalidArgument);
+            }
+            validate_revision(doc, revision)?;
+            let range = doc
+                .source_byte_range_for_hard_lines(
+                    checked_length(first_line)?..checked_length(end_line)?,
+                )
+                .map_err(|_| EvimStatus::PolicyRequired)?;
+            let complete = range.start == 0 && range.end == doc.source_byte_len();
+            Ok((doc.source_bytes()[range].to_vec(), complete))
+        })?;
+        unsafe {
+            out_required.write(bytes.len() as u64);
+            out_complete.write(u32::from(complete));
+        }
+        if capacity < bytes.len() as u64 {
+            return Err(EvimStatus::BufferTooSmall);
+        }
+        if !bytes.is_empty() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len());
             }
         }
         Ok(())

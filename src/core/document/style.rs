@@ -1,8 +1,13 @@
+mod defaults;
+pub use defaults::StyleDefaultsError;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Opaque stable identity of a block or character style. The string is a
 /// serialization-friendly token, not the user-visible style name.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
+#[derive(
+    Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct StyleId(pub String);
 
 impl From<&str> for StyleId {
@@ -56,7 +61,7 @@ impl StyleDefinitionMetadata {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Color {
     pub red: f32,
     pub green: f32,
@@ -64,14 +69,14 @@ pub struct Color {
     pub alpha: f32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FontSlant {
     Upright,
     Italic,
     Oblique,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WritingDirection {
     Natural,
     LeftToRight,
@@ -81,13 +86,13 @@ pub enum WritingDirection {
 /// The schema domain a block style may declare. Future structural roles (for
 /// example List and ListItem) can extend this enum without creating another
 /// style namespace.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum BlockRole {
     Document,
     Paragraph,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LineSpacing {
     Normal,
     Multiplier(f32),
@@ -95,7 +100,7 @@ pub enum LineSpacing {
     Exact(f32),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ParagraphAlignment {
     Start,
     End,
@@ -103,7 +108,8 @@ pub enum ParagraphAlignment {
 }
 
 /// Sparse character declarations. `None` means inherit/leave unchanged.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct CharacterProperties {
     pub font_families: Option<Vec<String>>,
     pub size: Option<f32>,
@@ -159,7 +165,8 @@ impl CharacterProperties {
 
 /// Sparse paragraph/block declarations. Future list properties can be added
 /// here without introducing a separate paragraph-style namespace.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct BlockProperties {
     pub spacing_before: Option<f32>,
     pub spacing_after: Option<f32>,
@@ -232,14 +239,14 @@ impl DocumentStyleAssignment {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CharacterStyle {
     pub id: StyleId,
     pub based_on: Option<StyleId>,
     pub properties: CharacterProperties,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BlockStyle {
     pub id: StyleId,
     pub based_on: Option<StyleId>,
@@ -320,7 +327,7 @@ pub enum ConfigurationStyleIntent {
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Hash)]
 pub struct StyleSheetRevision(pub u64);
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct StyleSheet {
     pub revision: StyleSheetRevision,
     pub base_document: StyleId,
@@ -333,6 +340,30 @@ pub struct StyleSheet {
     deleted_configuration_blocks: BTreeSet<StyleId>,
     deleted_configuration_characters: BTreeSet<StyleId>,
     deleted_source_blocks: BTreeSet<StyleId>,
+    source_defined_blocks: BTreeSet<StyleId>,
+    source_defined_characters: BTreeSet<StyleId>,
+    source_character_defaults: BTreeMap<StyleId, CharacterProperties>,
+    default_blocks: BTreeMap<StyleId, BlockStyle>,
+    default_characters: BTreeMap<StyleId, CharacterStyle>,
+}
+
+// Imported-definition tracking is parser provenance, not a semantic declaration.
+impl PartialEq for StyleSheet {
+    fn eq(&self, other: &Self) -> bool {
+        self.revision == other.revision
+            && self.base_document == other.base_document
+            && self.base_paragraph == other.base_paragraph
+            && self.base_character == other.base_character
+            && self.block_styles == other.block_styles
+            && self.character_styles == other.character_styles
+            && self.block_metadata == other.block_metadata
+            && self.character_metadata == other.character_metadata
+            && self.deleted_configuration_blocks == other.deleted_configuration_blocks
+            && self.deleted_configuration_characters == other.deleted_configuration_characters
+            && self.deleted_source_blocks == other.deleted_source_blocks
+            && self.default_blocks == other.default_blocks
+            && self.default_characters == other.default_characters
+    }
 }
 
 impl Default for StyleSheet {
@@ -446,6 +477,35 @@ impl Default for StyleSheet {
                 properties: CharacterProperties::default(),
             },
         );
+        let code_properties = CharacterProperties {
+            font_families: Some(vec!["monospace".to_owned()]),
+            foreground: Some(Color {
+                red: 0.0,
+                green: 100.0 / 255.0,
+                blue: 0.0,
+                alpha: 1.0,
+            }),
+            ..CharacterProperties::default()
+        };
+        block_styles.insert(
+            "Code Block".into(),
+            BlockStyle {
+                id: "Code Block".into(),
+                based_on: Some(paragraph.clone()),
+                next_paragraph_style: Some(paragraph.clone()),
+                role: BlockRole::Paragraph,
+                character: code_properties.clone(),
+                block: BlockProperties::default(),
+            },
+        );
+        character_styles.insert(
+            "Code".into(),
+            CharacterStyle {
+                id: "Code".into(),
+                based_on: Some(character.clone()),
+                properties: code_properties,
+            },
+        );
         let mut block_metadata = BTreeMap::new();
         block_metadata.insert(
             document.clone(),
@@ -472,6 +532,11 @@ impl Default for StyleSheet {
             character.clone(),
             StyleDefinitionMetadata::generated("Base Character"),
         );
+        block_metadata.insert(
+            "Code Block".into(),
+            StyleDefinitionMetadata::generated("Code Block"),
+        );
+        character_metadata.insert("Code".into(), StyleDefinitionMetadata::generated("Code"));
         Self {
             revision: StyleSheetRevision(1),
             base_document: document,
@@ -484,6 +549,11 @@ impl Default for StyleSheet {
             deleted_configuration_blocks: BTreeSet::new(),
             deleted_configuration_characters: BTreeSet::new(),
             deleted_source_blocks: BTreeSet::new(),
+            source_defined_blocks: BTreeSet::new(),
+            source_defined_characters: BTreeSet::new(),
+            source_character_defaults: BTreeMap::new(),
+            default_blocks: BTreeMap::new(),
+            default_characters: BTreeMap::new(),
         }
     }
 }
@@ -1015,6 +1085,7 @@ impl StyleSheet {
         }
     }
     pub(crate) fn retain_configuration_deletions(&mut self, previous: &Self) {
+        self.retain_defaults(previous);
         self.retain_internal_styles(previous);
         self.deleted_configuration_blocks = previous.deleted_configuration_blocks.clone();
         self.deleted_configuration_characters = previous.deleted_configuration_characters.clone();
@@ -1411,8 +1482,14 @@ impl StyleSheet {
                         .block_metadata
                         .insert(style.id.clone(), metadata.clone());
                     candidate.deleted_source_blocks.remove(&style.id);
+                    if metadata.origin == StyleDefinitionOrigin::SourceBacked {
+                        candidate.source_defined_blocks.insert(style.id.clone());
+                    }
                 }
                 StyleDefinitionEdit::InsertCharacter { style, metadata } => {
+                    if metadata.origin == StyleDefinitionOrigin::SourceBacked {
+                        candidate.source_defined_characters.insert(style.id.clone());
+                    }
                     validate_definition_metadata(&style.id, metadata)?;
                     candidate
                         .character_styles
@@ -2204,6 +2281,9 @@ impl StyleSheet {
                 .get(style_id)
                 .ok_or_else(|| StyleError::MissingParent(style_id.clone()))?;
             chain.push(style);
+            if let Some(default) = self.default_blocks.get(style_id) {
+                chain.push(default);
+            }
             current = style.based_on.as_ref();
         }
         chain.reverse();
@@ -2234,6 +2314,9 @@ impl StyleSheet {
                 .get(style_id)
                 .ok_or_else(|| StyleError::MissingParent(style_id.clone()))?;
             chain.push(style);
+            if let Some(default) = self.default_characters.get(style_id) {
+                chain.push(default);
+            }
             current = style.based_on.as_ref();
         }
         chain.reverse();

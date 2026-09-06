@@ -8,9 +8,12 @@ final class EVEditingPreferencesTests: XCTestCase {
   func testSmartQuotesDefaultsOffPersistsAndNotifiesOnlyOnChanges() throws {
     let suite = "evim-editing-test-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-config-test-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
+    let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
     defer { defaults.removePersistentDomain(forName: suite) }
     let center = NotificationCenter()
-    let preferences = EVEditingPreferences(defaults: defaults, center: center)
+    let preferences = EVEditingPreferences(configuration: configuration, center: center)
     var changes = 0
     let observer = center.addObserver(
       forName: .evimEditingPreferencesDidChange, object: nil, queue: .main
@@ -18,21 +21,24 @@ final class EVEditingPreferencesTests: XCTestCase {
     defer { center.removeObserver(observer) }
     XCTAssertFalse(preferences.smartQuotes)
     preferences.setSmartQuotes(true)
-    XCTAssertTrue(EVEditingPreferences(defaults: defaults).smartQuotes)
+    XCTAssertTrue(EVEditingPreferences(configuration: EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)).smartQuotes)
     XCTAssertEqual(changes, 1)
     preferences.setSmartQuotes(true)
     XCTAssertEqual(changes, 1)
     preferences.setSmartQuotes(false)
-    XCTAssertFalse(EVEditingPreferences(defaults: defaults).smartQuotes)
+    XCTAssertFalse(EVEditingPreferences(configuration: EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)).smartQuotes)
     XCTAssertEqual(changes, 2)
   }
 
   func testEditingCategoryCheckboxUpdatesPreferenceWithoutChangingTheme() throws {
     let suite = "evim-editing-settings-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-config-test-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
+    let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
     defer { defaults.removePersistentDomain(forName: suite) }
-    let preferences = EVEditingPreferences(defaults: defaults)
-    let theme = EVThemeStore(defaults: defaults)
+    let preferences = EVEditingPreferences(configuration: configuration)
+    let theme = EVThemeStore(configuration: configuration)
     let settings = EVSettingsWindowController(store: theme, editingPreferences: preferences)
     defer { settings.close() }
     settings.showWindow(nil)

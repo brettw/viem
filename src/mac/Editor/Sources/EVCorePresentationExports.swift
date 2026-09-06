@@ -109,6 +109,13 @@ struct EVLayoutPaintExport {
 struct EVCommandLineExport {
     var info: EvimCommandLineInfoV1
     var text: String
+    var selectionAnchorUTF8Offset: UInt64 = 0
+
+    var selectedUTF8Range: Range<Int> {
+        let active = Int(info.cursor_utf8_offset)
+        let anchor = Int(selectionAnchorUTF8Offset)
+        return min(anchor, active)..<max(anchor, active)
+    }
 
     var prompt: Character? {
         switch info.identity.kind {
@@ -298,7 +305,10 @@ extension EVCoreViewSession {
         else {
             throw EVCoreFrontendError.invalidUTF8
         }
-        return EVCommandLineExport(info: copiedInfo, text: text)
+        var selection = EvimCommandLineSelectionV1()
+        selection.struct_size = UInt32(MemoryLayout<EvimCommandLineSelectionV1>.size)
+        try checkedPresentationExport(evim_core_view_command_line_selection(document.core, viewID, &identity, &selection), operation: "Read command selection")
+        return EVCommandLineExport(info: copiedInfo, text: text, selectionAnchorUTF8Offset: selection.anchor_utf8_offset)
     }
 
     func visualSelectionExport() throws -> EVVisualSelectionExport {

@@ -28,6 +28,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private var fields: [Int: NSTextField] = [:]
   private let fontSelect = NSPopUpButton()
   private let preview = EVThemePreview()
+  private let persistenceDiagnostic = NSTextField(wrappingLabelWithString: "")
   private var selectedCategory = 1
   private var hasPresented = false
 
@@ -188,19 +189,24 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     stack.addArrangedSubview(title)
     let subtitle = NSTextField(
       wrappingLabelWithString: [
-        "Document styles travel with your writing. Theme settings stay in eVim.",
+        "Default styles and app settings are saved in ~/.evim. Documents can override their format’s defaults.",
         "Make a comfortable space for writing. Changes apply to every window.",
         "Choose how eVim helps while you type. These preferences apply to every document.",
       ][selectedCategory])
     subtitle.textColor = .secondaryLabelColor
     stack.addArrangedSubview(subtitle)
+    persistenceDiagnostic.textColor = .systemRed
+    persistenceDiagnostic.font = .systemFont(ofSize: 12)
+    persistenceDiagnostic.stringValue = store.lastError ?? editingPreferences.lastError ?? ""
+    persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
+    stack.addArrangedSubview(persistenceDiagnostic)
     if selectedCategory == 0 {
       stack.addArrangedSubview(
         section(
           "New documents",
           views: [
-            label("Default font: SF Pro, 14 pt"),
-            label("Choose Edit Styles… from Paragraph or Character to change document styles."),
+            label("Text, HTML, Markdown, and RTF each have their own default style set."),
+            label("Use Format > Style to edit a document’s styles or save them as its format’s defaults."),
           ]))
       return
     }
@@ -332,6 +338,8 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     return field
   }
   private func refresh() {
+    persistenceDiagnostic.stringValue = store.lastError ?? ""
+    persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
     let theme = store.theme
     let colors = [
       theme.foreground, theme.background, theme.caret, theme.selection, theme.statusForeground,
@@ -351,6 +359,9 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   }
   @objc private func changeSmartQuotes(_ sender: NSButton) {
     editingPreferences.setSmartQuotes(sender.state == .on)
+    sender.state = editingPreferences.smartQuotes ? .on : .off
+    persistenceDiagnostic.stringValue = editingPreferences.lastError ?? ""
+    persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
   }
   @objc private func useMidnight() {
     store.update(.midnight)

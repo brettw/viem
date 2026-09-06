@@ -47,6 +47,15 @@ pub enum RangeSeparator {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExAction {
+    EditNewWindow {
+        path: Option<String>,
+    },
+    PrintWorkingDirectory,
+    CheckTime,
+    ChangeDirectory {
+        path: Option<String>,
+    },
+    Update,
     Split {
         path: Option<String>,
     },
@@ -250,7 +259,7 @@ impl fmt::Display for ExParseError {
                 write!(formatter, "invalid register {register:?}")
             }
             ExParseErrorKind::InvalidSubstituteDelimiter(delimiter) => {
-                write!(formatter, "invalid substitute delimiter {delimiter:?}")
+                write!(formatter, "invalid substitute delimiter {delimiter:?}; :s substitutes text — use :w <file> or :saveas <file> to save")
             }
             ExParseErrorKind::UnterminatedSubstitutePattern => {
                 formatter.write_str("substitute pattern has no closing delimiter")
@@ -321,9 +330,18 @@ impl<'a> Parser<'a> {
                     self.input[self.at..].to_owned(),
                 ));
             }
-            self.input[start..self.at].to_ascii_lowercase()
+            if &self.input[start..self.at] == "E" {
+                "E".to_owned()
+            } else {
+                self.input[start..self.at].to_ascii_lowercase()
+            }
         };
-        let name = resolve_command(&command).map_err(|kind| ExParseError {
+        let name = (if command == "E" {
+            Ok(CommandName::EditNewWindow)
+        } else {
+            resolve_command(&command)
+        })
+        .map_err(|kind| ExParseError {
             offset: command_offset,
             kind,
         })?;
@@ -466,6 +484,15 @@ impl<'a> Parser<'a> {
             }
         };
         match name {
+            CommandName::EditNewWindow => Ok(ExAction::EditNewWindow {
+                path: optional_string(args),
+            }),
+            CommandName::PrintWorkingDirectory => no_args(ExAction::PrintWorkingDirectory),
+            CommandName::CheckTime => no_args(ExAction::CheckTime),
+            CommandName::ChangeDirectory => Ok(ExAction::ChangeDirectory {
+                path: optional_string(args),
+            }),
+            CommandName::Update => no_args(ExAction::Update),
             CommandName::Split => Ok(ExAction::Split {
                 path: optional_string(args),
             }),
@@ -582,6 +609,11 @@ impl<'a> Parser<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandName {
+    EditNewWindow,
+    PrintWorkingDirectory,
+    CheckTime,
+    ChangeDirectory,
+    Update,
     Split,
     Edit,
     New,
@@ -615,6 +647,11 @@ enum CommandName {
 impl CommandName {
     fn canonical(self) -> &'static str {
         match self {
+            Self::EditNewWindow => "E",
+            Self::PrintWorkingDirectory => "pwd",
+            Self::CheckTime => "checktime",
+            Self::ChangeDirectory => "cd",
+            Self::Update => "update",
             Self::Split => "split",
             Self::Edit => "edit",
             Self::New => "enew",
@@ -650,6 +687,8 @@ impl CommandName {
         matches!(
             self,
             Self::Edit
+                | Self::EditNewWindow
+                | Self::Update
                 | Self::New
                 | Self::Write
                 | Self::SaveAs
@@ -691,6 +730,31 @@ struct CommandSpec {
 }
 
 const COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        name: CommandName::CheckTime,
+        spelling: "checktime",
+        minimum: 5,
+    },
+    CommandSpec {
+        name: CommandName::PrintWorkingDirectory,
+        spelling: "pwd",
+        minimum: 2,
+    },
+    CommandSpec {
+        name: CommandName::ChangeDirectory,
+        spelling: "cd",
+        minimum: 2,
+    },
+    CommandSpec {
+        name: CommandName::ChangeDirectory,
+        spelling: "chdir",
+        minimum: 2,
+    },
+    CommandSpec {
+        name: CommandName::Update,
+        spelling: "update",
+        minimum: 2,
+    },
     CommandSpec {
         name: CommandName::Split,
         spelling: "split",

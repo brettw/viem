@@ -202,12 +202,12 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
         let (_, surface, session) = try makeSurface("one\ntwo")
 
         try sendEx("set ff?", through: session)
-        XCTAssertEqual(surface.statusBarState.message, "fileformat=unix")
+        XCTAssertEqual(try commandOutput(from: surface), "fileformat=unix")
 
         try sendEx("%s/o/O/gp", through: session)
         surface.refreshPresentation()
         XCTAssertEqual(surface.formattedText, "One\ntwO")
-        XCTAssertEqual(surface.statusBarState.message, "One\ntwO\n2 substitutions")
+        XCTAssertEqual(try commandOutput(from: surface), "One\ntwO\n2 substitutions")
     }
 
     func testResolvedMarksRegistersAndJumpsRenderWithoutFrontendProjectionReads() throws {
@@ -216,15 +216,15 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
         backend.resetFormattedAccessCounters()
 
         try sendEx("marks a", through: session)
-        XCTAssertTrue(surface.statusBarState.message.contains("a  1  0  α one"))
+        XCTAssertTrue(try commandOutput(from: surface).contains("a  1  0  α one"))
 
         try sendEx("registers a", through: session)
-        XCTAssertTrue(surface.statusBarState.message.contains("\"a"))
-        XCTAssertTrue(surface.statusBarState.message.contains("α one^J"))
+        XCTAssertTrue(try commandOutput(from: surface).contains("\"a"))
+        XCTAssertTrue(try commandOutput(from: surface).contains("α one^J"))
 
         try sendEx("jumps", through: session)
-        XCTAssertTrue(surface.statusBarState.message.contains("γ three"))
-        XCTAssertTrue(surface.statusBarState.message.contains(">"))
+        XCTAssertTrue(try commandOutput(from: surface).contains("γ three"))
+        XCTAssertTrue(try commandOutput(from: surface).contains(">"))
         XCTAssertEqual(
             backend.formattedAccessCounters.fullRangeReadCalls,
             0,
@@ -262,7 +262,7 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
 
         XCTAssertEqual(host.requests.last?.map(\.kind), [.writeQuit])
         XCTAssertEqual(
-            surface.statusBarState.message,
+            try commandOutput(from: surface),
             EVDocumentHostError.saveCancelledOrFailed.localizedDescription
         )
     }
@@ -315,6 +315,21 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(pasteboard.text, "original")
         XCTAssertTrue(pasteboard.writes.isEmpty)
+    }
+
+    private func commandOutput(from surface: EVEditorSurfaceController, file: StaticString = #filePath, line: UInt = #line) throws -> String {
+        let output = try XCTUnwrap(surface.commandOutput, file: file, line: line)
+        let bar = surface.editorView.commandOutputBar
+        XCTAssertFalse(bar.isHidden, file: file, line: line)
+        XCTAssertFalse(bar.textView.isEditable, file: file, line: line)
+        XCTAssertTrue(bar.textView.isSelectable, file: file, line: line)
+        XCTAssertEqual(bar.textView.string, output, file: file, line: line)
+        XCTAssertEqual(surface.statusBarState.message, "", "output is not duplicated in the status bar", file: file, line: line)
+        let close = try XCTUnwrap(bar.subviews.compactMap { $0 as? NSButton }.first, file: file, line: line)
+        XCTAssertEqual(close.accessibilityLabel(), "Close command output", file: file, line: line)
+        XCTAssertFalse(close.isHidden, file: file, line: line)
+        XCTAssertNotNil(close.image, file: file, line: line)
+        return output
     }
 
     private func makeSurface(

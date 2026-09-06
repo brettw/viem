@@ -54,7 +54,21 @@ final class EVRecoveryCoreTests: XCTestCase {
     let session = try XCTUnwrap(surface.session)
     surface.performInput { _ = try session.sendText(":w") }
     surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER)) }
-    XCTAssertTrue(surface.statusBarState.message.contains("E45"))
+    let output = try XCTUnwrap(surface.commandOutput)
+    XCTAssertTrue(output.contains("E45"))
+    XCTAssertEqual(surface.statusBarState.message, "")
+    let bar = surface.editorView.commandOutputBar
+    XCTAssertFalse(bar.isHidden)
+    XCTAssertFalse(bar.textView.isEditable)
+    XCTAssertTrue(bar.textView.isSelectable)
+    XCTAssertEqual(bar.textView.string, output)
+    let close = try XCTUnwrap(bar.subviews.compactMap { $0 as? NSButton }.first)
+    XCTAssertEqual(close.accessibilityLabel(), "Close command output")
+    XCTAssertFalse(close.isHidden)
+    XCTAssertNotNil(close.image)
+    close.performClick(nil)
+    XCTAssertNil(surface.commandOutput)
+    XCTAssertTrue(bar.isHidden)
     XCTAssertEqual(surface.statusBarState.mode, "NORMAL")
     XCTAssertEqual(
       try backend.serializedSource(typeName: EVDocument.plainTextType), Data("original".utf8))

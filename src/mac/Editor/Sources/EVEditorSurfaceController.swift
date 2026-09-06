@@ -19,6 +19,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var layoutSnapshot: EVLayoutExport?
     var layoutPaint: EVLayoutPaintExport?
     private(set) var commandLine: EVCommandLineExport?
+    private(set) var commandOutput: String?
     private(set) var visualSelection: EVVisualSelectionExport?
     private(set) var viewPresentation = EvimViewPresentationV1()
     private(set) var viewportState = EvimViewportStateV1()
@@ -84,6 +85,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
         do {
             try attachToCore()
+            if let warning = backend.configurationWarning { lastErrorMessage = warning }
         } catch {
             lastErrorMessage = error.localizedDescription
         }
@@ -285,6 +287,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             layoutTextSlices = nextLayoutTextSlices
             compositionTextSlices = nextCompositionTextSlices
             commandLine = nextCommandLine
+            if nextCommandLine.prompt != nil { commandOutput = nil }
             visualSelection = nextVisualSelection
             presentationRefreshCount &+= 1
             updateStatusBar()
@@ -312,8 +315,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     func report(_ error: Error) {
-        lastErrorMessage = error.localizedDescription
-        updateStatusBar()
+        publishHostMessage(error.localizedDescription)
     }
 
     func sharedDocumentDidChange(originatingViewIDs: Set<EvimViewId>) {
@@ -481,6 +483,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 preferredStyle: .document,
                 sender: sender
             )
+        case .saveDefaultStyle:
+            do { let url = try backend.saveDefaultStyle(); publishHostMessage("Saved default style to \(url.path)") }
+            catch { report(error) }
         case .save:
             (view.window?.windowController as? EVDocumentWindowController)?.activeDocument?.save(sender)
         case .saveAs:
@@ -586,6 +591,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
              .lineSpacingNormal, .lineSpacingSingle, .lineSpacingOneAndHalf, .lineSpacingDouble:
             EVMenuItemPresentation(isEnabled: [.html, .htmlSource, .rtf].contains(backend.sourceFormat)
                 && (try? session?.listSelection()) != nil)
+        case .saveDefaultStyle:
+            EVMenuItemPresentation(isEnabled: true, title: "Save as default \(backend.sourceFormat.defaultStyleName) style")
         case .editCharacterStyles, .editParagraphStyles, .editDocumentStyles:
             .enabled
         case .printDocument:
@@ -1194,6 +1201,10 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         switch effect.kind {
         case UInt32(EVIM_EX_FRONTEND_SPLIT): kind = .split
         case UInt32(EVIM_EX_FRONTEND_EDIT): kind = .edit
+        case UInt32(EVIM_EX_FRONTEND_EDIT_NEW_WINDOW): kind = .editNewWindow
+        case UInt32(EVIM_EX_FRONTEND_PWD): kind = .printWorkingDirectory
+        case UInt32(EVIM_EX_FRONTEND_CHECKTIME): kind = .checkTime
+        case UInt32(EVIM_EX_FRONTEND_CD): kind = .changeDirectory
         case UInt32(EVIM_EX_FRONTEND_NEW): kind = .new
         case UInt32(EVIM_EX_FRONTEND_WRITE): kind = .write
         case UInt32(EVIM_EX_FRONTEND_SAVE_AS): kind = .saveAs
@@ -1202,7 +1213,8 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         case UInt32(EVIM_EX_FRONTEND_WRITE_QUIT): kind = .writeQuit
         case UInt32(EVIM_EX_FRONTEND_XIT): kind = .xit
         case UInt32(EVIM_EX_FRONTEND_WRITE_ALL): kind = .writeAll
-        case UInt32(EVIM_EX_FRONTEND_MARKS),
+        case UInt32(EVIM_EX_FRONTEND_MESSAGE),
+             UInt32(EVIM_EX_FRONTEND_MARKS),
              UInt32(EVIM_EX_FRONTEND_REGISTERS),
              UInt32(EVIM_EX_FRONTEND_JUMPS),
              UInt32(EVIM_EX_FRONTEND_OPTIONS),
@@ -1228,6 +1240,7 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
 
     private func displayMessage(for effect: EVExHostEffect) throws -> String? {
         switch effect.kind {
+        case UInt32(EVIM_EX_FRONTEND_MESSAGE): return effect.text
         case UInt32(EVIM_EX_FRONTEND_OPTIONS):
             return effect.options.map(formatOption).joined(separator: "  ")
         case UInt32(EVIM_EX_FRONTEND_MARKS):
@@ -1268,6 +1281,9 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         case UInt32(EVIM_EX_OPTION_LINEBREAK): name = "linebreak"
         case UInt32(EVIM_EX_OPTION_FILE_FORMAT): name = "fileformat"
         case UInt32(EVIM_EX_OPTION_FILE_FORMATS): name = "fileformats"
+        case 5: name = "ignorecase"
+        case 6: name = "smartcase"
+        case 7: name = "wrapscan"
         default: name = "option\(option.name)"
         }
         switch option.value {
@@ -1294,8 +1310,17 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             .replacingOccurrences(of: "\t", with: "^I")
     }
 
-    private func publishHostMessage(_ message: String) {
-        lastErrorMessage = message
+    func dismissCommandOutput() {
+        commandOutput = nil
+        if isViewLoaded { editorView.applyPresentation(); editorView.window?.makeFirstResponder(editorView) }
+    }
+
+    public func showDocumentMessage(_ message: String) { publishHostMessage(message) }
+
+    func publishHostMessage(_ message: String) {
+        commandOutput = message
+        lastErrorMessage = ""
         updateStatusBar()
+        if isViewLoaded { editorView.applyPresentation() }
     }
 }

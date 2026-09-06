@@ -5762,11 +5762,175 @@ fn readonly_ex_error_has_a_distinct_abi_status_and_no_host_write_effect() {
     let (status, outcome, effects) = host_key(&core, view, key(EVIM_KEY_ENTER, 0), &[]);
     assert_eq!(status, EvimStatus::Ok);
     assert_eq!(outcome.command_status, EVIM_COMMAND_STATUS_READ_ONLY);
-    assert_eq!(effects, 0);
+    assert_ne!(effects, 0);
+    let diagnostic = copy_effect_batch(effects);
+    assert_eq!(diagnostic.ex_requests.len(), 1);
+    assert_eq!(diagnostic.ex_requests[0].kind, EVIM_EX_FRONTEND_MESSAGE);
+    assert!(diagnostic
+        .text(diagnostic.ex_requests[0].text)
+        .contains("E45"));
+    assert!(diagnostic.clipboard_writes.is_empty());
+    assert_eq!(evim_effect_batch_release(effects), EvimStatus::Ok);
     host_chars(&core, view, ":w!");
     let (status, outcome, effects) = host_key(&core, view, key(EVIM_KEY_ENTER, 0), &[]);
     assert_eq!(status, EvimStatus::Ok);
     assert_eq!(outcome.command_status, EVIM_COMMAND_STATUS_COMPLETE);
     assert_ne!(effects, 0);
     assert_eq!(evim_effect_batch_release(effects), EvimStatus::Ok);
+}
+
+#[test]
+fn ranged_source_export_preserves_delimiters_and_rejects_stale_identity() {
+    let core = create_core(
+        b"first\r\n**second**\r\nlast",
+        EvimDocumentOptions {
+            format: EVIM_FORMAT_MARKDOWN,
+            ..EvimDocumentOptions::default()
+        },
+    );
+    let state = document_state(&core);
+    let mut required = 0;
+    let mut complete = 99;
+    assert_eq!(
+        unsafe {
+            evim_core_copy_hard_line_source_bytes(
+                core.handle,
+                state.document_id,
+                state.document_revision,
+                1,
+                2,
+                ptr::null_mut(),
+                0,
+                &mut required,
+                &mut complete,
+            )
+        },
+        EvimStatus::BufferTooSmall
+    );
+    assert_eq!(required, b"**second**\r\n".len() as u64);
+    assert_eq!(complete, 0);
+    let mut bytes = vec![0; required as usize];
+    assert_eq!(
+        unsafe {
+            evim_core_copy_hard_line_source_bytes(
+                core.handle,
+                state.document_id,
+                state.document_revision,
+                1,
+                2,
+                bytes.as_mut_ptr(),
+                bytes.len() as u64,
+                &mut required,
+                &mut complete,
+            )
+        },
+        EvimStatus::Ok
+    );
+    assert_eq!(bytes, b"**second**\r\n");
+    assert_eq!(
+        unsafe {
+            evim_core_copy_hard_line_source_bytes(
+                core.handle,
+                state.document_id + 1,
+                state.document_revision,
+                1,
+                2,
+                ptr::null_mut(),
+                0,
+                &mut required,
+                &mut complete,
+            )
+        },
+        EvimStatus::InvalidArgument
+    );
+    assert_eq!(
+        unsafe {
+            evim_core_copy_hard_line_source_bytes(
+                core.handle,
+                state.document_id,
+                state.document_revision + 1,
+                1,
+                2,
+                ptr::null_mut(),
+                0,
+                &mut required,
+                &mut complete,
+            )
+        },
+        EvimStatus::StaleRevision
+    );
+    assert_eq!(
+        unsafe {
+            evim_core_copy_hard_line_source_bytes(
+                core.handle,
+                state.document_id,
+                state.document_revision,
+                2,
+                1,
+                ptr::null_mut(),
+                0,
+                &mut required,
+                &mut complete,
+            )
+        },
+        EvimStatus::PolicyRequired
+    );
+    assert_eq!(document_state(&core), state);
+}
+
+#[test]
+fn native_format_setter_returns_owned_loss_warning_and_stale_retry_is_inert() {
+    let core = create_core(
+        b"<p>Body</p><!-- preserved until conversion -->",
+        EvimDocumentOptions {
+            format: EVIM_FORMAT_HTML,
+            ..EvimDocumentOptions::default()
+        },
+    );
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, _) = add_test_view(&core, &mut *provider);
+    let state = document_state(&core);
+    let request = EvimSetFormatV1 {
+        struct_size: EVIM_SET_FORMAT_V1_SIZE,
+        format: EVIM_FORMAT_MARKDOWN,
+        document_id: state.document_id,
+        document_revision: state.document_revision,
+    };
+    let mut outcome = EvimCoreOutcomeV1::default();
+    let mut effects = 0;
+    assert_eq!(
+        unsafe {
+            evim_core_view_set_format_with_effects(
+                core.handle,
+                view,
+                &request,
+                &mut outcome,
+                &mut effects,
+            )
+        },
+        EvimStatus::Ok
+    );
+    assert_ne!(effects, 0);
+    let batch = copy_effect_batch(effects);
+    assert_eq!(batch.ex_requests.len(), 1);
+    assert_eq!(batch.ex_requests[0].kind, EVIM_EX_FRONTEND_MESSAGE);
+    assert!(batch
+        .text(batch.ex_requests[0].text)
+        .contains("information was lost"));
+    assert_eq!(evim_effect_batch_release(effects), EvimStatus::Ok);
+    let committed = document_state(&core);
+    assert_eq!(
+        unsafe {
+            evim_core_view_set_format_with_effects(
+                core.handle,
+                view,
+                &request,
+                &mut outcome,
+                &mut effects,
+            )
+        },
+        EvimStatus::StaleRevision
+    );
+    assert_eq!(effects, 0);
+    assert_eq!(document_state(&core), committed);
 }

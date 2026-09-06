@@ -50,16 +50,10 @@ final class EVDocumentWindowControllerTests: XCTestCase {
   }
 
   private func preservingStatusBarDefault(_ body: () throws -> Void) rethrows {
-    let defaults = UserDefaults.standard
-    let previous = defaults.object(forKey: "EVShowStatusBar")
-    defaults.set(true, forKey: "EVShowStatusBar")
-    defer {
-      if let previous {
-        defaults.set(previous, forKey: "EVShowStatusBar")
-      } else {
-        defaults.removeObject(forKey: "EVShowStatusBar")
-      }
-    }
+    let configuration = EVConfigurationStore.shared
+    let previous = configuration.showStatusBar
+    try? configuration.setShowStatusBar(true)
+    defer { try? configuration.setShowStatusBar(previous) }
     try body()
   }
 
@@ -154,7 +148,7 @@ final class EVDocumentWindowControllerTests: XCTestCase {
       XCTAssertFalse(geometry.statusBarIsVisible)
       XCTAssertEqual(geometry.statusBar.height, 0, accuracy: 0.5)
       XCTAssertEqual(geometry.editor, geometry.content)
-      XCTAssertEqual(UserDefaults.standard.bool(forKey: "EVShowStatusBar"), false)
+      XCTAssertEqual(EVConfigurationStore.shared.showStatusBar, false)
       XCTAssertTrue(contentController.validateMenuItem(item))
       XCTAssertEqual(item.state, .off)
 

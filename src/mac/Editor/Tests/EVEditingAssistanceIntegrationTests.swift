@@ -10,8 +10,11 @@ final class EVEditingAssistanceIntegrationTests: XCTestCase {
   func testLiveSmartQuotePreferenceOnlyAffectsSubsequentTypedInput() throws {
     let suite = "evim-assistance-native-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-config-test-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
+    let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
     defer { defaults.removePersistentDomain(forName: suite) }
-    let preferences = EVEditingPreferences(defaults: defaults)
+    let preferences = EVEditingPreferences(configuration: configuration)
     let backend = EVCoreDocumentBackend()
     try backend.read(source: Data(), typeName: EVDocument.plainTextType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)

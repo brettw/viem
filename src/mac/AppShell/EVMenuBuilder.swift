@@ -343,13 +343,10 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         for item in color.items { color.removeItem(item); menu.addItem(item) }
         menu.addItem(.separator())
 
-        menu.addItem(makeStyleMenu(
-            title: "Document Style",
-            role: .document,
-            baseTitle: "Base Document",
-            baseCommand: .baseDocumentStyle,
-            editCommand: .editDocumentStyles
-        ))
+        let styles = NSMenu(title: "Style")
+        styles.addItem(coreItem("Edit document style…", command: .editDocumentStyles))
+        styles.addItem(coreItem("Save as default text style", command: .saveDefaultStyle))
+        menu.addItem(submenuItem("Style", submenu: styles))
         menu.addItem(.separator())
 
         let paragraph = NSMenu(title: "Paragraph")

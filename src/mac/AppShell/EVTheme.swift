@@ -92,30 +92,24 @@ extension Notification.Name {
 @MainActor
 public final class EVThemeStore {
   public static let shared = EVThemeStore()
-  private let defaults: UserDefaults
+  private let configuration: EVConfigurationStore
+  public var lastError: String? { configuration.lastError }
   private let center: NotificationCenter
   public private(set) var theme: EVTheme
   public private(set) var generation: UInt64 = 1
-  private static let key = "EVApplicationTheme.v1"
-
-  public init(defaults: UserDefaults = .standard, center: NotificationCenter = .default) {
-    self.defaults = defaults
+  public init(configuration: EVConfigurationStore? = nil, center: NotificationCenter = .default) {
+    let configuration = configuration ?? .shared
+    self.configuration = configuration
     self.center = center
-    if let data = defaults.data(forKey: Self.key),
-      let saved = try? JSONDecoder().decode(EVTheme.self, from: data), saved.isValid
-    {
-      theme = saved
-    } else {
-      theme = .paper
-    }
+    theme = configuration.theme
   }
 
   public func update(_ value: EVTheme) {
     guard value.isValid, value != theme else { return }
+    do { try configuration.setTheme(value) } catch { return }
     theme = value
     generation &+= 1
     if generation == 0 { generation = 1 }
-    if let data = try? JSONEncoder().encode(value) { defaults.set(data, forKey: Self.key) }
     center.post(name: .evimThemeDidChange, object: self)
   }
 }

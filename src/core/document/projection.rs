@@ -2338,6 +2338,16 @@ impl FormattedDocument {
             .collect()
     }
 
+    pub(crate) fn hard_breaks_for_region(&self, range: &Range<usize>) -> Vec<usize> {
+        self.hard_lines
+            .query_touching(range)
+            .iter()
+            .filter_map(|line| line.separator_range())
+            .filter(|separator| range.start <= separator.start && separator.end <= range.end)
+            .map(|separator| separator.start)
+            .collect()
+    }
+
     pub(crate) fn hard_break_offsets(&self) -> Vec<usize> {
         self.hard_lines
             .get_range(&(0..self.hard_lines.len()))
@@ -3666,8 +3676,71 @@ fn project_markdown(
     builder.preserve_markers = preserve_markers;
     let input_lines = normalized_hard_line_ranges(normalized);
 
-    for (line_index, line) in input_lines.into_iter().enumerate() {
+    let mut line_index = 0;
+    while line_index < input_lines.len() {
+        let line = &input_lines[line_index];
         let output_start = builder.output.len();
+        if let Some((delimiter, length)) = markdown_fence(&normalized.text[line.clone()]) {
+            let mut closing = line_index + 1;
+            while closing < input_lines.len() {
+                let body = normalized.text[input_lines[closing].clone()].trim();
+                if body.len() >= length && body.bytes().all(|c| c == delimiter) {
+                    break;
+                }
+                closing += 1;
+            }
+            let after = (closing + 1).min(input_lines.len());
+            let body_start = if preserve_markers {
+                line_index
+            } else {
+                line_index + 1
+            };
+            let body_end = if preserve_markers { after } else { closing };
+            if body_start < body_end {
+                for index in body_start..body_end {
+                    let output_start = builder.output.len();
+                    builder.emit_range(input_lines[index].start, input_lines[index].end);
+                    builder.push_semantic_style(output_start, SemanticInlineStyle::Code);
+                    builder.blocks.push(Block {
+                        id: 0,
+                        range: output_start..builder.output.len(),
+                        kind: BlockKind::Paragraph,
+                        style: "Code Block".into(),
+                        direct_paragraph: BlockProperties::default(),
+                        direct_default_character: CharacterProperties::default(),
+                    });
+                    if index + 1 < body_end {
+                        if let Some(ending) = normalized.endings.get(index) {
+                            builder.emit_unit_at(ending.normalized.start);
+                        }
+                    }
+                }
+            } else {
+                let body_at = input_lines
+                    .get(line_index + 1)
+                    .map_or(line.end, |line| line.start);
+                let source_at = builder
+                    .unit_at(body_at)
+                    .map_or(source_content_end, |unit| unit.source.start);
+                builder.provenance.push(ProvenanceSpan {
+                    formatted: output_start..output_start,
+                    source: source_at..source_at,
+                });
+                builder.blocks.push(Block {
+                    id: 0,
+                    range: output_start..output_start,
+                    kind: BlockKind::Paragraph,
+                    style: "Code Block".into(),
+                    direct_paragraph: BlockProperties::default(),
+                    direct_default_character: CharacterProperties::default(),
+                });
+            }
+            if let Some(ending) = normalized.endings.get(after - 1) {
+                builder.emit_unit_at(ending.normalized.start);
+            }
+            line_index = after;
+            continue;
+        }
         let (content_start, kind) = markdown_block_prefix(&normalized.text, line.start, line.end);
         if preserve_markers || matches!(kind, BlockKind::ListItem { .. }) {
             builder.emit_range(line.start, content_start);
@@ -3692,6 +3765,7 @@ fn project_markdown(
         if let Some(ending) = normalized.endings.get(line_index) {
             builder.emit_unit_at(ending.normalized.start);
         }
+        line_index += 1;
     }
 
     FormattedDocument::from_parts(
@@ -3705,6 +3779,21 @@ fn project_markdown(
         source_content_start,
         source_content_end,
     )
+}
+
+pub(super) fn markdown_fence(line: &str) -> Option<(u8, usize)> {
+    let indent = line.bytes().take_while(|c| *c == b' ').count();
+    if indent > 3 {
+        return None;
+    }
+    let tail = &line[indent..];
+    let delimiter = *tail.as_bytes().first()?;
+    if !matches!(delimiter, b'`' | b'~') {
+        return None;
+    }
+    let length = tail.bytes().take_while(|c| *c == delimiter).count();
+    (length >= 3 && (delimiter != b'`' || !tail[length..].contains('`')))
+        .then_some((delimiter, length))
 }
 
 pub(crate) fn markdown_block_prefix(text: &str, start: usize, end: usize) -> (usize, BlockKind) {
@@ -3813,17 +3902,53 @@ impl<'a> MarkdownBuilder<'a> {
             }
 
             if self.source_text[at..].starts_with('`') {
-                if let Some(close) = self.find_marker(at + 1, end, "`") {
+                let length = self.source_text.as_bytes()[at..end]
+                    .iter()
+                    .take_while(|byte| **byte == b'`')
+                    .count();
+                let mut probe = at + length;
+                let mut close = None;
+                while probe < end {
+                    if self.source_text.as_bytes()[probe] == b'`' {
+                        let run = self.source_text.as_bytes()[probe..end]
+                            .iter()
+                            .take_while(|byte| **byte == b'`')
+                            .count();
+                        if run == length {
+                            close = Some(probe);
+                            break;
+                        }
+                        probe += run;
+                    } else {
+                        probe += self.source_text[probe..].chars().next().unwrap().len_utf8();
+                    }
+                }
+                if let Some(close) = close {
                     let output_start = self.output.len();
                     if self.preserve_markers {
-                        self.emit_range(at, close + 1);
+                        self.emit_range(at, close + length);
                     } else {
-                        self.emit_range(at + 1, close);
+                        let mut body = at + length..close;
+                        let text = &self.source_text[body.clone()];
+                        if text.starts_with(' ') && text.ends_with(' ') && !text.trim().is_empty() {
+                            body.start += 1;
+                            body.end -= 1;
+                        }
+                        self.emit_range(body.start, body.end);
                     }
                     self.push_semantic_style(output_start, SemanticInlineStyle::Code);
-                    at = close + 1;
+                    if output_start < self.output.len() {
+                        self.styles.push(StyleSpan {
+                            range: output_start..self.output.len(),
+                            application: StyleApplication::Named("Code".into()),
+                        });
+                    }
+                    at = close + length;
                     continue;
                 }
+                self.emit_range(at, at + length);
+                at += length;
+                continue;
             }
 
             // Canonical combined emphasis uses a triple delimiter. If its
@@ -4347,7 +4472,7 @@ mod tests {
         assert_eq!(projected.text_tree().hard_line_start(1).unwrap(), 26);
         assert_eq!(projected.blocks[0].kind, BlockKind::Heading(1));
         assert_eq!(projected.blocks[1].kind, BlockKind::Paragraph);
-        assert_eq!(projected.styles.len(), 3);
+        assert_eq!(projected.styles.len(), 4);
         assert_eq!(projected.styles[0].range, 2..6);
         assert_eq!(
             projected.styles[0].application,

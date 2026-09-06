@@ -10,20 +10,22 @@ pub mod ex;
 pub mod ex_execute;
 pub mod insert_motion;
 pub mod layout_motion;
+pub mod regex_v1;
 pub mod text_object;
 pub mod visual_block;
 
+mod command_line_edit;
 mod input_assistance;
 mod line_mode;
 mod registers;
 mod typing_style;
+pub use command_line_edit::{CommandLineEditAction, CommandLineEditRequest, CommandLineSnapshot};
 pub use line_mode::{LineLocation, LineMode};
 mod text;
 
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
-use regex::Regex;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::document::{
@@ -37,10 +39,9 @@ use crate::layout::{LayoutError, LayoutSnapshot};
 use clipboard::{ClipboardCommandContext, ClipboardWriteRequest};
 use ex::{parse_ex, ExAction};
 use ex_execute::{
-    commit_ex, prepare_ex, validate_regex_dialect, ExExecuteError, ExExecutionContext,
-    ExExecutionState, ExFrontendRequest, ExNavigation, ExNormalRequest, ExOptionEffect,
-    ExOptionName, ExOptionValue, ExOutcome, ExRegisterEffectKind, ExRegisterKind, ExRegisterReader,
-    ExRegisterValue,
+    commit_ex, prepare_ex, ExExecuteError, ExExecutionContext, ExExecutionState, ExFrontendRequest,
+    ExNavigation, ExNormalRequest, ExOptionEffect, ExOptionName, ExOptionValue, ExOutcome,
+    ExRegisterEffectKind, ExRegisterKind, ExRegisterReader, ExRegisterValue,
 };
 use insert_motion::{ctrl_u_delete_range_since, ctrl_w_delete_range};
 use layout_motion::{
@@ -54,11 +55,11 @@ pub use registers::{
     RegisterKind, RegisterReadError, RegisterValue, RegisterValueError, RegisterWriteError,
 };
 use text::{
-    advance_graphemes, find_character, first_non_blank, floor_grapheme_boundary, grapheme_column,
-    grapheme_range_at, is_grapheme_boundary, last_grapheme_on_line, last_non_blank, line_count,
-    line_end, line_range, line_start, linewise_range, move_horizontal, move_paragraph,
-    move_sentence, move_vertical, move_word_backward, move_word_end, move_word_end_backward,
-    move_word_forward, next_grapheme_boundary, next_line_start, normalize_normal_cursor,
+    advance_graphemes, find_character, first_non_blank, grapheme_column, grapheme_range_at,
+    is_grapheme_boundary, last_grapheme_on_line, last_non_blank, line_count, line_end, line_range,
+    line_start, linewise_range, move_horizontal, move_paragraph, move_sentence, move_vertical,
+    move_word_backward, move_word_end, move_word_end_backward, move_word_forward,
+    next_grapheme_boundary, next_line_start, normalize_normal_cursor,
     normalize_normal_cursor_snapshot, nth_line_start, position_at_column,
     previous_grapheme_boundary, repeat_find_character,
 };
@@ -696,19 +697,32 @@ enum SearchDirection {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct CommandLineBuffer {
     input: String,
+    selection_anchor: Option<usize>,
     cursor: usize,
     history_index: Option<usize>,
     draft: String,
 }
 
 impl CommandLineBuffer {
+    fn delete_selection(&mut self) -> bool {
+        let Some(anchor) = self.selection_anchor.take() else {
+            return false;
+        };
+        let range = anchor.min(self.cursor)..anchor.max(self.cursor);
+        self.input.replace_range(range.clone(), "");
+        self.cursor = range.start;
+        self.detach_from_history();
+        !range.is_empty()
+    }
     fn insert(&mut self, text: &str) {
+        self.delete_selection();
         self.input.insert_str(self.cursor, text);
         self.cursor += text.len();
         self.detach_from_history();
     }
 
     fn set(&mut self, text: String) {
+        self.selection_anchor = None;
         self.input = text;
         self.cursor = self.input.len();
     }
@@ -1093,6 +1107,7 @@ pub(crate) struct BufferCommandState {
     ex_history: Vec<String>,
     ex_state: ExExecutionState,
     fileformats: Vec<FileFormat>,
+    search_options: regex_v1::SearchOptions,
     last_search: Option<(SearchDirection, String)>,
     last_repeat: Option<RepeatAction>,
     line_undo: Option<LineUndoState>,
@@ -1140,6 +1155,7 @@ pub struct CommandInterpreter {
     physical_cursor: Option<line_mode::PhysicalCursor>,
     visual_source_anchor: Option<crate::document::SourcePoint>,
     fileformats: Vec<FileFormat>,
+    search_options: regex_v1::SearchOptions,
     last_search: Option<(SearchDirection, String)>,
     last_repeat: Option<RepeatAction>,
     line_undo: Option<LineUndoState>,
@@ -1250,6 +1266,7 @@ impl CommandInterpreter {
             visual_source_anchor: None,
             linebreak: true,
             fileformats: vec![FileFormat::Unix, FileFormat::Dos],
+            search_options: regex_v1::SearchOptions::default(),
             last_search: None,
             last_repeat: None,
             line_undo: None,
@@ -1290,6 +1307,7 @@ impl CommandInterpreter {
             ex_history: self.ex_history.clone(),
             ex_state: self.ex_state.clone(),
             fileformats: self.fileformats.clone(),
+            search_options: self.search_options,
             last_search: self.last_search.clone(),
             last_repeat: self.last_repeat.clone(),
             line_undo: self.line_undo.clone(),
@@ -1305,6 +1323,7 @@ impl CommandInterpreter {
         self.ex_history.clone_from(&state.ex_history);
         self.ex_state.clone_from(&state.ex_state);
         self.fileformats.clone_from(&state.fileformats);
+        self.search_options = state.search_options;
         self.last_search.clone_from(&state.last_search);
         self.last_repeat.clone_from(&state.last_repeat);
         self.line_undo.clone_from(&state.line_undo);
@@ -1330,7 +1349,7 @@ impl CommandInterpreter {
         if literal.is_empty() {
             return false;
         }
-        self.last_search = Some((SearchDirection::Forward, regex::escape(literal)));
+        self.last_search = Some((SearchDirection::Forward, regex_v1::escape_literal(literal)));
         true
     }
 
@@ -3920,6 +3939,7 @@ impl CommandInterpreter {
             }
             Key::Left => {
                 if let Some(state) = self.command_line_state.as_mut() {
+                    state.buffer.selection_anchor = None;
                     state.buffer.cursor =
                         previous_grapheme_boundary(&state.buffer.input, state.buffer.cursor)
                             .unwrap_or(0);
@@ -3928,6 +3948,7 @@ impl CommandInterpreter {
             }
             Key::Right => {
                 if let Some(state) = self.command_line_state.as_mut() {
+                    state.buffer.selection_anchor = None;
                     state.buffer.cursor =
                         next_grapheme_boundary(&state.buffer.input, state.buffer.cursor)
                             .unwrap_or(state.buffer.input.len());
@@ -3936,12 +3957,14 @@ impl CommandInterpreter {
             }
             Key::Home | Key::Ctrl('b' | 'B') => {
                 if let Some(state) = self.command_line_state.as_mut() {
+                    state.buffer.selection_anchor = None;
                     state.buffer.cursor = 0;
                 }
                 CommandOutput::pending()
             }
             Key::End | Key::Ctrl('e' | 'E') => {
                 if let Some(state) = self.command_line_state.as_mut() {
+                    state.buffer.selection_anchor = None;
                     state.buffer.cursor = state.buffer.input.len();
                 }
                 CommandOutput::pending()
@@ -3958,6 +3981,7 @@ impl CommandInterpreter {
                 if let Some(state) = self.command_line_state.as_mut() {
                     let cursor = state.buffer.cursor;
                     state.buffer.input.replace_range(..cursor, "");
+                    state.buffer.selection_anchor = None;
                     state.buffer.cursor = 0;
                     state.buffer.detach_from_history();
                 }
@@ -11908,6 +11932,7 @@ impl CommandInterpreter {
                 search.direction,
                 &search.pattern,
                 count,
+                self.search_options,
             ) {
                 Ok(Some(destination)) => Some(exclusive_motion_extent(
                     document.text(),
@@ -12301,6 +12326,7 @@ impl CommandInterpreter {
             }
             Key::Left => {
                 if let Some(state) = self.command_line_state.as_mut() {
+                    state.buffer.selection_anchor = None;
                     state.buffer.cursor =
                         previous_grapheme_boundary(&state.buffer.input, state.buffer.cursor)
                             .unwrap_or(0);
@@ -12309,6 +12335,7 @@ impl CommandInterpreter {
             }
             Key::Right => {
                 if let Some(state) = self.command_line_state.as_mut() {
+                    state.buffer.selection_anchor = None;
                     state.buffer.cursor =
                         next_grapheme_boundary(&state.buffer.input, state.buffer.cursor)
                             .unwrap_or(state.buffer.input.len());
@@ -12317,12 +12344,14 @@ impl CommandInterpreter {
             }
             Key::Home | Key::Ctrl('b' | 'B') => {
                 if let Some(state) = self.command_line_state.as_mut() {
+                    state.buffer.selection_anchor = None;
                     state.buffer.cursor = 0;
                 }
                 Ok(CommandOutput::pending())
             }
             Key::End | Key::Ctrl('e' | 'E') => {
                 if let Some(state) = self.command_line_state.as_mut() {
+                    state.buffer.selection_anchor = None;
                     state.buffer.cursor = state.buffer.input.len();
                 }
                 Ok(CommandOutput::pending())
@@ -12339,6 +12368,7 @@ impl CommandInterpreter {
                 if let Some(state) = self.command_line_state.as_mut() {
                     let cursor = state.buffer.cursor;
                     state.buffer.input.replace_range(..cursor, "");
+                    state.buffer.selection_anchor = None;
                     state.buffer.cursor = 0;
                     state.buffer.detach_from_history();
                 }
@@ -12369,7 +12399,6 @@ impl CommandInterpreter {
                                 .map(|(_, pattern)| pattern.clone())
                                 .unwrap_or_default()
                         } else {
-                            push_history(&mut self.search_history, entered.clone());
                             entered
                         };
                         if pattern.is_empty() {
@@ -12393,7 +12422,11 @@ impl CommandInterpreter {
                             self.search_pattern(document, direction, &pattern, state.count)
                         };
                         output.mode_changed = true;
-                        if !matches!(output.status, CommandStatus::Error(_)) {
+                        if !matches!(output.status, CommandStatus::Error(_))
+                            && (state.operator.is_none()
+                                || matches!(output.status, CommandStatus::Complete))
+                        {
+                            push_history(&mut self.search_history, pattern.clone());
                             self.last_search = Some((direction, pattern));
                         }
                         Ok(if state.operator.is_some() {
@@ -12410,8 +12443,14 @@ impl CommandInterpreter {
                                 ..CommandOutput::complete()
                             });
                         }
-                        push_history(&mut self.ex_history, command.clone());
-                        Ok(self.execute_ex_command(document, &command))
+                        let output = self.execute_ex_command(document, &command);
+                        if !matches!(
+                            output.status,
+                            CommandStatus::Error(_) | CommandStatus::ExError(_)
+                        ) {
+                            push_history(&mut self.ex_history, command);
+                        }
+                        Ok(output)
                     }
                 }
             }
@@ -12506,6 +12545,7 @@ impl CommandInterpreter {
             wrap: self.wrap,
             linebreak: self.linebreak,
             fileformats: self.fileformats.clone(),
+            search_options: self.search_options,
             last_search_pattern: self
                 .last_search
                 .as_ref()
@@ -12901,6 +12941,15 @@ impl CommandInterpreter {
     fn apply_ex_option_effects(&mut self, effects: &[ExOptionEffect]) {
         for effect in effects {
             match (&effect.name, &effect.new_value) {
+                (ExOptionName::IgnoreCase, ExOptionValue::Boolean(value)) => {
+                    self.search_options.ignorecase = *value
+                }
+                (ExOptionName::SmartCase, ExOptionValue::Boolean(value)) => {
+                    self.search_options.smartcase = *value
+                }
+                (ExOptionName::WrapScan, ExOptionValue::Boolean(value)) => {
+                    self.search_options.wrapscan = *value
+                }
                 (ExOptionName::Wrap, ExOptionValue::Boolean(value)) => self.wrap = *value,
                 (ExOptionName::LineBreak, ExOptionValue::Boolean(value)) => {
                     self.linebreak = *value;
@@ -13138,7 +13187,7 @@ impl CommandInterpreter {
                 ..CommandOutput::complete()
             });
         };
-        let escaped = regex::escape(&document.text()[range]);
+        let escaped = regex_v1::escape_literal(&document.text()[range]);
         let pattern = if whole_word {
             format!(r"\b{escaped}\b")
         } else {
@@ -13149,8 +13198,18 @@ impl CommandInterpreter {
         } else {
             SearchDirection::Backward
         };
-        self.last_search = Some((direction, pattern.clone()));
-        self.execute_operator_search(document, pending, OperatorSearch { direction, pattern })
+        let output = self.execute_operator_search(
+            document,
+            pending,
+            OperatorSearch {
+                direction,
+                pattern: pattern.clone(),
+            },
+        )?;
+        if matches!(output.status, CommandStatus::Complete) {
+            self.last_search = Some((direction, pattern));
+        }
+        Ok(output)
     }
 
     fn execute_operator_search(
@@ -13170,6 +13229,7 @@ impl CommandInterpreter {
             search.direction,
             &search.pattern,
             count,
+            self.search_options,
         ) {
             Ok(Some(destination)) => destination,
             Ok(None) => {
@@ -13282,7 +13342,7 @@ impl CommandInterpreter {
                 ..CommandOutput::complete()
             };
         };
-        let escaped = regex::escape(&document.text()[range]);
+        let escaped = regex_v1::escape_literal(&document.text()[range]);
         let pattern = if whole_word {
             format!(r"\b{escaped}\b")
         } else {
@@ -13293,9 +13353,11 @@ impl CommandInterpreter {
         } else {
             SearchDirection::Backward
         };
-        self.last_search = Some((direction, pattern.clone()));
         let origin = self.cursor;
         let output = self.search_pattern(document, direction, &pattern, count);
+        if !matches!(output.status, CommandStatus::Error(_)) {
+            self.last_search = Some((direction, pattern));
+        }
         self.record_successful_jump(document, origin, output)
     }
 
@@ -13616,6 +13678,7 @@ impl CommandInterpreter {
             direction,
             pattern,
             count,
+            self.search_options,
         ) {
             Ok(Some(destination)) => {
                 self.cursor = destination;
@@ -14576,112 +14639,88 @@ fn search_destination(
     direction: SearchDirection,
     pattern: &str,
     count: usize,
+    options: regex_v1::SearchOptions,
 ) -> Result<Option<usize>, String> {
-    validate_regex_dialect(pattern).map_err(|error| error.to_string())?;
-    let regex = Regex::new(pattern).map_err(|error| error.to_string())?;
-    let has_line_anchor = regex_has_line_anchor(pattern);
-    let mut matches = Vec::new();
-    if has_line_anchor {
-        // Apply anchored expressions to each semantic hard-line content
-        // range. A literal U+000A is not necessarily a hard break (notably
-        // with forced Mac file format), so Regex's byte-level idea of a line
-        // must not define the behavior of `^` and `$`.
-        for index in 0..lines.line_count() {
-            let range = lines
-                .line(index)
-                .expect("a bounded hard-line index resolves")
-                .content_range();
-            for matched in regex.find_iter(&text[range.clone()]) {
-                let offset = range.start + matched.start();
-                matches.push(normalize_normal_cursor(
-                    text,
-                    lines,
-                    floor_grapheme_boundary(text, offset),
-                ));
-            }
-        }
-        matches.sort_unstable();
-        matches.dedup();
-        if matches.is_empty() {
-            return Ok(None);
-        }
-    }
-    let mut cursor = origin.min(text.len());
-    let count = count.max(1);
-    let mut completed = 0usize;
+    use regex_v1::{CompiledRegex, RegexInput, RegexLimits, RegexWork};
+    let limits = RegexLimits::default();
+    let regex = CompiledRegex::compile(
+        pattern,
+        options
+            .case_insensitive(pattern)
+            .map_err(|e| e.to_string())?,
+        limits,
+    )
+    .map_err(|e| e.to_string())?;
+    let input = RegexInput::new(lines);
+    let mut work = RegexWork::new(limits);
+    let mut cursor = origin;
+    let mut completed = 0;
     let mut seen = HashMap::new();
-    while completed < count {
+    while completed < count.max(1) {
         if let Some(previous) = seen.insert(cursor, completed) {
-            let cycle_length = completed - previous;
-            let remaining = count - completed;
-            let cycles = remaining / cycle_length;
-            if cycles > 0 {
-                completed += cycles * cycle_length;
+            let cycle = completed - previous;
+            let skip = (count.max(1) - completed) / cycle;
+            if skip > 0 {
+                completed += skip * cycle;
                 continue;
             }
         }
-        let found = if has_line_anchor {
-            match direction {
-                SearchDirection::Forward => {
-                    let start = next_grapheme_boundary(text, cursor).unwrap_or(text.len());
-                    matches
-                        .iter()
-                        .copied()
-                        .find(|candidate| *candidate >= start)
-                        .or_else(|| matches.first().copied())
+        let mut seek = |start: usize, before: Option<usize>| -> Result<Option<usize>, String> {
+            let mut at = start;
+            let mut last = None;
+            while at <= text.len() {
+                let Some(matched) = regex
+                    .find(&input, at, text.len(), &mut work)
+                    .map_err(|e| e.to_string())?
+                else {
+                    break;
+                };
+                let found = matched.range().start;
+                if before.is_some_and(|limit| found >= limit) {
+                    break;
                 }
-                SearchDirection::Backward => matches
-                    .iter()
-                    .rev()
-                    .copied()
-                    .find(|candidate| *candidate < cursor)
-                    .or_else(|| matches.last().copied()),
+                if lines.is_grapheme_boundary(found) {
+                    if before.is_none() {
+                        return Ok(Some(found));
+                    }
+                    last = Some(found);
+                }
+                let Some(next) = lines.next_grapheme_boundary(found) else {
+                    break;
+                };
+                at = next;
             }
-        } else {
-            // Preserve ordinary Rust/Unicode regex behavior, including
-            // overlapping searches and explicit matches which cross style or
-            // semantic hard-line boundaries.
-            match direction {
-                SearchDirection::Forward => {
-                    let start = next_grapheme_boundary(text, cursor).unwrap_or(text.len());
-                    regex
-                        .find_at(text, start)
-                        .or_else(|| regex.find_at(text, 0))
-                        .map(|matched| matched.start())
+            Ok(last)
+        };
+        let found = match direction {
+            SearchDirection::Forward => {
+                let found = if let Some(start) = lines.next_grapheme_boundary(cursor) {
+                    seek(start, None)?
+                } else {
+                    None
+                };
+                if found.is_none() && options.wrapscan {
+                    seek(0, None)?
+                } else {
+                    found
                 }
-                SearchDirection::Backward => regex
-                    .find_iter(&text[..cursor])
-                    .last()
-                    .or_else(|| regex.find_iter(text).last())
-                    .map(|matched| matched.start()),
+            }
+            SearchDirection::Backward => {
+                let found = seek(0, Some(cursor))?;
+                if found.is_none() && options.wrapscan {
+                    seek(0, Some(text.len().saturating_add(1)))?
+                } else {
+                    found
+                }
             }
         };
         let Some(found) = found else {
             return Ok(None);
         };
-        cursor = normalize_normal_cursor(text, lines, floor_grapheme_boundary(text, found));
+        cursor = found;
         completed += 1;
     }
     Ok(Some(cursor))
-}
-
-fn regex_has_line_anchor(pattern: &str) -> bool {
-    let mut escaped = false;
-    let mut in_class = false;
-    for character in pattern.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match character {
-            '\\' => escaped = true,
-            '[' if !in_class => in_class = true,
-            ']' if in_class => in_class = false,
-            '^' | '$' if !in_class => return true,
-            _ => {}
-        }
-    }
-    false
 }
 
 fn percentage_line(lines: &HardLineSnapshot, percent: usize) -> Option<usize> {
@@ -15358,6 +15397,9 @@ fn navigate_history(buffer: &mut CommandLineBuffer, history: &[String], older: b
 }
 
 fn command_line_backspace(buffer: &mut CommandLineBuffer) {
+    if buffer.delete_selection() {
+        return;
+    }
     let Some(previous) = previous_grapheme_boundary(&buffer.input, buffer.cursor) else {
         return;
     };
@@ -15367,6 +15409,9 @@ fn command_line_backspace(buffer: &mut CommandLineBuffer) {
 }
 
 fn command_line_delete(buffer: &mut CommandLineBuffer) {
+    if buffer.delete_selection() {
+        return;
+    }
     let Some(next) = next_grapheme_boundary(&buffer.input, buffer.cursor) else {
         return;
     };
@@ -15375,6 +15420,9 @@ fn command_line_delete(buffer: &mut CommandLineBuffer) {
 }
 
 fn command_line_delete_word(buffer: &mut CommandLineBuffer) {
+    if buffer.delete_selection() {
+        return;
+    }
     let mut start = buffer.cursor;
     while let Some(previous) = previous_grapheme_boundary(&buffer.input, start) {
         if !buffer.input[previous..start]
@@ -15412,24 +15460,21 @@ fn keyword_range(text: &str, offset: usize) -> Option<Range<usize>> {
     if !is_keyword(&text[current.clone()]) {
         return None;
     }
+    // Scan each neighboring grapheme once. Repeated document-wide boundary
+    // lookups make an oversized word quadratic before the regex size guard.
     let mut start = current.start;
-    while let Some(previous) = previous_grapheme_boundary(text, start) {
-        let range = previous..start;
-        if !is_keyword(&text[range.clone()]) {
+    for (previous, grapheme) in text[..current.start].grapheme_indices(true).rev() {
+        if !is_keyword(grapheme) {
             break;
         }
         start = previous;
     }
     let mut end = current.end;
-    while end < text.len() {
-        let Some(next) = next_grapheme_boundary(text, end) else {
-            break;
-        };
-        let range = end..next;
-        if !is_keyword(&text[range.clone()]) {
+    for (relative, grapheme) in text[current.end..].grapheme_indices(true) {
+        if !is_keyword(grapheme) {
             break;
         }
-        end = next;
+        end = current.end + relative + grapheme.len();
     }
     Some(start..end)
 }
@@ -18040,7 +18085,11 @@ mod tests {
         assert_eq!(put.status, CommandStatus::Complete);
         assert_eq!(document.text(), "a\rb");
         assert_eq!(document.hard_line_snapshot().line_count(), 1);
-        assert_eq!(commands.register('a').unwrap().hard_break_offsets(), &[]);
+        assert!(commands
+            .register('a')
+            .unwrap()
+            .hard_break_offsets()
+            .is_empty());
 
         keys(&mut commands, &mut document, "u");
         assert_eq!(document.text(), "ab");
@@ -20453,7 +20502,7 @@ mod tests {
                     .unwrap();
                 let output = key(&mut commands, &mut document, Key::Enter);
                 assert!(
-                    matches!(output.status, CommandStatus::Error(ref error) if error.contains("unsupported Vim regular-expression atom")),
+                    matches!(output.status, CommandStatus::Error(ref error) if error.contains("UnsupportedRegexAtom")),
                     "{command}{pattern} returned {:?}",
                     output.status
                 );

@@ -103,7 +103,19 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
     next.addWindowController(self)
   }
 
-  public func windowDidBecomeKey(_ notification: Notification) { updateActiveDocumentChrome() }
+  public func windowDidBecomeKey(_ notification: Notification) {
+    updateActiveDocumentChrome()
+    var seen = Set<ObjectIdentifier>()
+    for pane in paneContainer.panes {
+      guard let document = pane.document, seen.insert(ObjectIdentifier(document)).inserted else { continue }
+      document.checkForExternalChanges { [weak self, weak document] change in
+        guard let self, let document, let change else { return }
+        for pane in self.paneContainer.panes where pane.document === document {
+          pane.editorSurface.showDocumentMessage(change.message)
+        }
+      }
+    }
+  }
 
   public func windowShouldClose(_ sender: NSWindow) -> Bool {
     if closingAfterReview { return true }
@@ -274,9 +286,15 @@ extension EVDocumentWindowController {
     }
 
     switch request.kind {
+    case .checkTime:
+      document.checkForExternalChanges { change in completion(.success(change?.message ?? "File unchanged.")) }
     case .split:
       split(document, path: request.path, completion: completion)
     case .write:
+      if request.path != nil || request.hardLineRange != nil {
+        writeAlternate(document, request: request, closeAfter: false, completion: completion)
+        return
+      }
       guard request.path == nil, request.hardLineRange == nil else {
         completion(.failure(EVDocumentHostError.preparedWriteUnavailable))
         return
@@ -290,22 +308,13 @@ extension EVDocumentWindowController {
       )
 
     case .saveAs:
-      guard request.hardLineRange == nil,
-        let path = request.path,
-        let destination = resolvedFileURL(path, relativeTo: document.fileURL)
-      else {
-        completion(.failure(EVDocumentHostError.invalidPath(request.path ?? "")))
-        return
-      }
-      save(
-        document,
-        request: request,
-        destination: destination,
-        operation: .saveAsOperation,
-        completion: completion
-      )
+      writeAlternate(document, request: request, closeAfter: false, adoptBinding: true, completion: completion)
 
     case .writeQuit:
+      if request.path != nil || request.hardLineRange != nil {
+        writeAlternate(document, request: request, closeAfter: true, completion: completion)
+        return
+      }
       guard request.path == nil, request.hardLineRange == nil else {
         completion(.failure(EVDocumentHostError.preparedWriteUnavailable))
         return
@@ -325,6 +334,10 @@ extension EVDocumentWindowController {
       }
 
     case .xit:
+      if request.path != nil {
+        writeAlternate(document, request: request, closeAfter: true, completion: completion)
+        return
+      }
       guard request.path == nil else {
         completion(.failure(EVDocumentHostError.preparedWriteUnavailable))
         return
@@ -375,6 +388,32 @@ extension EVDocumentWindowController {
       if !documents.contains(where: { $0 === document }) { documents.append(document) }
       saveAll(documents[...], force: request.force, completion: completion)
 
+    case .printWorkingDirectory:
+      completion(.success(FileManager.default.currentDirectoryPath))
+
+    case .changeDirectory:
+      let path = request.path ?? NSHomeDirectory()
+      guard let destination = resolvedFileURL(path, relativeTo: nil),
+        FileManager.default.changeCurrentDirectoryPath(destination.path) else {
+        completion(.failure(EVDocumentHostError.invalidPath(path)))
+        return
+      }
+      completion(.success(FileManager.default.currentDirectoryPath))
+
+    case .editNewWindow:
+      guard let path = request.path ?? document.fileURL?.path,
+        let destination = resolvedFileURL(path, relativeTo: nil) else {
+        completion(.failure(EVDocumentHostError.noDocumentURL))
+        return
+      }
+      openPaneDocument(destination, fallback: document.fileType) { opened, error in
+        guard let opened else { completion(.failure(error ?? EVDocumentHostError.unsupportedRequest)); return }
+        let controller = EVDocumentWindowController(document: opened, editorSurface: opened.editorBackend.makeEditorSurface())
+        opened.addWindowController(controller)
+        controller.showWindow(nil)
+        completion(.success(nil))
+      }
+
     case .edit:
       guard request.force || !persistence.isDirty else {
         completion(.failure(EVDocumentHostError.documentModified))
@@ -406,6 +445,52 @@ extension EVDocumentWindowController {
         completion(.failure(error))
       }
     }
+  }
+
+  fileprivate func writeAlternate(
+    _ document: EVDocument, request: EVDocumentHostRequest, closeAfter: Bool, adoptBinding: Bool = false,
+    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+  ) {
+    guard !(document.isReadOnly || document.editorBackend.persistenceState.isReadOnly) || request.force else { completion(.failure(EVRecoveryError.readOnly)); return }
+    guard let path = request.path ?? document.fileURL?.path, let destination = resolvedFileURL(path, relativeTo: nil) else {
+      completion(.failure(EVDocumentHostError.invalidPath(request.path ?? ""))); return
+    }
+    do {
+      let snapshot: EVDocumentSaveSnapshot
+      if let range = request.hardLineRange {
+        snapshot = try document.editorBackend.nativeSaveSnapshot(typeName: document.fileType ?? EVDocument.plainTextType, hardLineRange: range)
+      } else { snapshot = try document.editorBackend.nativeSaveSnapshot(typeName: document.fileType ?? EVDocument.plainTextType) }
+      guard snapshot.documentID == request.documentID, snapshot.documentRevision == request.documentRevision else {
+        throw EVDocumentHostError.staleRequest
+      }
+      let writesCurrent = document.fileURL.map { EVDocumentIdentity.sameFile($0, destination) } ?? false
+      if writesCurrent, !snapshot.isCompleteSource, !request.force { throw EVDocumentHostError.partialWriteRequiresForce }
+      let target = EVDocumentIdentity.canonicalURL(destination)
+      try document.validateExternalWrite(to: target, force: request.force)
+      let expectedFile = request.force ? nil : (writesCurrent ? document.fileBaseline : nil)
+      DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        let result = Result { try EVExFileWriter.write(snapshot.data, to: target, force: request.force || writesCurrent, expected: expectedFile) }
+        DispatchQueue.main.async {
+          do {
+            try result.get()
+            if writesCurrent || adoptBinding { document.recordFileBaseline(snapshot.data, at: target) }
+            if adoptBinding {
+              document.fileURL = target
+              document.configureRecovery(for: target)
+            }
+            if (writesCurrent && snapshot.isCompleteSource) || adoptBinding { try document.editorBackend.acknowledgeNativeSave(snapshot) }
+            if closeAfter {
+              let current = document.editorBackend.persistenceState
+              guard current.documentID == snapshot.documentID, current.documentRevision == snapshot.documentRevision else {
+                throw EVDocumentHostError.staleRequest
+              }
+              self?.closeCurrentDocumentOrWindow(document)
+            }
+            completion(.success("\(destination.path) written"))
+          } catch { completion(.failure(error)) }
+        }
+      }
+    } catch { completion(.failure(error)) }
   }
 
   fileprivate func save(
@@ -634,9 +719,7 @@ extension EVDocumentWindowController {
     if expanded.hasPrefix("/") {
       return URL(fileURLWithPath: expanded).standardizedFileURL
     }
-    let base =
-      currentURL?.deletingLastPathComponent()
-      ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
     return URL(fileURLWithPath: expanded, relativeTo: base).standardizedFileURL
   }
 
@@ -695,7 +778,7 @@ final class EVDocumentContentViewController: NSViewController,
 
   init(editorSurface: any EVEditorSurface) {
     self.editorSurface = editorSurface
-    showsStatusBar = UserDefaults.standard.object(forKey: "EVShowStatusBar") as? Bool ?? true
+    showsStatusBar = EVConfigurationStore.shared.showStatusBar
     super.init(nibName: nil, bundle: nil)
 
     editorSurface.statusBarStateDidChange = { [weak self] state in
@@ -792,7 +875,7 @@ final class EVDocumentContentViewController: NSViewController,
     showsStatusBar.toggle()
     statusBar.isHidden = !showsStatusBar
     layoutContent()
-    UserDefaults.standard.set(showsStatusBar, forKey: "EVShowStatusBar")
+    try? EVConfigurationStore.shared.setShowStatusBar(showsStatusBar)
   }
 
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {

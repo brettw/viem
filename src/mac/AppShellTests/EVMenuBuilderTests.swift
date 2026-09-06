@@ -68,7 +68,7 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
         XCTAssertEqual(try titles(in: submenu("Format", of: menu)), [
             "Show Fonts", "Bold", "Italic", "Underline", "Strikethrough", "Bigger", "Smaller", "Ligatures", "Kerning", "Baseline", "OpenType Features",
-            "Show Colors", "Text Color…", "Highlight Color…", "Document Style", "Paragraph", "Copy Style", "Paste Style", "Clear Direct Character Formatting",
+            "Show Colors", "Text Color…", "Highlight Color…", "Style", "Paragraph", "Copy Style", "Paste Style", "Clear Direct Character Formatting",
             "Clear Direct Paragraph Formatting", "Clear All Direct Formatting",
         ])
         XCTAssertEqual(try titles(in: submenu("View", of: menu)), [
@@ -108,7 +108,7 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
         XCTAssertEqual(tokens(in: try submenu("Format", of: main)), [
             "Show Fonts", "-", "Bold", "Italic", "Underline", "Strikethrough", "-", "Bigger", "Smaller", "-", "Ligatures", "Kerning", "Baseline", "OpenType Features", "-",
-            "Show Colors", "Text Color…", "Highlight Color…", "-", "Document Style", "-", "Paragraph", "-", "Copy Style", "Paste Style",
+            "Show Colors", "Text Color…", "Highlight Color…", "-", "Style", "-", "Paragraph", "-", "Copy Style", "Paste Style",
             "Clear Direct Character Formatting", "Clear Direct Paragraph Formatting",
             "Clear All Direct Formatting",
         ])
@@ -172,8 +172,8 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertEqual(tokens(in: try submenu("Paragraph", of: main)), [
             "Base Paragraph", "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6", "-", "Edit Styles…",
         ])
-        XCTAssertEqual(tokens(in: try submenu("Document Style", of: format)), [
-            "Base Document", "-", "Edit Styles…",
+        XCTAssertEqual(tokens(in: try submenu("Style", of: format)), [
+            "Edit document style…", "Save as default text style",
         ])
 
         let paragraph = try submenu("Paragraph", of: format)
@@ -255,8 +255,8 @@ final class EVMenuBuilderTests: XCTestCase {
         }
         let grouped = Dictionary(grouping: tagged, by: \.0)
 
-        XCTAssertEqual(Set(grouped.keys), Set(EVMenuCommand.allCases.filter { $0 != .baseParagraphStyle }))
-        for command in EVMenuCommand.allCases where command != .baseParagraphStyle {
+        XCTAssertEqual(Set(grouped.keys), Set(EVMenuCommand.allCases.filter { $0 != .baseParagraphStyle && $0 != .baseDocumentStyle }))
+        for command in EVMenuCommand.allCases where command != .baseParagraphStyle && command != .baseDocumentStyle {
             XCTAssertEqual(grouped[command]?.count, 1, "Unexpected menu count for \(command)")
         }
 
@@ -267,7 +267,7 @@ final class EVMenuBuilderTests: XCTestCase {
         let styleCommands: Set<EVMenuCommand> = [
             .baseCharacterStyle, .editCharacterStyles,
             .baseParagraphStyle, .editParagraphStyles,
-            .baseDocumentStyle, .editDocumentStyles,
+
         ]
         let coreSelector = #selector(EVEditorCommandRouting.performEditorMenuCommand(_:))
         let styleSelector = #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:))
@@ -501,8 +501,8 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertEqual(try titles(in: submenu("Paragraph", of: menu)), [
             "Base Paragraph", "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6", "Edit Styles…",
         ])
-        XCTAssertEqual(try titles(in: submenu("Document Style", of: format)), [
-            "Base Document", "Edit Styles…",
+        XCTAssertEqual(try titles(in: submenu("Style", of: format)), [
+            "Edit document style…", "Save as default text style",
         ])
 
         let paragraph = try submenu("Paragraph", of: format)

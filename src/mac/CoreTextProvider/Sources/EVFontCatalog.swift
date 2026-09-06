@@ -1,3 +1,4 @@
+import AppKit
 import CoreText
 import Foundation
 
@@ -124,8 +125,11 @@ public enum EVFontCatalog {
   }
 
   static func baseFont(named name: String, size: CGFloat) -> CTFont {
+    if ["monospace", "ui-monospace", "system monospace", "systemmonospace"].contains(name.lowercased()) {
+      return NSFont.monospacedSystemFont(ofSize: size, weight: .regular) as CTFont
+    }
     if ["system-ui", "sf pro", "-apple-system"].contains(name.lowercased())
-      || name.hasPrefix(".SFNS")
+      || (name.hasPrefix(".SFNS") && !name.hasPrefix(".SFNSMono"))
     {
       return CTFontCreateUIFontForLanguage(.system, size, nil)
         ?? CTFontCreateWithName("Helvetica" as CFString, size, nil)

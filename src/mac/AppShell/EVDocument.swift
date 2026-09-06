@@ -65,6 +65,11 @@ public final class EVDocument: NSDocument {
     }
 
     private var activeSave: ActiveSave?
+    var fileBaseline: EVFileFingerprint?
+    var fileBaselineURL: URL?
+    var fileBaselineGeneration: UInt64 = 0
+    public internal(set) var externalFileChange: EVExternalFileChange?
+    var externalSaveDecisionHandler: ((EVExternalFileChange) -> Bool)?
 
     public private(set) var isReadOnly = false
     public private(set) var wasRecovered = false
@@ -121,6 +126,8 @@ public final class EVDocument: NSDocument {
             }
             try self.setReadOnly(decision == .readOnly)
             self.wasRecovered = recovered
+            if let original = try? original.get() { self.recordFileBaseline(original, at: target) }
+            else { self.recordMissingFileBaseline(at: target) }
             self.recoveryTimer?.cancel()
             self.recoveryGeneration &+= 1
             self.recoveryRequestedTarget = target
@@ -140,6 +147,7 @@ public final class EVDocument: NSDocument {
     public func configureRecovery(for url: URL) {
         let target = EVDocumentIdentity.canonicalURL(url)
         recoveryRequestedTarget = target
+        if fileBaseline == nil && !FileManager.default.fileExists(atPath: target.path) { recordMissingFileBaseline(at: target) }
         guard recoveryTarget != target || recoveryStore == nil else { return }
         recoveryTimer?.cancel()
         beginRecovery(for: target)
@@ -331,6 +339,10 @@ public final class EVDocument: NSDocument {
     public override nonisolated func read(from data: Data, ofType typeName: String) throws {
         try onMainActor {
             try self.editorBackend.read(source: data, typeName: typeName)
+            self.fileBaseline = nil
+            self.fileBaselineURL = nil
+            self.fileBaselineGeneration &+= 1
+            self.externalFileChange = nil
         }
     }
 
@@ -369,13 +381,17 @@ public final class EVDocument: NSDocument {
             completionHandler(nil)
             return
         }
-        guard !isReadOnly || confirmReadOnlySave() else {
+        guard !(isReadOnly || editorBackend.persistenceState.isReadOnly) || confirmReadOnlySave() else {
             completionHandler(CocoaError(.userCancelled))
             return
         }
         let snapshot: EVDocumentSaveSnapshot
         let sourceFormat: EVSourceFormat
         do {
+            do { try validateExternalWrite(to: url, force: false) }
+            catch EVExternalFileError.changed(let change) {
+                guard confirmExternalOverwrite(change) else { throw CocoaError(.userCancelled) }
+            }
             sourceFormat = try Self.validateSerializationType(
                 typeName,
                 currentFormat: editorBackend.sourceFormat
@@ -408,7 +424,7 @@ public final class EVDocument: NSDocument {
         for saveOperation: NSDocument.SaveOperationType,
         completionHandler: @escaping (Error?) -> Void
     ) {
-        guard !isReadOnly || force else { completionHandler(EVRecoveryError.readOnly); return }
+        guard !(isReadOnly || editorBackend.persistenceState.isReadOnly) || force else { completionHandler(EVRecoveryError.readOnly); return }
         let snapshot: EVDocumentSaveSnapshot
         let sourceFormat: EVSourceFormat
         do {
@@ -423,6 +439,7 @@ public final class EVDocument: NSDocument {
                 completionHandler(EVDocumentHostError.staleRequest)
                 return
             }
+            try validateExternalWrite(to: url, force: force)
         } catch {
             completionHandler(error)
             return
@@ -472,6 +489,7 @@ public final class EVDocument: NSDocument {
                 return
             }
             let target = EVDocumentIdentity.canonicalURL(url)
+            self.recordFileBaseline(snapshot.data, at: target)
             if self.recoveryTarget != target {
                 // A successful Save As already adopted its native target even
                 // when a newer edit makes the core acknowledgement stale.
@@ -571,6 +589,7 @@ public final class EVDocument: NSDocument {
         // The source adapter can change through an undoable status option.
         // Native save validation must follow that current buffer state.
         fileType = Self.typeName(for: editorBackend.sourceFormat)
+        isReadOnly = state.isReadOnly
         if !state.isDirty { wasRecovered = false }
         if state.isDirty {
             if !isDocumentEdited {

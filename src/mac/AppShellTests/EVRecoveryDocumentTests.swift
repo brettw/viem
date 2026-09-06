@@ -34,7 +34,11 @@ final class EVRecoveryDocumentTests: XCTestCase {
             recoveryReads.append(snapshot); data = snapshot.source; sourceFormat = snapshot.format
             persistenceState.isDirty = true; persistenceStateDidChange?(persistenceState)
         }
-        func setReadOnly(_ value: Bool) throws { readOnly = value }
+        func setReadOnly(_ value: Bool) throws {
+            readOnly = value
+            persistenceState.isReadOnly = value
+            persistenceStateDidChange?(persistenceState)
+        }
         func edit(_ text: String) { data = Data(text.utf8); persistenceState.isDirty = true; persistenceState.documentRevision += 1; sourceDidChange?(); persistenceStateDidChange?(persistenceState) }
     }
     private func fixture() throws -> URL {
@@ -74,6 +78,7 @@ final class EVRecoveryDocumentTests: XCTestCase {
         defer { reader.close() }
         try reader.setReadOnly(true)
         backend.edit("edited")
+        XCTAssertTrue(reader.isReadOnly, "Editing must retain the shared readonly policy")
         XCTAssertTrue(backend.readOnly)
         XCTAssertThrowsError(try reader.write(to: target, ofType: EVDocument.plainTextType))
         XCTAssertThrowsError(try reader.writeSafely(to: target, ofType: EVDocument.plainTextType, for: .saveOperation))

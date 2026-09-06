@@ -22,8 +22,11 @@ final class EVCompactStyleControlsTests: XCTestCase {
         surface.loadViewIfNeeded()
         let suite = "evim-style-theme-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-config-test-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
+        let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
-        let themeStore = EVThemeStore(defaults: defaults)
+        let themeStore = EVThemeStore(configuration: configuration)
         themeStore.update(theme)
         let editor = EVStyleEditorViewController()
         editor.themeStore = themeStore

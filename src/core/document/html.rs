@@ -59,7 +59,10 @@ fn void(name: &str) -> bool {
     )
 }
 fn paragraph(name: &str) -> bool {
-    matches!(name, "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li")
+    matches!(
+        name,
+        "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "pre"
+    )
 }
 pub(super) fn block(name: &str) -> bool {
     paragraph(name)
@@ -96,7 +99,6 @@ fn atomic(name: &str) -> bool {
             | "embed"
             | "svg"
             | "math"
-            | "pre"
             | "textarea"
             | "video"
             | "audio"
@@ -514,10 +516,19 @@ pub(super) fn project(
                 if paragraph(&tag.name) {
                     frame.paragraph_style = None;
                 }
+                if tag.name == "pre" {
+                    frame.preserve_whitespace = true;
+                    frame.paragraph_style = Some("Code Block".into());
+                } else if tag.name == "code" {
+                    frame.named_character = Some("Code".into());
+                }
                 if let Some(classes) = tag.attribute("class") {
                     if paragraph(&tag.name) {
-                        frame.paragraph_style =
-                            super::html_styles::select_class(&builder.style_sheet, classes, false);
+                        if let Some(style) =
+                            super::html_styles::select_class(&builder.style_sheet, classes, false)
+                        {
+                            frame.paragraph_style = Some(style);
+                        }
                     } else if tag.name != "body" {
                         if let Some(id) =
                             super::html_styles::select_class(&builder.style_sheet, classes, true)
@@ -1745,35 +1756,44 @@ fn attribute_escape(text: &str) -> String {
 }
 pub(super) fn character_wrapper(properties: &CharacterProperties) -> (String, String) {
     let mut rest = properties.clone();
-    let tag = if rest.bold == Some(true) && rest.weight.is_none() {
+    let mut tags = Vec::new();
+    if rest.bold == Some(true) {
         rest.bold = None;
-        "b"
-    } else if rest.slant == Some(FontSlant::Italic) {
+        tags.push("b");
+    }
+    if rest.slant == Some(FontSlant::Italic) {
         rest.slant = None;
-        "i"
-    } else if rest.underline == Some(true) {
-        if rest.strikethrough.is_none() {
-            rest.underline = None;
-        }
-        "u"
-    } else if rest.strikethrough == Some(true) {
-        if rest.underline.is_none() {
-            rest.strikethrough = None;
-        }
-        "s"
-    } else {
-        "span"
-    };
+        tags.push("i");
+    }
+    if rest.underline == Some(true) && rest.strikethrough.is_none() {
+        rest.underline = None;
+        tags.push("u");
+    }
+    if rest.strikethrough == Some(true) && rest.underline.is_none() {
+        rest.strikethrough = None;
+        tags.push("s");
+    }
     let css = character_css(&rest);
-    let mut opening = format!("<{tag}");
-    if !css.is_empty() {
-        opening.push_str(&format!(" style=\"{}\"", attribute_escape(&css)));
+    let mut opening = String::new();
+    let mut closing = String::new();
+    // A numeric face weight is authored outside b, so the inner semantic tag
+    // still means emphasis relative to that face instead of CSS overriding it.
+    if !css.is_empty() || properties.language.is_some() || tags.is_empty() {
+        opening.push_str("<span");
+        if !css.is_empty() {
+            opening.push_str(&format!(" style=\"{}\"", attribute_escape(&css)));
+        }
+        if let Some(language) = &properties.language {
+            opening.push_str(&format!(" lang=\"{}\"", attribute_escape(language)));
+        }
+        opening.push('>');
+        closing.push_str("</span>");
     }
-    if let Some(language) = &properties.language {
-        opening.push_str(&format!(" lang=\"{}\"", attribute_escape(language)));
+    for tag in tags {
+        opening.push_str(&format!("<{tag}>"));
+        closing = format!("</{tag}>{closing}");
     }
-    opening.push('>');
-    (opening, format!("</{tag}>"))
+    (opening, closing)
 }
 
 /// When exactly one conventional element contributed the toggled property,

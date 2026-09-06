@@ -5,15 +5,16 @@
 //! changes, navigation, and frontend work in one [`ExPlan`]. The coordinator
 //! can therefore validate every effect before committing the document change.
 //!
-//! Substitution patterns use the Rust `regex` crate's Unicode-aware syntax,
-//! not Vim's regular-expression language. Common Vim-only atoms are rejected
-//! explicitly so that they are never reinterpreted as literals. Replacement
-//! text supports `&`, `\0` through `\9`, `\r`, `\&`, and `\\`.
+//! Substitution uses the versioned portable Regex v1 language and semantic
+//! hard-line assertions. Replacement captures retain their formatted content.
 
 use std::fmt;
 use std::ops::Range;
 
-use regex::{Captures, Regex, RegexBuilder};
+use super::regex_v1::{
+    CompiledRegex, ExpandedFragment, RegexError, RegexInput, RegexLimits, RegexWork,
+    ReplacementTemplate,
+};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::ex::{
@@ -57,6 +58,7 @@ pub struct ExExecutionContext {
     pub wrap: bool,
     pub linebreak: bool,
     pub fileformats: Vec<FileFormat>,
+    pub search_options: super::regex_v1::SearchOptions,
     pub last_search_pattern: Option<String>,
 }
 
@@ -67,6 +69,7 @@ impl Default for ExExecutionContext {
             wrap: false,
             linebreak: true,
             fileformats: vec![FileFormat::Unix, FileFormat::Dos],
+            search_options: super::regex_v1::SearchOptions::default(),
             last_search_pattern: None,
         }
     }
@@ -244,6 +247,9 @@ pub enum ExOptionName {
     LineBreak,
     FileFormat,
     FileFormats,
+    IgnoreCase,
+    SmartCase,
+    WrapScan,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -269,6 +275,14 @@ pub struct ExOptionDisplay {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExFileRequest {
+    EditNewWindow {
+        path: Option<String>,
+    },
+    PrintWorkingDirectory,
+    CheckTime,
+    ChangeDirectory {
+        path: Option<String>,
+    },
     Split {
         path: Option<String>,
     },
@@ -460,6 +474,8 @@ impl CompletedExArtifactWrite {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExInfoRequest {
+    /// Plain informational or warning text for a persistent, selectable output surface.
+    Message(String),
     Marks(Vec<char>),
     Registers(Vec<char>),
     Jumps,
@@ -587,6 +603,8 @@ pub struct SubstitutePreview {
     /// The same replacements with semantic hard breaks distinguished from
     /// literal U+000A content, ready for a policy-approved model commit.
     pub payload_edits: Vec<FormattedPayloadEdit>,
+    /// Authoritative replacement pieces preserving captured styles.
+    pub fragment_edits: Vec<crate::document::FragmentEdit>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -629,6 +647,7 @@ pub enum ExExecuteError {
     InvalidRegex(String),
     UnsupportedRegexAtom(String),
     UnsupportedReplacementAtom(String),
+    Regex(RegexError),
     PatternNotFound(String),
     DestinationInsideRange,
     InvalidOptionValue {
@@ -649,6 +668,17 @@ pub enum ExExecuteError {
     NeedsCapability(ExCapability),
 }
 
+impl From<RegexError> for ExExecuteError {
+    fn from(value: RegexError) -> Self {
+        match value {
+            RegexError::InvalidRegex(error) => Self::InvalidRegex(error),
+            RegexError::UnsupportedRegexAtom(atom) => Self::UnsupportedRegexAtom(atom),
+            RegexError::UnsupportedReplacementAtom(atom) => Self::UnsupportedReplacementAtom(atom),
+            other => Self::Regex(other),
+        }
+    }
+}
+
 impl From<DocumentError> for ExExecuteError {
     fn from(value: DocumentError) -> Self {
         Self::Document(value)
@@ -664,6 +694,7 @@ impl From<FormattedPayloadError> for ExExecuteError {
 impl fmt::Display for ExExecuteError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Regex(error) => error.fmt(formatter),
             Self::Document(error) => error.fmt(formatter),
             Self::FormattedPayload(error) => error.fmt(formatter),
             Self::CurrentLineOutOfBounds {
@@ -1000,6 +1031,33 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
     let mut plan = ExPlan::empty(document);
 
     match &command.action {
+        ExAction::EditNewWindow { path } => push_file(
+            &mut plan,
+            ExFileRequest::EditNewWindow { path: path.clone() },
+        ),
+        ExAction::CheckTime => push_file(&mut plan, ExFileRequest::CheckTime),
+        ExAction::PrintWorkingDirectory => {
+            push_file(&mut plan, ExFileRequest::PrintWorkingDirectory)
+        }
+        ExAction::ChangeDirectory { path } => push_file(
+            &mut plan,
+            ExFileRequest::ChangeDirectory { path: path.clone() },
+        ),
+        ExAction::Update => {
+            if document.is_dirty() {
+                if document.is_read_only() && !command.bang {
+                    return Err(ExExecuteError::ReadOnly);
+                }
+                push_file(
+                    &mut plan,
+                    ExFileRequest::Write {
+                        path: None,
+                        force: command.bang,
+                        range: None,
+                    },
+                );
+            }
+        }
         ExAction::Split { path } => {
             push_file(&mut plan, ExFileRequest::Split { path: path.clone() })
         }
@@ -1999,15 +2057,18 @@ fn plan_substitution(
     plan: &mut ExPlan,
 ) -> Result<(), ExExecuteError> {
     let lines = effective_counted_range(document, context, range, count)?;
-    validate_regex_dialect(&stored.pattern)?;
-    validate_replacement_dialect(&stored.replacement)?;
-    let regex = RegexBuilder::new(&stored.pattern)
-        .case_insensitive(stored.flags.ignore_case.unwrap_or(false))
-        .unicode(true)
-        .build()
-        .map_err(|error| ExExecuteError::InvalidRegex(error.to_string()))?;
-    let (edits, payload_edits, substitutions) =
-        substitution_edits(document, lines, &regex, &stored)?;
+    let limits = RegexLimits::default();
+    let regex = CompiledRegex::compile(
+        &stored.pattern,
+        stored
+            .flags
+            .ignore_case
+            .unwrap_or(context.search_options.case_insensitive(&stored.pattern)?),
+        limits,
+    )?;
+    let replacement = ReplacementTemplate::compile(&stored.replacement, &regex)?;
+    let (edits, payload_edits, fragment_edits, substitutions) =
+        substitution_edits(document, lines, &regex, &replacement, &stored, limits)?;
     if substitutions == 0 && !stored.flags.suppress_errors {
         return Err(ExExecuteError::PatternNotFound(stored.pattern));
     }
@@ -2019,6 +2080,7 @@ fn plan_substitution(
                 matches: substitutions,
                 edits,
                 payload_edits,
+                fragment_edits,
             }),
         ));
     }
@@ -2036,147 +2098,106 @@ fn plan_substitution(
                 list: stored.flags.list,
             }));
     }
-    plan.stage_formatted_payload_edits(document, payload_edits);
+    plan.mutation = ExMutation::Model(ModelRequest::ApplyFragmentEdits {
+        document: document.id(),
+        revision: document.revision(),
+        edits: fragment_edits,
+    });
     plan.next_substitute = Some(stored);
-    Ok(())
-}
-
-pub(crate) fn validate_regex_dialect(pattern: &str) -> Result<(), ExExecuteError> {
-    // In Vim's default-magic dialect these spell structural operators, while
-    // Rust regex would accept several of them as escaped literals. Reject the
-    // mismatch rather than running a different pattern than the user entered.
-    const VIM_ONLY: &[&str] = &[
-        "\\(", "\\)", "\\+", "\\=", "\\?", "\\|", "\\<", "\\>", "\\{", "\\}", "\\zs", "\\ze",
-        "\\v", "\\m", "\\M", "\\V", "\\c", "\\C", "\\%",
-    ];
-    if let Some(atom) = VIM_ONLY.iter().find(|atom| pattern.contains(**atom)) {
-        return Err(ExExecuteError::UnsupportedRegexAtom((*atom).to_owned()));
-    }
-    Ok(())
-}
-
-fn validate_replacement_dialect(replacement: &str) -> Result<(), ExExecuteError> {
-    let mut chars = replacement.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '~' {
-            return Err(ExExecuteError::UnsupportedReplacementAtom("~".to_owned()));
-        }
-        if ch != '\\' {
-            continue;
-        }
-        match chars.next() {
-            Some('0'..='9' | 'r' | '&' | '\\' | '~') | None => {}
-            Some(other) => {
-                return Err(ExExecuteError::UnsupportedReplacementAtom(format!(
-                    "\\{other}"
-                )))
-            }
-        }
-    }
     Ok(())
 }
 
 fn substitution_edits(
     document: &Document,
     lines: HardLineRange,
-    regex: &Regex,
+    regex: &CompiledRegex,
+    replacement: &ReplacementTemplate,
     substitute: &StoredSubstitute,
-) -> Result<(Vec<TextEdit>, Vec<FormattedPayloadEdit>, usize), ExExecuteError> {
-    let hard_lines = document.hard_line_snapshot();
-    validate_line_range(lines, hard_lines.line_count())?;
+    limits: RegexLimits,
+) -> Result<
+    (
+        Vec<TextEdit>,
+        Vec<FormattedPayloadEdit>,
+        Vec<crate::document::FragmentEdit>,
+        usize,
+    ),
+    ExExecuteError,
+> {
+    use crate::document::{FragmentEdit, ReplacementFragment};
+    let snapshot = document.hard_line_snapshot();
+    validate_line_range(lines, snapshot.line_count())?;
+    let start = snapshot.line(lines.start).unwrap().content_range().start;
+    let end = snapshot.line(lines.end).unwrap().content_range().end;
+    let input = RegexInput::new(&snapshot);
+    let mut work = RegexWork::new(limits);
+    let matches = regex.find_all(&input, start..end, &mut work)?;
+    let occurrence = substitute.flags.occurrence.unwrap_or(1);
+    if occurrence == 0 {
+        return Err(ExExecuteError::InvalidCount(0));
+    }
+    let mut per_line = std::collections::HashMap::<usize, u64>::new();
+    let mut selected = Vec::new();
+    for matched in matches {
+        let line = snapshot
+            .line_at_offset(matched.range().start)
+            .unwrap()
+            .index();
+        let ordinal = per_line.entry(line).or_default();
+        *ordinal += 1;
+        if if substitute.flags.global {
+            *ordinal >= occurrence
+        } else {
+            *ordinal == occurrence
+        } {
+            matched.validate_edit(&snapshot)?;
+            selected.push(matched);
+        }
+    }
+    // Every selected extent is validated before building any source transaction.
     let mut edits = Vec::new();
     let mut payload_edits = Vec::new();
-    let mut total = 0;
-    for line in lines.start..=lines.end {
-        let range = hard_lines
-            .line(line)
-            .map(|line| line.content_range())
-            .ok_or(ExExecuteError::AddressOverflow)?;
-        let start = range.start;
-        let end = range.end;
-        let input = &document.text()[start..end];
-        let matches: Vec<Captures<'_>> = regex.captures_iter(input).collect();
-        if matches.is_empty() {
-            continue;
-        }
-
-        let occurrence = substitute.flags.occurrence.unwrap_or(1);
-        if occurrence == 0 {
-            return Err(ExExecuteError::InvalidCount(occurrence));
-        }
-        let occurrence =
-            usize::try_from(occurrence).map_err(|_| ExExecuteError::AddressOverflow)?;
-        let selected: Vec<&Captures<'_>> = matches
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| {
-                let ordinal = index + 1;
-                if substitute.flags.global {
-                    ordinal >= occurrence
-                } else {
-                    ordinal == occurrence
+    let mut fragment_edits = Vec::new();
+    for matched in selected {
+        let mut text = String::new();
+        let mut breaks = Vec::new();
+        let mut fragments = Vec::new();
+        for fragment in replacement.expand(&matched, &input)? {
+            match fragment {
+                ExpandedFragment::Literal {
+                    text: part,
+                    break_offsets,
+                } => {
+                    breaks.extend(break_offsets.iter().map(|at| text.len() + at));
+                    text.push_str(&part);
+                    fragments.push(ReplacementFragment::Literal(FormattedTextPayload::new(
+                        &snapshot,
+                        part,
+                        break_offsets,
+                    )?));
                 }
-            })
-            .map(|(_, captures)| captures)
-            .collect();
-        if selected.is_empty() {
-            continue;
-        }
-
-        let mut output = String::with_capacity(input.len());
-        let mut copied = 0;
-        for captures in selected {
-            let matched = captures.get(0).expect("regex capture zero always exists");
-            output.push_str(&input[copied..matched.start()]);
-            let (replacement, hard_break_offsets) =
-                expand_vim_replacement(&substitute.replacement, captures);
-            output.push_str(&replacement);
-            let payload = FormattedTextPayload::new(&hard_lines, replacement, hard_break_offsets)?;
-            payload_edits.push(FormattedPayloadEdit::new(
-                start + matched.start()..start + matched.end(),
-                payload,
-            ));
-            copied = matched.end();
-            total += 1;
-        }
-        output.push_str(&input[copied..]);
-        edits.push(TextEdit::new(start..end, output));
-    }
-    Ok((edits, payload_edits, total))
-}
-
-fn expand_vim_replacement(template: &str, captures: &Captures<'_>) -> (String, Vec<usize>) {
-    let mut output = String::new();
-    let mut hard_break_offsets = Vec::new();
-    let mut chars = template.chars();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '&' => {
-                if let Some(value) = captures.get(0) {
-                    output.push_str(value.as_str());
+                ExpandedFragment::Capture(range) => {
+                    breaks.extend(
+                        input
+                            .hard_break_offsets(range.clone())
+                            .map(|at| text.len() + at - range.start),
+                    );
+                    text.push_str(&input.text()[range.clone()]);
+                    fragments.push(ReplacementFragment::Capture(range));
                 }
             }
-            '\\' => match chars.next() {
-                Some(digit @ '0'..='9') => {
-                    let index = digit.to_digit(10).expect("matched an ASCII digit") as usize;
-                    if let Some(value) = captures.get(index) {
-                        output.push_str(value.as_str());
-                    }
-                }
-                Some('r') => {
-                    hard_break_offsets.push(output.len());
-                    output.push('\n');
-                }
-                Some('&') => output.push('&'),
-                Some('\\') => output.push('\\'),
-                Some('~') => output.push('~'),
-                Some(other) => output.push(other),
-                None => output.push('\\'),
-            },
-            other => output.push(other),
         }
+        edits.push(TextEdit::new(matched.range(), text.clone()));
+        payload_edits.push(FormattedPayloadEdit::new(
+            matched.range(),
+            FormattedTextPayload::new(&snapshot, text, breaks)?,
+        ));
+        fragment_edits.push(FragmentEdit {
+            range: matched.range(),
+            fragments,
+        });
     }
-    (output, hard_break_offsets)
+    let total = edits.len();
+    Ok((edits, payload_edits, fragment_edits, total))
 }
 
 fn prepare_set(
@@ -2191,10 +2212,29 @@ fn prepare_set(
         linebreak: context.linebreak,
         file_format: document.file_format(),
         fileformats: context.fileformats.clone(),
+        search_options: context.search_options,
     };
     match operation {
         SetOperation::ShowChanged => {
             let mut shown = Vec::new();
+            if values.search_options.ignorecase {
+                shown.push(display(
+                    ExOptionName::IgnoreCase,
+                    ExOptionValue::Boolean(true),
+                ));
+            }
+            if values.search_options.smartcase {
+                shown.push(display(
+                    ExOptionName::SmartCase,
+                    ExOptionValue::Boolean(true),
+                ));
+            }
+            if !values.search_options.wrapscan {
+                shown.push(display(
+                    ExOptionName::WrapScan,
+                    ExOptionValue::Boolean(false),
+                ));
+            }
             if values.wrap {
                 shown.push(display(ExOptionName::Wrap, ExOptionValue::Boolean(true)));
             }
@@ -2264,10 +2304,23 @@ struct PendingOptions {
     linebreak: bool,
     file_format: FileFormat,
     fileformats: Vec<FileFormat>,
+    search_options: super::regex_v1::SearchOptions,
 }
 
 fn all_option_values(values: &PendingOptions) -> Vec<ExOptionDisplay> {
     vec![
+        display(
+            ExOptionName::IgnoreCase,
+            ExOptionValue::Boolean(values.search_options.ignorecase),
+        ),
+        display(
+            ExOptionName::SmartCase,
+            ExOptionValue::Boolean(values.search_options.smartcase),
+        ),
+        display(
+            ExOptionName::WrapScan,
+            ExOptionValue::Boolean(values.search_options.wrapscan),
+        ),
         display(ExOptionName::Wrap, ExOptionValue::Boolean(values.wrap)),
         display(
             ExOptionName::LineBreak,
@@ -2296,6 +2349,30 @@ fn apply_option_operation(
 ) -> Result<(), ExExecuteError> {
     let name = operation.name.to_ascii_lowercase();
     match name.as_str() {
+        "ignorecase" | "ic" => apply_boolean_option(
+            scope,
+            ExOptionName::IgnoreCase,
+            false,
+            &operation.action,
+            &mut values.search_options.ignorecase,
+            plan,
+        ),
+        "smartcase" | "sc" => apply_boolean_option(
+            scope,
+            ExOptionName::SmartCase,
+            false,
+            &operation.action,
+            &mut values.search_options.smartcase,
+            plan,
+        ),
+        "wrapscan" | "ws" => apply_boolean_option(
+            scope,
+            ExOptionName::WrapScan,
+            true,
+            &operation.action,
+            &mut values.search_options.wrapscan,
+            plan,
+        ),
         "wrap" => apply_boolean_option(
             scope,
             ExOptionName::Wrap,
@@ -3256,7 +3333,8 @@ mod tests {
         match error {
             ExExecuteError::NeedsPolicy(ExPolicyRequest::ConfirmSubstitution(preview)) => {
                 assert_eq!(preview.matches, 2);
-                assert_eq!(preview.edits.len(), 1);
+                assert_eq!(preview.edits.len(), 2);
+                assert_eq!(preview.fragment_edits.len(), 2);
             }
             other => panic!("unexpected error: {other:?}"),
         }

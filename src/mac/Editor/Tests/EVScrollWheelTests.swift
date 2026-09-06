@@ -20,7 +20,7 @@ final class EVScrollWheelTests: XCTestCase {
 
         XCTAssertEqual(surface.viewportState.top, 0, accuracy: 0.01)
 
-        view.scrollWheel(with: WheelEvent(deltaY: 1, precise: false))
+        view.scrollWheel(with: WheelEvent(deltaY: -1, precise: false))
         XCTAssertEqual(
             CGFloat(surface.viewportState.top),
             discreteRowDistance,
@@ -28,21 +28,21 @@ final class EVScrollWheelTests: XCTestCase {
             "a non-precise wheel unit represents one visual-row distance"
         )
 
-        view.scrollWheel(with: WheelEvent(deltaY: -1, precise: false))
+        view.scrollWheel(with: WheelEvent(deltaY: 1, precise: false))
         XCTAssertEqual(surface.viewportState.top, 0, accuracy: 0.01)
 
-        view.scrollWheel(with: WheelEvent(deltaY: 23.5, precise: true))
+        view.scrollWheel(with: WheelEvent(deltaY: -23.5, precise: true))
         XCTAssertEqual(
             surface.viewportState.top,
             23.5,
             accuracy: 0.05,
-            "positive AppKit scrolling deltas advance the y-down viewport"
+            "negative AppKit scrolling deltas advance the y-down viewport"
         )
 
-        view.scrollWheel(with: WheelEvent(deltaY: -10_000, precise: true))
+        view.scrollWheel(with: WheelEvent(deltaY: 10_000, precise: true))
         XCTAssertEqual(surface.viewportState.top, 0, accuracy: 0.01)
 
-        view.scrollWheel(with: WheelEvent(deltaY: 1_000_000, precise: true))
+        view.scrollWheel(with: WheelEvent(deltaY: -1_000_000, precise: true))
         let bottom = try XCTUnwrap(surface.layoutSnapshot)
         let expectedBottom = max(
             CGFloat(bottom.info.coverage_y_start),
@@ -52,7 +52,7 @@ final class EVScrollWheelTests: XCTestCase {
         XCTAssertEqual(CGFloat(surface.viewportState.top), expectedBottom, accuracy: 0.1)
 
         let clampedBottom = surface.viewportState.top
-        view.scrollWheel(with: WheelEvent(deltaY: 10_000, precise: true))
+        view.scrollWheel(with: WheelEvent(deltaY: -10_000, precise: true))
         XCTAssertEqual(surface.viewportState.top, clampedBottom, accuracy: 0.01)
     }
 
@@ -79,7 +79,7 @@ final class EVScrollWheelTests: XCTestCase {
             )
         XCTAssertGreaterThan(maximumLeft, discreteRowDistance)
 
-        surface.editorView.scrollWheel(with: WheelEvent(deltaX: 1, precise: false))
+        surface.editorView.scrollWheel(with: WheelEvent(deltaX: -1, precise: false))
         XCTAssertEqual(
             CGFloat(surface.viewportState.left),
             discreteRowDistance,
@@ -87,18 +87,18 @@ final class EVScrollWheelTests: XCTestCase {
             "horizontal wheel units receive the same readable line-step conversion"
         )
 
-        surface.editorView.scrollWheel(with: WheelEvent(deltaX: 17.25, precise: true))
+        surface.editorView.scrollWheel(with: WheelEvent(deltaX: -17.25, precise: true))
         XCTAssertEqual(
             CGFloat(surface.viewportState.left),
             discreteRowDistance + 17.25,
             accuracy: 0.05,
-            "positive AppKit scrolling deltas advance the y-down/rightward viewport"
+            "negative AppKit scrolling deltas advance the y-down/rightward viewport"
         )
 
-        surface.editorView.scrollWheel(with: WheelEvent(deltaX: 1_000_000, precise: true))
+        surface.editorView.scrollWheel(with: WheelEvent(deltaX: -1_000_000, precise: true))
         XCTAssertEqual(CGFloat(surface.viewportState.left), maximumLeft, accuracy: 0.1)
 
-        surface.editorView.scrollWheel(with: WheelEvent(deltaX: -1_000_000, precise: true))
+        surface.editorView.scrollWheel(with: WheelEvent(deltaX: 1_000_000, precise: true))
         XCTAssertEqual(surface.viewportState.left, 0, accuracy: 0.01)
 
         surface.performInput { _ = try session.setViewportOrigin(left: 40) }
@@ -108,7 +108,7 @@ final class EVScrollWheelTests: XCTestCase {
         XCTAssertEqual(surface.viewportState.maximum_left, 0, accuracy: 0.01)
         XCTAssertEqual(surface.viewportState.left, 0, accuracy: 0.01)
 
-        surface.editorView.scrollWheel(with: WheelEvent(deltaX: 80, precise: true))
+        surface.editorView.scrollWheel(with: WheelEvent(deltaX: -80, precise: true))
         XCTAssertEqual(
             surface.viewportState.left,
             0,
@@ -153,6 +153,7 @@ private final class WheelEvent: NSEvent {
     override var type: NSEvent.EventType { .scrollWheel }
     override var scrollingDeltaX: CGFloat { horizontalDelta }
     override var scrollingDeltaY: CGFloat { verticalDelta }
+    override var isDirectionInvertedFromDevice: Bool { true }
     override var hasPreciseScrollingDeltas: Bool { precise }
     override var phase: NSEvent.Phase { [] }
     override var momentumPhase: NSEvent.Phase { [] }

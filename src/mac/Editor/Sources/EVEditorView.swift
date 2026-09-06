@@ -270,7 +270,32 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         drawCommandLineBand()
     }
 
+    private(set) lazy var commandOutputBar: EVCommandOutputBar = {
+        let bar = EVCommandOutputBar(frame: .zero)
+        bar.isHidden = true
+        bar.autoresizingMask = [.width, .minYMargin]
+        bar.close = { [weak self] in self?.surface?.dismissCommandOutput() }
+        bar.beginCommand = { [weak self] in
+            guard let self, let surface = self.surface, let session = surface.session else { return }
+            self.window?.makeFirstResponder(self)
+            surface.performInput {
+                if [UInt32(EVIM_MODE_INSERT), UInt32(EVIM_MODE_REPLACE)].contains(surface.viewPresentation.mode) {
+                    _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+                }
+                _ = try session.sendKey(kind: UInt32(EVIM_KEY_CHARACTER), codepoint: 58)
+            }
+        }
+        addSubview(bar)
+        return bar
+    }()
+
     func applyPresentation() {
+        if let output = surface?.commandOutput, surface?.commandLine?.prompt == nil {
+            let height = min(bounds.height / 3, CGFloat(min(6, output.split(separator: "\n", omittingEmptySubsequences: false).count)) * 16 + 16)
+            commandOutputBar.frame = NSRect(x: 0, y: bounds.maxY - height, width: bounds.width, height: height)
+            commandOutputBar.show(output)
+            commandOutputBar.isHidden = false
+        } else { commandOutputBar.isHidden = true }
         synchronizeEditingPreferences()
         reconcileMarkedTextWithCore()
         updateCustomCaretPresentation()
@@ -1088,12 +1113,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     @objc(undo:) func undoDocument(_ sender: Any?) { surface?.perform(menuCommand: .undo, sender: sender) }
     @objc(redo:) func redoDocument(_ sender: Any?) { surface?.perform(menuCommand: .redo, sender: sender) }
-    @objc(cut:) func cutDocumentSelection(_ sender: Any?) { surface?.perform(menuCommand: .cut, sender: sender) }
-    @objc(copy:) func copyDocumentSelection(_ sender: Any?) { surface?.perform(menuCommand: .copy, sender: sender) }
-    @objc(paste:) func pasteIntoDocument(_ sender: Any?) { surface?.perform(menuCommand: .paste, sender: sender) }
-    @objc(pasteAsPlainText:) func pastePlainTextIntoDocument(_ sender: Any?) { surface?.perform(menuCommand: .pasteAndMatchStyle, sender: sender) }
-    @objc(delete:) func deleteDocumentSelection(_ sender: Any?) { surface?.perform(menuCommand: .delete, sender: sender) }
-    override func selectAll(_ sender: Any?) { surface?.perform(menuCommand: .selectAll, sender: sender) }
+    @objc(cut:) func cutDocumentSelection(_ sender: Any?) { if !performCommandLineMenu(.cut) { surface?.perform(menuCommand: .cut, sender: sender) } }
+    @objc(copy:) func copyDocumentSelection(_ sender: Any?) { if !performCommandLineMenu(.copy) { surface?.perform(menuCommand: .copy, sender: sender) } }
+    @objc(paste:) func pasteIntoDocument(_ sender: Any?) { if !performCommandLineMenu(.paste) { surface?.perform(menuCommand: .paste, sender: sender) } }
+    @objc(pasteAsPlainText:) func pastePlainTextIntoDocument(_ sender: Any?) { if !performCommandLineMenu(.pasteAndMatchStyle) { surface?.perform(menuCommand: .pasteAndMatchStyle, sender: sender) } }
+    @objc(delete:) func deleteDocumentSelection(_ sender: Any?) { if !performCommandLineMenu(.delete) { surface?.perform(menuCommand: .delete, sender: sender) } }
+    override func selectAll(_ sender: Any?) { if !performCommandLineMenu(.selectAll) { surface?.perform(menuCommand: .selectAll, sender: sender) } }
 
     override func keyDown(with event: NSEvent) {
         guard let surface else { return }
@@ -1103,6 +1128,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             super.keyDown(with: event)
             return
         }
+        if event.keyCode == 109, event.modifierFlags.contains(.shift) { showEditorContextMenu(event); return }
+        if !compositionActive, moveCommandLineSelection(with: event) { return }
         let textModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         if textModifiers == [.option], event.charactersIgnoringModifiers?.lowercased() == "i",
            !compositionActive,
@@ -1195,20 +1222,13 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
         case UInt32(EVIM_MODE_COMMAND_LINE):
             guard let commandLine = surface.commandLine else { return }
-            if replacementRange.location == NSNotFound {
-                guard !value.isEmpty else { return }
-                surface.performInput { _ = try session.sendText(value) }
-            } else {
-                guard let replacement = utf8Range(
-                    forUTF16: replacementRange,
-                    in: commandLine.text,
-                    requireGraphemeBoundaries: true
-                ) else { return }
-                let target = commandLineMarkedTarget(commandLine, replacement: replacement)
-                surface.performInput {
-                    _ = try self.commitCommandLineMarkedText(value, target: target, using: session)
-                }
+            let range: Range<Int>
+            if replacementRange.location == NSNotFound { range = commandLine.selectedUTF8Range }
+            else {
+                guard let converted = utf8Range(forUTF16: replacementRange, in: commandLine.text, requireGraphemeBoundaries: true) else { return }
+                range = converted
             }
+            surface.performInput { _ = try session.editCommandLine(commandLine, selecting: range, replacement: value) }
 
         case UInt32(EVIM_MODE_NORMAL),
              UInt32(EVIM_MODE_VISUAL_CHARACTER),
@@ -1284,9 +1304,102 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
+    func commandLineMenuEnabled(_ command: EVMenuCommand) -> Bool? {
+        guard let surface, let prompt = surface.commandLine, prompt.prompt != nil else { return nil }
+        switch command {
+        case .copy, .cut, .delete: return !prompt.selectedUTF8Range.isEmpty
+        case .paste, .pasteAndMatchStyle: return surface.pasteboard.evimCanReadString()
+        case .selectAll: return !prompt.text.isEmpty
+        case .undo, .redo: return false
+        default: return nil
+        }
+    }
+
+    @discardableResult private func performCommandLineMenu(_ command: EVMenuCommand) -> Bool {
+        guard let surface, let session = surface.session, let prompt = surface.commandLine, prompt.prompt != nil else { return false }
+        let range = prompt.selectedUTF8Range
+        switch command {
+        case .copy, .cut:
+            guard !range.isEmpty, let lower = stringIndex(utf8Offset: range.lowerBound, in: prompt.text), let upper = stringIndex(utf8Offset: range.upperBound, in: prompt.text) else { return true }
+            guard surface.pasteboard.evimIsWritable else { return true }
+            _ = surface.pasteboard.evimClearContents()
+            guard surface.pasteboard.evimSetString(String(prompt.text[lower..<upper])) else { return true }
+            if command == .cut { surface.performInput { _ = try session.editCommandLine(prompt, selecting: range, replacement: "") } }
+        case .paste, .pasteAndMatchStyle:
+            if let value = surface.pasteboard.evimString() { surface.performInput { _ = try session.editCommandLine(prompt, selecting: range, replacement: value) } }
+        case .delete:
+            if !range.isEmpty { surface.performInput { _ = try session.editCommandLine(prompt, selecting: range, replacement: "") } }
+        case .selectAll:
+            surface.performInput { _ = try session.editCommandLine(prompt, anchor: 0, active: prompt.text.utf8.count) }
+        default: return false
+        }
+        return true
+    }
+
+    private func moveCommandLineSelection(with event: NSEvent) -> Bool {
+        guard let surface, let session = surface.session, let prompt = surface.commandLine, prompt.prompt != nil,
+              event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+              [123, 124, 115, 119].contains(Int(event.keyCode)),
+              let index = stringIndex(utf8Offset: Int(prompt.info.cursor_utf8_offset), in: prompt.text)
+        else { return false }
+        let extend = event.modifierFlags.contains(.shift)
+        let active: Int
+        switch event.keyCode {
+        case 115: active = 0
+        case 119: active = prompt.text.utf8.count
+        case 123:
+            if !extend, !prompt.selectedUTF8Range.isEmpty { active = prompt.selectedUTF8Range.lowerBound }
+            else { active = prompt.text[..<(index == prompt.text.startIndex ? index : prompt.text.index(before: index))].utf8.count }
+        default:
+            if !extend, !prompt.selectedUTF8Range.isEmpty { active = prompt.selectedUTF8Range.upperBound }
+            else { active = prompt.text[..<(index == prompt.text.endIndex ? index : prompt.text.index(after: index))].utf8.count }
+        }
+        surface.performInput { _ = try session.editCommandLine(prompt, anchor: extend ? Int(prompt.selectionAnchorUTF8Offset) : active, active: active) }
+        return true
+    }
+
+    private func selectCommandLine(at point: NSPoint, extending: Bool, allowOutside: Bool = false) -> Bool {
+        guard let surface, let session = surface.session, let prompt = surface.commandLine,
+              let state = commandLineRenderState(), allowOutside || state.bandRect.contains(point) else { return false }
+        if compositionActive { cancelActiveMarkedText(using: session, discardInputContext: true); return true }
+        var closest = 0
+        var distance = CGFloat.greatestFiniteMagnitude
+        for index in Array(prompt.text.indices) + [prompt.text.endIndex] {
+            let prefix = state.prompt + prompt.text[..<index]
+            let x = state.textOrigin.x + (prefix as NSString).size(withAttributes: [.font: state.font]).width
+            if abs(x - point.x) < distance { distance = abs(x - point.x); closest = prompt.text[..<index].utf8.count }
+        }
+        surface.performInput { _ = try session.editCommandLine(prompt, anchor: extending ? Int(prompt.selectionAnchorUTF8Offset) : closest, active: closest) }
+        return true
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu(title: "Edit")
+        for (title, action) in [("Cut", #selector(cutDocumentSelection(_:))), ("Copy", #selector(copyDocumentSelection(_:))), ("Paste", #selector(pasteIntoDocument(_:))), ("Paste and Match Style", #selector(pastePlainTextIntoDocument(_:))), ("Select All", #selector(selectAll(_:)))] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    private func showEditorContextMenu(_ event: NSEvent) {
+        guard let menu = menu(for: event) else { return }
+        if event.type == .keyDown { menu.popUp(positioning: nil, at: NSPoint(x: bounds.midX, y: bounds.midY), in: self) }
+        else { NSMenu.popUpContextMenu(menu, with: event, for: self) }
+    }
+
     // MARK: - Pointer and scrolling
 
+    private var draggingCommandLine = false
+
     override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) { showEditorContextMenu(event); return }
+        if selectCommandLine(at: convert(event.locationInWindow, from: nil), extending: event.modifierFlags.contains(.shift)) {
+            window?.makeFirstResponder(self)
+            draggingCommandLine = true
+            return
+        }
         stopDragAutoscroll()
         window?.makeFirstResponder(self)
         customCaretBlinkController.restartAfterActivity()
@@ -1299,6 +1412,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if draggingCommandLine {
+            _ = selectCommandLine(at: convert(event.locationInWindow, from: nil), extending: true, allowOutside: true)
+            return
+        }
         _ = autoscroll(with: event)
         customCaretBlinkController.restartAfterActivity()
         placeCursor(for: event, extending: true)
@@ -1306,6 +1423,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func mouseUp(with event: NSEvent) {
+        draggingCommandLine = false
         stopDragAutoscroll()
         super.mouseUp(with: event)
     }
@@ -1338,8 +1456,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         let deltaScale = event.hasPreciseScrollingDeltas
             ? 1
             : discreteWheelScrollDistance(in: snapshot)
-        let deltaX = event.scrollingDeltaX * deltaScale
-        let deltaY = event.scrollingDeltaY * deltaScale
+        // AppKit already applies the user's natural-scrolling preference.
+        // Its deltas describe content movement; viewport origins move oppositely.
+        let deltaX = -event.scrollingDeltaX * deltaScale
+        let deltaY = -event.scrollingDeltaY * deltaScale
         if !textInputGeometryUpdateActive {
             beginTextInputGeometryUpdate()
         }
@@ -1473,7 +1593,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                     guard let cursor = Int(exactly: commandLine.info.cursor_utf8_offset),
                           cursor <= commandLine.text.utf8.count
                     else { return }
-                    replacement = cursor ..< cursor
+                    replacement = commandLine.selectedUTF8Range
                 } else {
                     guard let converted = utf8Range(
                         forUTF16: replacementRange,
@@ -1549,8 +1669,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
         if surface.viewPresentation.mode == UInt32(EVIM_MODE_COMMAND_LINE),
            let commandLine = surface.commandLine,
-           let cursor = Int(exactly: commandLine.info.cursor_utf8_offset),
-           let range = utf16Range(forUTF8: cursor ..< cursor, in: commandLine.text)
+           let range = utf16Range(forUTF8: commandLine.selectedUTF8Range, in: commandLine.text)
         {
             return range
         }
@@ -1878,16 +1997,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
               let end = stringIndex(utf8Offset: target.replacementUTF8.upperBound, in: target.coreText)
         else { return false }
 
-        let prefixCount = target.coreText[..<start].count
-        let replacementCount = target.coreText[start ..< end].count
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_HOME))
-        for _ in 0 ..< prefixCount {
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_RIGHT))
-        }
-        for _ in 0 ..< replacementCount {
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_DELETE))
-        }
-        if !value.isEmpty { _ = try session.sendText(value) }
+        _ = start; _ = end
+        _ = try session.editCommandLine(current, selecting: target.replacementUTF8, replacement: value)
         return true
     }
 
@@ -2709,7 +2820,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         var text = commandLine.text
         var cursor = coreCursor
         var markedDisplayRange: NSRange?
-        var selectedDisplayRange: NSRange?
+        var selectedDisplayRange = utf16Range(forUTF8: commandLine.selectedUTF8Range, in: commandLine.text).map {
+            NSRange(location: $0.location + promptText.utf16.count, length: $0.length)
+        }
         if case let .commandLine(target)? = markedTextTarget,
            commandLineTarget(target, matches: commandLine),
            let projected = replacingUTF8(

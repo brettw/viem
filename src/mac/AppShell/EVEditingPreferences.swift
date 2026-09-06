@@ -10,21 +10,22 @@ extension Notification.Name {
 @MainActor
 public final class EVEditingPreferences {
   public static let shared = EVEditingPreferences()
-  private static let smartQuotesKey = "EVEditing.SmartQuotes.v1"
-  private let defaults: UserDefaults
+  private let configuration: EVConfigurationStore
+  public var lastError: String? { configuration.lastError }
   private let center: NotificationCenter
   public private(set) var smartQuotes: Bool
 
-  public init(defaults: UserDefaults = .standard, center: NotificationCenter = .default) {
-    self.defaults = defaults
+  public init(configuration: EVConfigurationStore? = nil, center: NotificationCenter = .default) {
+    let configuration = configuration ?? .shared
+    self.configuration = configuration
     self.center = center
-    smartQuotes = defaults.object(forKey: Self.smartQuotesKey) as? Bool ?? false
+    smartQuotes = configuration.smartQuotes
   }
 
   public func setSmartQuotes(_ enabled: Bool) {
     guard enabled != smartQuotes else { return }
+    do { try configuration.setSmartQuotes(enabled) } catch { return }
     smartQuotes = enabled
-    defaults.set(enabled, forKey: Self.smartQuotesKey)
     center.post(name: .evimEditingPreferencesDidChange, object: self)
   }
 }

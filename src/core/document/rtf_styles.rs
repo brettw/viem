@@ -119,6 +119,13 @@ pub(super) fn read(input: &NormalizedText) -> RtfSheet {
             metadata: StyleDefinitionMetadata::generated("Document"),
         }])
         .expect("RTF document defaults have valid native properties");
+    sheet.record_source_character_defaults(
+        sheet.base_document.clone(),
+        CharacterProperties {
+            font_families: rtf::default_font_name(&tables).map(|name| vec![name.to_owned()]),
+            ..Default::default()
+        },
+    );
     let mut result = RtfSheet {
         sheet,
         entries: Vec::new(),

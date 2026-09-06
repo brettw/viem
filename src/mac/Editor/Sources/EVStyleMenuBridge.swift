@@ -120,6 +120,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
 extension EVEditorView: EVStyleMenuActionRouting, NSMenuItemValidation {
   func validateMenuItem(_ item: NSMenuItem) -> Bool {
     if let command = EVMenuCommand.nativeEditCommand(for: item.action), let surface {
+      if let enabled = commandLineMenuEnabled(command) { return enabled }
       let presentation = surface.presentation(for: command)
       item.state = presentation.state
       if let title = presentation.title { item.title = title }

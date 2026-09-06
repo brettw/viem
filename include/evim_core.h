@@ -285,6 +285,11 @@ typedef struct EvimFormattedPointInfoV1 {
 #define EVIM_EX_FRONTEND_PRINT_LINES 14u
 #define EVIM_EX_FRONTEND_NORMAL 15u
 #define EVIM_EX_FRONTEND_SPLIT 16u
+#define EVIM_EX_FRONTEND_MESSAGE 17u
+#define EVIM_EX_FRONTEND_EDIT_NEW_WINDOW 18u
+#define EVIM_EX_FRONTEND_PWD 19u
+#define EVIM_EX_FRONTEND_CD 20u
+#define EVIM_EX_FRONTEND_CHECKTIME 21u
 
 #define EVIM_EX_FRONTEND_FORCE (1u << 0)
 #define EVIM_EX_FRONTEND_HAS_PATH (1u << 1)
@@ -297,6 +302,9 @@ typedef struct EvimFormattedPointInfoV1 {
 #define EVIM_EX_OPTION_LINEBREAK 2u
 #define EVIM_EX_OPTION_FILE_FORMAT 3u
 #define EVIM_EX_OPTION_FILE_FORMATS 4u
+#define EVIM_EX_OPTION_IGNORECASE 5u
+#define EVIM_EX_OPTION_SMARTCASE 6u
+#define EVIM_EX_OPTION_WRAPSCAN 7u
 
 #define EVIM_EX_OPTION_VALUE_BOOLEAN 1u
 #define EVIM_EX_OPTION_VALUE_FILE_FORMAT 2u
@@ -2167,6 +2175,30 @@ typedef struct EvimSelectedStylesInfoV1 {
 EvimStatus evim_core_view_selected_styles_export(EvimCoreHandle core,
     EvimViewId view, uint64_t expected_revision,
     EvimSelectedStylesInfoV1 *out_info, uint8_t *out_utf8, uint64_t capacity);
+
+/* Version 1 UTF-8 JSON defaults. Initialization requires a pristine core with no views;
+ * it does not change source, revision, dirty state, or history. Export is two-pass,
+ * reports required bytes, and never writes a partial output. */
+EvimStatus evim_core_initialize_style_defaults(EvimCoreHandle core, uint64_t expected_revision, const uint8_t *json, uint64_t length);
+EvimStatus evim_core_export_style_defaults(EvimCoreHandle core, uint64_t expected_revision, uint8_t *output, uint64_t capacity, uint64_t *required);
+
+/* Command prompt selection and editing carry the exact exported prompt identity. */
+typedef struct EvimCommandLineSelectionV1 {
+  uint32_t struct_size;
+  uint32_t reserved;
+  uint64_t anchor_utf8_offset;
+  uint64_t active_utf8_offset;
+} EvimCommandLineSelectionV1;
+EvimStatus evim_core_view_command_line_selection(EvimCoreHandle core, EvimViewId view,
+    const EvimCommandLineIdentityV1 *expected, EvimCommandLineSelectionV1 *out_selection);
+EvimStatus evim_core_view_edit_command_line(EvimCoreHandle core, EvimViewId view,
+    const EvimCommandLineIdentityV1 *expected, uint32_t operation,
+    uint64_t start, uint64_t end, const uint8_t *utf8, uint64_t length,
+    EvimCoreOutcomeV1 *out_outcome);
+
+EvimStatus evim_core_view_set_format_with_effects(EvimCoreHandle core, EvimViewId view, const EvimSetFormatV1 *request, EvimCoreOutcomeV1 *out_outcome, EvimEffectBatchHandle *out_effects);
+EvimStatus evim_core_view_set_encoding_with_effects(EvimCoreHandle core, EvimViewId view, const EvimSetEncodingV1 *request, EvimCoreOutcomeV1 *out_outcome, EvimEffectBatchHandle *out_effects);
+EvimStatus evim_core_copy_hard_line_source_bytes(EvimCoreHandle core, uint64_t document, uint64_t revision, uint64_t first_line, uint64_t end_line, uint8_t *output, uint64_t capacity, uint64_t *out_required, uint32_t *out_complete);
 
 #ifdef __cplusplus
 }

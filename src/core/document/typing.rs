@@ -97,7 +97,7 @@ impl Document {
             && matches!(baseline_shift)
     }
 
-    fn prepare_typing_markdown_style(
+    pub(super) fn prepare_typing_markdown_style(
         &self,
         range: Range<usize>,
         style: SemanticInlineStyle,

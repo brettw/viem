@@ -149,13 +149,13 @@ final class EVStyleMenuBridgeTests: XCTestCase {
     XCTAssertEqual(
       catalogue.entries.filter { $0.role == .character }.map(\.stableID),
       [
-        "Character"
+        "Character", "Code"
       ])
     XCTAssertEqual(
       Set(catalogue.entries.filter { $0.role == .paragraph }.map(\.stableID)),
       Set(
         [
-          "Paragraph", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6",
+          "Paragraph", "Code Block", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6",
         ] + (1...3).map { "List\($0)" }))
     XCTAssertEqual(
       catalogue.entries.filter { $0.role == .document }.map(\.stableID),

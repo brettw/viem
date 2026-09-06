@@ -281,6 +281,7 @@ pub enum StyleEditGroupError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoreEvent {
+    EditCommandLine(crate::command::CommandLineEditRequest),
     SetDirectCharacterProperties {
         expected: LogicalSelectionIdentity,
         values: Vec<(
@@ -935,6 +936,16 @@ impl<P: TextMeasurementProvider> Core<P> {
             queued_replay: None,
             compound_replay_event_limit: MACRO_REPLAY_EVENT_LIMIT,
         }
+    }
+
+    pub fn initialize_style_defaults(
+        &mut self,
+        json: &[u8],
+    ) -> Result<(), crate::document::StyleDefaultsError> {
+        if !self.views.is_empty() {
+            return Err(crate::document::StyleDefaultsError::NotPristine);
+        }
+        self.document.initialize_style_defaults(json)
     }
 
     pub fn document(&self) -> &Document {
@@ -3321,8 +3332,31 @@ impl<P: TextMeasurementProvider> Core<P> {
             view_id,
             ImmediateLayoutIntent::PreserveViewport,
         );
+        let warnings = committed.summary().conversion_warnings();
+        let command = if warnings.is_empty() {
+            None
+        } else {
+            let mut ex = crate::command::ex_execute::ExOutcome::default();
+            ex.frontend_requests = warnings
+                .iter()
+                .map(|warning| {
+                    crate::command::ex_execute::ExFrontendRequest::Info(
+                        crate::command::ex_execute::ExInfoRequest::Message(warning.message()),
+                    )
+                })
+                .collect();
+            Some(CommandOutput {
+                status: CommandStatus::Complete,
+                cursor_moved: false,
+                document_changed: changed,
+                mode_changed: false,
+                history_navigation: false,
+                ex_outcome: Some(ex),
+                clipboard_writes: Vec::new(),
+            })
+        };
         Ok(CoreOutcome {
-            command: None,
+            command,
             document_changed: changed,
             position_map: Some(expected_map),
             layout_changed: true,
@@ -3770,6 +3804,23 @@ impl<P: TextMeasurementProvider> Core<P> {
         // without risking later commands joining the style undo unit.
         self.finalize_style_edit_group()?;
         let event = match event {
+            CoreEvent::EditCommandLine(request) => {
+                self.install_buffer_commands(view_id);
+                let command = self
+                    .views
+                    .get_mut(&view_id)
+                    .expect("view checked")
+                    .commands
+                    .edit_command_line(&self.document, request)?;
+                self.publish_buffer_commands(view_id);
+                return Ok(CoreOutcome {
+                    command: Some(command),
+                    document_changed: false,
+                    position_map: None,
+                    layout_changed: false,
+                    composition_changes: Vec::new(),
+                });
+            }
             CoreEvent::SetDirectCharacterProperties { expected, values } => {
                 if expected.kind() == LogicalSelectionKind::None {
                     if self.list_selection_identity(view_id)? != expected {
@@ -4116,6 +4167,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             Vec::new()
         };
         let outcome: Result<CoreOutcome, CoreError> = match event {
+            CoreEvent::EditCommandLine(_) => {
+                unreachable!("prompt edits handled before document/layout dispatch")
+            }
             CoreEvent::Resize { width, height } => {
                 let view = self
                     .views
