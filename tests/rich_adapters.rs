@@ -32,7 +32,12 @@ fn html_is_passive_and_preserves_every_source_byte() {
         document.projection().blocks()[0].kind,
         BlockKind::Heading(1)
     ));
-    assert_eq!(properties_at(&document, 19).bold, Some(true));
+    assert_eq!(
+        properties_at(&document, 19).bold,
+        None,
+        "space before B keeps its own context"
+    );
+    assert_eq!(properties_at(&document, 20).bold, Some(true));
 }
 #[test]
 fn html_entities_collapsed_whitespace_and_text_edits_keep_tags() {
@@ -320,12 +325,12 @@ fn empty_rich_documents_accept_first_text_and_enter_inside_the_source_body() {
         (
             br"{\rtf1\ansi}".as_slice(),
             Format::Rtf,
-            br"{\rtf1\ansi{\uc1 hi\par there}}".as_slice(),
+            br"{\rtf1\ansi hi\par there}".as_slice(),
         ),
         (
             b"".as_slice(),
             Format::Rtf,
-            br"{\rtf1\ansi {\uc1 hi\par there}}".as_slice(),
+            br"{\rtf1\ansi hi\par there}".as_slice(),
         ),
     ] {
         let mut document = open(source, format);
@@ -524,7 +529,7 @@ fn rich_body_replacement_uses_discontiguous_patches_preserving_all_intervening_s
                 "<p><b foo='bar'>replacement</b><i></i></p><!--keep-->"
             );
         } else {
-            assert!(actual.contains(r"{\b\unknown42 {\uc1 replacement}}"));
+            assert!(actual.contains(r"{\b\unknown42 replacement}"));
             assert!(actual.contains(r"{\*\unknown keep}"));
         }
         assert!(document.undo());

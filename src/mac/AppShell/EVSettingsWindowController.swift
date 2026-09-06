@@ -18,9 +18,12 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   NSTableViewDelegate
 {
   private let store: EVThemeStore
+  private let editingPreferences: EVEditingPreferences
   private let sidebar = NSTableView()
   private let content = NSView()
   private var observer: NSObjectProtocol?
+  private var editingObserver: NSObjectProtocol?
+  private weak var smartQuotesCheckbox: NSButton?
   private var wells: [Int: NSColorWell] = [:]
   private var fields: [Int: NSTextField] = [:]
   private let fontSelect = NSPopUpButton()
@@ -28,10 +31,13 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private var selectedCategory = 1
   private var hasPresented = false
 
-  convenience init() { self.init(store: .shared) }
+  convenience init() { self.init(store: .shared, editingPreferences: .shared) }
 
-  init(store: EVThemeStore) {
+  convenience init(store: EVThemeStore) { self.init(store: store, editingPreferences: .shared) }
+
+  init(store: EVThemeStore, editingPreferences: EVEditingPreferences) {
     self.store = store
+    self.editingPreferences = editingPreferences
     let window = EVSettingsWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 690),
       styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -44,6 +50,14 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       forName: .evimThemeDidChange, object: store, queue: .main
     ) { [weak self] _ in
       MainActor.assumeIsolated { self?.refresh() }
+    }
+    editingObserver = NotificationCenter.default.addObserver(
+      forName: .evimEditingPreferencesDidChange, object: nil, queue: .main
+    ) { [weak self] notification in
+      MainActor.assumeIsolated {
+        guard let self, notification.object as AnyObject? === self.editingPreferences else { return }
+        self.smartQuotesCheckbox?.state = self.editingPreferences.smartQuotes ? .on : .off
+      }
     }
     window.setContentSize(NSSize(width: 800, height: 690))
     if window.screen != nil { window.center() }
@@ -59,7 +73,10 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     }
   }
 
-  deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
+  deinit {
+    if let observer { NotificationCenter.default.removeObserver(observer) }
+    if let editingObserver { NotificationCenter.default.removeObserver(editingObserver) }
+  }
   @available(*, unavailable) required init?(coder: NSCoder) {
     fatalError("init(coder:) is unavailable")
   }
@@ -88,7 +105,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     navigation.drawsBackground = false
     navigation.hasVerticalScroller = false
     navigation.borderType = .noBorder
-    sidebar.frame = NSRect(x: 0, y: 0, width: 148, height: 84)
+    sidebar.frame = NSRect(x: 0, y: 0, width: 148, height: 120)
     sidebar.autoresizingMask = [.width]
     navigation.documentView = sidebar
     rail.addSubview(heading)
@@ -121,15 +138,15 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     showCategory()
   }
 
-  func numberOfRows(in tableView: NSTableView) -> Int { 2 }
+  func numberOfRows(in tableView: NSTableView) -> Int { 3 }
   func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView?
   {
     let image = NSImageView(
       image: NSImage(
-        systemSymbolName: row == 0 ? "doc.text" : "paintpalette", accessibilityDescription: nil)
+        systemSymbolName: ["doc.text", "paintpalette", "text.cursor"][row], accessibilityDescription: nil)
         ?? NSImage())
     image.contentTintColor = .secondaryLabelColor
-    let label = NSTextField(labelWithString: row == 0 ? "Documents" : "Theme")
+    let label = NSTextField(labelWithString: ["Documents", "Theme", "Editing"][row])
     label.font = .systemFont(ofSize: 13, weight: .medium)
     let row = NSStackView(views: [image, label])
     row.spacing = 9
@@ -166,13 +183,15 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     stack.translatesAutoresizingMaskIntoConstraints = false
     scroll.documentView = stack
     stack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
-    let title = NSTextField(labelWithString: selectedCategory == 1 ? "Theme" : "Documents")
+    let title = NSTextField(labelWithString: ["Documents", "Theme", "Editing"][selectedCategory])
     title.font = .systemFont(ofSize: 25, weight: .bold)
     stack.addArrangedSubview(title)
     let subtitle = NSTextField(
-      wrappingLabelWithString: selectedCategory == 1
-        ? "Make a comfortable space for writing. Changes apply to every window."
-        : "Document styles travel with your writing. Theme settings stay in eVim.")
+      wrappingLabelWithString: [
+        "Document styles travel with your writing. Theme settings stay in eVim.",
+        "Make a comfortable space for writing. Changes apply to every window.",
+        "Choose how eVim helps while you type. These preferences apply to every document.",
+      ][selectedCategory])
     subtitle.textColor = .secondaryLabelColor
     stack.addArrangedSubview(subtitle)
     if selectedCategory == 0 {
@@ -183,6 +202,19 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
             label("Default font: SF Pro, 14 pt"),
             label("Choose Edit Styles… from Paragraph or Character to change document styles."),
           ]))
+      return
+    }
+    if selectedCategory == 2 {
+      let checkbox = NSButton(checkboxWithTitle: "Use smart quotes", target: self, action: #selector(changeSmartQuotes(_:)))
+      checkbox.state = editingPreferences.smartQuotes ? .on : .off
+      checkbox.setAccessibilityLabel("Use smart quotes")
+      smartQuotesCheckbox = checkbox
+      let explanation = NSTextField(wrappingLabelWithString: "Use opening and closing typographic quotes in prose. Quotes required by markup keep their original spelling.")
+      explanation.textColor = .secondaryLabelColor
+      explanation.font = .systemFont(ofSize: 12)
+      let group = section("Typing assistance", views: [checkbox, explanation])
+      stack.addArrangedSubview(group)
+      group.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
       return
     }
     let paper = button("Paper", action: #selector(usePaper))
@@ -316,6 +348,9 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   @objc private func usePaper() {
     store.update(.paper)
     refresh()
+  }
+  @objc private func changeSmartQuotes(_ sender: NSButton) {
+    editingPreferences.setSmartQuotes(sender.state == .on)
   }
   @objc private func useMidnight() {
     store.update(.midnight)

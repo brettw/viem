@@ -244,7 +244,7 @@ final class EVEditingReliabilityTests: XCTestCase {
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.perform(statusOption: .format(.markdownSource))
-        XCTAssertEqual(surface.statusBarState.format, "Markdown")
+        XCTAssertEqual(surface.statusBarState.format, "Markdown Source")
         XCTAssertEqual(surface.formattedText, source)
         surface.perform(statusOption: .format(.markdown))
         XCTAssertEqual(surface.statusBarState.format, "Markdown WYSIWYG")
@@ -256,7 +256,7 @@ final class EVEditingReliabilityTests: XCTestCase {
         surface.perform(menuCommand: .undo, sender: nil)
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
         surface.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(surface.statusBarState.format, "Markdown")
+        XCTAssertEqual(surface.statusBarState.format, "Markdown Source")
         XCTAssertEqual(surface.formattedText, source)
         XCTAssertEqual(surface.statusBarState.message, "")
     }

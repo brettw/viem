@@ -102,6 +102,7 @@ struct EVStyleDefinitionFlags: OptionSet, Equatable {
     static let baseDocument = Self(rawValue: UInt32(EVIM_STYLE_DEFINITION_BASE_DOCUMENT))
     static let baseParagraph = Self(rawValue: UInt32(EVIM_STYLE_DEFINITION_BASE_PARAGRAPH))
     static let baseCharacter = Self(rawValue: UInt32(EVIM_STYLE_DEFINITION_BASE_CHARACTER))
+    static let internalSyntax = Self(rawValue: UInt32(EVIM_STYLE_DEFINITION_INTERNAL))
 
     var isBase: Bool {
         !intersection([.baseDocument, .baseParagraph, .baseCharacter]).isEmpty

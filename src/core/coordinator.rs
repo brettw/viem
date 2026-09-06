@@ -16,6 +16,7 @@ use crate::command::{
     ExNormalReplayPlan, ExNormalTarget, InputEvent, Key, LayoutCommandContext, MacroReplayPlan,
     Mode, ReplayPlan, COMPOUND_REPLAY_LIMIT, MACRO_REPLAY_EVENT_LIMIT,
 };
+use crate::document::StyleProperty;
 use crate::document::{
     ArtifactOverwrite, ArtifactPath, ArtifactWriteCompletion, ArtifactWriteCompletionStatus,
     ArtifactWriteIntent, ArtifactWriteScope, ArtifactWriteToken, Association, BoundaryAffinity,
@@ -333,6 +334,7 @@ pub enum CoreEvent {
     SetLineBreak(bool),
     /// Change the view-local domain used by unprefixed line commands.
     SetLineMode(crate::command::LineMode),
+    SetSmartQuotes(bool),
     /// Change the shared source line-ending spelling through one exact,
     /// revision-bound model transaction. This is intentionally typed rather
     /// than routed through Ex parsing so native UI can preserve model policy
@@ -954,8 +956,12 @@ impl<P: TextMeasurementProvider> Core<P> {
             .map_or(view.commands.cursor(), |range| range.start);
         let upstream =
             range.is_none() && view.commands.boundary_affinity() == BoundaryAffinity::Upstream;
-        let first = DocumentLayoutStyles::character_at(self.document.projection(), at, upstream)
-            .map_err(LayoutError::from)?;
+        let mut first =
+            DocumentLayoutStyles::semantic_character_at(self.document.projection(), at, upstream)
+                .map_err(LayoutError::from)?;
+        if range.is_none() {
+            view.commands.apply_typing_presentation(&mut first);
+        }
         let mixed = if let Some(range) = range.filter(|range| !range.is_empty()) {
             let styles =
                 DocumentLayoutStyles::resolve_region(self.document.projection(), range.clone())
@@ -976,8 +982,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .into_iter()
                 .filter(|at| *at < range.end)
                 .any(|at| {
-                    DocumentLayoutStyles::character_at(self.document.projection(), at, false)
-                        .is_ok_and(|value| value != first)
+                    DocumentLayoutStyles::semantic_character_at(
+                        self.document.projection(),
+                        at,
+                        false,
+                    )
+                    .is_ok_and(|value| value != first)
                 })
         } else {
             false
@@ -1005,6 +1015,52 @@ impl<P: TextMeasurementProvider> Core<P> {
                 LogicalSelectionKind::None
             }
         };
+        if selection_kind == LogicalSelectionKind::None
+            && matches!(view.commands.mode(), Mode::Insert | Mode::Replace)
+        {
+            let values = match style {
+                SemanticInlineStyle::Strong => vec![(
+                    StyleProperty::CharacterBold,
+                    crate::document::StylePropertyValue::Boolean(true),
+                )],
+                SemanticInlineStyle::Emphasis => vec![(
+                    StyleProperty::CharacterSlant,
+                    crate::document::StylePropertyValue::FontSlant(
+                        crate::document::FontSlant::Italic,
+                    ),
+                )],
+                _ => Vec::new(),
+            };
+            let supported = !values.is_empty()
+                && self.document.validate_typing_properties(&values).is_ok()
+                && (self.document.format() != Format::HtmlSource
+                    || self
+                        .document
+                        .html_source_prose_at(
+                            view.commands.cursor(),
+                            view.commands.insertion_boundary_affinity(),
+                        )
+                        .unwrap_or(false));
+            let (current, _) = self.selected_typography(view_id)?;
+            let on = match style {
+                SemanticInlineStyle::Strong => current.bold,
+                SemanticInlineStyle::Emphasis => {
+                    current.slant != crate::document::FontSlant::Upright
+                }
+                _ => false,
+            };
+            return Ok(SemanticStylePresentation {
+                selection_kind,
+                selection: Some(self.list_selection_identity(view_id)?),
+                state: if on {
+                    SemanticStyleState::On
+                } else {
+                    SemanticStyleState::Off
+                },
+                can_set: supported,
+                can_clear: supported,
+            });
+        }
         if !matches!(
             selection_kind,
             LogicalSelectionKind::Character | LogicalSelectionKind::Line
@@ -1045,7 +1101,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             })
             .collect::<Vec<_>>();
         covered.sort_by_key(|segment| (segment.start, segment.end));
-        let state = if matches!(self.document.format(), Format::Html | Format::Rtf) {
+        let state = if matches!(
+            self.document.format(),
+            Format::Html | Format::HtmlSource | Format::Rtf
+        ) {
             let resolved =
                 DocumentLayoutStyles::resolve_region(self.document.projection(), range.clone())
                     .map_err(LayoutError::from)?;
@@ -1108,6 +1167,35 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         strike: bool,
     ) -> Result<SemanticStyleState, CoreError> {
+        if self.active_linear_selection_identity(view_id)?.is_none() {
+            let view = self
+                .views
+                .get(&view_id)
+                .ok_or(CoreError::UnknownView(view_id))?;
+            if !matches!(view.commands.mode(), Mode::Insert | Mode::Replace) {
+                return Err(CoreError::StaleLogicalSelection);
+            }
+            self.document.validate_typing_properties(&[(
+                if strike {
+                    StyleProperty::CharacterStrikethrough
+                } else {
+                    StyleProperty::CharacterUnderline
+                },
+                crate::document::StylePropertyValue::Boolean(true),
+            )])?;
+            let (style, _) = self.selected_typography(view_id)?;
+            return Ok(
+                if if strike {
+                    style.strikethrough
+                } else {
+                    style.underline
+                } {
+                    SemanticStyleState::On
+                } else {
+                    SemanticStyleState::Off
+                },
+            );
+        }
         let selection = self
             .active_linear_selection_identity(view_id)?
             .ok_or(CoreError::StaleLogicalSelection)?;
@@ -1159,6 +1247,17 @@ impl<P: TextMeasurementProvider> Core<P> {
             active_affinity: commands.boundary_affinity(),
             range: cursor..cursor,
         })
+    }
+
+    pub fn selected_named_styles(
+        &self,
+        view_id: ViewId,
+    ) -> Result<crate::document::SelectedNamedStyles, CoreError> {
+        let selection = self.list_selection_identity(view_id)?;
+        Ok(self
+            .document
+            .projection()
+            .selected_named_styles(selection.range(), selection.active_affinity()))
     }
 
     fn active_linear_selection_identity(
@@ -2938,6 +3037,38 @@ impl<P: TextMeasurementProvider> Core<P> {
         style: SemanticInlineStyle,
         enabled: bool,
     ) -> Result<CoreOutcome, CoreError> {
+        if expected.kind() == LogicalSelectionKind::None {
+            if self.list_selection_identity(view_id)? != expected {
+                return Err(CoreError::StaleLogicalSelection);
+            }
+            let values = match style {
+                SemanticInlineStyle::Strong => vec![(
+                    StyleProperty::CharacterBold,
+                    crate::document::StylePropertyValue::Boolean(enabled),
+                )],
+                SemanticInlineStyle::Emphasis => vec![(
+                    StyleProperty::CharacterSlant,
+                    crate::document::StylePropertyValue::FontSlant(if enabled {
+                        crate::document::FontSlant::Italic
+                    } else {
+                        crate::document::FontSlant::Upright
+                    }),
+                )],
+                _ => return Err(CoreError::Document(DocumentError::UnsupportedFormatting)),
+            };
+            self.views
+                .get_mut(&view_id)
+                .expect("view checked")
+                .commands
+                .set_typing_properties(&self.document, values)?;
+            return Ok(CoreOutcome {
+                command: None,
+                document_changed: false,
+                position_map: None,
+                layout_changed: false,
+                composition_changes: Vec::new(),
+            });
+        }
         let current = self
             .active_linear_selection_identity(view_id)?
             .ok_or(CoreError::StaleLogicalSelection)?;
@@ -3215,8 +3346,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             StyleNamespace::Character => sheet.character_style_metadata(style),
         }
         .map(|metadata| metadata.origin);
-        if matches!(self.document.format(), Format::Html | Format::Rtf)
-            && origin == Some(crate::document::StyleDefinitionOrigin::SourceBacked)
+        if matches!(
+            self.document.format(),
+            Format::Html | Format::HtmlSource | Format::Rtf
+        ) && origin == Some(crate::document::StyleDefinitionOrigin::SourceBacked)
         {
             let definition_edit = sheet
                 .prepare_source_field_edit(namespace, style, edit)
@@ -3638,6 +3771,23 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.finalize_style_edit_group()?;
         let event = match event {
             CoreEvent::SetDirectCharacterProperties { expected, values } => {
+                if expected.kind() == LogicalSelectionKind::None {
+                    if self.list_selection_identity(view_id)? != expected {
+                        return Err(CoreError::StaleLogicalSelection);
+                    }
+                    self.views
+                        .get_mut(&view_id)
+                        .expect("view checked")
+                        .commands
+                        .set_typing_properties(&self.document, values)?;
+                    return Ok(CoreOutcome {
+                        command: None,
+                        document_changed: false,
+                        position_map: None,
+                        layout_changed: false,
+                        composition_changes: Vec::new(),
+                    });
+                }
                 let actual = self
                     .active_linear_selection_identity(view_id)?
                     .ok_or(CoreError::StaleLogicalSelection)?;
@@ -3660,6 +3810,28 @@ impl<P: TextMeasurementProvider> Core<P> {
                 value,
             } => {
                 let character = crate::document::is_character_property(property);
+                if character && expected.kind() == LogicalSelectionKind::None {
+                    if self.list_selection_identity(view_id)? != expected {
+                        return Err(CoreError::StaleLogicalSelection);
+                    }
+                    let commands =
+                        &mut self.views.get_mut(&view_id).expect("view checked").commands;
+                    if !matches!(commands.mode(), Mode::Insert | Mode::Replace) {
+                        return Err(CoreError::Document(DocumentError::UnsupportedFormatting));
+                    }
+                    if let Some(value) = value {
+                        commands.set_typing_properties(&self.document, vec![(property, value)])?;
+                    } else {
+                        commands.clear_typing_property(property);
+                    }
+                    return Ok(CoreOutcome {
+                        command: None,
+                        document_changed: false,
+                        position_map: None,
+                        layout_changed: false,
+                        composition_changes: Vec::new(),
+                    });
+                }
                 let actual = if character {
                     self.active_linear_selection_identity(view_id)?
                         .ok_or(CoreError::StaleLogicalSelection)?
@@ -4055,6 +4227,20 @@ impl<P: TextMeasurementProvider> Core<P> {
                     position_map: None,
                     layout_changed: layout.viewport_top() != before_top
                         || layout.snapshot().map(|snapshot| snapshot.revision) != before_layout,
+                    composition_changes: Vec::new(),
+                })
+            }
+            CoreEvent::SetSmartQuotes(enabled) => {
+                self.views
+                    .get_mut(&view_id)
+                    .expect("view checked")
+                    .commands
+                    .set_smart_quotes(enabled);
+                Ok(CoreOutcome {
+                    command: None,
+                    document_changed: false,
+                    position_map: None,
+                    layout_changed: false,
                     composition_changes: Vec::new(),
                 })
             }
@@ -5338,7 +5524,17 @@ impl<P: TextMeasurementProvider> Core<P> {
             self.document.close_edit_group();
         }
         self.edit_group_restoration = None;
-        let request = session.prepare_commit(&self.document)?;
+        let invoking_commands = &self
+            .views
+            .get(&view_id)
+            .expect("composition view remains attached")
+            .commands;
+        let typing_properties = invoking_commands.typing_properties().to_vec();
+        let request = session.prepare_commit_with_typing_properties(
+            &self.document,
+            &typing_properties,
+            invoking_commands.insertion_boundary_affinity(),
+        )?;
         let replaced_empty_range = request.edit().range.is_empty();
         let inserted_text = request.edit().replacement.clone();
         let caret_offset = request.caret_offset();
@@ -5408,6 +5604,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 &inserted_text,
             )
             .expect("composition preparation validated the committed caret boundary");
+        target_commands.restore_typing_properties(typing_properties);
         target_commands.update_line_undo_after_external_edit(
             &self.document,
             line_undo_candidate,

@@ -57,7 +57,7 @@ fn text_and_list_edits_preserve_modern_tables_and_reopen_exactly() {
     assert_eq!(document.text(), "3. One\n• Kid\n4. Two\n8. Restart\nTail");
     assert_eq!(
         document.source_bytes(),
-        source.replace("Child", r"{\uc1 Kid}").as_bytes()
+        source.replace("Child", "Kid").as_bytes()
     );
     assert_eq!(
         open(&String::from_utf8(document.source_bytes()).unwrap()).text(),

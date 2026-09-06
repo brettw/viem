@@ -453,7 +453,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     @discardableResult
     func createStyle(kind: EVStyleKind) -> Bool {
         guard kind != .document, let document, let session = document.session,
-              [.html, .rtf].contains(document.backend.sourceFormat) else { return false }
+              [.html, .htmlSource, .rtf].contains(document.backend.sourceFormat) else { return false }
         return changeStyleCatalogue {
             let latest = try document.backend.styleSheetSnapshot()
             let prefix = kind == .paragraph ? "RtfP" : "RtfC"
@@ -681,7 +681,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
 
         configureStylePopup(snapshot: snapshot)
         selectPopupItem(for: definition.key)
-        newStylePopup.isEnabled = document.map { [.html, .rtf].contains($0.backend.sourceFormat) } ?? false
+        newStylePopup.isEnabled = document.map { [.html, .htmlSource, .rtf].contains($0.backend.sourceFormat) } ?? false
         deleteStyleButton.isEnabled = definition.capabilities.contains(.delete)
         nameField.stringValue = definition.name
         nameDraftIsInvalid = false

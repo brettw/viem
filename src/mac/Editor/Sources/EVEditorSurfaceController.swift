@@ -575,7 +575,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 session: session
             )
         case .underline, .strikethrough:
-            if [.html, .rtf].contains(backend.sourceFormat), let session,
+            if [.html, .htmlSource, .rtf].contains(backend.sourceFormat), let session,
                let state = try? session.decorationState(menuCommand == .underline ? .characterUnderline : .characterStrikethrough) {
                 EVMenuItemPresentation(isEnabled: true,
                     state: state == UInt32(EVIM_SEMANTIC_STYLE_STATE_ON) ? .on
@@ -584,7 +584,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .alignStart, .alignCenter, .alignEnd,
              .directionAutomatic, .directionLeftToRight, .directionRightToLeft,
              .lineSpacingNormal, .lineSpacingSingle, .lineSpacingOneAndHalf, .lineSpacingDouble:
-            EVMenuItemPresentation(isEnabled: [.html, .rtf].contains(backend.sourceFormat)
+            EVMenuItemPresentation(isEnabled: [.html, .htmlSource, .rtf].contains(backend.sourceFormat)
                 && (try? session?.listSelection()) != nil)
         case .editCharacterStyles, .editParagraphStyles, .editDocumentStyles:
             .enabled
@@ -862,7 +862,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
               let value = try? session.semanticStylePresentation(style),
               value.struct_size >= UInt32(MemoryLayout<EvimSemanticStylePresentationV1>.size),
               value.style == style,
-              value.flags & UInt32(EVIM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE) != 0,
+              value.flags & UInt32(EVIM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE | EVIM_SEMANTIC_STYLE_TYPING_CONTEXT) != 0,
               value.selection.struct_size
                 >= UInt32(MemoryLayout<EvimLogicalSelectionIdentityV1>.size)
         else { return .disabled }
@@ -897,7 +897,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             guard value.struct_size
                     >= UInt32(MemoryLayout<EvimSemanticStylePresentationV1>.size),
                   value.style == style,
-                  value.flags & UInt32(EVIM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE) != 0,
+                  value.flags & UInt32(EVIM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE | EVIM_SEMANTIC_STYLE_TYPING_CONTEXT) != 0,
                   value.selection.struct_size
                     >= UInt32(MemoryLayout<EvimLogicalSelectionIdentityV1>.size)
             else {

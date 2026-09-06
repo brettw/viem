@@ -136,7 +136,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     public func restoreRecovery(_ snapshot: EVRecoverySnapshot) throws {
         recoveryInterpretation = snapshot
         defer { recoveryInterpretation = nil }
-        try read(source: snapshot.source, typeName: snapshot.format == .markdownSource ? EVDocument.markdownSourceType : EVDocument.typeName(for: snapshot.format))
+        try read(source: snapshot.source, typeName: snapshot.format == .markdownSource ? EVDocument.markdownSourceType : (snapshot.format == .htmlSource ? EVDocument.htmlSourceType : EVDocument.typeName(for: snapshot.format)))
         let state = try documentState()
         try checked(evim_core_mark_recovered(core, state.document_id, state.document_revision), operation: "Restore unsaved recovery state")
         _ = try documentState()
@@ -350,7 +350,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         // frontend identifies the format container but never decodes or scans
         // authoritative source bytes itself.
         options.encoding = recoveryInterpretation?.encoding ?? UInt32(EVIM_ENCODING_DETECT)
-        options.format = Self.formatOption(typeName: recoveryInterpretation.map { $0.format == .markdownSource ? EVDocument.markdownSourceType : EVDocument.typeName(for: $0.format) } ?? typeName)
+        options.format = Self.formatOption(typeName: recoveryInterpretation.map { $0.format == .markdownSource ? EVDocument.markdownSourceType : ($0.format == .htmlSource ? EVDocument.htmlSourceType : EVDocument.typeName(for: $0.format)) } ?? typeName)
         options.file_format = recoveryInterpretation?.fileFormat ?? UInt32(EVIM_FILE_FORMAT_DETECT)
         var handle: EvimCoreHandle = 0
         var revision: UInt64 = 0
@@ -552,6 +552,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         case UInt32(EVIM_FORMAT_MARKDOWN): .markdown
         case UInt32(EVIM_FORMAT_MARKDOWN_SOURCE): .markdownSource
         case UInt32(EVIM_FORMAT_HTML): .html
+        case UInt32(EVIM_FORMAT_HTML_SOURCE): .htmlSource
         case UInt32(EVIM_FORMAT_RTF): .rtf
         default: .plainText
         }
@@ -565,6 +566,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             UInt32(EVIM_FORMAT_MARKDOWN_SOURCE)
         case .html:
             UInt32(EVIM_FORMAT_HTML)
+        case .htmlSource:
+            UInt32(EVIM_FORMAT_HTML_SOURCE)
         case .rtf:
             UInt32(EVIM_FORMAT_RTF)
         case .plainText, nil:
@@ -742,6 +745,10 @@ final class EVCoreViewSession {
 
     func setThemePadding(_ padding: EVThemePadding) throws {
         try checked(evim_core_view_set_padding(document.core, viewID, Float(padding.top), Float(padding.left), Float(padding.bottom), Float(padding.right)), operation: "Update document padding")
+    }
+
+    func setSmartQuotes(_ enabled: Bool) throws {
+        try checked(evim_core_view_set_smart_quotes(document.core, viewID, enabled ? 1 : 0), operation: "Update smart quotes")
     }
 
     func currentFontEnWidth() throws -> CGFloat {
@@ -1004,6 +1011,7 @@ final class EVCoreViewSession {
         case .markdown: UInt32(EVIM_FORMAT_MARKDOWN)
         case .markdownSource: UInt32(EVIM_FORMAT_MARKDOWN_SOURCE)
         case .html: UInt32(EVIM_FORMAT_HTML)
+        case .htmlSource: UInt32(EVIM_FORMAT_HTML_SOURCE)
         case .rtf: UInt32(EVIM_FORMAT_RTF)
         }
         request.document_id = state.document_id

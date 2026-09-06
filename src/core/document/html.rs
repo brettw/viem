@@ -61,7 +61,7 @@ fn void(name: &str) -> bool {
 fn paragraph(name: &str) -> bool {
     matches!(name, "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li")
 }
-fn block(name: &str) -> bool {
+pub(super) fn block(name: &str) -> bool {
     paragraph(name)
         || matches!(
             name,
@@ -320,6 +320,8 @@ pub(super) fn project(
     let mut stack = vec![Frame::default()];
     let mut pending_break: Option<Range<usize>> = None;
     let mut pending_space: Option<Range<usize>> = None;
+    let mut pending_space_style = CharacterProperties::default();
+    let mut pending_space_named = None;
     let mut paragraph_seen = false;
     for token in tokens {
         match token.kind {
@@ -341,6 +343,8 @@ pub(super) fn project(
                             space.end = token.range.end;
                         } else if pending_space.is_none() {
                             pending_space = Some(token.range);
+                            pending_space_style = frame.character.clone();
+                            pending_space_named = frame.named_character.clone();
                         }
                     }
                     continue;
@@ -353,7 +357,10 @@ pub(super) fn project(
                 builder.paragraph_style = frame.paragraph_style.clone();
                 builder.named_character = frame.named_character.clone();
                 if let Some(range) = pending_space.take() {
-                    builder.emit(" ", range, &frame.character);
+                    let named =
+                        std::mem::replace(&mut builder.named_character, pending_space_named.take());
+                    builder.emit(" ", range, &pending_space_style);
+                    builder.named_character = named;
                 }
                 if !mapped {
                     builder.emit_read_only(&value);
@@ -643,6 +650,8 @@ pub(super) fn project(
                                 space.end = range.end;
                             } else if pending_space.is_none() {
                                 pending_space = Some(range);
+                                pending_space_style = frame.character.clone();
+                                pending_space_named = frame.named_character.clone();
                             }
                         }
                         continue;
@@ -655,7 +664,12 @@ pub(super) fn project(
                     builder.paragraph_style = frame.paragraph_style.clone();
                     builder.named_character = frame.named_character.clone();
                     if let Some(range) = pending_space.take() {
-                        builder.emit(" ", range, &frame.character);
+                        let named = std::mem::replace(
+                            &mut builder.named_character,
+                            pending_space_named.take(),
+                        );
+                        builder.emit(" ", range, &pending_space_style);
+                        builder.named_character = named;
                     }
                     if frame.preserve_whitespace && value == "\n" {
                         builder.hard_break(range);

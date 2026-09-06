@@ -131,6 +131,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private var textInputGeometryUpdateActive = false
     private var isActiveTextSurface = false
     private var caretAppearanceObserver: NSObjectProtocol?
+    private var editingPreferencesObserver: NSObjectProtocol?
+    private weak var configuredEditingSession: EVCoreViewSession?
+    private var configuredSmartQuotes: Bool?
+    var editingPreferences = EVEditingPreferences.shared {
+        didSet { configuredSmartQuotes = nil; synchronizeEditingPreferences() }
+    }
     private lazy var customCaretBlinkController: EVCustomCaretBlinkController = {
         let controller = EVCustomCaretBlinkController()
         controller.onVisibilityChange = { [weak self] _ in
@@ -175,11 +181,23 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyPresentation() }
         }
+        editingPreferencesObserver = NotificationCenter.default.addObserver(
+            forName: .evimEditingPreferencesDidChange, object: nil, queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let self, notification.object as AnyObject? === self.editingPreferences else { return }
+                self.synchronizeEditingPreferences()
+            }
+        }
+        synchronizeEditingPreferences()
     }
 
     deinit {
         if let caretAppearanceObserver {
             NotificationCenter.default.removeObserver(caretAppearanceObserver)
+        }
+        if let editingPreferencesObserver {
+            NotificationCenter.default.removeObserver(editingPreferencesObserver)
         }
     }
 
@@ -253,12 +271,29 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func applyPresentation() {
+        synchronizeEditingPreferences()
         reconcileMarkedTextWithCore()
         updateCustomCaretPresentation()
         needsDisplay = true
         updateInsertionIndicator()
         updateCommandLineInsertionIndicator()
         notifyTextInputStateChanged()
+    }
+
+    /// Refresh a newly created/replaced core view as well as live preferences.
+    /// Quote classification and source-aware insertion remain entirely in core.
+    private func synchronizeEditingPreferences() {
+        guard let session = surface?.session else { return }
+        let enabled = editingPreferences.smartQuotes
+        guard configuredEditingSession !== session || configuredSmartQuotes != enabled else { return }
+        do {
+            try session.setSmartQuotes(enabled)
+            configuredEditingSession = session
+            configuredSmartQuotes = enabled
+        } catch {
+            // A closing or replaced session may be unavailable. The next
+            // presentation retries against the live session instead.
+        }
     }
 
     private func updateCustomCaretPresentation() {
@@ -1068,6 +1103,13 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             super.keyDown(with: event)
             return
         }
+        let textModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if textModifiers == [.option], event.charactersIgnoringModifiers?.lowercased() == "i",
+           !compositionActive,
+           [UInt32(EVIM_MODE_INSERT), UInt32(EVIM_MODE_REPLACE)].contains(surface.viewPresentation.mode) {
+            surface.perform(menuCommand: .italic, sender: event)
+            return
+        }
 
         if compositionActive, event.keyCode == 53 {
             cancelActiveMarkedText(using: session, discardInputContext: true)
@@ -1249,6 +1291,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         window?.makeFirstResponder(self)
         customCaretBlinkController.restartAfterActivity()
         placeCursor(for: event, extending: event.modifierFlags.contains(.shift))
+        if event.clickCount >= 3 {
+            surface?.perform(menuCommand: .selectHardLine, sender: event)
+        } else if event.clickCount == 2 {
+            surface?.perform(menuCommand: .selectWord, sender: event)
+        }
     }
 
     override func mouseDragged(with event: NSEvent) {

@@ -7,8 +7,9 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
   public func currentStyleMenuCatalogue() -> EVStyleMenuCatalogue? {
     guard let snapshot = try? backend.styleSheetSnapshot() else { return nil }
     let selection = try? session?.listSelection()
+    let selectedStyles = try? session?.selectedNamedStyles()
 
-    let entries = snapshot.definitions.sorted {
+    let entries = snapshot.definitions.filter { !$0.flags.contains(.internalSyntax) }.sorted {
       $0.name.localizedStandardCompare($1.name) == .orderedAscending
     }.map { definition in
       EVStyleMenuEntry(
@@ -23,7 +24,11 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
               || (definition.capabilities.contains(.assign)
                 && (definition.kind == .paragraph
                   || (definition.kind == .character
-                    && selection!.text_start < selection!.text_end))))
+                    && selection!.text_start < selection!.text_end)))),
+          state: selectedStyles?.identity == snapshot.identity
+            && ((definition.kind == .paragraph && selectedStyles?.paragraph == definition.key.id)
+                || (definition.kind == .character && selectedStyles?.character == definition.key.id))
+            ? .on : .off
         )
       )
     }
@@ -57,7 +62,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
   }
 
   private func standardHeadingLevel(for id: String) -> UInt32? {
-    guard [.markdown, .markdownSource, .html, .rtf].contains(backend.sourceFormat) else {
+    guard [.markdown, .markdownSource, .html, .htmlSource, .rtf].contains(backend.sourceFormat) else {
       return nil
     }
     if id == "Paragraph" { return 0 }
@@ -76,7 +81,8 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
         let definition = snapshot.definition(
           namespace: action.role.namespace,
           id: EVStyleID(rawValue: action.stableID)),
-        definition.kind.menuRole == action.role
+        definition.kind.menuRole == action.role,
+        !definition.flags.contains(.internalSyntax)
       else { return }
       let level = action.role == .paragraph ? standardHeadingLevel(for: action.stableID) : nil
       guard level != nil || definition.capabilities.contains(.assign) else { return }

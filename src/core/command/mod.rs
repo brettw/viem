@@ -13,8 +13,10 @@ pub mod layout_motion;
 pub mod text_object;
 pub mod visual_block;
 
+mod input_assistance;
 mod line_mode;
 mod registers;
+mod typing_style;
 pub use line_mode::{LineLocation, LineMode};
 mod text;
 
@@ -746,6 +748,16 @@ struct ReplaceJournalEntry {
     start: usize,
     inserted: String,
     original: Option<String>,
+    source_record: Option<crate::document::RecordedReplacement>,
+}
+
+impl ReplaceJournalEntry {
+    fn frontier(&self) -> Option<usize> {
+        self.source_record
+            .as_ref()
+            .map(|record| record.after_cursor)
+            .or_else(|| self.start.checked_add(self.inserted.len()))
+    }
 }
 
 /// Snapshot-independent redo program for one uninterrupted Insert or Replace
@@ -758,6 +770,8 @@ struct EditSessionProgram {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum EditSessionStep {
+    AssistedText(String),
+    TypingStyle(typing_style::TypingStyle),
     Text(RegisterValue),
     ListEnter,
     Backspace,
@@ -1130,6 +1144,8 @@ pub struct CommandInterpreter {
     last_repeat: Option<RepeatAction>,
     line_undo: Option<LineUndoState>,
     insert_session: Option<InsertSession>,
+    typing_style: typing_style::TypingStyle,
+    input_assistance: input_assistance::InputAssistance,
     visual_block_insert: Option<VisualBlockInsertSession>,
     replaying: bool,
     last_find: Option<FindState>,
@@ -1238,6 +1254,8 @@ impl CommandInterpreter {
             last_repeat: None,
             line_undo: None,
             insert_session: None,
+            typing_style: Default::default(),
+            input_assistance: Default::default(),
             visual_block_insert: None,
             replaying: false,
             last_find: None,
@@ -1584,6 +1602,8 @@ impl CommandInterpreter {
         // publishes its validated post-change slot to every view after this
         // position-map preparation, so an inactive view must not discard the
         // shared pre-publication value here.
+        next.typing_style = Default::default();
+        next.input_assistance.clear_tag();
         next.position_revision = Some(map.target_revision());
         *self = next;
         Ok(true)
@@ -1630,6 +1650,21 @@ impl CommandInterpreter {
             };
             next.cursor = mapped;
             next.boundary_affinity = anchors.cursor.affinity();
+        }
+
+        if let (Some(previous), Some(current), Some(anchor)) = (
+            before.insert_session.as_ref(),
+            next.insert_session.as_mut(),
+            anchors.insert_unit_floor,
+        ) {
+            if current.unit_floor == previous.unit_floor
+                && document.text_point(current.unit_floor).is_err()
+            {
+                let Some(mapped) = mapped_anchor(map, anchor)? else {
+                    return Ok(false);
+                };
+                current.unit_floor = mapped;
+            }
         }
 
         if self.visual_anchor == before.visual_anchor {
@@ -2020,6 +2055,8 @@ impl CommandInterpreter {
             .map(|(name, anchor)| validate(*anchor).map(|offset| (*name, offset)))
             .collect::<Result<BTreeMap<_, _>, _>>()?;
 
+        self.typing_style = Default::default();
+        self.input_assistance.clear_tag();
         self.mode = Mode::Normal;
         self.cursor = normalize_normal_cursor_snapshot(&document.hard_line_snapshot(), cursor);
         self.boundary_affinity = restoration.cursor().affinity();
@@ -2321,6 +2358,8 @@ impl CommandInterpreter {
     pub fn set_cursor(&mut self, document: &Document, offset: usize) -> bool {
         let lines = document.hard_line_snapshot();
         if lines.is_grapheme_boundary(offset) {
+            self.typing_style = Default::default();
+            self.input_assistance.clear_tag();
             self.invalidate_replace_restoration();
             self.cursor = normalize_normal_cursor_snapshot(&lines, offset);
             self.position_revision = Some(document.revision());
@@ -2353,6 +2392,8 @@ impl CommandInterpreter {
         }
 
         self.invalidate_replace_restoration();
+        self.typing_style = Default::default();
+        self.input_assistance.clear_tag();
         if extend_selection {
             if !matches!(
                 self.mode,
@@ -2460,6 +2501,22 @@ impl CommandInterpreter {
         event: InputEvent,
     ) -> Result<CommandOutput, DocumentError> {
         let checkpoint = self.clone();
+        if matches!(
+            &event,
+            InputEvent::Key(
+                Key::Left
+                    | Key::Right
+                    | Key::Up
+                    | Key::Down
+                    | Key::Home
+                    | Key::End
+                    | Key::PageUp
+                    | Key::PageDown
+            )
+        ) {
+            self.typing_style = Default::default();
+            self.input_assistance.clear_tag();
+        }
         let edit_group_depth = document.edit_group_depth();
         let before_lines = document.hard_line_snapshot();
         let line_undo_candidate = self.capture_line_undo_at_cursor(document);
@@ -2650,6 +2707,18 @@ impl CommandInterpreter {
             });
         }
 
+        if self.needs_input_assistance(context.document(), &event)
+            || !self.typing_style.values.is_empty()
+            || self
+                .insert_session
+                .as_ref()
+                .and_then(|session| session.replace_journal.last())
+                .is_some_and(|entry| entry.source_record.is_some())
+        {
+            return Ok(CommandResolution::Legacy(
+                LegacyCommandReason::CompoundOrUnmigrated,
+            ));
+        }
         if self.line_mode == LineMode::PhysicalSource
             && matches!(&event,InputEvent::Key(key) if (self.mode==Mode::VisualLine||self.mode_line_key(*key)||matches!(key,Key::Char('p'|'P'))))
         {
@@ -3283,6 +3352,7 @@ impl CommandInterpreter {
             let Some(range) = grapheme_range_at(document.text(), end) else {
                 if journalable {
                     journal_entries.push(ReplaceJournalEntry {
+                        source_record: None,
                         start: start + relative,
                         inserted: inserted.to_owned(),
                         original: None,
@@ -3293,6 +3363,7 @@ impl CommandInterpreter {
             if is_hard_line_separator(lines, &range) {
                 if journalable {
                     journal_entries.push(ReplaceJournalEntry {
+                        source_record: None,
                         start: start + relative,
                         inserted: inserted.to_owned(),
                         original: None,
@@ -3302,6 +3373,7 @@ impl CommandInterpreter {
             }
             if journalable {
                 journal_entries.push(ReplaceJournalEntry {
+                    source_record: None,
                     start: start + relative,
                     inserted: inserted.to_owned(),
                     original: Some(document.text()[range.clone()].to_owned()),
@@ -7867,6 +7939,22 @@ impl CommandInterpreter {
         document: &mut Document,
         key: Key,
     ) -> Result<CommandOutput, DocumentError> {
+        if let Some(output) = self.try_html_assistance_key(document, key)? {
+            return Ok(output);
+        }
+        if matches!(
+            key,
+            Key::Escape
+                | Key::Left
+                | Key::Right
+                | Key::Up
+                | Key::Down
+                | Key::Home
+                | Key::End
+                | Key::Ctrl('o')
+        ) {
+            self.typing_style = Default::default();
+        }
         if let Some(output) = self.try_mode_line_key(document, key)? {
             return Ok(output);
         }
@@ -10376,6 +10464,10 @@ impl CommandInterpreter {
         document: &mut Document,
         input: &str,
     ) -> Result<CommandOutput, DocumentError> {
+        if let Some(output) = self.try_insert_html_assistance(document, input)? {
+            return Ok(output);
+        }
+        let input = self.smart_quotes_input(document, input);
         let value = RegisterValue::characterwise(input);
         self.insert_register_payload(document, &value)
     }
@@ -10385,7 +10477,11 @@ impl CommandInterpreter {
         document: &mut Document,
         input: &str,
     ) -> Result<CommandOutput, DocumentError> {
-        let value = external_text_register_value(document, input);
+        if let Some(output) = self.try_insert_html_assistance(document, input)? {
+            return Ok(output);
+        }
+        let input = self.smart_quotes_input(document, input);
+        let value = external_text_register_value(document, &input);
         self.insert_register_payload(document, &value)
     }
 
@@ -10401,20 +10497,29 @@ impl CommandInterpreter {
         let lines = document.hard_line_snapshot();
         let payload = FormattedTextPayload::new(&lines, input, value.hard_break_offsets().to_vec())
             .expect("insert register payload has validated semantic breaks");
-        if matches!(
-            document.format(),
-            crate::document::Format::Html | crate::document::Format::Rtf
-        ) {
-            let affinity = self.insertion_boundary_affinity();
-            document.apply_formatted_payload_edits(vec![FormattedPayloadEdit::new(
-                self.cursor..self.cursor,
-                payload,
-            )
-            .with_boundary_affinity(affinity)])?;
+        if !self.typing_style.values.is_empty() {
+            self.cursor = document
+                .insert_with_typing_properties(
+                    FormattedPayloadEdit::new(self.cursor..self.cursor, payload)
+                        .with_boundary_affinity(self.insertion_boundary_affinity()),
+                    &self.typing_style.values,
+                )
+                .map_err(command_document_error)?;
         } else {
-            document.insert_formatted_payload(self.cursor, payload)?;
+            if matches!(
+                document.format(),
+                crate::document::Format::Html | crate::document::Format::Rtf
+            ) {
+                document.apply_formatted_payload_edits(vec![FormattedPayloadEdit::new(
+                    self.cursor..self.cursor,
+                    payload,
+                )
+                .with_boundary_affinity(self.insertion_boundary_affinity())])?;
+            } else {
+                document.insert_formatted_payload(self.cursor, payload)?;
+            }
+            self.cursor += input.len();
         }
-        self.cursor += input.len();
         if let Some(session) = self.insert_session.as_mut() {
             if !session.replaying_program {
                 session.preserve_normal_repeat = false;
@@ -10431,7 +10536,7 @@ impl CommandInterpreter {
         })
     }
 
-    fn insertion_boundary_affinity(&self) -> BoundaryAffinity {
+    pub(crate) fn insertion_boundary_affinity(&self) -> BoundaryAffinity {
         if self
             .insert_session
             .as_ref()
@@ -10452,7 +10557,7 @@ impl CommandInterpreter {
         if continuing {
             BoundaryAffinity::Upstream
         } else {
-            BoundaryAffinity::Downstream
+            self.boundary_affinity
         }
     }
 
@@ -10495,6 +10600,68 @@ impl CommandInterpreter {
                 .insert_session
                 .as_ref()
                 .is_some_and(|session| session.placement == InsertPlacement::Replace);
+        if journalable
+            && (!self.typing_style.values.is_empty()
+                || self
+                    .insert_session
+                    .as_ref()
+                    .and_then(|session| session.replace_journal.last())
+                    .is_some_and(|entry| entry.source_record.is_some()))
+        {
+            let previous = self
+                .insert_session
+                .as_ref()
+                .and_then(|session| session.replace_journal.last());
+            let continuing = previous.is_some_and(|entry| entry.frontier() == Some(self.cursor));
+            let target = if continuing {
+                previous
+                    .and_then(|entry| entry.source_record.as_ref())
+                    .map_or(self.cursor, |record| record.next_target)
+            } else {
+                self.cursor
+            };
+            let (prepared, records) = document
+                .prepare_recorded_replacement(
+                    self.cursor,
+                    target,
+                    input,
+                    &self.typing_style.values,
+                    self.insertion_boundary_affinity(),
+                )
+                .map_err(command_document_error)?;
+            let changed = !prepared.is_no_op();
+            document
+                .commit_model_transaction(prepared)
+                .map_err(command_document_error)?;
+            if let Some(last) = records.last() {
+                self.cursor = last.after_cursor;
+            }
+            if let Some(session) = self.insert_session.as_mut() {
+                if !continuing {
+                    session.replace_journal.clear();
+                }
+                session
+                    .replace_journal
+                    .extend(records.into_iter().map(|record| ReplaceJournalEntry {
+                        start: record.before_cursor,
+                        inserted: record.inserted.clone(),
+                        original: record.original.clone(),
+                        source_record: Some(record),
+                    }));
+                if !session.replaying_program {
+                    session.preserve_normal_repeat = false;
+                    if let Some(program) = session.repeat_program.as_mut() {
+                        program.append_text(value);
+                    }
+                    session.last_inserted.append_inserted_payload(value);
+                }
+            }
+            return Ok(CommandOutput {
+                document_changed: changed,
+                cursor_moved: true,
+                ..CommandOutput::complete()
+            });
+        }
         if !journalable {
             // Newlines and externally established Replace sessions need
             // richer row-aware bookkeeping. Do not let a stale one-line
@@ -10519,6 +10686,7 @@ impl CommandInterpreter {
             let Some(range) = grapheme_range_at(document.text(), end) else {
                 if journalable {
                     journal_entries.push(ReplaceJournalEntry {
+                        source_record: None,
                         start: start + relative,
                         inserted: inserted.to_owned(),
                         original: None,
@@ -10529,6 +10697,7 @@ impl CommandInterpreter {
             if is_hard_line_separator(&lines, &range) {
                 if journalable {
                     journal_entries.push(ReplaceJournalEntry {
+                        source_record: None,
                         start: start + relative,
                         inserted: inserted.to_owned(),
                         original: None,
@@ -10538,6 +10707,7 @@ impl CommandInterpreter {
             }
             if journalable {
                 journal_entries.push(ReplaceJournalEntry {
+                    source_record: None,
                     start: start + relative,
                     inserted: inserted.to_owned(),
                     original: Some(document.text()[range.clone()].to_owned()),
@@ -10548,8 +10718,18 @@ impl CommandInterpreter {
         let before = document.revision();
         let payload = FormattedTextPayload::new(&lines, input, value.hard_break_offsets().to_vec())
             .expect("replacement register payload has validated semantic breaks");
-        document.replace_with_formatted_payload(start..end, payload)?;
-        self.cursor = start + input.len();
+        if !self.typing_style.values.is_empty() {
+            self.cursor = document
+                .insert_with_typing_properties(
+                    FormattedPayloadEdit::new(start..end, payload)
+                        .with_boundary_affinity(self.insertion_boundary_affinity()),
+                    &self.typing_style.values,
+                )
+                .map_err(command_document_error)?;
+        } else {
+            document.replace_with_formatted_payload(start..end, payload)?;
+            self.cursor = start + input.len();
+        }
         if let Some(session) = self.insert_session.as_mut() {
             if !session.replaying_program {
                 session.preserve_normal_repeat = false;
@@ -10593,17 +10773,32 @@ impl CommandInterpreter {
                 .insert_session
                 .as_ref()
                 .and_then(|session| session.replace_journal.last())
-                .filter(|entry| entry.start.checked_add(entry.inserted.len()) == Some(self.cursor))
+                .filter(|entry| entry.frontier() == Some(self.cursor))
                 .cloned();
             if let Some(entry) = journal_entry {
                 let before = document.revision();
-                document.replace(
-                    entry.start..self.cursor,
-                    entry.original.as_deref().unwrap_or(""),
-                )?;
+                if let Some(record) = &entry.source_record {
+                    document
+                        .restore_recorded_replacement(&record.restoration)
+                        .map_err(command_document_error)?;
+                } else {
+                    document.replace(
+                        entry.start..self.cursor,
+                        entry.original.as_deref().unwrap_or(""),
+                    )?;
+                }
                 self.cursor = entry.start;
                 if let Some(session) = self.insert_session.as_mut() {
                     session.replace_journal.pop();
+                    if let Some(previous) = session
+                        .replace_journal
+                        .last_mut()
+                        .and_then(|entry| entry.source_record.as_mut())
+                    {
+                        previous
+                            .restoration
+                            .after_newer_frontier_restored(document.revision());
+                    }
                     if !session.replaying_program {
                         session.preserve_normal_repeat = false;
                         if let Some(program) = session.repeat_program.as_mut() {
@@ -10688,6 +10883,8 @@ impl CommandInterpreter {
         if entry_count > isize::MAX as usize {
             return repetition_too_large(entry_count);
         }
+        self.typing_style = Default::default();
+        self.input_assistance.clear_tag();
         let text = document.text();
         let lines = document.hard_line_snapshot();
         self.cursor = match placement {
@@ -10744,6 +10941,9 @@ impl CommandInterpreter {
             return Ok(());
         }
         for step in &program.steps {
+            if let EditSessionStep::AssistedText(value) = step {
+                document.encoding().encode_fragment(value)?;
+            }
             if let EditSessionStep::Text(value) = step {
                 // Encoding failure is deterministic and must be discovered
                 // before an earlier semantic step can mutate the document.
@@ -10772,6 +10972,7 @@ impl CommandInterpreter {
         let text_bytes = program.steps.iter().try_fold(0usize, |total, step| {
             let length = match step {
                 EditSessionStep::Text(value) => value.text.len(),
+                EditSessionStep::AssistedText(value) => value.len(),
                 _ => 0,
             };
             total.checked_add(length)
@@ -10829,13 +11030,28 @@ impl CommandInterpreter {
                 }
                 for step in &program.steps {
                     let next = match step {
+                        EditSessionStep::TypingStyle(value) => {
+                            self.typing_style = value.clone();
+                            CommandOutput::complete()
+                        }
+                        EditSessionStep::AssistedText(value) => {
+                            self.insert_text(document, value)?
+                        }
                         EditSessionStep::Text(value) if self.mode == Mode::Insert => {
                             self.insert_register_payload(document, value)?
                         }
                         EditSessionStep::Text(value) => {
                             self.replace_register_payload(document, value)?
                         }
-                        EditSessionStep::Backspace => self.edit_mode_backspace(document)?,
+                        EditSessionStep::Backspace => {
+                            if let Some(output) =
+                                self.try_html_assistance_key(document, Key::Backspace)?
+                            {
+                                output
+                            } else {
+                                self.edit_mode_backspace(document)?
+                            }
+                        }
                         EditSessionStep::Delete => self.edit_mode_delete(document)?,
                         EditSessionStep::DeleteWord => self.insert_ctrl_w(document)?,
                         EditSessionStep::DeleteToLineStart => self.insert_ctrl_u(document)?,
@@ -10870,6 +11086,8 @@ impl CommandInterpreter {
             }
             expansion_changed = output.document_changed;
         }
+        self.typing_style = Default::default();
+        self.input_assistance.clear_tag();
         if let Some(session) = self.insert_session.take() {
             let last_inserted = session.last_inserted.clone();
             document.end_edit_group();

@@ -3493,7 +3493,7 @@ The two Markdown views share one physical Markdown serialization:
 
 - **Markdown WYSIWYG** is the existing projection with formatting delimiters
   hidden.
-- **Markdown** preserves every decoded source character, including formatting
+- **Markdown Source** preserves every decoded source character, including formatting
   delimiters, in editable display text. Parsed styles apply to the associated
   source spans, including heading and emphasis delimiters. Editing a delimiter
   reparses and updates formatting immediately. Formatting commands update the
@@ -3503,6 +3503,105 @@ Opening a Markdown file retains the existing WYSIWYG default. The status popup
 can select the source-visible Markdown view. New bold uses `**`, italic uses
 `*`, and headings use one through six `#` characters followed by one space.
 Untouched alternative delimiters and physical line endings remain exact.
+
+The two HTML views similarly share one physical HTML serialization:
+
+- **HTML WYSIWYG** displays the interpreted document. Typed `<`, `&`, quotes,
+  and other syntax-sensitive characters are encoded as appropriate HTML text
+  or entity syntax and must not accidentally create markup.
+- **HTML Source** displays every decoded source character, including tags,
+  comments, attributes, entities, and uninterpreted script/style contents.
+  Encoding and logical line-ending normalization still use the shared pipeline;
+  original bytes and delimiter spellings remain authoritative. Source edits
+  immediately update semantic formatting, and formatting actions update the
+  corresponding source markup. Switching views preserves source bytes.
+
+HTML Source overlays configurable internal character styles on brackets, tag
+names, attribute keys, attribute values, attribute equals signs, entity names,
+and uninterpreted content. Their names start with `* HTML`. Generated defaults
+declare only foreground colors; all other properties come from the underlying
+content style. Automatic applications form a separate sparse overlay, so they
+do not reset the underlying font, weight, size, or semantic styling. Internal
+definitions appear in Edit Styles, but cannot be manually assigned and do not
+appear in Paragraph or Character assignment menus. Current-style queries and
+typing inheritance ignore the automatic layer. These definitions use stable
+identities and generated buffer configuration, like generated Markdown styles.
+Their customization survives edits and history navigation in that buffer,
+never changes HTML bytes, and returns to defaults when a document is reopened.
+
+HTML Source uses physical source lines as its displayed paragraph units.
+Recovered semantic paragraph styles contribute character defaults and named
+style identity to their source spans. Paragraph spacing and alignment remain
+editable source properties and take full effect in WYSIWYG; independent HTML
+paragraphs on one physical source line cannot each align that same displayed
+line differently. Source view does not invent additional visible line breaks.
+
+### Authored-input assistance
+
+In HTML Source prose, typing a single `<` inserts `<>` and leaves the caret
+between them. As the opening name is authored, eVim maintains a generated end
+tag: `<b|></b>` becomes `<br|>` when `r` is typed because `br` is a void element.
+All standard HTML void elements and explicit self-closing tags omit the end
+tag. Attributes retain literal quote syntax. Typing `>` at the generated
+opening delimiter advances over it rather than duplicating it; Backspace while
+authoring the opening tag updates its generated suffix, and backspacing the
+initial `<` removes the empty generated pair.
+
+Only the most recent automatic insertion is tracked, using persistent anchors
+and exact generated-text validation. Changing generated text, moving the caret
+away, leaving Insert mode, or an unresolvable rebase retires that annotation.
+Existing and pasted source is never automatically repaired. Assistance does not
+run inside tags, attribute values, comments, entities, or uninterpreted raw
+text. Each assisted keystroke is one verified transaction within the enclosing
+Insert undo group; counted insertion, dot, and macros retain its input intent.
+
+Settings includes an **Editing** category with **Smart quotes**, initially off.
+This application preference is propagated to every view and never changes
+document source merely by being toggled. It transforms individually authored
+straight quotes in prose, not pasted text, registers, command prompts, or
+syntax-required quotes in HTML Source and Markdown code/link/tag constructs.
+Beginning of text or a logical line, whitespace, opening brackets, opening
+quotes, and hyphen/en-dash/em-dash favor opening `‘` or `“`. Letters, digits,
+closing punctuation, and other preceding content favor closing `’` or `”`;
+apostrophes within words therefore close. HTML tags are ignored when finding
+the surrounding prose, entities contribute their decoded text, hidden content
+is excluded, and paragraph tags supply a line boundary. Context queries are
+bounded; when preceding prose cannot be established within that bound, quotes
+retain their literal spelling.
+
+### Caret formatting and native selection
+
+With no selected text in Insert or Replace mode, supported character-formatting
+actions update a sparse, view-local typing override tied to the exact caret.
+They do not insert empty HTML/Markdown/RTF wrappers, change source, or create an
+undo unit. The next nonempty insertion combines text and its requested style
+into one verified transaction. Repeated typing retains the override; explicit
+caret movement, leaving the insertion mode, or changing projection retires it.
+Menu checkmarks and typography queries show inherited style plus pending
+overrides, without including automatic source-syntax colors. Formatting with a
+selection continues to modify that exact range. Bold, Italic, and other
+supported character actions work in RTF as well as the compatible HTML and
+Markdown views.
+
+Marked text remains an IME overlay until commit, when its text and pending
+formatting become one transaction. In Replace mode, Backspace restores the
+recorded local source patches for each overwritten grapheme, including original
+formatting and generated delimiters. It must not reconstruct the old state
+from plain text alone or retain a full-document copy for each keystroke.
+
+`Command-I` remains the standard Italic action. As an additional requested
+editing shortcut, `Option-I` toggles the typing Italic property in Insert and
+Replace mode when no input-method composition is active. In that context it
+takes precedence over the keyboard layout's Option-I dead key; other native
+fields retain their normal keyboard behavior. Underline's U icon includes a
+visible underline.
+
+A paragraph-style menu choice applies to the paragraph containing the caret
+when there is no selection, and to the selected paragraph span otherwise.
+Double-click selects the portable word under the pointer, respecting grapheme
+boundaries. Triple-click selects the line using the active view's Visual or
+Physical Source line policy. These native gestures invoke the same core
+selection algebra and operator behavior as keyboard selection.
 
 The Format > Paragraph > List menu applies bulleted or numbered lists, changes
 between them, or removes list structure from the current paragraph or selected

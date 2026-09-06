@@ -25,6 +25,7 @@ pub enum Format {
     /// Editable Markdown source with formatting applied to visible syntax.
     MarkdownSource,
     Html,
+    HtmlSource,
     Rtf,
 }
 
@@ -1994,7 +1995,7 @@ impl FormattedDocument {
         position_map: &PositionMap,
         next_id: u64,
     ) -> Result<u64, BlockIdentityError> {
-        if !matches!(format, Format::Html | Format::Rtf) {
+        if !matches!(format, Format::Html | Format::HtmlSource | Format::Rtf) {
             return self.install_reconciled_block_ids(previous, edits, position_map, next_id);
         }
         self.install_reconciled_source_block_ids(previous, edits, position_map, next_id)
@@ -2535,12 +2536,19 @@ impl FormattedDocument {
                 .filter(|block| block_styles.contains(&block.style))
                 .map(|block| block.range.clone()),
         );
-        ranges.extend(self.styles.iter().filter_map(|span| {
-            let StyleApplication::Named(id) = &span.application else {
-                return None;
-            };
-            character_styles.contains(id).then(|| span.range.clone())
-        }));
+        ranges.extend(
+            self.styles
+                .iter()
+                .filter_map(|span| match &span.application {
+                    StyleApplication::Named(id) | StyleApplication::Automatic(id) => {
+                        character_styles.contains(id).then(|| span.range.clone())
+                    }
+                    StyleApplication::SourceParagraph { style, .. } => {
+                        block_styles.contains(style).then(|| span.range.clone())
+                    }
+                    _ => None,
+                }),
+        );
         ranges.sort_by_key(|range| (range.start, range.end));
         let mut normalized: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
         for range in ranges {
@@ -3098,6 +3106,12 @@ pub(crate) fn project(
             source_content_start,
             source_content_end,
         ),
+        Format::HtmlSource => super::html_source::project(
+            normalized,
+            revision,
+            source_content_start,
+            source_content_end,
+        ),
         Format::Rtf => super::rtf::project(
             normalized,
             revision,
@@ -3525,7 +3539,7 @@ fn shift_region_range(
             .ok_or(BlockIdentityError::InvalidProjection)?)
 }
 
-fn project_plain(
+pub(super) fn project_plain(
     normalized: &NormalizedText,
     revision: Revision,
     source_content_start: usize,
@@ -3771,6 +3785,14 @@ impl<'a> MarkdownBuilder<'a> {
     }
 
     fn parse_inline(&mut self, start: usize, end: usize) {
+        self.parse_inline_depth(start, end, 0);
+    }
+
+    fn parse_inline_depth(&mut self, start: usize, end: usize, depth: usize) {
+        if depth >= 64 {
+            self.emit_range_with_escapes(start, end);
+            return;
+        }
         let mut at = start;
         while at < end {
             if self.source_text[at..].starts_with('\\') {
@@ -3804,7 +3826,53 @@ impl<'a> MarkdownBuilder<'a> {
                 }
             }
 
-            let double = if self.source_text[at..].starts_with("**") {
+            // Canonical combined emphasis uses a triple delimiter. If its
+            // closing run is split, the first inner closing run determines
+            // whether the outer role is strong or emphasis.
+            let triple = if self.source_text[at..].starts_with("***") {
+                Some("***")
+            } else if self.source_text[at..].starts_with("___") {
+                Some("___")
+            } else {
+                None
+            };
+            let mut triple_outer_single = false;
+            if let Some(marker) = triple {
+                if let Some(close) = self.find_marker(at + 3, end, marker) {
+                    let output_start = self.output.len();
+                    if self.preserve_markers {
+                        self.emit_range(at, at + 3);
+                    }
+                    self.parse_inline_depth(at + 3, close, depth + 1);
+                    if self.preserve_markers {
+                        self.emit_range(close, close + 3);
+                    }
+                    self.push_semantic_style(output_start, SemanticInlineStyle::Strong);
+                    self.push_semantic_style(output_start, SemanticInlineStyle::Emphasis);
+                    at = close + 3;
+                    continue;
+                }
+                let byte = marker.as_bytes()[0];
+                let mut probe = at + 3;
+                while probe < end {
+                    if self.source_text.as_bytes()[probe] == b'\\' {
+                        probe = self
+                            .next_boundary(probe)
+                            .and_then(|p| self.next_boundary(p))
+                            .unwrap_or(end);
+                        continue;
+                    }
+                    if self.source_text.as_bytes()[probe] == byte {
+                        triple_outer_single =
+                            self.source_text.as_bytes().get(probe + 1) == Some(&byte);
+                        break;
+                    }
+                    probe = self.next_boundary(probe).unwrap_or(end);
+                }
+            }
+            let double = if triple_outer_single {
+                None
+            } else if self.source_text[at..].starts_with("**") {
                 Some("**")
             } else if self.source_text[at..].starts_with("__") {
                 Some("__")
@@ -3816,9 +3884,11 @@ impl<'a> MarkdownBuilder<'a> {
                 if let Some(close) = self.find_marker(inner, end, marker) {
                     let output_start = self.output.len();
                     if self.preserve_markers {
-                        self.emit_range(at, close + marker.len());
-                    } else {
-                        self.emit_range_with_escapes(inner, close);
+                        self.emit_range(at, inner);
+                    }
+                    self.parse_inline_depth(inner, close, depth + 1);
+                    if self.preserve_markers {
+                        self.emit_range(close, close + marker.len());
                     }
                     self.push_semantic_style(output_start, SemanticInlineStyle::Strong);
                     at = close + marker.len();
@@ -3838,9 +3908,11 @@ impl<'a> MarkdownBuilder<'a> {
                 if let Some(close) = self.find_marker(inner, end, marker) {
                     let output_start = self.output.len();
                     if self.preserve_markers {
-                        self.emit_range(at, close + marker.len());
-                    } else {
-                        self.emit_range_with_escapes(inner, close);
+                        self.emit_range(at, inner);
+                    }
+                    self.parse_inline_depth(inner, close, depth + 1);
+                    if self.preserve_markers {
+                        self.emit_range(close, close + marker.len());
                     }
                     self.push_semantic_style(output_start, SemanticInlineStyle::Emphasis);
                     at = close + 1;
@@ -3950,6 +4022,9 @@ impl<'a> MarkdownBuilder<'a> {
     }
 
     fn find_marker(&self, mut at: usize, end: usize, marker: &str) -> Option<usize> {
+        let delimiter = marker.as_bytes()[0];
+        let styled = delimiter == b'*' || delimiter == b'_';
+        let mut nested = false;
         while at + marker.len() <= end {
             if self.source_text[at..].starts_with('\\') {
                 at = self.next_boundary(at)?;
@@ -3958,7 +4033,48 @@ impl<'a> MarkdownBuilder<'a> {
                 }
                 continue;
             }
-            if self.source_text[at..].starts_with(marker) {
+            if styled && self.source_text.as_bytes()[at] == delimiter {
+                let mut run = 1;
+                while at + run < end && self.source_text.as_bytes()[at + run] == delimiter {
+                    run += 1;
+                }
+                match marker.len() {
+                    3 if run >= 3 => return Some(at),
+                    2 if run >= 2 => return Some(at + usize::from(nested && run >= 3)),
+                    2 if run == 1 => nested = !nested,
+                    1 if run == 1 && !nested => return Some(at),
+                    1 if run >= 3 && nested => return Some(at + 2),
+                    1 if run == 2 => {
+                        if !nested {
+                            let mut probe = at + run;
+                            let mut closes_double = false;
+                            while probe < end {
+                                if self.source_text.as_bytes()[probe] == b'\\' {
+                                    probe = self
+                                        .next_boundary(probe)
+                                        .and_then(|p| self.next_boundary(p))
+                                        .unwrap_or(end);
+                                    continue;
+                                }
+                                if self.source_text.as_bytes()[probe] == delimiter {
+                                    closes_double = self.source_text.as_bytes().get(probe + 1)
+                                        == Some(&delimiter);
+                                    break;
+                                }
+                                probe = self.next_boundary(probe).unwrap_or(end);
+                            }
+                            if !closes_double {
+                                return Some(at);
+                            }
+                        }
+                        nested = !nested;
+                    }
+                    _ => {}
+                }
+                at += run;
+                continue;
+            }
+            if !styled && self.source_text[at..].starts_with(marker) {
                 return Some(at);
             }
             at = self.next_boundary(at)?;

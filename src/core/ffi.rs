@@ -107,6 +107,7 @@ pub const EVIM_FORMAT_MARKDOWN: u32 = 2;
 pub const EVIM_FORMAT_HTML: u32 = 3;
 pub const EVIM_FORMAT_RTF: u32 = 4;
 pub const EVIM_FORMAT_MARKDOWN_SOURCE: u32 = 5;
+pub const EVIM_FORMAT_HTML_SOURCE: u32 = 6;
 
 /// Detect the line-ending interpretation through the core's shared open
 /// policy.
@@ -1109,6 +1110,7 @@ pub const EVIM_STYLE_DEFINITION_HAS_NEXT_STYLE: u32 = 1 << 1;
 pub const EVIM_STYLE_DEFINITION_BASE_DOCUMENT: u32 = 1 << 2;
 pub const EVIM_STYLE_DEFINITION_BASE_PARAGRAPH: u32 = 1 << 3;
 pub const EVIM_STYLE_DEFINITION_BASE_CHARACTER: u32 = 1 << 4;
+pub const EVIM_STYLE_DEFINITION_INTERNAL: u32 = 1 << 5;
 
 pub const EVIM_STYLE_CAPABILITY_EDIT_DECLARATIONS: u32 = 1 << 0;
 pub const EVIM_STYLE_CAPABILITY_EDIT_PARENT: u32 = 1 << 1;
@@ -1822,6 +1824,8 @@ pub const EVIM_SEMANTIC_STYLE_STATE_ON: u32 = 1;
 pub const EVIM_SEMANTIC_STYLE_STATE_MIXED: u32 = 2;
 
 pub const EVIM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE: u32 = 1 << 0;
+/// Exact Insert/Replace caret target; toggles change pending typing policy only.
+pub const EVIM_SEMANTIC_STYLE_TYPING_CONTEXT: u32 = 1 << 3;
 pub const EVIM_SEMANTIC_STYLE_CAN_SET: u32 = 1 << 1;
 pub const EVIM_SEMANTIC_STYLE_CAN_CLEAR: u32 = 1 << 2;
 
@@ -2275,6 +2279,7 @@ fn parse_format(raw: u32) -> Result<Format, EvimStatus> {
         EVIM_FORMAT_HTML => Ok(Format::Html),
         EVIM_FORMAT_RTF => Ok(Format::Rtf),
         EVIM_FORMAT_MARKDOWN_SOURCE => Ok(Format::MarkdownSource),
+        EVIM_FORMAT_HTML_SOURCE => Ok(Format::HtmlSource),
         _ => Err(EvimStatus::InvalidFormat),
     }
 }
@@ -2309,6 +2314,7 @@ fn format_to_ffi(format: Format) -> u32 {
         Format::Html => EVIM_FORMAT_HTML,
         Format::Rtf => EVIM_FORMAT_RTF,
         Format::MarkdownSource => EVIM_FORMAT_MARKDOWN_SOURCE,
+        Format::HtmlSource => EVIM_FORMAT_HTML_SOURCE,
     }
 }
 
@@ -5594,7 +5600,10 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, EvimStatu
                 metadata.origin,
                 is_base_document || is_base_paragraph,
                 Some(style.role),
-                matches!(document.format(), Format::Html | Format::Rtf),
+                matches!(
+                    document.format(),
+                    Format::Html | Format::HtmlSource | Format::Rtf
+                ),
             ) | if document.format() == Format::Rtf
                 && style.id.0.starts_with("List")
                 && crate::document::StyleSheet::builtin_block(&style.id)
@@ -5643,6 +5652,9 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, EvimStatu
         }
         let is_base = style.id == sheet.base_character;
         let mut flags = u32::from(is_base) * EVIM_STYLE_DEFINITION_BASE_CHARACTER;
+        if style.id.is_internal() {
+            flags |= EVIM_STYLE_DEFINITION_INTERNAL;
+        }
         let parent_id = if let Some(parent) = &style.based_on {
             flags |= EVIM_STYLE_DEFINITION_HAS_PARENT;
             push_style_string(&mut strings, &parent.0)?
@@ -5655,12 +5667,19 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, EvimStatu
             namespace: EVIM_STYLE_NAMESPACE_CHARACTER,
             role: EVIM_STYLE_ROLE_NONE,
             origin: style_origin_to_ffi(metadata.origin),
-            capabilities: generated_style_capabilities(
-                metadata.origin,
-                is_base,
-                None,
-                matches!(document.format(), Format::Html | Format::Rtf),
-            ),
+            capabilities: if style.id.is_internal() {
+                EVIM_STYLE_CAPABILITY_EDIT_DECLARATIONS
+            } else {
+                generated_style_capabilities(
+                    metadata.origin,
+                    is_base,
+                    None,
+                    matches!(
+                        document.format(),
+                        Format::Html | Format::HtmlSource | Format::Rtf
+                    ),
+                )
+            },
             stable_id: push_style_string(&mut strings, &style.id.0)?,
             display_name: push_style_string(&mut strings, &metadata.display_name)?,
             parent_id,
@@ -6191,6 +6210,12 @@ fn export_semantic_style_presentation(
         .is_some_and(|selection| !selection.range().is_empty())
     {
         flags |= EVIM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE;
+    }
+    if presentation
+        .selection()
+        .is_some_and(|selection| selection.kind() == LogicalSelectionKind::None)
+    {
+        flags |= EVIM_SEMANTIC_STYLE_TYPING_CONTEXT;
     }
     if presentation.can_set() {
         flags |= EVIM_SEMANTIC_STYLE_CAN_SET;
@@ -8373,7 +8398,9 @@ pub unsafe extern "C" fn evim_core_view_set_semantic_style(
         if request.expected_selection.struct_size < EVIM_LOGICAL_SELECTION_IDENTITY_V1_SIZE
             || !matches!(
                 request.expected_selection.kind,
-                EVIM_LOGICAL_SELECTION_KIND_CHARACTER | EVIM_LOGICAL_SELECTION_KIND_LINE
+                EVIM_LOGICAL_SELECTION_KIND_NONE
+                    | EVIM_LOGICAL_SELECTION_KIND_CHARACTER
+                    | EVIM_LOGICAL_SELECTION_KIND_LINE
             )
         {
             return Err(EvimStatus::InvalidArgument);
@@ -13028,6 +13055,24 @@ pub unsafe extern "C" fn evim_core_view_set_line_mode(
     })
 }
 
+/// Set the application smart-quotes preference for one existing view. This is
+/// presentation/input policy only and never changes source or undo state.
+#[no_mangle]
+pub extern "C" fn evim_core_view_set_smart_quotes(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    enabled: u32,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        if enabled > 1 {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        with_core_mut(handle, |core| {
+            dispatch_event(core, view, CoreEvent::SetSmartQuotes(enabled != 0)).map(|_| ())
+        })
+    })
+}
+
 pub const EVIM_LINE_LOCATION_GLOBAL_LINE_EXACT: u32 = 1;
 pub const EVIM_LINE_LOCATION_FRAGMENT_EXACT: u32 = 2;
 #[repr(C)]
@@ -13121,5 +13166,77 @@ pub extern "C" fn evim_core_mark_recovered(
             core.mark_recovered(crate::document::DocumentId(document), Revision(revision))
                 .map_err(core_status)
         })
+    })
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EvimSelectedStylesInfoV1 {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub document_id: u64,
+    pub document_revision: u64,
+    pub style_sheet_revision: u64,
+    pub paragraph_id_bytes: u64,
+    pub character_id_bytes: u64,
+}
+
+/// Copy semantic assignment IDs, excluding automatic source syntax styles.
+/// # Safety
+/// Output regions must be aligned, writable, and mutually disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_selected_styles_export(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    expected_revision: u64,
+    out_info: *mut EvimSelectedStylesInfoV1,
+    out_utf8: *mut u8,
+    capacity: u64,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let info_region = typed_pointer_region(out_info, 1)?;
+        let bytes_region = typed_pointer_region(out_utf8, capacity)?;
+        if regions_overlap(info_region, bytes_region) {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        unsafe {
+            out_info.write(EvimSelectedStylesInfoV1::default());
+        }
+        let (info, bytes) = with_core(handle, |core| {
+            if core.document().revision().0 != expected_revision {
+                return Err(EvimStatus::StaleRevision);
+            }
+            let selected = core
+                .selected_named_styles(ViewId(view))
+                .map_err(core_status)?;
+            let paragraph = selected.paragraph.map(|id| id.0).unwrap_or_default();
+            let character = selected.character.map(|id| id.0).unwrap_or_default();
+            let info = EvimSelectedStylesInfoV1 {
+                struct_size: size_of::<EvimSelectedStylesInfoV1>() as u32,
+                flags: u32::from(selected.paragraph_mixed)
+                    | (u32::from(selected.character_mixed) << 1),
+                document_id: core.document().id().0,
+                document_revision: expected_revision,
+                style_sheet_revision: core.document().projection().style_sheet().revision.0,
+                paragraph_id_bytes: paragraph.len() as u64,
+                character_id_bytes: character.len() as u64,
+            };
+            Ok((
+                info,
+                [paragraph.into_bytes(), character.into_bytes()].concat(),
+            ))
+        })?;
+        unsafe {
+            out_info.write(info);
+        }
+        if capacity < bytes.len() as u64 {
+            return Err(EvimStatus::BufferTooSmall);
+        }
+        if !bytes.is_empty() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_utf8, bytes.len());
+            }
+        }
+        Ok(())
     })
 }

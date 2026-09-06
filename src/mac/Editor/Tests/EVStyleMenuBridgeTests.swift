@@ -1,10 +1,49 @@
 import AppKit
+import CEvimCore
 import EvimAppShell
 import XCTest
 
 @testable import EvimEditor
 
 final class EVStyleMenuBridgeTests: XCTestCase {
+  @MainActor
+  func testHTMLSourceInternalStylesStayInEditorAndOutOfAssignmentMenus() throws {
+    let source = "<h2 title='hello'>Body &amp; <em>words</em></h2>"
+    let backend = EVCoreDocumentBackend()
+    try backend.read(source: Data(source.utf8), typeName: EVDocument.htmlSourceType)
+    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+    surface.loadViewIfNeeded()
+    let snapshot = try backend.styleSheetSnapshot()
+    let internalStyles = snapshot.definitions.filter { $0.flags.contains(.internalSyntax) }
+    XCTAssertGreaterThanOrEqual(internalStyles.count, 7)
+    XCTAssertTrue(internalStyles.allSatisfy { $0.name.hasPrefix("*") && !$0.capabilities.contains(.assign) })
+    let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
+    XCTAssertEqual(catalogue.entries.first { $0.stableID == "Heading2" }?.presentation.state, .on)
+    XCTAssertEqual(catalogue.entries.first { $0.stableID == "Character" }?.presentation.state, .on)
+    let internalIDs = Set(internalStyles.map { $0.key.id.rawValue })
+    XCTAssertFalse(catalogue.entries.contains { internalIDs.contains($0.stableID) })
+    let definition = try XCTUnwrap(internalStyles.first { $0.key.id.rawValue == "* HTML Tag name" })
+    let editor = EVStyleEditorViewController()
+    editor.retarget(document: surface, styleKey: definition.key)
+    XCTAssertEqual(editor.inspection.selectedStyleKey, definition.key)
+    let color = EVStyleColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1)
+    XCTAssertTrue(editor.setPropertyForTesting(.characterForeground, value: .color(color)), editor.inspection.diagnostic)
+    let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
+    XCTAssertEqual(saved, Data(source.utf8), "Syntax colors are buffer configuration, not source declarations")
+    let session = try XCTUnwrap(surface.session)
+    surface.editorView.insertText("A", replacementRange: NSRange(location: NSNotFound, length: 0))
+    surface.editorView.insertText(" ", replacementRange: NSRange(location: NSNotFound, length: 0))
+    XCTAssertNotEqual(try backend.serializedSource(typeName: EVDocument.htmlType), saved)
+    XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: definition.key)?.properties[.characterForeground]?.declared, .color(color))
+    surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+    surface.perform(menuCommand: .undo, sender: nil)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), saved)
+    XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: definition.key)?.properties[.characterForeground]?.declared, .color(color))
+    let fresh = try XCTUnwrap(surface.currentStyleMenuCatalogue())
+    surface.perform(styleMenuAction: EVStyleMenuAction(kind: .assign, role: .character, stableID: definition.key.id.rawValue, documentID: fresh.documentID, documentRevision: fresh.documentRevision, styleSheetRevision: fresh.styleSheetRevision), sender: nil)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), saved, "A forged assignment action cannot apply an automatic syntax style")
+    withExtendedLifetime(surface) {}
+  }
   @MainActor
   func testBuiltinHeadingDeletionPersistsAndDisablesAbsentShortcut() throws {
     let backend = EVCoreDocumentBackend()
@@ -124,7 +163,9 @@ final class EVStyleMenuBridgeTests: XCTestCase {
         "Document"
       ])
     XCTAssertTrue(catalogue.entries.allSatisfy { !$0.presentation.isEnabled })
-    XCTAssertTrue(catalogue.entries.allSatisfy { $0.presentation.state == .off })
+    XCTAssertEqual(catalogue.entries.first { $0.stableID == "Paragraph" }?.presentation.state, .on)
+    XCTAssertEqual(catalogue.entries.first { $0.stableID == "Character" }?.presentation.state, .on)
+    XCTAssertTrue(catalogue.entries.filter { !["Paragraph", "Character"].contains($0.stableID) }.allSatisfy { $0.presentation.state == .off })
     XCTAssertTrue(catalogue.canEditStyles)
   }
 

@@ -6,6 +6,15 @@ import XCTest
 
 @MainActor
 final class EVCompactStyleControlsTests: XCTestCase {
+    func testUnderlineButtonHasVisibleUnderlineAndNativeAction() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        let button = try control(NSButton.self, label: "Underline", in: editor.view)
+        XCTAssertEqual(button.attributedTitle.string, "U")
+        XCTAssertEqual(button.attributedTitle.attribute(.underlineStyle, at: 0, effectiveRange: nil) as? Int, NSUnderlineStyle.single.rawValue)
+        button.performClick(nil)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterUnderline]?.declared, .boolean(true))
+    }
     private func makeEditor(theme: EVTheme = .paper, html: Bool = false) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController, EVThemeStore) {
         let backend = EVCoreDocumentBackend()
         try backend.read(source: Data((html ? "<p>Text</p>" : "Text").utf8), typeName: html ? EVDocument.htmlType : EVDocument.markdownType)

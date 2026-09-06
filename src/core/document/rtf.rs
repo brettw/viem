@@ -1230,7 +1230,14 @@ pub(super) fn escape(text: &str) -> String {
     if text.is_empty() {
         return String::new();
     }
-    let mut out = String::from("{\\uc1 ");
+    let scoped = text
+        .chars()
+        .any(|c| !c.is_ascii() || c.is_control() && !matches!(c, '\n' | '\t'));
+    let mut out = if scoped {
+        String::from("{\\uc1 ")
+    } else {
+        String::new()
+    };
     for c in text.chars() {
         match c {
             '\\' | '{' | '}' => {
@@ -1248,8 +1255,81 @@ pub(super) fn escape(text: &str) -> String {
             }
         }
     }
-    out.push('}');
+    if scoped {
+        out.push('}');
+    }
     out
+}
+
+/// A bounded source context can reuse an explicit Unicode fallback scope.
+/// Ordinary ASCII needs no scope; only an unfinished preceding control word
+/// needs a delimiter before literal text. This avoids one nested group per key.
+pub(super) fn escape_insertion(
+    document: &super::Document,
+    source_at: usize,
+    text: &str,
+) -> Result<String, super::DocumentError> {
+    let mut syntax = escape(text);
+    if syntax.is_empty() {
+        return Ok(syntax);
+    }
+    let start = source_at.saturating_sub(4096);
+    let bytes = document
+        .state()
+        .source
+        .bytes_in(start..source_at)
+        .ok_or(super::DocumentError::AmbiguousProjection)?;
+    let context = document.encoding().decode_region(&bytes, start)?.text;
+    let raw = context.as_bytes();
+    let mut groups = Vec::new();
+    let mut at = 0;
+    while at < raw.len() {
+        match raw[at] {
+            b'\\' if at + 1 < raw.len() && matches!(raw[at + 1], b'\\' | b'{' | b'}') => {
+                at += 2;
+                continue;
+            }
+            b'{' => groups.push(at),
+            b'}' => {
+                groups.pop();
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    if syntax.starts_with("{\\uc1 ")
+        && groups.iter().rev().any(|start| {
+            let group = &context[*start..];
+            group.starts_with("{\\uc1 ")
+                && !group[6..].contains("\\uc")
+                && !group[6..].contains("\\bin")
+        })
+    {
+        syntax = syntax[6..syntax.len() - 1].to_owned();
+    }
+    if syntax
+        .as_bytes()
+        .first()
+        .is_some_and(|b| b.is_ascii_alphanumeric() || b.is_ascii_whitespace() || *b == b'-')
+    {
+        let mut word = raw.len();
+        while word > 0 && (raw[word - 1].is_ascii_alphanumeric() || raw[word - 1] == b'-') {
+            word -= 1;
+        }
+        if word < raw.len() && raw[word].is_ascii_alphabetic() && word > 0 && raw[word - 1] == b'\\'
+        {
+            let mut slashes = 1;
+            let mut before = word - 1;
+            while before > 0 && raw[before - 1] == b'\\' {
+                slashes += 1;
+                before -= 1;
+            }
+            if slashes % 2 == 1 {
+                syntax.insert(0, ' ');
+            }
+        }
+    }
+    Ok(syntax)
 }
 
 pub(super) fn character_patches(
@@ -1452,4 +1532,75 @@ pub(super) fn empty_insertion_point(input: &NormalizedText) -> Option<usize> {
     tokenize(input).iter().rev().find_map(|token| {
         matches!(token.kind, Kind::Close).then(|| builder.source_range(token.range.clone()).start)
     })
+}
+
+/// Unicode fallback scopes carry no character formatting. A caret after their
+/// final scalar may insert immediately after the closing brace, preserving its
+/// typing style while keeping successive Unicode escapes as sibling scopes.
+pub(super) fn advance_past_fallback_scope(
+    document: &super::Document,
+    source_at: usize,
+) -> Result<usize, super::DocumentError> {
+    let width = document.encoding().encode_fragment("}")?.len();
+    let Some(next) = document.state().source.bytes_in(
+        source_at
+            ..source_at
+                .saturating_add(width)
+                .min(document.source_byte_len()),
+    ) else {
+        return Ok(source_at);
+    };
+    if next != document.encoding().encode_fragment("}")? {
+        return Ok(source_at);
+    }
+    let start = source_at.saturating_sub(4096);
+    let bytes = document
+        .state()
+        .source
+        .bytes_in(start..source_at)
+        .ok_or(super::DocumentError::AmbiguousProjection)?;
+    let context = document.encoding().decode_region(&bytes, start)?.text;
+    let raw = context.as_bytes();
+    let mut groups = Vec::new();
+    let mut at = 0;
+    while at < raw.len() {
+        match raw[at] {
+            b'\\' if at + 1 < raw.len() && matches!(raw[at + 1], b'\\' | b'{' | b'}') => {
+                at += 2;
+                continue;
+            }
+            b'{' => groups.push(at),
+            b'}' => {
+                groups.pop();
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    let Some(open) = groups.last().copied() else {
+        return Ok(source_at);
+    };
+    if !context[open..].starts_with("{\\uc1 ") {
+        return Ok(source_at);
+    }
+    at = open + 6;
+    while at < raw.len() {
+        if raw[at] != b'\\' {
+            at += 1;
+            continue;
+        }
+        at += 1;
+        let begin = at;
+        while at < raw.len() && raw[at].is_ascii_alphabetic() {
+            at += 1;
+        }
+        if at == begin {
+            at = (at + 1).min(raw.len());
+            continue;
+        }
+        if !matches!(&context[begin..at], "u" | "par" | "line" | "tab") {
+            return Ok(source_at);
+        }
+    }
+    Ok(source_at + width)
 }

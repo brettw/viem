@@ -11,6 +11,7 @@ mod html;
 mod html5_tree;
 mod html_direct;
 mod html_paragraph;
+mod html_source;
 mod html_styles;
 mod lists;
 mod rich_text;
@@ -26,9 +27,11 @@ mod pipeline;
 mod position;
 mod projection;
 mod range_index;
+mod selected_styles;
 mod source;
 mod source_line_index;
 mod source_lines;
+pub use selected_styles::SelectedNamedStyles;
 pub use source_lines::PhysicalSourceLine;
 mod style;
 pub(crate) use style::is_character_property;
@@ -87,6 +90,7 @@ pub use style::{
     StyleNamespace, StyleProperty, StylePropertyValue, StyleSheet, StyleSheetRevision,
     WritingDirection,
 };
+pub(crate) use transaction::RecordedReplacement;
 pub use transaction::{
     CommittedModelTransaction, HistoryNavigationRequest, ModelChangeKind, ModelChangeSummary,
     ModelRequest, ModelTransactionError, PersistedStyleIntent, PreparedModelTransaction,

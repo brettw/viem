@@ -536,8 +536,10 @@ impl TransformationPipelineSnapshot {
                 if matches!(
                     self.configuration.format,
                     Format::Markdown | Format::MarkdownSource
-                ) || (matches!(self.configuration.format, Format::Html | Format::Rtf)
-                    && *style != SemanticInlineStyle::Code)
+                ) || (matches!(
+                    self.configuration.format,
+                    Format::Html | Format::HtmlSource | Format::Rtf
+                ) && *style != SemanticInlineStyle::Code)
                 {
                     StageEditDisposition::Translated
                 } else {
@@ -550,7 +552,10 @@ impl TransformationPipelineSnapshot {
             | PipelineEditIntent::AssignCharacterStyle { .. }
             | PipelineEditIntent::EditBlockStyleDefinition { .. }
             | PipelineEditIntent::EditCharacterStyleDefinition { .. }
-                if matches!(self.configuration.format, Format::Html | Format::Rtf) =>
+                if matches!(
+                    self.configuration.format,
+                    Format::Html | Format::HtmlSource | Format::Rtf
+                ) =>
             {
                 StageEditDisposition::Translated
             }
@@ -577,7 +582,10 @@ impl TransformationPipelineSnapshot {
             ),
             PipelineEditIntent::SetDirectProperty { .. }
             | PipelineEditIntent::ClearDirectProperty { .. }
-                if matches!(self.configuration.format, Format::Html | Format::Rtf) =>
+                if matches!(
+                    self.configuration.format,
+                    Format::Html | Format::HtmlSource | Format::Rtf
+                ) =>
             {
                 StageEditDisposition::Translated
             }
@@ -642,6 +650,7 @@ impl Document {
                         Format::PlainText => "builtin.plain-text",
                         Format::Markdown => "builtin.markdown",
                         Format::MarkdownSource => "builtin.markdown-source",
+                        Format::HtmlSource => "builtin.html-source",
                         Format::Html => "builtin.html",
                         Format::Rtf => "builtin.rtf",
                     },

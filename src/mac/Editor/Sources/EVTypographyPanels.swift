@@ -19,7 +19,7 @@ final class EVTypographyPanels: NSObject {
 
   func showFonts(for surface: EVEditorSurfaceController) {
     guard let session = surface.session, let style = try? session.selectedTypography(),
-      let selection = try? session.listSelection(), selection.text_start < selection.text_end
+      let selection = try? session.listSelection(), surface.canEditTypography
     else { return }
     fontSurface = surface
     fontSelection = selection
@@ -60,7 +60,7 @@ final class EVTypographyPanels: NSObject {
 
   func showColors(for surface: EVEditorSurfaceController, highlight: Bool) {
     guard let session = surface.session, let style = try? session.selectedTypography(),
-      let selection = try? session.listSelection(), selection.text_start < selection.text_end
+      let selection = try? session.listSelection(), surface.canEditTypography
     else { return }
     colorSurface = surface
     colorSelection = selection
@@ -115,8 +115,8 @@ extension EVStyleColor {
 
 extension EVEditorSurfaceController {
   var canEditTypography: Bool {
-    [.html, .rtf].contains(backend.sourceFormat)
-      && (try? session?.listSelection()).map { $0.text_start < $0.text_end } == true
+    [.html, .htmlSource, .rtf].contains(backend.sourceFormat)
+      && (try? session?.listSelection()).map { $0.text_start < $0.text_end || viewPresentation.mode == UInt32(EVIM_MODE_INSERT) || viewPresentation.mode == UInt32(EVIM_MODE_REPLACE) } == true
   }
 
   func changeFontSize(increasing: Bool) {

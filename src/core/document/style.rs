@@ -11,6 +11,21 @@ impl From<&str> for StyleId {
     }
 }
 
+impl StyleId {
+    pub fn is_internal(&self) -> bool {
+        matches!(
+            self.0.as_str(),
+            "* HTML Brackets"
+                | "* HTML Tag name"
+                | "* HTML Attribute key"
+                | "* HTML Attribute value"
+                | "* HTML Equals"
+                | "* HTML Entity"
+                | "* HTML Uninterpreted"
+        )
+    }
+}
+
 /// Provenance/editability class of one normalized style definition.
 ///
 /// This is immutable metadata on the definition itself. Model requests do not
@@ -942,6 +957,37 @@ impl ResolvedParagraphStyle {
 }
 
 impl StyleSheet {
+    pub(crate) fn install_html_source_styles(&mut self) {
+        for (name, rgb) in [
+            ("Brackets", [0.48, 0.48, 0.52]),
+            ("Tag name", [0.62, 0.36, 0.80]),
+            ("Attribute key", [0.22, 0.57, 0.68]),
+            ("Attribute value", [0.29, 0.58, 0.31]),
+            ("Equals", [0.55, 0.48, 0.40]),
+            ("Entity", [0.76, 0.47, 0.20]),
+            ("Uninterpreted", [0.50, 0.52, 0.55]),
+        ] {
+            let id = StyleId(format!("* HTML {name}"));
+            self.character_styles
+                .entry(id.clone())
+                .or_insert_with(|| CharacterStyle {
+                    id: id.clone(),
+                    based_on: None,
+                    properties: CharacterProperties {
+                        foreground: Some(Color {
+                            red: rgb[0],
+                            green: rgb[1],
+                            blue: rgb[2],
+                            alpha: 1.0,
+                        }),
+                        ..Default::default()
+                    },
+                });
+            self.character_metadata
+                .entry(id.clone())
+                .or_insert_with(|| StyleDefinitionMetadata::generated(id.0));
+        }
+    }
     /// Look up one immutable block-style definition by its stable ID.
     pub fn block_style(&self, id: &StyleId) -> Option<&BlockStyle> {
         self.block_styles.get(id)
@@ -955,7 +1001,21 @@ impl StyleSheet {
             self.deleted_configuration_characters.contains(id)
         }
     }
+    pub(crate) fn retain_internal_styles(&mut self, previous: &Self) {
+        for style in previous
+            .character_styles()
+            .filter(|style| style.id.is_internal())
+        {
+            self.character_styles
+                .insert(style.id.clone(), style.clone());
+            if let Some(metadata) = previous.character_style_metadata(&style.id) {
+                self.character_metadata
+                    .insert(style.id.clone(), metadata.clone());
+            }
+        }
+    }
     pub(crate) fn retain_configuration_deletions(&mut self, previous: &Self) {
+        self.retain_internal_styles(previous);
         self.deleted_configuration_blocks = previous.deleted_configuration_blocks.clone();
         self.deleted_configuration_characters = previous.deleted_configuration_characters.clone();
         for id in &self.deleted_configuration_blocks {
@@ -1191,6 +1251,19 @@ impl StyleSheet {
         has_assignment: bool,
         required_origin: StyleDefinitionOrigin,
     ) -> Result<bool, StyleError> {
+        if edit.style_id().is_internal() {
+            let allowed = match edit {
+                StyleDefinitionEdit::UpdateCharacter(style) => self
+                    .character_style(&style.id)
+                    .is_some_and(|old| old.based_on == style.based_on),
+                _ => false,
+            };
+            if !allowed {
+                return Err(StyleError::InvalidDefinitionMetadata(
+                    edit.style_id().clone(),
+                ));
+            }
+        }
         let (origin, id) = match edit {
             StyleDefinitionEdit::InsertBlock { style, metadata } => (metadata.origin, &style.id),
             StyleDefinitionEdit::InsertCharacter { style, metadata } => {
@@ -1579,12 +1652,12 @@ impl StyleSheet {
         }
         validate_definition_metadata(&style.id, &metadata)?;
         validate_character_properties(&style.id, &style.properties)?;
-        let parent = style
-            .based_on
-            .as_ref()
-            .ok_or_else(|| StyleError::MissingParent(style.id.clone()))?;
-        if !self.character_styles.contains_key(parent) {
-            return Err(StyleError::MissingParent(parent.clone()));
+        if let Some(parent) = &style.based_on {
+            if !self.character_styles.contains_key(parent) {
+                return Err(StyleError::MissingParent(parent.clone()));
+            }
+        } else if !style.id.is_internal() {
+            return Err(StyleError::MissingParent(style.id.clone()));
         }
         let next_revision = self.next_revision()?;
         let old = self
@@ -2851,6 +2924,18 @@ pub enum SemanticInlineStyle {
 #[derive(Clone, Debug, PartialEq)]
 pub enum StyleApplication {
     Named(StyleId),
+    /// Adapter-owned syntax decoration; never a user character assignment.
+    Automatic(StyleId),
+    /// A source grammar extent, including unpainted whitespace inside a tag.
+    SourceSyntax,
+    /// Raw script/style-like contents where even the opening boundary is literal.
+    SourceRawText,
+    /// The semantic paragraph underlying visible source syntax. Source hard
+    /// lines may contain several paragraph elements, so this context is inline.
+    SourceParagraph {
+        style: StyleId,
+        defaults: CharacterProperties,
+    },
     Direct(CharacterProperties),
     Semantic(SemanticInlineStyle),
 }

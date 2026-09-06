@@ -236,6 +236,12 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         button.setButtonType(.pushOnPushOff)
         button.bezelStyle = .texturedRounded
         button.font = font
+        if property == .characterUnderline {
+            button.attributedTitle = NSAttributedString(string: title, attributes: [
+                .font: font, .foregroundColor: NSColor.labelColor,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+            ])
+        }
         button.tag = Int(property.rawValue)
         button.setAccessibilityLabel(property == .characterBold ? "Bold" : property == .characterSlant ? "Italic" : property.displayName)
         button.widthAnchor.constraint(equalToConstant: 31).isActive = true

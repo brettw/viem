@@ -6,14 +6,16 @@ public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
     case markdown
     case markdownSource
     case html
+    case htmlSource
     case rtf
 
     public var displayName: String {
         switch self {
         case .plainText: "Plain Text"
         case .markdown: "Markdown WYSIWYG"
-        case .markdownSource: "Markdown"
-        case .html: "HTML"
+        case .markdownSource: "Markdown Source"
+        case .html: "HTML WYSIWYG"
+        case .htmlSource: "HTML Source"
         case .rtf: "RTF"
         }
     }
@@ -21,6 +23,7 @@ public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
     public func hasSameSerialization(as other: Self) -> Bool {
         self == other || ([Self.markdown, .markdownSource].contains(self)
             && [Self.markdown, .markdownSource].contains(other))
+            || ([Self.html, .htmlSource].contains(self) && [Self.html, .htmlSource].contains(other))
     }
 }
 
@@ -51,6 +54,7 @@ public final class EVDocument: NSDocument {
     public static let markdownType = UTType(filenameExtension: "md")?.identifier
         ?? "net.daringfireball.markdown"
     public static let markdownSourceType = "com.evim.markdown-source"
+    public static let htmlSourceType = "com.evim.html-source"
     public static let htmlType = UTType.html.identifier
     public static let rtfType = UTType.rtf.identifier
 
@@ -289,7 +293,7 @@ public final class EVDocument: NSDocument {
         switch format {
         case .plainText: plainTextType
         case .markdown, .markdownSource: markdownType
-        case .html: htmlType
+        case .html, .htmlSource: htmlType
         case .rtf: rtfType
         }
     }
@@ -500,6 +504,7 @@ public final class EVDocument: NSDocument {
     public static func sourceFormat(forTypeName typeName: String) -> EVSourceFormat? {
         let lowered = typeName.lowercased()
         if lowered == markdownSourceType { return .markdownSource }
+        if lowered == htmlSourceType { return .htmlSource }
         if [".html", ".htm", htmlType].contains(lowered) || lowered.hasSuffix(".html") {
             return .html
         }

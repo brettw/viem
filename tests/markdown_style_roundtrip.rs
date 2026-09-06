@@ -1,6 +1,6 @@
 use evim_core::document::{
-    Document, DocumentError, Encoding, Format, ModelChangeKind, ModelRequest,
-    ModelTransactionError, SemanticInlineStyle, StyleApplication,
+    Document, DocumentError, Encoding, Format, ModelChangeKind, ModelRequest, SemanticInlineStyle,
+    StyleApplication,
 };
 
 fn encode_source(encoding: Encoding, text: &str) -> Vec<u8> {
@@ -102,7 +102,7 @@ fn clearing_markdown_styles_uses_exact_source_delimiters_in_every_encoding() {
 }
 
 #[test]
-fn malformed_or_non_exact_markdown_style_clear_is_atomic() {
+fn malformed_styles_reject_and_combined_styles_clear_one_role_atomically() {
     for source in [
         "prefix __Hé** suffix",
         "prefix **Hé__ suffix",
@@ -130,7 +130,7 @@ fn malformed_or_non_exact_markdown_style_clear_is_atomic() {
         assert_eq!(document.history_status(), before_history);
     }
 
-    let document = Document::from_bytes(
+    let mut document = Document::from_bytes(
         "___Hé___".as_bytes().to_vec(),
         Encoding::Utf8,
         Format::Markdown,
@@ -148,7 +148,7 @@ fn malformed_or_non_exact_markdown_style_clear_is_atomic() {
     let before_text = document.text().to_owned();
     let before_revision = document.revision();
     let before_history = document.history_status();
-    let error = document
+    let prepared = document
         .prepare_model_request(ModelRequest::SetSemanticStyle {
             document: document.id(),
             revision: document.revision(),
@@ -156,15 +156,22 @@ fn malformed_or_non_exact_markdown_style_clear_is_atomic() {
             style: SemanticInlineStyle::Strong,
             enabled: false,
         })
-        .unwrap_err();
-    assert_eq!(
-        error,
-        ModelTransactionError::Document(DocumentError::VerificationFailed)
-    );
+        .unwrap();
     assert_eq!(document.source_bytes(), before_source);
     assert_eq!(document.text(), before_text);
     assert_eq!(document.revision(), before_revision);
     assert_eq!(document.history_status(), before_history);
+    document.commit_model_transaction(prepared).unwrap();
+    assert_eq!(document.source_bytes(), "_Hé_".as_bytes());
+    assert_eq!(document.text(), "Hé");
+    assert!(document
+        .projection()
+        .style_spans()
+        .iter()
+        .any(|span| span.application == StyleApplication::Semantic(SemanticInlineStyle::Emphasis)));
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), before_source);
+    assert_eq!(document.text(), before_text);
 }
 
 #[test]

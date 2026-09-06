@@ -429,7 +429,11 @@ pub(super) fn character_edit_verified(
             match &span.application {
                 StyleApplication::Direct(layer) => overlay(&mut direct, layer),
                 StyleApplication::Named(style) => named = Some(style),
-                StyleApplication::Semantic(_) => return None,
+                StyleApplication::Semantic(_)
+                | StyleApplication::Automatic(_)
+                | StyleApplication::SourceSyntax
+                | StyleApplication::SourceRawText
+                | StyleApplication::SourceParagraph { .. } => return None,
             }
         }
         if let Some(properties) = override_properties {
@@ -612,20 +616,21 @@ pub(super) fn resolved_character_at(
     document: &FormattedDocument,
     at: usize,
 ) -> Option<super::ResolvedCharacterStyle> {
-    let block = document
-        .blocks()
-        .iter()
-        .find(|block| block.range.contains(&at))?;
+    let blocks = document.blocks_for_region(&(at..at));
+    let block = blocks.iter().find(|block| block.range.contains(&at))?;
+    let mut paragraph_style = &block.style;
+    let mut paragraph_defaults = &block.direct_default_character;
     let mut direct = CharacterProperties::default();
     let mut named = None;
-    for span in document
-        .style_spans()
-        .iter()
-        .filter(|span| span.range.contains(&at))
-    {
+    let spans = document.style_spans_for_region(&(at..at + 1));
+    for span in spans.iter().filter(|span| span.range.contains(&at)) {
         match &span.application {
             StyleApplication::Direct(properties) => overlay(&mut direct, properties),
             StyleApplication::Named(id) => named = Some(id),
+            StyleApplication::SourceParagraph { style, defaults } => {
+                paragraph_style = style;
+                paragraph_defaults = defaults;
+            }
             _ => {}
         }
     }
@@ -633,9 +638,9 @@ pub(super) fn resolved_character_at(
         .style_sheet()
         .resolve_assigned_paragraph_style(
             document.document_style(),
-            &block.style,
+            paragraph_style,
             &block.direct_paragraph,
-            &block.direct_default_character,
+            paragraph_defaults,
             named,
             &direct,
         )

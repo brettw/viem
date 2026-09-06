@@ -145,6 +145,25 @@ impl DocumentLayoutStyles {
         offset: usize,
         upstream: bool,
     ) -> Result<ResolvedCharacterStyle, DocumentStyleError> {
+        Self::character_at_with_automatic(document, offset, upstream, true)
+    }
+
+    /// The authored cascade, excluding automatically applied source syntax.
+    /// Style pickers and typing inheritance use this semantic view.
+    pub fn semantic_character_at(
+        document: &FormattedDocument,
+        offset: usize,
+        upstream: bool,
+    ) -> Result<ResolvedCharacterStyle, DocumentStyleError> {
+        Self::character_at_with_automatic(document, offset, upstream, false)
+    }
+
+    fn character_at_with_automatic(
+        document: &FormattedDocument,
+        offset: usize,
+        upstream: bool,
+        automatic: bool,
+    ) -> Result<ResolvedCharacterStyle, DocumentStyleError> {
         let text = document.text_tree();
         if offset > text.byte_len() || !text.is_char_boundary(offset)? {
             return Err(DocumentStyleError::InvalidBlockRange { index: 0 });
@@ -172,7 +191,17 @@ impl DocumentLayoutStyles {
                 .character);
         };
         let range = at..end.min(block.range.end);
-        let spans = document.style_spans_for_region(&range);
+        let mut spans = document.style_spans_for_region(&range);
+        if !automatic {
+            spans.retain(|span| {
+                !matches!(
+                    span.application,
+                    StyleApplication::Automatic(_)
+                        | StyleApplication::SourceSyntax
+                        | StyleApplication::SourceRawText
+                )
+            });
+        }
         resolve_character_at(
             StyleCascadeInput {
                 blocks: &blocks,
@@ -406,8 +435,29 @@ fn resolve_character_at(
     let mut named: Option<&StyleId> = None;
     let mut semantic = CharacterProperties::default();
     let mut direct = CharacterProperties::default();
+    let mut automatic = CharacterProperties::default();
+    let mut source_block = block.clone();
     for span in active {
         match &span.application {
+            StyleApplication::SourceSyntax | StyleApplication::SourceRawText => {}
+            StyleApplication::Automatic(id) => {
+                let mut chain = Vec::new();
+                let mut current = Some(id);
+                while let Some(id) = current {
+                    let style = sheet
+                        .character_style(id)
+                        .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?;
+                    chain.push(&style.properties);
+                    current = style.based_on.as_ref();
+                }
+                for properties in chain.into_iter().rev() {
+                    merge_character_properties(&mut automatic, properties);
+                }
+            }
+            StyleApplication::SourceParagraph { style, defaults } => {
+                source_block.style = style.clone();
+                source_block.direct_default_character = defaults.clone();
+            }
             StyleApplication::Named(id) => {
                 if named.is_some_and(|existing| existing != id) {
                     return Err(DocumentStyleError::MultipleNamedCharacterStyles {
@@ -427,13 +477,14 @@ fn resolve_character_at(
     // Semantic markup is a sparse convenience layer. Explicit direct
     // formatting wins property-by-property, independent of source-span order.
     merge_character_properties(&mut semantic, &direct);
+    merge_character_properties(&mut semantic, &automatic);
 
     sheet
         .resolve_assigned_paragraph_style(
             input.document_style,
-            &block.style,
-            &block.direct_paragraph,
-            &block.direct_default_character,
+            &source_block.style,
+            &source_block.direct_paragraph,
+            &source_block.direct_default_character,
             named,
             &semantic,
         )

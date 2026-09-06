@@ -81,6 +81,7 @@ typedef uint32_t EvimStatus;
 #define EVIM_FORMAT_HTML 3u
 #define EVIM_FORMAT_RTF 4u
 #define EVIM_FORMAT_MARKDOWN_SOURCE 5u
+#define EVIM_FORMAT_HTML_SOURCE 6u
 
 #define EVIM_FILE_FORMAT_DETECT 0u
 #define EVIM_FILE_FORMAT_UNIX 1u
@@ -814,6 +815,7 @@ typedef struct EvimRgbaV1 {
 #define EVIM_STYLE_DEFINITION_BASE_DOCUMENT (1u << 2)
 #define EVIM_STYLE_DEFINITION_BASE_PARAGRAPH (1u << 3)
 #define EVIM_STYLE_DEFINITION_BASE_CHARACTER (1u << 4)
+#define EVIM_STYLE_DEFINITION_INTERNAL (1u << 5)
 
 #define EVIM_STYLE_CAPABILITY_EDIT_DECLARATIONS (1u << 0)
 #define EVIM_STYLE_CAPABILITY_EDIT_PARENT (1u << 1)
@@ -1391,6 +1393,8 @@ typedef struct EvimVisualSelectionRectangleV1 {
 #define EVIM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE (1u << 0)
 #define EVIM_SEMANTIC_STYLE_CAN_SET (1u << 1)
 #define EVIM_SEMANTIC_STYLE_CAN_CLEAR (1u << 2)
+/* Insert/Replace caret; changes pending typing declarations, not source. */
+#define EVIM_SEMANTIC_STYLE_TYPING_CONTEXT (1u << 3)
 
 /*
  * Exact logical selection identity with no layout dependency. Only Character
@@ -2035,6 +2039,8 @@ EvimStatus evim_core_view_line_location(EvimCoreHandle handle, EvimViewId view, 
 /* View-local command policy; physical source lines are unsupported for RTF. */
 EvimStatus evim_core_view_line_mode(EvimCoreHandle core, EvimViewId view, uint32_t *out_mode);
 EvimStatus evim_core_view_set_line_mode(EvimCoreHandle core, EvimViewId view, uint32_t mode, EvimCoreOutcomeV1 *out_outcome);
+/* Application input preference; enabled must be 0 or 1. No source/undo change. */
+EvimStatus evim_core_view_set_smart_quotes(EvimCoreHandle core, EvimViewId view, uint32_t enabled);
 EvimStatus evim_core_view_set_wrap(EvimCoreHandle core, EvimViewId view,
                                    uint32_t wrap,
                                    EvimCoreOutcomeV1 *out_outcome);
@@ -2143,6 +2149,24 @@ EvimStatus evim_core_copy_formatted_utf8(EvimCoreHandle core,
                                          uint8_t *output,
                                          uint64_t output_capacity,
                                          uint64_t *out_required);
+
+/* Semantic assignment identities, excluding automatic syntax decoration.
+ * UTF-8 IDs are concatenated paragraph first, then character. Mixed roles
+ * have zero bytes. The output is tied to the exact document revision. */
+#define EVIM_SELECTED_STYLE_PARAGRAPH_MIXED (1u << 0)
+#define EVIM_SELECTED_STYLE_CHARACTER_MIXED (1u << 1)
+typedef struct EvimSelectedStylesInfoV1 {
+  uint32_t struct_size;
+  uint32_t flags;
+  uint64_t document_id;
+  uint64_t document_revision;
+  uint64_t style_sheet_revision;
+  uint64_t paragraph_id_bytes;
+  uint64_t character_id_bytes;
+} EvimSelectedStylesInfoV1;
+EvimStatus evim_core_view_selected_styles_export(EvimCoreHandle core,
+    EvimViewId view, uint64_t expected_revision,
+    EvimSelectedStylesInfoV1 *out_info, uint8_t *out_utf8, uint64_t capacity);
 
 #ifdef __cplusplus
 }

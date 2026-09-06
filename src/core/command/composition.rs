@@ -12,8 +12,9 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::document::{
     Association, BoundaryAffinity, CommittedModelTransaction, DeletionRecovery, Document,
-    DocumentError, DocumentId, FormattedTextTree, MappingOutcome, ModelRequest,
-    ModelTransactionError, PositionError, PreparedModelTransaction, Revision, TextEdit, TextRange,
+    DocumentError, DocumentId, FormattedPayloadEdit, FormattedTextPayload, FormattedTextTree,
+    MappingOutcome, ModelRequest, ModelTransactionError, PositionError, PreparedModelTransaction,
+    Revision, StyleProperty, StylePropertyValue, TextEdit, TextRange,
 };
 
 /// Normalized composition input emitted after a frontend has converted its
@@ -229,6 +230,47 @@ impl CompositionSession {
                 return Err(CompositionError::UnresolvableCommitCaret)
             }
         };
+        Ok(CompositionCommitRequest {
+            document_id: self.target.document_id,
+            expected_revision: self.target.revision,
+            generation: self.generation,
+            edit,
+            caret_offset,
+            prepared,
+        })
+    }
+
+    /// Preserve the invoking caret's pending character declarations when a
+    /// native IME commits its marked overlay. Preparation remains read-only;
+    /// text and formatting share the same exact map and atomic publication.
+    pub(crate) fn prepare_commit_with_typing_properties(
+        &self,
+        document: &Document,
+        values: &[(StyleProperty, StylePropertyValue)],
+        affinity: BoundaryAffinity,
+    ) -> Result<CompositionCommitRequest, CompositionError> {
+        if values.is_empty() || self.marked_text.is_empty() {
+            return self.prepare_commit(document);
+        }
+        self.validate_document(document)?;
+        let edit = TextEdit::new(
+            self.target.replacement_range.clone(),
+            self.marked_text.clone(),
+        );
+        let value = super::external_text_register_value(document, &self.marked_text);
+        let payload = FormattedTextPayload::new(
+            &document.hard_line_snapshot(),
+            self.marked_text.clone(),
+            value.hard_break_offsets().to_vec(),
+        )
+        .expect("composition literal text has validated semantic break offsets");
+        let (prepared, caret_offset) = document
+            .prepare_insertion_with_typing_properties(
+                FormattedPayloadEdit::new(edit.range.clone(), payload)
+                    .with_boundary_affinity(affinity),
+                values,
+            )
+            .map_err(composition_model_error)?;
         Ok(CompositionCommitRequest {
             document_id: self.target.document_id,
             expected_revision: self.target.revision,
