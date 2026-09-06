@@ -2,6 +2,7 @@ import AppKit
 import CEvimCore
 import CoreGraphics
 import EvimCoreTextProvider
+import EvimAppShell
 import Foundation
 
 struct EVCommandLineRenderState {
@@ -100,7 +101,8 @@ private struct EVTextInputSelectionState: Equatable {
 
 @MainActor
 class EVEditorView: NSView, @preconcurrency NSTextInputClient {
-    static let canvasInsets = NSEdgeInsets(top: 24, left: 30, bottom: 24, right: 30)
+    // Padding is part of the core canvas, never fixed window chrome.
+    static let canvasInsets = NSEdgeInsetsZero
     static let commandLineFont = NSFont(name: "SF Pro", size: 14) ?? NSFont.systemFont(ofSize: 14)
 
     static func layoutViewportSize(for viewSize: CGSize) -> CGSize {
@@ -193,7 +195,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
               let snapshot = surface.layoutSnapshot,
               let paint = exactLayoutPaint(for: snapshot)
         else { return true }
-        return paint.info.canvas_background.alpha >= 1
+        return nativeCanvas(paint.info).alphaComponent >= 1
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -233,7 +235,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     override func draw(_ dirtyRect: NSRect) {
         let snapshot = surface?.layoutSnapshot
         let paint = snapshot.flatMap(exactLayoutPaint(for:))
-        let background = paint.map { nativeColor($0.info.canvas_background) }
+        let background = paint.map { nativeCanvas($0.info) }
             ?? resolvedColor(.textBackgroundColor)
         background.setFill()
         dirtyRect.fill()
@@ -487,9 +489,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         ]
         let context = accessibilityLayoutContext()
         let paint = context.flatMap { exactAccessibilityPaint(in: $0) }
-        let foreground = paint.map { nativeColor($0.info.default_paint.foreground) }
+        let foreground = paint.map { nativeForeground($0.info.default_paint) }
             ?? resolvedColor(.textColor)
-        let background = paint.map { nativeColor($0.info.canvas_background) }
+        let background = paint.map { nativeCanvas($0.info) }
             ?? resolvedColor(.textBackgroundColor)
         let attributed = NSMutableAttributedString(
             string: substring,
@@ -515,7 +517,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                   let local = makeRange(location: localLocation, length: global.length)
             else { continue }
 
-            let foreground = nativeColor(run.paint.foreground)
+            let foreground = nativeForeground(run.paint)
             var attributes: [NSAttributedString.Key: Any] = [
                 .accessibilityForegroundColor: foreground.cgColor,
             ]
@@ -1048,6 +1050,15 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     // MARK: - Keyboard input
+
+    @objc(undo:) func undoDocument(_ sender: Any?) { surface?.perform(menuCommand: .undo, sender: sender) }
+    @objc(redo:) func redoDocument(_ sender: Any?) { surface?.perform(menuCommand: .redo, sender: sender) }
+    @objc(cut:) func cutDocumentSelection(_ sender: Any?) { surface?.perform(menuCommand: .cut, sender: sender) }
+    @objc(copy:) func copyDocumentSelection(_ sender: Any?) { surface?.perform(menuCommand: .copy, sender: sender) }
+    @objc(paste:) func pasteIntoDocument(_ sender: Any?) { surface?.perform(menuCommand: .paste, sender: sender) }
+    @objc(pasteAsPlainText:) func pastePlainTextIntoDocument(_ sender: Any?) { surface?.perform(menuCommand: .pasteAndMatchStyle, sender: sender) }
+    @objc(delete:) func deleteDocumentSelection(_ sender: Any?) { surface?.perform(menuCommand: .delete, sender: sender) }
+    override func selectAll(_ sender: Any?) { surface?.perform(menuCommand: .selectAll, sender: sender) }
 
     override func keyDown(with event: NSEvent) {
         guard let surface else { return }
@@ -2354,7 +2365,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             ?? paint.info.default_paint
         let flags = value.flags
         return EVResolvedTextPaint(
-            foreground: nativeColor(value.foreground),
+            foreground: nativeForeground(value),
             background: flags & UInt32(EVIM_TEXT_PAINT_HAS_BACKGROUND) != 0
                 ? nativeColor(value.background)
                 : nil,
@@ -2390,6 +2401,16 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         return paint
     }
 
+    private func nativeForeground(_ paint: EvimTextPaintV1) -> NSColor {
+        paint.flags & UInt32(EVIM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0
+            ? EVThemeStore.shared.theme.foreground.color : nativeColor(paint.foreground)
+    }
+
+    private func nativeCanvas(_ paint: EvimLayoutPaintInfoV1) -> NSColor {
+        paint.flags & UInt32(EVIM_LAYOUT_PAINT_DEFAULT_CANVAS) != 0
+            ? EVThemeStore.shared.theme.background.color : nativeColor(paint.canvas_background)
+    }
+
     private func nativeColor(_ color: EvimRgbaV1) -> NSColor {
         NSColor(
             srgbRed: CGFloat(color.red),
@@ -2400,8 +2421,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func drawSelection(_ snapshot: EVLayoutExport, in _: CGContext) {
-        let color = resolvedColor(.selectedContentBackgroundColor)
-            .withAlphaComponent(0.48)
+        let color = EVThemeStore.shared.theme.selection.color
         color.setFill()
         for rect in selectionRectsForDrawing(in: snapshot) {
             rect.fill()
@@ -2483,7 +2503,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         let color = EVCaretAppearanceResolver.shared.color(for: self)
         let geometry = associatedItemGeometry(snapshot)
         guard var rect = geometry.rect else { return }
-        if rect.width < 1 {
+        if geometry.cluster == nil || rect.width < 1 {
             rect.size.width = minimumCaretWidth(near: geometry.cluster, in: snapshot)
         }
 
@@ -2719,9 +2739,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         guard let surface else { return }
         guard let state = commandLineRenderState() else { return }
         let paint = surface.layoutSnapshot.flatMap(exactLayoutPaint(for:))
-        let background = paint.map { nativeColor($0.info.canvas_background) }
+        let background = paint.map { nativeCanvas($0.info) }
             ?? resolvedColor(.textBackgroundColor)
-        let foreground = paint.map { nativeColor($0.info.default_paint.foreground) }
+        let foreground = paint.map { nativeForeground($0.info.default_paint) }
             ?? resolvedColor(.textColor)
         background.setFill()
         state.bandRect.fill()
@@ -2883,7 +2903,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         in snapshot: EVLayoutExport
     ) -> CGFloat {
         guard let surface else {
-            return ceil((" " as NSString).size(withAttributes: [.font: Self.commandLineFont]).width)
+            return ceil(Self.commandLineFont.pointSize / 2)
         }
         let cursor = presentationCaretUTF8Offset
         let affinity = presentationCaretAffinity
@@ -2906,14 +2926,17 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             }
         if let cluster = nearbyCluster,
            cluster.flags & UInt32(EVIM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0,
-           let width = surface.session?.provider.renderRegistry.spaceAdvance(
+           let width = surface.session?.provider.renderRegistry.enAdvance(
                identifier: cluster.render_run.identifier,
                metricsGeneration: cluster.render_run.metrics_generation
            )
         {
             return ceil(max(width, 1))
         }
-        return ceil((" " as NSString).size(withAttributes: [.font: Self.commandLineFont]).width)
+        if let width = try? surface.session?.currentFontEnWidth() {
+            return ceil(max(width * CGFloat(surface.zoomScale), 1))
+        }
+        return ceil(Self.commandLineFont.pointSize / 2)
     }
 
     private func offsetDistance(_ left: UInt64, _ right: UInt64) -> UInt64 {

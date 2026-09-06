@@ -2313,7 +2313,11 @@ fn layout_paint_export_is_exact_revision_bound_and_uses_explicit_rgba_flags() {
         }
     );
     assert_eq!(paint.default_paint.struct_size, EVIM_TEXT_PAINT_V1_SIZE);
-    assert_eq!(paint.default_paint.flags, 0);
+    assert_eq!(
+        paint.default_paint.flags,
+        EVIM_TEXT_PAINT_DEFAULT_FOREGROUND
+    );
+    assert_eq!(paint.flags, EVIM_LAYOUT_PAINT_DEFAULT_CANVAS);
     assert_eq!(
         paint.default_paint.foreground,
         EvimRgbaV1 {
@@ -5337,4 +5341,432 @@ fn native_scalar_typing_after_html_heading_enter_uses_the_new_paragraph() {
         ),
         source.as_bytes()
     );
+}
+
+#[test]
+fn checked_line_mode_and_location_queries_are_view_local_and_do_not_edit() {
+    assert_eq!(std::mem::size_of::<EvimViewLineLocationV1>(), 48);
+    let core = create_core(b"abcdef\nsecond", EvimDocumentOptions::default());
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, mut outcome) = add_test_view(&core, &mut *provider);
+    let (second, _) = add_test_view(&core, &mut *provider);
+    let mut mode = 99;
+    assert_eq!(
+        unsafe { evim_core_view_line_mode(core.handle, view, &mut mode) },
+        EvimStatus::Ok
+    );
+    assert_eq!(mode, 0);
+    let mut location = EvimViewLineLocationV1::default();
+    assert_eq!(
+        unsafe { evim_core_view_line_location(core.handle, view, &mut location) },
+        EvimStatus::Ok
+    );
+    assert_eq!(
+        (
+            location.line,
+            location.column,
+            location.hard_line,
+            location.fragment
+        ),
+        (1, 1, 1, 1)
+    );
+    assert_eq!(
+        location.flags,
+        EVIM_LINE_LOCATION_GLOBAL_LINE_EXACT | EVIM_LINE_LOCATION_FRAGMENT_EXACT
+    );
+    assert_eq!(
+        unsafe { evim_core_view_set_line_mode(core.handle, view, 1, &mut outcome) },
+        EvimStatus::Ok
+    );
+    assert_eq!(
+        unsafe { evim_core_view_line_mode(core.handle, second, &mut mode) },
+        EvimStatus::Ok
+    );
+    assert_eq!(mode, 0);
+    assert_eq!(
+        unsafe { evim_core_view_line_location(core.handle, view, &mut location) },
+        EvimStatus::Ok
+    );
+    assert_eq!(location.mode, 1);
+    let revision = document_state(&core).document_revision;
+    assert_eq!(
+        unsafe { evim_core_view_set_line_mode(core.handle, view, 77, &mut outcome) },
+        EvimStatus::InvalidArgument
+    );
+    assert_eq!(
+        unsafe { evim_core_view_line_location(core.handle, u64::MAX, &mut location) },
+        EvimStatus::InvalidView
+    );
+    assert_eq!(
+        unsafe { evim_core_view_line_location(core.handle, view, ptr::null_mut()) },
+        EvimStatus::InvalidArgument
+    );
+    assert_eq!(document_state(&core).document_revision, revision);
+    assert_eq!(
+        copy_core_bytes(evim_core_copy_source_bytes, &core, revision),
+        b"abcdef\nsecond"
+    );
+}
+
+#[test]
+fn typography_export_is_exact_batched_stale_checked_and_includes_mixed_default_gaps() {
+    let core = create_core(
+        b"<p style='font-family:Arial;font-size:20pt'><b>A</b>B</p>",
+        EvimDocumentOptions {
+            format: EVIM_FORMAT_HTML,
+            ..Default::default()
+        },
+    );
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, mut outcome) = add_test_view(&core, provider.as_mut());
+    for character in ['v', 'l'] {
+        assert_eq!(
+            unsafe {
+                evim_core_view_send_key(
+                    core.handle,
+                    view,
+                    &key(EVIM_KEY_CHARACTER, character as u32),
+                    &mut outcome,
+                )
+            },
+            EvimStatus::Ok
+        );
+    }
+    let mut info = EvimTypographyInfoV1::default();
+    assert_eq!(
+        unsafe {
+            evim_core_view_typography_export(
+                core.handle,
+                view,
+                outcome.document_revision,
+                &mut info,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                0,
+            )
+        },
+        EvimStatus::BufferTooSmall
+    );
+    assert_eq!(info.flags & 3, 3);
+    assert_eq!(info.size, 20.0);
+    assert_eq!(info.base_weight, 400);
+    assert_eq!(info.weight, 700);
+    let mut family = vec![0; info.font_family_bytes as usize];
+    let mut features = vec![EvimOpenTypeFeatureV1::default(); info.feature_count as usize];
+    assert_eq!(
+        unsafe {
+            evim_core_view_typography_export(
+                core.handle,
+                view,
+                outcome.document_revision,
+                &mut info,
+                family.as_mut_ptr(),
+                family.len() as u64,
+                features.as_mut_ptr(),
+                features.len() as u64,
+            )
+        },
+        EvimStatus::Ok
+    );
+    assert_eq!(family, b"Arial");
+    family.fill(0xFF);
+    assert_eq!(
+        unsafe {
+            evim_core_view_typography_export(
+                core.handle,
+                view,
+                outcome.document_revision + 1,
+                &mut info,
+                family.as_mut_ptr(),
+                family.len() as u64,
+                features.as_mut_ptr(),
+                features.len() as u64,
+            )
+        },
+        EvimStatus::StaleRevision
+    );
+    assert!(family.iter().all(|byte| *byte == 0xFF));
+    assert_eq!(
+        unsafe {
+            evim_core_view_typography_export(
+                core.handle,
+                view,
+                outcome.document_revision,
+                &mut info,
+                (&mut info as *mut EvimTypographyInfoV1).cast(),
+                1,
+                ptr::null_mut(),
+                0,
+            )
+        },
+        EvimStatus::InvalidArgument
+    );
+}
+
+#[test]
+fn direct_character_batch_is_atomic_and_rejects_duplicate_stale_or_overlapping_requests() {
+    let original = b"<p>Text</p><!--keep-->";
+    let core = create_core(
+        original,
+        EvimDocumentOptions {
+            format: EVIM_FORMAT_HTML,
+            ..Default::default()
+        },
+    );
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, mut outcome) = add_test_view(&core, provider.as_mut());
+    for character in ['v', 'e'] {
+        assert_eq!(
+            unsafe {
+                evim_core_view_send_key(
+                    core.handle,
+                    view,
+                    &key(EVIM_KEY_CHARACTER, character as u32),
+                    &mut outcome,
+                )
+            },
+            EvimStatus::Ok
+        );
+    }
+    let mut selection = EvimLogicalSelectionIdentityV1::default();
+    assert_eq!(
+        unsafe { evim_core_view_list_selection(core.handle, view, &mut selection) },
+        EvimStatus::Ok
+    );
+    let make = |property, value| EvimDirectStyleEditV1 {
+        struct_size: EVIM_DIRECT_STYLE_EDIT_V1_SIZE,
+        operation: EVIM_STYLE_EDIT_SET_DECLARATION,
+        property,
+        value,
+        expected_selection: selection,
+        ..Default::default()
+    };
+    let requests = [
+        make(
+            EVIM_STYLE_PROPERTY_CHARACTER_WEIGHT,
+            EvimStyleEditValueV1 {
+                kind: EVIM_STYLE_VALUE_UNSIGNED,
+                enum_value: 200,
+                ..Default::default()
+            },
+        ),
+        make(
+            EVIM_STYLE_PROPERTY_CHARACTER_BOLD,
+            EvimStyleEditValueV1 {
+                kind: EVIM_STYLE_VALUE_BOOLEAN,
+                enum_value: 1,
+                ..Default::default()
+            },
+        ),
+        make(
+            EVIM_STYLE_PROPERTY_CHARACTER_SIZE,
+            EvimStyleEditValueV1 {
+                kind: EVIM_STYLE_VALUE_FLOAT,
+                number: 24.0,
+                ..Default::default()
+            },
+        ),
+    ];
+    let duplicate = [requests[0], requests[0]];
+    assert_eq!(
+        unsafe {
+            evim_core_view_edit_direct_character_batch(
+                core.handle,
+                view,
+                duplicate.as_ptr(),
+                2,
+                &mut outcome,
+            )
+        },
+        EvimStatus::InvalidArgument
+    );
+    assert_eq!(
+        copy_core_bytes(
+            evim_core_copy_source_bytes,
+            &core,
+            document_state(&core).document_revision
+        ),
+        original
+    );
+    assert_eq!(
+        unsafe {
+            evim_core_view_edit_direct_character_batch(
+                core.handle,
+                view,
+                requests.as_ptr(),
+                3,
+                requests.as_ptr().cast_mut().cast(),
+            )
+        },
+        EvimStatus::InvalidArgument
+    );
+    assert_eq!(
+        unsafe {
+            evim_core_view_edit_direct_character_batch(
+                core.handle,
+                view,
+                requests.as_ptr(),
+                3,
+                &mut outcome,
+            )
+        },
+        EvimStatus::Ok
+    );
+    let changed_revision = outcome.document_revision;
+    assert_eq!(
+        unsafe {
+            evim_core_view_edit_direct_character_batch(
+                core.handle,
+                view,
+                requests.as_ptr(),
+                3,
+                &mut outcome,
+            )
+        },
+        EvimStatus::StaleRevision
+    );
+    let mut info = EvimTypographyInfoV1::default();
+    assert_eq!(
+        unsafe {
+            evim_core_view_typography_export(
+                core.handle,
+                view,
+                changed_revision,
+                &mut info,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                0,
+            )
+        },
+        EvimStatus::BufferTooSmall
+    );
+    assert_eq!((info.base_weight, info.weight, info.size), (200, 500, 24.0));
+    assert_eq!(
+        unsafe {
+            evim_core_view_send_key(core.handle, view, &key(EVIM_KEY_ESCAPE, 0), &mut outcome)
+        },
+        EvimStatus::Ok
+    );
+    assert_eq!(
+        unsafe {
+            evim_core_view_send_key(
+                core.handle,
+                view,
+                &key(EVIM_KEY_CHARACTER, 'u' as u32),
+                &mut outcome,
+            )
+        },
+        EvimStatus::Ok
+    );
+    assert_eq!(
+        copy_core_bytes(
+            evim_core_copy_source_bytes,
+            &core,
+            outcome.document_revision
+        ),
+        original
+    );
+}
+
+#[test]
+fn readonly_and_recovered_flags_are_exact_buffer_policies_and_save_clears_recovery() {
+    let core = create_core(b"recovered", EvimDocumentOptions::default());
+    let initial = document_state(&core);
+    assert_eq!(
+        evim_core_set_read_only(
+            core.handle,
+            initial.document_id,
+            initial.document_revision,
+            2
+        ),
+        EvimStatus::InvalidArgument
+    );
+    assert_eq!(
+        evim_core_set_read_only(
+            core.handle,
+            initial.document_id + 1,
+            initial.document_revision,
+            1
+        ),
+        EvimStatus::InvalidArgument
+    );
+    assert_eq!(
+        evim_core_mark_recovered(
+            core.handle,
+            initial.document_id,
+            initial.document_revision + 1
+        ),
+        EvimStatus::StaleRevision
+    );
+    assert_eq!(document_state(&core), initial);
+    assert_eq!(
+        evim_core_set_read_only(
+            core.handle,
+            initial.document_id,
+            initial.document_revision,
+            1
+        ),
+        EvimStatus::Ok
+    );
+    let readonly = document_state(&core);
+    assert_eq!(readonly.document_revision, initial.document_revision);
+    assert_eq!(readonly.flags & EVIM_DOCUMENT_STATE_IS_DIRTY, 0);
+    assert_ne!(readonly.flags & EVIM_DOCUMENT_STATE_READ_ONLY, 0);
+    assert_eq!(
+        evim_core_mark_recovered(core.handle, initial.document_id, initial.document_revision),
+        EvimStatus::Ok
+    );
+    let recovered = document_state(&core);
+    assert_ne!(recovered.flags & EVIM_DOCUMENT_STATE_IS_DIRTY, 0);
+    assert_ne!(recovered.flags & EVIM_DOCUMENT_STATE_RECOVERED, 0);
+    assert_eq!(recovered.flags & EVIM_DOCUMENT_STATE_CAN_UNDO, 0);
+    let saved = EvimMarkSavedV1 {
+        struct_size: EVIM_MARK_SAVED_V1_SIZE,
+        document_id: initial.document_id,
+        document_revision: initial.document_revision,
+        ..EvimMarkSavedV1::default()
+    };
+    assert_eq!(
+        unsafe { evim_core_mark_saved(core.handle, &saved) },
+        EvimStatus::Ok
+    );
+    let result = document_state(&core);
+    assert_eq!(
+        result.flags & (EVIM_DOCUMENT_STATE_IS_DIRTY | EVIM_DOCUMENT_STATE_RECOVERED),
+        0
+    );
+    assert_ne!(result.flags & EVIM_DOCUMENT_STATE_READ_ONLY, 0);
+    assert_eq!(
+        copy_core_bytes(
+            evim_core_copy_source_bytes,
+            &core,
+            initial.document_revision
+        ),
+        b"recovered"
+    );
+}
+
+#[test]
+fn readonly_ex_error_has_a_distinct_abi_status_and_no_host_write_effect() {
+    let core = create_core(b"Text", EvimDocumentOptions::default());
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, _) = add_test_view(&core, &mut *provider);
+    let state = document_state(&core);
+    assert_eq!(
+        evim_core_set_read_only(core.handle, state.document_id, state.document_revision, 1),
+        EvimStatus::Ok
+    );
+    host_chars(&core, view, ":w");
+    let (status, outcome, effects) = host_key(&core, view, key(EVIM_KEY_ENTER, 0), &[]);
+    assert_eq!(status, EvimStatus::Ok);
+    assert_eq!(outcome.command_status, EVIM_COMMAND_STATUS_READ_ONLY);
+    assert_eq!(effects, 0);
+    host_chars(&core, view, ":w!");
+    let (status, outcome, effects) = host_key(&core, view, key(EVIM_KEY_ENTER, 0), &[]);
+    assert_eq!(status, EvimStatus::Ok);
+    assert_eq!(outcome.command_status, EVIM_COMMAND_STATUS_COMPLETE);
+    assert_ne!(effects, 0);
+    assert_eq!(evim_effect_batch_release(effects), EvimStatus::Ok);
 }

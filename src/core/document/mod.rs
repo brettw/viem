@@ -28,6 +28,8 @@ mod projection;
 mod range_index;
 mod source;
 mod source_line_index;
+mod source_lines;
+pub use source_lines::PhysicalSourceLine;
 mod style;
 pub(crate) use style::is_character_property;
 mod transaction;
@@ -747,6 +749,8 @@ pub struct Document {
     next_artifact_write_token: u64,
     next_save_sequence: u64,
     last_successful_save_sequence: u64,
+    read_only: bool,
+    recovered_dirty: bool,
 }
 
 impl Default for Document {
@@ -834,6 +838,8 @@ impl Document {
             next_artifact_write_token: 1,
             next_save_sequence: 1,
             last_successful_save_sequence: 0,
+            read_only: false,
+            recovered_dirty: false,
         }
     }
 
@@ -990,6 +996,8 @@ impl Document {
             next_artifact_write_token: 1,
             next_save_sequence: 1,
             last_successful_save_sequence: 0,
+            read_only: false,
+            recovered_dirty: false,
         })
     }
 
@@ -1113,6 +1121,15 @@ impl Document {
         &mut self,
         intent: ArtifactWriteIntent,
     ) -> Result<PreparedArtifactWrite, PersistenceError> {
+        self.prepare_artifact_write_with_force(intent, false)
+    }
+
+    pub fn prepare_artifact_write_with_force(
+        &mut self,
+        intent: ArtifactWriteIntent,
+        force: bool,
+    ) -> Result<PreparedArtifactWrite, PersistenceError> {
+        self.validate_write_policy(force)?;
         self.close_edit_group();
 
         let history = self.history.status().current;
@@ -1284,6 +1301,7 @@ impl Document {
                 }
                 if let Some(sequence) = save_sequence {
                     self.last_successful_save_sequence = sequence;
+                    self.recovered_dirty = false;
                 }
                 let file_identity_changed = self.artifact_binding != previous_binding;
                 self.finish_artifact_write(token);
@@ -1793,7 +1811,9 @@ impl Document {
 
     /// Read-only state of the branching undo tree.
     pub fn history_status(&self) -> HistoryStatus {
-        self.history.status()
+        let mut status = self.history.status();
+        status.is_dirty |= self.recovered_dirty;
+        status
     }
 
     /// Immutable diagnostics/audit metadata for one retained history node.
@@ -1918,12 +1938,37 @@ impl Document {
     /// state. This performs no I/O.
     pub fn mark_saved(&mut self) -> HistoryNodeId {
         self.close_edit_group();
+        self.recovered_dirty = false;
         self.history.mark_saved()
     }
 
     /// Whether the current history state differs from the save-point identity.
     pub fn is_dirty(&self) -> bool {
-        self.history.status().is_dirty
+        self.recovered_dirty || self.history.status().is_dirty
+    }
+
+    /// Buffer policy: editing and undo remain available; external writes
+    /// require a separate explicit force authorization.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+    pub fn set_read_only(&mut self, value: bool) {
+        self.read_only = value;
+    }
+    pub fn is_recovered(&self) -> bool {
+        self.recovered_dirty
+    }
+    /// Recovered source is not evidence of a successful write of that source.
+    /// Keep it dirty even at the initial history node or after undo to it.
+    pub fn mark_recovered(&mut self) {
+        self.recovered_dirty = true;
+    }
+    pub fn validate_write_policy(&self, force: bool) -> Result<(), PersistenceError> {
+        if self.read_only && !force {
+            Err(PersistenceError::ReadOnly)
+        } else {
+            Ok(())
+        }
     }
 
     /// Convert only logical line-ending tokens. Literal CR/LF content is

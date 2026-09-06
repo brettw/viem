@@ -30,7 +30,8 @@ struct EVCoreTextStylePreviewInspection: Equatable {
 
 /// A small, read-only style specimen that deliberately shares the editor's
 /// Core Text shaping path instead of relying on TextKit's private defaults.
-/// The value map is the exact committed, cascade-resolved map returned by core.
+/// The value map comes from the committed core cascade, with absent foreground
+/// declarations resolved to the current theme for presentation only.
 @MainActor
 final class EVCoreTextStylePreviewView: NSView {
     private static let contentInset: CGFloat = 12
@@ -192,10 +193,19 @@ final class EVCoreTextStylePreviewView: NSView {
     private func styleAttributes(
         from values: [EVStyleProperty: EVStyleValue]
     ) -> [NSAttributedString.Key: Any] {
+        let font = makeFont(from: values)
         var attributes: [NSAttributedString.Key: Any] = [
-            NSAttributedString.Key(kCTFontAttributeName as String): makeFont(from: values),
+            NSAttributedString.Key(kCTFontAttributeName as String): font,
             .paragraphStyle: makeParagraphStyle(from: values),
         ]
+        let base: UInt32
+        if case let .unsigned(value)? = values[.characterWeight] { base = value } else { base = 400 }
+        let bold: Bool
+        if case let .boolean(value)? = values[.characterBold] { bold = value } else { bold = false }
+        let target = bold ? min(base + 300, 1000) : base
+        if target >= 500 && UInt32(EVFontCatalog.weight(of: font)) < target {
+            attributes[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] = -3.0
+        }
         if case let .color(value)? = values[.characterForeground] {
             attributes[NSAttributedString.Key(kCTForegroundColorAttributeName as String)] =
                 value.appKitColor.cgColor
@@ -255,52 +265,19 @@ final class EVCoreTextStylePreviewView: NSView {
         let weight: UInt32
         if case let .unsigned(value)? = values[.characterWeight] { weight = value }
         else { weight = 400 }
-        let normalizedWeight = max(-1, min(1, CGFloat(Int(weight) - 400) / 500))
-        let isSlanted: Bool
-        if case let .fontSlant(value)? = values[.characterSlant] {
-            isSlanted = value != UInt32(EVIM_FONT_SLANT_UPRIGHT)
-        } else {
-            isSlanted = false
-        }
+        let bold: Bool
+        if case let .boolean(value)? = values[.characterBold] { bold = value } else { bold = false }
+        let slant: UInt32
+        if case let .fontSlant(value)? = values[.characterSlant] { slant = value }
+        else { slant = UInt32(EVIM_FONT_SLANT_UPRIGHT) }
+        let features: [(String, UInt32)]
+        if case let .openTypeFeatures(value)? = values[.characterOpenTypeFeatures] {
+            features = value.map { ($0.tag, $0.setting) }
+        } else { features = [] }
+        return resolveFont(families: requested.families, size: requested.size,
+            cssWeight: CGFloat(bold ? min(weight + 300, 1000) : weight),
+            slant: slant, features: features, relativeBold: bold)
 
-        var traits: [CFString: Any] = [kCTFontWeightTrait: normalizedWeight]
-        if isSlanted { traits[kCTFontSlantTrait] = 0.16 }
-        let primaryRequest = requested.families[0]
-        let baseFont: CTFont
-        if isSystemFontRequest(primaryRequest) {
-            baseFont = CTFontCreateUIFontForLanguage(.system, requested.size, nil)
-                ?? CTFontCreateWithName("Helvetica" as CFString, requested.size, nil)
-        } else {
-            baseFont = CTFontCreateWithName(primaryRequest as CFString, requested.size, nil)
-        }
-        var descriptorAttributes: [CFString: Any] = [kCTFontTraitsAttribute: traits]
-        if requested.families.count > 1 {
-            descriptorAttributes[kCTFontCascadeListAttribute] = requested.families.dropFirst().map {
-                if isSystemFontRequest($0) {
-                    let font = CTFontCreateUIFontForLanguage(.system, requested.size, nil)
-                        ?? CTFontCreateWithName("Helvetica" as CFString, requested.size, nil)
-                    return CTFontCopyFontDescriptor(font)
-                }
-                return CTFontDescriptorCreateWithAttributes([
-                    kCTFontFamilyNameAttribute: $0,
-                ] as CFDictionary)
-            }
-        }
-        if case let .openTypeFeatures(features)? = values[.characterOpenTypeFeatures],
-           !features.isEmpty
-        {
-            descriptorAttributes[kCTFontFeatureSettingsAttribute] = features.map {
-                [
-                    kCTFontOpenTypeFeatureTag: $0.tag,
-                    kCTFontOpenTypeFeatureValue: $0.setting,
-                ] as [CFString: Any]
-            }
-        }
-        let descriptor = CTFontDescriptorCreateCopyWithAttributes(
-            CTFontCopyFontDescriptor(baseFont),
-            descriptorAttributes as CFDictionary
-        )
-        return CTFontCreateWithFontDescriptor(descriptor, requested.size, nil)
     }
 
     private func isSystemFontRequest(_ family: String) -> Bool {

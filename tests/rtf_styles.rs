@@ -151,11 +151,74 @@ fn creates_assigns_and_deletes_native_style_without_renumbering() {
         .is_none());
     assert_eq!(
         document.projection().blocks()[1].style,
-        StyleId::from("RtfP5")
+        StyleId::from("Paragraph")
     );
     for _ in 0..3 {
         assert!(document.undo());
     }
+    assert_eq!(document.source_bytes(), original);
+}
+
+#[test]
+fn deleting_in_use_character_style_uses_default_not_parent_and_retains_direct_properties() {
+    let source = r"{\rtf1{\stylesheet{\s0 Normal;}{\*\cs2\i Parent;}{\*\cs3\sbasedon2\b Child;}}\cs3\ul Text{\*\unknown Opaque}}";
+    let mut document =
+        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
+    edit(
+        &mut document,
+        StyleDefinitionEdit::DeleteCharacter("RtfC3".into()),
+    );
+    let resolved =
+        evim_core::layout::DocumentLayoutStyles::character_at(document.projection(), 0, false)
+            .unwrap();
+    assert_eq!(resolved.slant, FontSlant::Upright);
+    assert!(!resolved.bold);
+    assert!(resolved.underline);
+    let saved = String::from_utf8(document.source_bytes()).unwrap();
+    assert!(saved.contains(r"{\*\cs2\i Parent;}"));
+    assert!(saved.ends_with(r"{\*\unknown Opaque}}"));
+    let reopened =
+        Document::from_bytes(saved.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
+    assert_eq!(
+        evim_core::layout::DocumentLayoutStyles::character_at(reopened.projection(), 0, false)
+            .unwrap(),
+        resolved
+    );
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+}
+
+#[test]
+fn named_rtf_optional_font_features_round_trip_without_rewriting_opaque_style_controls() {
+    let mut document = open();
+    let original = document.source_bytes();
+    let mut style = document
+        .projection()
+        .style_sheet()
+        .character_style(&"RtfC2".into())
+        .unwrap()
+        .clone();
+    style.properties.open_type_features = Some(std::collections::BTreeMap::from([
+        ("liga".into(), 0),
+        ("ss01".into(), 1),
+    ]));
+    edit(&mut document, StyleDefinitionEdit::UpdateCharacter(style));
+    let selected =
+        evim_core::layout::DocumentLayoutStyles::character_at(document.projection(), 12, false)
+            .unwrap();
+    assert_eq!(selected.open_type_features.get("liga"), Some(&0));
+    assert_eq!(selected.open_type_features.get("ss01"), Some(&1));
+    let saved = document.source_bytes();
+    assert!(String::from_utf8(saved.clone())
+        .unwrap()
+        .contains("\\unknown44"));
+    let reopened = Document::from_bytes(saved, Encoding::Utf8, Format::Rtf).unwrap();
+    assert_eq!(
+        evim_core::layout::DocumentLayoutStyles::character_at(reopened.projection(), 12, false)
+            .unwrap(),
+        selected
+    );
+    assert!(document.undo());
     assert_eq!(document.source_bytes(), original);
 }
 
@@ -242,15 +305,7 @@ fn plain_resets_named_character_overrides_default_font_and_baseline() {
     assert_eq!(span.size, Some(12.0));
     assert_eq!(span.slant, Some(FontSlant::Upright));
     assert_eq!(span.baseline_shift, Some(0.0));
-    assert_eq!(
-        span.foreground,
-        Some(Color {
-            red: 0.0,
-            green: 0.0,
-            blue: 0.0,
-            alpha: 1.0
-        })
-    );
+    assert_eq!(span.foreground, None);
     assert!(!document
         .projection()
         .style_spans()
@@ -418,7 +473,7 @@ fn character_assignment_across_source_groups_preserves_unselected_text_and_direc
                 .any(|span| span.application == StyleApplication::Named("RtfC2".into())),
             (7..16).contains(&at)
         );
-        assert_eq!(spans.iter().any(|span|matches!(&span.application,StyleApplication::Direct(value) if value.weight==Some(700))),at<11);
+        assert_eq!(spans.iter().any(|span|matches!(&span.application,StyleApplication::Direct(value) if value.bold==Some(true))),at<11);
     }
     assert!(String::from_utf8_lossy(&document.source_bytes()).contains(r"{\*\unknown Opaque}"));
     assert!(document.undo());

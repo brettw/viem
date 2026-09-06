@@ -32,7 +32,7 @@ fn html_is_passive_and_preserves_every_source_byte() {
         document.projection().blocks()[0].kind,
         BlockKind::Heading(1)
     ));
-    assert_eq!(properties_at(&document, 19).weight, Some(700));
+    assert_eq!(properties_at(&document, 19).bold, Some(true));
 }
 #[test]
 fn html_entities_collapsed_whitespace_and_text_edits_keep_tags() {
@@ -119,7 +119,7 @@ fn rtf_scoped_formatting_tables_controls_and_breaks() {
     assert_eq!(first.font_families, Some(vec!["Times New Roman".into()]));
     assert_eq!(first.size, Some(18.0));
     assert_eq!(first.foreground.unwrap().red, 1.0);
-    assert_eq!(properties_at(&document, 6).weight, Some(700));
+    assert_eq!(properties_at(&document, 6).bold, Some(true));
     assert_eq!(properties_at(&document, 11).slant, Some(FontSlant::Italic));
     assert_eq!(properties_at(&document, 16).slant, None);
     assert_eq!(
@@ -150,7 +150,7 @@ fn rtf_text_edits_preserve_header_and_escape_new_unicode() {
     document.replace(0..5, "Hi {é} 😀").unwrap();
     assert_eq!(document.text(), "Hi {é} 😀 tail");
     assert_eq!(document.source_bytes(), br"{\rtf1\ansi\uc2{\info{\title Original}}{\b\unknown7 {\uc1 Hi \{\u233?\} \u-10179?\u-8704?}} tail}");
-    assert_eq!(properties_at(&document, 0).weight, Some(700));
+    assert_eq!(properties_at(&document, 0).bold, Some(true));
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source);
     assert!(document.redo());
@@ -207,7 +207,7 @@ fn canonical_bold_and_italic_changes_preserve_other_source() {
     assert!(html.undo());
     html.set_semantic_style(1..3, SemanticInlineStyle::Strong, false)
         .unwrap();
-    assert_eq!(html.source_bytes(), b"<p><b foo='bar'>w<span style=\"font-weight: 400\">or</span>d</b><span data-untouched='yes'> tail</span></p>");
+    assert_eq!(html.source_bytes(), b"<p><b foo='bar'>w<span style=\"font-weight: 400; --evim-base-weight: 400; --evim-bold: false\">or</span>d</b><span data-untouched='yes'> tail</span></p>");
     let mut rtf = open(br"{\rtf1\ansi{\b\unknown4 word} tail}", Format::Rtf);
     rtf.set_semantic_style(1..3, SemanticInlineStyle::Strong, false)
         .unwrap();
@@ -263,9 +263,9 @@ fn rich_direct_formatting_appends_rtf_tables_without_renumbering() {
         document.commit_model_transaction(prepared).unwrap();
         assert_eq!(properties_at(&document, 0), properties);
         if format == Format::Rtf {
-            assert_eq!(document.source_bytes(), br"{\rtf1{\fonttbl{\f7\fnil Old Font;}{\f8\fnil Georgia;}}{\colortbl;\red0\green0\blue255;\red255\green0\blue0;}{\f8\fs36\b\cf2 word}}");
+            assert_eq!(document.source_bytes(), br"{\rtf1{\fonttbl{\f7\fnil Old Font;}{\f8\fnil Georgia;}}{\colortbl;\red0\green0\blue255;\red255\green0\blue0;}{\f8\fs36\b\evimweight700\cf2 word}}");
         } else {
-            assert_eq!(document.source_bytes(), b"<p><b style=\"font-family: 'Georgia'; font-size: 18pt; color: #ff0000ff\">word</b></p>");
+            assert_eq!(document.source_bytes(), b"<p><span style=\"font-family: 'Georgia'; font-size: 18pt; font-weight: 700; color: #ff0000ff\">word</span></p>");
         }
         assert!(document.undo());
         assert_eq!(document.source_bytes(), source);
@@ -285,7 +285,7 @@ fn html_empty_paragraphs_and_misnested_inline_formatting_recover() {
     let source = b"<p></p><p><b><i>a</b>b</i></p><p></p>";
     let document = open(source, Format::Html);
     assert_eq!(document.text(), "\nab\n");
-    assert_eq!(properties_at(&document, 1).weight, Some(700));
+    assert_eq!(properties_at(&document, 1).bold, Some(true));
     assert_eq!(properties_at(&document, 1).slant, Some(FontSlant::Italic));
     assert_eq!(properties_at(&document, 2).weight, None);
     assert_eq!(properties_at(&document, 2).slant, Some(FontSlant::Italic));
@@ -349,8 +349,8 @@ fn html_deletion_and_change_preserve_spaces_and_empty_formatting_context() {
     document.insert(0, "New words").unwrap();
     assert_eq!(document.text(), "New words and italic & cafe.");
     assert_eq!(
-        properties_at(&document, 0).weight,
-        Some(700),
+        properties_at(&document, 0).bold,
+        Some(true),
         "{} {:?}",
         String::from_utf8_lossy(&document.source_bytes()),
         document.projection().provenance()
@@ -444,7 +444,7 @@ fn rich_typing_at_hard_line_end_inherits_preceding_inline_group() {
         assert_eq!(document.text(), "oneX\ntwo");
         let fresh = open(&document.source_bytes(), format);
         assert_eq!(properties_at(&document, 3), properties_at(&fresh, 3));
-        assert_eq!(properties_at(&document, 3).weight, Some(700), "{format:?}");
+        assert_eq!(properties_at(&document, 3).bold, Some(true), "{format:?}");
     }
 }
 
@@ -554,8 +554,8 @@ fn visual_change_of_whole_middle_inline_run_retains_original_bold_context() {
     assert_eq!(document.text(), "Bold ORDS and & text.");
     for at in 5..9 {
         assert_eq!(
-            properties_at(&document, at).weight,
-            Some(700),
+            properties_at(&document, at).bold,
+            Some(true),
             "at{at} source {}",
             String::from_utf8_lossy(&document.source_bytes())
         );

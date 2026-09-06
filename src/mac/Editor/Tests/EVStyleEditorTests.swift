@@ -91,9 +91,9 @@ final class EVStyleEditorTests: XCTestCase {
         _ = backend
         defer { withExtendedLifetime(surface) {} }
 
-        XCTAssertEqual(editor.inspection.styleCount, 25)
+        XCTAssertEqual(editor.inspection.styleCount, 12)
         XCTAssertEqual(editor.inspection.selectedKind, .paragraph)
-        XCTAssertEqual(editor.inspection.characterPropertyCount, 13)
+        XCTAssertEqual(editor.inspection.characterPropertyCount, 14)
         XCTAssertEqual(editor.inspection.paragraphPropertyCount, 8)
         XCTAssertTrue(editor.inspection.paragraphTabEnabled)
         XCTAssertTrue(editor.inspection.mutationsEnabled)
@@ -103,7 +103,7 @@ final class EVStyleEditorTests: XCTestCase {
 
         editor.selectStyle(EVStyleKey.baseDocument)
         XCTAssertEqual(editor.inspection.selectedStyleKey, EVStyleKey.baseDocument)
-        XCTAssertEqual(editor.inspection.characterPropertyCount, 13)
+        XCTAssertEqual(editor.inspection.characterPropertyCount, 14)
         XCTAssertEqual(editor.inspection.paragraphPropertyCount, 0)
     }
 
@@ -411,14 +411,17 @@ final class EVStyleEditorTests: XCTestCase {
     }
 
     @MainActor
-    func testCoreTextPreviewReceivesExactCommittedEffectiveValuesIncludingInheritance() throws {
+    func testCoreTextPreviewReceivesCommittedEffectiveValuesWithThemeDefaults() throws {
         let headingKey = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         let (backend, surface, editor) = try makeEditor(source: "# Heading", style: headingKey)
         defer { withExtendedLifetime(surface) {} }
         let definition = try XCTUnwrap(try backend.styleSheetSnapshot().definition(for: headingKey))
         let expectedValues = definition.properties.reduce(into: [EVStyleProperty: EVStyleValue]()) {
             values, entry in
-            if let effective = entry.value.effective { values[entry.key] = effective }
+            if entry.key == .characterForeground && entry.value.usesThemeDefault {
+                let foreground = editor.themeStore.theme.foreground
+                values[entry.key] = .color(EVStyleColor(red: Float(foreground.red), green: Float(foreground.green), blue: Float(foreground.blue), alpha: Float(foreground.alpha)))
+            } else if let effective = entry.value.effective { values[entry.key] = effective }
         }
 
         XCTAssertEqual(editor.inspection.preview.effectiveValues, expectedValues)
@@ -624,6 +627,10 @@ final class EVStyleEditorTests: XCTestCase {
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let editor = EVStyleEditorViewController()
+        let themeSuite = "evim-style-editor-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: themeSuite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: themeSuite) }
+        editor.themeStore = EVThemeStore(defaults: defaults)
         editor.retarget(document: surface, styleKey: style)
         return (backend, surface, editor)
     }

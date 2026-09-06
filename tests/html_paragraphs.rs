@@ -22,6 +22,9 @@ fn direct(document: &Document, at: usize) -> CharacterProperties {
         .filter(|span| span.range.start <= at && at < span.range.end)
     {
         if let StyleApplication::Direct(properties) = &span.application {
+            if properties.bold.is_some() {
+                result.bold = properties.bold;
+            }
             if properties.weight.is_some() {
                 result.weight = properties.weight;
             }
@@ -48,8 +51,8 @@ fn middle_split_preserves_named_style_direct_paragraph_and_inline_scopes() {
         paragraphs[0].direct_paragraph,
         paragraphs[1].direct_paragraph
     );
-    assert_eq!(direct(&document, 0).weight, Some(700));
-    assert_eq!(direct(&document, 3).weight, Some(700));
+    assert_eq!(direct(&document, 0).bold, Some(true));
+    assert_eq!(direct(&document, 3).bold, Some(true));
     assert_eq!(direct(&document, 5).weight, None);
     assert_eq!(direct(&document, 5).slant, Some(FontSlant::Italic));
     assert_eq!(direct(&document, 5).size, Some(19.0));

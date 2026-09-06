@@ -47,6 +47,18 @@ fn selector(sheet: &StyleSheet, id: &StyleId, character: bool) -> String {
     format!(".{}", class_name(id, character))
 }
 
+fn builtin_heading(id: &StyleId) -> Option<u8> {
+    match id.0.strip_prefix("Heading")? {
+        "1" => Some(1),
+        "2" => Some(2),
+        "3" => Some(3),
+        "4" => Some(4),
+        "5" => Some(5),
+        "6" => Some(6),
+        _ => None,
+    }
+}
+
 pub(super) fn quote(value: &str) -> String {
     let mut out = String::from("\"");
     for c in value.chars() {
@@ -180,6 +192,7 @@ fn properties(
         |v: &Vec<String>| strings(v)
     );
     item!("character-size", character.size, |v: &f32| v.to_string());
+    item!("character-bold", character.bold, |v: &bool| v.to_string());
     item!("character-weight", character.weight, |v: &u16| v
         .to_string());
     item!("character-slant", character.slant, |v: &FontSlant| {
@@ -301,6 +314,7 @@ fn parse_property(
         "character-font-families" => c.font_families = Some(parse_strings(value)?),
         "character-size" => c.size = Some(float()?),
         "character-weight" => c.weight = Some(value.parse().ok()?),
+        "character-bold" => c.bold = Some(value.parse().ok()?),
         "character-slant" => {
             c.slant = Some(match value {
                 "normal" => FontSlant::Upright,
@@ -377,6 +391,16 @@ fn parse_rule(text: &str) -> Option<StyleDefinitionEdit> {
         }
     }
     let id = StyleId(values.remove("--evim-style-id")?);
+    if let Some(deleted) = values.remove("--evim-style-deleted") {
+        if deleted != "true"
+            || !values.is_empty()
+            || !StyleSheet::builtin_block(&id)
+            || selector != self::selector(&StyleSheet::default(), &id, false)
+        {
+            return None;
+        }
+        return Some(StyleDefinitionEdit::DeleteBlock(id));
+    }
     let metadata = StyleDefinitionMetadata {
         display_name: values.remove("--evim-style-name")?,
         origin: StyleDefinitionOrigin::SourceBacked,
@@ -593,11 +617,15 @@ pub(super) fn select_class(sheet: &StyleSheet, classes: &str, character: bool) -
 }
 
 fn overlay_character(target: &mut CharacterProperties, layer: &CharacterProperties) {
+    if layer.weight.is_some() {
+        target.bold = None;
+    }
     macro_rules! copy {($($field:ident),*)=>{$(if layer.$field.is_some(){target.$field=layer.$field.clone();})*};}
     copy!(
         font_families,
         size,
         weight,
+        bold,
         slant,
         foreground,
         background,
@@ -653,6 +681,7 @@ pub(super) fn remove_named_overrides(
         font_families,
         size,
         weight,
+        bold,
         slant,
         foreground,
         background,
@@ -721,6 +750,22 @@ pub(super) fn block_css(properties: &BlockProperties) -> String {
 }
 
 pub(super) fn write_rule(sheet: &StyleSheet, id: &StyleId, character: bool) -> Option<String> {
+    if !character && StyleSheet::builtin_block(id) && sheet.block_style(id).is_none() {
+        // An additive v1 rule persists deletion of an otherwise implicit
+        // heading definition. Its ordinary CSS presents hN as the default
+        // paragraph in passive readers as well as in the editable projection.
+        let paragraph = write_rule(sheet, &sheet.base_paragraph, false)?;
+        let (_, body) = paragraph.split_once(" {\n")?;
+        let mut out = format!("{} {{\n  --evim-style-id: {};\n  --evim-style-deleted: \"true\";\n  font: inherit;\n  margin: 0;\n",
+            selector(sheet, id, false), quote(&id.0));
+        for (key, value) in html::declarations(body.strip_suffix("}\n")?) {
+            if !key.starts_with("--evim-") {
+                out.push_str(&format!("  {key}: {value};\n"));
+            }
+        }
+        out.push_str("}\n");
+        return Some(out);
+    }
     let (metadata, parent, next, role, own_character, own_block) = if character {
         let style = sheet.character_style(id)?;
         (
@@ -797,7 +842,12 @@ pub(super) fn write_rule(sheet: &StyleSheet, id: &StyleId, character: bool) -> O
         block_css(&effective_block)
     );
     for (key, value) in html::declarations(&css) {
-        out.push_str(&format!("  {key}: {value};\n"));
+        // Owned metadata already records sparse base weight and relative
+        // emphasis. Inline-only helper declarations are neither canonical
+        // metadata nor standard fallback CSS.
+        if !key.starts_with("--evim-") {
+            out.push_str(&format!("  {key}: {value};\n"));
+        }
     }
     out.push_str("}\n");
     Some(out)
@@ -843,6 +893,13 @@ pub(super) fn definition_patches(
                         .ok_or(DocumentError::UnsupportedFormatting)?,
                 );
             }
+        }
+    }
+    for id in after.deleted_source_blocks() {
+        if !old.contains(&(true, id.clone())) {
+            append.push_str(
+                &write_rule(after, id, false).ok_or(DocumentError::UnsupportedFormatting)?,
+            );
         }
     }
     if !append.is_empty() {
@@ -1264,33 +1321,61 @@ pub(super) fn paragraph_assignment_patches(
 
 pub(super) fn remove_assignment_patches(
     input: &super::line_endings::NormalizedText,
+    sheet: &StyleSheet,
     id: &StyleId,
     character: bool,
 ) -> Vec<(Range<usize>, String)> {
     let class = class_name(id, character);
     let converter = super::rich_text::Builder::new(input, Revision(0));
-    html::tokenize(&input.text)
+    let tokens = super::html5_tree::tokens(&input.text);
+    let mut seen = BTreeSet::new();
+    let mut list_depth = 0usize;
+    active_source_elements(&tokens)
         .into_iter()
         .filter_map(|token| {
-            let TokenKind::Tag(tag) = token.kind else {
+            let TokenKind::Tag(tag) = &token.kind else {
                 return None;
             };
-            if tag.end {
+            if matches!(tag.name.as_str(), "ul" | "ol") {
+                if tag.end {
+                    list_depth = list_depth.saturating_sub(1);
+                } else {
+                    list_depth += 1;
+                }
+            }
+            if tag.end || token.range.is_empty() || !seen.insert(token.range.start) {
                 return None;
             }
             let classes = tag
-                .attribute("class")?
+                .attribute("class")
+                .unwrap_or("")
                 .split_ascii_whitespace()
                 .collect::<Vec<_>>();
-            if !classes.contains(&class.as_str()) {
+            let assigned = select_class(sheet, &classes.join(" "), character);
+            let implicit_heading = !character
+                && builtin_heading(id).is_some_and(|level| tag.name == format!("h{level}"))
+                && assigned.is_none();
+            let implicit_list = !character
+                && tag.name == "li"
+                && assigned.is_none()
+                && id.0 == format!("List{}", list_depth.max(1));
+            if assigned.as_ref() != Some(id) && !implicit_heading && !implicit_list {
                 return None;
             }
-            let remaining = classes
+            let mut remaining = classes
                 .into_iter()
                 .filter(|token| *token != class)
                 .collect::<Vec<_>>()
                 .join(" ");
-            let (range, replacement) = class_patch(&input.text, token.range, &remaining);
+            let fallback = class_name(
+                &StyleId::from(if character { "Character" } else { "Paragraph" }),
+                character,
+            );
+            if !remaining.is_empty() {
+                remaining.insert(0, ' ');
+            }
+            remaining.insert_str(0, &fallback);
+            let (range, replacement) = class_patch(&input.text, token.range.clone(), &remaining);
             Some((converter.source_range(range), replacement))
         })
         .collect()

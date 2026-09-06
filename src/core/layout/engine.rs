@@ -333,6 +333,8 @@ pub struct PositionedCaret {
 pub struct VisualRow {
     pub paragraph_id: Option<u64>,
     pub hard_line_index: usize,
+    /// Zero-based visual fragment within this formatted hard line.
+    pub fragment_index: usize,
     pub hard_line_range: Range<usize>,
     pub text_range: Range<usize>,
     pub y: f32,
@@ -408,6 +410,7 @@ pub struct LayoutSnapshot {
     pub document_insets: EdgeInsets,
     pub document_style_revision: Option<StyleSheetRevision>,
     pub canvas_background: Color,
+    pub canvas_background_is_default: bool,
     pub default_paint: ResolvedTextPaint,
     pub paint_runs: Vec<PaintStyleRun>,
     pub coverage: LayoutCoverage,
@@ -500,6 +503,7 @@ pub struct RegionalLayoutSnapshot {
     document_insets: EdgeInsets,
     document_style_revision: Option<StyleSheetRevision>,
     canvas_background: Color,
+    canvas_background_is_default: bool,
     default_paint: ResolvedTextPaint,
     paint_runs: Vec<PaintStyleRun>,
     lines: Vec<RegionalHardLineLayout>,
@@ -1856,6 +1860,7 @@ fn partial_snapshot_from_region(
         document_insets: region.document_insets,
         document_style_revision: region.document_style_revision,
         canvas_background: region.canvas_background,
+        canvas_background_is_default: region.canvas_background_is_default,
         default_paint: region.default_paint.clone(),
         paint_runs: region.paint_runs.clone(),
         coverage: LayoutCoverage::PartialHardLines {
@@ -2784,6 +2789,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 rows.push(VisualRow {
                     paragraph_id: paragraph.paragraph_id,
                     hard_line_index,
+                    fragment_index: starting_row,
                     hard_line_range: line_slice.full_range.clone(),
                     text_range: line_range.clone(),
                     y,
@@ -2952,6 +2958,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             document_insets,
             document_style_revision: Some(document_styles.style_sheet_revision),
             canvas_background: document_styles.canvas_background,
+            canvas_background_is_default: document_styles.canvas_background_is_default,
             default_paint: document_styles.default_paint.clone(),
             paint_runs,
             lines,
@@ -3056,6 +3063,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             },
             |styles| styles.canvas_background,
         );
+        let canvas_background_is_default = document_styles
+            .as_ref()
+            .map_or(true, |styles| styles.canvas_background_is_default);
         let default_paint = document_styles
             .as_ref()
             .map_or_else(ResolvedTextPaint::default, |styles| {
@@ -3224,6 +3234,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 rows.push(VisualRow {
                     paragraph_id: paragraph.paragraph_id,
                     hard_line_index,
+                    fragment_index: 0,
                     hard_line_range: line_range.clone(),
                     text_range: line_range.clone(),
                     y,
@@ -3305,6 +3316,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             document_insets,
             document_style_revision,
             canvas_background,
+            canvas_background_is_default,
             default_paint,
             paint_runs,
             coverage: LayoutCoverage::FullDocument {
@@ -4076,6 +4088,7 @@ fn position_row(
     Ok(VisualRow {
         paragraph_id,
         hard_line_index,
+        fragment_index: row_in_line,
         hard_line_range,
         text_range,
         y,

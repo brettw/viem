@@ -269,6 +269,9 @@ pub struct ExOptionDisplay {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExFileRequest {
+    Split {
+        path: Option<String>,
+    },
     Edit {
         path: Option<String>,
         force: bool,
@@ -619,6 +622,7 @@ pub enum ExExecuteError {
     InvalidCount(u64),
     NoUndo,
     NoRedo,
+    ReadOnly,
     EmptyRegister(Option<char>),
     NoPreviousSubstitute,
     NoPreviousSearch,
@@ -689,6 +693,9 @@ impl fmt::Display for ExExecuteError {
                 )
             }
             Self::InvalidCount(count) => write!(formatter, "invalid line count {count}"),
+            Self::ReadOnly => {
+                formatter.write_str("E45: readonly option is set (use ! to override)")
+            }
             Self::NoUndo => formatter.write_str("already at oldest change"),
             Self::NoRedo => formatter.write_str("already at newest change"),
             Self::EmptyRegister(name) => match name {
@@ -978,9 +985,24 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
     registers: &R,
 ) -> Result<ExPlan, ExExecuteError> {
     validate_current_line(context.current_line, document.line_count())?;
+    if document.is_read_only()
+        && !command.bang
+        && (matches!(
+            &command.action,
+            ExAction::Write { .. }
+                | ExAction::SaveAs { .. }
+                | ExAction::WriteQuit { .. }
+                | ExAction::WriteAll
+        ) || matches!(&command.action,ExAction::Xit{path} if path.is_some()||document.is_dirty()))
+    {
+        return Err(ExExecuteError::ReadOnly);
+    }
     let mut plan = ExPlan::empty(document);
 
     match &command.action {
+        ExAction::Split { path } => {
+            push_file(&mut plan, ExFileRequest::Split { path: path.clone() })
+        }
         ExAction::Edit { path } => push_file(
             &mut plan,
             ExFileRequest::Edit {

@@ -7,6 +7,39 @@ import XCTest
 
 final class EVCoreStateMenuIntegrationTests: XCTestCase {
     @MainActor
+    func testStandardNativeEditSelectorsReachCoreWhenDocumentViewIsFocused() throws {
+        let (backend, surface, _) = try makeSurface("Text")
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 640, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = surface
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        XCTAssertTrue(window.makeFirstResponder(surface.editorView))
+        func item(_ command: EVMenuCommand) throws -> NSMenuItem {
+            let item = NSMenuItem(title: "Edit", action: try XCTUnwrap(command.nativeEditAction), keyEquivalent: "")
+            item.tag = command.rawValue
+            return item
+        }
+        func send(_ command: EVMenuCommand) throws {
+            let action = try item(command)
+            XCTAssertTrue(surface.editorView.validateMenuItem(action))
+            XCTAssertTrue(window.firstResponder === surface.editorView)
+            XCTAssertTrue(try XCTUnwrap(window.firstResponder).tryToPerform(try XCTUnwrap(action.action), with: action))
+        }
+        XCTAssertFalse(surface.editorView.validateMenuItem(try item(.undo)))
+        try send(.selectAll)
+        XCTAssertEqual(surface.editorView.selectedRange(), NSRange(location: 0, length: 4))
+        try send(.delete)
+        XCTAssertEqual(try backend.formattedText(), "")
+        let undo = try item(.undo)
+        XCTAssertTrue(surface.editorView.validateMenuItem(undo))
+        XCTAssertTrue(undo.title.hasPrefix("Undo "))
+        try send(.undo)
+        XCTAssertEqual(try backend.formattedText(), "Text")
+        try send(.redo)
+        XCTAssertEqual(try backend.formattedText(), "")
+    }
+
+    @MainActor
     private final class Pasteboard: EVPasteboardAccess {
         var text: String?
         var generation: UInt64 = 1

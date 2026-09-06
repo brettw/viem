@@ -32,7 +32,9 @@ public enum EVCoreFrontendError: LocalizedError, Equatable {
                 "\(operation) failed (eVim core status \(status))."
             }
         case let .command(operation, status):
-            "\(operation) was rejected (eVim command status \(status))."
+            status == UInt32(EVIM_COMMAND_STATUS_READ_ONLY)
+                ? "E45: readonly option is set (use ! to override)"
+                : "\(operation) was rejected (eVim command status \(status))."
         case .invalidUTF8:
             "The formatted projection was not valid UTF-8."
         case .unavailableLayout:
@@ -72,6 +74,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     private(set) var core: EvimCoreHandle = 0
     private var source = Data()
     private var typeName = "public.plain-text"
+    private var recoveryInterpretation: EVRecoverySnapshot?
     private(set) var currentDocumentState = EvimDocumentStateV1()
     private(set) var formattedAccessCounters = EVFormattedAccessCounters()
     private var surfaces: [WeakSurface] = []
@@ -121,6 +124,30 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         for surface in surfaces.compactMap(\.value) {
             try surface.attachToCore()
         }
+    }
+
+    public func recoverySnapshot() throws -> EVRecoverySnapshot {
+        let state = try documentState()
+        return EVRecoverySnapshot(source: try copySourceBytes(expectedRevision: state.document_revision),
+                                  format: Self.sourceFormat(from: state), encoding: state.encoding, fileFormat: state.file_format,
+                                  documentID: state.document_id, documentRevision: state.document_revision)
+    }
+
+    public func restoreRecovery(_ snapshot: EVRecoverySnapshot) throws {
+        recoveryInterpretation = snapshot
+        defer { recoveryInterpretation = nil }
+        try read(source: snapshot.source, typeName: snapshot.format == .markdownSource ? EVDocument.markdownSourceType : EVDocument.typeName(for: snapshot.format))
+        let state = try documentState()
+        try checked(evim_core_mark_recovered(core, state.document_id, state.document_revision), operation: "Restore unsaved recovery state")
+        _ = try documentState()
+        for surface in surfaces.compactMap(\.value) { surface.refreshPresentation() }
+    }
+
+    public func setReadOnly(_ readOnly: Bool) throws {
+        let state = try documentState()
+        try checked(evim_core_set_read_only(core, state.document_id, state.document_revision, readOnly ? 1 : 0), operation: "Set read-only policy")
+        _ = try documentState()
+        for surface in surfaces.compactMap(\.value) { surface.refreshPresentation() }
     }
 
     public func serializedSource(typeName: String) throws -> Data {
@@ -322,9 +349,9 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         // Opening policy belongs to the portable encoding projection. The
         // frontend identifies the format container but never decodes or scans
         // authoritative source bytes itself.
-        options.encoding = UInt32(EVIM_ENCODING_DETECT)
-        options.format = Self.formatOption(typeName: typeName)
-        options.file_format = UInt32(EVIM_FILE_FORMAT_DETECT)
+        options.encoding = recoveryInterpretation?.encoding ?? UInt32(EVIM_ENCODING_DETECT)
+        options.format = Self.formatOption(typeName: recoveryInterpretation.map { $0.format == .markdownSource ? EVDocument.markdownSourceType : EVDocument.typeName(for: $0.format) } ?? typeName)
+        options.file_format = recoveryInterpretation?.fileFormat ?? UInt32(EVIM_FILE_FORMAT_DETECT)
         var handle: EvimCoreHandle = 0
         var revision: UInt64 = 0
         let status = source.withUnsafeBytes { raw in
@@ -498,6 +525,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     private static func persistenceState(from state: EvimDocumentStateV1) -> EVDocumentPersistenceState {
         EVDocumentPersistenceState(
             isDirty: state.flags & UInt32(EVIM_DOCUMENT_STATE_IS_DIRTY) != 0,
+            isReadOnly: state.flags & UInt32(EVIM_DOCUMENT_STATE_READ_ONLY) != 0,
+            isRecovered: state.flags & UInt32(EVIM_DOCUMENT_STATE_RECOVERED) != 0,
             documentID: state.document_id,
             documentRevision: state.document_revision
         )
@@ -688,6 +717,40 @@ final class EVCoreViewSession {
         if let copiedBatch {
             try commandTurnHost?.applyHostEffectBatch(copiedBatch)
         }
+        if outcome.command_status == UInt32(EVIM_COMMAND_STATUS_READ_ONLY) {
+            throw EVCoreFrontendError.command(operation: operation, status: outcome.command_status)
+        }
+    }
+
+    func lineLocation() throws -> EvimViewLineLocationV1 {
+        var value = EvimViewLineLocationV1(); value.struct_size = UInt32(MemoryLayout<EvimViewLineLocationV1>.size)
+        try checked(evim_core_view_line_location(document.core, viewID, &value), operation: "Read line position")
+        return value
+    }
+
+    func lineMode() throws -> EVLineMode {
+        var value: UInt32 = 0
+        try checked(evim_core_view_line_mode(document.core, viewID, &value), operation: "Read line mode")
+        return EVLineMode(rawValue: value) ?? .visual
+    }
+
+    func setLineMode(_ mode: EVLineMode) throws {
+        var outcome = EvimCoreOutcomeV1(); outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        try checked(evim_core_view_set_line_mode(document.core, viewID, mode.rawValue, &outcome), operation: "Change line mode")
+        finish(outcome, composition: .cancelIfChanged)
+    }
+
+    func setThemePadding(_ padding: EVThemePadding) throws {
+        try checked(evim_core_view_set_padding(document.core, viewID, Float(padding.top), Float(padding.left), Float(padding.bottom), Float(padding.right)), operation: "Update document padding")
+    }
+
+    func currentFontEnWidth() throws -> CGFloat {
+        var info = EvimTypographyInfoV1()
+        info.struct_size = UInt32(MemoryLayout<EvimTypographyInfoV1>.size)
+        let status = evim_core_view_typography_export(document.core, viewID,
+            try document.revision(), &info, nil, 0, nil, 0)
+        if status != UInt32(EVIM_STATUS_BUFFER_TOO_SMALL) { try checked(status, operation: "Resolve caret font") }
+        return CGFloat(info.size) / 2
     }
 
     @discardableResult

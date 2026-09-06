@@ -132,6 +132,8 @@ pub const EVIM_DOCUMENT_STATE_HAS_BOM: u32 = 1 << 0;
 pub const EVIM_DOCUMENT_STATE_CAN_UNDO: u32 = 1 << 1;
 pub const EVIM_DOCUMENT_STATE_CAN_REDO: u32 = 1 << 2;
 pub const EVIM_DOCUMENT_STATE_IS_DIRTY: u32 = 1 << 3;
+pub const EVIM_DOCUMENT_STATE_READ_ONLY: u32 = 1 << 4;
+pub const EVIM_DOCUMENT_STATE_RECOVERED: u32 = 1 << 5;
 
 /// Immutable model/history metadata captured in one serial core query.
 #[repr(C)]
@@ -384,6 +386,7 @@ pub const EVIM_COMMAND_STATUS_NEEDS_MORE_LAYOUT: u32 = 4;
 pub const EVIM_COMMAND_STATUS_SEARCH_NOT_FOUND: u32 = 5;
 pub const EVIM_COMMAND_STATUS_UNSUPPORTED: u32 = 6;
 pub const EVIM_COMMAND_STATUS_ERROR: u32 = 7;
+pub const EVIM_COMMAND_STATUS_READ_ONLY: u32 = 8;
 
 pub const EVIM_MODE_NORMAL: u32 = 1;
 pub const EVIM_MODE_INSERT: u32 = 2;
@@ -425,6 +428,7 @@ pub const EVIM_EX_FRONTEND_JUMPS: u32 = 12;
 pub const EVIM_EX_FRONTEND_OPTIONS: u32 = 13;
 pub const EVIM_EX_FRONTEND_PRINT_LINES: u32 = 14;
 pub const EVIM_EX_FRONTEND_NORMAL: u32 = 15;
+pub const EVIM_EX_FRONTEND_SPLIT: u32 = 16;
 
 pub const EVIM_EX_FRONTEND_FORCE: u32 = 1 << 0;
 pub const EVIM_EX_FRONTEND_HAS_PATH: u32 = 1 << 1;
@@ -1129,6 +1133,7 @@ pub const EVIM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION: u32 = 13;
 pub const EVIM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES: u32 = 14;
 pub const EVIM_STYLE_PROPERTY_CHARACTER_SIZE: u32 = 15;
 pub const EVIM_STYLE_PROPERTY_CHARACTER_WEIGHT: u32 = 16;
+pub const EVIM_STYLE_PROPERTY_CHARACTER_BOLD: u32 = 27;
 pub const EVIM_STYLE_PROPERTY_CHARACTER_SLANT: u32 = 17;
 pub const EVIM_STYLE_PROPERTY_CHARACTER_FOREGROUND: u32 = 18;
 pub const EVIM_STYLE_PROPERTY_CHARACTER_BACKGROUND: u32 = 19;
@@ -1458,6 +1463,8 @@ impl EvimStyleEditGroupV1 {
 pub const EVIM_TEXT_PAINT_HAS_BACKGROUND: u32 = 1 << 0;
 pub const EVIM_TEXT_PAINT_UNDERLINE: u32 = 1 << 1;
 pub const EVIM_TEXT_PAINT_STRIKETHROUGH: u32 = 1 << 2;
+pub const EVIM_TEXT_PAINT_DEFAULT_FOREGROUND: u32 = 1 << 3;
+pub const EVIM_LAYOUT_PAINT_DEFAULT_CANVAS: u32 = 1 << 0;
 
 /// Fully resolved paint-only text attributes. Foreground is always present;
 /// background is meaningful only with `HAS_BACKGROUND`. Decoration flags mean
@@ -1479,7 +1486,7 @@ pub const EVIM_TEXT_PAINT_V1_SIZE: u32 = size_of::<EvimTextPaintV1>() as u32;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EvimLayoutPaintInfoV1 {
     pub struct_size: u32,
-    pub reserved: u32,
+    pub flags: u32,
     pub identity: EvimLayoutSnapshotIdentityV1,
     pub canvas_background: EvimRgbaV1,
     pub default_paint: EvimTextPaintV1,
@@ -2695,7 +2702,7 @@ impl MarshalledStyle {
             },
             has_language: u32::from(style.language.is_some()),
             has_script: u32::from(style.script.is_some()),
-            reserved: 0,
+            reserved: u32::from(style.relative_bold),
             size: style.size,
             weight: style.weight,
             letter_spacing: style.letter_spacing,
@@ -3452,6 +3459,10 @@ fn export_ex_frontend_request(
     };
     match request {
         ExFrontendRequest::File(request) => match request {
+            ExFileRequest::Split { path } => {
+                output.kind = EVIM_EX_FRONTEND_SPLIT;
+                set_ex_path(&mut output, strings, path.as_deref())?;
+            }
             ExFileRequest::Edit { path, force } => {
                 output.kind = EVIM_EX_FRONTEND_EDIT;
                 output.flags |= u32::from(*force) * EVIM_EX_FRONTEND_FORCE;
@@ -4337,6 +4348,9 @@ fn command_status_to_ffi(status: &CommandStatus) -> u32 {
         CommandStatus::NeedsMoreLayout(_) => EVIM_COMMAND_STATUS_NEEDS_MORE_LAYOUT,
         CommandStatus::SearchNotFound => EVIM_COMMAND_STATUS_SEARCH_NOT_FOUND,
         CommandStatus::Unsupported(_) => EVIM_COMMAND_STATUS_UNSUPPORTED,
+        CommandStatus::ExError(crate::command::ExCommandError::Execute(
+            crate::command::ex_execute::ExExecuteError::ReadOnly,
+        )) => EVIM_COMMAND_STATUS_READ_ONLY,
         CommandStatus::Error(_)
         | CommandStatus::CountError(_)
         | CommandStatus::RegisterReadError(_)
@@ -4442,6 +4456,9 @@ fn core_status(error: CoreError) -> EvimStatus {
             | LayoutJobError::WrongMeasurementEnvironment { .. }
             | LayoutJobError::StaleMetrics { .. },
         ) => EvimStatus::LayoutUnavailable,
+        CoreError::Persistence(crate::document::PersistenceError::ReadOnly) => {
+            EvimStatus::PolicyRequired
+        }
         CoreError::NoVisualSelection => EvimStatus::InvalidRange,
         CoreError::StaleLogicalSelection => EvimStatus::StaleRevision,
         _ => EvimStatus::CoreFailure,
@@ -4596,6 +4613,12 @@ fn summarize_document_state(document: &Document) -> EvimDocumentStateV1 {
     }
     if history.is_dirty {
         flags |= EVIM_DOCUMENT_STATE_IS_DIRTY;
+    }
+    if document.is_read_only() {
+        flags |= EVIM_DOCUMENT_STATE_READ_ONLY;
+    }
+    if document.is_recovered() {
+        flags |= EVIM_DOCUMENT_STATE_RECOVERED;
     }
     EvimDocumentStateV1 {
         struct_size: EVIM_DOCUMENT_STATE_V1_SIZE,
@@ -4833,7 +4856,11 @@ fn color_to_ffi(color: Color) -> EvimRgbaV1 {
 }
 
 fn text_paint_to_ffi(paint: &ResolvedTextPaint) -> EvimTextPaintV1 {
-    let mut flags = 0;
+    let mut flags = if paint.foreground_is_default {
+        EVIM_TEXT_PAINT_DEFAULT_FOREGROUND
+    } else {
+        0
+    };
     let background = paint.background.map_or_else(EvimRgbaV1::default, |color| {
         flags |= EVIM_TEXT_PAINT_HAS_BACKGROUND;
         color_to_ffi(color)
@@ -4938,10 +4965,11 @@ const FFI_PARAGRAPH_PROPERTIES: [StyleProperty; 8] = [
     StyleProperty::ParagraphBaseDirection,
 ];
 
-const FFI_CHARACTER_PROPERTIES: [StyleProperty; 13] = [
+const FFI_CHARACTER_PROPERTIES: [StyleProperty; 14] = [
     StyleProperty::CharacterFontFamilies,
     StyleProperty::CharacterSize,
     StyleProperty::CharacterWeight,
+    StyleProperty::CharacterBold,
     StyleProperty::CharacterSlant,
     StyleProperty::CharacterForeground,
     StyleProperty::CharacterBackground,
@@ -5012,6 +5040,7 @@ fn style_property_to_ffi(property: StyleProperty) -> u32 {
         StyleProperty::CharacterFontFamilies => EVIM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES,
         StyleProperty::CharacterSize => EVIM_STYLE_PROPERTY_CHARACTER_SIZE,
         StyleProperty::CharacterWeight => EVIM_STYLE_PROPERTY_CHARACTER_WEIGHT,
+        StyleProperty::CharacterBold => EVIM_STYLE_PROPERTY_CHARACTER_BOLD,
         StyleProperty::CharacterSlant => EVIM_STYLE_PROPERTY_CHARACTER_SLANT,
         StyleProperty::CharacterForeground => EVIM_STYLE_PROPERTY_CHARACTER_FOREGROUND,
         StyleProperty::CharacterBackground => EVIM_STYLE_PROPERTY_CHARACTER_BACKGROUND,
@@ -5165,6 +5194,7 @@ fn declared_character_property(
             .map(StylePropertyValue::FontFamilies),
         StyleProperty::CharacterSize => properties.size.map(StylePropertyValue::Float),
         StyleProperty::CharacterWeight => properties.weight.map(StylePropertyValue::FontWeight),
+        StyleProperty::CharacterBold => properties.bold.map(StylePropertyValue::Boolean),
         StyleProperty::CharacterSlant => properties.slant.map(StylePropertyValue::FontSlant),
         StyleProperty::CharacterForeground => properties.foreground.map(StylePropertyValue::Color),
         StyleProperty::CharacterBackground => properties.background.map(StylePropertyValue::Color),
@@ -5238,7 +5268,10 @@ fn effective_character_property(
             properties.font_families.clone(),
         )),
         StyleProperty::CharacterSize => Some(StylePropertyValue::Float(properties.size)),
-        StyleProperty::CharacterWeight => Some(StylePropertyValue::FontWeight(properties.weight)),
+        StyleProperty::CharacterWeight => {
+            Some(StylePropertyValue::FontWeight(properties.base_weight))
+        }
+        StyleProperty::CharacterBold => Some(StylePropertyValue::Boolean(properties.bold)),
         StyleProperty::CharacterSlant => Some(StylePropertyValue::FontSlant(properties.slant)),
         StyleProperty::CharacterForeground => {
             Some(StylePropertyValue::Color(properties.foreground))
@@ -5431,7 +5464,7 @@ fn generated_style_capabilities(
     let mut capabilities =
         EVIM_STYLE_CAPABILITY_EDIT_DECLARATIONS | EVIM_STYLE_CAPABILITY_EDIT_DISPLAY_NAME;
     if !is_base {
-        capabilities |= EVIM_STYLE_CAPABILITY_EDIT_PARENT;
+        capabilities |= EVIM_STYLE_CAPABILITY_EDIT_PARENT | EVIM_STYLE_CAPABILITY_DELETE;
     }
     if role == Some(BlockRole::Paragraph) {
         capabilities |= EVIM_STYLE_CAPABILITY_EDIT_NEXT_STYLE;
@@ -5562,17 +5595,13 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, EvimStatu
                 is_base_document || is_base_paragraph,
                 Some(style.role),
                 matches!(document.format(), Format::Html | Format::Rtf),
-            ) & if document.format() == Format::Html
-                && style
-                    .id
-                    .0
-                    .strip_prefix("Heading")
-                    .and_then(|level| level.parse::<u8>().ok())
-                    .is_some_and(|level| (1..=6).contains(&level))
+            ) | if document.format() == Format::Rtf
+                && style.id.0.starts_with("List")
+                && crate::document::StyleSheet::builtin_block(&style.id)
             {
-                !EVIM_STYLE_CAPABILITY_DELETE
+                EVIM_STYLE_CAPABILITY_ASSIGN
             } else {
-                u32::MAX
+                0
             },
             stable_id: push_style_string(&mut strings, &style.id.0)?,
             display_name: push_style_string(&mut strings, &metadata.display_name)?,
@@ -5667,7 +5696,11 @@ fn layout_paint_info(
 ) -> Result<EvimLayoutPaintInfoV1, EvimStatus> {
     Ok(EvimLayoutPaintInfoV1 {
         struct_size: EVIM_LAYOUT_PAINT_INFO_V1_SIZE,
-        reserved: 0,
+        flags: if snapshot.canvas_background_is_default {
+            EVIM_LAYOUT_PAINT_DEFAULT_CANVAS
+        } else {
+            0
+        },
         identity: snapshot_identity(snapshot, view_id),
         canvas_background: color_to_ffi(snapshot.canvas_background),
         default_paint: text_paint_to_ffi(&snapshot.default_paint),
@@ -6654,6 +6687,7 @@ fn parse_style_property(raw: u32) -> Result<StyleProperty, EvimStatus> {
         EVIM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES => Ok(StyleProperty::CharacterFontFamilies),
         EVIM_STYLE_PROPERTY_CHARACTER_SIZE => Ok(StyleProperty::CharacterSize),
         EVIM_STYLE_PROPERTY_CHARACTER_WEIGHT => Ok(StyleProperty::CharacterWeight),
+        EVIM_STYLE_PROPERTY_CHARACTER_BOLD => Ok(StyleProperty::CharacterBold),
         EVIM_STYLE_PROPERTY_CHARACTER_SLANT => Ok(StyleProperty::CharacterSlant),
         EVIM_STYLE_PROPERTY_CHARACTER_FOREGROUND => Ok(StyleProperty::CharacterForeground),
         EVIM_STYLE_PROPERTY_CHARACTER_BACKGROUND => Ok(StyleProperty::CharacterBackground),
@@ -6759,7 +6793,9 @@ unsafe fn parse_style_property_value(
                 u16::try_from(value.enum_value).map_err(|_| invalid())?,
             ))
         }
-        StyleProperty::CharacterUnderline | StyleProperty::CharacterStrikethrough => {
+        StyleProperty::CharacterBold
+        | StyleProperty::CharacterUnderline
+        | StyleProperty::CharacterStrikethrough => {
             if value.kind != EVIM_STYLE_VALUE_BOOLEAN || value.enum_value > 1 {
                 return Err(invalid());
             }
@@ -9265,6 +9301,38 @@ pub unsafe extern "C" fn evim_core_view_resize(
     })
 }
 
+/// Change application-owned canvas padding without a source transaction.
+#[no_mangle]
+pub extern "C" fn evim_core_view_set_padding(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    top: f32,
+    left: f32,
+    bottom: f32,
+    right: f32,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        if [top, left, bottom, right]
+            .iter()
+            .any(|value| !value.is_finite() || *value < 0.0)
+        {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        with_core_mut(handle, |core| {
+            core.set_view_insets(
+                ViewId(view),
+                crate::layout::EdgeInsets {
+                    top,
+                    left,
+                    bottom,
+                    right,
+                },
+            )
+            .map_err(core_status)
+        })
+    })
+}
+
 /// Set one view's magnification and synchronously reflow its current viewport.
 /// The value is presentation-only and never changes document state.
 ///
@@ -9652,6 +9720,70 @@ pub unsafe extern "C" fn evim_core_view_edit_direct_style(
 
 /// Query decoration toggle state using the exact current logical selection.
 /// # Safety
+/// The request array, nested inputs, and output must be valid and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_edit_direct_character_batch(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    requests: *const EvimDirectStyleEditV1,
+    count: u64,
+    out_outcome: *mut EvimCoreOutcomeV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        if !(1..=32).contains(&count) {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let input = typed_pointer_region(requests, count)?;
+        let output = typed_pointer_region(out_outcome, 1)?;
+        if regions_overlap(input, output) {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let requests = unsafe { std::slice::from_raw_parts(requests, count as usize) };
+        let expected_selection = requests[0].expected_selection;
+        let mut values = Vec::with_capacity(count as usize);
+        let mut seen = std::collections::BTreeSet::new();
+        for request in requests {
+            if request.struct_size < EVIM_DIRECT_STYLE_EDIT_V1_SIZE
+                || request.reserved != 0
+                || request.operation != EVIM_STYLE_EDIT_SET_DECLARATION
+            {
+                return Err(EvimStatus::InvalidArgument);
+            }
+            validate_logical_selection_identity(request.expected_selection, expected_selection)?;
+            let property = parse_style_property(request.property)?;
+            if !crate::document::is_character_property(property) || !seen.insert(property) {
+                return Err(EvimStatus::InvalidArgument);
+            }
+            let value =
+                unsafe { parse_style_property_value(property, &request.value, out_outcome)? };
+            values.push((property, value));
+        }
+        unsafe {
+            clear_outcome(out_outcome)?;
+        }
+        let outcome = with_core_mut(handle, |core| {
+            let expected = core
+                .list_selection_identity(ViewId(view))
+                .map_err(core_status)?;
+            validate_logical_selection_identity(
+                expected_selection,
+                logical_selection_identity_to_ffi(&expected)?,
+            )?;
+            dispatch_event(
+                core,
+                view,
+                CoreEvent::SetDirectCharacterProperties { expected, values },
+            )
+        })?;
+        unsafe {
+            out_outcome.write(outcome);
+        }
+        Ok(())
+    })
+}
+
+/// Query decoration toggle state using the exact current logical selection.
+/// # Safety
 /// out_state must point to writable, aligned u32 storage for this call.
 #[no_mangle]
 pub unsafe extern "C" fn evim_core_view_decoration_state(
@@ -9673,6 +9805,116 @@ pub unsafe extern "C" fn evim_core_view_decoration_state(
                 .map_err(core_status)
         })?;
         unsafe { out_state.write(state) };
+        Ok(())
+    })
+}
+
+/// Current selection/caret typography. Output strings and features are copied
+/// in one batch and tied to the caller's exact document revision.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EvimTypographyInfoV1 {
+    pub struct_size: u32,
+    /// bit0 bold, bit1 mixed, bit2 default foreground.
+    pub flags: u32,
+    pub document_id: u64,
+    pub document_revision: u64,
+    pub font_family_bytes: u64,
+    pub feature_count: u64,
+    pub size: f32,
+    pub weight: u32,
+    pub base_weight: u32,
+    pub slant: u32,
+    pub foreground: EvimRgbaV1,
+}
+
+/// # Safety
+/// Outputs must be valid for their capacities and mutually disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_typography_export(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    expected_revision: u64,
+    out_info: *mut EvimTypographyInfoV1,
+    out_family: *mut u8,
+    family_capacity: u64,
+    out_features: *mut EvimOpenTypeFeatureV1,
+    feature_capacity: u64,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(out_info, 1)?;
+        let family_region = typed_pointer_region(out_family, family_capacity)?;
+        let feature_region = typed_pointer_region(out_features, feature_capacity)?;
+        let info_region = typed_pointer_region(out_info, 1)?;
+        if regions_overlap(info_region, family_region)
+            || regions_overlap(info_region, feature_region)
+            || regions_overlap(family_region, feature_region)
+        {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let (info, family, features) = with_core(handle, |core| {
+            if core.document().revision().0 != expected_revision {
+                return Err(EvimStatus::StaleRevision);
+            }
+            let (style, mixed) = core
+                .selected_typography(ViewId(view))
+                .map_err(core_status)?;
+            let family = style
+                .font_families
+                .first()
+                .cloned()
+                .unwrap_or_default()
+                .into_bytes();
+            let features = style
+                .open_type_features
+                .iter()
+                .map(|(tag, value)| EvimOpenTypeFeatureV1 {
+                    tag: tag.as_bytes().try_into().unwrap_or(*b"    "),
+                    value: *value,
+                })
+                .collect::<Vec<_>>();
+            let info = EvimTypographyInfoV1 {
+                struct_size: size_of::<EvimTypographyInfoV1>() as u32,
+                flags: u32::from(style.bold)
+                    | (u32::from(mixed) << 1)
+                    | (u32::from(style.foreground_is_default) << 2),
+                document_id: core.document().id().0,
+                document_revision: expected_revision,
+                font_family_bytes: family.len() as u64,
+                feature_count: features.len() as u64,
+                size: style.size,
+                weight: u32::from(style.weight),
+                base_weight: u32::from(style.base_weight),
+                slant: match style.slant {
+                    FontSlant::Upright => EVIM_FONT_SLANT_UPRIGHT,
+                    FontSlant::Italic => EVIM_FONT_SLANT_ITALIC,
+                    FontSlant::Oblique => EVIM_FONT_SLANT_OBLIQUE,
+                },
+                foreground: EvimRgbaV1 {
+                    red: style.foreground.red,
+                    green: style.foreground.green,
+                    blue: style.foreground.blue,
+                    alpha: style.foreground.alpha,
+                },
+            };
+            Ok((info, family, features))
+        })?;
+        unsafe {
+            out_info.write(info);
+        }
+        if family_capacity < info.font_family_bytes || feature_capacity < info.feature_count {
+            return Err(EvimStatus::BufferTooSmall);
+        }
+        if !family.is_empty() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(family.as_ptr(), out_family, family.len());
+            }
+        }
+        if !features.is_empty() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(features.as_ptr(), out_features, features.len());
+            }
+        }
         Ok(())
     })
 }
@@ -10946,8 +11188,8 @@ mod tests {
             unsafe { evim_core_style_sheet_info(handle, &mut info) },
             EvimStatus::Ok
         );
-        assert_eq!(info.definition_count, 25);
-        assert_eq!(info.property_count, 514);
+        assert_eq!(info.definition_count, 12);
+        assert_eq!(info.property_count, 253);
         assert_ne!(info.string_bytes, 0);
 
         let mut count_info = EvimStyleSheetInfoV1::default();
@@ -12731,4 +12973,153 @@ mod tests {
             EVIM_TEXT_DIRECTION_RIGHT_TO_LEFT
         );
     }
+}
+
+/// Read a view's line-command domain (0 visual, 1 physical source).
+/// # Safety
+/// out_mode must identify one aligned writable u32.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_line_mode(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    out_mode: *mut u32,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        if out_mode.is_null() || (out_mode as usize) % std::mem::align_of::<u32>() != 0 {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let mode = with_core_mut(handle, |core| {
+            core.command_state(crate::coordinator::ViewId(view))
+                .map(|state| state.line_mode() as u32)
+                .ok_or(EvimStatus::InvalidView)
+        })?;
+        unsafe {
+            out_mode.write(mode);
+        }
+        Ok(())
+    })
+}
+/// Set a view's line-command domain. RTF rejects physical-source mode.
+/// # Safety
+/// out_outcome must identify one aligned writable outcome.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_set_line_mode(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    mode: u32,
+    out_outcome: *mut EvimCoreOutcomeV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        unsafe {
+            clear_outcome(out_outcome)?;
+        }
+        let mode = match mode {
+            0 => crate::command::LineMode::Visual,
+            1 => crate::command::LineMode::PhysicalSource,
+            _ => return Err(EvimStatus::InvalidArgument),
+        };
+        let outcome = with_core_mut(handle, |core| {
+            dispatch_event(core, view, CoreEvent::SetLineMode(mode))
+        })?;
+        unsafe {
+            out_outcome.write(outcome);
+        }
+        Ok(())
+    })
+}
+
+pub const EVIM_LINE_LOCATION_GLOBAL_LINE_EXACT: u32 = 1;
+pub const EVIM_LINE_LOCATION_FRAGMENT_EXACT: u32 = 2;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EvimViewLineLocationV1 {
+    pub struct_size: u32,
+    pub mode: u32,
+    pub flags: u32,
+    pub reserved: u32,
+    pub line: u64,
+    pub column: u64,
+    pub hard_line: u64,
+    pub fragment: u64,
+}
+pub const EVIM_VIEW_LINE_LOCATION_V1_SIZE: u32 =
+    std::mem::size_of::<EvimViewLineLocationV1>() as u32;
+/// Report one-based line/column and the exact hard-line/fragment fallback.
+/// line is zero when the global visual row number is not yet materialized.
+/// # Safety
+/// out_location must identify one aligned writable V1 location record.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_line_location(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    out_location: *mut EvimViewLineLocationV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        if out_location.is_null()
+            || (out_location as usize) % std::mem::align_of::<EvimViewLineLocationV1>() != 0
+        {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let location = with_core_mut(handle, |core| {
+            core.line_location(ViewId(view)).map_err(core_status)
+        })?;
+        let result = EvimViewLineLocationV1 {
+            struct_size: EVIM_VIEW_LINE_LOCATION_V1_SIZE,
+            mode: location.mode as u32,
+            flags: EVIM_LINE_LOCATION_FRAGMENT_EXACT
+                | if location.line.is_some() {
+                    EVIM_LINE_LOCATION_GLOBAL_LINE_EXACT
+                } else {
+                    0
+                },
+            reserved: 0,
+            line: location.line.unwrap_or(0) as u64,
+            column: location.column as u64,
+            hard_line: location.hard_line as u64,
+            fragment: location.fragment as u64,
+        };
+        unsafe {
+            out_location.write(result);
+        }
+        Ok(())
+    })
+}
+
+/// Change buffer-local readonly policy without editing source or undo state.
+#[no_mangle]
+pub extern "C" fn evim_core_set_read_only(
+    handle: EvimCoreHandle,
+    document: u64,
+    revision: u64,
+    read_only: u32,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let value = match read_only {
+            0 => false,
+            1 => true,
+            _ => return Err(EvimStatus::InvalidArgument),
+        };
+        with_core_mut(handle, |core| {
+            core.set_read_only(
+                crate::document::DocumentId(document),
+                Revision(revision),
+                value,
+            )
+            .map_err(core_status)
+        })
+    })
+}
+/// Mark recovered bytes as unsaved until a successful save acknowledgement.
+#[no_mangle]
+pub extern "C" fn evim_core_mark_recovered(
+    handle: EvimCoreHandle,
+    document: u64,
+    revision: u64,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        with_core_mut(handle, |core| {
+            core.mark_recovered(crate::document::DocumentId(document), Revision(revision))
+                .map_err(core_status)
+        })
+    })
 }

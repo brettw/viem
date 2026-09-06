@@ -92,6 +92,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   /// provider callback and therefore cannot end the C ABI response lifetime.
   @discardableResult
   public func invalidateMetrics() -> UInt64 {
+    EVFontCatalog.invalidate()
     stateLock.lock()
     generation = generation &+ 1
     if generation == 0 { generation = 1 }
@@ -441,10 +442,11 @@ private struct ResolvedStyle {
   let script: String?
   let direction: UInt32
   let features: [(String, UInt32)]
+  let syntheticBold: Bool
 
   init(_ source: EvimResolvedTextStyleV1, scale: CGFloat) throws {
     guard source.struct_size >= UInt32(MemoryLayout<EvimResolvedTextStyleV1>.size),
-      source.reserved == 0,
+      source.reserved <= 1,
       source.size.isFinite, source.size > 0,
       source.weight.isFinite,
       source.letter_spacing.isFinite,
@@ -505,8 +507,15 @@ private struct ResolvedStyle {
       size: size,
       cssWeight: weight,
       slant: slant,
-      features: decodedFeatures
+      features: decodedFeatures,
+      relativeBold: source.reserved & 1 != 0
     )
+    let baseWeight = EVFontCatalog.face(named: families.first ?? "")?.weight
+    let target =
+      source.reserved & 1 != 0
+      ? min(Int(baseWeight ?? UInt16(max(1, min(1000, source.weight - 300)))) + 300, 1000)
+      : Int(source.weight)
+    syntheticBold = target >= 500 && Int(EVFontCatalog.weight(of: font)) < target
   }
 
   var attributes: [NSAttributedString.Key: Any] {
@@ -515,6 +524,9 @@ private struct ResolvedStyle {
       NSAttributedString.Key(kCTKernAttributeName as String): letterSpacing,
       NSAttributedString.Key(kCTBaselineOffsetAttributeName as String): baselineShift,
     ]
+    if syntheticBold {
+      result[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] = -3.0
+    }
     if let language, !language.isEmpty {
       result[NSAttributedString.Key(kCTLanguageAttributeName as String)] = language
     }
@@ -609,29 +621,67 @@ private func makeAttributedString(
   return attributed
 }
 
-func resolveFont(
+public func resolveFont(
   families: [String],
   size: CGFloat,
   cssWeight: CGFloat,
   slant: UInt32,
-  features: [(String, UInt32)]
+  features: [(String, UInt32)],
+  relativeBold: Bool = false
 ) -> CTFont {
   let requested = families.first ?? CoreTextMeasurementProvider.defaultFontFamily
-  let normalized = requested.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-  let base: CTFont
-  if normalized == "system-ui" || normalized == "sf pro" || normalized == "-apple-system" {
-    base =
-      CTFontCreateUIFontForLanguage(.system, size, nil)
-      ?? CTFontCreateWithName("Helvetica" as CFString, size, nil)
+  let base = EVFontCatalog.baseFont(named: requested, size: size)
+  let faces = EVFontCatalog.faces(for: requested)
+  let exactFace = faces.first { $0.postScriptName == requested }
+  let targetWeight =
+    relativeBold && exactFace != nil
+    ? EVFontCatalog.boldWeight(baseWeight: exactFace!.weight, faces: faces)
+    : UInt16(max(1, min(1000, cssWeight.rounded())))
+  let wantsItalic = slant != UInt32(EVIM_FONT_SLANT_UPRIGHT)
+  let matchingSlant = faces.filter { $0.italic == wantsItalic }
+  let available = matchingSlant.isEmpty ? faces : matchingSlant
+  let preferred: EVFontFace?
+  if relativeBold {
+    preferred =
+      available.filter { $0.weight >= targetWeight }.min { $0.weight < $1.weight }
+      ?? available.max { $0.weight < $1.weight }
   } else {
-    base = CTFontCreateWithName(requested as CFString, size, nil)
+    preferred = available.min {
+      abs(Int($0.weight) - Int(targetWeight)) < abs(Int($1.weight) - Int(targetWeight))
+    }
   }
-
-  var traits: [CFString: Any] = [
-    kCTFontWeightTrait: max(-1, min(1, (cssWeight - 400) / 500))
-  ]
-  if slant == UInt32(EVIM_FONT_SLANT_ITALIC) || slant == UInt32(EVIM_FONT_SLANT_OBLIQUE) {
-    traits[kCTFontSlantTrait] = slant == UInt32(EVIM_FONT_SLANT_OBLIQUE) ? 0.16 : 0.12
+  var member: CTFont
+  if (CTFontCopyPostScriptName(base) as String).hasPrefix(".SFNS") {
+    let anchors: [(UInt16, CGFloat)] = [
+      (100, -0.8), (200, -0.6), (300, -0.4), (400, 0), (500, 0.23), (600, 0.3), (700, 0.4),
+      (800, 0.56), (900, 0.62),
+    ]
+    let nativeWeight = anchors.min {
+      abs(Int($0.0) - Int(targetWeight)) < abs(Int($1.0) - Int(targetWeight))
+    }!.1
+    member =
+      NSFont.systemFont(ofSize: size, weight: NSFont.Weight(rawValue: nativeWeight)) as CTFont
+    if wantsItalic {
+      member =
+        CTFontCreateCopyWithSymbolicTraits(member, size, nil, .traitItalic, .traitItalic) ?? member
+    }
+  } else {
+    member =
+      preferred.map { CTFontCreateWithName($0.postScriptName as CFString, size, nil) } ?? base
+  }
+  var symbolic: CTFontSymbolicTraits = []
+  if relativeBold || targetWeight >= 600 { symbolic.insert(.traitBold) }
+  if wantsItalic { symbolic.insert(.traitItalic) }
+  // Ask Core Text for a native member first. If no heavier/italic member
+  // exists, descriptor traits request the platform's synthetic treatment.
+  let needsSyntheticBold = relativeBold && (preferred?.weight ?? 0) < targetWeight
+  let needsSyntheticItalic = wantsItalic && !(preferred?.italic ?? false)
+  var traits: [CFString: Any] = [:]
+  if needsSyntheticBold || needsSyntheticItalic {
+    member = CTFontCreateCopyWithSymbolicTraits(member, size, nil, symbolic, symbolic) ?? member
+    traits[kCTFontSymbolicTrait] = symbolic.rawValue
+    if needsSyntheticBold { traits[kCTFontWeightTrait] = 0.4 }
+    if needsSyntheticItalic { traits[kCTFontSlantTrait] = 0.2 }
   }
 
   var descriptorAttributes: [CFString: Any] = [kCTFontTraitsAttribute: traits]
@@ -660,20 +710,17 @@ func resolveFont(
     }
   }
 
-  // A named face such as Helvetica carries a PostScript-name constraint.
-  // Numeric descriptor traits alone cannot change that face to Bold/Oblique.
-  // Resolve the requested family member before adding features and cascade.
-  var symbolic: CTFontSymbolicTraits = []
-  if cssWeight >= 600 { symbolic.insert(.traitBold) }
-  if slant != UInt32(EVIM_FONT_SLANT_UPRIGHT) { symbolic.insert(.traitItalic) }
-  let member = CTFontCreateCopyWithSymbolicTraits(
-    base, size, nil, symbolic, [.traitBold, .traitItalic]
-  ) ?? base
   let descriptor = CTFontDescriptorCreateCopyWithAttributes(
     CTFontCopyFontDescriptor(member),
     descriptorAttributes as CFDictionary
   )
-  return CTFontCreateWithFontDescriptor(descriptor, size, nil)
+  let resolved = CTFontCreateWithFontDescriptor(descriptor, size, nil)
+  if wantsItalic && !CTFontGetSymbolicTraits(resolved).contains(.traitItalic) {
+    var matrix = CTFontGetMatrix(resolved)
+    matrix.c += 0.2
+    return CTFontCreateCopyWithAttributes(resolved, size, &matrix, nil)
+  }
+  return resolved
 }
 
 private final class TextIndexMap {
@@ -855,12 +902,22 @@ private func makeCluster(
   var secondaryEnd: CGFloat = 0
   let startOffset = CTLineGetOffsetForStringIndex(line, utf16Start, &secondaryStart)
   let endOffset = CTLineGetOffsetForStringIndex(line, utf16End, &secondaryEnd)
-  var advance = abs(endOffset - startOffset)
-  if !advance.isFinite || advance == 0 {
-    advance = records.reduce(0) { $0 + abs($1.advance.width) }
+  // A bidi boundary has two caret positions. Core Text's primary positions
+  // at the two string endpoints may belong to opposite directional runs;
+  // subtracting them can measure an entire run instead of this cluster.
+  // Signed glyph advances identify the matching pair without measuring
+  // across the opposite bidi caret. Preserve negative positioning advances.
+  let offsets = [startOffset, secondaryStart].flatMap { left in
+    [endOffset, secondaryEnd].map { right in (left, right) }
   }
+  let estimate = abs(records.reduce(0) { $0 + $1.advance.width })
+  let endpoints = offsets.min {
+    abs(abs($0.1 - $0.0) - estimate) < abs(abs($1.1 - $1.0) - estimate)
+  }!
+  var advance = abs(endpoints.1 - endpoints.0)
+  if records.isEmpty { advance = abs(endOffset - startOffset) }
   advance = max(advance, 0)
-  let visualLeft = min(startOffset, endOffset)
+  let visualLeft = min(endpoints.0, endpoints.1)
 
   let fonts = records.map(\.font)
   let allFonts = fonts.isEmpty ? [style.font] : fonts
@@ -893,6 +950,9 @@ private func makeCluster(
       height: clusterMetrics.ascent + clusterMetrics.descent)
   }
 
+  if style.syntheticBold {
+    inkRect = inkRect.insetBy(dx: -style.size * 0.015, dy: -style.size * 0.015)
+  }
   let rtl = bidiLevel % 2 == 1
   let startInline = rtl ? advance : 0
   let endInline = rtl ? 0 : advance
@@ -910,6 +970,7 @@ private func makeCluster(
     let members = records.filter { $0.run == run }
     return CoreTextRenderRegistry.GlyphBatch(
       font: members[0].font,
+      strokeWidth: style.syntheticBold ? style.size * 0.03 : 0,
       glyphs: members.map(\.glyph),
       positions: members.map { CGPoint(x: $0.position.x - visualLeft, y: $0.position.y) }
     )
@@ -921,6 +982,8 @@ private func makeCluster(
   signature.append(UInt64(bidiLevel))
   for batch in grouped {
     signature.append(CTFontCopyPostScriptName(batch.font) as String)
+    signature.append(Float(batch.strokeWidth).bitPattern)
+    signature.append(Float(CTFontGetMatrix(batch.font).c).bitPattern)
     for (glyph, position) in zip(batch.glyphs, batch.positions) {
       signature.append(UInt64(glyph))
       signature.append(Float(position.x).bitPattern)

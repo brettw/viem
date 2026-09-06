@@ -66,13 +66,13 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             let content = EVStyleEditorViewController()
             content.onClose = { [weak self] in self?.controller?.close() }
             let panel = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 800, height: 820),
+                contentRect: NSRect(x: 0, y: 0, width: 760, height: 770),
                 styleMask: [.titled, .closable, .resizable],
                 backing: .buffered,
                 defer: false
             )
             panel.title = "Edit Styles"
-            panel.contentMinSize = NSSize(width: 720, height: 750)
+            panel.contentMinSize = NSSize(width: 700, height: 720)
             panel.backgroundColor = .windowBackgroundColor
             panel.isReleasedWhenClosed = false
             panel.collectionBehavior.insert(.fullScreenAuxiliary)
@@ -167,6 +167,8 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
 @MainActor
 final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     var onClose: (() -> Void)?
+    var themeStore = EVThemeStore.shared
+    private var themeObserver: NSObjectProtocol?
 
     private weak var document: EVEditorSurfaceController?
     private var snapshot: EVStyleSheetSnapshot?
@@ -198,6 +200,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private let preview = EVCoreTextStylePreviewView()
     private let summary = NSTextView()
     private var propertyRows: [EVStyleProperty: EVStylePropertyRow] = [:]
+    private let compactControls = EVCompactStyleControls()
     private let nextStyleRow = EVFollowingStyleRow()
 
     private var selectedDefinition: EVStyleDefinition? {
@@ -229,7 +232,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             declaredProperties: Set(definition?.properties.values.compactMap {
                 $0.isDeclared ? $0.property : nil
             } ?? []),
-            hasInvalidDraft: nameDraftIsInvalid || propertyRows.values.contains(where: \.hasInvalidDraft),
+            hasInvalidDraft: nameDraftIsInvalid || compactControls.hasInvalidDraft || propertyRows.values.contains(where: \.hasInvalidDraft),
             diagnostic: diagnosticMessage,
             summary: summary.string,
             preview: preview.inspection()
@@ -238,9 +241,17 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
 
     deinit {
         if let documentObserver { NotificationCenter.default.removeObserver(documentObserver) }
+        if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
     }
 
     override func loadView() {
+        themeObserver = NotificationCenter.default.addObserver(forName: .evimThemeDidChange, object: nil, queue: .main) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let self, notification.object as AnyObject? === self.themeStore else { return }
+                self.compactControls.refreshThemeColors(self.themeStore.theme)
+                if let definition = self.selectedDefinition { self.updatePreviewAndSummary(snapshot: self.snapshot, definition: definition) }
+            }
+        }
         let root = EVStyleEditorBackgroundView(frame: .zero)
         root.setAccessibilityElement(false)
         stylePopup.target = self
@@ -278,6 +289,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             [label("Name"), nameField],
             [label("Style type"), typeLabel],
             [label("Based on"), basedOnPopup],
+            [label("Next paragraph"), nextStyleRow.popupForCompactLayout],
         ])
         configurePropertiesGrid(propertiesGrid)
         let propertiesContainer = centeredContainer(
@@ -371,9 +383,9 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         }
         stack.setCustomSpacing(10, after: propertiesContainer)
         root.addSubview(stack)
-        let preferredFormattingHeight = formattingBox.heightAnchor.constraint(equalToConstant: 190)
+        let preferredFormattingHeight = formattingBox.heightAnchor.constraint(equalToConstant: 196)
         preferredFormattingHeight.priority = .defaultHigh
-        let preferredPreviewHeight = previewBox.heightAnchor.constraint(equalToConstant: 112)
+        let preferredPreviewHeight = previewBox.heightAnchor.constraint(equalToConstant: 140)
         preferredPreviewHeight.priority = .defaultHigh
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
@@ -556,9 +568,8 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         view.layoutSubtreeIfNeeded()
         let active = paragraphControls.isHidden ? characterControls : paragraphControls
         active.layoutSubtreeIfNeeded()
-        return propertyRows.values.filter { row in
-            !row.view.isHidden
-                && active.bounds.intersects(row.view.convert(row.view.bounds, to: active))
+        return active.subviews.flatMap { ($0 as? NSStackView)?.arrangedSubviews ?? [] }.filter {
+            !$0.isHidden && active.bounds.intersects($0.convert($0.bounds, to: active))
         }.count
     }
 
@@ -575,15 +586,29 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     }
 
     private func installPropertyControls() {
-        let characterRows = EVStyleProperty.characterProperties.map(makePropertyRow)
-        var paragraphRows = EVStyleProperty.paragraphProperties.map(makePropertyRow)
+        compactControls.onMutations = { [weak self] mutations in
+            guard let self else { return }
+            let opensGroup = self.activeStyleEditGroup == nil && mutations.count > 1
+            if opensGroup { self.beginContinuousStyleEdit() }
+            for mutation in mutations { if !self.commit(mutation) { break } }
+            if opensGroup { self.endContinuousStyleEdit() }
+        }
+        compactControls.onEditBegan = { [weak self] in self?.beginContinuousStyleEdit() }
+        compactControls.onEditEnded = { [weak self] in self?.endContinuousStyleEdit() }
         nextStyleRow.onChange = { [weak self] key in
             guard let self else { return }
             _ = self.commit(key.map { .setNextStyle($0.id) } ?? .clearNextStyle)
         }
-        paragraphRows.append(nextStyleRow.view)
-        installScroll(rows: characterRows, in: characterControls)
-        installScroll(rows: paragraphRows, in: paragraphControls)
+        for (child, container) in [(compactControls.characterView, characterControls), (compactControls.paragraphView, paragraphControls)] {
+            child.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(child)
+            NSLayoutConstraint.activate([
+                child.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                child.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                child.topAnchor.constraint(equalTo: container.topAnchor),
+                child.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+            ])
+        }
     }
 
     private func makePropertyRow(_ property: EVStyleProperty) -> NSView {
@@ -674,7 +699,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             if definition.capabilities.isEmpty {
                 availabilityLabel.stringValue = "This \(definition.origin.displayName) style is read-only. Effective and inherited values remain available for inspection."
             } else {
-                availabilityLabel.stringValue = "Valid changes apply immediately. Inherited values name the core-resolved contributor."
+                availabilityLabel.stringValue = "Default restores inherited formatting. Hover over a control to see whether it is inherited."
             }
             availabilityLabel.textColor = .secondaryLabelColor
         } else {
@@ -682,6 +707,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             availabilityLabel.textColor = .systemRed
         }
 
+        compactControls.configure(definition, theme: themeStore.theme, sourceFormat: document?.backend.sourceFormat ?? .plainText)
         let canEditDeclarations = definition.capabilities.contains(.declarations)
         for property in EVStyleProperty.characterProperties + EVStyleProperty.paragraphProperties {
             propertyRows[property]?.configure(
@@ -899,7 +925,10 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         preview.apply(
             kind: definition.kind,
             effectiveValues: definition.properties.reduce(into: [:]) { values, entry in
-                if let effective = entry.value.effective { values[entry.key] = effective }
+                if entry.value.usesThemeDefault && entry.key == .characterForeground {
+                    let color = themeStore.theme.foreground
+                    values[entry.key] = .color(EVStyleColor(red: Float(color.red), green: Float(color.green), blue: Float(color.blue), alpha: Float(color.alpha)))
+                } else if let effective = entry.value.effective { values[entry.key] = effective }
             },
             canvasBackground: previewCanvasBackground(snapshot: snapshot)
         )
@@ -908,29 +937,13 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         let visible = EVStyleProperty.characterProperties
             + (definition.kind == .paragraph ? EVStyleProperty.paragraphProperties : [])
         let declared = visible.compactMap { definition.properties[$0] }.filter(\.isDeclared)
+        var lines = ["Style: \(definition.name)  ·  Based on: \(parent)"]
+        if declared.isEmpty { lines.append("All formatting is inherited.") }
+        else { lines.append(declared.map { "\($0.property.displayName): \(format($0.declared))" }.joined(separator: "  ·  ")) }
         let inherited = visible.compactMap { definition.properties[$0] }.filter { !$0.isDeclared }
-        var lines = [
-            "Style: \(definition.name)",
-            "Stable ID: \(definition.key.id.rawValue)",
-            "Namespace: \(definition.key.namespace == .block ? "Block" : "Character")",
-            "Type: \(definition.kind.displayName)",
-            "Based on: \(parent)",
-            "Origin: \(definition.origin.displayName)",
-            "Snapshot: document \(snapshot?.identity.documentRevision ?? 0), styles \(snapshot?.identity.styleSheetRevision ?? 0)",
-            "", "Declarations at this layer",
-        ]
-        if declared.isEmpty { lines.append("  None") }
-        else { for property in declared { lines.append("  \(property.property.displayName): \(format(property.declared))") } }
-        lines.append(contentsOf: ["", "Inherited contributions"])
-        if inherited.isEmpty { lines.append("  None") }
-        else {
-            for property in inherited {
-                lines.append("  \(property.property.displayName): \(format(property.effective)) — \(contributorName(for: property))")
-            }
-        }
-        lines.append(contentsOf: ["", "Resulting effective properties"])
-        for property in visible.compactMap({ definition.properties[$0] }) {
-            lines.append("  \(property.property.displayName): \(format(property.effective))")
+        if !inherited.isEmpty {
+            lines.append("Inherited contributions")
+            lines.append(inherited.map { $0.usesThemeDefault ? "\($0.property.displayName): Default (theme foreground)" : "\($0.property.displayName): \(format($0.effective)) — \(contributorName(for: $0))" }.joined(separator: "  ·  "))
         }
         if definition.kind == .paragraph {
             let nextName = definition.nextStyleID.flatMap {
@@ -943,12 +956,10 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     }
 
     private func previewCanvasBackground(snapshot: EVStyleSheetSnapshot?) -> EVStyleColor {
-        guard let document = snapshot?.definition(for: .baseDocument),
-              case let .color(background)? = document.properties[.canvasBackground]?.effective
-        else {
-            return EVStyleColor(red: 1, green: 1, blue: 1, alpha: 1)
-        }
-        return background
+        if let resolved = snapshot?.definition(for: .baseDocument)?.properties[.canvasBackground],
+           !resolved.usesThemeDefault, case let .color(background)? = resolved.effective { return background }
+        let color = themeStore.theme.background
+        return EVStyleColor(red: Float(color.red), green: Float(color.green), blue: Float(color.blue), alpha: Float(color.alpha))
     }
 
     private func renderNoDocument() {
@@ -972,6 +983,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         tabs.selectedSegment = EVStyleEditorTab.character.rawValue
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.character.rawValue)
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.paragraph.rawValue)
+        compactControls.configure(nil, theme: themeStore.theme)
         propertyRows.values.forEach { $0.configure(resolved: nil, editable: false, contributorName: "Unavailable") }
         nextStyleRow.configure(selected: nil, choices: [], editable: false)
         characterControls.isHidden = false
@@ -1216,6 +1228,7 @@ private final class EVStyleKeyBox: NSObject {
 
 @MainActor
 private final class EVFollowingStyleRow: NSObject {
+    var popupForCompactLayout: NSPopUpButton { popup }
     let view: NSView
     var onChange: ((EVStyleKey?) -> Void)?
     private let popup = NSPopUpButton()
@@ -1226,7 +1239,7 @@ private final class EVFollowingStyleRow: NSObject {
         title.alignment = .right
         title.widthAnchor.constraint(equalToConstant: 155).isActive = true
         popup.setAccessibilityLabel("Following paragraph style")
-        let row = NSStackView(views: [title, popup])
+        let row = NSStackView(views: [title])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 10

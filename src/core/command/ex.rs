@@ -47,6 +47,9 @@ pub enum RangeSeparator {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExAction {
+    Split {
+        path: Option<String>,
+    },
     Edit {
         path: Option<String>,
     },
@@ -463,6 +466,9 @@ impl<'a> Parser<'a> {
             }
         };
         match name {
+            CommandName::Split => Ok(ExAction::Split {
+                path: optional_string(args),
+            }),
             CommandName::Edit => Ok(ExAction::Edit {
                 path: optional_string(args),
             }),
@@ -576,6 +582,7 @@ impl<'a> Parser<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandName {
+    Split,
     Edit,
     New,
     Write,
@@ -608,6 +615,7 @@ enum CommandName {
 impl CommandName {
     fn canonical(self) -> &'static str {
         match self {
+            Self::Split => "split",
             Self::Edit => "edit",
             Self::New => "enew",
             Self::Write => "write",
@@ -683,6 +691,21 @@ struct CommandSpec {
 }
 
 const COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        name: CommandName::Split,
+        spelling: "split",
+        minimum: 2,
+    },
+    CommandSpec {
+        name: CommandName::Split,
+        spelling: "vsplit",
+        minimum: 2,
+    },
+    CommandSpec {
+        name: CommandName::Quit,
+        spelling: "close",
+        minimum: 3,
+    },
     CommandSpec {
         name: CommandName::Edit,
         spelling: "edit",
@@ -1527,6 +1550,22 @@ mod tests {
             }
         );
         assert_eq!(parse(":ju").action, ExAction::Jumps);
+    }
+
+    #[test]
+    fn stacked_split_aliases_preserve_paths_and_reject_unsupported_modifiers() {
+        for command in [":sp", ":split", ":vs", ":vsplit"] {
+            assert_eq!(parse(command).action, ExAction::Split { path: None });
+            assert_eq!(
+                parse(&format!("{command} notes file.md")).action,
+                ExAction::Split {
+                    path: Some("notes file.md".to_owned())
+                }
+            );
+            assert!(parse_ex(&format!("{command}!")).is_err());
+        }
+        assert!(parse_ex(":1,2split").is_err());
+        assert_eq!(parse(":clo").action, ExAction::Quit);
     }
 
     #[test]

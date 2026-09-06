@@ -155,7 +155,9 @@ final class EVApplicationDelegate: NSObject,
 
     @discardableResult
     private func openDocument(at url: URL) -> Bool {
-        if let existing = NSDocumentController.shared.document(for: url) {
+        let url = EVDocumentIdentity.canonicalURL(url)
+        if let existing = EVDocumentIdentity.existingDocument(at: url) {
+            if existing.windowControllers.isEmpty { existing.makeWindowControllers() }
             existing.showWindows()
             return true
         }
@@ -165,7 +167,9 @@ final class EVApplicationDelegate: NSObject,
             let document = EVDocument()
             try document.read(from: url, ofType: type)
             document.fileURL = url
-            document.updateChangeCount(.changeCleared)
+            if !document.editorBackend.persistenceState.isDirty {
+                document.updateChangeCount(.changeCleared)
+            }
             NSDocumentController.shared.addDocument(document)
             NSDocumentController.shared.noteNewRecentDocumentURL(url)
             document.makeWindowControllers()

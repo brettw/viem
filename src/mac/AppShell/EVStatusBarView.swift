@@ -2,180 +2,275 @@ import AppKit
 
 @MainActor
 public final class EVStatusBarView: NSView {
-    public static let preferredHeight: CGFloat = 25
+  public static var preferredHeight: CGFloat {
+    max(25, ceil(EVThemeStore.shared.theme.statusFontSize + 14))
+  }
+  public var preferredHeightDidChange: (() -> Void)?
+  private var themeObserver: NSObjectProtocol?
+  private var heightConstraint: NSLayoutConstraint!
+  private var currentState = EVStatusBarState()
 
-    private let modeLabel = NSTextField(labelWithString: "")
-    private let messageLabel = NSTextField(labelWithString: "")
-    private let locationLabel = NSTextField(labelWithString: "")
-    public var optionDidChange: ((EVStatusBarOption) -> Void)?
-    private let encodingSelect = EVStatusSelect()
-    private let lineEndingSelect = EVStatusSelect()
-    private let formatSelect = EVStatusSelect()
+  private let modeLabel = NSTextField(labelWithString: "")
+  private let messageLabel = NSTextField(labelWithString: "")
+  private let locationLabel = NSButton(title: "", target: nil, action: nil)
+  public var optionDidChange: ((EVStatusBarOption) -> Void)?
+  private let encodingSelect = EVStatusSelect()
+  private let lineEndingSelect = EVStatusSelect()
+  private let formatSelect = EVStatusSelect()
 
-    public override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        translatesAutoresizingMaskIntoConstraints = false
-        setAccessibilityRole(.group)
-        setAccessibilityLabel("Editor status")
+  public override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    translatesAutoresizingMaskIntoConstraints = false
+    setAccessibilityRole(.group)
+    setAccessibilityLabel("Editor status")
 
-        let separator = NSBox()
-        separator.boxType = .separator
-        separator.translatesAutoresizingMaskIntoConstraints = false
+    let separator = NSBox()
+    separator.boxType = .separator
+    separator.translatesAutoresizingMaskIntoConstraints = false
 
-        modeLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        modeLabel.setContentHuggingPriority(.required, for: .horizontal)
-        messageLabel.textColor = .secondaryLabelColor
-        messageLabel.lineBreakMode = .byTruncatingTail
-        messageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    wantsLayer = true
+    locationLabel.isBordered = false
+    locationLabel.imagePosition = .imageLeading
+    locationLabel.imageScaling = .scaleProportionallyDown
+    locationLabel.target = self
+    locationLabel.action = #selector(toggleLineMode)
+    locationLabel.setContentHuggingPriority(.required, for: .horizontal)
+    modeLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+    modeLabel.setContentHuggingPriority(.required, for: .horizontal)
+    messageLabel.textColor = .secondaryLabelColor
+    messageLabel.lineBreakMode = .byTruncatingTail
+    messageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        encodingSelect.configure(label: "Encoding", options: [
-            ("UTF-8", .encoding(1)), ("Latin-1", .encoding(2)),
-            ("UTF-16 LE", .encoding(3)), ("UTF-16 BE", .encoding(4)),
-        ])
-        lineEndingSelect.configure(label: "Line endings", options: [
-            ("LF", .lineEnding(1)), ("CRLF", .lineEnding(2)), ("CR", .lineEnding(3)),
-        ])
-        formatSelect.configure(label: "Format", options:
-            [EVSourceFormat.plainText, .markdownSource, .markdown, .html, .rtf].map {
-                ($0.displayName, .format($0))
-            }
-        )
-        for select in [encodingSelect, lineEndingSelect, formatSelect] {
-            select.didChoose = { [weak self] option in self?.optionDidChange?(option) }
-        }
-        let trailing = NSStackView(views: [locationLabel, encodingSelect, lineEndingSelect, formatSelect])
-        trailing.orientation = .horizontal
-        trailing.spacing = 14
-        trailing.alignment = .centerY
-        trailing.setContentHuggingPriority(.required, for: .horizontal)
-
-        let row = NSStackView(views: [modeLabel, messageLabel, trailing])
-        row.orientation = .horizontal
-        row.spacing = 14
-        row.alignment = .centerY
-        row.translatesAutoresizingMaskIntoConstraints = false
-
-        addSubview(separator)
-        addSubview(row)
-        NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: Self.preferredHeight),
-            separator.leadingAnchor.constraint(equalTo: leadingAnchor),
-            separator.trailingAnchor.constraint(equalTo: trailingAnchor),
-            separator.topAnchor.constraint(equalTo: topAnchor),
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            row.topAnchor.constraint(equalTo: separator.bottomAnchor),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-
-        apply(EVStatusBarState())
+    encodingSelect.configure(
+      label: "Encoding",
+      options: [
+        ("UTF-8", .encoding(1)), ("Latin-1", .encoding(2)),
+        ("UTF-16 LE", .encoding(3)), ("UTF-16 BE", .encoding(4)),
+      ])
+    lineEndingSelect.configure(
+      label: "Line endings",
+      options: [
+        ("LF", .lineEnding(1)), ("CRLF", .lineEnding(2)), ("CR", .lineEnding(3)),
+      ])
+    formatSelect.configure(
+      label: "Format",
+      options: [EVSourceFormat.plainText, .markdownSource, .markdown, .html, .rtf].map {
+        ($0.displayName, .format($0))
+      }
+    )
+    for select in [encodingSelect, lineEndingSelect, formatSelect] {
+      select.didChoose = { [weak self] option in self?.optionDidChange?(option) }
     }
+    let trailing = NSStackView(views: [
+      locationLabel, encodingSelect, lineEndingSelect, formatSelect,
+    ])
+    trailing.orientation = .horizontal
+    trailing.spacing = 14
+    trailing.alignment = .centerY
+    trailing.setContentHuggingPriority(.required, for: .horizontal)
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is unavailable")
+    let row = NSStackView(views: [modeLabel, messageLabel, trailing])
+    row.orientation = .horizontal
+    row.spacing = 14
+    row.alignment = .centerY
+    row.translatesAutoresizingMaskIntoConstraints = false
+
+    addSubview(separator)
+    addSubview(row)
+    heightConstraint = heightAnchor.constraint(equalToConstant: Self.preferredHeight)
+    NSLayoutConstraint.activate([
+      heightConstraint,
+      separator.leadingAnchor.constraint(equalTo: leadingAnchor),
+      separator.trailingAnchor.constraint(equalTo: trailingAnchor),
+      separator.topAnchor.constraint(equalTo: topAnchor),
+      row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+      row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+      row.topAnchor.constraint(equalTo: separator.bottomAnchor),
+      row.bottomAnchor.constraint(equalTo: bottomAnchor),
+    ])
+
+    themeObserver = NotificationCenter.default.addObserver(
+      forName: .evimThemeDidChange, object: EVThemeStore.shared, queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated {
+        self?.applyTheme()
+        self?.preferredHeightDidChange?()
+      }
     }
+    apply(EVStatusBarState())
+  }
 
-    public func apply(_ state: EVStatusBarState) {
-        modeLabel.stringValue = state.mode
-        messageLabel.stringValue = state.message
-        locationLabel.stringValue = state.location
-        encodingSelect.selectItem(withTitle: state.encoding)
-        lineEndingSelect.selectItem(withTitle: state.lineEnding)
-        formatSelect.selectItem(withTitle: state.format)
-        for select in [encodingSelect, lineEndingSelect, formatSelect] {
-            select.invalidateIntrinsicContentSize()
-        }
-        lineEndingSelect.isEnabled = state.format != EVSourceFormat.rtf.displayName
-        encodingSelect.isEnabled = state.format != EVSourceFormat.rtf.displayName
+  deinit { if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) } }
 
-        modeLabel.setAccessibilityLabel("Mode: \(state.mode)")
-        locationLabel.setAccessibilityLabel("Position: \(state.location)")
-        encodingSelect.setAccessibilityLabel("Encoding: \(state.encoding)")
-        lineEndingSelect.setAccessibilityLabel("Line endings: \(state.lineEnding)")
-        formatSelect.setAccessibilityLabel("Format: \(state.format)")
+  private func applyTheme() {
+    let theme = EVThemeStore.shared.theme
+    layer?.backgroundColor = theme.statusBackground.color.cgColor
+    modeLabel.font = theme.statusFont
+    messageLabel.font = theme.statusFont
+    modeLabel.textColor = theme.statusForeground.color
+    messageLabel.textColor = theme.statusForeground.color.withAlphaComponent(0.75)
+    locationLabel.font = theme.statusFont
+    locationLabel.contentTintColor = theme.statusForeground.color
+    locationLabel.attributedTitle = NSAttributedString(
+      string: currentState.location,
+      attributes: [.font: theme.statusFont, .foregroundColor: theme.statusForeground.color])
+    for select in [encodingSelect, lineEndingSelect, formatSelect] { select.applyTheme(theme) }
+    heightConstraint.constant = Self.preferredHeight
+    needsDisplay = true
+  }
+
+  @objc private func toggleLineMode() {
+    optionDidChange?(.lineMode(currentState.lineMode == .visual ? .physicalSource : .visual))
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is unavailable")
+  }
+
+  public func apply(_ state: EVStatusBarState) {
+    currentState = state
+    modeLabel.stringValue = state.mode
+    messageLabel.stringValue = state.message
+    locationLabel.title = state.location
+    locationLabel.image = Self.lineIcon(state.lineMode)
+    locationLabel.isEnabled = state.format != EVSourceFormat.rtf.displayName
+    locationLabel.toolTip =
+      state.format == EVSourceFormat.rtf.displayName
+      ? "Visual lines · RTF has no physical source lines"
+      : (state.lineMode == .visual
+        ? "Visual lines · click for physical source lines"
+        : "Physical source lines · click for visual lines")
+    if state.locationIsFragment {
+      locationLabel.toolTip = "Position shows hard line · visual row. Click to change line mode."
     }
+    encodingSelect.selectItem(withTitle: state.encoding)
+    lineEndingSelect.selectItem(withTitle: state.lineEnding)
+    formatSelect.selectItem(withTitle: state.format)
+    for select in [encodingSelect, lineEndingSelect, formatSelect] {
+      select.invalidateIntrinsicContentSize()
+    }
+    lineEndingSelect.isEnabled = state.format != EVSourceFormat.rtf.displayName
+    encodingSelect.isEnabled = state.format != EVSourceFormat.rtf.displayName
+
+    modeLabel.setAccessibilityLabel("Mode: \(state.mode)")
+    locationLabel.setAccessibilityLabel(
+      "\(state.lineMode == .visual ? "Visual" : "Physical source") lines: \(state.location)")
+    encodingSelect.setAccessibilityLabel("Encoding: \(state.encoding)")
+    lineEndingSelect.setAccessibilityLabel("Line endings: \(state.lineEnding)")
+    formatSelect.setAccessibilityLabel("Format: \(state.format)")
+    applyTheme()
+  }
+
+  static func lineIcon(_ mode: EVLineMode) -> NSImage? {
+    let path =
+      mode == .visual
+      ? "<path d='M1.5 8C4.5 2.5 11.5 2.5 14.5 8C11.5 13.5 4.5 13.5 1.5 8Z'/><circle cx='8' cy='8' r='2.1'/>"
+      : "<path d='M4 1.5H9.5L12.5 4.5V14.5H4Z M9.5 1.5V4.5H12.5 M6 8H10 M6 10.5H10'/>"
+    let svg =
+      "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'><g fill='none' stroke='black' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'>\(path)</g></svg>"
+    let image = NSImage(data: Data(svg.utf8))
+    image?.isTemplate = true
+    return image
+  }
 }
 
 /// Native select tracking and keyboard accessibility with unobtrusive status chrome.
 @MainActor
 private final class EVStatusSelect: NSPopUpButton {
-    var didChoose: ((EVStatusBarOption) -> Void)?
-    private var options: [EVStatusBarOption] = []
-    private var hoverTracking: NSTrackingArea?
+  var didChoose: ((EVStatusBarOption) -> Void)?
+  private var options: [EVStatusBarOption] = []
+  private var hoverTracking: NSTrackingArea?
+  private var themeForeground = NSColor.labelColor
 
-    init() {
-        super.init(frame: .zero, pullsDown: false)
-        cell = EVStatusSelectCell(textCell: "", pullsDown: false)
-        isBordered = false
-        font = .systemFont(ofSize: 11)
-        controlSize = .small
-        (cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
-        setContentHuggingPriority(.required, for: .horizontal)
-        setContentCompressionResistancePriority(.required, for: .horizontal)
-        wantsLayer = true
-        layer?.cornerRadius = 4
-        target = self
-        action = #selector(choose(_:))
-    }
+  init() {
+    super.init(frame: .zero, pullsDown: false)
+    cell = EVStatusSelectCell(textCell: "", pullsDown: false)
+    isBordered = false
+    font = .systemFont(ofSize: 11)
+    controlSize = .small
+    (cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
+    setContentHuggingPriority(.required, for: .horizontal)
+    setContentCompressionResistancePriority(.required, for: .horizontal)
+    wantsLayer = true
+    layer?.cornerRadius = 4
+    target = self
+    action = #selector(choose(_:))
+  }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+  @available(*, unavailable)
+  required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
-    override var intrinsicContentSize: NSSize {
-        let textWidth = (title as NSString).size(withAttributes: [.font: font ?? NSFont.systemFont(ofSize: 11)]).width
-        return NSSize(width: ceil(textWidth) + 26, height: super.intrinsicContentSize.height)
-    }
+  func applyTheme(_ theme: EVTheme) {
+    font = theme.statusFont
+    themeForeground = theme.statusForeground.color
+    (cell as? EVStatusSelectCell)?.themeForeground = themeForeground
+    invalidateIntrinsicContentSize()
+    needsDisplay = true
+  }
 
-    func configure(label: String, options: [(String, EVStatusBarOption)]) {
-        self.options = options.map(\.1)
-        addItems(withTitles: options.map(\.0))
-        setAccessibilityLabel(label)
-    }
+  override var intrinsicContentSize: NSSize {
+    let textWidth = (title as NSString).size(withAttributes: [
+      .font: font ?? NSFont.systemFont(ofSize: 11)
+    ]).width
+    return NSSize(width: ceil(textWidth) + 26, height: super.intrinsicContentSize.height)
+  }
 
-    override func updateTrackingAreas() {
-        if let hoverTracking { removeTrackingArea(hoverTracking) }
-        let tracking = NSTrackingArea(
-            rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self, userInfo: nil
-        )
-        addTrackingArea(tracking)
-        hoverTracking = tracking
-        super.updateTrackingAreas()
-    }
+  func configure(label: String, options: [(String, EVStatusBarOption)]) {
+    self.options = options.map(\.1)
+    addItems(withTitles: options.map(\.0))
+    setAccessibilityLabel(label)
+  }
 
-    override func mouseEntered(with event: NSEvent) {
-        if isEnabled { layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.08).cgColor }
-    }
+  override func updateTrackingAreas() {
+    if let hoverTracking { removeTrackingArea(hoverTracking) }
+    let tracking = NSTrackingArea(
+      rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+      owner: self, userInfo: nil
+    )
+    addTrackingArea(tracking)
+    hoverTracking = tracking
+    super.updateTrackingAreas()
+  }
 
-    override func mouseExited(with event: NSEvent) { layer?.backgroundColor = nil }
+  override func mouseEntered(with event: NSEvent) {
+    if isEnabled { layer?.backgroundColor = themeForeground.withAlphaComponent(0.12).cgColor }
+  }
 
-    @objc private func choose(_ sender: Any?) {
-        guard options.indices.contains(indexOfSelectedItem) else { return }
-        didChoose?(options[indexOfSelectedItem])
-    }
+  override func mouseExited(with event: NSEvent) { layer?.backgroundColor = nil }
+
+  @objc private func choose(_ sender: Any?) {
+    guard options.indices.contains(indexOfSelectedItem) else { return }
+    didChoose?(options[indexOfSelectedItem])
+  }
 }
 
 @MainActor
 private final class EVStatusSelectCell: NSPopUpButtonCell {
-    override var cellSize: NSSize {
-        var size = super.cellSize
-        size.width += 10
-        return size
-    }
+  var themeForeground = NSColor.labelColor
+  override var cellSize: NSSize {
+    var size = super.cellSize
+    size.width += 10
+    return size
+  }
 
-    override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
-        var titleFrame = cellFrame
-        titleFrame.size.width -= 10
-        super.draw(withFrame: titleFrame, in: controlView)
-        let x = cellFrame.maxX - 6
-        let y = cellFrame.midY
-        let triangle = NSBezierPath()
-        triangle.move(to: NSPoint(x: x - 2.5, y: y - 1.5))
-        triangle.line(to: NSPoint(x: x + 2.5, y: y - 1.5))
-        triangle.line(to: NSPoint(x: x, y: y + 1.5))
-        triangle.close()
-        (isEnabled ? NSColor.secondaryLabelColor : .disabledControlTextColor).setFill()
-        triangle.fill()
-    }
+  override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
+    var titleFrame = cellFrame
+    titleFrame.size.width -= 10
+    let textFont = font ?? NSFont.systemFont(ofSize: 11)
+    let color = themeForeground.withAlphaComponent(isEnabled ? 1 : 0.4)
+    let height = textFont.ascender - textFont.descender
+    titleFrame.origin.y = cellFrame.midY - height / 2 - 1
+    (title as NSString).draw(
+      in: titleFrame, withAttributes: [.font: textFont, .foregroundColor: color])
+    let x = cellFrame.maxX - 6
+    let y = cellFrame.midY
+    let triangle = NSBezierPath()
+    triangle.move(to: NSPoint(x: x - 2.5, y: y - 1.5))
+    triangle.line(to: NSPoint(x: x + 2.5, y: y - 1.5))
+    triangle.line(to: NSPoint(x: x, y: y + 1.5))
+    triangle.close()
+    color.setFill()
+    triangle.fill()
+  }
 }

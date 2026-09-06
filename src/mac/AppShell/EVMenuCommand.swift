@@ -88,6 +88,13 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case bulletedList
     case numberedList
     case removeList
+    case heading0 = 370
+    case heading1
+    case heading2
+    case heading3
+    case heading4
+    case heading5
+    case heading6
 
     case wordWrap = 400
     case wrapAtWordBoundaries
@@ -96,6 +103,30 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case zoomOut
     case actualSize
     case newWindowForDocument
+
+    /// Standard text actions must reach native field editors first. The custom
+    /// document view implements the same selectors using core intentions.
+    public var nativeEditAction: Selector? {
+        let name: String
+        switch self {
+        case .undo: name = "undo:"
+        case .redo: name = "redo:"
+        case .cut: name = "cut:"
+        case .copy: name = "copy:"
+        case .paste: name = "paste:"
+        case .pasteAndMatchStyle: name = "pasteAsPlainText:"
+        case .delete: name = "delete:"
+        case .selectAll: name = "selectAll:"
+        default: return nil
+        }
+        return NSSelectorFromString(name)
+    }
+
+    public static func nativeEditCommand(for action: Selector?) -> EVMenuCommand? {
+        guard let action else { return nil }
+        return [.undo, .redo, .cut, .copy, .paste, .pasteAndMatchStyle, .delete, .selectAll]
+            .first { $0.nativeEditAction == action }
+    }
 }
 
 @MainActor

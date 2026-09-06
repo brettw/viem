@@ -151,12 +151,24 @@ impl StyleModelRequest {
 /// rather than silently rebasing it to the current state.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelRequest {
+    SetDirectCharacterProperties {
+        document: DocumentId,
+        revision: Revision,
+        range: Range<usize>,
+        values: Vec<(StyleProperty, super::StylePropertyValue)>,
+    },
     EditDirectProperty {
         document: DocumentId,
         revision: Revision,
         range: Range<usize>,
         property: StyleProperty,
         value: Option<super::StylePropertyValue>,
+    },
+    ReplacePhysicalSource {
+        document: DocumentId,
+        revision: Revision,
+        range: Range<usize>,
+        replacement: String,
     },
     ApplyTextEdits {
         document: DocumentId,
@@ -244,7 +256,9 @@ pub enum ModelRequest {
 impl ModelRequest {
     pub fn document(&self) -> DocumentId {
         match self {
+            Self::SetDirectCharacterProperties { document, .. } => *document,
             Self::EditDirectProperty { document, .. } => *document,
+            Self::ReplacePhysicalSource { document, .. } => *document,
             Self::ApplyTextEdits { document, .. }
             | Self::SetSemanticStyle { document, .. }
             | Self::SetListStyle { document, .. }
@@ -263,7 +277,9 @@ impl ModelRequest {
 
     pub fn revision(&self) -> Revision {
         match self {
+            Self::SetDirectCharacterProperties { revision, .. } => *revision,
             Self::EditDirectProperty { revision, .. } => *revision,
+            Self::ReplacePhysicalSource { revision, .. } => *revision,
             Self::ApplyTextEdits { revision, .. }
             | Self::SetSemanticStyle { revision, .. }
             | Self::SetListStyle { revision, .. }
@@ -839,6 +855,23 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_request_target(&request)?;
         match request {
+            ModelRequest::SetDirectCharacterProperties { range, values, .. } => {
+                let range =
+                    TextRange::new(self.text_point(range.start)?, self.text_point(range.end)?)?;
+                let mut properties = CharacterProperties::default();
+                for (property, value) in values {
+                    super::style::set_character_property(
+                        &StyleId::from("Direct"),
+                        &mut properties,
+                        property,
+                        &value,
+                    )?;
+                }
+                super::style::validate_character_properties(&StyleId::from("Direct"), &properties)?;
+                self.prepare_persisted_style_intent(
+                    PersistedStyleIntent::SetDirectCharacterProperties { range, properties },
+                )
+            }
             ModelRequest::EditDirectProperty {
                 range,
                 property,
@@ -892,6 +925,9 @@ impl Document {
                 };
                 self.prepare_persisted_style_intent(intent)
             }
+            ModelRequest::ReplacePhysicalSource {
+                range, replacement, ..
+            } => self.prepare_physical_source(range, replacement),
             ModelRequest::ApplyTextEdits { edits, .. } => self.prepare_text_edits(edits),
             ModelRequest::SetSemanticStyle {
                 range,
@@ -1565,16 +1601,6 @@ impl Document {
         let mut expected = before.clone();
         let syntax = match &intent {
             PersistedStyleIntent::EditStyleDefinition { edit, .. } => {
-                if let StyleDefinitionEdit::DeleteBlock(id) = edit {
-                    if id
-                        .0
-                        .strip_prefix("Heading")
-                        .and_then(|level| level.parse::<u8>().ok())
-                        .is_some_and(|level| (1..=6).contains(&level))
-                    {
-                        return Err(StyleError::CannotRemoveBaseStyle(id.clone()).into());
-                    }
-                }
                 let deleting = matches!(
                     edit,
                     StyleDefinitionEdit::DeleteCharacter(_) | StyleDefinitionEdit::DeleteBlock(_)
@@ -1594,6 +1620,7 @@ impl Document {
                 if deleting {
                     patches.extend(super::html_styles::remove_assignment_patches(
                         &normalized,
+                        before,
                         edit.style_id(),
                         !edit.is_block(),
                     ));
@@ -1677,16 +1704,56 @@ impl Document {
                         })
                         .collect::<Result<Vec<_>, _>>()?
                 };
-                super::html_styles::paragraph_assignment_patches(
+                let mut patches = super::html_styles::paragraph_assignment_patches(
                     &normalized,
                     &sources,
                     before,
                     style,
-                )?
+                )?;
+                if style.0.starts_with("List") {
+                    let owned = super::html_styles::read(&normalized.text);
+                    if !owned.rules.iter().any(|rule| {
+                        rule.definition.is_block() && rule.definition.style_id() == style
+                    }) {
+                        let supporting = if let Some(at) = owned.close {
+                            vec![(
+                                at..at,
+                                super::html_styles::write_rule(before, style, false)
+                                    .ok_or(DocumentError::UnsupportedFormatting)?,
+                            )]
+                        } else {
+                            super::html_styles::definition_patches(
+                                &normalized.text,
+                                before,
+                                before,
+                            )?
+                        };
+                        patches.splice(
+                            0..0,
+                            supporting
+                                .into_iter()
+                                .map(|(range, text)| (converter.source_range(range), text)),
+                        );
+                    }
+                }
+                patches
             }
             _ => return Err(DocumentError::UnsupportedFormatting.into()),
         };
-        let mut source_patches = syntax
+        let mut syntax = syntax;
+        syntax.sort_by_key(|(range, _)| (range.start, range.end));
+        let mut merged: Vec<(Range<usize>, String)> = Vec::new();
+        for (range, text) in syntax {
+            if let Some((_, old)) = merged
+                .last_mut()
+                .filter(|(old, _)| old.is_empty() && *old == range)
+            {
+                old.push_str(&text);
+            } else {
+                merged.push((range, text));
+            }
+        }
+        let mut source_patches = merged
             .into_iter()
             .map(|(range, syntax)| {
                 Ok(SourcePatch::primary(
@@ -1784,14 +1851,13 @@ impl Document {
         let mut intent = intent;
         let mut supporting = Vec::new();
         if let PersistedStyleIntent::AssignBlockStyle { style, .. } = &mut intent {
-            if let Some(level) = style
-                .0
-                .strip_prefix("Heading")
-                .and_then(|level| level.parse::<u8>().ok())
-                .filter(|level| (1..=6).contains(level))
-            {
+            if StyleSheet::builtin_block(style) {
                 let native = super::rtf_styles::read(&input);
-                let name = format!("Heading {level}");
+                let name = if let Some(level) = style.0.strip_prefix("Heading") {
+                    format!("Heading {level}")
+                } else {
+                    format!("List Level {}", style.0.strip_prefix("List").unwrap())
+                };
                 let matches = native
                     .entries
                     .iter()
@@ -1856,9 +1922,7 @@ impl Document {
                         &input,
                         id,
                         false,
-                        before
-                            .block_style(id)
-                            .and_then(|style| style.based_on.as_ref()),
+                        Some(&before.base_paragraph),
                     )?);
                 }
                 if let StyleDefinitionEdit::DeleteCharacter(id) = edit {
@@ -1866,9 +1930,7 @@ impl Document {
                         &input,
                         id,
                         true,
-                        before
-                            .character_style(id)
-                            .and_then(|style| style.based_on.as_ref()),
+                        Some(&before.base_character),
                     )?);
                 }
                 patches
@@ -2085,6 +2147,7 @@ impl Document {
         let before_assignment = self.projection().document_style();
         let mut style_sheet = before_sheet.clone();
         let mut document_style = before_assignment.clone();
+        let mut configured_projection = self.projection().clone();
 
         let changed = match &intent {
             ConfigurationStyleIntent::EditDefinition(edit) => {
@@ -2095,7 +2158,22 @@ impl Document {
                     self.projection()
                         .has_character_style_assignment(edit.style_id())
                 };
-                style_sheet.apply_configuration_edit(edit, style_sheet_revision, has_assignment)?
+                let deleting = matches!(
+                    edit,
+                    StyleDefinitionEdit::DeleteBlock(_) | StyleDefinitionEdit::DeleteCharacter(_)
+                );
+                if deleting {
+                    style_sheet.rebase_source_references_for_delete(edit, style_sheet_revision)?;
+                    configured_projection.reassign_deleted_style(edit.style_id(), edit.is_block());
+                    if document_style.style == *edit.style_id() {
+                        document_style.style = style_sheet.base_document.clone();
+                    }
+                }
+                style_sheet.apply_configuration_edit(
+                    edit,
+                    style_sheet_revision,
+                    has_assignment && !deleting,
+                )?
             }
             ConfigurationStyleIntent::AssignDocumentStyle(style) => {
                 if document_style.style == *style {
@@ -2158,7 +2236,11 @@ impl Document {
             return Ok(self.no_op_prepared());
         }
 
-        validate_projection_style_configuration(self.projection(), &style_sheet, &document_style)?;
+        validate_projection_style_configuration(
+            &configured_projection,
+            &style_sheet,
+            &document_style,
+        )?;
         let style_change = configuration_style_change_summary(
             self.projection(),
             before_sheet,
@@ -2170,6 +2252,7 @@ impl Document {
 
         let mut candidate = self.state().clone();
         candidate.revision = after_revision;
+        candidate.projection = configured_projection;
         candidate.projection.install_configuration_styles(
             after_revision,
             style_sheet,
@@ -4219,6 +4302,25 @@ impl Document {
         let normalized = normalize(&decoded, self.state().file_format);
         let mut syntax_patches = Vec::new();
         for source_range in sources {
+            let mut authored = properties.clone();
+            if authored.font_families.is_some()
+                && authored.weight.is_some()
+                && authored.bold.is_none()
+            {
+                let at = self
+                    .projection()
+                    .provenance_for_region(range)
+                    .iter()
+                    .find(|span| span.source.start == source_range.start)
+                    .map(|span| span.formatted.start)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                if super::rich_text::resolved_character_at(self.projection(), at)
+                    .ok_or(DocumentError::UnsupportedFormatting)?
+                    .bold
+                {
+                    authored.bold = Some(true);
+                }
+            }
             let local = if self.format() == Format::Html {
                 if let Some(patches) = remove_conventional.and_then(|style| {
                     super::html::exact_conventional_removal(
@@ -4229,7 +4331,19 @@ impl Document {
                 }) {
                     patches
                 } else {
-                    let mut authored = properties.clone();
+                    if authored.bold.is_some() && authored.weight.is_none() {
+                        let at = self
+                            .projection()
+                            .provenance_for_region(range)
+                            .iter()
+                            .find(|span| span.source.start == source_range.start)
+                            .map(|span| span.formatted.start)
+                            .ok_or(DocumentError::AmbiguousProjection)?;
+                        let inherited =
+                            super::rich_text::resolved_character_at(self.projection(), at)
+                                .ok_or(DocumentError::UnsupportedFormatting)?;
+                        authored.weight = Some(inherited.base_weight);
+                    }
                     if properties.underline.is_some() != properties.strikethrough.is_some() {
                         let at = self
                             .projection()
@@ -4255,7 +4369,7 @@ impl Document {
                     ]
                 }
             } else {
-                super::rtf::character_patches(&normalized, &source_range, properties)?
+                super::rtf::character_patches(&normalized, &source_range, &authored)?
             };
             for patch in local {
                 if !syntax_patches.contains(&patch) {
@@ -4263,7 +4377,18 @@ impl Document {
                 }
             }
         }
-        syntax_patches
+        let mut coalesced: Vec<(Range<usize>, String)> = Vec::new();
+        for (range, syntax) in syntax_patches {
+            if range.is_empty() {
+                if let Some((_, existing)) = coalesced.iter_mut().find(|(prior, _)| *prior == range)
+                {
+                    existing.push_str(&syntax);
+                    continue;
+                }
+            }
+            coalesced.push((range, syntax));
+        }
+        coalesced
             .into_iter()
             .map(|(range, syntax)| {
                 Ok(SourcePatch::primary(
@@ -4459,6 +4584,117 @@ impl Document {
             [] => Err(DocumentError::UnsupportedFormatting.into()),
             _ => Err(DocumentError::AmbiguousProjection.into()),
         }
+    }
+
+    fn prepare_physical_source(
+        &self,
+        range: Range<usize>,
+        replacement: String,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if self.format() == Format::Rtf {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
+        self.source_point(range.start)?;
+        self.source_point(range.end)?;
+        if range.start > range.end {
+            return Err(DocumentError::InvalidRange {
+                start: range.start,
+                end: range.end,
+                length: self.source_byte_len(),
+            }
+            .into());
+        }
+        let encoded = self.encoding().encode_fragment(&replacement.replace(
+            "\n",
+            match self.file_format() {
+                FileFormat::Unix => "\n",
+                FileFormat::Dos => "\r\n",
+                FileFormat::Mac => "\r",
+            },
+        ))?;
+        if self
+            .state()
+            .source
+            .bytes_in(range.clone())
+            .is_some_and(|original| original == encoded)
+        {
+            return Ok(self.no_op_prepared());
+        }
+        let patches = vec![SourcePatch::primary(range.clone(), encoded)];
+        // Identity text projections use the existing line-local incremental
+        // path. Source syntax edits in rich/cooked formats may reinterpret
+        // following grammar and therefore require authoritative reprojection.
+        if matches!(self.format(), Format::PlainText | Format::MarkdownSource) {
+            let start = self
+                .projection()
+                .map_source_boundary(self.revision(), range.start, BoundaryAffinity::Downstream)
+                .map_err(|_| DocumentError::AmbiguousProjection)?
+                .formatted_offset;
+            let end = self
+                .projection()
+                .map_source_boundary(self.revision(), range.end, BoundaryAffinity::Upstream)
+                .map_err(|_| DocumentError::AmbiguousProjection)?
+                .formatted_offset;
+            return self.prepare_text_edits_with_patches(
+                vec![TextEdit::new(start..end, replacement)],
+                Some(patches),
+            );
+        }
+        let source = apply_source_patches(&self.state().source, &patches)?;
+        let decoded = self.encoding().decode(&source.bytes())?;
+        let revision = Revision(self.next_revision);
+        let mut candidate = build_state_from_decoded(
+            source,
+            decoded,
+            self.format(),
+            self.file_format(),
+            self.file_format_origin(),
+            self.line_ending_evidence(),
+            revision,
+        )?;
+        let edits = source_backed_reprojection_edits(self.projection(), &candidate.projection);
+        candidate
+            .projection
+            .install_persistent_text_edits(self.projection(), &edits)
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let formatted_splices = edits
+            .iter()
+            .map(|edit| Splice::new(edit.range.clone(), edit.replacement.len()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let splices =
+            grapheme_closed_snapshot_map_splices(self.projection(), &candidate.projection, &edits)?;
+        let map = PositionMap::for_text_snapshots(
+            self.id,
+            self.revision(),
+            revision,
+            self.projection(),
+            &candidate.projection,
+            splices,
+        )?;
+        let next_id = candidate
+            .projection
+            .install_reconciled_source_block_ids(
+                self.projection(),
+                &edits,
+                &map,
+                self.next_projected_block_id,
+            )
+            .map_err(super::block_identity_document_error)?;
+        let work = ProjectionWorkStatistics::full(&candidate);
+        Ok(self.prepared(
+            revision,
+            ModelChangeSummary {
+                kind: ModelChangeKind::TextEdits,
+                source_patches: patches,
+                formatted_splices,
+                projection_work: work,
+                style_change: None,
+            },
+            map,
+            None,
+            next_id,
+            PreparedPublication::State(candidate),
+        ))
     }
 
     fn prepare_format(
@@ -5456,6 +5692,7 @@ fn clear_character_properties(
             StyleProperty::CharacterFontFamilies => target.font_families = None,
             StyleProperty::CharacterSize => target.size = None,
             StyleProperty::CharacterWeight => target.weight = None,
+            StyleProperty::CharacterBold => target.bold = None,
             StyleProperty::CharacterSlant => target.slant = None,
             StyleProperty::CharacterForeground => target.foreground = None,
             StyleProperty::CharacterBackground => target.background = None,
@@ -5623,11 +5860,19 @@ fn effective_block_definition_changes(
 ) -> Result<BTreeSet<StyleProperty>, StyleError> {
     let mut changed = BTreeSet::new();
     for id in affected {
-        let (Some(before), Some(after)) =
-            (before_sheet.block_style(id), after_sheet.block_style(id))
-        else {
+        let Some(before) = before_sheet.block_style(id) else {
             continue;
         };
+        let after_id = if after_sheet.block_style(id).is_some() {
+            id
+        } else if before.role == super::BlockRole::Document {
+            &after_sheet.base_document
+        } else {
+            &after_sheet.base_paragraph
+        };
+        let after = after_sheet
+            .block_style(after_id)
+            .ok_or_else(|| StyleError::UnknownStyle(after_id.clone()))?;
         if before.role != after.role {
             changed.extend(before.block.changed_properties(&BlockProperties::default()));
             changed.extend(after.block.changed_properties(&BlockProperties::default()));
@@ -5651,7 +5896,7 @@ fn effective_block_definition_changes(
                     &CharacterProperties::default(),
                 )?;
                 let after = after_sheet.resolve_document_style(
-                    id,
+                    after_id,
                     &BlockProperties::default(),
                     &CharacterProperties::default(),
                 )?;
@@ -5668,7 +5913,7 @@ fn effective_block_definition_changes(
                 )?;
                 let after = after_sheet.resolve_assigned_paragraph_style(
                     after_assignment,
-                    id,
+                    after_id,
                     &BlockProperties::default(),
                     &CharacterProperties::default(),
                     None,
@@ -5690,7 +5935,7 @@ fn effective_character_definition_changes(
 ) -> Result<BTreeSet<StyleProperty>, StyleError> {
     let mut changed = BTreeSet::new();
     for id in affected {
-        if before_sheet.character_style(id).is_none() || after_sheet.character_style(id).is_none() {
+        if before_sheet.character_style(id).is_none() {
             continue;
         }
         let before = before_sheet.resolve_assigned_paragraph_style(
@@ -5701,12 +5946,17 @@ fn effective_character_definition_changes(
             Some(id),
             &CharacterProperties::default(),
         )?;
+        let after_id = if after_sheet.character_style(id).is_some() {
+            id
+        } else {
+            &after_sheet.base_character
+        };
         let after = after_sheet.resolve_assigned_paragraph_style(
             after_assignment,
             &after_sheet.base_paragraph,
             &BlockProperties::default(),
             &CharacterProperties::default(),
-            Some(id),
+            Some(after_id),
             &CharacterProperties::default(),
         )?;
         changed.extend(before.character.changed_properties(&after.character));
@@ -5735,7 +5985,7 @@ fn rich_semantic_properties(
 ) -> Result<CharacterProperties, DocumentError> {
     let mut properties = CharacterProperties::default();
     match style {
-        SemanticInlineStyle::Strong => properties.weight = Some(if enabled { 700 } else { 400 }),
+        SemanticInlineStyle::Strong => properties.bold = Some(enabled),
         SemanticInlineStyle::Emphasis => {
             properties.slant = Some(if enabled {
                 super::FontSlant::Italic

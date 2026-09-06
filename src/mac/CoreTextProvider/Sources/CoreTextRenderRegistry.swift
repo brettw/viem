@@ -9,6 +9,7 @@ import Foundation
 public final class CoreTextRenderRegistry: @unchecked Sendable {
   struct GlyphBatch {
     let font: CTFont
+    let strokeWidth: CGFloat
     let glyphs: [CGGlyph]
     let positions: [CGPoint]
   }
@@ -60,7 +61,8 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
     metricsGeneration: UInt64
   ) -> [(tag: String, value: UInt32)]? {
     lock.lock()
-    let font = generation == metricsGeneration
+    let font =
+      generation == metricsGeneration
       ? resources[identifier]?.batches.first?.font
       : nil
     lock.unlock()
@@ -83,7 +85,8 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
   /// geometry where there is no glyph beneath the cursor to supply a width.
   public func spaceAdvance(identifier: UInt64, metricsGeneration: UInt64) -> CGFloat? {
     lock.lock()
-    let font = generation == metricsGeneration
+    let font =
+      generation == metricsGeneration
       ? resources[identifier]?.batches.first?.font
       : nil
     lock.unlock()
@@ -98,6 +101,16 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
     CTFontGetAdvancesForGlyphs(font, .horizontal, &glyph, &advance, 1)
     let width = abs(advance.width)
     return width.isFinite && width > 0 ? width : nil
+  }
+
+  /// An en is half the current em; unlike a space it is not font-dependent
+  /// word spacing and remains useful on an empty line.
+  public func enAdvance(identifier: UInt64, metricsGeneration: UInt64) -> CGFloat? {
+    lock.lock()
+    let font = generation == metricsGeneration ? resources[identifier]?.batches.first?.font : nil
+    lock.unlock()
+    guard let font else { return nil }
+    return CTFontGetSize(font) / 2
   }
 
   /// Draws one shaped cluster at a baseline expressed in the editor view's
@@ -129,6 +142,9 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
     context.scaleBy(x: 1, y: -1)
 
     for batch in resource.batches {
+      context.setLineWidth(batch.strokeWidth)
+      context.setStrokeColor((color.usingColorSpace(.deviceRGB) ?? color).cgColor)
+      context.setTextDrawingMode(batch.strokeWidth > 0 ? .fillStroke : .fill)
       batch.glyphs.withUnsafeBufferPointer { glyphBuffer in
         batch.positions.withUnsafeBufferPointer { positionBuffer in
           guard let glyphBase = glyphBuffer.baseAddress,

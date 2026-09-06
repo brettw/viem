@@ -1,0 +1,198 @@
+import AppKit
+import CEvimCore
+import EvimAppShell
+import XCTest
+@testable import EvimEditor
+
+@MainActor
+final class EVCompactStyleControlsTests: XCTestCase {
+    private func makeEditor(theme: EVTheme = .paper, html: Bool = false) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController, EVThemeStore) {
+        let backend = EVCoreDocumentBackend()
+        try backend.read(source: Data((html ? "<p>Text</p>" : "Text").utf8), typeName: html ? EVDocument.htmlType : EVDocument.markdownType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        let suite = "evim-style-theme-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let themeStore = EVThemeStore(defaults: defaults)
+        themeStore.update(theme)
+        let editor = EVStyleEditorViewController()
+        editor.themeStore = themeStore
+        editor.retarget(document: surface, styleKey: .baseParagraph)
+        return (backend, surface, editor, themeStore)
+    }
+
+    private func control<T: NSView>(_ type: T.Type, label: String, in root: NSView) throws -> T {
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        return try XCTUnwrap(descendants(root).first { $0 is T && $0.accessibilityLabel() == label } as? T, "Missing control \(label)")
+    }
+
+    func testParagraphControlsUseCoreEnumValuesForDisplayAndNativeActions() throws {
+        let (backend, surface, editor, _) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        editor.selectTab(.paragraph)
+        let alignment = try control(NSSegmentedControl.self, label: "Paragraph alignment", in: editor.view)
+        let lineKind = try control(NSPopUpButton.self, label: "Line spacing kind", in: editor.view)
+        let lineValue = try control(NSTextField.self, label: "Line spacing value", in: editor.view)
+        XCTAssertEqual(alignment.selectedSegment, 0, "Start is core enum1 and UI segment0")
+        XCTAssertEqual(lineKind.titleOfSelectedItem, "Normal")
+        XCTAssertFalse(lineValue.isEnabled)
+        for (segment, expected) in [(1, EVIM_STYLE_PARAGRAPH_ALIGNMENT_CENTER), (2, EVIM_STYLE_PARAGRAPH_ALIGNMENT_END), (0, EVIM_STYLE_PARAGRAPH_ALIGNMENT_START)] {
+            alignment.selectedSegment = segment
+            XCTAssertTrue(alignment.sendAction(try XCTUnwrap(alignment.action), to: alignment.target))
+            let value = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.paragraphAlignment]?.declared
+            XCTAssertEqual(value, .paragraphAlignment(UInt32(expected)))
+            XCTAssertEqual(alignment.selectedSegment, segment)
+            XCTAssertEqual(editor.inspection.diagnostic, "")
+        }
+        for (title, kind) in [("Multiple", EVIM_STYLE_LINE_SPACING_MULTIPLIER), ("At least", EVIM_STYLE_LINE_SPACING_AT_LEAST), ("Exactly", EVIM_STYLE_LINE_SPACING_EXACT), ("Normal", EVIM_STYLE_LINE_SPACING_NORMAL)] {
+            lineKind.selectItem(withTitle: title)
+            XCTAssertTrue(lineKind.sendAction(try XCTUnwrap(lineKind.action), to: lineKind.target))
+            let value = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.paragraphLineSpacing]?.declared
+            guard case let .lineSpacing(spacing)? = value else { return XCTFail("Native line spacing choice did not write a declaration") }
+            XCTAssertEqual(spacing.kind, UInt32(kind))
+            if title == "Normal" { XCTAssertFalse(lineValue.isEnabled) }
+            else { XCTAssertGreaterThan(spacing.value, 0); XCTAssertTrue(lineValue.isEnabled) }
+            XCTAssertEqual(lineKind.titleOfSelectedItem, title)
+            XCTAssertEqual(editor.inspection.diagnostic, "")
+        }
+    }
+
+    func testDefaultThemeSwatchAndPreviewUpdateWithoutMutatingSourceOrStyle() throws {
+        let (backend, surface, editor, store) = try makeEditor(theme: .midnight)
+        defer { withExtendedLifetime(surface) {} }
+        let swatch = try control(NSColorWell.self, label: "Text color", in: editor.view)
+        let before = try backend.styleSheetSnapshot()
+        let bytes = try backend.serializedSource(typeName: EVDocument.markdownType)
+        func styleColor(_ color: EVThemeColor) -> EVStyleColor { EVStyleColor(red: Float(color.red), green: Float(color.green), blue: Float(color.blue), alpha: Float(color.alpha)) }
+        XCTAssertEqual(EVThemeColor(swatch.color), EVTheme.midnight.foreground)
+        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterForeground], .color(styleColor(EVTheme.midnight.foreground)))
+        XCTAssertEqual(editor.inspection.preview.canvasBackground, styleColor(EVTheme.midnight.background))
+        XCTAssertTrue(editor.inspection.summary.contains("Default (theme foreground)"))
+        store.update(.paper)
+        XCTAssertEqual(EVThemeColor(swatch.color), EVTheme.paper.foreground)
+        XCTAssertEqual(editor.inspection.preview.canvasBackground, styleColor(EVTheme.paper.background))
+        XCTAssertEqual(try backend.styleSheetSnapshot(), before)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), bytes)
+    }
+
+    func testExplicitAndInheritedBlackRemainBlackUntilNativeDefaultAction() throws {
+        let (backend, surface, editor, store) = try makeEditor(theme: .midnight)
+        defer { withExtendedLifetime(surface) {} }
+        let swatch = try control(NSColorWell.self, label: "Text color", in: editor.view)
+        swatch.color = .black
+        XCTAssertTrue(swatch.sendAction(try XCTUnwrap(swatch.action), to: swatch.target))
+        let black = EVStyleColor(red: 0, green: 0, blue: 0, alpha: 1)
+        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterForeground], .color(black))
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterForeground]?.declared, .color(black))
+        store.update(.paper); store.update(.midnight)
+        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterForeground], .color(black))
+        let reset = try control(NSButton.self, label: "Default foreground", in: editor.view)
+        reset.performClick(nil)
+        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterForeground]?.declared)
+        XCTAssertEqual(EVThemeColor(swatch.color), EVTheme.midnight.foreground)
+        editor.selectStyle(EVStyleKey.baseDocument)
+        swatch.color = .black
+        XCTAssertTrue(swatch.sendAction(try XCTUnwrap(swatch.action), to: swatch.target))
+        editor.selectStyle(EVStyleKey.baseParagraph)
+        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterForeground], .color(black), "An explicit declaration inherited from a parent is preserved")
+    }
+
+    func testNativeLightFaceThenBoldCommitsSourceBackedStyle() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
+        family.stringValue = "SF Pro"
+        XCTAssertTrue(family.sendAction(try XCTUnwrap(family.action), to: family.target))
+        let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
+        let light = try XCTUnwrap(face.itemArray.first { $0.title == "Light" })
+        face.select(light)
+        XCTAssertTrue(face.sendAction(try XCTUnwrap(face.action), to: face.target))
+        let bold = try control(NSButton.self, label: "Bold", in: editor.view)
+        bold.performClick(nil)
+        XCTAssertEqual(editor.inspection.diagnostic, "")
+        XCTAssertEqual(bold.state, .on)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterBold]?.declared, .boolean(true))
+        XCTAssertEqual(family.stringValue, "SF Pro")
+    }
+
+    func testPrimaryFamilyAndFaceKeepImportedOrderedFallbackTail() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        let tail = ["Georgia", "Apple Color Emoji", "Menlo"]
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList(["Helvetica"] + tail)))
+        let imported = try backend.serializedSource(typeName: EVDocument.htmlType)
+        try backend.read(source: imported, typeName: EVDocument.htmlType)
+        editor.retarget(document: surface, styleKey: .baseParagraph)
+        let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
+        family.stringValue = "SF Pro"
+        XCTAssertTrue(family.sendAction(try XCTUnwrap(family.action), to: family.target))
+        let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
+        face.select(try XCTUnwrap(face.itemArray.first { $0.title == "Light" }))
+        XCTAssertTrue(face.sendAction(try XCTUnwrap(face.action), to: face.target))
+        guard case let .stringList(request)? = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFamilies]?.declared else { return XCTFail("Missing font request") }
+        XCTAssertEqual(Array(request.dropFirst()), tail)
+        XCTAssertTrue(request[0].contains("Light"))
+        let reopened = EVCoreDocumentBackend()
+        try reopened.read(source: backend.serializedSource(typeName: EVDocument.htmlType), typeName: EVDocument.htmlType)
+        XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFamilies]?.declared, .stringList(request))
+    }
+
+    func testNativeFallbackPopoverOrdersAddsRemovesAppliesAndCancels() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        let original = ["Helvetica", "Georgia", "Apple Color Emoji"]
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList(original)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 770), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = editor
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        window.displayIfNeeded()
+        let button = try control(NSButton.self, label: "Fallback fonts", in: editor.view)
+        let owner = try XCTUnwrap(button.target as? EVCompactStyleControls)
+        button.performClick(nil)
+        let popover = try XCTUnwrap(owner.fallbackPopover)
+        let draft = try XCTUnwrap(popover.contentViewController as? EVFallbackFontsController)
+        let table = try control(NSTableView.self, label: "Ordered fallback fonts", in: draft.view)
+        table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        try control(NSButton.self, label: "Move fallback up", in: draft.view).performClick(nil)
+        let entry = try control(NSComboBox.self, label: "Add fallback family", in: draft.view)
+        XCTAssertTrue(try XCTUnwrap(entry.window).makeFirstResponder(entry))
+        let fieldEditor = try XCTUnwrap(entry.currentEditor() as? NSTextView)
+        fieldEditor.insertText("Menlo", replacementRange: NSRange(location: 0, length: fieldEditor.string.utf16.count))
+        XCTAssertEqual(entry.stringValue, "Menlo")
+        try control(NSButton.self, label: "Add fallback font", in: draft.view).performClick(nil)
+        table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        try control(NSButton.self, label: "Remove fallback font", in: draft.view).performClick(nil)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFamilies]?.declared, .stringList(original), "The popover is a draft until Apply")
+        try control(NSButton.self, label: "Apply fallback fonts", in: draft.view).performClick(nil)
+        let expected = ["Helvetica", "Apple Color Emoji", "Menlo"]
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFamilies]?.declared, .stringList(expected))
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFamilies]?.declared, .stringList(original))
+        button.performClick(nil)
+        let cancelled = try XCTUnwrap(owner.fallbackPopover?.contentViewController as? EVFallbackFontsController)
+        let cancelledTable = try control(NSTableView.self, label: "Ordered fallback fonts", in: cancelled.view)
+        cancelledTable.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        try control(NSButton.self, label: "Remove fallback font", in: cancelled.view).performClick(nil)
+        try control(NSButton.self, label: "Cancel fallback changes", in: cancelled.view).performClick(nil)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFamilies]?.declared, .stringList(original))
+        withExtendedLifetime(window) {}
+    }
+
+    func testNativeRTFColorWellNormalizesPickerValuesToSourcePrecision() throws {
+        let backend = EVCoreDocumentBackend()
+        try backend.read(source: Data(#"{\rtf1 Text}"#.utf8), typeName: EVDocument.rtfType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        let editor = EVStyleEditorViewController()
+        editor.retarget(document: surface, styleKey: .baseParagraph)
+        let well = try control(NSColorWell.self, label: "Text color", in: editor.view)
+        well.color = NSColor(deviceRed: 0.75, green: 0.25, blue: 0.125, alpha: 0.4)
+        XCTAssertTrue(well.sendAction(try XCTUnwrap(well.action), to: well.target))
+        XCTAssertEqual(editor.inspection.diagnostic, "")
+        let expected = EVStyleColor(red: 191 / 255, green: 64 / 255, blue: 32 / 255, alpha: 1)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterForeground]?.declared, .color(expected))
+        withExtendedLifetime(surface) {}
+    }
+}

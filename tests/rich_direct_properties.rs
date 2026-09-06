@@ -44,13 +44,20 @@ fn html_clear_direct_property_splits_only_affected_inline_context() {
             &mut document,
             PersistedStyleIntent::ClearDirectCharacterProperties {
                 range: selected,
-                properties: BTreeSet::from([StyleProperty::CharacterWeight]),
+                properties: BTreeSet::from([
+                    StyleProperty::CharacterWeight,
+                    StyleProperty::CharacterBold,
+                ]),
             },
         );
         assert_eq!(document.text(), "abcdef");
-        assert_eq!(direct(&document, 0).weight, Some(700));
+        assert!(
+            direct(&document, 0).weight == Some(700) || direct(&document, 0).bold == Some(true)
+        );
         assert_eq!(direct(&document, 2).weight, None);
-        assert_eq!(direct(&document, 4).weight, Some(700));
+        assert!(
+            direct(&document, 4).weight == Some(700) || direct(&document, 4).bold == Some(true)
+        );
         let fresh = open(
             std::str::from_utf8(&document.source_bytes()).unwrap(),
             Format::Html,
@@ -92,7 +99,7 @@ fn html_paragraph_properties_apply_to_all_hard_lines_and_clear_to_inheritance() 
             .spacing_after,
         None
     );
-    assert_eq!(direct(&document, 0).weight, Some(700));
+    assert!(direct(&document, 0).weight == Some(700) || direct(&document, 0).bold == Some(true));
     let selected = range(&document, 0, 7);
     apply(
         &mut document,
@@ -214,7 +221,9 @@ fn direct_character_formatting_crosses_existing_markup_without_rewriting_it() {
             },
         );
         assert_eq!(document.text(), "bold and italic");
-        assert_eq!(direct(&document, 0).weight, Some(700));
+        assert!(
+            direct(&document, 0).weight == Some(700) || direct(&document, 0).bold == Some(true)
+        );
         assert_eq!(direct(&document, 9).slant, Some(FontSlant::Italic));
         for at in 0..15 {
             assert_eq!(direct(&document, at).underline, Some(true));
@@ -240,13 +249,20 @@ fn rtf_clearing_direct_properties_splits_control_lifetimes_and_preserves_unknown
             &mut document,
             PersistedStyleIntent::ClearDirectCharacterProperties {
                 range: selected,
-                properties: BTreeSet::from([StyleProperty::CharacterWeight]),
+                properties: BTreeSet::from([
+                    StyleProperty::CharacterWeight,
+                    StyleProperty::CharacterBold,
+                ]),
             },
         );
         assert_eq!(document.text(), "abcdef");
-        assert_eq!(direct(&document, 0).weight, Some(700));
+        assert!(
+            direct(&document, 0).weight == Some(700) || direct(&document, 0).bold == Some(true)
+        );
         assert_eq!(direct(&document, 2).weight, None);
-        assert_eq!(direct(&document, 4).weight, Some(700));
+        assert!(
+            direct(&document, 4).weight == Some(700) || direct(&document, 4).bold == Some(true)
+        );
         if source.contains("unknown") {
             assert!(String::from_utf8(document.source_bytes())
                 .unwrap()
@@ -390,7 +406,7 @@ fn html_mixed_direct_properties_preserve_existing_other_decoration() {
             },
         },
     );
-    assert_eq!(direct(&document, 0).weight, Some(700));
+    assert!(direct(&document, 0).weight == Some(700) || direct(&document, 0).bold == Some(true));
     assert_eq!(direct(&document, 0).underline, Some(true));
     assert_eq!(direct(&document, 0).strikethrough, Some(true));
 }
@@ -423,7 +439,7 @@ fn rtf_paragraph_direct_clear_retains_generated_list_and_inline_styles() {
         },
     );
     assert_eq!(document.text(), "1. One body\nTail");
-    assert_eq!(direct(&document, 3).weight, Some(700));
+    assert_eq!(direct(&document, 3).bold, Some(true));
     assert_eq!(
         document.projection().blocks()[0].direct_paragraph.alignment,
         None

@@ -104,6 +104,8 @@ typedef uint32_t EvimStatus;
 #define EVIM_DOCUMENT_STATE_CAN_UNDO (1u << 1)
 #define EVIM_DOCUMENT_STATE_CAN_REDO (1u << 2)
 #define EVIM_DOCUMENT_STATE_IS_DIRTY (1u << 3)
+#define EVIM_DOCUMENT_STATE_READ_ONLY (1u << 4)
+#define EVIM_DOCUMENT_STATE_RECOVERED (1u << 5)
 
 typedef struct EvimDocumentOptions {
   uint32_t struct_size;
@@ -239,6 +241,7 @@ typedef struct EvimFormattedPointInfoV1 {
 #define EVIM_COMMAND_STATUS_SEARCH_NOT_FOUND 5u
 #define EVIM_COMMAND_STATUS_UNSUPPORTED 6u
 #define EVIM_COMMAND_STATUS_ERROR 7u
+#define EVIM_COMMAND_STATUS_READ_ONLY 8u
 
 #define EVIM_MODE_NORMAL 1u
 #define EVIM_MODE_INSERT 2u
@@ -280,6 +283,7 @@ typedef struct EvimFormattedPointInfoV1 {
 #define EVIM_EX_FRONTEND_OPTIONS 13u
 #define EVIM_EX_FRONTEND_PRINT_LINES 14u
 #define EVIM_EX_FRONTEND_NORMAL 15u
+#define EVIM_EX_FRONTEND_SPLIT 16u
 
 #define EVIM_EX_FRONTEND_FORCE (1u << 0)
 #define EVIM_EX_FRONTEND_HAS_PATH (1u << 1)
@@ -501,6 +505,8 @@ typedef struct EvimResolvedTextStyleV1 {
   uint32_t direction;
   uint32_t has_language;
   uint32_t has_script;
+  /* bit0: weight includes relative bold (+300); retain selected face as base.
+     Other bits are reserved and zero. Older providers may ignore this hint. */
   uint32_t reserved;
   float size;
   float weight;
@@ -513,6 +519,8 @@ typedef struct EvimResolvedTextStyleV1 {
   const EvimOpenTypeFeatureV1 *features;
   uint64_t feature_count;
 } EvimResolvedTextStyleV1;
+
+#define EVIM_RESOLVED_TEXT_STYLE_RELATIVE_BOLD (1u << 0)
 
 #define EVIM_RESOLVED_TEXT_STYLE_V1_SIZE \
   ((uint32_t)sizeof(EvimResolvedTextStyleV1))
@@ -840,6 +848,7 @@ typedef struct EvimRgbaV1 {
 #define EVIM_STYLE_PROPERTY_CHARACTER_OPEN_TYPE_FEATURES 24u
 #define EVIM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING 25u
 #define EVIM_STYLE_PROPERTY_CHARACTER_BASELINE_SHIFT 26u
+#define EVIM_STYLE_PROPERTY_CHARACTER_BOLD 27u
 
 #define EVIM_STYLE_VALUE_NONE 0u
 #define EVIM_STYLE_VALUE_FLOAT 1u
@@ -1050,6 +1059,8 @@ typedef struct EvimStyleEditGroupV1 {
 #define EVIM_TEXT_PAINT_HAS_BACKGROUND (1u << 0)
 #define EVIM_TEXT_PAINT_UNDERLINE (1u << 1)
 #define EVIM_TEXT_PAINT_STRIKETHROUGH (1u << 2)
+#define EVIM_TEXT_PAINT_DEFAULT_FOREGROUND (1u << 3)
+#define EVIM_LAYOUT_PAINT_DEFAULT_CANVAS (1u << 0)
 
 /*
  * Foreground is always present. Background is meaningful only with
@@ -1067,7 +1078,8 @@ typedef struct EvimTextPaintV1 {
 /* Canvas/default paint and required override-run count for one exact layout. */
 typedef struct EvimLayoutPaintInfoV1 {
   uint32_t struct_size;
-  uint32_t reserved;
+  /* Formerly reserved; output flags preserve the v1 binary layout. */
+  uint32_t flags;
   EvimLayoutSnapshotIdentityV1 identity;
   EvimRgbaV1 canvas_background;
   EvimTextPaintV1 default_paint;
@@ -1745,6 +1757,10 @@ EvimStatus evim_core_formatted_point_info(
     EvimCoreHandle core, const EvimFormattedSnapshotIdentityV1 *identity,
     uint64_t utf8_offset, EvimFormattedPointInfoV1 *out_info);
 
+/* Snapshot-checked buffer policies; they do not modify source or undo state. */
+EvimStatus evim_core_set_read_only(EvimCoreHandle core, uint64_t expected_document, uint64_t expected_revision, uint32_t read_only);
+EvimStatus evim_core_mark_recovered(EvimCoreHandle core, uint64_t expected_document, uint64_t expected_revision);
+
 /* Call only after the native write of this exact source snapshot succeeds. */
 EvimStatus evim_core_mark_saved(EvimCoreHandle core,
                                 const EvimMarkSavedV1 *request);
@@ -1984,6 +2000,9 @@ EvimStatus evim_core_view_set_viewport_origin(
     EvimCoreHandle core, EvimViewId view,
     const EvimViewportOriginV1 *request, EvimCoreOutcomeV1 *out_outcome);
 
+/* Theme padding is presentation-only and scrolls with the document canvas. */
+EvimStatus evim_core_view_set_padding(EvimCoreHandle core, EvimViewId view,
+    float top, float left, float bottom, float right);
 EvimStatus evim_core_view_resize(EvimCoreHandle core, EvimViewId view,
                                  float width, float height,
                                  EvimCoreOutcomeV1 *out_outcome);
@@ -1995,6 +2014,27 @@ EvimStatus evim_core_view_resize(EvimCoreHandle core, EvimViewId view,
 EvimStatus evim_core_view_set_scale(EvimCoreHandle core, EvimViewId view,
                                     float scale,
                                     EvimCoreOutcomeV1 *out_outcome);
+#define EVIM_LINE_LOCATION_GLOBAL_LINE_EXACT 1u
+#define EVIM_LINE_LOCATION_FRAGMENT_EXACT 2u
+typedef struct EvimViewLineLocationV1 {
+    uint32_t struct_size;
+    uint32_t mode;
+    uint32_t flags;
+    uint32_t reserved;
+    uint64_t line;
+    uint64_t column;
+    uint64_t hard_line;
+    uint64_t fragment;
+} EvimViewLineLocationV1;
+#define EVIM_VIEW_LINE_LOCATION_V1_SIZE ((uint32_t)sizeof(EvimViewLineLocationV1))
+/* One-based fields; line==0 means use exact hard_line/fragment fallback. */
+EvimStatus evim_core_view_line_location(EvimCoreHandle handle, EvimViewId view, EvimViewLineLocationV1 *out_location);
+
+#define EVIM_LINE_MODE_VISUAL 0u
+#define EVIM_LINE_MODE_PHYSICAL_SOURCE 1u
+/* View-local command policy; physical source lines are unsupported for RTF. */
+EvimStatus evim_core_view_line_mode(EvimCoreHandle core, EvimViewId view, uint32_t *out_mode);
+EvimStatus evim_core_view_set_line_mode(EvimCoreHandle core, EvimViewId view, uint32_t mode, EvimCoreOutcomeV1 *out_outcome);
 EvimStatus evim_core_view_set_wrap(EvimCoreHandle core, EvimViewId view,
                                    uint32_t wrap,
                                    EvimCoreOutcomeV1 *out_outcome);
@@ -2063,7 +2103,33 @@ EvimStatus evim_core_view_end_style_edit_group(
 
 EvimStatus evim_core_view_edit_direct_style(EvimCoreHandle handle, EvimViewId view,
     const EvimDirectStyleEditV1 *request, EvimCoreOutcomeV1 *out_outcome);
+/* Atomically sets 1..32 distinct character properties on one exact selection.
+   Every request must use SET_DECLARATION and the same expected selection. */
+EvimStatus evim_core_view_edit_direct_character_batch(EvimCoreHandle handle, EvimViewId view,
+    const EvimDirectStyleEditV1 *requests, uint64_t count, EvimCoreOutcomeV1 *out_outcome);
 /* Returns the semantic Off/On/Mixed constants for underline/strike. */
+typedef struct EvimTypographyInfoV1 {
+  uint32_t struct_size;
+  /* bit0 semantic bold; bit1 mixed; bit2 theme-default foreground. */
+  uint32_t flags;
+  uint64_t document_id;
+  uint64_t document_revision;
+  uint64_t font_family_bytes;
+  uint64_t feature_count;
+  float size;
+  uint32_t weight;
+  uint32_t base_weight;
+  uint32_t slant;
+  EvimRgbaV1 foreground;
+} EvimTypographyInfoV1;
+
+/* Zero-capacity query returns BufferTooSmall with exact sizes. All buffers
+   must be disjoint; no array payload is copied until both capacities fit. */
+EvimStatus evim_core_view_typography_export(
+    EvimCoreHandle core, EvimViewId view, uint64_t expected_revision,
+    EvimTypographyInfoV1 *info, uint8_t *family, uint64_t family_capacity,
+    EvimOpenTypeFeatureV1 *features, uint64_t feature_capacity);
+
 EvimStatus evim_core_view_decoration_state(EvimCoreHandle handle, EvimViewId view,
     uint32_t property, uint32_t *out_state);
 

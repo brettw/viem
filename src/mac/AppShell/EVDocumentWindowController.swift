@@ -6,634 +6,815 @@ import AppKit
 /// Preserve the requested frame until a real screen exists, then use AppKit's
 /// normal constraints for native moving, tiling, zooming, and resizing.
 private final class EVDocumentWindow: NSWindow {
-    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
-        guard let screen else { return frameRect }
-        return super.constrainFrameRect(frameRect, to: screen)
-    }
+  override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+    guard let screen else { return frameRect }
+    return super.constrainFrameRect(frameRect, to: screen)
+  }
 }
 
 @MainActor
-public final class EVDocumentWindowController: NSWindowController, EVDocumentHostEffectHandling {
-    static let initialContentSize = NSSize(width: 920, height: 680)
-    static let minimumContentSize = NSSize(width: 480, height: 280)
+public final class EVDocumentWindowController: NSWindowController, EVDocumentHostEffectHandling,
+  NSWindowDelegate
+{
+  static let initialContentSize = NSSize(width: 920, height: 680)
+  static let minimumContentSize = NSSize(width: 480, height: 280)
 
-    public let editorSurface: any EVEditorSurface
-    let documentContentController: EVDocumentContentViewController
-    private weak var hostDocument: EVDocument?
-    private var hasPresentedInitialWindow = false
-    private var isPerformingDocumentHostEffect = false
+  public var editorSurface: any EVEditorSurface { paneContainer.activePane.editorSurface }
+  var documentContentController: EVDocumentContentViewController { paneContainer.activePane }
+  public var activeDocument: EVDocument? { paneContainer.activePane.document }
+  private let paneContainer: EVPaneContainer
+  private static var instances: [EVWeakDocumentWindow] = []
+  private var isClosed = false
+  private var closeQueue: [EVDocument] = []
+  private var closingAfterReview = false
+  private var hasPresentedInitialWindow = false
+  private var isPerformingDocumentHostEffect = false
 
-    var currentGeometry: EVDocumentWindowGeometry? {
-        guard let window, let contentView = synchronizeContentFrame(of: window) else { return nil }
-        return documentContentController.geometry(in: contentView)
+  var currentGeometry: EVDocumentWindowGeometry? {
+    guard let window, synchronizeContentFrame(of: window) != nil else { return nil }
+    return documentContentController.geometry(in: documentContentController.view)
+  }
+
+  public init(document: EVDocument, editorSurface: any EVEditorSurface) {
+    let firstPane = EVDocumentContentViewController(editorSurface: editorSurface)
+    firstPane.document = document
+    paneContainer = EVPaneContainer(first: firstPane)
+
+    let window = EVDocumentWindow(
+      contentRect: NSRect(origin: .zero, size: Self.initialContentSize),
+      styleMask: [.titled, .closable, .miniaturizable, .resizable],
+      backing: .buffered,
+      defer: false
+    )
+    let contentView = paneContainer.view
+    contentView.frame = NSRect(origin: .zero, size: Self.initialContentSize)
+    contentView.translatesAutoresizingMaskIntoConstraints = false
+    window.contentView = contentView
+    window.contentMinSize = Self.minimumContentSize
+    window.setContentSize(Self.initialContentSize)
+    // Automatic tabbing can replace a just-created window's requested
+    // frame with the geometry of an unrelated existing tab group. eVim's
+    // initial UI has document windows, not a tab model, so opt out here.
+    window.tabbingMode = .disallowed
+    // State restoration needs a restoration class and stable document
+    // identity. Advertising restoration without either can resurrect a
+    // newly created untitled window in a stale miniaturized state.
+    window.isRestorable = false
+    window.titleVisibility = .visible
+
+    super.init(window: window)
+    window.delegate = self
+    Self.instances.removeAll { $0.value == nil }
+    Self.instances.append(EVWeakDocumentWindow(self))
+    // NSDocument.addWindowController(_:) is the sole owner of attaching
+    // this controller to its document. Pre-setting `document` here makes
+    // AppKit treat the subsequent add as a no-op, leaving the document with
+    // no retained window controllers.
+    // The initial frame is explicitly centered below. NSWindowController's
+    // cascade machinery is useful for nib/restored windows, but can mutate
+    // a programmatic document window while it is first being shown.
+    shouldCascadeWindows = false
+    documentContentController.document = document
+    (editorSurface as? any EVDocumentHostAttachable)?.documentHostEffectHandler = self
+  }
+
+  public static func windowShowing(document: EVDocument) -> NSWindow? {
+    instances.compactMap(\.value).first { controller in
+      !controller.isClosed && controller.paneContainer.panes.contains { $0.document === document }
+    }?.window
+  }
+
+  var paneCount: Int { paneContainer.panes.count }
+
+  func updateActiveDocumentChrome() {
+    guard !isClosed, let document = activeDocument else { return }
+    window?.title =
+      document.displayName
+      + (paneContainer.panes.count > 1 ? " · \(paneContainer.panes.count) panes" : "")
+    window?.representedURL = document.fileURL
+    window?.isDocumentEdited = document.editorBackend.persistenceState.isDirty
+  }
+
+  private func rebindWindowDocument() {
+    let owner = self.document as? EVDocument
+    guard !paneContainer.panes.contains(where: { $0.document === owner }), let next = activeDocument
+    else { return }
+    owner?.removeWindowController(self)
+    next.addWindowController(self)
+  }
+
+  public func windowDidBecomeKey(_ notification: Notification) { updateActiveDocumentChrome() }
+
+  public func windowShouldClose(_ sender: NSWindow) -> Bool {
+    if closingAfterReview { return true }
+    guard closeQueue.isEmpty else { return false }
+    var seen = Set<ObjectIdentifier>()
+    closeQueue = paneContainer.panes.compactMap(\.document).filter { doc in
+      guard seen.insert(ObjectIdentifier(doc)).inserted else { return false }
+      let outside = Self.instances.compactMap(\.value).filter { $0 !== self && !$0.isClosed }
+        .contains { $0.paneContainer.panes.contains { $0.document === doc } }
+      return !outside && doc.editorBackend.persistenceState.isDirty
+    }
+    reviewNextClose()
+    return false
+  }
+
+  private func reviewNextClose() {
+    guard let document = closeQueue.first else {
+      closingAfterReview = true
+      DispatchQueue.main.async { [weak self] in self?.close() }
+      return
+    }
+    document.canClose(
+      withDelegate: self, shouldClose: #selector(reviewedDocument(_:shouldClose:contextInfo:)),
+      contextInfo: nil)
+  }
+
+  @objc private func reviewedDocument(
+    _ document: NSDocument, shouldClose: Bool, contextInfo: UnsafeMutableRawPointer?
+  ) {
+    guard shouldClose else {
+      closeQueue.removeAll()
+      return
+    }
+    if !closeQueue.isEmpty { closeQueue.removeFirst() }
+    reviewNextClose()
+  }
+
+  public func windowWillClose(_ notification: Notification) {
+    guard !isClosed else { return }
+    isClosed = true
+    let documents = paneContainer.panes.compactMap(\.document)
+    (document as? EVDocument)?.removeWindowController(self)
+    var seen = Set<ObjectIdentifier>()
+    for document in documents where seen.insert(ObjectIdentifier(document)).inserted {
+      closeIfUnrepresented(document)
+    }
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is unavailable")
+  }
+
+  public override func windowDidLoad() {
+    super.windowDidLoad()
+    window?.makeFirstResponder(editorSurface.viewController.view)
+  }
+
+  public override func showWindow(_ sender: Any?) {
+    guard let window else {
+      super.showWindow(sender)
+      return
     }
 
-    public init(document: EVDocument, editorSurface: any EVEditorSurface) {
-        self.editorSurface = editorSurface
-        hostDocument = document
-        documentContentController = EVDocumentContentViewController(editorSurface: editorSurface)
+    let isInitialPresentation = !hasPresentedInitialWindow
+    if isInitialPresentation {
+      prepareInitialFrame(of: window)
+    }
+    super.showWindow(sender)
+    if window.isMiniaturized {
+      window.deminiaturize(sender)
+    }
+    if isInitialPresentation {
+      // Apply once more after AppKit has ordered the programmatic window.
+      // This defeats any pre-show tiling/restoration candidate without
+      // fighting subsequent user resizing.
+      prepareInitialFrame(of: window)
+      hasPresentedInitialWindow = true
+    }
+    _ = synchronizeContentFrame(of: window)
+    window.makeFirstResponder(editorSurface.viewController.view)
+    window.makeKeyAndOrderFront(sender)
+  }
 
-        let window = EVDocumentWindow(
-            contentRect: NSRect(origin: .zero, size: Self.initialContentSize),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
+  private func prepareInitialFrame(of window: NSWindow) {
+    window.setContentSize(Self.initialContentSize)
+    // `center()` has surprising destructive behavior before AppKit has
+    // assigned a screen: it can collapse the window to its fitting size.
+    // This occurs during early launch (and in headless AppKit tests).
+    if window.screen != nil {
+      window.center()
+    }
+    _ = synchronizeContentFrame(of: window)
+  }
+
+  @discardableResult
+  private func synchronizeContentFrame(of window: NSWindow) -> NSView? {
+    guard let contentView = window.contentView else { return nil }
+    let contentSize = window.contentLayoutRect.size
+    if contentView.frame.size != contentSize || contentView.frame.origin != .zero {
+      contentView.frame = NSRect(origin: .zero, size: contentSize)
+    }
+    paneContainer.layoutPanes()
+    return contentView
+  }
+}
+
+@MainActor
+extension EVDocumentWindowController {
+  fileprivate func finishDocumentHostEffect(
+    _ result: Result<String?, Error>,
+    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+  ) {
+    isPerformingDocumentHostEffect = false
+    completion(result)
+  }
+
+  fileprivate func performDocumentHostRequests(
+    _ requests: ArraySlice<EVDocumentHostRequest>,
+    messages: [String],
+    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+  ) {
+    guard let request = requests.first else {
+      finishDocumentHostEffect(
+        .success(messages.isEmpty ? nil : messages.joined(separator: "\n")),
+        completion: completion
+      )
+      return
+    }
+    performDocumentHostRequest(request) { [weak self] result in
+      guard let self else {
+        completion(.failure(EVDocumentHostError.unsupportedRequest))
+        return
+      }
+      switch result {
+      case .success(let message):
+        var nextMessages = messages
+        if let message, !message.isEmpty { nextMessages.append(message) }
+        self.performDocumentHostRequests(
+          requests.dropFirst(),
+          messages: nextMessages,
+          completion: completion
         )
-        let contentView = documentContentController.view
-        contentView.frame = NSRect(origin: .zero, size: Self.initialContentSize)
-        contentView.translatesAutoresizingMaskIntoConstraints = false
-        window.contentView = contentView
-        window.contentMinSize = Self.minimumContentSize
-        window.setContentSize(Self.initialContentSize)
-        // Automatic tabbing can replace a just-created window's requested
-        // frame with the geometry of an unrelated existing tab group. eVim's
-        // initial UI has document windows, not a tab model, so opt out here.
-        window.tabbingMode = .disallowed
-        // State restoration needs a restoration class and stable document
-        // identity. Advertising restoration without either can resurrect a
-        // newly created untitled window in a stale miniaturized state.
-        window.isRestorable = false
-        window.titleVisibility = .visible
+      case .failure(let error):
+        self.finishDocumentHostEffect(.failure(error), completion: completion)
+      }
+    }
+  }
 
-        super.init(window: window)
-        // NSDocument.addWindowController(_:) is the sole owner of attaching
-        // this controller to its document. Pre-setting `document` here makes
-        // AppKit treat the subsequent add as a no-op, leaving the document with
-        // no retained window controllers.
-        // The initial frame is explicitly centered below. NSWindowController's
-        // cascade machinery is useful for nib/restored windows, but can mutate
-        // a programmatic document window while it is first being shown.
-        shouldCascadeWindows = false
-        documentContentController.document = document
-        (editorSurface as? any EVDocumentHostAttachable)?.documentHostEffectHandler = self
+  fileprivate func performDocumentHostRequest(
+    _ request: EVDocumentHostRequest,
+    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+  ) {
+    guard
+      let document = paneContainer.panes.compactMap(\.document).first(where: {
+        $0.editorBackend.persistenceState.documentID == request.documentID
+      })
+    else {
+      completion(.failure(EVDocumentHostError.unsupportedRequest))
+      return
+    }
+    let persistence = document.editorBackend.persistenceState
+    guard persistence.documentID == request.documentID,
+      persistence.documentRevision == request.documentRevision
+    else {
+      completion(.failure(EVDocumentHostError.staleRequest))
+      return
     }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is unavailable")
-    }
+    switch request.kind {
+    case .split:
+      split(document, path: request.path, completion: completion)
+    case .write:
+      guard request.path == nil, request.hardLineRange == nil else {
+        completion(.failure(EVDocumentHostError.preparedWriteUnavailable))
+        return
+      }
+      save(
+        document,
+        request: request,
+        destination: document.fileURL,
+        operation: document.fileURL == nil ? .saveAsOperation : .saveOperation,
+        completion: completion
+      )
 
-    public override func windowDidLoad() {
-        super.windowDidLoad()
-        window?.makeFirstResponder(editorSurface.viewController.view)
-    }
+    case .saveAs:
+      guard request.hardLineRange == nil,
+        let path = request.path,
+        let destination = resolvedFileURL(path, relativeTo: document.fileURL)
+      else {
+        completion(.failure(EVDocumentHostError.invalidPath(request.path ?? "")))
+        return
+      }
+      save(
+        document,
+        request: request,
+        destination: destination,
+        operation: .saveAsOperation,
+        completion: completion
+      )
 
-    public override func showWindow(_ sender: Any?) {
-        guard let window else {
-            super.showWindow(sender)
-            return
+    case .writeQuit:
+      guard request.path == nil, request.hardLineRange == nil else {
+        completion(.failure(EVDocumentHostError.preparedWriteUnavailable))
+        return
+      }
+      save(
+        document,
+        request: request,
+        destination: document.fileURL,
+        operation: document.fileURL == nil ? .saveAsOperation : .saveOperation
+      ) { [weak self] result in
+        guard case .success = result else {
+          completion(result)
+          return
         }
-
-        let isInitialPresentation = !hasPresentedInitialWindow
-        if isInitialPresentation {
-            prepareInitialFrame(of: window)
-        }
-        super.showWindow(sender)
-        if window.isMiniaturized {
-            window.deminiaturize(sender)
-        }
-        if isInitialPresentation {
-            // Apply once more after AppKit has ordered the programmatic window.
-            // This defeats any pre-show tiling/restoration candidate without
-            // fighting subsequent user resizing.
-            prepareInitialFrame(of: window)
-            hasPresentedInitialWindow = true
-        }
-        _ = synchronizeContentFrame(of: window)
-        window.makeFirstResponder(editorSurface.viewController.view)
-        window.makeKeyAndOrderFront(sender)
-    }
-
-    private func prepareInitialFrame(of window: NSWindow) {
-        window.setContentSize(Self.initialContentSize)
-        // `center()` has surprising destructive behavior before AppKit has
-        // assigned a screen: it can collapse the window to its fitting size.
-        // This occurs during early launch (and in headless AppKit tests).
-        if window.screen != nil {
-            window.center()
-        }
-        _ = synchronizeContentFrame(of: window)
-    }
-
-    @discardableResult
-    private func synchronizeContentFrame(of window: NSWindow) -> NSView? {
-        guard let contentView = window.contentView else { return nil }
-        let contentSize = window.contentLayoutRect.size
-        if contentView.frame.size != contentSize || contentView.frame.origin != .zero {
-            contentView.frame = NSRect(origin: .zero, size: contentSize)
-        }
-        documentContentController.layoutContent()
-        return contentView
-    }
-}
-
-@MainActor
-private extension EVDocumentWindowController {
-    func finishDocumentHostEffect(
-        _ result: Result<String?, Error>,
-        completion: @escaping @MainActor (Result<String?, Error>) -> Void
-    ) {
-        isPerformingDocumentHostEffect = false
+        self?.closeCurrentDocumentOrWindow(document)
         completion(result)
-    }
+      }
 
-    func performDocumentHostRequests(
-        _ requests: ArraySlice<EVDocumentHostRequest>,
-        messages: [String],
-        completion: @escaping @MainActor (Result<String?, Error>) -> Void
-    ) {
-        guard let request = requests.first else {
-            finishDocumentHostEffect(
-                .success(messages.isEmpty ? nil : messages.joined(separator: "\n")),
-                completion: completion
-            )
-            return
+    case .xit:
+      guard request.path == nil else {
+        completion(.failure(EVDocumentHostError.preparedWriteUnavailable))
+        return
+      }
+      guard persistence.isDirty else {
+        closeCurrentDocumentOrWindow(document)
+        completion(.success(nil))
+        return
+      }
+      save(
+        document,
+        request: request,
+        destination: document.fileURL,
+        operation: document.fileURL == nil ? .saveAsOperation : .saveOperation
+      ) { [weak self] result in
+        guard case .success = result else {
+          completion(result)
+          return
         }
-        performDocumentHostRequest(request) { [weak self] result in
-            guard let self else {
-                completion(.failure(EVDocumentHostError.unsupportedRequest))
-                return
-            }
-            switch result {
-            case let .success(message):
-                var nextMessages = messages
-                if let message, !message.isEmpty { nextMessages.append(message) }
-                self.performDocumentHostRequests(
-                    requests.dropFirst(),
-                    messages: nextMessages,
-                    completion: completion
-                )
-            case let .failure(error):
-                self.finishDocumentHostEffect(.failure(error), completion: completion)
-            }
-        }
-    }
+        self?.closeCurrentDocumentOrWindow(document)
+        completion(result)
+      }
 
-    func performDocumentHostRequest(
-        _ request: EVDocumentHostRequest,
-        completion: @escaping @MainActor (Result<String?, Error>) -> Void
-    ) {
-        guard let document = hostDocument else {
-            completion(.failure(EVDocumentHostError.unsupportedRequest))
-            return
-        }
-        let persistence = document.editorBackend.persistenceState
-        guard persistence.documentID == request.documentID,
-              persistence.documentRevision == request.documentRevision
-        else {
-            completion(.failure(EVDocumentHostError.staleRequest))
-            return
-        }
+    case .quit:
+      guard
+        request.force || !persistence.isDirty
+          || hasOtherView(of: document, excluding: documentContentController)
+      else {
+        completion(.failure(EVDocumentHostError.documentModified))
+        return
+      }
+      closeCurrentDocumentOrWindow(document)
+      completion(.success(nil))
 
-        switch request.kind {
-        case .write:
-            guard request.path == nil, request.hardLineRange == nil else {
-                completion(.failure(EVDocumentHostError.preparedWriteUnavailable))
-                return
-            }
-            save(
-                document,
-                request: request,
-                destination: document.fileURL,
-                operation: document.fileURL == nil ? .saveAsOperation : .saveOperation,
-                completion: completion
-            )
+    case .quitAll:
+      var documents = NSDocumentController.shared.documents.compactMap { $0 as? EVDocument }
+      if !documents.contains(where: { $0 === document }) { documents.append(document) }
+      guard request.force || documents.allSatisfy({ !$0.editorBackend.persistenceState.isDirty })
+      else {
+        completion(.failure(EVDocumentHostError.documentModified))
+        return
+      }
+      for candidate in documents { candidate.close() }
+      completion(.success(nil))
 
-        case .saveAs:
-            guard request.hardLineRange == nil,
-                  let path = request.path,
-                  let destination = resolvedFileURL(path, relativeTo: document.fileURL)
-            else {
-                completion(.failure(EVDocumentHostError.invalidPath(request.path ?? "")))
-                return
-            }
-            save(
-                document,
-                request: request,
-                destination: destination,
-                operation: .saveAsOperation,
-                completion: completion
-            )
+    case .writeAll:
+      var documents = NSDocumentController.shared.documents.compactMap { $0 as? EVDocument }
+      if !documents.contains(where: { $0 === document }) { documents.append(document) }
+      saveAll(documents[...], force: request.force, completion: completion)
 
-        case .writeQuit:
-            guard request.path == nil, request.hardLineRange == nil else {
-                completion(.failure(EVDocumentHostError.preparedWriteUnavailable))
-                return
-            }
-            save(
-                document,
-                request: request,
-                destination: document.fileURL,
-                operation: document.fileURL == nil ? .saveAsOperation : .saveOperation
-            ) { [weak self] result in
-                guard case .success = result else {
-                    completion(result)
-                    return
-                }
-                self?.closeCurrentDocumentOrWindow(document)
-                completion(result)
-            }
+    case .edit:
+      guard request.force || !persistence.isDirty else {
+        completion(.failure(EVDocumentHostError.documentModified))
+        return
+      }
+      edit(document, path: request.path, completion: completion)
 
-        case .xit:
-            guard request.path == nil else {
-                completion(.failure(EVDocumentHostError.preparedWriteUnavailable))
-                return
-            }
-            guard persistence.isDirty else {
-                closeCurrentDocumentOrWindow(document)
-                completion(.success(nil))
-                return
-            }
-            save(
-                document,
-                request: request,
-                destination: document.fileURL,
-                operation: document.fileURL == nil ? .saveAsOperation : .saveOperation
-            ) { [weak self] result in
-                guard case .success = result else {
-                    completion(result)
-                    return
-                }
-                self?.closeCurrentDocumentOrWindow(document)
-                completion(result)
-            }
-
-        case .quit:
-            guard request.force || !persistence.isDirty else {
-                completion(.failure(EVDocumentHostError.documentModified))
-                return
-            }
-            closeCurrentDocumentOrWindow(document)
-            completion(.success(nil))
-
-        case .quitAll:
-            var documents = NSDocumentController.shared.documents.compactMap { $0 as? EVDocument }
-            if !documents.contains(where: { $0 === document }) { documents.append(document) }
-            guard request.force || documents.allSatisfy({ !$0.editorBackend.persistenceState.isDirty }) else {
-                completion(.failure(EVDocumentHostError.documentModified))
-                return
-            }
-            for candidate in documents { candidate.close() }
-            completion(.success(nil))
-
-        case .writeAll:
-            var documents = NSDocumentController.shared.documents.compactMap { $0 as? EVDocument }
-            if !documents.contains(where: { $0 === document }) { documents.append(document) }
-            saveAll(documents[...], force: request.force, completion: completion)
-
-        case .edit:
-            guard request.force || !persistence.isDirty else {
-                completion(.failure(EVDocumentHostError.documentModified))
-                return
-            }
-            edit(document, path: request.path, completion: completion)
-
-        case .new:
-            guard request.force || !persistence.isDirty else {
-                completion(.failure(EVDocumentHostError.documentModified))
-                return
-            }
-            do {
-                let newDocument = try NSDocumentController.shared.makeUntitledDocument(
-                    ofType: EVDocument.plainTextType
-                )
-                NSDocumentController.shared.addDocument(newDocument)
-                newDocument.makeWindowControllers()
-                newDocument.showWindows()
-                closeCurrentDocumentOrWindow(document)
-                completion(.success(nil))
-            } catch {
-                completion(.failure(error))
-            }
-        }
-    }
-
-    func save(
-        _ document: EVDocument,
-        request: EVDocumentHostRequest,
-        destination: URL?,
-        operation: NSDocument.SaveOperationType,
-        completion: @escaping @MainActor (Result<String?, Error>) -> Void
-    ) {
-        if let destination {
-            let typeName = documentType(for: destination, fallback: document.fileType)
-            document.saveHostRevision(
-                documentID: request.documentID,
-                documentRevision: request.documentRevision,
-                to: destination,
-                ofType: typeName,
-                for: operation
-            ) { error in
-                if let error {
-                    completion(.failure(error))
-                } else {
-                    completion(.success("\(destination.path) written"))
-                }
-            }
-            return
-        }
-
-        let panel = NSSavePanel()
-        panel.canCreateDirectories = true
-        panel.nameFieldStringValue = document.displayName == "Untitled"
-            ? "Untitled.txt"
-            : document.displayName
-        guard document.prepareSavePanel(panel), let sheetWindow = document.windowForSheet else {
-            completion(.failure(EVDocumentHostError.noDocumentURL))
-            return
-        }
-        panel.beginSheetModal(for: sheetWindow) { [weak document] response in
-            guard response == .OK, let document, let destination = panel.url else {
-                completion(.failure(EVDocumentHostError.saveCancelledOrFailed))
-                return
-            }
-            let typeName = self.documentType(for: destination, fallback: document.fileType)
-            document.saveHostRevision(
-                documentID: request.documentID,
-                documentRevision: request.documentRevision,
-                to: destination,
-                ofType: typeName,
-                for: .saveAsOperation
-            ) { error in
-                if let error {
-                    completion(.failure(error))
-                } else {
-                    completion(.success("\(destination.path) written"))
-                }
-            }
-        }
-    }
-
-    func saveAll(
-        _ documents: ArraySlice<EVDocument>,
-        force: Bool,
-        completion: @escaping @MainActor (Result<String?, Error>) -> Void
-    ) {
-        guard let document = documents.first else {
-            completion(.success(nil))
-            return
-        }
-        let state = document.editorBackend.persistenceState
-        guard state.isDirty else {
-            saveAll(documents.dropFirst(), force: force, completion: completion)
-            return
-        }
-        let request = EVDocumentHostRequest(
-            kind: .write,
-            documentID: state.documentID,
-            documentRevision: state.documentRevision,
-            force: force
+    case .new:
+      guard
+        request.force || !persistence.isDirty
+          || hasOtherView(of: document, excluding: documentContentController)
+      else {
+        completion(.failure(EVDocumentHostError.documentModified))
+        return
+      }
+      do {
+        let newDocument = try NSDocumentController.shared.makeUntitledDocument(
+          ofType: EVDocument.plainTextType
         )
-        save(
-            document,
-            request: request,
-            destination: document.fileURL,
-            operation: document.fileURL == nil ? .saveAsOperation : .saveOperation
-        ) { result in
-            switch result {
-            case .success:
-                self.saveAll(documents.dropFirst(), force: force, completion: completion)
-            case .failure:
-                completion(result)
-            }
-        }
-    }
-
-    func edit(
-        _ document: EVDocument,
-        path: String?,
-        completion: @escaping @MainActor (Result<String?, Error>) -> Void
-    ) {
-        if let path {
-            guard let url = resolvedFileURL(path, relativeTo: document.fileURL) else {
-                completion(.failure(EVDocumentHostError.invalidPath(path)))
-                return
-            }
-            if url.standardizedFileURL == document.fileURL?.standardizedFileURL {
-                do {
-                    try document.revert(
-                        toContentsOf: url,
-                        ofType: documentType(for: url, fallback: document.fileType)
-                    )
-                    completion(.success(nil))
-                } catch {
-                    completion(.failure(error))
-                }
-                return
-            }
-            NSDocumentController.shared.openDocument(withContentsOf: url, display: true) {
-                [weak self] openedDocument, _, error in
-                if let error {
-                    completion(.failure(error))
-                } else if openedDocument != nil {
-                    self?.closeCurrentDocumentOrWindow(document)
-                    completion(.success(nil))
-                } else {
-                    completion(.failure(EVDocumentHostError.unsupportedRequest))
-                }
-            }
-            return
-        }
-
-        guard let url = document.fileURL else {
-            completion(.failure(EVDocumentHostError.noDocumentURL))
-            return
-        }
-        do {
-            try document.revert(
-                toContentsOf: url,
-                ofType: documentType(for: url, fallback: document.fileType)
-            )
-            completion(.success(nil))
-        } catch {
-            completion(.failure(error))
-        }
-    }
-
-    func closeCurrentDocumentOrWindow(_ document: EVDocument) {
-        if document.windowControllers.count > 1 {
-            close()
-            document.removeWindowController(self)
+        NSDocumentController.shared.addDocument(newDocument)
+        if let next = newDocument as? EVDocument {
+          replaceActivePane(with: next)
+          closeIfUnrepresented(document)
+          completion(.success(nil))
         } else {
-            document.close()
+          completion(.failure(EVDocumentHostError.unsupportedRequest))
         }
+      } catch {
+        completion(.failure(error))
+      }
+    }
+  }
+
+  fileprivate func save(
+    _ document: EVDocument,
+    request: EVDocumentHostRequest,
+    destination: URL?,
+    operation: NSDocument.SaveOperationType,
+    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+  ) {
+    if let destination {
+      let typeName = documentType(for: destination, fallback: document.fileType)
+      document.saveHostRevision(
+        documentID: request.documentID,
+        documentRevision: request.documentRevision,
+        force: request.force,
+        to: destination,
+        ofType: typeName,
+        for: operation
+      ) { error in
+        if let error {
+          completion(.failure(error))
+        } else {
+          completion(.success("\(destination.path) written"))
+        }
+      }
+      return
     }
 
-    func resolvedFileURL(_ path: String, relativeTo currentURL: URL?) -> URL? {
-        guard !path.isEmpty, !path.utf8.contains(0) else { return nil }
-        let expanded = (path as NSString).expandingTildeInPath
-        if expanded.hasPrefix("/") {
-            return URL(fileURLWithPath: expanded).standardizedFileURL
-        }
-        let base = currentURL?.deletingLastPathComponent()
-            ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-        return URL(fileURLWithPath: expanded, relativeTo: base).standardizedFileURL
+    let panel = NSSavePanel()
+    panel.canCreateDirectories = true
+    panel.nameFieldStringValue =
+      document.displayName == "Untitled"
+      ? "Untitled.txt"
+      : document.displayName
+    guard document.prepareSavePanel(panel), let sheetWindow = document.windowForSheet else {
+      completion(.failure(EVDocumentHostError.noDocumentURL))
+      return
     }
+    panel.beginSheetModal(for: sheetWindow) { [weak document] response in
+      guard response == .OK, let document, let destination = panel.url else {
+        completion(.failure(EVDocumentHostError.saveCancelledOrFailed))
+        return
+      }
+      let typeName = self.documentType(for: destination, fallback: document.fileType)
+      document.saveHostRevision(
+        documentID: request.documentID,
+        documentRevision: request.documentRevision,
+        force: request.force,
+        to: destination,
+        ofType: typeName,
+        for: .saveAsOperation
+      ) { error in
+        if let error {
+          completion(.failure(error))
+        } else {
+          completion(.success("\(destination.path) written"))
+        }
+      }
+    }
+  }
 
-    func documentType(for url: URL, fallback: String?) -> String {
-        switch url.pathExtension.lowercased() {
-        case "md", "markdown", "mdown": EVDocument.markdownType
-        case "html", "htm": EVDocument.htmlType
-        case "rtf": EVDocument.rtfType
-        case "txt", "text": EVDocument.plainTextType
-        default: fallback ?? EVDocument.plainTextType
-        }
+  fileprivate func saveAll(
+    _ documents: ArraySlice<EVDocument>,
+    force: Bool,
+    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+  ) {
+    guard let document = documents.first else {
+      completion(.success(nil))
+      return
     }
+    let state = document.editorBackend.persistenceState
+    guard state.isDirty else {
+      saveAll(documents.dropFirst(), force: force, completion: completion)
+      return
+    }
+    let request = EVDocumentHostRequest(
+      kind: .write,
+      documentID: state.documentID,
+      documentRevision: state.documentRevision,
+      force: force
+    )
+    save(
+      document,
+      request: request,
+      destination: document.fileURL,
+      operation: document.fileURL == nil ? .saveAsOperation : .saveOperation
+    ) { result in
+      switch result {
+      case .success:
+        self.saveAll(documents.dropFirst(), force: force, completion: completion)
+      case .failure:
+        completion(result)
+      }
+    }
+  }
+
+  fileprivate func split(
+    _ source: EVDocument, path: String?,
+    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+  ) {
+    guard let path else {
+      addPane(document: source)
+      completion(.success(nil))
+      return
+    }
+    guard let url = resolvedFileURL(path, relativeTo: source.fileURL) else {
+      completion(.failure(EVDocumentHostError.invalidPath(path)))
+      return
+    }
+    openPaneDocument(url, fallback: source.fileType) { [weak self] opened, error in
+      if let opened {
+        self?.addPane(document: opened)
+        completion(.success(nil))
+      } else {
+        completion(.failure(error ?? EVDocumentHostError.unsupportedRequest))
+      }
+    }
+  }
+
+  fileprivate func openPaneDocument(
+    _ url: URL, fallback: String?, completion: @escaping @MainActor (EVDocument?, Error?) -> Void
+  ) {
+    if !FileManager.default.fileExists(atPath: url.path),
+      EVDocumentIdentity.existingDocument(at: url) == nil
+    {
+      do {
+        let document = EVDocument()
+        let type = documentType(for: url, fallback: fallback)
+        try document.read(from: Data(), ofType: type)
+        document.fileURL = EVDocumentIdentity.canonicalURL(url)
+        document.fileType = type
+        document.configureRecovery(for: EVDocumentIdentity.canonicalURL(url))
+        NSDocumentController.shared.addDocument(document)
+        completion(document, nil)
+      } catch { completion(nil, error) }
+    } else {
+      EVDocumentIdentity.open(url, display: false, completion: completion)
+    }
+  }
+
+  fileprivate func edit(
+    _ document: EVDocument, path: String?,
+    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+  ) {
+    let url: URL
+    if let path {
+      guard let resolved = resolvedFileURL(path, relativeTo: document.fileURL) else {
+        completion(.failure(EVDocumentHostError.invalidPath(path)))
+        return
+      }
+      url = resolved
+    } else if let current = document.fileURL {
+      url = current
+    } else {
+      completion(.failure(EVDocumentHostError.noDocumentURL))
+      return
+    }
+    if document.fileURL.map({ EVDocumentIdentity.sameFile($0, url) }) == true {
+      do {
+        try document.revert(
+          toContentsOf: url, ofType: documentType(for: url, fallback: document.fileType))
+        completion(.success(nil))
+      } catch { completion(.failure(error)) }
+      return
+    }
+    openPaneDocument(url, fallback: document.fileType) { [weak self] opened, error in
+      if let opened, let self {
+        self.replaceActivePane(with: opened)
+        self.closeIfUnrepresented(document)
+        completion(.success(nil))
+      } else {
+        completion(.failure(error ?? EVDocumentHostError.unsupportedRequest))
+      }
+    }
+  }
+
+  fileprivate func closeCurrentDocumentOrWindow(_ document: EVDocument) {
+    if paneContainer.panes.count > 1 {
+      let target = documentContentController
+      paneContainer.remove(target)
+      rebindWindowDocument()
+      closeIfUnrepresented(document)
+      updateActiveDocumentChrome()
+    } else {
+      close()
+    }
+  }
+
+  fileprivate func hasOtherView(
+    of document: EVDocument, excluding pane: EVDocumentContentViewController?
+  ) -> Bool {
+    Self.instances.compactMap(\.value).filter { !$0.isClosed }.contains { controller in
+      controller.paneContainer.panes.contains { $0 !== pane && $0.document === document }
+    }
+  }
+
+  fileprivate func closeIfUnrepresented(_ document: EVDocument) {
+    guard !hasOtherView(of: document, excluding: nil), document.windowControllers.isEmpty else {
+      return
+    }
+    document.close()
+  }
+
+  fileprivate func makePane(document: EVDocument) -> EVDocumentContentViewController {
+    let surface = document.editorBackend.makeEditorSurface()
+    let pane = EVDocumentContentViewController(editorSurface: surface)
+    pane.document = document
+    (surface as? any EVDocumentHostAttachable)?.documentHostEffectHandler = self
+    return pane
+  }
+
+  fileprivate func addPane(document: EVDocument) {
+    paneContainer.insert(makePane(document: document))
+    updateActiveDocumentChrome()
+  }
+
+  fileprivate func replaceActivePane(with document: EVDocument) {
+    paneContainer.replace(documentContentController, with: makePane(document: document))
+    rebindWindowDocument()
+    updateActiveDocumentChrome()
+  }
+
+  fileprivate func resolvedFileURL(_ path: String, relativeTo currentURL: URL?) -> URL? {
+    guard !path.isEmpty, !path.utf8.contains(0) else { return nil }
+    let expanded = (path as NSString).expandingTildeInPath
+    if expanded.hasPrefix("/") {
+      return URL(fileURLWithPath: expanded).standardizedFileURL
+    }
+    let base =
+      currentURL?.deletingLastPathComponent()
+      ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    return URL(fileURLWithPath: expanded, relativeTo: base).standardizedFileURL
+  }
+
+  fileprivate func documentType(for url: URL, fallback: String?) -> String {
+    switch url.pathExtension.lowercased() {
+    case "md", "markdown", "mdown": EVDocument.markdownType
+    case "html", "htm": EVDocument.htmlType
+    case "rtf": EVDocument.rtfType
+    case "txt", "text": EVDocument.plainTextType
+    default: fallback ?? EVDocument.plainTextType
+    }
+  }
 }
 
 @MainActor
-public extension EVDocumentWindowController {
-    func perform(
-        documentHostRequests: [EVDocumentHostRequest],
-        completion: @escaping @MainActor (Result<String?, Error>) -> Void
-    ) {
-        guard !isPerformingDocumentHostEffect else {
-            completion(.failure(EVDocumentHostError.operationAlreadyInProgress))
-            return
-        }
-        isPerformingDocumentHostEffect = true
-        performDocumentHostRequests(
-            documentHostRequests[...],
-            messages: [],
-            completion: completion
-        )
+extension EVDocumentWindowController {
+  public func perform(
+    documentHostRequests: [EVDocumentHostRequest],
+    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+  ) {
+    guard !isPerformingDocumentHostEffect else {
+      completion(.failure(EVDocumentHostError.operationAlreadyInProgress))
+      return
     }
+    isPerformingDocumentHostEffect = true
+    performDocumentHostRequests(
+      documentHostRequests[...],
+      messages: [],
+      completion: completion
+    )
+  }
+}
+
+private final class EVWeakDocumentWindow {
+  weak var value: EVDocumentWindowController?
+  init(_ value: EVDocumentWindowController) { self.value = value }
 }
 
 struct EVDocumentWindowGeometry: Equatable {
-    let content: NSRect
-    let editor: NSRect
-    let statusBar: NSRect
-    let statusBarIsVisible: Bool
+  let content: NSRect
+  let editor: NSRect
+  let statusBar: NSRect
+  let statusBarIsVisible: Bool
 }
 
 @MainActor
 final class EVDocumentContentViewController: NSViewController,
-    EVEditorCommandRouting,
-    NSMenuItemValidation
+  EVEditorCommandRouting,
+  NSMenuItemValidation
 {
-    weak var document: EVDocument?
+  weak var document: EVDocument?
 
-    private let editorSurface: any EVEditorSurface
-    private let statusBar = EVStatusBarView()
-    private var showsStatusBar: Bool
+  let editorSurface: any EVEditorSurface
+  private let statusBar = EVStatusBarView()
+  private var showsStatusBar: Bool
 
-    init(editorSurface: any EVEditorSurface) {
-        self.editorSurface = editorSurface
-        showsStatusBar = UserDefaults.standard.object(forKey: "EVShowStatusBar") as? Bool ?? true
-        super.init(nibName: nil, bundle: nil)
+  init(editorSurface: any EVEditorSurface) {
+    self.editorSurface = editorSurface
+    showsStatusBar = UserDefaults.standard.object(forKey: "EVShowStatusBar") as? Bool ?? true
+    super.init(nibName: nil, bundle: nil)
 
-        editorSurface.statusBarStateDidChange = { [weak self] state in
-            self?.statusBar.apply(state)
-        }
-        statusBar.optionDidChange = { [weak self] option in
-            guard let self else { return }
-            self.editorSurface.perform(statusOption: option)
-            self.statusBar.apply(self.editorSurface.statusBarState)
-            self.view.window?.makeFirstResponder(self.editorSurface.viewController.view)
-        }
+    editorSurface.statusBarStateDidChange = { [weak self] state in
+      self?.statusBar.apply(state)
+      (self?.viewIfLoaded?.window?.windowController as? EVDocumentWindowController)?
+        .updateActiveDocumentChrome()
+    }
+    statusBar.preferredHeightDidChange = { [weak self] in self?.layoutContent() }
+    statusBar.optionDidChange = { [weak self] option in
+      guard let self else { return }
+      self.editorSurface.perform(statusOption: option)
+      self.statusBar.apply(self.editorSurface.statusBarState)
+      self.view.window?.makeFirstResponder(self.editorSurface.viewController.view)
+    }
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) is unavailable")
+  }
+
+  override func loadView() {
+    let root = NSView()
+    // Programmatic content views do not receive the nib loader's default
+    // width/height autoresizing mask. Keep the controller root matched to
+    // the window's content rect as the window is shown and resized.
+    root.autoresizingMask = [.width, .height]
+
+    addChild(editorSurface.viewController)
+    let editorView = editorSurface.viewController.view
+    editorView.translatesAutoresizingMaskIntoConstraints = true
+    editorView.autoresizingMask = [.width, .height]
+    statusBar.translatesAutoresizingMaskIntoConstraints = true
+    statusBar.autoresizingMask = [.width, .maxYMargin]
+    root.addSubview(editorView)
+    root.addSubview(statusBar)
+
+    statusBar.apply(editorSurface.statusBarState)
+    statusBar.isHidden = !showsStatusBar
+    view = root
+    layoutContent()
+  }
+
+  func geometry(in root: NSView) -> EVDocumentWindowGeometry {
+    loadViewIfNeeded()
+    layoutContent()
+    let editorView = editorSurface.viewController.view
+    return EVDocumentWindowGeometry(
+      content: root.bounds,
+      editor: editorView.convert(editorView.bounds, to: root),
+      statusBar: statusBar.convert(statusBar.bounds, to: root),
+      statusBarIsVisible: !statusBar.isHidden
+    )
+  }
+
+  func layoutContent() {
+    loadViewIfNeeded()
+    let bounds = view.bounds
+    let statusHeight = showsStatusBar ? EVStatusBarView.preferredHeight : 0
+    let editorView = editorSurface.viewController.view
+    statusBar.frame = NSRect(
+      x: bounds.minX,
+      y: bounds.minY,
+      width: bounds.width,
+      height: statusHeight
+    )
+    editorView.frame = NSRect(
+      x: bounds.minX,
+      y: bounds.minY + statusHeight,
+      width: bounds.width,
+      height: max(0, bounds.height - statusHeight)
+    )
+    statusBar.layoutSubtreeIfNeeded()
+    editorView.layoutSubtreeIfNeeded()
+  }
+
+  @objc(saveDocument:) func savePane(_ sender: Any?) { document?.save(sender) }
+  @objc(saveDocumentAs:) func savePaneAs(_ sender: Any?) { document?.saveAs(sender) }
+
+  @objc func performEditorMenuCommand(_ sender: Any?) {
+    guard
+      let menuItem = sender as? NSMenuItem,
+      let command = EVMenuCommand(rawValue: menuItem.tag)
+    else { return }
+
+    if command == .newWindowForDocument {
+      document?.showAdditionalWindow()
+    } else {
+      editorSurface.perform(menuCommand: command, sender: sender)
+    }
+  }
+
+  @objc func toggleStatusBar(_ sender: Any?) {
+    showsStatusBar.toggle()
+    statusBar.isHidden = !showsStatusBar
+    layoutContent()
+    UserDefaults.standard.set(showsStatusBar, forKey: "EVShowStatusBar")
+  }
+
+  func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    if menuItem.action == #selector(toggleStatusBar(_:)) {
+      menuItem.state = showsStatusBar ? .on : .off
+      return true
     }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is unavailable")
+    guard
+      menuItem.action == #selector(performEditorMenuCommand(_:)),
+      let command = EVMenuCommand(rawValue: menuItem.tag)
+    else { return true }
+
+    if command == .newWindowForDocument {
+      return document != nil
     }
 
-    override func loadView() {
-        let root = NSView()
-        // Programmatic content views do not receive the nib loader's default
-        // width/height autoresizing mask. Keep the controller root matched to
-        // the window's content rect as the window is shown and resized.
-        root.autoresizingMask = [.width, .height]
-
-        addChild(editorSurface.viewController)
-        let editorView = editorSurface.viewController.view
-        editorView.translatesAutoresizingMaskIntoConstraints = true
-        editorView.autoresizingMask = [.width, .height]
-        statusBar.translatesAutoresizingMaskIntoConstraints = true
-        statusBar.autoresizingMask = [.width, .maxYMargin]
-        root.addSubview(editorView)
-        root.addSubview(statusBar)
-
-        statusBar.apply(editorSurface.statusBarState)
-        statusBar.isHidden = !showsStatusBar
-        view = root
-        layoutContent()
+    let presentation = editorSurface.presentation(for: command)
+    menuItem.state = presentation.state
+    if let title = presentation.title {
+      menuItem.title = title
     }
-
-    func geometry(in root: NSView) -> EVDocumentWindowGeometry {
-        loadViewIfNeeded()
-        layoutContent()
-        let editorView = editorSurface.viewController.view
-        return EVDocumentWindowGeometry(
-            content: root.bounds,
-            editor: editorView.convert(editorView.bounds, to: root),
-            statusBar: statusBar.convert(statusBar.bounds, to: root),
-            statusBarIsVisible: !statusBar.isHidden
-        )
-    }
-
-    func layoutContent() {
-        loadViewIfNeeded()
-        let bounds = view.bounds
-        let statusHeight = showsStatusBar ? EVStatusBarView.preferredHeight : 0
-        let editorView = editorSurface.viewController.view
-        statusBar.frame = NSRect(
-            x: bounds.minX,
-            y: bounds.minY,
-            width: bounds.width,
-            height: statusHeight
-        )
-        editorView.frame = NSRect(
-            x: bounds.minX,
-            y: bounds.minY + statusHeight,
-            width: bounds.width,
-            height: max(0, bounds.height - statusHeight)
-        )
-        statusBar.layoutSubtreeIfNeeded()
-        editorView.layoutSubtreeIfNeeded()
-    }
-
-    @objc func performEditorMenuCommand(_ sender: Any?) {
-        guard
-            let menuItem = sender as? NSMenuItem,
-            let command = EVMenuCommand(rawValue: menuItem.tag)
-        else { return }
-
-        if command == .newWindowForDocument {
-            document?.showAdditionalWindow()
-        } else {
-            editorSurface.perform(menuCommand: command, sender: sender)
-        }
-    }
-
-    @objc func toggleStatusBar(_ sender: Any?) {
-        showsStatusBar.toggle()
-        statusBar.isHidden = !showsStatusBar
-        layoutContent()
-        UserDefaults.standard.set(showsStatusBar, forKey: "EVShowStatusBar")
-    }
-
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if menuItem.action == #selector(toggleStatusBar(_:)) {
-            menuItem.state = showsStatusBar ? .on : .off
-            return true
-        }
-
-        guard
-            menuItem.action == #selector(performEditorMenuCommand(_:)),
-            let command = EVMenuCommand(rawValue: menuItem.tag)
-        else { return true }
-
-        if command == .newWindowForDocument {
-            return document != nil
-        }
-
-        let presentation = editorSurface.presentation(for: command)
-        menuItem.state = presentation.state
-        if let title = presentation.title {
-            menuItem.title = title
-        }
-        return presentation.isEnabled
-    }
+    return presentation.isEnabled
+  }
 }

@@ -28,8 +28,8 @@ fn active_formatting_reconstructs_after_explicit_and_implied_paragraph_closes() 
     ] {
         let mut document = open(source);
         assert_eq!(document.text(), "one\ntwothree");
-        assert_eq!(direct(&document, 0).weight, Some(700));
-        assert_eq!(direct(&document, 4).weight, Some(700));
+        assert_eq!(direct(&document, 0).bold, Some(true));
+        assert_eq!(direct(&document, 4).bold, Some(true));
         assert_eq!(direct(&document, 7).weight, None);
         assert_eq!(document.source_bytes(), source.as_bytes());
         document.replace(4..7, "TWO").unwrap();
@@ -48,7 +48,7 @@ fn misnested_formatting_end_preserves_open_paragraph_and_its_direct_properties()
     let source = "<b><p style='font-size:24pt;margin-inline-start:8pt'><i>one</b>two</i>three</p>";
     let document = open(source);
     assert_eq!(document.text(), "onetwothree");
-    assert_eq!(direct(&document, 0).weight, Some(700));
+    assert_eq!(direct(&document, 0).bold, Some(true));
     assert_eq!(direct(&document, 3).weight, None);
     assert_eq!(direct(&document, 3).slant, Some(FontSlant::Italic));
     assert_eq!(direct(&document, 6).slant, None);
@@ -150,8 +150,8 @@ fn html5_adoption_and_nested_anchors_use_recovered_ancestry() {
     let source="<b>one<p data-x='keep'>two</b>three</p><a style='font-weight:600'>four<a style='font-style:italic'>five</a>six</a>";
     let document = open(source);
     assert_eq!(document.text(), "one\ntwothree\nfourfivesix");
-    assert_eq!(direct(&document, 0).weight, Some(700));
-    assert_eq!(direct(&document, 4).weight, Some(700));
+    assert_eq!(direct(&document, 0).bold, Some(true));
+    assert_eq!(direct(&document, 4).bold, Some(true));
     assert_eq!(direct(&document, 7).weight, None);
     assert_eq!(direct(&document, 13).weight, Some(600));
     assert_eq!(direct(&document, 17).weight, None);

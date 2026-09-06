@@ -683,3 +683,21 @@ fn visual_block_join_uses_touched_hard_lines_and_is_one_undo_unit() {
     run_notation(&mut core, view, "u").expect("Visual Block J is undoable");
     assert_eq!(core.document().text(), original);
 }
+
+#[test]
+fn visual_block_join_is_line_mode_independent_and_dot_replays_its_block_extent() {
+    use evim_core::command::LineMode;
+    let original = "abcdefghij\nx\nthird";
+    for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        for (join, expected) in [("J", "abcdefghij x third"), ("gJ", "abcdefghijxthird")] {
+            let (mut core, view) = new_core(original, 24.0);
+            core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
+            run_notation(&mut core, view, &format!("<C-V>G{join}")).unwrap();
+            assert_eq!(core.document().text(), expected, "{mode:?} {join}");
+            run_notation(&mut core, view, "ugg0.").unwrap();
+            assert_eq!(core.document().text(), expected, "dot: {mode:?} {join}");
+            run_notation(&mut core, view, "u").unwrap();
+            assert_eq!(core.document().text(), original);
+        }
+    }
+}

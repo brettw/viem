@@ -395,6 +395,7 @@ pub enum ArtifactWriteCompletionStatus {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PersistenceError {
+    ReadOnly,
     NoCurrentArtifact,
     InvalidSourceRange {
         start: usize,
@@ -417,6 +418,9 @@ pub enum PersistenceError {
 impl fmt::Display for PersistenceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ReadOnly => {
+                formatter.write_str("E45: readonly option is set (use ! to override)")
+            }
             Self::NoCurrentArtifact => {
                 formatter.write_str("the document has no current persisted artifact")
             }

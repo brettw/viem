@@ -70,6 +70,7 @@ pub struct ResolvedTextStyle {
     pub font_families: Vec<String>,
     pub size: f32,
     pub weight: f32,
+    pub relative_bold: bool,
     /// Preserve italic versus oblique so the platform shaper can select the
     /// document's requested face rather than reducing both to a boolean.
     pub slant: FontSlant,
@@ -89,6 +90,7 @@ impl Default for ResolvedTextStyle {
             font_families: vec!["SF Pro".to_owned()],
             size: 14.0,
             weight: 400.0,
+            relative_bold: false,
             slant: FontSlant::Upright,
             letter_spacing: 0.0,
             baseline_shift: 0.0,

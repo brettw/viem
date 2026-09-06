@@ -942,6 +942,71 @@ impl RangedItem for ProvenanceSpan {
     }
 }
 
+/// Reverse presentation lookup, independently ordered by physical source
+/// boundary so recovered/reordered HTML does not require a monotonic view.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SourceTextBoundary {
+    source: Range<usize>,
+    formatted: usize,
+    side: Side,
+}
+impl RangedItem for SourceTextBoundary {
+    fn range(&self) -> &Range<usize> {
+        &self.source
+    }
+    fn with_range(&self, source: Range<usize>) -> Self {
+        Self {
+            source,
+            ..self.clone()
+        }
+    }
+    fn with_transform(
+        &self,
+        source: Range<usize>,
+        auxiliary_shift: i128,
+        _revision: Option<u64>,
+    ) -> Option<Self> {
+        Some(Self {
+            source,
+            formatted: shift_range_i128(&(self.formatted..self.formatted), auxiliary_shift)?.start,
+            side: self.side,
+        })
+    }
+}
+fn source_text_boundaries(
+    spans: impl IntoIterator<Item = ProvenanceSpan>,
+) -> Vec<SourceTextBoundary> {
+    let mut boundaries = spans
+        .into_iter()
+        .flat_map(|span| {
+            [
+                SourceTextBoundary {
+                    source: span.source.start..span.source.start,
+                    formatted: span.formatted.start,
+                    side: Side::Downstream,
+                },
+                SourceTextBoundary {
+                    source: span.source.end..span.source.end,
+                    formatted: span.formatted.end,
+                    side: Side::Upstream,
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    normalize_source_boundaries(&mut boundaries);
+    boundaries
+}
+fn normalize_source_boundaries(boundaries: &mut Vec<SourceTextBoundary>) {
+    boundaries.sort_by_key(|boundary| {
+        (
+            boundary.source.start,
+            boundary.formatted,
+            matches!(boundary.side, Side::Downstream),
+        )
+    });
+    boundaries.dedup();
+}
+
 impl RangedItem for DecodingDiagnostic {
     fn range(&self) -> &Range<usize> {
         &self.formatted_range
@@ -1156,6 +1221,8 @@ pub struct FormattedDocument {
     hard_lines: OrderedRangeStore<HardLine>,
     styles: IntervalRangeStore<StyleSpan>,
     provenance: IntervalRangeStore<ProvenanceSpan>,
+    source_boundaries: IntervalRangeStore<SourceTextBoundary>,
+    source_ordered: bool,
     decoding_diagnostics: IntervalRangeStore<DecodingDiagnostic>,
     style_sheet: StyleSheet,
     document_style: DocumentStyleAssignment,
@@ -1212,10 +1279,20 @@ impl FormattedDocument {
         styles: Vec<StyleSpan>,
         provenance: Vec<ProvenanceSpan>,
         decoding_diagnostics: Vec<DecodingDiagnostic>,
-        style_sheet: StyleSheet,
+        mut style_sheet: StyleSheet,
         source_content_start: usize,
         source_content_end: usize,
     ) -> Self {
+        if let Some(level) = blocks
+            .iter()
+            .filter_map(|block| match block.kind {
+                BlockKind::ListItem { level, .. } => Some(u16::from(level) + 1),
+                _ => None,
+            })
+            .max()
+        {
+            style_sheet.ensure_list_level(level);
+        }
         let document_style = DocumentStyleAssignment::new(style_sheet.base_document.clone());
         let flat_text: Arc<str> = flat_text.into();
         let text = FormattedTextTree::try_from_shared(flat_text.clone())
@@ -1231,6 +1308,11 @@ impl FormattedDocument {
         compatibility_text
             .set(flat_text)
             .expect("a fresh compatibility cell is empty");
+        let source_ordered = provenance
+            .windows(2)
+            .all(|pair| pair[0].source.start <= pair[1].source.start);
+        let source_boundaries =
+            IntervalRangeStore::new(source_text_boundaries(provenance.iter().cloned()));
         Self {
             revision,
             text,
@@ -1239,6 +1321,8 @@ impl FormattedDocument {
             hard_lines: OrderedRangeStore::new(hard_lines),
             styles: IntervalRangeStore::new(styles),
             provenance: IntervalRangeStore::new(provenance),
+            source_boundaries,
+            source_ordered,
             decoding_diagnostics: IntervalRangeStore::new(decoding_diagnostics),
             style_sheet,
             document_style,
@@ -1744,6 +1828,12 @@ impl FormattedDocument {
             candidate.id = old.id;
             candidate.direct_paragraph = old.direct_paragraph.clone();
             candidate.direct_default_character = old.direct_default_character.clone();
+            if previous
+                .style_sheet
+                .configuration_deleted(&candidate.style, true)
+            {
+                candidate.style = previous.style_sheet.base_paragraph.clone();
+            }
         }
         self.style_sheet = previous.style_sheet.clone();
         self.document_style = previous.document_style.clone();
@@ -1768,10 +1858,30 @@ impl FormattedDocument {
         for (block, parsed) in blocks.iter_mut().zip(parsed_blocks) {
             block.direct_paragraph = parsed.direct_paragraph;
             block.direct_default_character = parsed.direct_default_character;
+            if previous
+                .style_sheet
+                .configuration_deleted(&block.style, true)
+            {
+                block.style = previous.style_sheet.base_paragraph.clone();
+            }
         }
         self.blocks = OrderedRangeStore::new(blocks);
         self.style_sheet = parsed_sheet;
+        self.style_sheet
+            .retain_configuration_deletions(&previous.style_sheet);
         self.document_style = parsed_document;
+        // Source adapters do not author these configuration-only root layers.
+        // Retain them when preserving source-backed parsed definitions.
+        self.document_style.direct_canvas = previous.document_style.direct_canvas.clone();
+        self.document_style.direct_default_character =
+            previous.document_style.direct_default_character.clone();
+        if self
+            .style_sheet
+            .block_style(&previous.document_style.style)
+            .is_some()
+        {
+            self.document_style.style = previous.document_style.style.clone();
+        }
         Ok(())
     }
 
@@ -1859,6 +1969,11 @@ impl FormattedDocument {
 
         self.style_sheet = previous.style_sheet.clone();
         self.document_style = previous.document_style.clone();
+        for block in &mut blocks {
+            if self.style_sheet.configuration_deleted(&block.style, true) {
+                block.style = self.style_sheet.base_paragraph.clone();
+            }
+        }
         let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
         self.blocks = OrderedRangeStore::new(blocks);
         self.blocks.reuse_equal_chunks(&previous.blocks);
@@ -1902,10 +2017,21 @@ impl FormattedDocument {
         for (block, parsed) in blocks.iter_mut().zip(parsed_blocks) {
             block.direct_paragraph = parsed.direct_paragraph;
             block.direct_default_character = parsed.direct_default_character;
+            if previous
+                .style_sheet
+                .configuration_deleted(&block.style, true)
+            {
+                block.style = previous.style_sheet.base_paragraph.clone();
+            }
         }
         self.blocks = OrderedRangeStore::new(blocks);
         self.style_sheet = parsed_sheet;
+        self.style_sheet
+            .retain_configuration_deletions(&previous.style_sheet);
         self.document_style = parsed_document;
+        self.document_style.direct_canvas = previous.document_style.direct_canvas.clone();
+        self.document_style.direct_default_character =
+            previous.document_style.direct_default_character.clone();
         Ok(next_id)
     }
 
@@ -2261,6 +2387,57 @@ impl FormattedDocument {
         self.provenance.query_overlapping(range)
     }
 
+    /// Presentation recovery at the nearest real source boundary, in
+    /// O(log n + k) for the boundaries sharing that exact source position.
+    pub(crate) fn nearest_text_boundary_for_source(
+        &self,
+        source: usize,
+        downstream: bool,
+    ) -> Option<usize> {
+        let index = self.source_boundaries.partition_point_start(source);
+        let following = self.source_boundaries.get(index);
+        if following
+            .as_ref()
+            .is_some_and(|boundary| boundary.source.start == source)
+        {
+            let exact = self.source_boundaries.query_touching(&(source..source));
+            let side = if downstream {
+                Side::Downstream
+            } else {
+                Side::Upstream
+            };
+            return exact
+                .iter()
+                .filter(|boundary| boundary.side == side)
+                .min_by_key(|boundary| boundary.formatted)
+                .or_else(|| exact.iter().min_by_key(|boundary| boundary.formatted))
+                .map(|boundary| boundary.formatted);
+        }
+        let preceding = index
+            .checked_sub(1)
+            .and_then(|index| self.source_boundaries.get(index));
+        let selected = if downstream {
+            following.as_ref().or(preceding.as_ref())
+        } else {
+            preceding.as_ref().or(following.as_ref())
+        }?;
+        let at = selected.source.start;
+        let adjacent = self.source_boundaries.query_touching(&(at..at));
+        if at < source {
+            adjacent.iter().map(|boundary| boundary.formatted).max()
+        } else {
+            adjacent.iter().map(|boundary| boundary.formatted).min()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn source_boundary_query_work(&self, source: usize) -> (usize, usize) {
+        let (_, stats) = self
+            .source_boundaries
+            .query_overlapping_with_stats(&(source.saturating_sub(1)..source.saturating_add(1)));
+        (stats.nodes_visited, stats.items_examined)
+    }
+
     /// Malformed source ranges represented by visible opaque replacement
     /// items in this exact formatted snapshot.
     pub fn decoding_diagnostics(&self) -> &[DecodingDiagnostic] {
@@ -2291,6 +2468,30 @@ impl FormattedDocument {
     /// Install an already validated generated-configuration sheet on an
     /// otherwise unchanged projection candidate. The caller binds the
     /// candidate to the new document revision before atomic publication.
+    pub(crate) fn reassign_deleted_style(&mut self, id: &StyleId, block: bool) {
+        if block {
+            let mut blocks = self.blocks.to_vec();
+            for block in &mut blocks {
+                if &block.style == id {
+                    block.style = self.style_sheet.base_paragraph.clone();
+                }
+            }
+            self.blocks = OrderedRangeStore::new(blocks);
+            if &self.document_style.style == id {
+                self.document_style.style = self.style_sheet.base_document.clone();
+            }
+        } else {
+            let mut spans = self.styles.to_vec();
+            for span in &mut spans {
+                if matches!(&span.application, StyleApplication::Named(style) if style == id) {
+                    span.application =
+                        StyleApplication::Named(self.style_sheet.base_character.clone());
+                }
+            }
+            self.styles = IntervalRangeStore::new(spans);
+        }
+    }
+
     pub(crate) fn install_configuration_styles(
         &mut self,
         revision: Revision,
@@ -2491,7 +2692,7 @@ impl FormattedDocument {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Side {
     Upstream,
     Downstream,
@@ -3012,6 +3213,12 @@ pub(crate) fn splice_line_local_projection(
         candidate.id = old.id;
         candidate.direct_paragraph = old.direct_paragraph.clone();
         candidate.direct_default_character = old.direct_default_character.clone();
+        if previous
+            .style_sheet
+            .configuration_deleted(&candidate.style, true)
+        {
+            candidate.style = previous.style_sheet.base_paragraph.clone();
+        }
     }
 
     let mut range_stats = RangeSpliceStats::default();
@@ -3107,6 +3314,53 @@ pub(crate) fn splice_line_local_projection(
             })
         })
         .collect::<Result<Vec<_>, BlockIdentityError>>()?;
+    // A source-reordered projection needs full reprojection when an edit can
+    // shift its two orderings differently. Ordinary text/rich paragraphs
+    // splice both persistent indexes without walking the untouched suffix.
+    if !previous.source_ordered || !regional.source_ordered {
+        return Err(BlockIdentityError::InvalidProjection);
+    }
+    let mut regional_boundaries = source_text_boundaries(regional_provenance.iter().cloned());
+    regional_boundaries.extend(
+        previous
+            .source_boundaries
+            .query_touching(&(old_source.start..old_source.start))
+            .into_iter()
+            .filter(|boundary| boundary.formatted <= old_formatted.start),
+    );
+    let formatted_delta = new_formatted_end as i128 - old_formatted.end as i128;
+    regional_boundaries.extend(
+        previous
+            .source_boundaries
+            .query_touching(&(old_source.end..old_source.end))
+            .into_iter()
+            .filter(|boundary| boundary.formatted >= old_formatted.end)
+            .filter_map(|boundary| {
+                boundary.with_transform(new_source.end..new_source.end, formatted_delta, None)
+            }),
+    );
+    normalize_source_boundaries(&mut regional_boundaries);
+    let boundary_indices = previous
+        .source_boundaries
+        .partition_point_start(old_source.start)
+        ..old_source
+            .end
+            .checked_add(1)
+            .map_or(previous.source_boundaries.len(), |end| {
+                previous.source_boundaries.partition_point_start(end)
+            });
+    let source_boundaries = previous
+        .source_boundaries
+        .splice_transformed(
+            boundary_indices,
+            regional_boundaries,
+            old_source.end,
+            new_source.end,
+            Some((old_formatted.end, new_formatted_end)),
+            None,
+            &mut range_stats,
+        )
+        .ok_or(BlockIdentityError::InvalidProjection)?;
     let provenance = previous
         .provenance
         .splice_transformed(
@@ -3171,8 +3425,27 @@ pub(crate) fn splice_line_local_projection(
         hard_lines,
         styles,
         provenance,
+        source_boundaries,
+        source_ordered: true,
         decoding_diagnostics,
-        style_sheet: previous.style_sheet.clone(),
+        style_sheet: {
+            let mut sheet = previous.style_sheet.clone();
+            if let Some(level) = regional
+                .style_sheet
+                .block_styles()
+                .filter_map(|style| {
+                    style
+                        .id
+                        .0
+                        .strip_prefix("List")
+                        .and_then(|number| number.parse::<u16>().ok())
+                })
+                .max()
+            {
+                sheet.ensure_list_level(level);
+            }
+            sheet
+        },
         document_style: previous.document_style.clone(),
         source_content_start: previous.source_content_start,
         source_content_end: new_source_content_end,
@@ -3428,7 +3701,7 @@ pub(crate) fn markdown_block_prefix(text: &str, start: usize, end: usize) -> (us
     } else {
         let indent = line.iter().take_while(|byte| **byte == b' ').count();
         let body = &line[indent..];
-        let level = u8::try_from(indent / 2).unwrap_or(u8::MAX).min(15);
+        let level = u8::try_from(indent / 2).unwrap_or(u8::MAX);
         if matches!(body.first(), Some(b'-' | b'+' | b'*')) && body.get(1) == Some(&b' ') {
             return (
                 start + indent + 2,

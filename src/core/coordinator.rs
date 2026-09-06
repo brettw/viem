@@ -32,9 +32,10 @@ use crate::layout::{
     DocumentLayoutStyles, InstalledLayoutJob, LayoutCancellationToken, LayoutComputationError,
     LayoutCoverage, LayoutEngine, LayoutError, LayoutExecutionContext, LayoutInstallTarget,
     LayoutJobCandidate, LayoutJobError, LayoutJobId, LayoutJobInstallRejection, LayoutJobPriority,
-    LayoutJobRegion, LayoutProviderRequirements, LayoutRevision, MeasurementEnvironmentId,
-    MetricsGeneration, PaintStyleRun, ParagraphLayoutStyle, ShapeStyleRun, TextMeasurementProvider,
-    ViewConfigurationGeneration, ViewLayout, ViewportLayoutRegion,
+    LayoutJobRegion, LayoutProviderRequirements, LayoutRevision, LongLineCheckpointCache,
+    LongLineLayoutCheckpoint, MeasurementEnvironmentId, MetricsGeneration, PaintStyleRun,
+    ParagraphLayoutStyle, ShapeStyleRun, TextMeasurementProvider, ViewConfigurationGeneration,
+    ViewLayout, ViewportLayoutRegion, MAX_LONG_LINE_LAYOUT_SLICE_BYTES,
 };
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -279,6 +280,13 @@ pub enum StyleEditGroupError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoreEvent {
+    SetDirectCharacterProperties {
+        expected: LogicalSelectionIdentity,
+        values: Vec<(
+            crate::document::StyleProperty,
+            crate::document::StylePropertyValue,
+        )>,
+    },
     EditDirectProperty {
         expected: LogicalSelectionIdentity,
         property: crate::document::StyleProperty,
@@ -323,6 +331,8 @@ pub enum CoreEvent {
     },
     SetWrap(bool),
     SetLineBreak(bool),
+    /// Change the view-local domain used by unprefixed line commands.
+    SetLineMode(crate::command::LineMode),
     /// Change the shared source line-ending spelling through one exact,
     /// revision-bound model transaction. This is intentionally typed rather
     /// than routed through Ex parsing so native UI can preserve model policy
@@ -732,6 +742,10 @@ struct View<P: TextMeasurementProvider> {
     immediate_layout_context: LayoutExecutionContext,
     observed_metrics_generation: MetricsGeneration,
     active_layout_work: Option<ActiveLayoutWork>,
+    /// Exact wrap checkpoints, keyed by their snapshot-local text boundary.
+    /// Each value carries every dependency identity; obsolete values are
+    /// discarded before lookup and this cache has a fixed entry limit.
+    long_line_checkpoints: LongLineCheckpointCache,
 }
 
 #[derive(Clone, Debug)]
@@ -925,6 +939,52 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self.document
     }
 
+    pub fn selected_typography(
+        &self,
+        view_id: ViewId,
+    ) -> Result<(crate::document::ResolvedCharacterStyle, bool), CoreError> {
+        let view = self
+            .views
+            .get(&view_id)
+            .ok_or(CoreError::UnknownView(view_id))?;
+        let selection = self.active_linear_selection_identity(view_id)?;
+        let range = selection.as_ref().map(|value| value.range());
+        let at = range
+            .as_ref()
+            .map_or(view.commands.cursor(), |range| range.start);
+        let upstream =
+            range.is_none() && view.commands.boundary_affinity() == BoundaryAffinity::Upstream;
+        let first = DocumentLayoutStyles::character_at(self.document.projection(), at, upstream)
+            .map_err(LayoutError::from)?;
+        let mixed = if let Some(range) = range.filter(|range| !range.is_empty()) {
+            let styles =
+                DocumentLayoutStyles::resolve_region(self.document.projection(), range.clone())
+                    .map_err(LayoutError::from)?;
+            let mut boundaries = std::collections::BTreeSet::from([range.start, range.end]);
+            for run in &styles.shaping_runs {
+                boundaries.insert(run.text_range.start.max(range.start));
+                boundaries.insert(run.text_range.end.min(range.end));
+            }
+            for run in &styles.paint_runs {
+                boundaries.insert(run.text_range.start.max(range.start));
+                boundaries.insert(run.text_range.end.min(range.end));
+            }
+            for paragraph in &styles.paragraphs {
+                boundaries.insert(paragraph.text_range.start.max(range.start));
+            }
+            boundaries
+                .into_iter()
+                .filter(|at| *at < range.end)
+                .any(|at| {
+                    DocumentLayoutStyles::character_at(self.document.projection(), at, false)
+                        .is_ok_and(|value| value != first)
+                })
+        } else {
+            false
+        };
+        Ok((first, mixed))
+    }
+
     /// Return native Bold/Italic presentation from the authoritative logical
     /// selection and transformation capability. This query performs no layout
     /// work and therefore remains valid for an offscreen linear selection.
@@ -990,7 +1050,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 DocumentLayoutStyles::resolve_region(self.document.projection(), range.clone())
                     .map_err(LayoutError::from)?;
             let enabled = |value: &crate::layout::ResolvedTextStyle| match style {
-                SemanticInlineStyle::Strong => value.weight >= 600.0,
+                SemanticInlineStyle::Strong => value.relative_bold,
                 SemanticInlineStyle::Emphasis => value.slant != crate::document::FontSlant::Upright,
                 SemanticInlineStyle::Code => false,
             };
@@ -1118,7 +1178,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         };
         let range = view
             .commands
-            .linear_visual_selection_range(&self.document)
+            .line_selection_range(&self.document, view.layout.snapshot())
             .ok_or(CoreError::NoVisualSelection)?;
         let active = view.commands.cursor();
         let anchor = view.commands.visual_anchor().unwrap_or(active);
@@ -1198,6 +1258,44 @@ impl<P: TextMeasurementProvider> Core<P> {
         Ok(())
     }
 
+    /// Change buffer write policy against an exact current source snapshot.
+    pub fn set_read_only(
+        &mut self,
+        document: DocumentId,
+        revision: Revision,
+        value: bool,
+    ) -> Result<(), CoreError> {
+        self.validate_buffer_policy_snapshot(document, revision)?;
+        self.document.set_read_only(value);
+        Ok(())
+    }
+    pub fn mark_recovered(
+        &mut self,
+        document: DocumentId,
+        revision: Revision,
+    ) -> Result<(), CoreError> {
+        self.validate_buffer_policy_snapshot(document, revision)?;
+        self.document.mark_recovered();
+        Ok(())
+    }
+    fn validate_buffer_policy_snapshot(
+        &self,
+        document: DocumentId,
+        revision: Revision,
+    ) -> Result<(), CoreError> {
+        if document != self.document.id() {
+            return Err(DocumentError::WrongDocument.into());
+        }
+        if revision != self.document.revision() {
+            return Err(DocumentError::WrongSnapshot {
+                expected: self.document.revision(),
+                actual: revision,
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     /// Acknowledge that a native frontend successfully persisted the exact
     /// current source snapshot. Stale acknowledgements are rejected before an
     /// open edit group or save-point state is changed.
@@ -1232,10 +1330,20 @@ impl<P: TextMeasurementProvider> Core<P> {
         &mut self,
         intent: ArtifactWriteIntent,
     ) -> Result<PreparedArtifactWrite, CoreError> {
+        self.prepare_artifact_write_with_force(intent, false)
+    }
+    pub fn prepare_artifact_write_with_force(
+        &mut self,
+        intent: ArtifactWriteIntent,
+        force: bool,
+    ) -> Result<PreparedArtifactWrite, CoreError> {
+        self.document.validate_write_policy(force)?;
         self.finalize_style_edit_group()?;
         self.edit_group_owner = None;
         self.edit_group_restoration = None;
-        Ok(self.document.prepare_artifact_write(intent)?)
+        Ok(self
+            .document
+            .prepare_artifact_write_with_force(intent, force)?)
     }
 
     /// Publish a provider result after the external operation has finished.
@@ -1261,6 +1369,9 @@ impl<P: TextMeasurementProvider> Core<P> {
         &mut self,
         request: &ExFileRequest,
     ) -> Result<PreparedExFileRequest, CoreError> {
+        if let ExFileRequest::WriteAll { force } = request {
+            self.document.validate_write_policy(*force)?;
+        }
         let tag = ExRequestTag::new(self.document.id(), self.document.revision());
         let tagged = |request| TaggedExFileRequest::new(tag, request);
 
@@ -1276,10 +1387,13 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             ExFileRequest::Xit { path, force } => (path.as_deref(), *force, None, true),
             ExFileRequest::SaveAs { path, force } => {
-                let write = self.prepare_artifact_write(ArtifactWriteIntent::SaveAs {
-                    destination: ArtifactPath::from(path.clone()),
-                    overwrite: overwrite_for_alternate(*force),
-                })?;
+                let write = self.prepare_artifact_write_with_force(
+                    ArtifactWriteIntent::SaveAs {
+                        destination: ArtifactPath::from(path.clone()),
+                        overwrite: overwrite_for_alternate(*force),
+                    },
+                    *force,
+                )?;
                 return Ok(PreparedExFileRequest::ArtifactWrite(
                     PreparedExArtifactWrite::new(tag, write, None),
                 ));
@@ -1287,8 +1401,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             request => return Ok(PreparedExFileRequest::Host(tagged(request.clone()))),
         };
 
+        self.document.validate_write_policy(force)?;
         let intent = self.ex_artifact_write_intent(path, force, range)?;
-        let write = self.prepare_artifact_write(intent)?;
+        let write = self.prepare_artifact_write_with_force(intent, force)?;
         let after_success = quit_after_success.then(|| tagged(ExFileRequest::Quit { force }));
         Ok(PreparedExFileRequest::ArtifactWrite(
             PreparedExArtifactWrite::new(tag, write, after_success),
@@ -1489,6 +1604,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 immediate_layout_context,
                 observed_metrics_generation,
                 active_layout_work: None,
+                long_line_checkpoints: LongLineCheckpointCache::default(),
             },
         );
         // Measurement failures leave the attached view without a current
@@ -1571,6 +1687,13 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.views.get(&view).map(|view| &view.commands)
     }
 
+    pub fn line_location(&self, view: ViewId) -> Result<crate::command::LineLocation, CoreError> {
+        let state = self.views.get(&view).ok_or(CoreError::UnknownView(view))?;
+        state
+            .commands
+            .line_location(&self.document, state.layout.snapshot())
+    }
+
     pub fn layout(&self, view: ViewId) -> Option<&ViewLayout> {
         self.views.get(&view).map(|view| &view.layout)
     }
@@ -1578,6 +1701,42 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// Return the layout a frontend should paint. Native marked text owns a
     /// disposable composed layout while the command model keeps using the
     /// source-backed layout for document-coordinate motions.
+    /// Application-owned padding belongs to the document canvas coordinates,
+    /// so scrolling moves it out of view. It never changes persisted styles.
+    pub fn set_view_insets(
+        &mut self,
+        view_id: ViewId,
+        insets: crate::layout::EdgeInsets,
+    ) -> Result<(), CoreError> {
+        if [insets.top, insets.left, insets.bottom, insets.right]
+            .iter()
+            .any(|value| !value.is_finite() || *value < 0.0)
+        {
+            return Err(LayoutError::InvalidGeometry.into());
+        }
+        let view = self
+            .views
+            .get_mut(&view_id)
+            .ok_or(CoreError::UnknownView(view_id))?;
+        let pinned_to_top = view.layout.viewport_top() == 0.0;
+        let before = view.layout.configuration_generation();
+        view.layout.set_insets(insets);
+        if before != view.layout.configuration_generation() {
+            cancel_active_layout_work(view);
+        }
+        self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::PreserveViewport)?;
+        if pinned_to_top {
+            let view = self
+                .views
+                .get_mut(&view_id)
+                .expect("inset view remains attached");
+            view.layout.set_viewport_top(0.0)?;
+            update_viewport_anchor(&self.document, view);
+        }
+        self.rematerialize_active_composition(view_id, true)?;
+        Ok(())
+    }
+
     pub fn presentation_layout(&self, view: ViewId) -> Option<&ViewLayout> {
         self.views
             .get(&view)
@@ -1765,6 +1924,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         candidate: LayoutJobCandidate,
     ) -> Result<InstalledLayoutJob, CoreError> {
         let job_id = candidate.job_id();
+        let checkpoint = candidate.next_long_line_checkpoint().cloned();
         let view = self
             .views
             .get_mut(&view_id)
@@ -1781,6 +1941,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             },
             candidate,
         )?;
+        if let Some(checkpoint) = checkpoint {
+            view.long_line_checkpoints
+                .insert(&self.document, checkpoint);
+        }
         if view
             .active_layout_work
             .as_ref()
@@ -1885,6 +2049,15 @@ impl<P: TextMeasurementProvider> Core<P> {
             .document
             .hard_line_at_offset(focus_offset)
             .ok_or(LayoutError::InvalidTextOffset(focus_offset))?;
+        if self.materialize_long_line_focus(
+            view_id,
+            focus_offset,
+            focus_line,
+            intent,
+            preserved_anchor,
+        )? {
+            return Ok(());
+        }
         let requested_top = {
             let view = self.views.get(&view_id).expect("view was validated above");
             match (intent, preserved_anchor) {
@@ -2011,6 +2184,101 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .expect("view remains attached while extending layout")
                 .layout
                 .viewport_top();
+        }
+    }
+
+    /// Reach a distant caret or viewport anchor by resuming exact wrap state.
+    /// The first visit must discover preceding row boundaries, but each job
+    /// captures at most one bounded text slice and only the final slice is
+    /// published. Later visits start from the nearest validated checkpoint.
+    fn materialize_long_line_focus(
+        &mut self,
+        view_id: ViewId,
+        focus_offset: usize,
+        focus_line: usize,
+        intent: ImmediateLayoutIntent,
+        preserved_anchor: Option<ViewportTextAnchor>,
+    ) -> Result<bool, CoreError> {
+        let line_start = self
+            .document
+            .line_start(focus_line)
+            .ok_or(LayoutError::InvalidTextOffset(focus_offset))?;
+        let line_end = self
+            .document
+            .line_end(focus_line)
+            .ok_or(LayoutError::InvalidTextOffset(focus_offset))?;
+        let (mut checkpoint, top, height) = {
+            let view = self
+                .views
+                .get_mut(&view_id)
+                .ok_or(CoreError::UnknownView(view_id))?;
+            if !view.layout.wrap() || line_end - line_start <= MAX_LONG_LINE_LAYOUT_SLICE_BYTES {
+                return Ok(false);
+            }
+            let requirements = inspect_layout_provider(&view.engine);
+            view.long_line_checkpoints
+                .discard_stale(&self.document, &view.layout, requirements);
+            let checkpoint = view
+                .long_line_checkpoints
+                .before(line_start..line_end, focus_offset);
+            (
+                checkpoint,
+                view.layout.viewport_top(),
+                view.layout.height().max(f32::EPSILON),
+            )
+        };
+        loop {
+            let work_start = checkpoint
+                .as_ref()
+                .map_or(line_start, LongLineLayoutCheckpoint::next_text_offset);
+            let viewport = match checkpoint.take() {
+                Some(checkpoint) => {
+                    ViewportLayoutRegion::resume_long_line(checkpoint, top, height)?
+                }
+                None => ViewportLayoutRegion::new(focus_line..focus_line + 1, top, height)?,
+            };
+            let request = self.prepare_view_layout_job(
+                view_id,
+                LayoutJobPriority::ChangedVisibleRows,
+                LayoutJobRegion::Viewport(viewport),
+                LayoutCancellationToken::new(),
+            )?;
+            let candidate = {
+                let view = self
+                    .views
+                    .get_mut(&view_id)
+                    .expect("layout view remains attached");
+                compute_layout_job(&mut view.engine, &request, view.immediate_layout_context)?
+            };
+            let coverage = candidate.regional_snapshot().lines()[0].text_coverage();
+            if coverage.start <= focus_offset && focus_offset <= coverage.end {
+                self.install_view_layout_job(view_id, candidate)?;
+                let view = self
+                    .views
+                    .get_mut(&view_id)
+                    .expect("layout view remains attached");
+                if intent == ImmediateLayoutIntent::PreserveViewport {
+                    view.viewport_anchor = preserved_anchor;
+                    restore_viewport_anchor(view)?;
+                } else {
+                    reveal_caret(view)?;
+                }
+                update_viewport_anchor(&self.document, view);
+                return Ok(true);
+            }
+            let next = candidate
+                .next_long_line_checkpoint()
+                .cloned()
+                .filter(|next| next.next_text_offset() > work_start)
+                .ok_or(LayoutJobError::InvalidLongLineCheckpoint(
+                    "continuation did not reach or advance toward the requested caret",
+                ))?;
+            self.views
+                .get_mut(&view_id)
+                .expect("layout view remains attached")
+                .long_line_checkpoints
+                .insert(&self.document, next.clone());
+            checkpoint = Some(next);
         }
     }
 
@@ -2245,6 +2513,7 @@ impl<P: TextMeasurementProvider> Core<P> {
 
     fn rebase_viewport_anchors(&mut self, map: &PositionMap) -> Result<(), CoreError> {
         for view in self.views.values_mut() {
+            view.long_line_checkpoints.rebase(&self.document, map);
             let Some(current) = view.viewport_anchor else {
                 continue;
             };
@@ -2876,7 +3145,12 @@ impl<P: TextMeasurementProvider> Core<P> {
         let changed = committed.after_revision() != committed.before_revision();
         debug_assert!(changed);
 
-        for (id, commands) in next_commands {
+        for (id, mut commands) in next_commands {
+            if self.document.format() == Format::Rtf
+                && commands.line_mode() == crate::command::LineMode::PhysicalSource
+            {
+                commands.set_line_mode(&self.document, crate::command::LineMode::Visual)?;
+            }
             self.views
                 .get_mut(&id)
                 .expect("prepared view remains attached during serial dispatch")
@@ -3363,6 +3637,23 @@ impl<P: TextMeasurementProvider> Core<P> {
         // without risking later commands joining the style undo unit.
         self.finalize_style_edit_group()?;
         let event = match event {
+            CoreEvent::SetDirectCharacterProperties { expected, values } => {
+                let actual = self
+                    .active_linear_selection_identity(view_id)?
+                    .ok_or(CoreError::StaleLogicalSelection)?;
+                if actual != expected {
+                    return Err(CoreError::StaleLogicalSelection);
+                }
+                return self.apply_native_model_request(
+                    view_id,
+                    ModelRequest::SetDirectCharacterProperties {
+                        document: expected.document(),
+                        revision: expected.revision(),
+                        range: expected.range(),
+                        values,
+                    },
+                );
+            }
             CoreEvent::EditDirectProperty {
                 expected,
                 property,
@@ -3764,6 +4055,20 @@ impl<P: TextMeasurementProvider> Core<P> {
                     position_map: None,
                     layout_changed: layout.viewport_top() != before_top
                         || layout.snapshot().map(|snapshot| snapshot.revision) != before_layout,
+                    composition_changes: Vec::new(),
+                })
+            }
+            CoreEvent::SetLineMode(mode) => {
+                let view = self
+                    .views
+                    .get_mut(&view_id)
+                    .expect("view existence checked above");
+                view.commands.set_line_mode(&self.document, mode)?;
+                Ok(CoreOutcome {
+                    command: None,
+                    document_changed: false,
+                    position_map: None,
+                    layout_changed: false,
                     composition_changes: Vec::new(),
                 })
             }
@@ -4322,7 +4627,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             CoreEvent::NavigateHistory(_) => {
                 unreachable!("native history navigation returns before ordinary dispatch")
             }
-            CoreEvent::EditDirectProperty { .. }
+            CoreEvent::SetDirectCharacterProperties { .. }
+            | CoreEvent::EditDirectProperty { .. }
             | CoreEvent::SetFileFormat { .. }
             | CoreEvent::SetFormat { .. }
             | CoreEvent::SetEncoding { .. }
@@ -6325,6 +6631,11 @@ mod tests {
         core.handle(second, CoreEvent::Input(InputEvent::Key(Key::Escape)))
             .unwrap();
         core.handle(second, key('j')).unwrap();
+        assert_eq!(
+            core.command_state(second).unwrap().cursor(),
+            2,
+            "j reaches the second visual row"
+        );
         for character in ":&".chars() {
             core.handle(second, key(character)).unwrap();
         }
@@ -7421,7 +7732,7 @@ mod tests {
 
         // Record `gj`, whose execution while recording already proves the
         // view has more than one visual row, then return to hard-line start.
-        for character in ['q', 'a', 'g', 'j', 'q', '0'] {
+        for character in ['q', 'a', 'g', 'j', 'q', 'g', 'g', '0'] {
             core.handle(view, key(character)).unwrap();
         }
         assert_eq!(core.command_state(view).unwrap().cursor(), 0);
@@ -10026,5 +10337,217 @@ mod tests {
             2,
             "redo must use the final Insert boundary captured from the owning view"
         );
+    }
+}
+
+#[cfg(test)]
+mod long_line_focus_tests {
+    use super::*;
+    use crate::command::LineMode;
+    use crate::layout::MockTextMeasurementProvider;
+
+    fn keys(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, input: &str) {
+        for value in input.chars() {
+            let outcome = core
+                .handle(view, CoreEvent::Input(InputEvent::key(value)))
+                .unwrap();
+            assert!(matches!(
+                outcome.command.unwrap().status,
+                CommandStatus::Complete | CommandStatus::Pending
+            ));
+        }
+    }
+    fn assert_caret_visible(core: &Core<MockTextMeasurementProvider>, id: ViewId) {
+        let view = &core.views[&id];
+        let snapshot = view.layout.snapshot().unwrap();
+        let position = view.commands.visual_position().unwrap_or(
+            crate::command::layout_motion::VisualPosition {
+                text_offset: view.commands.cursor(),
+                affinity: view.commands.boundary_affinity(),
+            },
+        );
+        assert!(snapshot.coverage.contains_text_offset(position.text_offset));
+        let geometry = snapshot
+            .logical_endpoint_geometry(position.text_offset, position.affinity)
+            .unwrap();
+        assert!(geometry.rect.y >= view.layout.viewport_top() - 0.01);
+        assert!(
+            geometry.rect.y + geometry.rect.height
+                <= view.layout.viewport_top() + view.layout.height() + 0.01
+        );
+        assert_eq!(view.layout.last_error(), None);
+    }
+
+    #[test]
+    fn theme_padding_keeps_a_top_pinned_view_at_the_document_origin() {
+        let mut core = Core::new(Document::new("paragraph\n".repeat(20_000)));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 200.0);
+        assert_eq!(core.layout(view).unwrap().viewport_top(), 0.0);
+        core.set_view_insets(
+            view,
+            crate::layout::EdgeInsets {
+                top: 28.0,
+                left: 22.0,
+                right: 22.0,
+                bottom: 28.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(core.layout(view).unwrap().viewport_top(), 0.0);
+        assert!(core.layout(view).unwrap().snapshot().unwrap().rows[0].y >= 28.0);
+        assert!(core.layout(view).unwrap().snapshot().unwrap().rows.len() < 100);
+        core.handle(
+            view,
+            CoreEvent::SetViewportOrigin {
+                left: 0.0,
+                top: Some(200.0),
+            },
+        )
+        .unwrap();
+        core.set_view_insets(
+            view,
+            crate::layout::EdgeInsets {
+                top: 38.0,
+                left: 22.0,
+                right: 22.0,
+                bottom: 28.0,
+            },
+        )
+        .unwrap();
+        assert!(
+            core.layout(view).unwrap().viewport_top() > 0.0,
+            "an already scrolled view retains its content anchor"
+        );
+        core.handle(
+            view,
+            CoreEvent::SetViewportOrigin {
+                left: 0.0,
+                top: Some(0.0),
+            },
+        )
+        .unwrap();
+        core.set_view_insets(
+            view,
+            crate::layout::EdgeInsets {
+                top: 18.0,
+                left: 22.0,
+                right: 22.0,
+                bottom: 28.0,
+            },
+        )
+        .unwrap();
+        assert_eq!(core.layout(view).unwrap().viewport_top(), 0.0);
+        assert!(!core.document().is_dirty());
+    }
+
+    #[test]
+    fn distant_caret_resumes_bounded_long_line_jobs_and_reuses_checkpoints() {
+        let long = "abcdef ".repeat(30_000);
+        let source = format!("{long}\n{}", "unrelated paragraph\n".repeat(20_000));
+        let mut core = Core::new(Document::new(source.clone()));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 90.0, 200.0);
+        assert!(
+            core.views[&view].engine.provider().request_calls() < 40,
+            "opening a giant paragraph does not shape the whole paragraph or neighboring document"
+        );
+        core.handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource))
+            .unwrap();
+        keys(&mut core, view, "$");
+        assert_eq!(core.command_state(view).unwrap().cursor(), long.len() - 1);
+        assert_caret_visible(&core, view);
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+        assert!(snapshot.rows[0].fragment_index > 0);
+        assert!(snapshot.rows.iter().all(|row| row.hard_line_index == 0));
+        assert!(
+            snapshot.rows.last().unwrap().text_range.end - snapshot.rows[0].text_range.start
+                <= MAX_LONG_LINE_LAYOUT_SLICE_BYTES
+        );
+        assert!(core.views[&view].long_line_checkpoints.len() >= 3);
+        keys(&mut core, view, "0");
+        assert_caret_visible(&core, view);
+        let requests = core.views[&view].engine.provider().request_calls();
+        keys(&mut core, view, "$");
+        assert_caret_visible(&core, view);
+        assert!(
+            core.views[&view].engine.provider().request_calls() - requests < 25,
+            "revisiting the tail shapes at most its final slice"
+        );
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        assert!(!core.document().is_dirty());
+    }
+
+    #[test]
+    fn long_line_checkpoints_invalidate_on_resize_metrics_edit_and_undo() {
+        let original = "abcdef ".repeat(20_000);
+        let mut core = Core::new(Document::new(original.clone()));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 90.0, 200.0);
+        core.handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource))
+            .unwrap();
+        keys(&mut core, view, "$");
+        assert_caret_visible(&core, view);
+        let old = core.views[&view]
+            .long_line_checkpoints
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        core.handle(
+            view,
+            CoreEvent::Resize {
+                width: 145.0,
+                height: 200.0,
+            },
+        )
+        .unwrap();
+        assert!(core.views[&view]
+            .long_line_checkpoints
+            .values()
+            .all(|checkpoint| checkpoint.configuration_generation()
+                != old.configuration_generation()));
+        keys(&mut core, view, "$");
+        assert_caret_visible(&core, view);
+        core.views
+            .get_mut(&view)
+            .unwrap()
+            .engine
+            .provider_mut()
+            .set_metrics_generation(MetricsGeneration(2));
+        core.handle(
+            view,
+            CoreEvent::Resize {
+                width: 145.0,
+                height: 200.0,
+            },
+        )
+        .unwrap();
+        assert!(core.views[&view]
+            .long_line_checkpoints
+            .values()
+            .all(|checkpoint| checkpoint.metrics_generation() == MetricsGeneration(2)));
+        keys(&mut core, view, "$");
+        assert_caret_visible(&core, view);
+        let jobs_before_edit = core.next_layout_job.unwrap();
+        keys(&mut core, view, "x");
+        assert!(core.next_layout_job.unwrap() - jobs_before_edit <= 2, "an edit after a validated prefix resumes from that prefix instead of wrapping it again");
+        assert!(core.views[&view]
+            .long_line_checkpoints
+            .values()
+            .all(|checkpoint| checkpoint.document_revision() == core.document().revision()));
+        assert_caret_visible(&core, view);
+        keys(&mut core, view, "u");
+        assert_caret_visible(&core, view);
+        assert_eq!(core.document().source_bytes(), original.as_bytes());
+        assert!(core.views[&view]
+            .long_line_checkpoints
+            .values()
+            .all(|checkpoint| checkpoint.document_revision() == core.document().revision()));
+        keys(&mut core, view, "0x");
+        assert_eq!(
+            core.views[&view].long_line_checkpoints.len(),
+            1,
+            "an edit in the consumed prefix discards every dependent continuation"
+        );
+        keys(&mut core, view, "$");
+        assert_caret_visible(&core, view);
     }
 }

@@ -373,7 +373,10 @@ pub(super) fn project(
                             && !closed.opaque
                             && closed.output_start == builder.text.len()
                         {
-                            builder.retain_empty_boundary(closed.source_inner_start);
+                            builder.retain_empty_boundary(
+                                closed.source_inner_start,
+                                &closed.character,
+                            );
                         }
                         stack.truncate(index.max(1));
                         if !was_hidden && block(&tag.name) {
@@ -483,7 +486,7 @@ pub(super) fn project(
                     }
                 }
                 match tag.name.as_str() {
-                    "b" | "strong" => frame.character.weight = Some(700),
+                    "b" | "strong" => frame.character.bold = Some(true),
                     "i" | "em" => frame.character.slant = Some(FontSlant::Italic),
                     "u" => frame.character.underline = Some(true),
                     "s" | "strike" | "del" => frame.character.strikethrough = Some(true),
@@ -522,6 +525,18 @@ pub(super) fn project(
                         }
                     }
                 }
+                if frame.paragraph_style.is_none() {
+                    if let BlockKind::Heading(level) = frame.kind {
+                        if builder
+                            .style_sheet
+                            .block_style(&format!("Heading{level}").as_str().into())
+                            .is_none()
+                        {
+                            frame.paragraph_style =
+                                Some(builder.style_sheet.base_paragraph.clone());
+                        }
+                    }
+                }
                 if let Some(css) = tag.attribute("style") {
                     apply_css(css, &mut frame.character, &mut frame.paragraph);
                     let paragraph_style =
@@ -533,9 +548,7 @@ pub(super) fn project(
                                     format!("Heading{level}").as_str().into()
                                 }
                                 BlockKind::ListItem { level, .. } => {
-                                    format!("List{}", u16::from(level.min(15)) + 1)
-                                        .as_str()
-                                        .into()
+                                    format!("List{}", u16::from(level) + 1).as_str().into()
                                 }
                                 _ => builder.style_sheet.base_paragraph.clone(),
                             });
@@ -592,6 +605,7 @@ pub(super) fn project(
                 if paragraph(&tag.name) && !frame.hidden && !frame.opaque {
                     builder.kind = frame.kind.clone();
                     builder.paragraph = frame.paragraph.clone();
+                    builder.defaults = frame.character.clone();
                     builder.paragraph_style = frame.paragraph_style.clone();
                 }
                 frame.output_start = builder.text.len();
@@ -1461,6 +1475,10 @@ pub(super) fn apply_css(
                     character.size = Some(size);
                 }
             }
+            "--evim-bold" => character.bold = value.parse().ok(),
+            "--evim-base-weight" => {
+                character.weight = value.parse::<u16>().ok().filter(|n| (1..=1000).contains(n))
+            }
             "font-weight" => {
                 if let Some(weight) = match lower.as_str() {
                     "normal" => Some(400),
@@ -1468,6 +1486,7 @@ pub(super) fn apply_css(
                     _ => lower.parse::<u16>().ok().filter(|n| (1..=1000).contains(n)),
                 } {
                     character.weight = Some(weight);
+                    character.bold = None;
                 }
             }
             "font-style" => {
@@ -1612,7 +1631,17 @@ pub(super) fn character_css(properties: &CharacterProperties) -> String {
     if let Some(size) = properties.size {
         declarations.push(format!("font-size: {size}pt"));
     }
-    if let Some(weight) = properties.weight {
+    if let Some(bold) = properties.bold {
+        let base = properties.weight.unwrap_or(400);
+        let weight = if bold {
+            base.saturating_add(300).min(1000)
+        } else {
+            base
+        };
+        declarations.push(format!("font-weight: {weight}"));
+        declarations.push(format!("--evim-base-weight: {base}"));
+        declarations.push(format!("--evim-bold: {bold}"));
+    } else if let Some(weight) = properties.weight {
         declarations.push(format!("font-weight: {weight}"));
     }
     if let Some(slant) = properties.slant {
@@ -1702,8 +1731,8 @@ fn attribute_escape(text: &str) -> String {
 }
 pub(super) fn character_wrapper(properties: &CharacterProperties) -> (String, String) {
     let mut rest = properties.clone();
-    let tag = if rest.weight == Some(700) {
-        rest.weight = None;
+    let tag = if rest.bold == Some(true) && rest.weight.is_none() {
+        rest.bold = None;
         "b"
     } else if rest.slant == Some(FontSlant::Italic) {
         rest.slant = None;

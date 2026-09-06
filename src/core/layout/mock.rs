@@ -234,6 +234,7 @@ impl MockTextMeasurementProvider {
         }
         mix(&style.size.to_bits().to_le_bytes());
         mix(&style.weight.to_bits().to_le_bytes());
+        mix(&[u8::from(style.relative_bold)]);
         mix(&style.letter_spacing.to_bits().to_le_bytes());
         mix(&style.baseline_shift.to_bits().to_le_bytes());
         mix(&request.scale.to_bits().to_le_bytes());

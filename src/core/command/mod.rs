@@ -13,7 +13,9 @@ pub mod layout_motion;
 pub mod text_object;
 pub mod visual_block;
 
+mod line_mode;
 mod registers;
+pub use line_mode::{LineLocation, LineMode};
 mod text;
 
 use std::collections::{BTreeMap, HashMap};
@@ -992,6 +994,7 @@ pub(crate) struct CommandStep {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RepeatTarget {
+    ViewLine(line_mode::LineShape, usize),
     Motion(OperatorMotion),
     Lines,
     TextObject(TextObject),
@@ -1118,6 +1121,10 @@ pub struct CommandInterpreter {
     ex_state: ExExecutionState,
     wrap: bool,
     linebreak: bool,
+    line_mode: LineMode,
+    line_layout: Option<LayoutSnapshot>,
+    physical_cursor: Option<line_mode::PhysicalCursor>,
+    visual_source_anchor: Option<crate::document::SourcePoint>,
     fileformats: Vec<FileFormat>,
     last_search: Option<(SearchDirection, String)>,
     last_repeat: Option<RepeatAction>,
@@ -1221,6 +1228,10 @@ impl CommandInterpreter {
             ex_history: Vec::new(),
             ex_state: ExExecutionState::default(),
             wrap: false,
+            line_mode: LineMode::Visual,
+            line_layout: None,
+            physical_cursor: None,
+            visual_source_anchor: None,
             linebreak: true,
             fileformats: vec![FileFormat::Unix, FileFormat::Dos],
             last_search: None,
@@ -1846,6 +1857,12 @@ impl CommandInterpreter {
         }
         if self.visual_block_insert.is_some() {
             return false;
+        }
+        if self.line_mode == LineMode::Visual
+            && (self.mode == Mode::VisualLine
+                || matches!(event,InputEvent::Key(key) if self.mode_line_key(*key)))
+        {
+            return true;
         }
         let InputEvent::Key(key) = event else {
             // Layout-aware dispatch has one special text path: a frontend may
@@ -2506,7 +2523,9 @@ impl CommandInterpreter {
         let line_undo_candidate = self.capture_line_undo_at_cursor(document);
         let tracked_event = event.clone();
         let viewport = context.viewport;
+        self.line_layout = Some(context.snapshot.clone());
         let result = self.handle_with_layout_inner(document, event, context);
+        self.line_layout = None;
         match result {
             Ok(mut output) => {
                 if matches!(output.status, CommandStatus::NeedsMoreLayout(_)) {
@@ -2631,6 +2650,13 @@ impl CommandInterpreter {
             });
         }
 
+        if self.line_mode == LineMode::PhysicalSource
+            && matches!(&event,InputEvent::Key(key) if (self.mode==Mode::VisualLine||self.mode_line_key(*key)||matches!(key,Key::Char('p'|'P'))))
+        {
+            return Ok(CommandResolution::Legacy(
+                LegacyCommandReason::CompoundOrUnmigrated,
+            ));
+        }
         if self.requires_layout_for_input(context.document(), &event, context.clipboard()) {
             return Ok(CommandResolution::Legacy(
                 LegacyCommandReason::LayoutDependent,
@@ -4708,6 +4734,9 @@ impl CommandInterpreter {
         key: Key,
         context: &mut LayoutCommandContext<'_>,
     ) -> Result<Option<CommandOutput>, DocumentError> {
+        if let Some(output) = self.try_mode_line_key(document, key)? {
+            return Ok(Some(output));
+        }
         if self.mode == Mode::CommandLine {
             return Ok(None);
         }
@@ -7838,6 +7867,9 @@ impl CommandInterpreter {
         document: &mut Document,
         key: Key,
     ) -> Result<CommandOutput, DocumentError> {
+        if let Some(output) = self.try_mode_line_key(document, key)? {
+            return Ok(output);
+        }
         if let Some(output) = self.try_handle_controller_only_key(document, key) {
             return Ok(output);
         }
@@ -9526,6 +9558,9 @@ impl CommandInterpreter {
         operator: Operator,
         command_count: usize,
     ) -> Result<CommandOutput, DocumentError> {
+        if let Some(output) = self.apply_mode_visual_operator(document, operator, command_count)? {
+            return Ok(output);
+        }
         let remembered = self.visual_anchor.map(|anchor| VisualMemory {
             mode: self.mode,
             anchor,
@@ -9789,6 +9824,9 @@ impl CommandInterpreter {
         document: &mut Document,
         insert_space: bool,
     ) -> Result<CommandOutput, DocumentError> {
+        if let Some(output) = self.mode_visual_join(document, insert_space)? {
+            return Ok(output);
+        }
         let shape = self.visual_repeat_shape(document);
         self.remember_visual();
         let extent = self.visual_extent(document);
@@ -9797,7 +9835,7 @@ impl CommandInterpreter {
         self.visual_anchor = None;
         self.leave_visual();
         let before = document.revision();
-        let mut output = self.join_lines(document, count, insert_space)?;
+        let mut output = self.join_hard_lines(document, count, count, insert_space)?;
         if document.revision() != before && !self.replaying {
             self.last_repeat = Some(RepeatAction::VisualJoin {
                 shape,
@@ -9838,7 +9876,7 @@ impl CommandInterpreter {
             .start;
         self.leave_visual_block();
         let before = document.revision();
-        let mut output = self.join_lines(document, count, insert_space)?;
+        let mut output = self.join_hard_lines(document, count, count, insert_space)?;
         if document.revision() != before && !self.replaying {
             self.last_repeat = Some(RepeatAction::VisualBlock(VisualBlockRepeat {
                 shape: repeat_shape,
@@ -10658,8 +10696,12 @@ impl CommandInterpreter {
                 .grapheme_range_at(self.cursor)
                 .filter(|range| !is_hard_line_separator(&lines, range))
                 .map_or(self.cursor, |range| range.end),
-            InsertPlacement::LineStart => first_non_blank(text, &lines, self.cursor),
-            InsertPlacement::LineEnd => line_end(&lines, self.cursor),
+            InsertPlacement::LineStart => self
+                .mode_line_insertion(document, false, true)
+                .unwrap_or_else(|| first_non_blank(text, &lines, self.cursor)),
+            InsertPlacement::LineEnd => self
+                .mode_line_insertion(document, true, false)
+                .unwrap_or_else(|| line_end(&lines, self.cursor)),
             InsertPlacement::Replace => self.cursor,
             InsertPlacement::OpenBelow | InsertPlacement::OpenAbove => self.cursor,
         };
@@ -10888,15 +10930,23 @@ impl CommandInterpreter {
         if entry_count > isize::MAX as usize {
             return Ok(repetition_too_large(entry_count));
         }
-        let position = if above {
-            line_start(&document.hard_line_snapshot(), self.cursor)
-        } else {
-            line_end(&document.hard_line_snapshot(), self.cursor)
-        };
+        let position = self
+            .mode_line_insertion(document, !above, false)
+            .unwrap_or_else(|| {
+                if above {
+                    line_start(&document.hard_line_snapshot(), self.cursor)
+                } else {
+                    line_end(&document.hard_line_snapshot(), self.cursor)
+                }
+            });
         let insertion = "\n";
         document.begin_edit_group();
-        document.insert(position, insertion)?;
-        self.cursor = if above { position } else { position + 1 };
+        if self.line_mode == LineMode::PhysicalSource {
+            self.open_physical_line(document, above)?;
+        } else {
+            document.insert(position, insertion)?;
+            self.cursor = if above { position } else { position + 1 };
+        }
         self.mode = Mode::Insert;
         self.insert_session = Some(InsertSession {
             placement: if above {
@@ -11101,6 +11151,9 @@ impl CommandInterpreter {
         if value.text.is_empty() {
             return Ok(CommandOutput::complete());
         }
+        if self.line_mode == LineMode::PhysicalSource && value.kind == RegisterKind::Linewise {
+            return self.paste_physical_lines(document, before, count, follow, name, value);
+        }
         let lines = document.hard_line_snapshot();
         let mut repeated = match checked_register_repetition(&value, count) {
             Ok(repeated) => repeated,
@@ -11277,6 +11330,27 @@ impl CommandInterpreter {
         count: usize,
         insert_space: bool,
     ) -> Result<CommandOutput, DocumentError> {
+        if self.line_mode == LineMode::PhysicalSource {
+            return self.join_physical_lines(document, count, insert_space);
+        }
+        let requested_count = count;
+        let count = match self.mode_join_count(document, count)? {
+            Ok(count) => count,
+            Err(error) => return Ok(layout_error(error)),
+        };
+        if count < 2 {
+            return Ok(CommandOutput::complete());
+        }
+        self.join_hard_lines(document, count, requested_count, insert_space)
+    }
+
+    fn join_hard_lines(
+        &mut self,
+        document: &mut Document,
+        count: usize,
+        requested_count: usize,
+        insert_space: bool,
+    ) -> Result<CommandOutput, DocumentError> {
         let lines = document.hard_line_snapshot();
         let current = lines
             .line_at_offset(self.cursor)
@@ -11336,7 +11410,7 @@ impl CommandInterpreter {
         );
         if !self.replaying {
             self.last_repeat = Some(RepeatAction::Join {
-                count,
+                count: requested_count,
                 insert_space,
             });
         }
@@ -11517,7 +11591,25 @@ impl CommandInterpreter {
         {
             return self.toggle_at_cursor(document, count);
         }
+        if let RepeatTarget::ViewLine(shape, applications) = command.target {
+            let mut output = self.apply_mode_line_operator_repeated(
+                document,
+                command.operator,
+                shape,
+                count,
+                command.register,
+                applications,
+            )?;
+            if command.operator == Operator::Change {
+                if let Some(program) = edits {
+                    output.merge(self.replay_edit_session_program(document, &program, 1, false)?);
+                }
+                output.merge(self.finish_insert(document)?);
+            }
+            return Ok(output);
+        }
         let extent = match &command.target {
+            RepeatTarget::ViewLine(..) => unreachable!("handled above"),
             RepeatTarget::Motion(motion) => {
                 self.resolve_operator_extent(document, command.operator, *motion, count)
             }
@@ -11750,6 +11842,11 @@ impl CommandInterpreter {
                     return layout_required("counted previous Visual Block selection");
                 }
                 return self.enter_scaled_previous_visual(document, memory, count);
+            }
+        }
+        if mode == Mode::VisualLine {
+            if let Some(output) = self.enter_mode_visual_line(document, count) {
+                return output;
             }
         }
         let origin = self.cursor;
@@ -15389,16 +15486,13 @@ mod tests {
             CommandResolution::Legacy(reason) => panic!("count used legacy path: {reason:?}"),
         };
         count.publish_success(&mut commands, &document, false);
-        let motion = match commands.resolve(&context, InputEvent::key('+')).unwrap() {
-            CommandResolution::Planned(plan) => plan,
-            CommandResolution::Legacy(reason) => panic!("hard-line motion used legacy: {reason:?}"),
-        };
-        assert_eq!(
-            motion.presentation_requests(),
-            &[CommandPresentationRequest::RevealCaret]
+        assert!(
+            matches!(
+                commands.resolve(&context, InputEvent::key('+')).unwrap(),
+                CommandResolution::Legacy(LegacyCommandReason::LayoutDependent)
+            ),
+            "Visual line mode uses the exact view even when wrapping is disabled"
         );
-        motion.publish_success(&mut commands, &document, false);
-        assert_eq!(commands.cursor(), 4);
     }
 
     #[test]

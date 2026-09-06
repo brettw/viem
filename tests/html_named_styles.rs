@@ -28,6 +28,229 @@ fn metadata(name: &str) -> StyleDefinitionMetadata {
         origin: StyleDefinitionOrigin::SourceBacked,
     }
 }
+
+#[test]
+fn deleting_each_builtin_heading_persists_default_assignment_and_undo() {
+    for level in 1..=6 {
+        let id = StyleId(format!("Heading{level}"));
+        let hidden = format!("<template><h{level} data-hidden='keep'>Hidden</h{level}></template>");
+        let original = format!("<!doctype html><h{level} data-keep='x' style='text-align:center'>Head<br>line</h{level}><p>Tail</p><!--keep-->{hidden}");
+        let mut document = html(&original);
+        let ids = document
+            .projection()
+            .blocks()
+            .iter()
+            .map(|block| block.id)
+            .collect::<Vec<_>>();
+        definition(&mut document, StyleDefinitionEdit::DeleteBlock(id.clone())).unwrap();
+        assert_eq!(document.text(), "Head\nline\nTail");
+        assert!(document
+            .projection()
+            .style_sheet()
+            .block_style(&id)
+            .is_none());
+        assert_eq!(
+            document
+                .projection()
+                .blocks()
+                .iter()
+                .map(|block| block.id)
+                .collect::<Vec<_>>(),
+            ids
+        );
+        let block = &document.projection().blocks()[0];
+        assert_eq!(block.style, StyleId::from("Paragraph"));
+        assert_eq!(
+            block.direct_paragraph.alignment,
+            Some(ParagraphAlignment::Center)
+        );
+        let saved = String::from_utf8(document.source_bytes()).unwrap();
+        assert!(saved.contains("--evim-style-deleted: \"true\";"));
+        assert!(saved.contains(&format!("<h{level} data-keep='x' style='text-align:center' class=\"evim-p-506172616772617068\">Head<br>line</h{level}>")), "{saved}");
+        assert!(saved.ends_with(&format!("<p>Tail</p><!--keep-->{hidden}")));
+        let reopened = html(&saved);
+        assert_eq!(reopened.source_bytes(), saved.as_bytes());
+        assert!(reopened
+            .projection()
+            .style_sheet()
+            .block_style(&id)
+            .is_none());
+        assert_eq!(
+            reopened.projection().blocks()[0].style,
+            StyleId::from("Paragraph")
+        );
+        document.replace(1..2, "E").unwrap();
+        assert_eq!(document.text(), "HEad\nline\nTail");
+        assert!(document
+            .projection()
+            .style_sheet()
+            .block_style(&id)
+            .is_none());
+        assert_eq!(
+            document.projection().blocks()[0].style,
+            StyleId::from("Paragraph")
+        );
+        assert_eq!(
+            document.projection().blocks()[0].direct_paragraph.alignment,
+            Some(ParagraphAlignment::Center)
+        );
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), saved.as_bytes());
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), original.as_bytes());
+        assert_eq!(document.projection().blocks()[0].style, id);
+    }
+}
+
+#[test]
+fn deleted_heading_rules_follow_default_edits_and_explicit_recreation() {
+    let mut document = html("<h1>Title</h1><p>Body</p><!--keep-->");
+    let heading = document
+        .projection()
+        .style_sheet()
+        .block_style(&"Heading1".into())
+        .unwrap()
+        .clone();
+    definition(
+        &mut document,
+        StyleDefinitionEdit::InsertBlock {
+            style: BlockStyle {
+                id: "Child".into(),
+                based_on: Some("Heading1".into()),
+                next_paragraph_style: Some("Heading1".into()),
+                role: BlockRole::Paragraph,
+                character: Default::default(),
+                block: Default::default(),
+            },
+            metadata: metadata("Child"),
+        },
+    )
+    .unwrap();
+    definition(
+        &mut document,
+        StyleDefinitionEdit::DeleteBlock("Heading1".into()),
+    )
+    .unwrap();
+    let child = document
+        .projection()
+        .style_sheet()
+        .block_style(&"Child".into())
+        .unwrap();
+    assert_eq!(child.based_on, Some("Paragraph".into()));
+    assert_eq!(child.next_paragraph_style, Some("Paragraph".into()));
+    let mut paragraph = document
+        .projection()
+        .style_sheet()
+        .block_style(&"Paragraph".into())
+        .unwrap()
+        .clone();
+    paragraph.character.size = Some(21.0);
+    definition(&mut document, StyleDefinitionEdit::UpdateBlock(paragraph)).unwrap();
+    let saved = String::from_utf8(document.source_bytes()).unwrap();
+    let reopened = html(&saved);
+    assert!(reopened
+        .projection()
+        .style_sheet()
+        .block_style(&"Heading1".into())
+        .is_none());
+    assert_eq!(
+        reopened
+            .projection()
+            .style_sheet()
+            .block_style(&"Paragraph".into())
+            .unwrap()
+            .character
+            .size,
+        Some(21.0)
+    );
+    definition(
+        &mut document,
+        StyleDefinitionEdit::InsertBlock {
+            style: heading,
+            metadata: metadata("Heading 1"),
+        },
+    )
+    .unwrap();
+    let saved = String::from_utf8(document.source_bytes()).unwrap();
+    assert!(!saved.contains("--evim-style-deleted"));
+    let reopened = html(&saved);
+    assert!(reopened
+        .projection()
+        .style_sheet()
+        .block_style(&"Heading1".into())
+        .is_some());
+    assert_eq!(
+        reopened.projection().blocks()[0].style,
+        StyleId::from("Paragraph")
+    );
+    assert!(saved.ends_with("<p>Body</p><!--keep-->"));
+}
+
+#[test]
+fn base_paragraph_relative_bold_preserves_selected_system_light_face() {
+    let mut document = html("<p>Words</p>");
+    let mut paragraph = document
+        .projection()
+        .style_sheet()
+        .block_style(&"Paragraph".into())
+        .unwrap()
+        .clone();
+    paragraph.character.font_families = Some(vec![".SFNS-Light".into()]);
+    paragraph.character.weight = Some(274);
+    definition(
+        &mut document,
+        StyleDefinitionEdit::UpdateBlock(paragraph.clone()),
+    )
+    .unwrap();
+    paragraph.character.bold = Some(true);
+    definition(&mut document, StyleDefinitionEdit::UpdateBlock(paragraph)).unwrap();
+    let saved = String::from_utf8(document.source_bytes()).unwrap();
+    let reopened = html(&saved);
+    let paragraph = reopened
+        .projection()
+        .style_sheet()
+        .block_style(&"Paragraph".into())
+        .unwrap();
+    assert_eq!(
+        paragraph.character.font_families,
+        Some(vec![".SFNS-Light".into()])
+    );
+    assert_eq!(paragraph.character.weight, Some(274));
+    assert_eq!(paragraph.character.bold, Some(true));
+}
+
+#[test]
+fn deleted_heading_rules_stay_passive_in_opaque_content_and_bases_remain_protected() {
+    let mut seed = html("<h1>Title</h1>");
+    definition(
+        &mut seed,
+        StyleDefinitionEdit::DeleteBlock("Heading1".into()),
+    )
+    .unwrap();
+    let saved = String::from_utf8(seed.source_bytes()).unwrap();
+    let sheet = &saved[..saved.find("<h1").unwrap()];
+    for source in [
+        format!("<template>{sheet}</template><h1>Title</h1>"),
+        format!("{}<h1>Title</h1>", sheet.replace("Heading1", "Heading01")),
+    ] {
+        let document = html(&source);
+        assert!(document
+            .projection()
+            .style_sheet()
+            .block_style(&"Heading1".into())
+            .is_some());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+    for edit in [
+        StyleDefinitionEdit::DeleteBlock("Paragraph".into()),
+        StyleDefinitionEdit::DeleteBlock("Document".into()),
+        StyleDefinitionEdit::DeleteCharacter("Character".into()),
+    ] {
+        let before = seed.source_bytes();
+        assert!(definition(&mut seed, edit).is_err());
+        assert_eq!(seed.source_bytes(), before);
+    }
+}
 fn html(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap()
 }
@@ -650,6 +873,71 @@ fn deleting_assigned_style_removes_only_its_rule_and_class_and_rebases_children(
     );
     assert!(document.undo());
     assert_eq!(document.source_bytes(), before);
+}
+
+#[test]
+fn deleting_custom_paragraph_on_heading_assigns_default_and_preserves_direct_properties() {
+    let mut document = html("<h2 data-keep='yes' style='text-align:center'>Text</h2><!--opaque-->");
+    definition(
+        &mut document,
+        StyleDefinitionEdit::InsertBlock {
+            style: BlockStyle {
+                id: "Custom".into(),
+                based_on: Some("Heading2".into()),
+                next_paragraph_style: None,
+                role: BlockRole::Paragraph,
+                character: CharacterProperties {
+                    size: Some(40.0),
+                    ..Default::default()
+                },
+                block: Default::default(),
+            },
+            metadata: metadata("Custom"),
+        },
+    )
+    .unwrap();
+    let range = TextRange::new(
+        document.text_point(0).unwrap(),
+        document.text_point(4).unwrap(),
+    )
+    .unwrap();
+    apply(
+        &mut document,
+        PersistedStyleIntent::AssignBlockStyle {
+            target: StyleBlockTarget::Paragraphs(range),
+            style: "Custom".into(),
+        },
+    )
+    .unwrap();
+    let original = document.source_bytes();
+    definition(
+        &mut document,
+        StyleDefinitionEdit::DeleteBlock("Custom".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        document.projection().blocks()[0].style,
+        StyleId::from("Paragraph")
+    );
+    assert_eq!(
+        document.projection().blocks()[0].direct_paragraph.alignment,
+        Some(ParagraphAlignment::Center)
+    );
+    let saved = String::from_utf8(document.source_bytes()).unwrap();
+    assert!(saved.contains("data-keep='yes'"));
+    assert!(saved.ends_with("<!--opaque-->"));
+    let reopened = html(&saved);
+    assert_eq!(
+        reopened.projection().blocks()[0].style,
+        StyleId::from("Paragraph")
+    );
+    document.replace(0..1, "T").unwrap();
+    assert_eq!(
+        document.projection().blocks()[0].style,
+        StyleId::from("Paragraph")
+    );
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), original);
 }
 
 #[test]

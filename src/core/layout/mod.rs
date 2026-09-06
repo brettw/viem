@@ -3,9 +3,12 @@
 mod engine;
 mod height_index;
 mod jobs;
+mod long_line_cache;
 mod measurement;
 mod mock;
 mod style;
+
+pub(crate) use long_line_cache::LongLineCheckpointCache;
 
 pub use engine::{
     CaretGeometry, CaretPoint, EdgeInsets, LayoutCancellationProbe, LayoutComputationError,

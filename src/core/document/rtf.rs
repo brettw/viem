@@ -443,6 +443,24 @@ pub(super) fn tables(tokens: &[Token]) -> Tables {
 pub(super) fn default_font_name(tables: &Tables) -> Option<&str> {
     tables.fonts.get(&tables.default_font).map(String::as_str)
 }
+
+/// Canonical private controls retain optional OpenType settings in RTF.
+/// Eight a..p letters encode the four tag bytes; a signed parameter carries
+/// the exact u32 setting bits. Other RTF readers safely ignore these controls.
+pub(super) fn feature_control_tag(name: &str) -> Option<String> {
+    let encoded = name.strip_prefix("evimfeature")?.as_bytes();
+    if encoded.len() != 8 || !encoded.iter().all(|byte| (b'a'..=b'p').contains(byte)) {
+        return None;
+    }
+    let bytes = encoded
+        .chunks_exact(2)
+        .map(|pair| ((pair[0] - b'a') << 4) | (pair[1] - b'a'))
+        .collect::<Vec<_>>();
+    if !bytes.iter().all(|byte| (0x20..=0x7e).contains(byte)) {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
 pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, tables: &Tables) {
     let enabled = number.unwrap_or(1) != 0;
     let twips = number.map(|n| n as f32 / 20.0);
@@ -457,13 +475,9 @@ pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, 
                     .map(|name| vec![name.clone()]),
                 size: Some(12.0),
                 weight: Some(400),
+                bold: Some(false),
                 slant: Some(FontSlant::Upright),
-                foreground: Some(Color {
-                    red: 0.0,
-                    green: 0.0,
-                    blue: 0.0,
-                    alpha: 1.0,
-                }),
+                foreground: None,
                 background: Some(Color {
                     red: 0.0,
                     green: 0.0,
@@ -472,6 +486,7 @@ pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, 
                 }),
                 underline: Some(false),
                 strikethrough: Some(false),
+                open_type_features: Some(BTreeMap::new()),
                 language: tables.default_language.clone(),
                 letter_spacing: Some(0.0),
                 baseline_shift: Some(0.0),
@@ -504,7 +519,16 @@ pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, 
                 state.list.get_or_insert((true, 1)).1 = n as u64;
             }
         }
-        "b" => state.character.weight = Some(if enabled { 700 } else { 400 }),
+        "b" => state.character.bold = Some(enabled),
+        "evimweight" => {
+            if let Some(weight) = number
+                .and_then(|n| u16::try_from(n).ok())
+                .filter(|n| (1..=1000).contains(n))
+            {
+                state.character.weight = Some(weight);
+                state.character.bold = None;
+            }
+        }
         "i" => {
             state.character.slant = Some(if enabled {
                 FontSlant::Italic
@@ -530,12 +554,7 @@ pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, 
         }
         "cf" => {
             if number == Some(0) && tables.colors.first().map_or(true, Option::is_none) {
-                state.character.foreground = Some(Color {
-                    red: 0.0,
-                    green: 0.0,
-                    blue: 0.0,
-                    alpha: 1.0,
-                });
+                state.character.foreground = None;
             } else if let Some(color) = number
                 .and_then(|n| usize::try_from(n).ok())
                 .and_then(|i| tables.colors.get(i))
@@ -573,6 +592,18 @@ pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, 
             state.character.baseline_shift = Some(-state.character.size.unwrap_or(12.0) * 0.20)
         }
         "nosupersub" => state.character.baseline_shift = Some(0.0),
+        "evimfeatures" if number == Some(0) => {
+            state.character.open_type_features = Some(BTreeMap::new())
+        }
+        _ if feature_control_tag(name).is_some() => {
+            if let Some(value) = number {
+                state
+                    .character
+                    .open_type_features
+                    .get_or_insert_with(BTreeMap::new)
+                    .insert(feature_control_tag(name).unwrap(), value as u32);
+            }
+        }
         "rtlch" => state.character.direction = Some(WritingDirection::RightToLeft),
         "ltrch" => state.character.direction = Some(WritingDirection::LeftToRight),
         "rtlpar" => state.paragraph.base_direction = Some(WritingDirection::RightToLeft),
@@ -877,6 +908,7 @@ pub(super) fn project(
                         builder
                             .source_range(token.range.start..token.range.start)
                             .start,
+                        &state.character,
                     );
                 }
                 if !state.hidden
@@ -886,6 +918,7 @@ pub(super) fn project(
                         builder
                             .source_range(token.range.start..token.range.start)
                             .start,
+                        &state.character,
                     );
                 }
                 let list = state.numbering_destination.then_some(state.list);
@@ -1242,7 +1275,7 @@ pub(super) fn character_patches(
             if let Some((handle, _)) = tables.fonts.iter().find(|(_, name)| *name == family) {
                 *handle
             } else {
-                let handle = tables
+                let mut handle = tables
                     .fonts
                     .keys()
                     .copied()
@@ -1250,6 +1283,12 @@ pub(super) fn character_patches(
                     .unwrap_or(-1)
                     .checked_add(1)
                     .ok_or(UnsupportedFormatting)?;
+                // An absent default font entry still means an unspecified
+                // document font. Do not turn it into the newly selected face
+                // for every untouched run when adding the first table.
+                if handle == tables.default_font {
+                    handle = handle.checked_add(1).ok_or(UnsupportedFormatting)?;
+                }
                 let escaped = family
                     .replace('\\', "\\\\")
                     .replace('{', "\\{")
@@ -1275,11 +1314,13 @@ pub(super) fn character_patches(
         control.push_str(&format!("\\fs{}", exact_scaled(size, 2.0)?));
     }
     if let Some(weight) = properties.weight {
-        control.push_str(match weight {
-            400 => "\\b0",
-            700 => "\\b",
-            _ => return Err(UnsupportedFormatting),
-        });
+        control.push_str(&format!(
+            "\\b{}\\evimweight{weight}",
+            if weight >= 600 { "" } else { "0" }
+        ));
+    }
+    if let Some(bold) = properties.bold {
+        control.push_str(if bold { "\\b" } else { "\\b0" });
     }
     if let Some(slant) = properties.slant {
         control.push_str(match slant {
@@ -1304,19 +1345,6 @@ pub(super) fn character_patches(
                 && tables.colors.first().map_or(true, Option::is_none)
             {
                 control.push_str("\\highlight0");
-                continue;
-            }
-            if name == "cf"
-                && color
-                    == (Color {
-                        red: 0.0,
-                        green: 0.0,
-                        blue: 0.0,
-                        alpha: 1.0,
-                    })
-                && tables.colors.first().map_or(true, Option::is_none)
-            {
-                control.push_str("\\cf0");
                 continue;
             }
             if color.alpha != 1.0 {
@@ -1370,12 +1398,19 @@ pub(super) fn character_patches(
             _ => return Err(UnsupportedFormatting),
         });
     }
-    if properties
-        .open_type_features
-        .as_ref()
-        .is_some_and(|f| !f.is_empty())
-    {
-        return Err(UnsupportedFormatting);
+    if let Some(features) = &properties.open_type_features {
+        control.push_str("\\evimfeatures0");
+        for (tag, value) in features {
+            if tag.len() != 4 || !tag.bytes().all(|byte| (0x20..=0x7e).contains(&byte)) {
+                return Err(UnsupportedFormatting);
+            }
+            control.push_str("\\evimfeature");
+            for byte in tag.bytes() {
+                control.push(char::from(b'a' + (byte >> 4)));
+                control.push(char::from(b'a' + (byte & 15)));
+            }
+            control.push_str(&(*value as i32).to_string());
+        }
     }
     if let Some(spacing) = properties.letter_spacing {
         control.push_str(&format!("\\expndtw{}", exact_scaled(spacing, 20.0)?));

@@ -24,6 +24,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var viewportState = EvimViewportStateV1()
     private(set) var documentState = EvimDocumentStateV1()
     private(set) var presentationRefreshCount: UInt64 = 0
+    private var themeObserver: NSObjectProtocol?
+    private var appliedPadding: EVThemePadding?
     private var showInvisibles = false
     private var lastErrorMessage = ""
     var pasteboard: any EVPasteboardAccess = EVAppKitPasteboardAccess.shared
@@ -77,11 +79,24 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     init(backend: EVCoreDocumentBackend) {
         self.backend = backend
         super.init(nibName: nil, bundle: nil)
+        themeObserver = NotificationCenter.default.addObserver(forName: .evimThemeDidChange, object: EVThemeStore.shared, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyTheme() }
+        }
         do {
             try attachToCore()
         } catch {
             lastErrorMessage = error.localizedDescription
         }
+    }
+
+    deinit { if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) } }
+
+    private func applyTheme() {
+        let padding = EVThemeStore.shared.theme.padding
+        do {
+            if appliedPadding != padding { try session?.setThemePadding(padding); appliedPadding = padding }
+            if isViewLoaded { refreshPresentation() }
+        } catch { report(error) }
     }
 
     @available(*, unavailable)
@@ -121,6 +136,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
         attachedSession.commandTurnHost = self
         session = attachedSession
+        try attachedSession.setThemePadding(EVThemeStore.shared.theme.padding)
+        appliedPadding = EVThemeStore.shared.theme.padding
         if isViewLoaded { refreshPresentation() }
     }
 
@@ -288,6 +305,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 refreshPresentation()
             }
         } catch {
+            refreshPresentation()
             report(error)
             NSSound.beep()
         }
@@ -325,6 +343,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         let expected = documentState
         performInput {
             switch statusOption {
+            case let .lineMode(mode): try session.setLineMode(mode)
             case let .format(format): _ = try session.setFormat(format, expected: expected)
             case let .encoding(encoding): _ = try session.setEncoding(encoding, expected: expected)
             case let .lineEnding(ending): _ = try session.setFileFormat(ending, expected: expected)
@@ -335,6 +354,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     public func perform(menuCommand: EVMenuCommand, sender: Any?) {
         guard let session else { return }
         switch menuCommand {
+        case .heading0, .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
+            performHeadingShortcut(level: UInt32(menuCommand.rawValue - EVMenuCommand.heading0.rawValue))
         case .undo:
             performInput { _ = try session.undo() }
         case .redo:
@@ -420,6 +441,12 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             }
         case .bold:
             toggleSemanticStyle(UInt32(EVIM_SEMANTIC_STYLE_STRONG), session: session)
+        case .showFonts:
+            EVTypographyPanels.shared.showFonts(for: self)
+        case .showColors, .textColor, .highlightColor:
+            EVTypographyPanels.shared.showColors(for: self, highlight: menuCommand == .highlightColor)
+        case .bigger, .smaller:
+            changeFontSize(increasing: menuCommand == .bigger)
         case .italic:
             toggleSemanticStyle(UInt32(EVIM_SEMANTIC_STYLE_EMPHASIS), session: session)
         case .underline, .strikethrough:
@@ -455,9 +482,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 sender: sender
             )
         case .save:
-            (view.window?.windowController?.document as? NSDocument)?.save(sender)
+            (view.window?.windowController as? EVDocumentWindowController)?.activeDocument?.save(sender)
         case .saveAs:
-            (view.window?.windowController?.document as? NSDocument)?.saveAs(sender)
+            (view.window?.windowController as? EVDocumentWindowController)?.activeDocument?.saveAs(sender)
         case .pageSetup:
             NSPageLayout().runModal()
         case .printDocument:
@@ -474,6 +501,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     public func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation {
         switch menuCommand {
+        case .heading0, .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
+            headingShortcutPresentation(level: UInt32(menuCommand.rawValue - EVMenuCommand.heading0.rawValue))
         case .bulletedList, .numberedList, .removeList:
             EVMenuItemPresentation(isEnabled: (try? session?.listSelection()) != nil)
         case .save, .saveAs, .pageSetup,
@@ -538,6 +567,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 UInt32(EVIM_SEMANTIC_STYLE_STRONG),
                 session: session
             )
+        case .showFonts, .showColors, .textColor, .highlightColor, .bigger, .smaller, .openTypeFeatures:
+            EVMenuItemPresentation(isEnabled: canEditTypography)
         case .italic:
             semanticStyleMenuPresentation(
                 UInt32(EVIM_SEMANTIC_STYLE_EMPHASIS),
@@ -991,17 +1022,21 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     private func updateStatusBar() {
-        let point = Int(exactly: viewPresentation.cursor_utf8_offset)
-            .flatMap(formattedPointInfo(atUTF8Offset:))
-        let line = point.flatMap { Int(exactly: $0.hard_line_index) }.map { $0 + 1 } ?? 1
-        let column = point.flatMap { Int(exactly: $0.grapheme_column) }.map { $0 + 1 } ?? 1
+        let point = try? session?.lineLocation()
+        let line = point.map { location in
+            location.flags & UInt32(EVIM_LINE_LOCATION_GLOBAL_LINE_EXACT) != 0
+                ? String(location.line) : "\(location.hard_line)·\(location.fragment)"
+        } ?? "1"
+        let column = point?.column ?? 1
         statusBarState = EVStatusBarState(
             mode: modeLabel(viewPresentation.mode),
             message: lastErrorMessage,
             location: "Ln \(line), Col \(column)",
             encoding: backend.encodingLabel,
             lineEnding: backend.lineEndingLabel,
-            format: backend.formatLabel
+            format: backend.formatLabel,
+            lineMode: (try? session?.lineMode()) ?? .visual,
+            locationIsFragment: point.map { $0.flags & UInt32(EVIM_LINE_LOCATION_GLOBAL_LINE_EXACT) == 0 } ?? false
         )
         statusBarStateDidChange?(statusBarState)
     }
@@ -1157,6 +1192,7 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             : nil
         let kind: EVDocumentHostRequest.Kind
         switch effect.kind {
+        case UInt32(EVIM_EX_FRONTEND_SPLIT): kind = .split
         case UInt32(EVIM_EX_FRONTEND_EDIT): kind = .edit
         case UInt32(EVIM_EX_FRONTEND_NEW): kind = .new
         case UInt32(EVIM_EX_FRONTEND_WRITE): kind = .write

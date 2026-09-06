@@ -105,8 +105,10 @@ impl<'a> Builder<'a> {
             let application = StyleApplication::Named(id.clone());
             if let Some(last) = self
                 .spans
-                .last_mut()
-                .filter(|span| span.range.end == start && span.application == application)
+                .iter_mut()
+                .rev()
+                .take(2)
+                .find(|span| span.range.end == start && span.application == application)
             {
                 last.range.end = range.end;
             } else {
@@ -117,7 +119,7 @@ impl<'a> Builder<'a> {
             }
         }
         if *style != CharacterProperties::default() {
-            if let Some(last) = self.spans.last_mut().filter(|s| {
+            if let Some(last) = self.spans.iter_mut().rev().take(2).find(|s| {
                 s.range.end == start && s.application == StyleApplication::Direct(style.clone())
             }) {
                 last.range.end = range.end;
@@ -160,7 +162,7 @@ impl<'a> Builder<'a> {
             });
         }
     }
-    pub fn retain_empty_boundary(&mut self, source_at: usize) {
+    pub fn retain_empty_boundary(&mut self, source_at: usize, style: &CharacterProperties) {
         if let Some(index) = self.pending_empty_seed.take() {
             self.provenance.remove(index);
         }
@@ -172,6 +174,9 @@ impl<'a> Builder<'a> {
             .last()
             .is_some_and(|span| span.formatted == (at..at))
         {
+            if self.line_is_empty() {
+                self.defaults = style.clone();
+            }
             self.provenance.push(ProvenanceSpan {
                 formatted: at..at,
                 source: source_at..source_at,
@@ -186,18 +191,23 @@ impl<'a> Builder<'a> {
     }
     fn finish_line(&mut self) {
         self.emit_list_marker();
-        let style = self
+        let mut style = self
             .paragraph_style
             .clone()
             .unwrap_or_else(|| match &self.kind {
                 BlockKind::Heading(level) => format!("Heading{level}").as_str().into(),
                 BlockKind::ListItem { level, .. } => {
-                    format!("List{}", u16::from((*level).min(15)) + 1)
-                        .as_str()
-                        .into()
+                    format!("List{}", u16::from(*level) + 1).as_str().into()
                 }
                 _ => "Paragraph".into(),
             });
+        if self
+            .style_sheet
+            .deleted_source_blocks()
+            .any(|id| id == &style)
+        {
+            style = self.style_sheet.base_paragraph.clone();
+        }
         self.blocks.push(Block {
             id: 0,
             range: self.line_start..self.text.len(),
@@ -244,18 +254,23 @@ impl<'a> Builder<'a> {
     }
     fn finish_paragraph(&mut self) {
         self.emit_list_marker();
-        let style = self
+        let mut style = self
             .paragraph_style
             .clone()
             .unwrap_or_else(|| match &self.kind {
                 BlockKind::Heading(level) => format!("Heading{level}").as_str().into(),
                 BlockKind::ListItem { level, .. } => {
-                    format!("List{}", u16::from((*level).min(15)) + 1)
-                        .as_str()
-                        .into()
+                    format!("List{}", u16::from(*level) + 1).as_str().into()
                 }
                 _ => "Paragraph".into(),
             });
+        if self
+            .style_sheet
+            .deleted_source_blocks()
+            .any(|id| id == &style)
+        {
+            style = self.style_sheet.base_paragraph.clone();
+        }
         self.paragraphs.push(Block {
             id: 0,
             range: self.paragraph_start..self.text.len(),
@@ -360,11 +375,15 @@ pub(super) fn editable_source_range(
 }
 
 pub(super) fn overlay(target: &mut CharacterProperties, source: &CharacterProperties) {
+    if source.weight.is_some() {
+        target.bold = None;
+    }
     macro_rules! copy { ($($field:ident),*) => { $(if source.$field.is_some() { target.$field = source.$field.clone(); })* }; }
     copy!(
         font_families,
         size,
         weight,
+        bold,
         slant,
         foreground,
         background,
@@ -414,7 +433,16 @@ pub(super) fn character_edit_verified(
             }
         }
         if let Some(properties) = override_properties {
-            overlay(&mut direct, properties);
+            let mut properties = properties.clone();
+            // A face selection changes its base weight while retaining the
+            // independently authored emphasis at each affected run.
+            if properties.font_families.is_some()
+                && properties.weight.is_some()
+                && properties.bold.is_none()
+            {
+                properties.bold = Some(resolved_character_at(document, offset)?.bold);
+            }
+            overlay(&mut direct, &properties);
         }
         document
             .style_sheet()

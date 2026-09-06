@@ -18,6 +18,7 @@ use std::ops::Range;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedTextPaint {
     pub foreground: Color,
+    pub foreground_is_default: bool,
     pub background: Option<Color>,
     pub underline: bool,
     pub strikethrough: bool,
@@ -59,6 +60,7 @@ pub struct DocumentLayoutStyles {
     pub style_sheet_revision: StyleSheetRevision,
     pub document_insets: EdgeInsets,
     pub canvas_background: Color,
+    pub canvas_background_is_default: bool,
     pub default_shaping_style: ResolvedTextStyle,
     pub shaping_runs: Vec<ShapeStyleRun>,
     pub default_paint: ResolvedTextPaint,
@@ -136,6 +138,53 @@ impl From<FormattedTextError> for DocumentStyleError {
 }
 
 impl DocumentLayoutStyles {
+    /// Resolve the content associated with one current logical boundary in
+    /// logarithmic plus local style-run work; empty paragraphs need no shaping.
+    pub fn character_at(
+        document: &FormattedDocument,
+        offset: usize,
+        upstream: bool,
+    ) -> Result<ResolvedCharacterStyle, DocumentStyleError> {
+        let text = document.text_tree();
+        if offset > text.byte_len() || !text.is_char_boundary(offset)? {
+            return Err(DocumentStyleError::InvalidBlockRange { index: 0 });
+        }
+        let empty_paragraph = document
+            .blocks_for_region(&(offset..offset))
+            .iter()
+            .any(|block| block.range == (offset..offset));
+        let at = if upstream && offset > 0 && !empty_paragraph {
+            text.previous_grapheme_boundary(offset)?.unwrap_or(offset)
+        } else {
+            offset
+        };
+        let end = text.next_grapheme_boundary(at)?.unwrap_or(at);
+        let blocks = document.blocks_for_region(&(at..at));
+        let block = blocks
+            .iter()
+            .find(|block| block.range.contains(&at))
+            .or_else(|| blocks.iter().find(|block| block.range.start == at))
+            .or_else(|| blocks.last());
+        let Some(block) = block else {
+            return Ok(document
+                .style_sheet()
+                .resolve_document_assignment(document.document_style())?
+                .character);
+        };
+        let range = at..end.min(block.range.end);
+        let spans = document.style_spans_for_region(&range);
+        resolve_character_at(
+            StyleCascadeInput {
+                blocks: &blocks,
+                style_spans: &spans,
+                style_sheet: document.style_sheet(),
+                document_style: document.document_style(),
+            },
+            block,
+            range,
+        )
+    }
+
     /// Resolve document, paragraph, named-character, semantic, and direct
     /// layers without consulting a platform or mutating the projection.
     pub fn resolve(document: &FormattedDocument) -> Result<Self, DocumentStyleError> {
@@ -237,6 +286,7 @@ impl DocumentLayoutStyles {
                 right: resolved_document.padding_right,
             },
             canvas_background: resolved_document.background,
+            canvas_background_is_default: resolved_document.background_is_default,
             default_shaping_style,
             shaping_runs,
             default_paint,
@@ -394,7 +444,7 @@ fn resolve_character_at(
 fn semantic_properties(style: SemanticInlineStyle) -> CharacterProperties {
     match style {
         SemanticInlineStyle::Strong => CharacterProperties {
-            weight: Some(700),
+            bold: Some(true),
             ..CharacterProperties::default()
         },
         SemanticInlineStyle::Emphasis => CharacterProperties {
@@ -419,6 +469,7 @@ fn merge_character_properties(destination: &mut CharacterProperties, source: &Ch
     replace_some!(font_families);
     replace_some!(size);
     replace_some!(weight);
+    replace_some!(bold);
     replace_some!(slant);
     replace_some!(foreground);
     replace_some!(background);
@@ -452,6 +503,7 @@ fn shaping_style(
         font_families: character.font_families.clone(),
         size: character.size,
         weight: f32::from(character.weight),
+        relative_bold: character.bold,
         slant: character.slant,
         letter_spacing: character.letter_spacing,
         baseline_shift: character.baseline_shift,
@@ -469,6 +521,7 @@ fn shaping_style(
 fn paint_style(character: &ResolvedCharacterStyle) -> ResolvedTextPaint {
     ResolvedTextPaint {
         foreground: character.foreground,
+        foreground_is_default: character.foreground_is_default,
         background: character.background,
         underline: character.underline,
         strikethrough: character.strikethrough,

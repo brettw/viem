@@ -93,6 +93,8 @@ pub struct CharacterProperties {
     pub font_families: Option<Vec<String>>,
     pub size: Option<f32>,
     pub weight: Option<u16>,
+    /// Semantic emphasis relative to the selected base face/weight.
+    pub bold: Option<bool>,
     pub slant: Option<FontSlant>,
     pub foreground: Option<Color>,
     pub background: Option<Color>,
@@ -121,6 +123,7 @@ impl CharacterProperties {
         compare!(font_families, StyleProperty::CharacterFontFamilies);
         compare!(size, StyleProperty::CharacterSize);
         compare!(weight, StyleProperty::CharacterWeight);
+        compare!(bold, StyleProperty::CharacterBold);
         compare!(slant, StyleProperty::CharacterSlant);
         compare!(foreground, StyleProperty::CharacterForeground);
         compare!(background, StyleProperty::CharacterBackground);
@@ -312,6 +315,9 @@ pub struct StyleSheet {
     character_styles: BTreeMap<StyleId, CharacterStyle>,
     block_metadata: BTreeMap<StyleId, StyleDefinitionMetadata>,
     character_metadata: BTreeMap<StyleId, StyleDefinitionMetadata>,
+    deleted_configuration_blocks: BTreeSet<StyleId>,
+    deleted_configuration_characters: BTreeSet<StyleId>,
+    deleted_source_blocks: BTreeSet<StyleId>,
 }
 
 impl Default for StyleSheet {
@@ -332,12 +338,8 @@ impl Default for StyleSheet {
                     size: Some(14.0),
                     weight: Some(400),
                     slant: Some(FontSlant::Upright),
-                    foreground: Some(Color {
-                        red: 0.0,
-                        green: 0.0,
-                        blue: 0.0,
-                        alpha: 1.0,
-                    }),
+                    // Unspecified color follows the application theme.
+                    foreground: None,
                     underline: Some(false),
                     strikethrough: Some(false),
                     direction: Some(WritingDirection::Natural),
@@ -354,12 +356,7 @@ impl Default for StyleSheet {
                     padding_right: Some(0.0),
                     padding_bottom: Some(0.0),
                     padding_left: Some(0.0),
-                    background: Some(Color {
-                        red: 1.0,
-                        green: 1.0,
-                        blue: 1.0,
-                        alpha: 1.0,
-                    }),
+                    background: None,
                     ..BlockProperties::default()
                 },
             },
@@ -407,7 +404,7 @@ impl Default for StyleSheet {
                 },
             );
         }
-        for level in 1..=16 {
+        for level in 1..=3 {
             let id: StyleId = format!("List{level}").as_str().into();
             block_styles.insert(
                 id.clone(),
@@ -449,7 +446,7 @@ impl Default for StyleSheet {
                 StyleDefinitionMetadata::generated(format!("Heading {level}")),
             );
         }
-        for level in 1..=16 {
+        for level in 1..=3 {
             block_metadata.insert(
                 StyleId(format!("List{level}")),
                 StyleDefinitionMetadata::generated(format!("List Level {level}")),
@@ -469,6 +466,9 @@ impl Default for StyleSheet {
             character_styles,
             block_metadata,
             character_metadata,
+            deleted_configuration_blocks: BTreeSet::new(),
+            deleted_configuration_characters: BTreeSet::new(),
+            deleted_source_blocks: BTreeSet::new(),
         }
     }
 }
@@ -524,8 +524,12 @@ pub struct ResolvedCharacterStyle {
     pub font_families: Vec<String>,
     pub size: f32,
     pub weight: u16,
+    pub base_weight: u16,
+    pub bold: bool,
     pub slant: FontSlant,
     pub foreground: Color,
+    /// No source or named layer declared a color; presentation uses its theme.
+    pub foreground_is_default: bool,
     pub background: Option<Color>,
     pub underline: bool,
     pub strikethrough: bool,
@@ -542,6 +546,8 @@ impl Default for ResolvedCharacterStyle {
             font_families: vec!["SF Pro".to_owned()],
             size: 14.0,
             weight: 400,
+            base_weight: 400,
+            bold: false,
             slant: FontSlant::Upright,
             foreground: Color {
                 red: 0.0,
@@ -549,6 +555,7 @@ impl Default for ResolvedCharacterStyle {
                 blue: 0.0,
                 alpha: 1.0,
             },
+            foreground_is_default: true,
             background: None,
             underline: false,
             strikethrough: false,
@@ -577,8 +584,10 @@ impl ResolvedCharacterStyle {
         compare!(font_families, StyleProperty::CharacterFontFamilies);
         compare!(size, StyleProperty::CharacterSize);
         compare!(weight, StyleProperty::CharacterWeight);
+        compare!(bold, StyleProperty::CharacterBold);
         compare!(slant, StyleProperty::CharacterSlant);
         compare!(foreground, StyleProperty::CharacterForeground);
+        compare!(foreground_is_default, StyleProperty::CharacterForeground);
         compare!(background, StyleProperty::CharacterBackground);
         compare!(underline, StyleProperty::CharacterUnderline);
         compare!(strikethrough, StyleProperty::CharacterStrikethrough);
@@ -594,6 +603,7 @@ impl ResolvedCharacterStyle {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedDocumentStyle {
     pub background: Color,
+    pub background_is_default: bool,
     pub padding_top: f32,
     pub padding_right: f32,
     pub padding_bottom: f32,
@@ -610,6 +620,7 @@ impl Default for ResolvedDocumentStyle {
                 blue: 1.0,
                 alpha: 1.0,
             },
+            background_is_default: true,
             padding_top: 0.0,
             padding_right: 0.0,
             padding_bottom: 0.0,
@@ -622,7 +633,9 @@ impl Default for ResolvedDocumentStyle {
 impl ResolvedDocumentStyle {
     pub fn changed_properties(&self, other: &Self) -> BTreeSet<StyleProperty> {
         let mut changed = self.character.changed_properties(&other.character);
-        if self.background != other.background {
+        if self.background != other.background
+            || self.background_is_default != other.background_is_default
+        {
             changed.insert(StyleProperty::CanvasBackground);
         }
         if self.padding_top != other.padding_top {
@@ -675,6 +688,7 @@ pub enum StyleProperty {
     CharacterFontFamilies,
     CharacterSize,
     CharacterWeight,
+    CharacterBold,
     CharacterSlant,
     CharacterForeground,
     CharacterBackground,
@@ -760,6 +774,7 @@ impl StyleProperty {
             Self::CharacterFontFamilies
             | Self::CharacterSize
             | Self::CharacterWeight
+            | Self::CharacterBold
             | Self::CharacterSlant
             | Self::CharacterLanguage
             | Self::CharacterDirection
@@ -789,10 +804,11 @@ const PARAGRAPH_STYLE_PROPERTIES: [StyleProperty; 8] = [
     StyleProperty::ParagraphBaseDirection,
 ];
 
-const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 13] = [
+const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 14] = [
     StyleProperty::CharacterFontFamilies,
     StyleProperty::CharacterSize,
     StyleProperty::CharacterWeight,
+    StyleProperty::CharacterBold,
     StyleProperty::CharacterSlant,
     StyleProperty::CharacterForeground,
     StyleProperty::CharacterBackground,
@@ -932,6 +948,26 @@ impl StyleSheet {
     }
 
     /// Iterate immutable block-style definitions in stable ID order.
+    pub(crate) fn configuration_deleted(&self, id: &StyleId, block: bool) -> bool {
+        if block {
+            self.deleted_configuration_blocks.contains(id)
+        } else {
+            self.deleted_configuration_characters.contains(id)
+        }
+    }
+    pub(crate) fn retain_configuration_deletions(&mut self, previous: &Self) {
+        self.deleted_configuration_blocks = previous.deleted_configuration_blocks.clone();
+        self.deleted_configuration_characters = previous.deleted_configuration_characters.clone();
+        for id in &self.deleted_configuration_blocks {
+            self.block_styles.remove(id);
+            self.block_metadata.remove(id);
+        }
+        for id in &self.deleted_configuration_characters {
+            self.character_styles.remove(id);
+            self.character_metadata.remove(id);
+        }
+    }
+
     pub fn block_styles(&self) -> impl ExactSizeIterator<Item = &BlockStyle> + '_ {
         self.block_styles.values()
     }
@@ -941,6 +977,47 @@ impl StyleSheet {
     }
 
     /// Read immutable core-owned metadata for a block definition.
+    /// Materialize generated list defaults only when a document actually
+    /// needs that nesting level. Existing source/custom definitions win.
+    pub(crate) fn ensure_list_level(&mut self, level: u16) {
+        for level in 4..=level {
+            let id = StyleId(format!("List{level}"));
+            if self.block_styles.contains_key(&id)
+                || self.deleted_configuration_blocks.contains(&id)
+                || self.deleted_source_blocks.contains(&id)
+            {
+                continue;
+            }
+            self.block_styles.insert(
+                id.clone(),
+                BlockStyle {
+                    id: id.clone(),
+                    based_on: Some(self.base_paragraph.clone()),
+                    next_paragraph_style: None,
+                    role: BlockRole::Paragraph,
+                    character: CharacterProperties::default(),
+                    block: BlockProperties {
+                        leading_indent: Some(20.0 * f32::from(level)),
+                        first_line_indent: Some(-20.0),
+                        ..Default::default()
+                    },
+                },
+            );
+            self.block_metadata.insert(
+                id,
+                StyleDefinitionMetadata {
+                    display_name: format!("List Level {level}"),
+                    origin: self
+                        .block_style_metadata(&self.base_document)
+                        .filter(|metadata| metadata.origin == StyleDefinitionOrigin::SourceBacked)
+                        .map_or(StyleDefinitionOrigin::GeneratedConfiguration, |metadata| {
+                            metadata.origin
+                        }),
+                },
+            );
+        }
+    }
+
     pub fn block_style_metadata(&self, id: &StyleId) -> Option<&StyleDefinitionMetadata> {
         self.block_metadata.get(id)
     }
@@ -1055,12 +1132,30 @@ impl StyleSheet {
         revision: StyleSheetRevision,
         has_assignment: bool,
     ) -> Result<bool, StyleError> {
-        self.apply_definition_edit(
+        let changed = self.apply_definition_edit(
             edit,
             revision,
             has_assignment,
             StyleDefinitionOrigin::GeneratedConfiguration,
-        )
+        )?;
+        if changed {
+            match edit {
+                StyleDefinitionEdit::DeleteBlock(id) => {
+                    self.deleted_configuration_blocks.insert(id.clone());
+                }
+                StyleDefinitionEdit::DeleteCharacter(id) => {
+                    self.deleted_configuration_characters.insert(id.clone());
+                }
+                StyleDefinitionEdit::InsertBlock { style, .. } => {
+                    self.deleted_configuration_blocks.remove(&style.id);
+                }
+                StyleDefinitionEdit::InsertCharacter { style, .. } => {
+                    self.deleted_configuration_characters.remove(&style.id);
+                }
+                _ => {}
+            }
+        }
+        Ok(changed)
     }
 
     pub(crate) fn apply_source_edit(
@@ -1069,12 +1164,24 @@ impl StyleSheet {
         revision: StyleSheetRevision,
         has_assignment: bool,
     ) -> Result<bool, StyleError> {
-        self.apply_definition_edit(
+        let changed = self.apply_definition_edit(
             edit,
             revision,
             has_assignment,
             StyleDefinitionOrigin::SourceBacked,
-        )
+        )?;
+        if changed {
+            match edit {
+                StyleDefinitionEdit::DeleteBlock(id) if Self::builtin_block(id) => {
+                    self.deleted_source_blocks.insert(id.clone());
+                }
+                StyleDefinitionEdit::InsertBlock { style, .. } => {
+                    self.deleted_source_blocks.remove(&style.id);
+                }
+                _ => {}
+            }
+        }
+        Ok(changed)
     }
 
     fn apply_definition_edit(
@@ -1230,6 +1337,7 @@ impl StyleSheet {
                     candidate
                         .block_metadata
                         .insert(style.id.clone(), metadata.clone());
+                    candidate.deleted_source_blocks.remove(&style.id);
                 }
                 StyleDefinitionEdit::InsertCharacter { style, metadata } => {
                     validate_definition_metadata(&style.id, metadata)?;
@@ -1239,6 +1347,14 @@ impl StyleSheet {
                     candidate
                         .character_metadata
                         .insert(style.id.clone(), metadata.clone());
+                }
+                StyleDefinitionEdit::DeleteBlock(id) => {
+                    if id == &candidate.base_document || id == &candidate.base_paragraph {
+                        return Err(StyleError::CannotRemoveBaseStyle(id.clone()));
+                    }
+                    candidate.block_styles.remove(id);
+                    candidate.block_metadata.remove(id);
+                    candidate.deleted_source_blocks.insert(id.clone());
                 }
                 _ => {
                     return Err(StyleError::InvalidDefinitionMetadata(
@@ -1270,14 +1386,32 @@ impl StyleSheet {
     }
 
     pub(crate) fn mark_html_base_styles_source_backed(&mut self) {
+        if let Some(metadata) = self.character_metadata.get_mut(&self.base_character) {
+            metadata.origin = StyleDefinitionOrigin::SourceBacked;
+        }
         for (id, metadata) in &mut self.block_metadata {
             if id == &self.base_document
                 || id == &self.base_paragraph
                 || id.0.starts_with("Heading")
+                || Self::builtin_block(id)
             {
                 metadata.origin = StyleDefinitionOrigin::SourceBacked;
             }
         }
+    }
+
+    pub(crate) fn builtin_block(id: &StyleId) -> bool {
+        ["Heading", "List"].into_iter().any(|prefix| {
+            id.0.strip_prefix(prefix)
+                .and_then(|value| value.parse::<u16>().ok())
+                .is_some_and(|level| {
+                    (1..=if prefix == "Heading" { 6 } else { 256 }).contains(&level)
+                        && id.0 == format!("{prefix}{level}")
+                })
+        })
+    }
+    pub(crate) fn deleted_source_blocks(&self) -> impl Iterator<Item = &StyleId> {
+        self.deleted_source_blocks.iter()
     }
 
     /// A source-backed deletion removes references in the same transaction.
@@ -1302,10 +1436,12 @@ impl StyleSheet {
                     .collect::<Vec<_>>();
                 for mut style in changed {
                     style.based_on = parent.clone();
-                    self.apply_source_edit(
+                    let origin = self.character_style_metadata(&style.id).unwrap().origin;
+                    self.apply_definition_edit(
                         &StyleDefinitionEdit::UpdateCharacter(style),
                         revision,
                         false,
+                        origin,
                     )?;
                 }
             }
@@ -1335,10 +1471,12 @@ impl StyleSheet {
                     if style.next_paragraph_style.as_ref() == Some(id) {
                         style.next_paragraph_style = next.clone();
                     }
-                    self.apply_source_edit(
+                    let origin = self.block_style_metadata(&style.id).unwrap().origin;
+                    self.apply_definition_edit(
                         &StyleDefinitionEdit::UpdateBlock(style),
                         revision,
                         false,
+                        origin,
                     )?;
                 }
             }
@@ -2147,6 +2285,9 @@ pub(super) fn set_character_property(
         (StyleProperty::CharacterWeight, StylePropertyValue::FontWeight(value)) => {
             properties.weight = Some(*value);
         }
+        (StyleProperty::CharacterBold, StylePropertyValue::Boolean(value)) => {
+            properties.bold = Some(*value);
+        }
         (StyleProperty::CharacterSlant, StylePropertyValue::FontSlant(value)) => {
             properties.slant = Some(*value);
         }
@@ -2194,6 +2335,7 @@ pub(super) fn clear_character_property(
         StyleProperty::CharacterFontFamilies => properties.font_families = None,
         StyleProperty::CharacterSize => properties.size = None,
         StyleProperty::CharacterWeight => properties.weight = None,
+        StyleProperty::CharacterBold => properties.bold = None,
         StyleProperty::CharacterSlant => properties.slant = None,
         StyleProperty::CharacterForeground => properties.foreground = None,
         StyleProperty::CharacterBackground => properties.background = None,
@@ -2471,6 +2613,9 @@ fn record_character_winners(
     if properties.size.is_some() {
         record_winner(contributions, StyleProperty::CharacterSize, &origin);
     }
+    if properties.bold.is_some() {
+        record_winner(contributions, StyleProperty::CharacterBold, &origin);
+    }
     if properties.weight.is_some() {
         record_winner(contributions, StyleProperty::CharacterWeight, &origin);
     }
@@ -2606,13 +2751,23 @@ fn apply_character_properties(
         resolved.size = value;
     }
     if let Some(value) = properties.weight {
-        resolved.weight = value;
+        resolved.base_weight = value;
+        resolved.bold = false;
     }
+    if let Some(value) = properties.bold {
+        resolved.bold = value;
+    }
+    resolved.weight = if resolved.bold {
+        resolved.base_weight.saturating_add(300).min(1000)
+    } else {
+        resolved.base_weight
+    };
     if let Some(value) = properties.slant {
         resolved.slant = value;
     }
     if let Some(value) = properties.foreground {
         resolved.foreground = value;
+        resolved.foreground_is_default = false;
     }
     if let Some(value) = properties.background {
         resolved.background = Some(value);
@@ -2643,6 +2798,7 @@ fn apply_character_properties(
 fn apply_document_properties(resolved: &mut ResolvedDocumentStyle, properties: &BlockProperties) {
     if let Some(value) = properties.background {
         resolved.background = value;
+        resolved.background_is_default = false;
     }
     if let Some(value) = properties.padding_top {
         resolved.padding_top = value;
@@ -2764,12 +2920,7 @@ mod tests {
                 size: Some(14.0),
                 weight: Some(400),
                 slant: Some(FontSlant::Upright),
-                foreground: Some(Color {
-                    red: 0.0,
-                    green: 0.0,
-                    blue: 0.0,
-                    alpha: 1.0,
-                }),
+                foreground: None,
                 underline: Some(false),
                 strikethrough: Some(false),
                 direction: Some(WritingDirection::Natural),
@@ -2786,12 +2937,7 @@ mod tests {
                 padding_right: Some(0.0),
                 padding_bottom: Some(0.0),
                 padding_left: Some(0.0),
-                background: Some(Color {
-                    red: 1.0,
-                    green: 1.0,
-                    blue: 1.0,
-                    alpha: 1.0,
-                }),
+                background: None,
                 ..BlockProperties::default()
             }
         );
@@ -3336,7 +3482,7 @@ mod tests {
                 &direct_character,
             )
             .unwrap();
-        assert_eq!(traced.contributions().len(), 18);
+        assert_eq!(traced.contributions().len(), 19);
         assert_eq!(traced.value.padding_left, 12.0);
         assert_eq!(traced.value.padding_top, 7.0);
         assert_eq!(traced.value.character.size, 18.0);
@@ -3445,7 +3591,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(traced.value, ordinary);
-        assert_eq!(traced.contributions().len(), 21);
+        assert_eq!(traced.contributions().len(), 22);
         assert_eq!(
             traced
                 .contribution(StyleProperty::ParagraphSpacingBefore)
@@ -3710,7 +3856,7 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(traced.value, ordinary);
-            assert_eq!(traced.contributions().len(), 21);
+            assert_eq!(traced.contributions().len(), 22);
             assert!(traced
                 .contributions()
                 .all(|(_, contribution)| !contribution.dependencies.is_empty()));

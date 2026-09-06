@@ -67,6 +67,7 @@ fn tag_with_properties(
                     StyleProperty::CharacterFontFamilies
                         | StyleProperty::CharacterSize
                         | StyleProperty::CharacterWeight
+                        | StyleProperty::CharacterBold
                         | StyleProperty::CharacterSlant
                         | StyleProperty::CharacterForeground
                         | StyleProperty::CharacterBackground
@@ -82,7 +83,9 @@ fn tag_with_properties(
             .copied()
             .collect(),
     )?;
-    if (matches!(name.as_str(), "b" | "strong") && clear.contains(&StyleProperty::CharacterWeight))
+    if (matches!(name.as_str(), "b" | "strong")
+        && (clear.contains(&StyleProperty::CharacterWeight)
+            || clear.contains(&StyleProperty::CharacterBold)))
         || (matches!(name.as_str(), "i" | "em") && clear.contains(&StyleProperty::CharacterSlant))
         || (name == "u" && clear.contains(&StyleProperty::CharacterUnderline))
         || (matches!(name.as_str(), "s" | "strike" | "del")

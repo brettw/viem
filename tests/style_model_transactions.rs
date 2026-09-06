@@ -270,21 +270,36 @@ fn in_use_delete_and_incompatible_document_assignment_are_structured() {
     let mut markdown =
         Document::from_bytes(b"# used".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
     let before = markdown.revision();
-    let error = markdown
+    markdown
         .apply_style_request(configure(
             &markdown,
             ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::DeleteBlock(
                 StyleId::from("Heading1"),
             )),
         ))
-        .unwrap_err();
-    assert!(matches!(
-        error,
-        ModelTransactionError::Style(StyleTransactionError::Definition(
-            StyleError::StyleInUse(id)
-        )) if id == StyleId::from("Heading1")
-    ));
+        .unwrap();
+    assert!(markdown
+        .projection()
+        .style_sheet()
+        .block_style(&StyleId::from("Heading1"))
+        .is_none());
+    assert_eq!(
+        markdown.projection().blocks()[0].style,
+        StyleId::from("Paragraph")
+    );
+    assert_eq!(markdown.source_bytes(), b"# used");
+    markdown.replace(0..1, "U").unwrap();
+    assert_eq!(
+        markdown.projection().blocks()[0].style,
+        StyleId::from("Paragraph")
+    );
+    assert!(markdown.undo());
+    assert!(markdown.undo());
     assert_eq!(markdown.revision(), before);
+    assert_eq!(
+        markdown.projection().blocks()[0].style,
+        StyleId::from("Heading1")
+    );
 
     let error = markdown
         .apply_style_request(configure(

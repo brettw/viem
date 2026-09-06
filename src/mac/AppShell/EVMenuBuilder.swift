@@ -17,6 +17,9 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     private let recentDocumentURLs: @MainActor () -> [URL]
     private let styleMenuProvider: @MainActor () -> (any EVStyleMenuProviding)?
     private var styleMenuRoles: [ObjectIdentifier: EVStyleMenuRole] = [:]
+    private var styleMenuCatalogues: [ObjectIdentifier: EVStyleMenuCatalogue] = [:]
+    private var openTypeMenu: NSMenu?
+    private var trackingMenus = Set<ObjectIdentifier>()
 
     public init(
         owner: any EVApplicationCommandRouting,
@@ -39,6 +42,10 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         mainMenu.addItem(topLevelItem("File", submenu: makeFileMenu()))
         mainMenu.addItem(topLevelItem("Edit", submenu: makeEditMenu()))
         mainMenu.addItem(topLevelItem("Format", submenu: makeFormatMenu()))
+        mainMenu.addItem(makeStyleMenu(title: "Paragraph", role: .paragraph,
+            baseTitle: "Base Paragraph", baseCommand: .baseParagraphStyle, editCommand: .editParagraphStyles))
+        mainMenu.addItem(makeStyleMenu(title: "Character", role: .character,
+            baseTitle: "Base Character", baseCommand: .baseCharacterStyle, editCommand: .editCharacterStyles))
         mainMenu.addItem(topLevelItem("View", submenu: makeViewMenu()))
 
         let windowMenu = makeWindowMenu(for: application)
@@ -52,7 +59,25 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         return mainMenu
     }
 
+    public func menuWillOpen(_ menu: NSMenu) {
+        menuNeedsUpdate(menu)
+        trackingMenus.insert(ObjectIdentifier(menu))
+    }
+
+    public func menuDidClose(_ menu: NSMenu) {
+        trackingMenus.remove(ObjectIdentifier(menu))
+    }
+
     public func menuNeedsUpdate(_ menu: NSMenu) {
+        // AppKit may request validation again while a mouse is held down.
+        // Keep the tracked NSMenuItem objects and their geometry stable.
+        guard !trackingMenus.contains(ObjectIdentifier(menu)) else { return }
+        if menu === openTypeMenu {
+            if let provider = styleMenuProvider() as? any EVOpenTypeMenuProviding {
+                provider.populateOpenTypeFeatureMenu(menu)
+            } else { menu.removeAllItems() }
+            return
+        }
         if let role = styleMenuRoles[ObjectIdentifier(menu)] {
             rebuildStyleMenu(menu, role: role)
             return
@@ -302,30 +327,22 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         baseline.addItem(coreItem("Raise", command: .raiseBaseline))
         baseline.addItem(coreItem("Lower", command: .lowerBaseline))
         font.addItem(submenuItem("Baseline", submenu: baseline))
-        font.addItem(coreItem("OpenType Features…", command: .openTypeFeatures))
-        menu.addItem(submenuItem("Font", submenu: font))
+        let features = NSMenu(title: "OpenType Features")
+        features.delegate = self
+        openTypeMenu = features
+        let featuresItem = submenuItem("OpenType Features", submenu: features)
+        featuresItem.tag = EVMenuCommand.openTypeFeatures.rawValue
+        font.addItem(featuresItem)
+        for item in font.items { font.removeItem(item); menu.addItem(item) }
 
         let color = NSMenu(title: "Color")
         color.addItem(coreItem("Show Colors", command: .showColors))
         color.addItem(coreItem("Text Color…", command: .textColor))
         color.addItem(coreItem("Highlight Color…", command: .highlightColor))
-        menu.addItem(submenuItem("Color", submenu: color))
+        menu.addItem(.separator())
+        for item in color.items { color.removeItem(item); menu.addItem(item) }
         menu.addItem(.separator())
 
-        menu.addItem(makeStyleMenu(
-            title: "Character Style",
-            role: .character,
-            baseTitle: "Base Character",
-            baseCommand: .baseCharacterStyle,
-            editCommand: .editCharacterStyles
-        ))
-        menu.addItem(makeStyleMenu(
-            title: "Paragraph Style",
-            role: .paragraph,
-            baseTitle: "Base Paragraph",
-            baseCommand: .baseParagraphStyle,
-            editCommand: .editParagraphStyles
-        ))
         menu.addItem(makeStyleMenu(
             title: "Document Style",
             role: .document,
@@ -451,7 +468,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     ) -> NSMenuItem {
         let submenu = NSMenu(title: title)
         submenu.delegate = self
-        submenu.autoenablesItems = false
+        submenu.autoenablesItems = true
         styleMenuRoles[ObjectIdentifier(submenu)] = role
         populateUnavailableStyleMenu(
             submenu,
@@ -478,6 +495,9 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             return
         }
 
+        let menuID = ObjectIdentifier(menu)
+        guard styleMenuCatalogues[menuID] != catalogue else { return }
+        styleMenuCatalogues[menuID] = catalogue
         let matching = catalogue.entries.filter { $0.role == role }
         let baseEntries = matching.filter(\.isBase)
         let namedEntries = matching.filter { !$0.isBase }
@@ -532,6 +552,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         editCommand: EVMenuCommand
     ) {
         let specification = styleMenuSpecification(for: role)
+        styleMenuCatalogues.removeValue(forKey: ObjectIdentifier(menu))
         menu.removeAllItems()
         menu.addItem(styleActionItem(
             title: baseTitle,
@@ -546,6 +567,11 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             ),
             presentation: .disabled
         ))
+        if role == .paragraph {
+            for level in 1...6 {
+                menu.addItem(coreItem("Heading \(level)", command: EVMenuCommand(rawValue: EVMenuCommand.heading0.rawValue + level)!, key: String(level)))
+            }
+        }
         menu.addItem(.separator())
         menu.addItem(styleActionItem(
             title: "Edit Styles…",
@@ -573,7 +599,14 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             action: #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:)),
             keyEquivalent: ""
         )
-        item.tag = command.rawValue
+        if payload.kind == .assign, payload.role == .paragraph,
+           let level = payload.stableID == "Paragraph" ? 0 : Int(payload.stableID.hasPrefix("Heading") ? String(payload.stableID.dropFirst(7)) : ""),
+           (0...6).contains(level) {
+            item.action = #selector(EVEditorCommandRouting.performEditorMenuCommand(_:))
+            item.tag = EVMenuCommand.heading0.rawValue + level
+            item.keyEquivalent = String(level)
+            item.keyEquivalentModifierMask = [.command]
+        } else { item.tag = command.rawValue }
         item.target = nil
         item.representedObject = payload
         item.isEnabled = presentation.isEnabled
@@ -609,7 +642,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
 
     private static func focusedStyleMenuProvider() -> (any EVStyleMenuProviding)? {
         let windows = [NSApplication.shared.keyWindow, NSApplication.shared.mainWindow]
-            .compactMap { $0 }
+            .compactMap { $0 } + NSApplication.shared.orderedWindows
         for window in windows {
             if let provider = (window.windowController as? EVDocumentWindowController)?
                 .editorSurface as? any EVStyleMenuProviding
@@ -638,7 +671,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     ) -> NSMenuItem {
         let item = NSMenuItem(
             title: title,
-            action: #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)),
+            action: command.nativeEditAction ?? #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)),
             keyEquivalent: key
         )
         item.tag = command.rawValue

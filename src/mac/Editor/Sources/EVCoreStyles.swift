@@ -160,9 +160,10 @@ enum EVStyleProperty: UInt32, CaseIterable, Hashable {
     case characterOpenTypeFeatures = 24
     case characterLetterSpacing = 25
     case characterBaselineShift = 26
+    case characterBold = 27
 
     static let characterProperties: [Self] = [
-        .characterFontFamilies, .characterSize, .characterWeight, .characterSlant,
+        .characterFontFamilies, .characterSize, .characterWeight, .characterSlant, .characterBold,
         .characterForeground, .characterBackground, .characterUnderline,
         .characterStrikethrough, .characterLanguage, .characterDirection,
         .characterOpenTypeFeatures, .characterLetterSpacing, .characterBaselineShift,
@@ -192,6 +193,7 @@ enum EVStyleProperty: UInt32, CaseIterable, Hashable {
         case .characterFontFamilies: "Font families"
         case .characterSize: "Font size"
         case .characterWeight: "Weight"
+        case .characterBold: "Bold"
         case .characterSlant: "Slant"
         case .characterForeground: "Foreground"
         case .characterBackground: "Background"
@@ -255,6 +257,12 @@ struct EVResolvedStyleProperty: Equatable {
     let dependencies: [EVStyleKey]
 
     var isDeclared: Bool { declared != nil }
+
+    var usesThemeDefault: Bool {
+        [.characterForeground, .canvasBackground].contains(property)
+            && declared == nil && contributor == nil
+            && contributorKind == UInt32(EVIM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY)
+    }
 }
 
 struct EVStyleDefinition: Equatable {
@@ -412,6 +420,14 @@ extension EVCoreDocumentBackend {
 
 @MainActor
 extension EVCoreViewSession {
+    @discardableResult
+    func setDirectCharacterProperties(_ values: [(EVStyleProperty, EVStyleValue)],
+                                      expected selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
+        let outcome = try EVCoreStyleBridge.applyDirectCharacterBatch(core: document.core, view: viewID,
+            values: values, selection: selection)
+        finishStyleEdit(outcome)
+        return outcome
+    }
     func beginStyleEditGroup(expected: EVStyleSheetIdentity) throws -> EVStyleEditGroup {
         guard viewID != 0 else { throw EVStyleBridgeError.noEditingView }
         return try EVCoreStyleBridge.beginGroup(
@@ -798,6 +814,40 @@ private enum EVCoreStyleBridge {
         }
         guard status == UInt32(EVIM_STATUS_OK) else {
             throw EVCoreFrontendError.core(operation: "Change direct formatting", status: status)
+        }
+        return outcome
+    }
+
+    static func applyDirectCharacterBatch(core: EvimCoreHandle, view: EvimViewId,
+                                         values: [(EVStyleProperty, EVStyleValue)],
+                                         selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
+        let identity = EVStyleSheetIdentity(documentID: selection.document_id,
+            documentRevision: selection.document_revision, styleSheetRevision: 0)
+        let encoded = values.map { EncodedMutation(key: .baseCharacter, expected: identity,
+            mutation: .setDeclaration($0.0, $0.1)) }
+        var requests: [EvimDirectStyleEditV1] = []
+        var outcome = EvimCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        // Nested arenas remain alive until the single batched call returns.
+        func withArenas(_ index: Int) -> UInt32 {
+            if index == encoded.count {
+                return requests.withUnsafeBufferPointer { requests in
+                    evim_core_view_edit_direct_character_batch(core, view,
+                        requests.baseAddress, UInt64(requests.count), &outcome)
+                }
+            }
+            return encoded[index].withRequest { item in
+                var request = EvimDirectStyleEditV1()
+                request.struct_size = UInt32(MemoryLayout<EvimDirectStyleEditV1>.size)
+                request.operation = item.operation; request.property = item.property
+                request.value = item.value; request.expected_selection = selection
+                requests.append(request)
+                return withArenas(index + 1)
+            }
+        }
+        let status = withArenas(0)
+        guard status == UInt32(EVIM_STATUS_OK) else {
+            throw EVCoreFrontendError.core(operation: "Change text typography", status: status)
         }
         return outcome
     }

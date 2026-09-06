@@ -221,10 +221,17 @@ pub fn move_visual_rows(
         _ => current_caret.x,
     };
     let target_row = shift_row_index(snapshot, current_row, row_delta)?;
-    let target =
-        nearest_caret(&snapshot.rows[target_row], x).ok_or(LayoutMotionError::EmptyLayout)?;
+    let row = &snapshot.rows[target_row];
+    let target = nearest_caret(row, x).ok_or(LayoutMotionError::EmptyLayout)?;
+    let mut position = position_of(target);
+    if position.text_offset == row.text_range.start && !row.text_range.is_empty() {
+        // Some shapers expose both affinities at a paragraph start. An
+        // upstream realization there must not associate the preceding
+        // paragraph separator when Normal mode chooses its block cursor.
+        position.affinity = BoundaryAffinity::Downstream;
+    }
     Ok(VisualMotionResult {
-        position: position_of(target),
+        position,
         desired_x: x,
     })
 }
@@ -941,4 +948,14 @@ mod tests {
             };
         assert_eq!(outside_viewport.edge(), LayoutDemandEdge::After);
     }
+}
+
+pub(crate) fn command_row_span(
+    snapshot: &LayoutSnapshot,
+    current: VisualPosition,
+    delta: isize,
+) -> Result<Range<usize>, LayoutMotionError> {
+    let (index, _) = locate(snapshot, current)?;
+    let target = shift_row_index(snapshot, index, delta)?;
+    Ok(index.min(target)..index.max(target) + 1)
 }

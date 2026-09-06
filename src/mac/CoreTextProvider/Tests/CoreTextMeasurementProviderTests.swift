@@ -9,16 +9,43 @@ import Testing
 
 @Suite("Core Text measurement provider")
 struct CoreTextMeasurementProviderTests {
+  @Test("Arabic and mixed bidi cluster advances equal the native shaped line")
+  func arabicClusterMetricsMatchNativeLine() throws {
+    let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 81)
+    let font = resolveFont(
+      families: ["SF Pro"], size: 14, cssWeight: 400,
+      slant: UInt32(EVIM_FONT_SLANT_UPRIGHT), features: [])
+    for text in [
+      "Arabic word مرحبا in the middle", "مرحبا بالعالم", "English العربية 123 ثم English",
+      "سَلامٌ e\u{301} 👩🏽‍💻 مرحبا",
+    ] {
+      let shaped = try shape(provider: provider, text: text, globalStart: 0)
+      let attributed = NSAttributedString(
+        string: text,
+        attributes: [
+          NSAttributedString.Key(kCTFontAttributeName as String): font,
+          NSAttributedString.Key(kCTKernAttributeName as String): CGFloat(0),
+        ])
+      let native = CTLineCreateWithAttributedString(attributed)
+      let width = CTLineGetTypographicBounds(native, nil, nil, nil)
+      let total = shaped.clusters.reduce(0.0) { $0 + Double($1.advance) }
+      #expect(abs(total - width) < 0.001, "\(text): provider \(total), native \(width)")
+    }
+  }
   @Test("Explicit font families resolve bold and italic faces")
   func explicitFamilyTraits() {
     for family in ["Helvetica", "Times New Roman", "SF Pro"] {
-      let normal = resolveFont(families: [family], size: 14, cssWeight: 400,
+      let normal = resolveFont(
+        families: [family], size: 14, cssWeight: 400,
         slant: UInt32(EVIM_FONT_SLANT_UPRIGHT), features: [])
-      let bold = resolveFont(families: [family], size: 14, cssWeight: 700,
+      let bold = resolveFont(
+        families: [family], size: 14, cssWeight: 700,
         slant: UInt32(EVIM_FONT_SLANT_UPRIGHT), features: [])
-      let italic = resolveFont(families: [family], size: 14, cssWeight: 400,
+      let italic = resolveFont(
+        families: [family], size: 14, cssWeight: 400,
         slant: UInt32(EVIM_FONT_SLANT_ITALIC), features: [])
-      let both = resolveFont(families: [family], size: 14, cssWeight: 700,
+      let both = resolveFont(
+        families: [family], size: 14, cssWeight: 700,
         slant: UInt32(EVIM_FONT_SLANT_ITALIC), features: [])
       #expect(!CTFontGetSymbolicTraits(normal).contains(.traitBold))
       #expect(!CTFontGetSymbolicTraits(normal).contains(.traitItalic))

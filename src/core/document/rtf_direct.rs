@@ -6,10 +6,15 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-fn character_property(name: &str) -> Option<StyleProperty> {
+fn character_property(name: &str, number: Option<i32>) -> Option<StyleProperty> {
     use StyleProperty::*;
     Some(match name {
-        "b" => CharacterWeight,
+        "b" => CharacterBold,
+        "evimweight" if number.is_some_and(|value| (1..=1000).contains(&value)) => CharacterWeight,
+        "evimfeatures" if number == Some(0) => CharacterOpenTypeFeatures,
+        _ if number.is_some() && rtf::feature_control_tag(name).is_some() => {
+            CharacterOpenTypeFeatures
+        }
         "i" => CharacterSlant,
         "f" => CharacterFontFamilies,
         "fs" => CharacterSize,
@@ -52,9 +57,9 @@ pub(super) fn clear_character_patches(
                     current.entry(*property).or_default().push(index);
                 }
             }
-            Kind::Control(name, _) => {
+            Kind::Control(name, number) => {
                 if let Some(property) =
-                    character_property(name).filter(|property| clear.contains(property))
+                    character_property(name, *number).filter(|property| clear.contains(property))
                 {
                     current.entry(property).or_default().push(index);
                 }
@@ -123,6 +128,7 @@ pub(super) fn clear_character_patches(
         // A removed control may have delimited a preceding control word. Keep
         // that lexical delimiter without introducing a visible space.
         let delimiter = if index > 0
+            && !selected.contains(&(index - 1))
             && matches!(&tokens[index - 1].kind, Kind::Control(_, _))
             && tokens[index - 1].range.end == token.range.start
             && !input.text[..token.range.start].ends_with(' ')
@@ -143,13 +149,30 @@ pub(super) fn clear_character_patches(
             if !chain.iter().any(|index| selected.contains(index)) {
                 continue;
             }
+            if *property == StyleProperty::CharacterOpenTypeFeatures {
+                // Each tag is a separate control in one sparse map. Restore
+                // its full scoped sequence, including any font-default reset.
+                for index in chain {
+                    let token = &tokens[*index];
+                    if matches!(&token.kind, Kind::Control(name, _) if name == "plain") {
+                        controls.push_str("\\evimfeatures0");
+                    } else {
+                        controls.push_str(input.text[token.range.clone()].trim_end());
+                    }
+                }
+                continue;
+            }
             let token = &tokens[*chain.last().unwrap()];
             if matches!(&token.kind,Kind::Control(name,_) if name=="plain") {
                 let mut selected_default = default_properties.clone();
                 for other in default_properties
                     .declared_properties()
                     .into_iter()
-                    .filter(|other| other != property)
+                    .filter(|other| {
+                        other != property
+                            && !(*property == StyleProperty::CharacterWeight
+                                && *other == StyleProperty::CharacterBold)
+                    })
                 {
                     super::style::clear_character_property(
                         &"Direct".into(),

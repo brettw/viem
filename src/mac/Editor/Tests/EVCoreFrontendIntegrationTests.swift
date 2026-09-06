@@ -143,7 +143,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
     }
 
     @MainActor
-    func testCanvasInsetsAreExcludedFromCoreViewportDimensions() throws {
+    func testDocumentPaddingUsesTheFullCoreViewport() throws {
         let backend = EVCoreDocumentBackend()
         try backend.read(source: Data("one line".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -157,8 +157,8 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
         let layout = try XCTUnwrap(surface.layoutSnapshot)
         XCTAssertEqual(CGFloat(layout.info.viewport_width), expected.width, accuracy: 0.01)
         XCTAssertEqual(CGFloat(layout.info.viewport_height), expected.height, accuracy: 0.01)
-        XCTAssertEqual(expected.width, 360)
-        XCTAssertEqual(expected.height, 212)
+        XCTAssertEqual(expected.width, 420)
+        XCTAssertEqual(expected.height, 260)
     }
 
     @MainActor

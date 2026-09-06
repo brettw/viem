@@ -1,7 +1,7 @@
 import AppKit
 import UniformTypeIdentifiers
 
-public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable {
+public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
     case plainText
     case markdown
     case markdownSource
@@ -38,6 +38,13 @@ public enum EVDocumentSerializationError: LocalizedError, Equatable {
     }
 }
 
+public enum EVRecoveryOpenDecision: Equatable {
+    case readOnly
+    case editAnyway
+    case recover(Int)
+    case cancel
+}
+
 @MainActor
 public final class EVDocument: NSDocument {
     public static let plainTextType = UTType.plainText.identifier
@@ -55,6 +62,187 @@ public final class EVDocument: NSDocument {
 
     private var activeSave: ActiveSave?
 
+    public private(set) var isReadOnly = false
+    public private(set) var wasRecovered = false
+    public private(set) var recoveryFailure: String?
+    private var recoveryStore: EVRecoveryStore?
+    private var recoveryTarget: URL?
+    private var recoveryRequestedTarget: URL?
+    private var retiredRecoveryStores: [EVRecoveryStore] = []
+    private var recoveryWriteGeneration: UInt64 = 0
+    var recoveryStoreFactory: (URL) throws -> EVRecoveryStore = { try EVRecoveryStore.claim(for: $0) }
+    private var recoveryTimer: DispatchWorkItem?
+    private var recoveryGeneration: UInt64 = 0
+    private var recoveryLifecycleObserver: NSObjectProtocol?
+    var recoveryIdleDelay: TimeInterval = 4
+    var recoveryDecisionHandler: (([EVRecoveryCandidate]) -> EVRecoveryOpenDecision)?
+    var readOnlySaveDecisionHandler: (() -> Bool)?
+
+    public override var windowForSheet: NSWindow? {
+        super.windowForSheet ?? EVDocumentWindowController.windowShowing(document: self)
+    }
+
+    public override func close() {
+        recoveryTimer?.cancel()
+        recoveryGeneration &+= 1
+        let stores = retiredRecoveryStores + (recoveryStore.map { [$0] } ?? [])
+        for store in stores { store.closeAndRemove() }
+        // Ordinary termination must not exit before its owned locks are removed.
+        for store in stores { store.waitForPendingOperations() }
+        recoveryStore = nil
+        retiredRecoveryStores.removeAll()
+        recoveryRequestedTarget = nil
+        super.close()
+    }
+
+    public override nonisolated func read(from url: URL, ofType typeName: String) throws {
+        let target = EVDocumentIdentity.canonicalURL(url)
+        let original = Result { try Data(contentsOf: target) }
+        try onMainActor {
+            let ownURLs = Set(self.retiredRecoveryStores.map(\.url) + (self.recoveryStore.map { [$0.url] } ?? []))
+            let candidates = EVRecoveryStore.candidates(for: target).filter { !ownURLs.contains($0.url) }
+            let decision = candidates.isEmpty ? EVRecoveryOpenDecision.editAnyway
+                : self.recoveryDecisionHandler?(candidates) ?? self.askRecoveryDecision(candidates, target: target)
+            if case .cancel = decision { throw CocoaError(.userCancelled) }
+            let recovered: Bool
+            switch decision {
+            case let .recover(index):
+                guard candidates.indices.contains(index), let snapshot = candidates[index].snapshot else { throw EVRecoveryError.noAvailableSlot }
+                try self.editorBackend.restoreRecovery(snapshot)
+                recovered = true
+            case .readOnly, .editAnyway:
+                try self.editorBackend.read(source: original.get(), typeName: typeName)
+                recovered = false
+            case .cancel: return
+            }
+            try self.setReadOnly(decision == .readOnly)
+            self.wasRecovered = recovered
+            self.recoveryTimer?.cancel()
+            self.recoveryGeneration &+= 1
+            self.recoveryRequestedTarget = target
+            self.beginRecovery(for: target)
+            self.synchronizeEditedState(self.editorBackend.persistenceState)
+            if self.wasRecovered { self.updateChangeCount(.changeDone) }
+        }
+    }
+
+    public func setReadOnly(_ value: Bool) throws {
+        try editorBackend.setReadOnly(value)
+        isReadOnly = value
+    }
+
+    /// Called when a previously untitled buffer acquires an original target,
+    /// including an Ex new-file path before its first explicit write.
+    public func configureRecovery(for url: URL) {
+        let target = EVDocumentIdentity.canonicalURL(url)
+        recoveryRequestedTarget = target
+        guard recoveryTarget != target || recoveryStore == nil else { return }
+        recoveryTimer?.cancel()
+        beginRecovery(for: target)
+    }
+
+    private func beginRecovery(for target: URL) {
+        do {
+            let snapshot = try editorBackend.recoverySnapshot()
+            let candidate = try recoveryStoreFactory(target)
+            if let previous = recoveryStore {
+                previous.invalidatePendingWrites()
+                retiredRecoveryStores.append(previous)
+            }
+            recoveryStore = candidate
+            recoveryTarget = target
+            writeRecovery(snapshot, to: candidate)
+        } catch { recoveryFailure = error.localizedDescription }
+    }
+
+    private func scheduleRecovery() {
+        guard recoveryStore != nil || recoveryRequestedTarget != nil else { return }
+        recoveryTimer?.cancel()
+        recoveryStore?.invalidatePendingWrites()
+        recoveryGeneration &+= 1
+        let generation = recoveryGeneration
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.recoveryGeneration == generation else { return }
+            self.captureRecoveryNow()
+        }
+        recoveryTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + recoveryIdleDelay, execute: work)
+    }
+
+    /// Copies one immutable snapshot on the document actor; JSON encoding and
+    /// file replacement run on the store's utility queue.
+    public func flushRecoverySnapshot() {
+        recoveryTimer?.cancel()
+        captureRecoveryNow()
+    }
+
+    private func captureRecoveryNow() {
+        if let target = recoveryRequestedTarget, target != recoveryTarget || recoveryStore == nil {
+            beginRecovery(for: target)
+            return
+        }
+        guard let store = recoveryStore else { return }
+        do { writeRecovery(try editorBackend.recoverySnapshot(), to: store) }
+        catch { recoveryFailure = error.localizedDescription }
+    }
+
+    private func writeRecovery(_ snapshot: EVRecoverySnapshot, to store: EVRecoveryStore) {
+        recoveryWriteGeneration &+= 1
+        let generation = recoveryWriteGeneration
+        store.write(snapshot, didCommit: { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, self.recoveryStore === store, self.recoveryWriteGeneration == generation,
+                      self.recoveryRequestedTarget == self.recoveryTarget else { return }
+                let current = self.editorBackend.persistenceState
+                guard current.documentID == snapshot.documentID && current.documentRevision == snapshot.documentRevision else {
+                    self.scheduleRecovery()
+                    return
+                }
+                self.recoveryFailure = nil
+                // Rebinding keeps the old valid snapshot until a current one
+                // has actually committed under the new target's ownership.
+                for old in self.retiredRecoveryStores {
+                    old.closeAndRemove { [weak self] in
+                        DispatchQueue.main.async { self?.retiredRecoveryStores.removeAll { $0 === old } }
+                    }
+                }
+            }
+        }, completion: { [weak self] error in
+            guard let error else { return }
+            DispatchQueue.main.async {
+                guard let self, self.recoveryStore === store, self.recoveryWriteGeneration == generation,
+                      self.recoveryRequestedTarget == self.recoveryTarget else { return }
+                self.recoveryFailure = error.localizedDescription
+            }
+        })
+    }
+
+    private func askRecoveryDecision(_ candidates: [EVRecoveryCandidate], target: URL) -> EVRecoveryOpenDecision {
+        let alert = NSAlert()
+        alert.messageText = "An editing session already exists for “\(target.lastPathComponent)”."
+        alert.informativeText = "A swap or recovery file is present. Another editor may still be using this file. Opening read-only allows editing, and requires confirmation before saving."
+        alert.addButton(withTitle: "Open Read-Only")
+        alert.addButton(withTitle: "Edit Anyway")
+        let recoverable = candidates.firstIndex { $0.snapshot != nil }
+        if recoverable != nil { alert.addButton(withTitle: "Recover") }
+        alert.addButton(withTitle: "Cancel")
+        let response = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        if response == 0 { return .readOnly }
+        if response == 1 { return .editAnyway }
+        if response == 2, let recoverable { return .recover(recoverable) }
+        return .cancel
+    }
+
+    private func confirmReadOnlySave() -> Bool {
+        if let handler = readOnlySaveDecisionHandler { return handler() }
+        let alert = NSAlert()
+        alert.messageText = "Save this read-only document?"
+        alert.informativeText = "This document was opened read-only because another editing session may exist. Saving can replace changes made by that session."
+        alert.addButton(withTitle: "Save Anyway")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     public override convenience init() {
         self.init(editorBackend: EVFrontendRegistry.makeDocumentBackend())
     }
@@ -65,11 +253,18 @@ public final class EVDocument: NSDocument {
         self.editorBackend = editorBackend
         super.init()
         configureBackendCallbacks()
+        recoveryLifecycleObserver = NotificationCenter.default.addObserver(forName: NSApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.flushRecoverySnapshot() }
+        }
         hasUndoManager = false
     }
 
+    deinit {
+        if let recoveryLifecycleObserver { NotificationCenter.default.removeObserver(recoveryLifecycleObserver) }
+    }
+
     public override class var autosavesInPlace: Bool {
-        true
+        false
     }
 
     public override class var readableTypes: [String] {
@@ -90,7 +285,7 @@ public final class EVDocument: NSDocument {
         (try? onMainActor { [Self.typeName(for: self.editorBackend.sourceFormat)] }) ?? []
     }
 
-    private static func typeName(for format: EVSourceFormat) -> String {
+    public static func typeName(for format: EVSourceFormat) -> String {
         switch format {
         case .plainText: plainTextType
         case .markdown, .markdownSource: markdownType
@@ -135,8 +330,12 @@ public final class EVDocument: NSDocument {
         }
     }
 
+    var recoveryURLForTesting: URL? { recoveryStore?.url }
+    func drainRecoveryForTesting() { recoveryStore?.drainForTesting(); retiredRecoveryStores.forEach { $0.drainForTesting() } }
+
     public override nonisolated func data(ofType typeName: String) throws -> Data {
         try onMainActor {
+            guard !self.isReadOnly || self.activeSave != nil else { throw EVRecoveryError.readOnly }
             if let activeSave = self.activeSave {
                 _ = try Self.validateSerializationType(
                     typeName,
@@ -161,6 +360,15 @@ public final class EVDocument: NSDocument {
         for saveOperation: NSDocument.SaveOperationType,
         completionHandler: @escaping (Error?) -> Void
     ) {
+        if saveOperation == .autosaveInPlaceOperation || saveOperation == .autosaveElsewhereOperation {
+            flushRecoverySnapshot()
+            completionHandler(nil)
+            return
+        }
+        guard !isReadOnly || confirmReadOnlySave() else {
+            completionHandler(CocoaError(.userCancelled))
+            return
+        }
         let snapshot: EVDocumentSaveSnapshot
         let sourceFormat: EVSourceFormat
         do {
@@ -190,11 +398,13 @@ public final class EVDocument: NSDocument {
     func saveHostRevision(
         documentID: UInt64,
         documentRevision: UInt64,
+        force: Bool = false,
         to url: URL,
         ofType typeName: String,
         for saveOperation: NSDocument.SaveOperationType,
         completionHandler: @escaping (Error?) -> Void
     ) {
+        guard !isReadOnly || force else { completionHandler(EVRecoveryError.readOnly); return }
         let snapshot: EVDocumentSaveSnapshot
         let sourceFormat: EVSourceFormat
         do {
@@ -257,8 +467,16 @@ public final class EVDocument: NSDocument {
                 completionHandler(nil)
                 return
             }
+            let target = EVDocumentIdentity.canonicalURL(url)
+            if self.recoveryTarget != target {
+                // A successful Save As already adopted its native target even
+                // when a newer edit makes the core acknowledgement stale.
+                self.configureRecovery(for: target)
+            }
             do {
                 try self.editorBackend.acknowledgeNativeSave(snapshot)
+                self.wasRecovered = false
+                self.captureRecoveryNow()
                 self.synchronizeEditedState(self.editorBackend.persistenceState)
                 completionHandler(nil)
             } catch {
@@ -335,9 +553,11 @@ public final class EVDocument: NSDocument {
     private func configureBackendCallbacks() {
         editorBackend.sourceDidChange = { [weak self] in
             self?.updateChangeCount(.changeDone)
+            self?.scheduleRecovery()
         }
         editorBackend.persistenceStateDidChange = { [weak self] state in
             self?.synchronizeEditedState(state)
+            self?.scheduleRecovery()
         }
         synchronizeEditedState(editorBackend.persistenceState)
     }
@@ -346,6 +566,7 @@ public final class EVDocument: NSDocument {
         // The source adapter can change through an undoable status option.
         // Native save validation must follow that current buffer state.
         fileType = Self.typeName(for: editorBackend.sourceFormat)
+        if !state.isDirty { wasRecovered = false }
         if state.isDirty {
             if !isDocumentEdited {
                 updateChangeCount(.changeDone)

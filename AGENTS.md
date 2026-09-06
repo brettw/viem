@@ -783,18 +783,19 @@ Initial character properties include:
 
 - an ordered font-family/fallback request, separate from the concrete font
   identities returned by the shaping provider;
-- font size in layout units, numeric weight, and slant;
-- foreground and optional background color;
+- font size in layout units, base numeric weight, slant, and semantic Bold;
+- optional foreground/background colors (unspecified foreground uses the theme);
 - underline and strike decoration;
 - language and writing-direction override;
 - OpenType feature settings; and
 - letter spacing and baseline shift.
 
-Bold and italic are command/UI conveniences that set numeric weight and slant;
-they are not separate booleans that can disagree with those properties.
+Bold is a sparse semantic Boolean separate from the selected face's base weight.
+Resolution adds 300 to that base weight, capped at 1000; native face selection
+uses the policy in the style-editor section. Italic changes the slant request.
 Portable color and font requests are value types and contain no native handles.
-The resolved character style passed to shaping contains concrete values for
-every required property.
+The resolved character style retains whether foreground/canvas colors are
+unspecified, allowing the frontend to resolve theme defaults at paint time.
 
 Initial paragraph properties include:
 
@@ -922,8 +923,13 @@ contains; only its first paragraph carries the generated marker. Independent
 source list containers remain distinct even when adjacent. The initial list
 container follows its first item's identity; surviving item identities support
 recovery when that item is deleted. Paragraphs inside an item continue to use
-Paragraph-role block styles. Generated `List1` through `List16` Paragraph styles
-provide initial indentation; supported source list properties can override it.
+Paragraph-role block styles. Generated `List1` through `List3` Paragraph styles
+provide initial indentation. Encountering or creating a deeper level synthesizes
+the missing levels on demand; unused deeper levels are not eagerly installed.
+Supported source list properties can override the defaults. Assigning one of
+these paragraph styles adjusts paragraph presentation; the separate list commands
+create or change bullet/number structure. Rich-format assignment persists the
+needed definition and assignment in the source.
 Generated markers have explicit synthetic provenance and caret/edit rules.
 
 Future List-role styles will use the same block-style record and inheritance
@@ -1464,6 +1470,15 @@ only when the canonical representation materializes a changed dependent value.
 Applying, removing, or changing a named style patches the smallest applicable
 `\sN` or `\csN` body control region.
 
+RTF's canonical eVim extension preserves semantic base weight with
+`\evimweightN` and OpenType features with scoped private control words. These
+controls are ignored by conventional RTF readers; ordinary `\b` and other
+standard controls provide the interoperable appearance fallback. eVim must retain
+feature state through partial clearing, named styles, `\plain`, and reopening.
+HTML owned version-1 style metadata accepts additive `character-bold` and
+explicit generated-style deletion declarations; inline base-weight/bold helpers
+must not leak into the owned-sheet fallback grammar.
+
 ### HTML and RTF conformance tests
 
 Each adapter has corpus, property, and targeted golden tests. At minimum:
@@ -1523,6 +1538,26 @@ Each adapter has corpus, property, and targeted golden tests. At minimum:
   styles together with enough portable semantics for the destination adapter
   to translate a paste. Plain-text system clipboard interchange is required;
   rich clipboard interchange is desirable but may be added separately.
+
+### Application theme and settings
+
+The theme is an application preference, shared across views and independent of
+source-backed named styles. It defines text foreground and canvas background,
+caret and selection colors, status foreground/background and font family/size,
+and top/left/right/bottom document-edge padding. Color values are portable sRGB.
+The macOS Settings window has a category sidebar, including Documents and Theme,
+with a live preview, native color controls, typography controls, edge-padding
+controls, presets, and restore-defaults action.
+
+A missing foreground or canvas color means **Default**, resolved through the
+theme at painting time. Generated base styles leave these colors unspecified.
+An explicit document color, including black or white, takes precedence and is
+not confused with Default. Default is not serialized as an explicit theme color.
+Theme changes never modify source bytes, style declarations, history, or dirty
+state. Color changes require only repainting. Theme padding belongs to document
+coordinates, so scrolling carries it off the visible edge; it is additive with
+explicit document-style padding and invalidates only affected view geometry.
+Padding changes preserve viewport anchors and keep large-document layout local.
 
 ### Continuous canvas and paragraph layout
 
@@ -1588,29 +1623,38 @@ source, syntax, unrelated style assignments, or width-independent shaping.
 - With wrapping off, hard lines do not reflow when the window narrows. The view
   scrolls horizontally and otherwise behaves like gVim.
 
-### Meaning of "line" while wrapped
+### Meaning of "line" and per-view line mode
 
-The central deliberate departure from gVim is vertical navigation:
+Each view has a portable line-mode policy, initially **Visual**. Clicking the
+status-bar location toggles Visual (an eye icon) and Physical Source (a file
+icon). These are original vector icons. The mode is independent of `wrap` and
+is not persisted in source. RTF does not expose Physical Source mode; changing
+a buffer to RTF returns any physical-mode views to Visual.
 
-- With wrapping on, standalone `j`, `k`, Down, and Up move by visual row.
-- With wrapping off, they move by hard line as in Vim.
-- `gj` and `gk` always move by visual row; while wrapped they are aliases for
-  `j` and `k`.
-- Vertical movement retains desired x in layout units and hit-tests that x on
-  the destination row. The desired x is reset by an explicit horizontal move,
-  mouse placement, or edit that establishes a new caret position.
-- Counts count visual rows in wrapped mode and hard lines otherwise.
-- Visual character/block selection endpoints follow the same movement rule.
-- `0`, `^`, `$`, `g0`, `g^`, and `g$` retain Vim's meanings: the first three
-  address the hard line and the `g` forms address the visual row. This keeps
-  both operations available.
-- Doubled linewise operators (`dd`, `cc`, `yy`, `>>`, `<<`) and Visual Line
-  mode operate on hard lines, not soft-wrapped rows. A soft wrap is never a
-  stored line boundary.
-- In operator-pending mode, `j` and `k` retain Vim's hard-line, linewise
-  semantics. This avoids making delete/yank results depend on window width.
-  `gj` and `gk` are visual-row characterwise motions when explicitly used.
-- Ex command ranges and line numbers always address hard lines.
+- Visual mode counts the exact displayed rows, including soft wraps. Without
+  wrapping, these are formatted hard lines. Physical Source mode counts the
+  shared line-ending projection's source-line tokens, including invisible
+  syntax and comments in text formats.
+- Standalone and operator-pending `j`/`k`, line start/end motions, doubled line
+  operators, `C`/`D`, line-oriented insertion, and Visual Line use the selected
+  mode. Counts, registers, replay, dot repeat, and undo retain that policy.
+- Explicit `g` visual-row motions keep their visual meaning. Ex addresses and
+  ranges retain their explicit formatted hard-line domain.
+- Visual vertical motion retains desired x and uses shaping caret stops;
+  physical motion retains its source column and a checked source position when
+  the destination has no visible text. Source positions must be invalidated or
+  explicitly remapped on revision changes, never interpreted in a new snapshot.
+- Deleting a visual row deletes its formatted content. An interior wrapped row
+  does not acquire an invented newline or paragraph boundary. A complete rich
+  paragraph/list-item deletion is structural and consumes its generated label.
+  A label-only visual row has an explicit list-clearing operation. Deleting a
+  physical line removes its authoritative source extent, including delimiters
+  and markup, and reparses. Neither operation guesses a contiguous reverse map.
+- Physical line registers preserve source spelling; visual fragments use
+  characterwise extents unless an actual complete hard-line extent was selected.
+- Location reporting must not lay out all preceding text. When a global visual
+  ordinal is not known exactly, display exact `hard line · visual row` instead.
+  Physical locations use exact source-line and source-column ordinals.
 
 ### Modes and caret
 
@@ -1663,7 +1707,9 @@ The Replace caret is custom rendered as a solid caret-color underline or low
 horizontal bar spanning the same associated-item geometry. An empty hard line,
 empty document, or end-of-line position has explicit block and underline
 geometry based on the current caret height and a minimum width derived from the
-active font's space advance; never assume a glyph exists under the caret.
+active font's en width (one half em); never assume a glyph exists under the
+caret. Empty documents use the current resolved typing font, not a status or
+command-line font.
 
 When an editor view is not the active first responder, its caret is a
 nonblinking hollow outline in the same geometry instead of a filled block,
@@ -1672,23 +1718,13 @@ the platform's text-cursor and accessibility preferences where those are
 available. Processing a key or changing the caret position makes it visible and
 restarts the applicable idle/blink behavior.
 
-Caret color is one centralized application appearance setting, not separate
-state in each renderer or mode. Its portable value is conceptually:
-
-```text
-CaretColorPreference = SystemCaretColor | Explicit(PortableColor)
-```
-
-`SystemCaretColor` is the default and resolves dynamically through each
-frontend's current system appearance. `Explicit` is reserved for a future
-manual setting and uses the portable color value type. The preference belongs
-to application-level appearance settings, is shared by all views unless a
-future scoped override is specified, and is persisted with other application
-preferences rather than in the document source. Every custom caret and every
-native vertical indicator in one frontend uses the same resolved color. A
-system appearance, accent, accessibility, or explicit-setting change advances
-an appearance generation and redraws visible carets without invalidating text
-layout or document state.
+Caret and selection colors belong to the application theme. Every custom
+caret and native vertical insertion indicator uses the same theme caret color.
+For recolored monochrome glyphs, convert sRGB components to linear light and
+compute relative luminance `0.2126 R + 0.7152 G + 0.0722 B`. Choose black or
+white according to whichever has the higher contrast ratio against the opaque
+caret fill; do not use a 50% brightness threshold. Theme changes redraw visible
+carets without changing document state or width-independent text shaping.
 
 ### Visual Block with proportional text
 
@@ -2070,7 +2106,8 @@ Backspace/Delete, history Up/Down, Escape, and Enter.
 
 Required Ex commands and common unambiguous abbreviations are:
 
-- files: `:edit`, `:enew`, `:write`, `:saveas`, `:quit`, `:qall`, `:wq`,
+- files/views: `:edit`, `:enew`, `:split`/`:sp`, `:vsplit`/`:vs`,
+  `:close`/`:clo`, `:write`, `:saveas`, `:quit`, `:qall`, `:wq`,
   `:xit`, `:wall`, and force `!` variants where meaningful;
 - editing: `:undo`, `:redo`, `:delete`, `:yank`, `:put`, `:join`,
   `:copy`, `:move`, and `:normal` for the supported Normal command subset;
@@ -2090,6 +2127,50 @@ results. Write commands serialize the authoritative source artifact, preserving
 unchanged source slices exactly; they never export a newly normalized formatted
 document as a substitute for the source.
 
+### Stacked document views
+
+`:split`/`:sp` and `:vsplit`/`:vs` create stacked panes. With no filename they
+create an independent view of the same buffer; with a filename they open or
+reuse that document. Despite the familiar `vs` alias, side-by-side panes are
+not supported. Each pane has its own cursor, selection, viewport, wrapping,
+line-mode policy, status bar, and scrollbar. Split creation distributes the
+available height and allows native divider resizing. Closing a pane keeps a
+shared document alive in its other panes. Save, style commands, and validation
+route to the focused pane. Closing the final view reviews unsaved changes.
+
+Document identity resolves standardized paths and symlinks and compares native
+file identity for hard links. Opening an already represented file reuses the
+same backend and history; it must not create divergent buffers for aliases.
+
+### Editing-session locks and recovery
+
+Named documents claim an exclusive recovery slot when opened or first named.
+The preferred spelling is `.filename.evim.swp`, with numbered alternate slots
+when occupied. A nonwritable source directory may use an application recovery
+directory keyed by canonical target identity. Existing eVim slots and Vim
+`.filename.swp` files trigger Open Read-Only, Edit Anyway, and Cancel choices;
+Recover is available when a valid eVim snapshot is present. Foreign swap bytes
+are never guessed or rewritten. A session only replaces/removes its own slot.
+
+Read-only is a portable buffer policy: it allows editing, registers, and history,
+but an unforced write reports E45. `:w!` and equivalent explicit force forms
+permit the write. Native Save asks Save Anyway/Cancel before writing. Recovery
+loads the saved full source plus format, encoding, and line-ending interpretation,
+retains the original target filename, and starts dirty even at the undo root.
+Only acknowledgement of a successful current Save/Save As clears that state;
+failed or alternate writes do not.
+
+After four seconds without edits, capture an immutable source snapshot and
+write its complete bytes and interpretation metadata to the owned slot. Encoding
+and I/O run on a utility queue; superseded jobs cannot overwrite newer snapshots.
+The original source changes only on explicit Save, never autosave-in-place.
+Create private temporary files exclusively, synchronize them, and atomically
+replace the owned slot. Rebinding after Save As retains the last valid backup
+until the new target's current snapshot commits. Failed opening or rebinding
+must not cancel or delete an existing valid backup. Closing a document cancels
+pending jobs and removes only owned slots; closing one shared pane is not a
+document close. Crash leftovers remain available for recovery.
+
 ### Native macOS editing affordances
 
 The macOS frontend supports mouse placement/drag selection, scroll gestures,
@@ -2104,8 +2185,8 @@ closures.
 
 ### macOS main menu
 
-The initial main-menu order is `eVim`, `File`, `Edit`, `Format`, `View`,
-`Window`, and `Help`. There are no `Navigate` or `Command` top-level menus.
+The initial main-menu order is `eVim`, `File`, `Edit`, `Format`, `Paragraph`,
+`Character`, `View`, `Window`, and `Help`. There are no `Navigate` or `Command` top-level menus.
 Vim motions, mode changes, command-line entry, registers, marks, and macros
 remain available through the Vim command grammar and any separately specified
 UI; they are not duplicated into speculative menu hierarchies.
@@ -2184,45 +2265,30 @@ The menu hierarchy is:
   - Start Dictation…
   - Emoji & Symbols (`Control-Command-Space`)
 - **Format**
-  - Font
-    - Show Fonts (`Command-T`)
-    - separator
-    - Bold (`Command-B`)
-    - Italic (`Command-I`)
-    - Underline (`Command-U`)
-    - Strikethrough
-    - separator
-    - Bigger
-    - Smaller
-    - separator
-    - Ligatures
-      - Use Default Ligatures
-      - Use All Ligatures
-      - Use No Ligatures
-    - Kerning
-      - Use Default Kerning
-      - Use No Kerning
-    - Baseline
-      - Superscript
-      - Subscript
-      - Raise
-      - Lower
-    - OpenType Features…
-  - Color
-    - Show Colors
-    - Text Color…
-    - Highlight Color…
+  - Show Fonts (`Command-T`)
+  - Bold (`Command-B`)
+  - Italic (`Command-I`)
+  - Underline (`Command-U`)
+  - Strikethrough
+  - Bigger
+  - Smaller
+  - Ligatures
+    - Use Default Ligatures
+    - Use All Ligatures
+    - Use No Ligatures
+  - Kerning
+    - Use Default Kerning
+    - Use No Kerning
+  - Baseline
+    - Superscript
+    - Subscript
+    - Raise
+    - Lower
+  - OpenType Features (available features of the current resolved font)
+  - Show Colors
+  - Text Color…
+  - Highlight Color…
   - separator
-  - Character Style
-    - Base Character
-    - dynamically listed named character styles
-    - separator
-    - Edit Styles…
-  - Paragraph Style
-    - Base Paragraph
-    - dynamically listed named paragraph styles
-    - separator
-    - Edit Styles…
   - Document Style
     - Base Document
     - dynamically listed named document styles
@@ -2253,6 +2319,17 @@ The menu hierarchy is:
   - Clear Direct Character Formatting
   - Clear Direct Paragraph Formatting
   - Clear All Direct Formatting
+- **Paragraph**
+  - Base Paragraph (`Command-0`)
+  - Heading 1 through Heading 6 (`Command-1` through `Command-6`)
+  - dynamically listed paragraph styles, including generated list levels
+  - separator
+  - Edit Styles…
+- **Character**
+  - Base Character
+  - dynamically listed named character styles
+  - separator
+  - Edit Styles…
 - **View**
   - Show Status Bar
   - separator
@@ -2288,11 +2365,22 @@ The menu hierarchy is:
   - Release Notes
   - Report a Problem…
 
+The future Windows frontend uses `Control-0` through `Control-6` for the same
+paragraph/heading assignments. Menu validation follows the focused pane and
+current format capabilities. Native menu tracking must retain item identity and
+must not rebuild the menu structure under a held mouse button; presentation
+updates must preserve normal click-drag highlighting and selection.
+
 Menu separators are presentation elements, not commands. Ellipses indicate
 that the item opens a panel, sheet, chooser, or other interaction before taking
 effect. Use standard macOS shortcuts and localized system titles where the
 platform supplies them; do not repurpose a standard shortcut for unrelated
 Vim behavior.
+
+Standard Edit actions use native responder-chain selectors. When a settings,
+style, or other native text field has focus, Cut, Copy, Paste, Select All, Undo,
+and Redo operate on that field. When the editor surface has focus, its responder
+adapts those selectors to the corresponding core commands and validation.
 
 `Word Wrap` reflects the view-local `wrap` option. `Wrap at Word Boundaries`
 reflects `linebreak` and is disabled when wrapping is off. Resizing a wrapped
@@ -2311,10 +2399,10 @@ system or dynamically supplied.
 
 Bare Vim keys such as `i`, `v`, `.`, and `:` MUST NOT be registered as global
 `NSMenu` key equivalents because they would interfere with text input and
-mode-dependent command interpretation. Every menu action dispatches the same
-typed core command or semantic intention as its keyboard equivalent and does
-not create separate AppKit editing, selection, formatting, source, or undo
-state.
+mode-dependent command interpretation. Every editor-content menu action
+dispatches the same typed core command or semantic intention as its keyboard
+equivalent and does not create separate AppKit editing, selection, formatting,
+source, or undo state.
 
 ### macOS style editor
 
@@ -2401,14 +2489,29 @@ Expose controls for all initial Character properties:
 
 - ordered font-family and fallback requests;
 - font size in layout units;
-- numeric weight and slant, with Bold and Italic conveniences;
-- foreground and optional background color;
+- a native font-face picker (Regular, Light, Bold, Italic, etc.) and separate
+  Bold and Italic toggles, with no generic numeric weight/slant fields;
+- native foreground/background color swatches, including Default/Inherited;
 - underline and strike decoration;
 - language;
 - writing-direction override;
-- OpenType feature settings;
+- an original SVG feature button opening the selected font’s supported OpenType
+  feature menu, with checkmarks and the same catalog as Format > OpenType Features;
 - letter spacing; and
 - baseline shift.
+
+Character controls form compact grouped rows, with original consistent SVG
+icons and separate B/I/U actions. Paragraph controls use corresponding alignment,
+indentation, and spacing groups. The reference images guide density and grouping;
+the interface must not be a tall generic attribute list.
+
+Font face establishes the base weight/slant. Bold is a separate portable semantic
+property: add 300 to the base weight (capped at 1000), then choose the next
+available face at least that bold, falling back to the strongest available face.
+Italic selects an intrinsic italic face when possible. Unsupported traits use
+native synthesis. Applying or removing Bold must retain the chosen base face.
+Source adapters preserve this distinction through their owned style metadata,
+with conventional interoperable bold fallback where necessary.
 
 Font-family fallback order requires an ordered editor rather than a single-font
 field. Native font and color panels may be used as transient choosers, but they
@@ -2466,6 +2569,15 @@ applicable value form the committed declaration.
 
 #### Selection validity and deletion
 
+Deleting any non-base style that is in use reassigns its content to the
+corresponding Base Paragraph or Base Character, rather than to the deleted
+style's parent. Definitions, assignments, and supporting source metadata change
+atomically and undo restores all of them. Generated heading/list definitions
+must not silently reappear after reparsing; an adapter may persist an explicit
+deletion marker in its owned schema. The three distinguished base styles remain
+undeletable. Required tests cover local edits and reopen after deletion, source
+locality, and deeper generated list levels.
+
 The selected style is tracked by document identity and stable style ID, never
 by menu index, name, or stale array position. On every style-sheet update and
 before sending an edit, the window revalidates that identity against the latest
@@ -2494,7 +2606,7 @@ to Base Paragraph, stale callback rejection, and target-document closure.
 The following are outside the initial command commitment unless a later change
 adds them here: Vimscript/Vim9script, user mappings and abbreviations, plugins,
 terminal jobs, shell filters and `:!`, tags, quickfix, diff mode, folding,
-spellchecking, code syntax highlighting, multiple Vim splits/tab pages,
+spellchecking, code syntax highlighting, Vim tab pages and side-by-side splits,
 sessions/viminfo, remote server commands, and full Vim option/regex parity.
 Architecture must not gratuitously prevent these, but do not build speculative
 subsystems for them now.
@@ -3361,8 +3473,7 @@ decision in this file or an architecture decision record first:
 - exact Unicode word/sentence segmentation tailoring;
 - exact regular-expression syntax supported by `/` and `:substitute`;
 - whether rich system clipboard formats are required for the first release;
-- default Base Document/Base Paragraph/Base Character colors and spacing, view
-  chrome insets, and other visual design choices not fixed above;
+- additional style defaults and visual design choices not fixed above;
 - hyphenation and justification; and
 - concrete latency and memory budgets for supported hardware.
 
