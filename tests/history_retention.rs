@@ -94,22 +94,38 @@ fn async_save_retains_identity_and_digest_after_its_node_is_pruned() {
 fn byte_budget_charges_derived_unicode_projections_and_history_maps() {
     let source = "éπa".repeat(1000);
     let bytes: Vec<_> = source.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut unbounded =
+        Document::from_bytes(bytes.clone(), Encoding::Utf16Le, Format::PlainText).unwrap();
+    unbounded.set_history_retention_policy(HistoryRetentionPolicy::unlimited());
+    let initial = unbounded.history_status().retained_memory_bytes;
+    for index in 0..80 {
+        unbounded.replace(0..2, if index % 2 == 0 { "δ" } else { "é" }).unwrap();
+    }
+    let unbounded_status = unbounded.history_status();
+    assert!(unbounded_status.retained_memory_bytes > initial);
+    // Calibrate a genuinely constraining heap budget. Persistent sharing can
+    // legitimately fit many history nodes into a fixed multiple of the first
+    // snapshot; a prescribed node count would test the allocation strategy.
+    let budget = initial + (unbounded_status.retained_memory_bytes - initial) / 2;
+    assert!(unbounded_status.retained_source_bytes < budget);
+
     let mut document = Document::from_bytes(bytes, Encoding::Utf16Le, Format::PlainText).unwrap();
     let root = document.history_status().current;
-    let initial = document.history_status().retained_memory_bytes;
-    let budget = initial * 4;
     document.set_history_retention_policy(HistoryRetentionPolicy::new(usize::MAX, budget));
     for index in 0..80 {
         document.replace(0..2, if index % 2 == 0 { "δ" } else { "é" }).unwrap();
+        let retained = document.history_status().retained_memory_bytes;
+        assert!(retained <= budget, "edit {index}: {retained} > {budget}");
     }
     let status = document.history_status();
     assert!(status.retained_source_bytes < 10_000);
     assert!(status.retained_memory_bytes > status.retained_source_bytes * 10);
     assert!(status.retained_memory_bytes <= budget, "{} > {budget}", status.retained_memory_bytes);
-    assert!(status.node_count < 20, "derived snapshots escaped the byte budget");
+    assert!(status.node_count < unbounded_status.node_count);
     assert!(status.can_undo);
     assert_eq!(document.select_history_node(root.node), Err(HistoryError::NodeNotFound(root.node)));
     let final_bytes = document.source_bytes();
+    assert_eq!(final_bytes, unbounded.source_bytes());
     document.try_undo().unwrap();
     document.try_redo().unwrap();
     assert_eq!(document.source_bytes(), final_bytes);

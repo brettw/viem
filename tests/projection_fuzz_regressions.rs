@@ -444,57 +444,147 @@ fn source_body_edit_after_large_code_block_keeps_projection_work_regional() {
 
 #[test]
 fn markdown_source_opening_fence_prefix_can_be_replaced() {
+    use evim_core::document::{ModelRequest, TextEdit};
+
     for source in [
         "```",
         "```\n",
         "```\na",
         "```\na\n```",
         "```\na\n```\nTail.",
-        "```\na\n```\n\nTail.",
-        "```\nline one\n\nli\r two\n```\n\nTail.",
     ] {
-    let original = encode(source, Encoding::Latin1);
-    let mut document = Document::from_bytes_with_file_format(
-        original.clone(),
-        Encoding::Latin1,
-        Format::MarkdownSource,
-        FileFormat::Unix,
-    )
-    .unwrap();
-    let mut expected = document.text().to_owned();
-    expected.replace_range(0..2, "\\");
-    let result = document.replace(0..2, "\\");
-    let mut candidate_source = source.to_owned();
-    candidate_source.replace_range(0..2, "\\");
-    let candidate = Document::from_bytes_with_file_format(
-        encode(&candidate_source, Encoding::Latin1),
-        Encoding::Latin1,
-        Format::MarkdownSource,
-        FileFormat::Unix,
-    )
-    .unwrap();
-    eprintln!(
-        "{source:?}: {result:?}; before={:?}; expected={expected:?}; projected={:?}",
-        Document::from_bytes_with_file_format(
-            original.clone(), Encoding::Latin1, Format::MarkdownSource, FileFormat::Unix
-        ).unwrap().text(),
-        candidate.text()
-    );
-    if result.is_err() {
-        continue;
+        for encoding in [
+            Encoding::Utf8,
+            Encoding::Latin1,
+            Encoding::Utf16Le,
+            Encoding::Utf16Be,
+        ] {
+            let mut document = Document::from_bytes_with_file_format(
+                encode(source, encoding),
+                encoding,
+                Format::MarkdownSource,
+                FileFormat::Unix,
+            )
+            .unwrap();
+            assert_eq!(document.text(), source);
+            let mut expected = source.to_owned();
+            expected.replace_range(0..2, "\\");
+            let prepared = document
+                .prepare_model_request(ModelRequest::ApplyTextEdits {
+                    document: document.id(),
+                    revision: document.revision(),
+                    edits: vec![TextEdit::new(0..2, "\\")],
+                })
+                .unwrap_or_else(|error| panic!("{source:?} {encoding:?}: {error:?}"));
+            assert_fence_prefix_edit(&mut document, prepared, &expected, &expected);
+        }
     }
-    assert_eq!(document.text(), expected);
+}
+
+#[test]
+fn markdown_source_fence_edit_requires_explicit_source_intent_when_breaks_reinterpret() {
+    use evim_core::document::{DocumentError, ModelRequest, ModelTransactionError, TextEdit};
+
+    // Removing the old opener makes the old closer open an unclosed code block:
+    // its following paragraph separator becomes two literal code breaks. In
+    // the second case, old code blank rows also become folded prose separators.
+    // A formatted TextEdit must not silently change these unselected breaks;
+    // a physical source edit explicitly permits reparsing their interpretation.
+    for (source, before_text, after_text) in [
+        (
+            "```\na\n```\n\nTail.",
+            "```\na\n```\nTail.",
+            "\\`\na\n```\n\nTail.",
+        ),
+        (
+            "```\nline one\n\nli\r two\n```\n\nTail.",
+            "```\nline one\n\nli\r two\n```\nTail.",
+            "\\`\nline one\nli\r two\n```\n\nTail.",
+        ),
+    ] {
+        for encoding in [
+            Encoding::Utf8,
+            Encoding::Latin1,
+            Encoding::Utf16Le,
+            Encoding::Utf16Be,
+        ] {
+            let original = encode(source, encoding);
+            let mut document = Document::from_bytes_with_file_format(
+                original.clone(),
+                encoding,
+                Format::MarkdownSource,
+                FileFormat::Unix,
+            )
+            .unwrap();
+            assert_eq!(document.text(), before_text);
+            let projection = document.projection().clone();
+            let revision = document.revision();
+            let history = document.history_status();
+            let error = document
+                .prepare_model_request(ModelRequest::ApplyTextEdits {
+                    document: document.id(),
+                    revision,
+                    edits: vec![TextEdit::new(0..2, "\\")],
+                })
+                .unwrap_err();
+            assert_eq!(
+                error,
+                ModelTransactionError::Document(DocumentError::VerificationFailed),
+                "{source:?} {encoding:?}"
+            );
+            assert_eq!(document.source_bytes(), original);
+            assert_eq!(document.projection(), &projection);
+            assert_eq!(document.revision(), revision);
+            assert_eq!(document.history_status(), history);
+
+            let prepared = document
+                .prepare_model_request(ModelRequest::ReplacePhysicalSource {
+                    document: document.id(),
+                    revision,
+                    range: 0..encode("``", encoding).len(),
+                    replacement: "\\".into(),
+                })
+                .unwrap_or_else(|error| panic!("{source:?} {encoding:?}: {error:?}"));
+            let mut expected_source = source.to_owned();
+            expected_source.replace_range(0..2, "\\");
+            assert_fence_prefix_edit(&mut document, prepared, &expected_source, after_text);
+        }
+    }
+}
+
+fn assert_fence_prefix_edit(
+    document: &mut Document,
+    prepared: evim_core::document::PreparedModelTransaction,
+    expected_source: &str,
+    expected_text: &str,
+) {
+    let original = document.source_bytes();
+    let before = document.projection().clone();
+    let patches = prepared.summary().source_patches();
+    assert_eq!(patches.len(), 1);
+    assert_eq!(patches[0].range(), 0..encode("``", document.encoding()).len());
+    assert_eq!(patches[0].replacement(), encode("\\", document.encoding()));
+    document.commit_model_transaction(prepared).unwrap();
+    let after = document.projection().clone();
+    let edited = encode(expected_source, document.encoding());
+    assert_eq!(document.source_bytes(), edited);
+    assert_eq!(document.text(), expected_text);
     let fresh = Document::from_bytes_with_file_format(
         document.source_bytes(),
-        Encoding::Latin1,
+        document.encoding(),
         Format::MarkdownSource,
         FileFormat::Unix,
     )
     .unwrap();
-    assert_eq!(document.text(), fresh.text());
-    assert_eq!(document.projection().provenance(), fresh.projection().provenance());
+    assert_eq!(fresh.text(), expected_text);
+    assert_eq!(
+        document.projection().provenance(),
+        fresh.projection().provenance()
+    );
     assert!(document.undo());
     assert_eq!(document.source_bytes(), original);
-    }
-    panic!("diagnostic");
+    assert_eq!(document.projection(), &before);
+    assert!(document.redo());
+    assert_eq!(document.source_bytes(), edited);
+    assert_eq!(document.projection(), &after);
 }

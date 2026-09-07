@@ -34,7 +34,17 @@ fn defaults_are_clean_sparse_and_source_declarations_override_them() {
         doc.initialize_style_defaults(&defaults()).unwrap();
         assert!(doc.projection().style_sheet().revision > prior_style_revision);
         assert_eq!(doc.revision(), Revision(0));
-        assert_eq!(doc.history_status(), before);
+        let after = doc.history_status();
+        // Defaults add retained configuration allocations, which must count
+        // toward the byte budget without creating an edit or moving history.
+        assert!(after.retained_memory_bytes > before.retained_memory_bytes);
+        assert_eq!(
+            after,
+            HistoryStatus {
+                retained_memory_bytes: after.retained_memory_bytes,
+                ..before
+            }
+        );
         assert_eq!(doc.source_bytes(), source.as_bytes());
         let style =
             DocumentLayoutStyles::semantic_character_at(doc.projection(), offset, false).unwrap();

@@ -11,7 +11,12 @@ use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum AllocationId {
-    Heap(usize),
+    // Arc::as_ptr identifies the payload, while Vec::as_ptr identifies its
+    // backing allocation. An empty Arc payload can point just past its
+    // allocation, at the address of an adjacent live Vec. Keep those address
+    // domains distinct even though both describe retained heap allocations.
+    Arc(usize),
+    Vector(usize),
     Owned(usize, u8),
 }
 
@@ -117,7 +122,8 @@ impl MemoryVisitor<'_> {
         if let Some(allocation) = self.ledger.allocations.get_mut(&id) {
             debug_assert_eq!(
                 allocation.bytes - allocation.children.capacity() * size_of::<AllocationId>() - 96,
-                bytes
+                bytes,
+                "retained allocation changed size: {id:?}"
             );
             allocation.references += 1;
             return;
@@ -161,7 +167,7 @@ impl MemoryVisitor<'_> {
             .saturating_add(align_of_val(value.as_ref()) - 1)
             .saturating_add(16);
         self.allocation(
-            AllocationId::Heap(Arc::as_ptr(value).cast::<u8>() as usize),
+            AllocationId::Arc(Arc::as_ptr(value).cast::<u8>() as usize),
             bytes,
             visit_children,
         );
@@ -170,7 +176,7 @@ impl MemoryVisitor<'_> {
     pub(super) fn vector<T>(&mut self, values: &Vec<T>, extra_owned_bytes: usize) {
         if values.capacity() != 0 && size_of::<T>() != 0 {
             self.allocation(
-                AllocationId::Heap(values.as_ptr() as usize),
+                AllocationId::Vector(values.as_ptr() as usize),
                 values
                     .capacity()
                     .saturating_mul(size_of::<T>())
@@ -185,6 +191,25 @@ impl MemoryVisitor<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_arc_payload_and_adjacent_vector_have_distinct_allocation_identities() {
+        // Model the legal address collision independently of allocator layout:
+        // an empty Arc payload is one-past its allocation, and the next Vec
+        // allocation can begin at exactly that address.
+        let address = 0x1000;
+        let mut memory = RetainedMemory::default();
+        let arc = memory.capture(|v| v.allocation(AllocationId::Arc(address), 32, |_| {}));
+        let vector = memory.capture(|v| v.allocation(AllocationId::Vector(address), 48, |_| {}));
+        assert_eq!(memory.allocation_count(), 2);
+        assert_eq!(memory.allocations[&AllocationId::Arc(address)].bytes, 32 + 96);
+        assert_eq!(memory.allocations[&AllocationId::Vector(address)].bytes, 48 + 96);
+        memory.release(arc);
+        assert_eq!(memory.allocation_count(), 1);
+        assert!(memory.allocations.contains_key(&AllocationId::Vector(address)));
+        memory.release(vector);
+        assert_eq!(memory.bytes(), 0);
+    }
 
     #[test]
     fn shared_subtrees_are_charged_once_and_not_revisited() {

@@ -11232,6 +11232,12 @@ impl CommandInterpreter {
             document.open_formatted_line(position)?;
             self.cursor = if above { position } else { position + 1 };
         }
+        // The newly opened line supplies the first insertion's context. An
+        // upstream affinity retained from the old cursor (for example `$`)
+        // can otherwise map a leading empty HTML line outside its paragraph.
+        self.boundary_affinity = BoundaryAffinity::Downstream;
+        self.visual_position = None;
+        self.desired_x = None;
         self.mode = Mode::Insert;
         self.insert_session = Some(InsertSession {
             placement: if above {
@@ -18287,7 +18293,10 @@ mod tests {
         let rejected = commands.handle(&mut mac, InputEvent::key('p'));
         assert_eq!(
             rejected,
-            Err(DocumentError::FormattedPayloadCannotReproject)
+            Err(DocumentError::UnrepresentableFormattedCharacter {
+                format: Format::PlainText,
+                character: '\r',
+            })
         );
         assert_eq!(mac.source_bytes(), b"a\rb");
         assert!(!mac.undo());
@@ -22776,7 +22785,19 @@ mod tests {
                 let cursor = commands.cursor();
 
                 let failed = commands.handle(&mut document, InputEvent::Key(Key::Enter));
-                assert_eq!(failed, Err(DocumentError::FormattedPayloadCannotReproject));
+                let expected_error = match file_format {
+                    // Mac projection consumes every source CR, so the scalar
+                    // itself cannot be represented as literal formatted text.
+                    FileFormat::Mac => DocumentError::UnrepresentableFormattedCharacter {
+                        format,
+                        character: '\r',
+                    },
+                    // DOS can retain a literal CR, but here it would combine
+                    // with the following bare LF and change the hard break.
+                    FileFormat::Dos => DocumentError::FormattedPayloadCannotReproject,
+                    FileFormat::Unix => unreachable!(),
+                };
+                assert_eq!(failed, Err(expected_error));
                 assert_eq!(document.source_bytes(), source);
                 assert_eq!(document.revision(), revision);
                 assert_eq!(commands.mode(), Mode::VisualCharacter);
