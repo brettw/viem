@@ -186,7 +186,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Base Paragraph", "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6", "-", "Edit Styles…",
         ])
         XCTAssertEqual(tokens(in: try submenu("Style", of: format)), [
-            "Edit document style…", "Save as default text style",
+            "Edit document style…", "Save as default text style", "Include style definitions in file",
         ])
 
         let paragraph = try submenu("Paragraph", of: format)
@@ -517,7 +517,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Base Paragraph", "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6", "Edit Styles…",
         ])
         XCTAssertEqual(try titles(in: submenu("Style", of: format)), [
-            "Edit document style…", "Save as default text style",
+            "Edit document style…", "Save as default text style", "Include style definitions in file",
         ])
 
         let paragraph = try submenu("Paragraph", of: format)

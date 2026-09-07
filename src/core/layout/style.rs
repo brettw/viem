@@ -426,7 +426,9 @@ fn validate_spans_in_tree(
     style_spans: &[StyleSpan],
 ) -> Result<(), DocumentStyleError> {
     for (index, span) in style_spans.iter().enumerate() {
-        if span.range.start >= span.range.end
+        if span.range.start > span.range.end
+            || (span.range.is_empty()
+                && span.application != StyleApplication::SourcePreservedWhitespace)
             || span.range.end > text.byte_len()
             || !text.is_char_boundary(span.range.start)?
             || !text.is_char_boundary(span.range.end)?
@@ -452,7 +454,9 @@ fn validate_blocks(text: &str, blocks: &[Block]) -> Result<(), DocumentStyleErro
 
 fn validate_spans(text: &str, style_spans: &[StyleSpan]) -> Result<(), DocumentStyleError> {
     for (index, span) in style_spans.iter().enumerate() {
-        if span.range.start >= span.range.end
+        if span.range.start > span.range.end
+            || (span.range.is_empty()
+                && span.application != StyleApplication::SourcePreservedWhitespace)
             || span.range.end > text.len()
             || !text.is_char_boundary(span.range.start)
             || !text.is_char_boundary(span.range.end)
@@ -1105,6 +1109,63 @@ mod tests {
         assert!(
             !document.projection().compatibility_text_is_materialized(),
             "regional style resolution must not flatten unrelated text"
+        );
+    }
+
+    #[test]
+    fn empty_source_whitespace_context_is_metadata_with_validated_boundaries() {
+        let text = "é";
+        let tree = FormattedTextTree::try_from_text(text).unwrap();
+        for at in [0, text.len()] {
+            let spans = [StyleSpan {
+                range: at..at,
+                application: StyleApplication::SourcePreservedWhitespace,
+            }];
+            assert!(validate_spans(text, &spans).is_ok());
+            assert!(validate_spans_in_tree(&tree, &spans).is_ok());
+        }
+        for span in [
+            StyleSpan {
+                range: 0..0,
+                application: StyleApplication::Direct(CharacterProperties::default()),
+            },
+            StyleSpan {
+                range: 0..0,
+                application: StyleApplication::Named("Code".into()),
+            },
+            StyleSpan {
+                range: 1..1,
+                application: StyleApplication::SourcePreservedWhitespace,
+            },
+            StyleSpan {
+                range: 3..3,
+                application: StyleApplication::SourcePreservedWhitespace,
+            },
+            StyleSpan {
+                range: 2..0,
+                application: StyleApplication::SourcePreservedWhitespace,
+            },
+        ] {
+            assert!(validate_spans(text, std::slice::from_ref(&span)).is_err());
+            assert!(validate_spans_in_tree(&tree, &[span]).is_err());
+        }
+        let document = Document::new(text);
+        let projection = document.projection();
+        let base = DocumentLayoutStyles::resolve(projection).unwrap();
+        let with_context = resolve_custom(
+            projection,
+            projection.style_sheet(),
+            projection.document_style(),
+            projection.blocks(),
+            &[StyleSpan {
+                range: 0..0,
+                application: StyleApplication::SourcePreservedWhitespace,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            with_context, base,
+            "point context has no layout or paint effect"
         );
     }
 

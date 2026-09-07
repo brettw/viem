@@ -143,7 +143,12 @@ pub(super) fn join_patches(
         .iter()
         .rev()
         .find(|token| matches!(&token.kind,TokenKind::Tag(tag) if paragraph(&tag.name)))
-        .or_else(|| first_stack.iter().rev().find(|token| matches!(&token.kind,TokenKind::Tag(tag) if tag.name == "li")))
+        .or_else(|| {
+            first_stack
+                .iter()
+                .rev()
+                .find(|token| matches!(&token.kind,TokenKind::Tag(tag) if tag.name == "li"))
+        })
         .copied()
         .ok_or(DocumentError::UnsupportedFormatting)?;
     let second_open = second_stack
@@ -186,7 +191,9 @@ pub(super) fn join_patches(
             TokenKind::Tag(tag) if paragraph(&tag.name) => Some(tag.name.as_str()),
             _ => None,
         })
-        .or_else(|| matches!(blocks[origin_index].kind, super::BlockKind::ListItem { .. }).then_some(""))
+        .or_else(|| {
+            matches!(blocks[origin_index].kind, super::BlockKind::ListItem { .. }).then_some("")
+        })
         .ok_or(DocumentError::UnsupportedFormatting)?;
     let parent = |stack: &Vec<&Token>| {
         stack.iter().filter(|token|matches!(&token.kind,TokenKind::Tag(tag) if structural(&tag.name)&&!paragraph(&tag.name))).map(|token|token.range.start).collect::<Vec<_>>()
@@ -212,8 +219,91 @@ pub(super) fn join_patches(
     if !edit.replacement.is_empty() {
         patches.push((
             source_at..source_at,
-            super::rich_text::escape_html_text(&edit.replacement, document.encoding()),
+            super::rich_text::escape_html_text_edit(document, source_at, edit)?,
         ));
+    }
+    // Whitespace previously trimmed at the two paragraph edges becomes inline
+    // after joining. Keep it when it can collapse with an inserted ordinary
+    // space; otherwise remove only the newly exposed whitespace, retaining
+    // every intervening element and comment.
+    let trim_before = edit
+        .replacement
+        .chars()
+        .next()
+        .map_or(true, |ch| !super::html_whitespace::collapsible(ch));
+    let trim_after = edit
+        .replacement
+        .chars()
+        .next_back()
+        .map_or(true, |ch| !super::html_whitespace::collapsible(ch));
+    if trim_before || trim_after {
+        let before = document
+            .projection()
+            .provenance_for_region(&first.range)
+            .into_iter()
+            .rev()
+            .find(|span| !span.formatted.is_empty() && !span.source.is_empty())
+            .map(|span| span.source.end);
+        let after = document
+            .projection()
+            .provenance_for_region(&second.range)
+            .into_iter()
+            .find(|span| !span.formatted.is_empty() && !span.source.is_empty())
+            .map(|span| span.source.start);
+        if let (Some(before), Some(after)) = (before, after) {
+            let mut hidden = Vec::new();
+            let mut whitespace: Vec<Range<usize>> = Vec::new();
+            for token in &tokens {
+                match &token.kind {
+                    TokenKind::Tag(tag) => {
+                        if tag.end {
+                            if let Some(index) = hidden.iter().rposition(|name| name == &tag.name) {
+                                hidden.truncate(index);
+                            }
+                        } else if !void(&tag.name)
+                            && (html::hidden(&tag.name) || html::atomic(&tag.name))
+                        {
+                            hidden.push(tag.name.clone());
+                        }
+                    }
+                    TokenKind::Text if hidden.is_empty() => {
+                        let source = converter.source_range(token.range.clone());
+                        if source.end <= before || source.start >= after {
+                            continue;
+                        }
+                        let mut at = token.range.start;
+                        while at < token.range.end {
+                            let (value, length) =
+                                html::reference(&input.text[at..token.range.end], false)
+                                    .unwrap_or_else(|| {
+                                        let ch = input.text[at..].chars().next().unwrap();
+                                        (ch.to_string(), ch.len_utf8())
+                                    });
+                            let source = converter.source_range(at..at + length);
+                            at += length;
+                            if source.start < before
+                                || source.end > after
+                                || !value.chars().all(super::html_whitespace::collapsible)
+                                || !(source.end <= source_at && trim_before
+                                    || source.start >= source_at && trim_after)
+                            {
+                                continue;
+                            }
+                            if let Some(previous) = whitespace
+                                .last_mut()
+                                .filter(|previous| previous.end == source.start)
+                            {
+                                previous.end = source.end;
+                            } else {
+                                whitespace.push(source);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            patches.extend(whitespace.into_iter().map(|range| (range, String::new())));
+        }
     }
     for token in tokens.iter().filter(|token| {
         first_open.range.end <= token.range.start && token.range.start < second_open.range.start
@@ -492,13 +582,13 @@ pub(super) fn enter_patches(
 }
 
 /// A paragraph split makes adjacent collapsible whitespace become leading or
-/// trailing whitespace. Preserve its existing formatted value explicitly so
-/// inserting a paragraph boundary cannot also delete a visible space.
-pub(super) fn split_whitespace_patches(
+/// trailing whitespace. Protect the visible space with NBSP in both source and
+/// formatted text so verification and position maps include its UTF-8 growth.
+pub(super) fn split_whitespace_protections(
     document: &super::Document,
     at: usize,
     block: &Block,
-) -> Result<Vec<(Range<usize>, String)>, DocumentError> {
+) -> Result<Vec<(Range<usize>, super::TextEdit)>, DocumentError> {
     let mut patches = Vec::new();
     let start = at.saturating_sub(1).max(block.range.start);
     let end = (at + 1).min(block.range.end);
@@ -532,10 +622,9 @@ pub(super) fn split_whitespace_patches(
             continue;
         }
         let source = super::rich_text::text_source_range(document, &range)?;
-        patches.push((
-            source,
-            super::rich_text::escape_html_text(&value, document.encoding()),
-        ));
+        let mut edit = super::TextEdit::new(range, "\u{a0}");
+        edit.html_protective_spaces.push(0);
+        patches.push((source, edit));
     }
     Ok(patches)
 }

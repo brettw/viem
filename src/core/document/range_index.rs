@@ -431,10 +431,6 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
             .as_slice()
     }
 
-    fn clear_compatibility_cache(&mut self) {
-        self.compatibility_flat = OnceLock::new();
-    }
-
     fn to_vec(&self) -> Vec<T> {
         let mut items = Vec::with_capacity(self.item_count);
         if let Some(root) = &self.root {

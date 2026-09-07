@@ -1,0 +1,295 @@
+{
+  "version": 1,
+  "scope": "Current eVim normative command matrix, adopted options and GAPS feature-family dispositions; not an exhaustive Vim index.",
+  "entries": [
+    {
+      "id": "command-surface",
+      "status": "supported",
+      "decision": "The normative command fixtures are executable matrices; counts/registers/operators/repeat/undo have separate exact-result tests.",
+      "tests": [
+        "tests/vim_command_matrix.rs",
+        "tests/vim_exact_conformance.rs",
+        "tests/vim_deep_semantics.rs"
+      ]
+    },
+    {
+      "id": "macro-repeat",
+      "status": "partial",
+      "decision": "Named/uppercase-append registers, counted/nested playback, event identity, recursion/work limits, semantic dot and :normal! are implemented. Expression/runtime and cross-file replay facilities are not adopted.",
+      "tests": [
+        "src/core/command/mod.rs",
+        "tests/vim_exact_conformance.rs"
+      ]
+    },
+    {
+      "id": "regex-v1",
+      "status": "intentional-difference",
+      "decision": "Versioned Unicode scalar syntax with semantic hard-line assertions, typed captures, resource limits, cancellation and grapheme-safe atomic edits. Vim-only atoms are rejected.",
+      "tests": [
+        "tests/regex_v1.rs",
+        "tests/regex_commands.rs",
+        "tests/captured_replacements.rs"
+      ]
+    },
+    {
+      "id": "settings",
+      "status": "supported",
+      "decision": "Versioned config.json is the native application preferences authority, with atomic writes, validation, legacy migration and unknown-key retention.",
+      "tests": [
+        "src/mac/AppShellTests/EVConfigurationStoreTests.swift",
+        "src/mac/AppShellTests/EVThemeTests.swift"
+      ]
+    },
+    {
+      "id": "format-defaults",
+      "status": "supported",
+      "decision": "Four format-specific sparse default files cascade below source declarations and never serialize inherited fields as direct formatting.",
+      "tests": [
+        "tests/user_style_defaults.rs",
+        "src/mac/AppShellTests/EVConfigurationStoreTests.swift"
+      ]
+    },
+    {
+      "id": "file-lifecycle",
+      "status": "partial",
+      "decision": ":e active-pane replacement, case-sensitive :E new window, :pwd/:cd/:checktime/:update, alternate/ranged writes and Save As use native document lifecycle. Hidden buffer/argument lists are not adopted.",
+      "tests": [
+        "tests/ex_file_commands.rs",
+        "tests/ex_persistence_bridge.rs",
+        "src/mac/AppShellTests/EVExFileWriterTests.swift",
+        "src/mac/Editor/Tests/EVNativeExFileTests.swift"
+      ]
+    },
+    {
+      "id": "recovery-and-save",
+      "status": "partial",
+      "decision": "Native recovery journal/ownership, immutable source saves, readonly guards, external-change warnings and stale overwrite protection are provided. Vim swap/backup/autoread options are not emulated.",
+      "tests": [
+        "tests/recovery_policy.rs",
+        "tests/persistence.rs",
+        "src/mac/AppShellTests/EVRecoveryStoreTests.swift",
+        "src/mac/AppShellTests/EVExternalFileChangeTests.swift"
+      ]
+    },
+    {
+      "id": "prompt-output-context-menu",
+      "status": "supported",
+      "decision": "Mouse/Shift selection, native clipboard commands, selectable read-only output with X and keyboard context menu.",
+      "tests": [
+        "tests/command_prompt_editing.rs",
+        "src/mac/Editor/Tests/EVCommandPromptEditingTests.swift"
+      ]
+    },
+    {
+      "id": "wheel-direction",
+      "status": "supported",
+      "decision": "AppKit preference-adjusted wheel deltas are consumed once.",
+      "tests": [
+        "src/mac/Editor/Tests/EVScrollWheelTests.swift"
+      ]
+    },
+    {
+      "id": "format-conversion-code",
+      "status": "supported",
+      "decision": "Explicit HTML/Markdown semantic conversion, loss warnings, explicit Latin1 replacement policy and native monospace Code/Code Block styles.",
+      "tests": [
+        "tests/format_conversion.rs",
+        "src/mac/CoreTextProvider/Tests/EVFontCatalogTests.swift"
+      ]
+    },
+    {
+      "id": "registers-marks-history",
+      "status": "partial",
+      "decision": "Stored/special clipboard/current-file/last-insert registers, local marks, typed jumps, branch-aware undo/time navigation. Session/global-file/expression registers and cross-file change lists are not adopted.",
+      "tests": [
+        "tests/special_registers.rs",
+        "tests/history_model.rs",
+        "tests/history_retention.rs",
+        "tests/undo_restoration.rs"
+      ]
+    },
+    {
+      "id": "proportional-visual-block",
+      "status": "intentional-difference",
+      "decision": "Visual-row navigation, desired x, shaped graphemes and row-tagged block extents replace terminal screen cells.",
+      "tests": [
+        "tests/view_line_modes.rs",
+        "tests/vim_deep_semantics.rs",
+        "tests/vim_command_matrix.rs"
+      ]
+    },
+    {
+      "id": "style-formatting",
+      "status": "intentional-difference",
+      "decision": "Paragraph/character styles, geometric indentation, lists and soft wrapping replace fixed-column formatting options.",
+      "tests": [
+        "tests/rich_lists.rs",
+        "tests/style_model_transactions.rs",
+        "tests/typography.rs"
+      ]
+    },
+    {
+      "id": "vim-option-universe",
+      "status": "rejected",
+      "decision": "Only actual eVim settings are accepted; no inert aliases, synthetic option types or a second Vim configuration authority.",
+      "tests": []
+    },
+    {
+      "id": "mappings-abbreviations-runtime",
+      "status": "rejected",
+      "decision": "User mappings/abbreviations, expression input, scripting, custom commands/operators and plugins remain outside the explicitly bounded command model.",
+      "tests": []
+    },
+    {
+      "id": "hidden-buffers-arglists-tabs",
+      "status": "rejected",
+      "decision": "Native documents/windows and stacked views own file lifecycle; hidden Vim buffers, argument traversal and tab-local directory state introduce a parallel model.",
+      "tests": []
+    },
+    {
+      "id": "general-ex-automation",
+      "status": "rejected",
+      "decision": "Command pipelines/modifiers, global/vglobal, retab, execute, user commands and file iteration require a separate batch/provenance policy and are not implicitly adopted by an agent-generated parity list.",
+      "tests": []
+    },
+    {
+      "id": "legacy-pattern-parity",
+      "status": "rejected",
+      "decision": "Vim regex modes, offsets, expression/case-conversion replacements and history files are outside canonical Regex v1. Incremental search/highlight decoration remains an explicit future UI capability.",
+      "tests": []
+    },
+    {
+      "id": "legacy-cell-formatting",
+      "status": "rejected",
+      "decision": "Fixed-column hard reflow, virtual terminal padding, Virtual Replace, code indentation and delimiter/tag-source motions do not define the formatted prose model.",
+      "tests": []
+    },
+    {
+      "id": "select-mode",
+      "status": "rejected",
+      "decision": "Core Visual modes plus native selection/IME provide the adopted selection model; no parallel Vim Select mode.",
+      "tests": []
+    },
+    {
+      "id": "programming-and-terminal",
+      "status": "rejected",
+      "decision": "Language tooling, syntax engines, tags/LSP/build/quickfix, shells/filters/jobs/channels and terminal buffers are outside this prose editor.",
+      "tests": []
+    },
+    {
+      "id": "remote-runtime",
+      "status": "rejected",
+      "decision": "Remote Ex, server/client scripting and interprocess automation are not exposed; native open-file routing and recovery ownership remain the supported mechanisms.",
+      "tests": []
+    },
+    {
+      "id": "compatibility-only-chrome",
+      "status": "rejected",
+      "decision": "Terminal number/whitespace gutters, gVim toolbar and broad display-option emulation are not added solely for parity; native typography/status and current accessibility stay authoritative.",
+      "tests": []
+    },
+    {
+      "id": "sort",
+      "status": "partial",
+      "decision": ":sort supports hard-line ranges, reverse, case-insensitive/unique, integer numeric bases, and Regex v1 keys as one verified source permutation. Plain/source rows, Markdown prose paragraphs and balanced sibling HTML paragraphs preserve source spelling and styles. Floating/locale sorting and ambiguous rich/RTF row ownership are unsupported.",
+      "tests": [
+        "tests/ex_sort.rs"
+      ]
+    }
+  ],
+  "options": [
+    {
+      "name": "wrap",
+      "aliases": [],
+      "type": "boolean",
+      "scope": "view",
+      "default": false,
+      "status": "supported",
+      "tests": [
+        "tests/view_line_modes.rs"
+      ]
+    },
+    {
+      "name": "linebreak",
+      "aliases": [
+        "lbr"
+      ],
+      "type": "boolean",
+      "scope": "view",
+      "default": true,
+      "status": "supported",
+      "tests": [
+        "tests/view_line_modes.rs"
+      ]
+    },
+    {
+      "name": "fileformat",
+      "aliases": [
+        "ff"
+      ],
+      "type": "enum(unix,dos,mac)",
+      "scope": "buffer",
+      "default": "unix",
+      "status": "supported",
+      "tests": [
+        "tests/line_ending_open_policy.rs",
+        "tests/ex_hard_line_semantics.rs"
+      ]
+    },
+    {
+      "name": "fileformats",
+      "aliases": [
+        "ffs"
+      ],
+      "type": "ordered-list(unix,dos,mac)",
+      "scope": "open-policy",
+      "default": [
+        "unix",
+        "dos"
+      ],
+      "status": "supported",
+      "tests": [
+        "tests/line_ending_open_policy.rs"
+      ]
+    },
+    {
+      "name": "ignorecase",
+      "aliases": [
+        "ic"
+      ],
+      "type": "boolean",
+      "scope": "buffer",
+      "default": false,
+      "status": "supported",
+      "tests": [
+        "tests/regex_commands.rs"
+      ]
+    },
+    {
+      "name": "smartcase",
+      "aliases": [
+        "sc"
+      ],
+      "type": "boolean",
+      "scope": "buffer",
+      "default": false,
+      "status": "supported",
+      "tests": [
+        "tests/regex_commands.rs"
+      ]
+    },
+    {
+      "name": "wrapscan",
+      "aliases": [
+        "ws"
+      ],
+      "type": "boolean",
+      "scope": "buffer",
+      "default": true,
+      "status": "supported",
+      "tests": [
+        "tests/regex_commands.rs"
+      ]
+    }
+  ]
+}

@@ -115,6 +115,112 @@ impl PatchComposition {
         }
         result
     }
+
+    /// Compose the verified formatted changes, including normalization and
+    /// supporting edits that were not part of the caller's original payload.
+    pub(super) fn record_formatted(
+        &mut self,
+        prepared: &PreparedModelTransaction,
+    ) -> Result<(), DocumentError> {
+        let PreparedPublication::State(state) = &prepared.publication else {
+            return Ok(());
+        };
+        let mut delta = 0isize;
+        let mut replacements = Vec::new();
+        for splice in &prepared.summary.formatted_splices {
+            let range = splice.old_range();
+            let start = range
+                .start
+                .checked_add_signed(delta)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let length = splice.inserted_len();
+            delta += length as isize - range.len() as isize;
+            let text = state
+                .projection
+                .text_tree()
+                .slice(start..start + length)
+                .map_err(DocumentError::FormattedTextStorage)?;
+            replacements.push((range, text));
+        }
+        for (range, text) in replacements.into_iter().rev() {
+            self.splice(range, text.as_bytes());
+        }
+        Ok(())
+    }
+
+    /// Recover per-byte origin from the verified speculative source. A single
+    /// composed patch may contain both new text and copied authored markup.
+    pub(super) fn source_patches(
+        self,
+        candidate: &crate::document::source::SourceSnapshot,
+    ) -> Result<Vec<SourcePatch>, DocumentError> {
+        let mut delta = 0isize;
+        self.patches()
+            .into_iter()
+            .map(|(range, bytes)| {
+                let start = range
+                    .start
+                    .checked_add_signed(delta)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let end = start
+                    .checked_add(bytes.len())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                delta += bytes.len() as isize - range.len() as isize;
+                let generated = candidate
+                    .generated_text_ranges(start..end)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                Ok(SourcePatch::primary(range, bytes).with_generated_text_ranges(generated))
+            })
+            .collect()
+    }
+
+    pub(super) fn formatted_edits(
+        self,
+        candidate: &Document,
+    ) -> Result<Vec<TextEdit>, DocumentError> {
+        let mut delta = 0isize;
+        let named = candidate.encoding().encode_fragment("&nbsp;")?;
+        self.patches()
+            .into_iter()
+            .map(|(range, bytes)| {
+                let start = range
+                    .start
+                    .checked_add_signed(delta)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                delta += bytes.len() as isize - range.len() as isize;
+                let text = String::from_utf8(bytes)
+                    .expect("formatted composition retains valid UTF-8 boundaries");
+                let mut edit = TextEdit::new(range, text);
+                if candidate.format() == Format::Html {
+                    edit.html_normalized = true;
+                    for (at, ch) in edit
+                        .replacement
+                        .char_indices()
+                        .filter(|(_, ch)| *ch == '\u{a0}')
+                    {
+                        let formatted = start + at..start + at + ch.len_utf8();
+                        let spans = candidate.projection().provenance_for_region(&formatted);
+                        if spans.iter().any(|span| {
+                            span.formatted == formatted
+                                && candidate
+                                    .state()
+                                    .source
+                                    .range_is_generated_text(span.source.clone())
+                                && candidate
+                                    .state()
+                                    .source
+                                    .bytes_in(span.source.clone())
+                                    .as_deref()
+                                    == Some(named.as_slice())
+                        }) {
+                            edit.html_protective_spaces.push(at);
+                        }
+                    }
+                }
+                Ok(edit)
+            })
+            .collect()
+    }
 }
 
 impl Document {
@@ -174,8 +280,9 @@ impl Document {
             };
             let payload = FormattedTextPayload::new(&lines, inserted, vec![])
                 .expect("journaled Replace excludes semantic hard breaks");
-            let edit =
-                FormattedPayloadEdit::new(target..end, payload).with_boundary_affinity(affinity);
+            let edit = scratch.normalize_typing_payload(
+                FormattedPayloadEdit::new(target..end, payload).with_boundary_affinity(affinity),
+            )?;
             let (prepared, after_cursor) = if values.is_empty() {
                 let prepared = scratch.prepare_formatted_payload_edits(vec![edit])?;
                 let caret = map_after(&scratch, &prepared, target)?;
@@ -198,15 +305,20 @@ impl Document {
                 let range = patch.range();
                 let start = (range.start as isize + source_delta) as usize;
                 source_delta += patch.replacement().len() as isize - range.len() as isize;
+                let origins = scratch
+                    .state()
+                    .source
+                    .generated_text_ranges(range.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
                 let old = scratch
                     .state()
                     .source
                     .bytes_in(range)
                     .ok_or(DocumentError::AmbiguousProjection)?;
-                inverse_source.push(SourcePatch::primary(
-                    start..start + patch.replacement().len(),
-                    old,
-                ));
+                inverse_source.push(
+                    SourcePatch::primary(start..start + patch.replacement().len(), old)
+                        .with_generated_text_ranges(origins),
+                );
             }
             let mut text_delta = 0isize;
             let mut inverse_text = Vec::new();
@@ -254,21 +366,8 @@ impl Document {
             cursor = after_cursor;
             target = next_target;
         }
-        let source_patches = source
-            .patches()
-            .into_iter()
-            .map(|(range, bytes)| SourcePatch::primary(range, bytes))
-            .collect();
-        let text_edits = formatted
-            .patches()
-            .into_iter()
-            .map(|(range, bytes)| {
-                TextEdit::new(
-                    range,
-                    String::from_utf8(bytes).expect("formatted patch is valid UTF-8"),
-                )
-            })
-            .collect();
+        let source_patches = source.source_patches(&scratch.state().source)?;
+        let text_edits = formatted.formatted_edits(&scratch)?;
         let prepared = self.prepare_text_edits_with_patches(text_edits, Some(source_patches))?;
         if let Some(last) = records.last_mut() {
             last.restoration.expected_revision = prepared.after_revision();
@@ -323,6 +422,21 @@ fn map_after(
 mod tests {
     use super::*;
     use crate::document::{Encoding, FontSlant};
+    #[test]
+    fn composed_patch_preserves_mixed_source_origin_when_authored_bytes_are_copied() {
+        let original = crate::document::source::SourceSnapshot::new(b"&nbsp;".to_vec());
+        let candidate = original
+            .replace_generated_text(0, 0, b"&nbsp;".to_vec())
+            .unwrap();
+        let mut composition = PatchComposition::new(original.len());
+        composition.splice(0..original.len(), &candidate.bytes());
+        let patches = composition.source_patches(&candidate).unwrap();
+        let replayed = apply_source_patches(&original, &patches).unwrap();
+        assert_eq!(replayed.bytes(), b"&nbsp;&nbsp;");
+        assert_eq!(replayed.generated_text_ranges(0..12), Some(vec![0..6]));
+        assert!(!replayed.range_is_generated_text(6..12));
+    }
+
     #[test]
     fn recorded_replacement_rejects_stale_restore_without_touching_source() {
         let mut document =
@@ -381,5 +495,25 @@ mod tests {
                 .full_text_bytes_materialized(),
             0
         );
+    }
+
+    #[test]
+    fn trailing_space_replacement_keeps_protection_and_projection_work_local() {
+        let source = format!("{}<p>AB</p>", "<p>line</p>".repeat(10_000));
+        let document =
+            Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Html).unwrap();
+        let at = document.projection().text_tree().byte_len() - 1;
+        let (prepared, _) = document
+            .prepare_recorded_replacement(at, at, " ", &[], BoundaryAffinity::Downstream)
+            .unwrap();
+        assert_eq!(prepared.summary().source_patches().len(), 1);
+        assert_eq!(
+            prepared.summary().source_patches()[0].replacement(),
+            b"&nbsp;"
+        );
+        let work = prepared.summary().projection_work();
+        assert_eq!(work.scope(), ProjectionWorkScope::RegionalHardLines);
+        assert!(work.decoded_source_bytes() < 256, "{work:?}");
+        assert_eq!(work.full_text_bytes_materialized(), 0);
     }
 }

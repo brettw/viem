@@ -48,7 +48,7 @@ fn html_entities_collapsed_whitespace_and_text_edits_keep_tags() {
     assert_eq!(document.text(), "new <text> & & & tail");
     assert_eq!(
         document.source_bytes(),
-        b"<p><b foo=\"bar\">new&#32;&lt;text&gt; &amp; &#38; &#x26;</b>  \t tail</p><!--opaque-->"
+        b"<p><b foo=\"bar\">new &lt;text&gt; &amp; &#38; &#x26;</b>  \t tail</p><!--opaque-->"
     );
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source);
@@ -347,10 +347,10 @@ fn html_deletion_and_change_preserve_spaces_and_empty_formatting_context() {
     let source = b"<p><b foo='bar'>Bold words</b> and <i>italic</i> &amp; cafe.</p>";
     let mut document = open(source, Format::Html);
     document.replace(0..10, "").unwrap();
-    assert_eq!(document.text(), " and italic & cafe.");
+    assert_eq!(document.text(), "\u{a0}and italic & cafe.");
     assert!(document
         .source_bytes()
-        .starts_with(b"<p><b foo='bar'></b><span style=\"white-space: pre-wrap\">&#32;</span>"));
+        .starts_with(b"<p><b foo='bar'></b>&nbsp;"));
     document.insert(0, "New words").unwrap();
     assert_eq!(document.text(), "New words and italic & cafe.");
     assert_eq!(
@@ -362,9 +362,9 @@ fn html_deletion_and_change_preserve_spaces_and_empty_formatting_context() {
     );
     let mut interior = open(b"<p>one words two</p>", Format::Html);
     interior.replace(4..9, "").unwrap();
-    assert_eq!(interior.text(), "one  two");
+    assert_eq!(interior.text(), "one \u{a0}two");
     interior.insert(4, "  ").unwrap();
-    assert_eq!(interior.text(), "one    two");
+    assert_eq!(interior.text(), "one \u{a0} \u{a0}two");
     assert_eq!(
         open(&interior.source_bytes(), Format::Html).text(),
         interior.text()

@@ -980,6 +980,26 @@ final class EVCoreViewSession {
         return outcome
     }
 
+    @discardableResult
+    func setIncludeStyleDefinitionsInFile(
+        _ enabled: Bool,
+        expected state: EvimDocumentStateV1
+    ) throws -> EvimCoreOutcomeV1 {
+        var request = EvimSetIncludeStyleDefinitionsV1()
+        request.struct_size = UInt32(MemoryLayout<EvimSetIncludeStyleDefinitionsV1>.size)
+        request.enabled = enabled ? 1 : 0
+        request.document_id = state.document_id
+        request.document_revision = state.document_revision
+        var outcome = EvimCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        try checked(
+            evim_core_view_set_include_style_definitions(document.core, viewID, &request, &outcome),
+            operation: "Change inclusion of style definitions"
+        )
+        finish(outcome, composition: .cancelIfChanged)
+        return outcome
+    }
+
     func listSelection() throws -> EvimLogicalSelectionIdentityV1 {
         var selection = EvimLogicalSelectionIdentityV1()
         selection.struct_size = UInt32(MemoryLayout<EvimLogicalSelectionIdentityV1>.size)

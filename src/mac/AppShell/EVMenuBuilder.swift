@@ -346,6 +346,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         let styles = NSMenu(title: "Style")
         styles.addItem(coreItem("Edit document style…", command: .editDocumentStyles))
         styles.addItem(coreItem("Save as default text style", command: .saveDefaultStyle))
+        styles.addItem(coreItem("Include style definitions in file", command: .includeStyleDefinitionsInFile))
         menu.addItem(submenuItem("Style", submenu: styles))
         menu.addItem(.separator())
 

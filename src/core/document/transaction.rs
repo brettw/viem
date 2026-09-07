@@ -28,7 +28,7 @@ use super::projection::{escape_markdown_insert, project, splice_line_local_proje
 use super::source_line_index::SourceHardLineSpliceStats;
 use super::transfer::{self, HardLineTransfer};
 use super::{
-    build_state_from_decoded, hard_line_source_image_from_state, ranges_overlap,
+    build_state_from_decoded_with_configuration, hard_line_source_image_from_state, ranges_overlap,
     spell_logical_breaks, Association, BlockProperties, BoundaryAffinity, CharacterProperties,
     ConfigurationStyleIntent, DeletionRecovery, Document, DocumentError, DocumentId, DocumentState,
     DocumentStyleAssignment, FileFormat, FileFormatOrigin, Format, FormattedDocument,
@@ -251,6 +251,11 @@ pub enum ModelRequest {
         revision: Revision,
         target: FileFormat,
     },
+    SetIncludeStyleDefinitionsInFile {
+        document: DocumentId,
+        revision: Revision,
+        enabled: bool,
+    },
     /// Switch interpretation losslessly within a family or to plain text;
     /// explicitly convert formatted semantics between HTML and Markdown.
     SetFormat {
@@ -314,6 +319,7 @@ impl ModelRequest {
             | Self::ContinueList { document, .. }
             | Self::OpenLine { document, .. }
             | Self::SetFileFormat { document, .. }
+            | Self::SetIncludeStyleDefinitionsInFile { document, .. }
             | Self::SetFormat { document, .. }
             | Self::SetEncoding { document, .. }
             | Self::ReorderHardLines { document, .. }
@@ -339,6 +345,7 @@ impl ModelRequest {
             | Self::ContinueList { revision, .. }
             | Self::OpenLine { revision, .. }
             | Self::SetFileFormat { revision, .. }
+            | Self::SetIncludeStyleDefinitionsInFile { revision, .. }
             | Self::SetFormat { revision, .. }
             | Self::SetEncoding { revision, .. }
             | Self::ReorderHardLines { revision, .. }
@@ -595,6 +602,8 @@ pub struct SourcePatch {
     part: SourcePartId,
     range: Range<usize>,
     replacement: Vec<u8>,
+    generated_text: bool,
+    generated_text_ranges: Vec<Range<usize>>,
 }
 
 impl SourcePatch {
@@ -603,7 +612,21 @@ impl SourcePatch {
             part: SourcePartId::PRIMARY,
             range,
             replacement,
+            generated_text: false,
+            generated_text_ranges: Vec::new(),
         }
+    }
+
+    fn with_generated_text(mut self, generated: bool) -> Self {
+        self.generated_text = generated;
+        self.generated_text_ranges.clear();
+        self
+    }
+
+    fn with_generated_text_ranges(mut self, ranges: Vec<Range<usize>>) -> Self {
+        self.generated_text = false;
+        self.generated_text_ranges = ranges;
+        self
     }
 
     pub fn part(&self) -> SourcePartId {
@@ -1032,6 +1055,9 @@ impl Document {
             ModelRequest::ContinueList { at, .. } => self.prepare_rich_list_enter(at),
             ModelRequest::OpenLine { at, .. } => self.prepare_open_line(at),
             ModelRequest::SetFileFormat { target, .. } => self.prepare_file_format(target),
+            ModelRequest::SetIncludeStyleDefinitionsInFile { enabled, .. } => {
+                self.prepare_html_style_definitions(enabled)
+            }
             ModelRequest::SetFormat { target, .. } => self.prepare_format(target),
             ModelRequest::SetEncoding { target, .. } => self.prepare_encoding(target),
             ModelRequest::ReorderHardLines {
@@ -1334,7 +1360,7 @@ impl Document {
         let bytes = source.bytes();
         let decoded = self.state().encoding.decode(&bytes)?;
         let evidence = detect(&decoded.text).1;
-        let mut candidate = build_state_from_decoded(
+        let mut candidate = build_state_from_decoded_with_configuration(
             source,
             decoded,
             self.state().format,
@@ -1342,6 +1368,7 @@ impl Document {
             self.state().file_format_origin,
             evidence,
             after_revision,
+            Some(self.projection().style_sheet()),
         )?;
         if candidate.projection.text() != expected_text
             || !candidate
@@ -1424,8 +1451,11 @@ impl Document {
         text_position_map: PositionMap,
         planned_history_navigation: Option<HistoryNavigation>,
         next_projected_block_id_after: u64,
-        publication: PreparedPublication,
+        mut publication: PreparedPublication,
     ) -> PreparedModelTransaction {
+        if let PreparedPublication::State(candidate) = &mut publication {
+            candidate.include_style_definitions_in_file = self.include_style_definitions_in_file();
+        }
         PreparedModelTransaction {
             document: self.id,
             before_revision: self.revision(),
@@ -1506,8 +1536,32 @@ impl Document {
         intent: PersistedStyleIntent,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         if self.format() == Format::HtmlSource {
-            let patches = super::html_source::translate_style(self, &intent)?;
-            return self.prepare_html_source_patches(patches);
+            let translated = super::html_source::translate_style(self, &intent)?;
+            if translated.patches.is_empty() {
+                if translated.style_sheet == *self.projection().style_sheet() {
+                    return Ok(self.no_op_prepared());
+                }
+                return self.prepare_html_style_sheet(
+                    translated.style_sheet,
+                    self.include_style_definitions_in_file(),
+                );
+            }
+            let mut prepared = self.prepare_html_source_patches(translated.patches)?;
+            if let PreparedPublication::State(candidate) = &mut prepared.publication {
+                let mut actual = candidate.projection.style_sheet().clone();
+                actual.retain_configuration_deletions(&translated.style_sheet);
+                actual.set_configuration_revision(translated.style_sheet.revision);
+                if actual != translated.style_sheet {
+                    return Err(DocumentError::VerificationFailed.into());
+                }
+                let assignment = candidate.projection.document_style().clone();
+                candidate.projection.install_configuration_styles(
+                    candidate.revision,
+                    actual,
+                    assignment,
+                );
+            }
+            return Ok(prepared);
         }
         if matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
             if let PersistedStyleIntent::AssignBlockStyle {
@@ -1699,6 +1753,136 @@ impl Document {
         Ok(())
     }
 
+    fn prepare_html_style_definitions(
+        &self,
+        enabled: bool,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if !matches!(self.format(), Format::Html | Format::HtmlSource) {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
+        if enabled == self.include_style_definitions_in_file() {
+            return Ok(self.no_op_prepared());
+        }
+        let mut expected = self.projection().style_sheet().clone();
+        if enabled {
+            expected.materialize_html_export_defaults();
+        } else {
+            expected.keep_all_html_native_configuration();
+        }
+        self.prepare_html_style_sheet(expected, enabled)
+    }
+
+    fn prepare_html_style_sheet(
+        &self,
+        expected: StyleSheet,
+        enabled: bool,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        let revision = Revision(self.next_revision);
+        let decoded = self.encoding().decode(&self.source_bytes())?;
+        let normalized = normalize(&decoded, self.file_format());
+        let converter = super::rich_text::Builder::new(&normalized, revision);
+        let patches = super::html_styles::definition_patches_with_policy(
+            &normalized.text,
+            self.projection().style_sheet(),
+            &expected,
+            enabled,
+        )?
+        .into_iter()
+        .map(|(range, text)| {
+            Ok(SourcePatch::primary(
+                converter.source_range(range),
+                self.encoding().encode_fragment(&text)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, DocumentError>>()?;
+        let mut prepared = if patches.is_empty() {
+            let mut candidate = self.state().clone();
+            candidate.revision = revision;
+            let assignment = candidate.projection.document_style().clone();
+            candidate.projection.install_configuration_styles(
+                revision,
+                expected.clone(),
+                assignment,
+            );
+            let map = PositionMap::for_text_snapshots(
+                self.id,
+                self.revision(),
+                revision,
+                self.projection(),
+                &candidate.projection,
+                Vec::new(),
+            )?;
+            self.prepared(
+                revision,
+                ModelChangeSummary {
+                    kind: ModelChangeKind::ConfigurationStyle,
+                    source_patches: Vec::new(),
+                    formatted_splices: Vec::new(),
+                    projection_work: ProjectionWorkStatistics::none(),
+                    style_change: None,
+                    conversion_warnings: Vec::new(),
+                },
+                map,
+                None,
+                self.next_projected_block_id,
+                PreparedPublication::State(candidate),
+            )
+        } else if self.format() == Format::HtmlSource {
+            self.prepare_html_source_patches(patches)?
+        } else {
+            self.prepare_source_only_patches(patches)?
+        };
+        if let PreparedPublication::State(candidate) = &mut prepared.publication {
+            // Relative source properties (for example vertical-align: super)
+            // depend on the configured native style while HTML is parsed.
+            let mut reparsed = build_state_from_decoded_with_configuration(
+                candidate.source.clone(),
+                self.encoding().decode(&candidate.source.bytes())?,
+                self.format(),
+                self.file_format(),
+                self.file_format_origin(),
+                self.line_ending_evidence(),
+                revision,
+                Some(&expected),
+            )?;
+            if reparsed.projection.text() != candidate.projection.text()
+                || !reparsed
+                    .projection
+                    .has_same_hard_line_structure(&candidate.projection)
+            {
+                return Err(DocumentError::VerificationFailed.into());
+            }
+            reparsed
+                .projection
+                .install_unchanged_text_storage(&candidate.projection)
+                .map_err(DocumentError::FormattedTextStorage)?;
+            reparsed
+                .projection
+                .install_source_block_ids(&candidate.projection)
+                .map_err(super::block_identity_document_error)?;
+            candidate.projection = reparsed.projection;
+            let mut work = ProjectionWorkStatistics::full(candidate);
+            work.source_decode_passes += prepared.summary.projection_work.source_decode_passes;
+            work.decoded_source_bytes += prepared.summary.projection_work.decoded_source_bytes;
+            work.projected_formatted_bytes +=
+                prepared.summary.projection_work.projected_formatted_bytes;
+            work.projected_hard_lines += prepared.summary.projection_work.projected_hard_lines;
+            prepared.summary.projection_work = work;
+            let mut actual = candidate.projection.style_sheet().clone();
+            actual.retain_configuration_deletions(&expected);
+            actual.set_configuration_revision(expected.revision);
+            if actual != expected {
+                return Err(DocumentError::VerificationFailed.into());
+            }
+            let assignment = candidate.projection.document_style().clone();
+            candidate
+                .projection
+                .install_configuration_styles(revision, actual, assignment);
+            candidate.include_style_definitions_in_file = enabled;
+        }
+        Ok(prepared)
+    }
+
     fn prepare_html_named_style(
         &self,
         intent: PersistedStyleIntent,
@@ -1711,19 +1895,27 @@ impl Document {
         let mut expected = before.clone();
         let default_assignment = match &intent {
             PersistedStyleIntent::AssignCharacterStyle { style, .. }
-                if before.has_user_default(style, true) =>
+                if before.has_user_default(style, true)
+                    && (self.include_style_definitions_in_file()
+                        || !super::html_styles::is_native_style(before, style, true)) =>
             {
                 Some((style.clone(), true))
             }
             PersistedStyleIntent::AssignBlockStyle { style, .. }
-                if before.has_user_default(style, false) =>
+                if before.has_user_default(style, false)
+                    && (self.include_style_definitions_in_file()
+                        || !super::html_styles::is_native_style(before, style, false)) =>
             {
                 Some((style.clone(), false))
             }
             _ => None,
         };
         if let Some((style, character)) = &default_assignment {
-            expected.materialize_default_definition(style, *character);
+            expected.materialize_html_default_definition(
+                style,
+                *character,
+                self.include_style_definitions_in_file(),
+            );
         }
         let syntax = match &intent {
             PersistedStyleIntent::EditStyleDefinition { edit, .. } => {
@@ -1738,11 +1930,18 @@ impl Document {
                 if !expected.apply_source_edit(edit, StyleSheetRevision(revision.0 + 1), false)? {
                     return Ok(self.no_op_prepared());
                 }
-                let mut patches =
-                    super::html_styles::definition_patches(&normalized.text, before, &expected)?
-                        .into_iter()
-                        .map(|(range, text)| (converter.source_range(range), text))
-                        .collect::<Vec<_>>();
+                if !self.include_style_definitions_in_file() {
+                    expected.keep_html_native_configuration(edit.style_id(), !edit.is_block());
+                }
+                let mut patches = super::html_styles::definition_patches_with_policy(
+                    &normalized.text,
+                    before,
+                    &expected,
+                    self.include_style_definitions_in_file(),
+                )?
+                .into_iter()
+                .map(|(range, text)| (converter.source_range(range), text))
+                .collect::<Vec<_>>();
                 if deleting {
                     patches.extend(super::html_styles::remove_assignment_patches(
                         &normalized,
@@ -1787,16 +1986,21 @@ impl Document {
                 if sources.is_empty() {
                     return Ok(self.no_op_prepared());
                 }
-                let mut patches = Vec::with_capacity(sources.len() * 2);
-                for source in sources {
-                    patches.push((
-                        source.start..source.start,
+                let (opening, closing) = if style.0 == "Code" {
+                    ("<code>".to_owned(), "</code>")
+                } else {
+                    (
                         format!(
                             "<span class=\"{}\">",
                             super::html_styles::class_name(style, true)
                         ),
-                    ));
-                    patches.push((source.end..source.end, "</span>".into()));
+                        "</span>",
+                    )
+                };
+                let mut patches = Vec::with_capacity(sources.len() * 2);
+                for source in sources {
+                    patches.push((source.start..source.start, opening.clone()));
+                    patches.push((source.end..source.end, closing.into()));
                 }
                 patches
             }
@@ -1824,85 +2028,40 @@ impl Document {
                             }
                         })
                         .map(|block| {
-                            self.projection()
-                                .source_range(block.range.clone())
-                                .ok_or(DocumentError::AmbiguousProjection)
+                            if block.range.is_empty() {
+                                let at =
+                                    super::rich_text::block_source_point(self.projection(), block)?;
+                                Ok(at..at)
+                            } else {
+                                self.projection()
+                                    .source_range(block.range.clone())
+                                    .ok_or(DocumentError::AmbiguousProjection)
+                            }
                         })
                         .collect::<Result<Vec<_>, _>>()?
                 };
-                let mut patches = super::html_styles::paragraph_assignment_patches(
+                let patches = super::html_styles::paragraph_assignment_patches(
                     &normalized,
                     &sources,
                     before,
                     style,
                 )?;
-                if style.0.starts_with("List") && default_assignment.is_none() {
-                    let owned = super::html_styles::read(&normalized.text);
-                    if !owned.rules.iter().any(|rule| {
-                        rule.definition.is_block() && rule.definition.style_id() == style
-                    }) {
-                        let supporting = if let Some(at) = owned.close {
-                            vec![(
-                                at..at,
-                                super::html_styles::write_rule(before, style, false)
-                                    .ok_or(DocumentError::UnsupportedFormatting)?,
-                            )]
-                        } else {
-                            super::html_styles::definition_patches(
-                                &normalized.text,
-                                before,
-                                before,
-                            )?
-                        };
-                        patches.splice(
-                            0..0,
-                            supporting
-                                .into_iter()
-                                .map(|(range, text)| (converter.source_range(range), text)),
-                        );
-                    }
-                }
                 patches
             }
             _ => return Err(DocumentError::UnsupportedFormatting.into()),
         };
         let mut syntax = syntax;
-        if let Some((style, character)) = default_assignment {
-            let owned = super::html_styles::read(&normalized.text);
-            if !owned.rules.iter().any(|rule| {
-                rule.definition.is_block() != character && rule.definition.style_id() == &style
-            }) {
-                let supporting = if let Some(at) = owned.close {
-                    let mut rules = String::new();
-                    let mut current = Some(style);
-                    while let Some(id) = current {
-                        if !owned.rules.iter().any(|rule| {
-                            rule.definition.is_block() != character
-                                && rule.definition.style_id() == &id
-                        }) {
-                            rules.push_str(
-                                &super::html_styles::write_rule(&expected, &id, character)
-                                    .ok_or(DocumentError::UnsupportedFormatting)?,
-                            );
-                        }
-                        current = if character {
-                            expected
-                                .character_style(&id)
-                                .and_then(|s| s.based_on.clone())
-                        } else {
-                            expected.block_style(&id).and_then(|s| s.based_on.clone())
-                        };
-                    }
-                    vec![(at..at, rules)]
-                } else {
-                    super::html_styles::definition_patches(&normalized.text, before, &expected)?
-                };
-                syntax.extend(
-                    supporting
-                        .into_iter()
-                        .map(|(range, text)| (converter.source_range(range), text)),
-                );
-            }
+        if default_assignment.is_some() {
+            syntax.extend(
+                super::html_styles::definition_patches_with_policy(
+                    &normalized.text,
+                    before,
+                    &expected,
+                    self.include_style_definitions_in_file(),
+                )?
+                .into_iter()
+                .map(|(range, text)| (converter.source_range(range), text)),
+            );
         }
         syntax.sort_by_key(|(range, _)| (range.start, range.end));
         let mut merged: Vec<(Range<usize>, String)> = Vec::new();
@@ -1928,7 +2087,7 @@ impl Document {
         validate_source_patches(&mut source_patches)?;
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let new_decoded = self.state().encoding.decode(&source.bytes())?;
-        let mut candidate = build_state_from_decoded(
+        let mut candidate = build_state_from_decoded_with_configuration(
             source,
             new_decoded,
             Format::Html,
@@ -1936,6 +2095,7 @@ impl Document {
             self.file_format_origin(),
             self.line_ending_evidence(),
             revision,
+            Some(&expected),
         )?;
         if candidate.projection.text() != self.text()
             || !candidate
@@ -2185,7 +2345,7 @@ impl Document {
         validate_source_patches(&mut source_patches)?;
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let decoded = self.state().encoding.decode(&source.bytes())?;
-        let mut candidate = build_state_from_decoded(
+        let mut candidate = build_state_from_decoded_with_configuration(
             source,
             decoded,
             Format::Rtf,
@@ -2193,6 +2353,7 @@ impl Document {
             self.file_format_origin(),
             self.line_ending_evidence(),
             revision,
+            Some(self.projection().style_sheet()),
         )?;
         if candidate.projection.text() != self.text()
             || !candidate
@@ -2420,6 +2581,23 @@ impl Document {
             return Ok(self.no_op_prepared());
         }
 
+        if matches!(self.format(), Format::Html | Format::HtmlSource) {
+            if let ConfigurationStyleIntent::EditDefinition(edit) = &intent {
+                if super::html_styles::is_native_style(
+                    &style_sheet,
+                    edit.style_id(),
+                    !edit.is_block(),
+                ) {
+                    if self.include_style_definitions_in_file() {
+                        style_sheet.materialize_html_export_defaults();
+                    } else {
+                        style_sheet
+                            .keep_html_native_configuration(edit.style_id(), !edit.is_block());
+                    }
+                }
+            }
+        }
+
         validate_projection_style_configuration(
             &configured_projection,
             &style_sheet,
@@ -2433,6 +2611,23 @@ impl Document {
             &document_style,
             &intent,
         )?;
+
+        if matches!(self.format(), Format::Html | Format::HtmlSource) {
+            if let ConfigurationStyleIntent::EditDefinition(edit) = &intent {
+                if super::html_styles::is_native_style(
+                    &style_sheet,
+                    edit.style_id(),
+                    !edit.is_block(),
+                ) {
+                    let mut prepared = self.prepare_html_style_sheet(
+                        style_sheet,
+                        self.include_style_definitions_in_file(),
+                    )?;
+                    prepared.summary.style_change = Some(style_change);
+                    return Ok(prepared);
+                }
+            }
+        }
 
         let mut candidate = self.state().clone();
         candidate.revision = after_revision;
@@ -2593,6 +2788,12 @@ impl Document {
         for edit in &edits {
             self.validate_range(&edit.range)?;
             self.validate_formatted_replacement_characters(&edit.replacement)?;
+        }
+        if explicit_source_patches.is_none() && self.format() == Format::Html {
+            edits = edits.into_iter().map(|edit| self.normalize_html_text_edit(edit))
+                .collect::<Result<Vec<_>, _>>()?;
+            let supporting_spaces = self.html_boundary_space_edits(&mut edits)?;
+            edits.extend(supporting_spaces);
         }
         edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
         for pair in edits.windows(2) {
@@ -2757,17 +2958,23 @@ impl Document {
                         runs = vec![at..at];
                     }
                     let syntax = if self.format() == Format::Html {
-                        super::rich_text::escape_html_source_edit(
-                            self,
-                            runs[0].start,
-                            &edit.replacement,
-                        )?
+                        super::rich_text::escape_html_text_edit(self, runs[0].start, edit)?
                     } else if self.source_byte_len() == 0 {
                         format!("{{\\rtf1\\ansi {}}}", super::rtf::escape(&edit.replacement))
                     } else {
                         super::rtf::escape_insertion(self, runs[0].start, &edit.replacement)?
                     };
+                    let syntax = if self.format() == Format::Html && runs.len() == 1 {
+                        if let Some((range, compact)) = super::rich_text::compact_generated_html_space(
+                            self, &TextEdit::new(edit.range.clone(), edit.replacement.as_str()), runs[0].start,
+                        )? { runs[0] = range; compact } else { syntax }
+                    } else { syntax };
                     let replacement = self.encoding().encode_fragment(&syntax)?;
+                    if self.format() == Format::Html {
+                        for range in super::html_whitespace::exposed_whitespace(self, edit, runs[0].start)? {
+                            source_patches.push(SourcePatch::primary(range, Vec::new()));
+                        }
+                    }
                     for (index, range) in runs.into_iter().enumerate() {
                         let value = if index == 0 {
                             replacement.clone()
@@ -2778,7 +2985,7 @@ impl Document {
                         } else {
                             Vec::new()
                         };
-                        source_patches.push(SourcePatch::primary(range, value));
+                        source_patches.push(SourcePatch::primary(range, value).with_generated_text(self.format() == Format::Html));
                     }
                     continue;
                 }
@@ -2814,9 +3021,7 @@ impl Document {
                         .markdown_replacement_begins_in_code(&edit.range);
                 let syntax = match self.state().format {
                     Format::MarkdownSource => self.markdown_source_replacement(edit)?,
-                    Format::PlainText | Format::HtmlSource => {
-                        edit.replacement.clone()
-                    }
+                    Format::PlainText | Format::HtmlSource => edit.replacement.clone(),
                     Format::Html => {
                         super::rich_text::escape_html_text(&edit.replacement, self.encoding())
                     }
@@ -2834,10 +3039,9 @@ impl Document {
                     Format::Markdown if in_code && !edit.replacement.contains('`') => {
                         edit.replacement.clone()
                     }
-                    Format::Markdown => {
-                        self.escape_markdown_source_text(source_range.start, &edit.replacement)?
-                            .replace('\n', "\n\n")
-                    }
+                    Format::Markdown => self
+                        .escape_markdown_source_text(source_range.start, &edit.replacement)?
+                        .replace('\n', "\n\n"),
                 };
                 let syntax = spell_logical_breaks(&syntax, self.state().file_format);
                 let replacement = self.state().encoding.encode_fragment(&syntax)?;
@@ -2853,59 +3057,6 @@ impl Document {
                     .map(|edit| &edit.range),
                 &mut source_patches,
             )?;
-        }
-        if self.format() == Format::Html {
-            for edit in &edits {
-                if !edit.replacement.is_empty() || edit.range.is_empty() {
-                    continue;
-                }
-                let line = self
-                    .projection()
-                    .hard_line_at_offset(edit.range.start)
-                    .and_then(|line| self.projection().hard_line_range(line));
-                let Some(line) = line.filter(|line| edit.range.end <= line.end) else {
-                    continue;
-                };
-                let left = if edit.range.start > line.start {
-                    self.projection()
-                        .text_tree()
-                        .slice(edit.range.start - 1..edit.range.start)
-                        .ok()
-                } else {
-                    None
-                };
-                let right = if edit.range.end < line.end {
-                    self.projection()
-                        .text_tree()
-                        .slice(edit.range.end..edit.range.end + 1)
-                        .ok()
-                } else {
-                    None
-                };
-                let retain = if right.as_deref() == Some(" ")
-                    && (left.is_none() || left.as_deref() == Some(" "))
-                {
-                    Some(edit.range.end..edit.range.end + 1)
-                } else if left.as_deref() == Some(" ") && right.is_none() {
-                    Some(edit.range.start - 1..edit.range.start)
-                } else {
-                    None
-                };
-                if let Some(range) = retain.filter(|range| {
-                    !edits
-                        .iter()
-                        .any(|edit| edit.range.start < range.end && range.start < edit.range.end)
-                }) {
-                    let source_range =
-                        super::rich_text::editable_source_range(self.projection(), &range)?;
-                    source_patches.push(SourcePatch::primary(
-                        source_range,
-                        self.state()
-                            .encoding
-                            .encode_fragment(&super::html::escape(" "))?,
-                    ));
-                }
-            }
         }
         validate_source_patches(&mut source_patches)?;
 
@@ -2959,8 +3110,7 @@ impl Document {
                 // after the ordinary semantic candidate verification passes.
                 let mut alternative = source_patches.clone();
                 alternative[0].replacement.clear();
-                let alternative_source =
-                    apply_source_patches(&self.state().source, &alternative)?;
+                let alternative_source = apply_source_patches(&self.state().source, &alternative)?;
                 match self.build_verified_text_edit_candidate(
                     alternative_source,
                     after_revision,
@@ -3093,10 +3243,16 @@ impl Document {
         let Some(line) = self.state().source_hard_lines.line_at_offset(source_at) else {
             return Err(DocumentError::AmbiguousProjection);
         };
-        let physical = self.state().source_hard_lines.get(line)
+        let physical = self
+            .state()
+            .source_hard_lines
+            .get(line)
             .ok_or(DocumentError::AmbiguousProjection)?;
         let prefix = if source_at - physical.start <= 128 {
-            let bytes = self.state().source.bytes_in(physical.start..source_at)
+            let bytes = self
+                .state()
+                .source
+                .bytes_in(physical.start..source_at)
                 .ok_or(DocumentError::AmbiguousProjection)?;
             self.encoding().decode_region(&bytes, physical.start)?.text
         } else {
@@ -3112,11 +3268,20 @@ impl Document {
             let digits = body.bytes().take_while(u8::is_ascii_digit).count();
             let punctuation = if body.starts_with(['-', '+']) {
                 Some(whitespace)
-            } else if (1..=9).contains(&digits) && matches!(body.as_bytes().get(digits), Some(b'.' | b')')) {
+            } else if (1..=9).contains(&digits)
+                && matches!(body.as_bytes().get(digits), Some(b'.' | b')'))
+            {
                 Some(whitespace + digits)
-            } else { None };
-            if let Some(at) = punctuation { escaped.insert(at, '\\'); }
-        } else if prefix.len() <= 9 && prefix.bytes().all(|byte| byte.is_ascii_digit()) && escaped.starts_with(['.', ')']) {
+            } else {
+                None
+            };
+            if let Some(at) = punctuation {
+                escaped.insert(at, '\\');
+            }
+        } else if prefix.len() <= 9
+            && prefix.bytes().all(|byte| byte.is_ascii_digit())
+            && escaped.starts_with(['.', ')'])
+        {
             escaped.insert(0, '\\');
         }
         Ok(escaped)
@@ -3133,6 +3298,7 @@ impl Document {
             self.validate_range(&edit.range)?;
             self.validate_formatted_replacement_characters(edit.payload.text())?;
         }
+        self.normalize_html_payload_edits(&mut edits)?;
         edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
         for pair in edits.windows(2) {
             let first = &pair[0].range;
@@ -3154,7 +3320,12 @@ impl Document {
             for edit in edits {
                 let mut runs = super::rich_text::text_source_runs(self, &edit.range)?;
                 if edit.range.is_empty() && self.projection().text_tree().byte_len() != 0 {
-                    if edit.boundary_affinity == Some(BoundaryAffinity::Upstream) {
+                    if edit.boundary_affinity == Some(BoundaryAffinity::Upstream)
+                        && (self.format() != Format::Html || self.projection()
+                            .hard_line_at_offset(edit.range.start)
+                            .and_then(|line| self.projection().hard_line_range(line))
+                            .is_some_and(|line| !line.is_empty()))
+                    {
                         let at = self
                             .projection()
                             .source_insertion_point(edit.range.start, false)
@@ -3167,11 +3338,7 @@ impl Document {
                     runs = vec![at..at];
                 }
                 let syntax = if self.format() == Format::Html {
-                    super::rich_text::escape_html_source_edit(
-                        self,
-                        runs[0].start,
-                        edit.payload.text(),
-                    )?
+                    super::rich_text::escape_html_text_edit(self, runs[0].start, &edit.text_edit())?
                 } else if self.source_byte_len() == 0 {
                     format!(
                         "{{\\rtf1\\ansi {}}}",
@@ -3180,7 +3347,17 @@ impl Document {
                 } else {
                     super::rtf::escape_insertion(self, runs[0].start, edit.payload.text())?
                 };
+                let syntax = if self.format() == Format::Html && runs.len() == 1 {
+                    if let Some((range, compact)) = super::rich_text::compact_generated_html_space(
+                        self, &edit.text_edit(), runs[0].start,
+                    )? { runs[0] = range; compact } else { syntax }
+                } else { syntax };
                 let replacement = self.encoding().encode_fragment(&syntax)?;
+                if self.format() == Format::Html {
+                    for range in super::html_whitespace::exposed_whitespace(self, &edit.text_edit(), runs[0].start)? {
+                        patches.push(SourcePatch::primary(range, Vec::new()));
+                    }
+                }
                 for (index, range) in runs.into_iter().enumerate() {
                     let value = if index == 0 {
                         replacement.clone()
@@ -3191,9 +3368,9 @@ impl Document {
                     } else {
                         Vec::new()
                     };
-                    patches.push(SourcePatch::primary(range, value));
+                    patches.push(SourcePatch::primary(range, value).with_generated_text(self.format() == Format::Html));
                 }
-                text_edits.push(TextEdit::new(edit.range, edit.payload.text()));
+                text_edits.push(edit.text_edit());
             }
             return self.prepare_text_edits_with_patches(text_edits, Some(patches));
         }
@@ -3216,7 +3393,7 @@ impl Document {
 
         let text_edits = edits
             .iter()
-            .map(|edit| TextEdit::new(edit.range.clone(), edit.payload.text()))
+            .map(|edit| edit.text_edit())
             .collect::<Vec<_>>();
         let old_text = self.text().to_owned();
         let mut expected_text = old_text.clone();
@@ -3280,11 +3457,7 @@ impl Document {
                     runs = vec![at..at];
                 }
                 let syntax = if self.format() == Format::Html {
-                    super::rich_text::escape_html_source_edit(
-                        self,
-                        runs[0].start,
-                        edit.payload.text(),
-                    )?
+                    super::rich_text::escape_html_text_edit(self, runs[0].start, &edit.text_edit())?
                 } else if self.source_byte_len() == 0 {
                     format!(
                         "{{\\rtf1\\ansi {}}}",
@@ -3293,7 +3466,17 @@ impl Document {
                 } else {
                     super::rtf::escape_insertion(self, runs[0].start, edit.payload.text())?
                 };
+                let syntax = if self.format() == Format::Html && runs.len() == 1 {
+                    if let Some((range, compact)) = super::rich_text::compact_generated_html_space(
+                        self, &edit.text_edit(), runs[0].start,
+                    )? { runs[0] = range; compact } else { syntax }
+                } else { syntax };
                 let replacement = self.encoding().encode_fragment(&syntax)?;
+                if self.format() == Format::Html {
+                    for range in super::html_whitespace::exposed_whitespace(self, &edit.text_edit(), runs[0].start)? {
+                        source_patches.push(SourcePatch::primary(range, Vec::new()));
+                    }
+                }
                 for (index, range) in runs.into_iter().enumerate() {
                     let value = if index == 0 {
                         replacement.clone()
@@ -3304,7 +3487,7 @@ impl Document {
                     } else {
                         Vec::new()
                     };
-                    source_patches.push(SourcePatch::primary(range, value));
+                    source_patches.push(SourcePatch::primary(range, value).with_generated_text(self.format() == Format::Html));
                 }
                 continue;
             }
@@ -3349,9 +3532,14 @@ impl Document {
                 in_code,
                 self.state().file_format,
             );
-            let syntax = if self.format() == Format::Markdown && !in_code && edit.payload.break_offsets().is_empty() {
+            let syntax = if self.format() == Format::Markdown
+                && !in_code
+                && edit.payload.break_offsets().is_empty()
+            {
                 self.escape_markdown_source_text(source_range.start, edit.payload.text())?
-            } else { syntax };
+            } else {
+                syntax
+            };
             let replacement = self.state().encoding.encode_fragment(&syntax)?;
             source_patches.push(SourcePatch::primary(source_range, replacement));
         }
@@ -4494,7 +4682,7 @@ impl Document {
                 },
             )
         };
-        let edits = vec![edit];
+        let mut edits = vec![edit];
         let mut source_targets = Vec::new();
         let mut legacy_patches = Vec::new();
         let numbering_origins = (self.format() == Format::Rtf)
@@ -4589,7 +4777,7 @@ impl Document {
                 merged.push((range, syntax));
             }
         }
-        let patches = merged
+        let mut patches = merged
             .into_iter()
             .map(|(range, syntax)| {
                 self.state()
@@ -4598,6 +4786,17 @@ impl Document {
                     .map(|bytes| SourcePatch::primary(range, bytes))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        if self.format() == Format::Html {
+            for (source, edit) in
+                super::html_paragraph::split_whitespace_protections(self, at, &block)?
+            {
+                patches.push(
+                    SourcePatch::primary(source, self.encoding().encode_fragment("&nbsp;")?)
+                        .with_generated_text(true),
+                );
+                edits.push(edit);
+            }
+        }
         self.prepare_text_edits_with_patches(edits, Some(patches))
     }
 
@@ -4665,12 +4864,9 @@ impl Document {
         }
         let decoded = self.state().encoding.decode(&self.source_bytes())?;
         let input = normalize(&decoded, self.file_format());
-        let mut syntax =
+        let syntax =
             super::html_paragraph::enter_patches(&input, source_at, extent, block, &next, sheet)?;
-        syntax.extend(super::html_paragraph::split_whitespace_patches(
-            self, at, block,
-        )?);
-        let patches = syntax
+        let mut patches = syntax
             .into_iter()
             .map(|(range, syntax)| {
                 self.state()
@@ -4679,20 +4875,51 @@ impl Document {
                     .map(|replacement| SourcePatch::primary(range, replacement))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let prepared =
-            self.prepare_text_edits_with_patches(vec![TextEdit::new(at..at, "\n")], Some(patches))?;
+        let mut edits = vec![TextEdit::new(at..at, "\n")];
+        for (source, edit) in
+            super::html_paragraph::split_whitespace_protections(self, at, block)?
+        {
+            patches.push(
+                SourcePatch::primary(source, self.encoding().encode_fragment("&nbsp;")?)
+                    .with_generated_text(true),
+            );
+            edits.push(edit);
+        }
+        let prepared = self.prepare_text_edits_with_patches(edits, Some(patches))?;
         if let PreparedPublication::State(candidate) = &prepared.publication {
+            let before = prepared
+                .text_position_map()
+                .map_text_point(
+                    self.text_point(at)?,
+                    Association::BeforeInsertion,
+                    BoundaryAffinity::Downstream,
+                    DeletionRecovery::PreferFollowingThenPreceding,
+                )?
+                .value()
+                .ok_or(DocumentError::AmbiguousProjection)?
+                .offset();
+            // A supporting replacement can begin at the same old boundary.
+            // AfterInsertion then follows that replacement too, so derive the
+            // end of the inserted break from its own recorded splice instead.
+            let inserted = prepared
+                .summary
+                .formatted_splices
+                .iter()
+                .find(|splice| splice.old_range() == (at..at))
+                .ok_or(DocumentError::VerificationFailed)?
+                .inserted_len();
+            let after = before + inserted;
             let first = candidate
                 .projection
-                .blocks_for_region(&(at..at))
+                .blocks_for_region(&(before..before))
                 .into_iter()
-                .find(|block| block.range.start <= at && at <= block.range.end)
+                .find(|block| block.range.start <= before && before <= block.range.end)
                 .ok_or(DocumentError::VerificationFailed)?;
             let following = candidate
                 .projection
-                .blocks_for_region(&(at + 1..at + 1))
+                .blocks_for_region(&(after..after))
                 .into_iter()
-                .find(|block| block.range.start == at + 1)
+                .find(|block| block.range.start == after)
                 .ok_or(DocumentError::VerificationFailed)?;
             if first.style != block.style
                 || following.style != next
@@ -5365,7 +5592,7 @@ impl Document {
         let source = apply_source_patches(&self.state().source, &patches)?;
         let decoded = self.encoding().decode(&source.bytes())?;
         let revision = Revision(self.next_revision);
-        let mut candidate = build_state_from_decoded(
+        let mut candidate = build_state_from_decoded_with_configuration(
             source,
             decoded,
             self.format(),
@@ -5373,6 +5600,7 @@ impl Document {
             self.file_format_origin(),
             self.line_ending_evidence(),
             revision,
+            Some(self.projection().style_sheet()),
         )?;
         let edits = source_backed_reprojection_edits(self.projection(), &candidate.projection);
         candidate
@@ -5472,7 +5700,7 @@ impl Document {
                 self.state().encoding.decode(&self.state().source.bytes())?,
             )
         };
-        let mut candidate = build_state_from_decoded(
+        let mut candidate = build_state_from_decoded_with_configuration(
             source,
             decoded,
             target,
@@ -5480,6 +5708,7 @@ impl Document {
             self.state().file_format_origin,
             self.state().line_ending_evidence,
             revision,
+            Some(self.projection().style_sheet()),
         )?;
         let edits = if source_patches.is_empty() {
             source_backed_reprojection_edits(self.projection(), &candidate.projection)
@@ -5578,7 +5807,7 @@ impl Document {
         if new_decoded.text != converted_text {
             return Err(DocumentError::VerificationFailed.into());
         }
-        let mut candidate = build_state_from_decoded(
+        let mut candidate = build_state_from_decoded_with_configuration(
             source,
             new_decoded,
             self.state().format,
@@ -5586,6 +5815,7 @@ impl Document {
             self.state().file_format_origin,
             self.state().line_ending_evidence,
             revision,
+            Some(self.projection().style_sheet()),
         )?;
         let edits = formatted_text_difference(self.text(), candidate.projection.text());
         candidate
@@ -5795,7 +6025,7 @@ impl Document {
         } = verification;
         let decoded = self.state().encoding.decode(&source.bytes())?;
         let evidence = detect(&decoded.text).1;
-        let mut candidate = build_state_from_decoded(
+        let mut candidate = build_state_from_decoded_with_configuration(
             source,
             decoded,
             self.state().format,
@@ -5803,6 +6033,7 @@ impl Document {
             file_format_origin,
             evidence,
             revision,
+            Some(self.projection().style_sheet()),
         )?;
         if candidate.projection.text() != expected_text {
             return Err(mismatch_error.into());
@@ -5896,6 +6127,14 @@ impl Document {
                     &edits[0],
                     new_source.start,
                     new_source.end,
+                )
+            } else if self.format() == Format::HtmlSource {
+                super::html_source::project_with_configuration(
+                    &normalized,
+                    revision,
+                    new_source.start,
+                    new_source.end,
+                    Some(self.projection().style_sheet()),
                 )
             } else {
                 project(
@@ -6021,6 +6260,7 @@ impl Document {
             return Ok(TextEditCandidate {
                 state: DocumentState {
                     revision,
+                    include_style_definitions_in_file: self.include_style_definitions_in_file(),
                     source,
                     projection,
                     source_hard_lines,
@@ -6093,10 +6333,30 @@ impl Document {
         }
         let edit = &edits[0];
         let patch = &patches[0];
+        let compacted_html_space =
+            if self.format() == Format::Html && edit.range.is_empty() && !patch.range.is_empty() {
+                let closing_length = self.encoding().encode_fragment("</span>")?.len();
+                if let Some(source_at) = patch.range.end.checked_sub(closing_length) {
+                    super::rich_text::compact_generated_html_space(self, edit, source_at)?
+                        .filter(|(range, _)| range == &patch.range)
+                        .map(|(_, syntax)| syntax)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
         let mut rtf_boundary_context_bytes = 0;
         if self.format() == Format::Rtf && !edit.range.is_empty() && edit.replacement.is_empty() {
-            let end = patch.range.end.saturating_add(64).min(self.source_byte_len());
-            let bytes = self.state().source.bytes_in(patch.range.end..end)
+            let end = patch
+                .range
+                .end
+                .saturating_add(64)
+                .min(self.source_byte_len());
+            let bytes = self
+                .state()
+                .source
+                .bytes_in(patch.range.end..end)
                 .ok_or(DocumentError::VerificationFailed)?;
             rtf_boundary_context_bytes = bytes.len();
             let decoded = self.encoding().decode_region(&bytes, patch.range.end)?;
@@ -6136,7 +6396,10 @@ impl Document {
         // uninterrupted visible source run covering exactly the replaced
         // formatted extent before inheriting any old character context.
         if edit.range.is_empty() {
-            if !patch.range.is_empty() {
+            // A generated one-space wrapper can become ordinary word spacing
+            // when typing continues. The adapter proves that exact supporting
+            // patch without permitting arbitrary formatting removal here.
+            if !patch.range.is_empty() && compacted_html_space.is_none() {
                 return Ok(None);
             }
         } else {
@@ -6161,7 +6424,11 @@ impl Document {
         // and paragraph intents may produce identical text while changing the
         // enclosing state, and must pass through a structural reparse.
         let canonical = if self.format() == Format::Html {
-            super::rich_text::escape_html_source_edit(self, patch.range.start, &edit.replacement)?
+            if let Some(compacted) = &compacted_html_space {
+                compacted.clone()
+            } else {
+                super::rich_text::escape_html_text_edit(self, patch.range.start, edit)?
+            }
         } else if markdown_code {
             edit.replacement.clone()
         } else {
@@ -6215,6 +6482,7 @@ impl Document {
         }
         let old_provenance = self.projection().provenance_for_region(&old_line);
         if edit.range.is_empty()
+            && compacted_html_space.is_none()
             && !old_provenance.iter().any(|span| {
                 !span.formatted.is_empty()
                     && (span.source.start == patch.range.start
@@ -6228,7 +6496,11 @@ impl Document {
         let (Some(first), Some(last)) = (old_provenance.first(), old_provenance.last()) else {
             return Ok(None);
         };
-        let old_source = first.source.start..last.source.end;
+        let old_source = first.source.start..if compacted_html_space.is_some() {
+            last.source.end.max(patch.range.end)
+        } else {
+            last.source.end
+        };
         if patch.range.start < old_source.start || patch.range.end > old_source.end {
             return Ok(None);
         }
@@ -6299,7 +6571,12 @@ impl Document {
         };
         if self.format() == Format::Html && !html_code {
             let content = &new_text[prefix_length..];
-            if content.starts_with(char::is_whitespace) || content.ends_with(char::is_whitespace) {
+            // Only collapsible HTML whitespace needs the enclosing block's
+            // edge context. NBSP and other Unicode spacing remain visible and
+            // can use the same exact fragment proof as ordinary characters.
+            if content.starts_with(super::html_whitespace::collapsible)
+                || content.ends_with(super::html_whitespace::collapsible)
+            {
                 return Ok(None);
             }
             let fragment = source
@@ -6311,7 +6588,13 @@ impl Document {
             bytes.extend(&sentinel);
             let decoded = self.state().encoding.decode_region(&bytes, 0)?;
             let normalized = normalize(&decoded, self.state().file_format);
-            let parsed = super::html::project(&normalized, revision, 0, bytes.len());
+            let parsed = super::html::project_with_configuration(
+                &normalized,
+                revision,
+                0,
+                bytes.len(),
+                Some(self.projection().style_sheet()),
+            );
             if parsed.text() != format!("X{content}X") {
                 return Ok(None);
             }
@@ -6338,16 +6621,23 @@ impl Document {
                         self.state().encoding.decode_region(&isolated_bytes, 0)?;
                     let isolated_normalized =
                         normalize(&isolated_decoded, self.state().file_format);
-                    let isolated = super::html::project(
+                    let isolated = super::html::project_with_configuration(
                         &isolated_normalized,
                         revision,
                         0,
                         isolated_bytes.len(),
+                        Some(self.projection().style_sheet()),
                     );
-                    if isolated.text() != format!("X{}X", edit.replacement) {
+                    let restored_space = if compacted_html_space.is_some() {
+                        " "
+                    } else {
+                        ""
+                    };
+                    if isolated.text() != format!("X{restored_space}{}X", edit.replacement) {
                         return Ok(None);
                     }
-                    inserted_whitespace_context = collect_whitespace_context(&isolated, 1);
+                    inserted_whitespace_context =
+                        collect_whitespace_context(&isolated, 1 + restored_space.len());
                 }
             }
             provenance = parsed.provenance_for_region(&(1..1 + content.len()));
@@ -6382,7 +6672,13 @@ impl Document {
                 bytes.extend_from_slice(&suffix);
                 let decoded = self.encoding().decode_region(&bytes, 0)?;
                 let normalized = normalize(&decoded, self.file_format());
-                let parsed = super::html::project(&normalized, revision, 0, bytes.len());
+                let parsed = super::html::project_with_configuration(
+                    &normalized,
+                    revision,
+                    0,
+                    bytes.len(),
+                    Some(self.projection().style_sheet()),
+                );
                 if parsed.text() != format!("X{}X", edit.replacement) {
                     return Ok(None);
                 }
@@ -6460,7 +6756,9 @@ impl Document {
             provenance.sort_by_key(|span| span.formatted.start);
             decoded_bytes = parsed_bytes + old_patch_bytes.len() + rtf_boundary_context_bytes;
         }
-        let mut sampled_at = if edit.range.is_empty() {
+        let mut sampled_at = if compacted_html_space.is_some() {
+            edit.range.start - 1
+        } else if edit.range.is_empty() {
             self.projection()
                 .provenance_for_region(&edited_line)
                 .iter()
@@ -6478,9 +6776,9 @@ impl Document {
             // its active element context from the preceding break. A nearby
             // visible character remains an exact sample across only breaks
             // and trivia; a formatting boundary requires a structural parse.
-            let nearby = self.projection().provenance_for_region(
-                &(edit.range.start.saturating_sub(1024)..edit.range.start),
-            );
+            let nearby = self
+                .projection()
+                .provenance_for_region(&(edit.range.start.saturating_sub(1024)..edit.range.start));
             let previous = nearby.iter().rev().find(|span| {
                 !span.formatted.is_empty()
                     && old_line.start <= span.formatted.start
@@ -6505,19 +6803,20 @@ impl Document {
                 .bytes_in(gap_range.clone())
                 .ok_or(DocumentError::VerificationFailed)?;
             let gap = self.encoding().decode_region(&gap_bytes, gap_range.start)?;
-            let unchanged_context = super::html::tokenize(&gap.text).iter().all(|token| {
-                match &token.kind {
-                    super::html::TokenKind::Tag(tag) => tag.name == "br" && !tag.end,
-                    super::html::TokenKind::Text => gap.text[token.range.clone()]
-                        .chars()
-                        .all(|c| matches!(c, ' ' | '\t' | '\r' | '\n' | '\u{000c}')),
-                    super::html::TokenKind::Opaque => {
-                        let text = &gap.text[token.range.clone()];
-                        text.starts_with("<!--") && text.ends_with("-->")
-                    }
-                    _ => false,
-                }
-            });
+            let unchanged_context =
+                super::html::tokenize(&gap.text)
+                    .iter()
+                    .all(|token| match &token.kind {
+                        super::html::TokenKind::Tag(tag) => tag.name == "br" && !tag.end,
+                        super::html::TokenKind::Text => gap.text[token.range.clone()]
+                            .chars()
+                            .all(|c| matches!(c, ' ' | '\t' | '\r' | '\n' | '\u{000c}')),
+                        super::html::TokenKind::Opaque => {
+                            let text = &gap.text[token.range.clone()];
+                            text.starts_with("<!--") && text.ends_with("-->")
+                        }
+                        _ => false,
+                    });
             if !unchanged_context {
                 return Ok(None);
             }
@@ -6532,8 +6831,15 @@ impl Document {
             .collect::<Vec<_>>();
         let mut styles = Vec::new();
         for span in old_styles {
-            if span.range.start < edit.range.start {
-                let end = span.range.end.min(edit.range.start);
+            let prefix_end = if compacted_html_space.is_some()
+                && span.application == StyleApplication::SourcePreservedWhitespace
+            {
+                edit.range.start - 1
+            } else {
+                edit.range.start
+            };
+            if span.range.start < prefix_end {
+                let end = span.range.end.min(prefix_end);
                 styles.push(StyleSpan {
                     range: span.range.start - old_line.start..end - old_line.start,
                     application: span.application.clone(),
@@ -6602,8 +6908,26 @@ impl Document {
             .collect::<Result<Vec<_>, DocumentError>>()?;
         regional.install_hard_line_partition(hard_line_ranges);
         let projected_bytes = regional.text().len();
-        let (projection, range_work) = match splice_line_local_projection(
-            self.projection(),
+        let relocated_boundary = if compacted_html_space.is_some() {
+            let closing_length = self.encoding().encode_fragment("</span>")?.len();
+            match self
+                .projection()
+                .relocate_synthetic_hard_line_source_boundary(
+                    old_line.end,
+                    patch.range.end - closing_length,
+                    patch.range.end,
+                ) {
+                Ok(value) => value,
+                Err(_) => return Ok(None),
+            }
+        } else {
+            None
+        };
+        let previous_projection = relocated_boundary
+            .as_ref()
+            .map_or(self.projection(), |(projection, _)| projection);
+        let (projection, mut range_work) = match splice_line_local_projection(
+            previous_projection,
             regional,
             revision,
             first_line..last_line + 1,
@@ -6617,6 +6941,9 @@ impl Document {
             Ok(value) => value,
             Err(_) => return Ok(None),
         };
+        if let Some((_, boundary_work)) = relocated_boundary {
+            range_work.include(boundary_work);
+        }
         let physical_end =
             rebase_source_boundary(physical.end, patches, Association::AfterInsertion)?;
         let (source_hard_lines, source_line_work) = self
@@ -6629,6 +6956,7 @@ impl Document {
             .ok_or(DocumentError::VerificationFailed)?;
         let state = DocumentState {
             revision,
+            include_style_definitions_in_file: self.include_style_definitions_in_file(),
             source: source.clone(),
             projection,
             source_hard_lines,
@@ -6806,10 +7134,14 @@ impl Document {
             // break is prose whitespace. Capture one unchanged neighbor on
             // each side, never the complete (possibly enormous) flow group.
             let neighbor_is_code = |line| {
-                self.projection().hard_line_range(line).is_some_and(|range| {
-                    self.projection().blocks_for_region(&range).iter()
-                        .any(|block| block.style.0 == "Code Block")
-                })
+                self.projection()
+                    .hard_line_range(line)
+                    .is_some_and(|range| {
+                        self.projection()
+                            .blocks_for_region(&range)
+                            .iter()
+                            .any(|block| block.style.0 == "Code Block")
+                    })
             };
             // A closing fence cannot be parsed in isolation as the preceding
             // neighbor: it would become an opening fence. Code boundaries are
@@ -6968,11 +7300,12 @@ impl Document {
                 .ok_or(DocumentError::VerificationFailed)?;
             let decoded = self.encoding().decode_region(&bytes, old_source.start)?;
             let normalized = normalize(&decoded, self.file_format());
-            let isolated = super::html_source::project(
+            let isolated = super::html_source::project_with_configuration(
                 &normalized,
                 self.revision(),
                 old_source.start,
                 old_source.end,
+                Some(self.projection().style_sheet()),
             );
             let mut old_styles = self.projection().style_spans_for_region(&old_formatted);
             if old_styles.iter().any(|span| {
@@ -7618,13 +7951,15 @@ fn apply_source_patches(
 ) -> Result<super::source::SourceSnapshot, ModelTransactionError> {
     let mut candidate = source.clone();
     for patch in patches.iter().rev() {
-        candidate = candidate
-            .replace(
-                patch.range.start,
-                patch.range.end,
-                patch.replacement.clone(),
+        candidate = if !patch.generated_text_ranges.is_empty() {
+            candidate.replace_with_generated_text_ranges(
+                patch.range.start, patch.range.end, patch.replacement.clone(), &patch.generated_text_ranges,
             )
-            .ok_or(DocumentError::AmbiguousProjection)?;
+        } else if patch.generated_text {
+            candidate.replace_generated_text(patch.range.start, patch.range.end, patch.replacement.clone())
+        } else {
+            candidate.replace(patch.range.start, patch.range.end, patch.replacement.clone())
+        }.ok_or(DocumentError::AmbiguousProjection)?;
     }
     Ok(candidate)
 }

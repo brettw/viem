@@ -6,7 +6,23 @@
 
 use std::cmp::Ordering;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
+
+static NEXT_SOURCE_SNAPSHOT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Identity of one immutable source revision, retained independently of any
+/// undo node or projection. Clones preserve it; real source edits replace it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SourceSnapshotIdentity(u64);
+
+impl SourceSnapshotIdentity {
+    fn fresh() -> Self {
+        Self(NEXT_SOURCE_SNAPSHOT_ID.fetch_update(
+            AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |id| id.checked_add(1),
+        ).expect("source snapshot identity exhausted"))
+    }
+}
 
 /// Deterministic digest of the exact serialized bytes in one source artifact.
 ///
@@ -28,6 +44,7 @@ impl SourceArtifactDigest {
 
 #[derive(Clone, Debug)]
 pub(crate) struct SourceSnapshot {
+    identity: SourceSnapshotIdentity,
     root: Option<Arc<Node>>,
 }
 
@@ -47,10 +64,16 @@ struct Piece {
     bytes: Arc<[u8]>,
     start: usize,
     len: usize,
+    /// Bytes emitted by a format adapter's text encoder, rather than loaded
+    /// from an artifact or inserted through a source-editing operation.
+    generated_text: bool,
 }
 
 impl SourceSnapshot {
-    pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+    pub(super) fn visit_retained_memory(
+        &self,
+        visitor: &mut super::history_memory::MemoryVisitor<'_>,
+    ) {
         fn visit(node: &Arc<Node>, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
             visitor.arc(node, |visitor| match node.as_ref() {
                 Node::Leaf(piece) => visitor.arc(&piece.bytes, |_| {}),
@@ -72,9 +95,14 @@ impl SourceSnapshot {
                 bytes: Arc::from(bytes),
                 start: 0,
                 len,
+                generated_text: false,
             })))
         };
-        Self { root }
+        Self { identity: SourceSnapshotIdentity::fresh(), root }
+    }
+
+    pub(crate) fn identity(&self) -> SourceSnapshotIdentity {
+        self.identity
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -98,8 +126,83 @@ impl SourceSnapshot {
         }
         let (_, suffix) = split(self.root.clone(), range.start);
         let (selected, _) = split(suffix, range.end - range.start);
-        let selected = Self { root: selected };
-        Some(selected.bytes())
+        let mut result = Vec::with_capacity(range.end - range.start);
+        if let Some(selected) = selected { selected.append_to(&mut result); }
+        Some(result)
+    }
+
+    /// Whether every byte in a nonempty, valid range was emitted by a format
+    /// adapter's text encoder. Only intersecting tree paths and pieces are
+    /// visited; unrelated source bytes are neither read nor materialized.
+    pub(crate) fn range_is_generated_text(&self, range: Range<usize>) -> bool {
+        if range.start >= range.end || range.end > self.len() {
+            return false;
+        }
+        self.root
+            .as_ref()
+            .is_some_and(|root| root.range_is_generated_text(range))
+    }
+
+    /// Generated portions of a validated range, relative to its start. The
+    /// traversal visits only intersecting pieces and never copies source bytes.
+    pub(crate) fn generated_text_ranges(&self, range: Range<usize>) -> Option<Vec<Range<usize>>> {
+        if range.start > range.end || range.end > self.len() {
+            return None;
+        }
+        let mut result = Vec::new();
+        if !range.is_empty() {
+            self.root.as_ref()?.collect_generated_text_ranges(range.clone(), 0, &mut result);
+        }
+        for item in &mut result {
+            item.start -= range.start;
+            item.end -= range.start;
+        }
+        Some(result)
+    }
+
+    /// Apply one byte patch while retaining the origin of each replacement
+    /// portion. Composed typing transactions use this to avoid treating copied
+    /// authored entities as newly generated whitespace.
+    pub(crate) fn replace_with_generated_text_ranges(
+        &self,
+        start: usize,
+        end: usize,
+        replacement: Vec<u8>,
+        generated: &[Range<usize>],
+    ) -> Option<Self> {
+        if start > end || end > self.len() {
+            return None;
+        }
+        let mut previous = 0;
+        for range in generated {
+            if range.start < previous || range.start >= range.end || range.end > replacement.len() {
+                return None;
+            }
+            previous = range.end;
+        }
+        if start == end && replacement.is_empty() {
+            return Some(self.clone());
+        }
+        let length = replacement.len();
+        let bytes: Arc<[u8]> = Arc::from(replacement);
+        let mut inserted = None;
+        let mut at = 0;
+        for range in generated.iter().cloned().chain(std::iter::once(length..length)) {
+            for (range, generated_text) in [(at..range.start, false), (range.clone(), true)] {
+                if !range.is_empty() {
+                    inserted = concat(inserted, Some(Arc::new(Node::Leaf(Piece {
+                        bytes: bytes.clone(), start: range.start, len: range.len(), generated_text,
+                    }))));
+                }
+            }
+            at = range.end;
+        }
+        let (before, rest) = split(self.root.clone(), start);
+        let (_, after) = split(rest, end - start);
+        Some(Self {
+            identity: SourceSnapshotIdentity::fresh(),
+            root: concat(concat(before, inserted), after),
+        })
     }
 
     pub(crate) fn artifact_digest(&self) -> SourceArtifactDigest {
@@ -120,6 +223,25 @@ impl SourceSnapshot {
     }
 
     pub(crate) fn replace(&self, start: usize, end: usize, replacement: Vec<u8>) -> Option<Self> {
+        self.replace_with_origin(start, end, replacement, false)
+    }
+
+    pub(crate) fn replace_generated_text(
+        &self,
+        start: usize,
+        end: usize,
+        replacement: Vec<u8>,
+    ) -> Option<Self> {
+        self.replace_with_origin(start, end, replacement, true)
+    }
+
+    fn replace_with_origin(
+        &self,
+        start: usize,
+        end: usize,
+        replacement: Vec<u8>,
+        generated_text: bool,
+    ) -> Option<Self> {
         if start > end || end > self.len() {
             return None;
         }
@@ -140,9 +262,11 @@ impl SourceSnapshot {
                 bytes: Arc::from(replacement),
                 start: 0,
                 len,
+                generated_text,
             })))
         };
         Some(Self {
+            identity: SourceSnapshotIdentity::fresh(),
             root: concat(concat(before, inserted), after),
         })
     }
@@ -154,6 +278,56 @@ impl SourceSnapshot {
 }
 
 impl Node {
+    fn collect_generated_text_ranges(
+        &self,
+        range: Range<usize>,
+        base: usize,
+        result: &mut Vec<Range<usize>>,
+    ) {
+        match self {
+            Self::Leaf(piece) if piece.generated_text => {
+                let range = base + range.start..base + range.end;
+                if let Some(previous) = result.last_mut().filter(|previous| previous.end == range.start) {
+                    previous.end = range.end;
+                } else {
+                    result.push(range);
+                }
+            }
+            Self::Leaf(_) => {}
+            Self::Branch { left, right, .. } => {
+                let boundary = left.len();
+                if range.start < boundary {
+                    left.collect_generated_text_ranges(range.start..range.end.min(boundary), base, result);
+                }
+                if range.end > boundary {
+                    right.collect_generated_text_ranges(
+                        range.start.saturating_sub(boundary)..range.end - boundary,
+                        base + boundary,
+                        result,
+                    );
+                }
+            }
+        }
+    }
+
+    fn range_is_generated_text(&self, range: Range<usize>) -> bool {
+        debug_assert!(range.start < range.end && range.end <= self.len());
+        match self {
+            Self::Leaf(piece) => piece.generated_text,
+            Self::Branch { left, right, .. } => {
+                let boundary = left.len();
+                if range.end <= boundary {
+                    left.range_is_generated_text(range)
+                } else if range.start >= boundary {
+                    right.range_is_generated_text(range.start - boundary..range.end - boundary)
+                } else {
+                    left.range_is_generated_text(range.start..boundary)
+                        && right.range_is_generated_text(0..range.end - boundary)
+                }
+            }
+        }
+    }
+
     fn len(&self) -> usize {
         match self {
             Self::Leaf(piece) => piece.len,
@@ -457,11 +631,13 @@ fn split(root: Option<Arc<Node>>, at: usize) -> (Option<Arc<Node>>, Option<Arc<N
                 bytes: piece.bytes.clone(),
                 start: piece.start,
                 len: at,
+                generated_text: piece.generated_text,
             }));
             let right = Arc::new(Node::Leaf(Piece {
                 bytes: piece.bytes.clone(),
                 start: piece.start + at,
                 len: piece.len - at,
+                generated_text: piece.generated_text,
             }));
             (Some(left), Some(right))
         }
@@ -492,15 +668,112 @@ mod tests {
     }
 
     #[test]
+    fn generated_text_origin_distinguishes_loaded_and_source_edited_bytes() {
+        let original = SourceSnapshot::new(b"abcdef".to_vec());
+        let generated = original.replace_generated_text(2, 4, b"XYZ".to_vec()).unwrap();
+        assert!(!original.range_is_generated_text(0..6));
+        assert!(generated.range_is_generated_text(2..5));
+        assert!(!generated.range_is_generated_text(1..5));
+        assert!(!generated.range_is_generated_text(2..6));
+
+        // Even a byte-identical source edit removes the encoder provenance
+        // from its replacement while retaining it on both surviving slices.
+        let source_edited = generated.replace(3, 4, b"Y".to_vec()).unwrap();
+        assert_eq!(source_edited.bytes(), generated.bytes());
+        assert!(source_edited.range_is_generated_text(2..3));
+        assert!(source_edited.range_is_generated_text(4..5));
+        assert!(!source_edited.range_is_generated_text(3..4));
+        assert!(!source_edited.range_is_generated_text(2..5));
+        assert!(generated.clone().range_is_generated_text(2..5));
+    }
+
+    #[test]
+    fn generated_text_origin_survives_splits_and_crosses_generated_pieces() {
+        let original = SourceSnapshot::new(Vec::new())
+            .replace_generated_text(0, 0, b"abcd".to_vec()).unwrap();
+        let inserted = original.replace_generated_text(2, 2, b"XY".to_vec()).unwrap();
+        assert_eq!(inserted.bytes(), b"abXYcd");
+        assert!(inserted.range_is_generated_text(0..6));
+        assert!(inserted.range_is_generated_text(1..5));
+
+        let deleted = inserted.replace(1, 5, Vec::new()).unwrap();
+        assert_eq!(deleted.bytes(), b"ad");
+        assert!(deleted.range_is_generated_text(0..2));
+        assert!(original.range_is_generated_text(0..4));
+    }
+
+    #[test]
+    fn generated_text_queries_reject_empty_inverted_and_out_of_bounds_ranges() {
+        let empty = SourceSnapshot::new(Vec::new());
+        assert!(!empty.range_is_generated_text(0..0));
+        let source = empty.replace_generated_text(0, 0, b"abc".to_vec()).unwrap();
+        assert!(!source.range_is_generated_text(1..1));
+        assert!(!source.range_is_generated_text(0..4));
+        let end = 1;
+        assert!(!source.range_is_generated_text(2..end));
+        assert!(!source.range_is_generated_text(usize::MAX..usize::MAX));
+
+        let unchanged = source.replace_generated_text(1, 1, Vec::new()).unwrap();
+        assert_eq!(unchanged.identity(), source.identity());
+        assert!(unchanged.range_is_generated_text(0..3));
+    }
+
+    #[test]
+    fn generated_text_queries_select_local_pieces_in_a_large_source() {
+        let mut source = SourceSnapshot::new(vec![b'x'; 2_000_000]);
+        for index in 0..4_096 {
+            let at = 1_000_000 + index;
+            source = source.replace_generated_text(at, at, vec![b'y']).unwrap();
+        }
+        assert!(source.range_is_generated_text(1_000_000..1_004_096));
+        assert!(source.range_is_generated_text(1_002_047..1_002_049));
+        assert!(!source.range_is_generated_text(999_999..1_000_001));
+        assert!(!source.range_is_generated_text(1_004_095..1_004_097));
+        assert!(!source.range_is_generated_text(0..source.len()));
+        assert_eq!(source.generated_text_ranges(999_999..1_004_097), Some(vec![1..4_097]));
+        assert_eq!(source.generated_text_ranges(1_002_047..1_002_049), Some(vec![0..2]));
+        assert!(source.height() < 40);
+    }
+
+    #[test]
+    fn mixed_origin_replacement_preserves_authored_entities_and_clips_queries() {
+        let original = SourceSnapshot::new(b"beforeafter".to_vec());
+        let replacement = b"<b>&nbsp;&nbsp;</b>".to_vec();
+        let mixed = original.replace_with_generated_text_ranges(6, 6, replacement.clone(), &[3..9]).unwrap();
+        assert_eq!(mixed.bytes(), b"before<b>&nbsp;&nbsp;</b>after");
+        assert_eq!(mixed.generated_text_ranges(6..6 + replacement.len()), Some(vec![3..9]));
+        assert!(mixed.range_is_generated_text(9..15));
+        assert!(!mixed.range_is_generated_text(15..21));
+        assert_eq!(mixed.generated_text_ranges(11..17), Some(vec![0..4]));
+        assert_eq!(mixed.generated_text_ranges(3..3), Some(Vec::new()));
+        assert_eq!(original.bytes(), b"beforeafter");
+        assert!(original.replace_with_generated_text_ranges(6, 6, replacement.clone(), &[3..10, 9..12]).is_none());
+        assert!(original.replace_with_generated_text_ranges(6, 6, replacement, &[3..30]).is_none());
+    }
+
+    #[test]
     fn empty_splice_preserves_the_exact_persistent_root() {
         let original = SourceSnapshot::new(b"abcdef".to_vec());
         let unchanged = original.replace(3, 3, Vec::new()).unwrap();
 
         assert_eq!(unchanged.bytes(), b"abcdef");
+        assert_eq!(unchanged.identity(), original.identity());
         assert!(Arc::ptr_eq(
             original.root.as_ref().unwrap(),
             unchanged.root.as_ref().unwrap()
         ));
+    }
+
+    #[test]
+    fn source_identity_distinguishes_empty_and_byte_equal_revisions() {
+        let empty = SourceSnapshot::new(Vec::new());
+        let another_empty = SourceSnapshot::new(Vec::new());
+        assert_ne!(empty.identity(), another_empty.identity());
+        assert_eq!(empty.identity(), empty.clone().identity());
+        let changed = empty.replace(0, 0, b"x".to_vec()).unwrap();
+        let emptied = changed.replace(0, 1, Vec::new()).unwrap();
+        assert!(emptied.bytes().is_empty());
+        assert_ne!(empty.identity(), emptied.identity());
     }
 
     #[test]

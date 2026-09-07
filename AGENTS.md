@@ -1258,108 +1258,144 @@ attributes remain original bytes. Partial-range edits split wrappers as needed,
 preserving the original wrapper bytes around unaffected left/right content when
 their source structure can remain valid.
 
-The reversible `white-space: pre-wrap` inline value is additionally supported.
-When an edit requires a leading, trailing, or repeated ordinary space that HTML
-would otherwise collapse, the writer may enclose only the affected spacing in
-`<span style="white-space: pre-wrap">` and declare that supporting patch. It
-preserves ordinary U+0020 text rather than substituting nonbreaking spaces.
+HTML whitespace follows CSS Text processing across inline element boundaries.
+In normal and nowrap contexts, spaces, tabs, and segment breaks collapse;
+leading and trailing collapsible whitespace at hard-line boundaries is removed.
+Source segment breaks join words with a space. Form feed, NBSP, and other
+Unicode separators are not ordinary collapsible spaces. `pre`, `pre-wrap`, and
+`break-spaces` preserve spaces and tabs; `pre-line` preserves segment breaks
+while collapsing spaces and tabs. These values inherit and can be overridden.
+
+WYSIWYG formatted edits interpret spaces and tabs in their HTML context. Each requested
+space that would collapse MUST become a nonbreaking U+00A0, serialized as
+`&nbsp;`, rather than generating a whitespace style wrapper. Ordinary word
+spaces MUST use literal source spaces. Subsequent typing SHOULD replace an
+editor-generated protective NBSP with an ordinary space when it becomes safe;
+that supporting edit belongs to the same verified transaction and position map.
+Explicitly inserted or imported NBSPs remain nonbreaking. Typed hard breaks
+remain hard breaks rather than collapsible source newlines. In whitespace-
+preserving contexts, typing keeps literal spaces and tabs.
+
+This policy also applies to paste, substitution, deletion, paragraph splitting,
+and the semantic formatted replacement APIs. When deleting or splitting exposes
+an existing space to collapse, a minimal supporting patch MUST protect it with
+`&nbsp;` and include its U+00A0 replacement in the formatted position map.
+These edits MUST NOT generate `white-space` spans. Imported/source-authored
+whitespace syntax retains its original bytes outside declared patches. Exact
+source restoration retains its recorded bytes and character semantics. Every
+edit MUST verify reopen equivalence and exact undo/redo, including changes in
+UTF-8 byte length when a space becomes NBSP.
 
 New text is escaped canonically for its HTML context. Existing character
 references such as `&amp;`, `&#38;`, and `&#x26;` retain their original spelling
 until their source range is edited.
 
+#### Native HTML elements and optional style definitions
+
+HTML authoring MUST use native elements whenever they represent the selected
+style: `p` for Paragraph, `h1` through `h6` for headings, `li` inside `ul` or
+`ol` for list items, `pre` for Code Block, and `code` for inline Code. Applying
+List Level 1 to a blank paragraph creates an editable `<ul><li></li></ul>`;
+typing then inserts inside `li`. List markers are decorations, never inserted
+text or characters in style spans. Existing ordered lists retain their
+numbering and nested lists retain their structure. Applying a deeper built-in
+level to a plain paragraph creates the necessary native list/item ancestors.
+An ancestor `li` containing only a nested list is structural and does not
+invent an empty formatted paragraph; a genuinely empty item remains editable.
+A named level MUST NOT be
+simulated by a styled `p` or by an invented class that changes the apparent
+level without changing list structure. Unsupported structural changes return a
+structured failure rather than producing misleading markup.
+
+Structural assignments replace only the needed tag names and container
+syntax. They preserve unrelated attributes, comments, inline markup, and source
+spelling. Adjacent selected paragraphs SHOULD share one list container. An
+ordinary numbered list starts with `<ol>`; a `start` attribute is needed only
+for a non-default ordinal or to override an existing conflicting declaration.
+Removing a complete list removes its containers instead of leaving empty
+sibling lists. Native assignment does not add a class or a CSS rule merely to
+identify a built-in style. An empty class attribute left by removing owned
+style assignments is removed.
+
+Format > Style includes **Include style definitions in file** in both HTML
+WYSIWYG and HTML Source. This is portable buffer-local state shared by the two
+views, defaulting to off for new documents. Opening a file containing recognized
+owned native style definitions restores the enabled state; an explicit owned
+marker preserves an enabled state when no non-default rule is necessary.
+Changing it is one atomic, undoable source transaction. Undo and redo restore
+both the exact source and the option; changing views preserves the option.
+
+When the option is off, built-in style definitions come from the saved HTML
+settings and MUST NOT be copied into the source on assignment or ordinary
+editing. Direct formatting remains source-backed because it was applied
+separately from a style. A custom style without an HTML-native representation
+uses a class and its required owned definition even with this option off.
+Turning the option off removes only recognized owned native definitions;
+custom definitions, direct formatting, and unrelated or unsupported CSS remain
+intact. Merely opening or saving never rewrites source CSS.
+
+When the option is on, eVim writes the necessary CSS for its style sheet using
+native selectors. Default HTML behavior MUST NOT produce redundant declarations:
+zero text indent, normal letter spacing, normal baseline alignment, and other
+browser-default values are omitted unless an override is needed. List styling
+belongs to `li`, with descendant `li` selectors for deeper levels, while `ul`
+and `ol` retain their ordinary container and marker semantics. Native defaults
+do not require per-paragraph or per-character metadata classes.
+
 #### Canonical eVim style sheet and classes
 
-User-created named Paragraph and Character styles map to CSS classes. eVim owns
-only a style element bearing the exact marker
-`<style id="evim-styles" data-evim-version="1">`. A style element without that
-marker, or content outside the supported grammar inside an otherwise marked
-element, is not silently adopted or rewritten.
+New owned definitions use the exact marker
+`<style id="evim-styles" data-evim-version="2">`. A style element without a
+recognized marker, or content outside the supported grammar inside a marked
+element, is never silently adopted or rewritten. Version 1 remains readable;
+untouched version-one rules remain byte-exact, while explicitly changed owned
+rules may migrate to a version-two element. Multiple recognized owned elements
+may coexist so migration does not rewrite neighboring opaque CSS.
 
-The owned style element is inline near the beginning of `head`, after any
+An owned style element is inserted near the beginning of `head`, after an
 encoding declaration whose placement is constrained. If a full document lacks
-`head`, the first style-creation transaction inserts the minimum valid explicit
-head and the owned style element. For an accepted HTML fragment, it inserts the
-owned style element at the fragment's beginning. Merely opening a document or
-editing text does not insert it.
+`head`, the transaction inserts the minimum explicit head. For an accepted
+HTML fragment, it inserts the element at the fragment's beginning. No element
+is inserted for a native style assignment while inclusion is off.
 
-Canonical owned rules use only these selectors:
+Canonical version-two selectors are `body`, `p`, `h1` through `h6`, `li` and
+its repeated descendant forms, `pre`, `code`, `.evim-p-<stable-id>` for custom
+Paragraph styles, and `.evim-c-<stable-id>` for custom Character styles. Stable
+class-ID suffixes are lowercase hexadecimal UTF-8, independent of display names.
+Native selectors supply their built-in identity, role, and default links;
+ordinary sparse CSS carries browser-representable properties. Empty native
+rules are omitted. Custom class rules additionally carry required stable ID,
+name, role, and optional parent and next-style links as namespaced metadata.
 
-- `body` for source-backed Base Document Character declarations;
-- `p` for source-backed Base Paragraph declarations;
-- `h1` through `h6` for Heading 1 through Heading 6;
-- `.evim-p-<stable-id>` for a user-created Paragraph style; and
-- `.evim-c-<stable-id>` for a user-created Character style.
+Only normalized distinctions that CSS cannot recover exactly need residual
+`--evim-prop-<schema-key>` declarations. These include relative bold and
+at-least line spacing. `--evim-inherit` records sparse inherited properties
+where browser interoperability requires a derived declaration. Direct
+formatting is never flattened into a named-style rule. CSS declaration order,
+whitespace, quoting, and escaping are fixed by the version-two golden fixtures;
+unsupported versions and noncanonical rules remain opaque.
 
-Class names derive from stable style identity, not the editable display name,
-so renaming a style does not rewrite every assignment. Each canonical rule
-uses these eVim-namespaced CSS custom properties:
+Version 1 retains its original authoritative namespaced-property grammar:
+`--evim-style-id`, `--evim-style-name`, `--evim-style-role`, optional
+`--evim-based-on` and `--evim-next-style`, and
+`--evim-prop-<schema-key>` for explicit normalized properties. Values are CSS
+double-quoted strings; control characters, quote, backslash, and `<`, `>`, `{`,
+`}` use lowercase hexadecimal CSS escapes followed by a space. Standard CSS
+in these legacy rules is derived interoperability output. The legacy reader
+validates exact canonical spelling rather than guessing another interpretation.
 
-- `--evim-style-id` for its stable document-local ID;
-- `--evim-style-name` for its escaped display name;
-- `--evim-style-role` with `document`, `paragraph`, or `character`;
-- `--evim-based-on` for an optional parent stable ID;
-- `--evim-next-style` for an optional following-paragraph stable ID; and
-- one `--evim-prop-<schema-key>` declaration for each normalized property that
-  is explicit at this style layer. Absence means inherited; explicit normal,
-  none, zero, and transparent values have canonical nonempty spellings.
+Editing a definition patches only its owned rule and the necessary dependent
+rules. Creating, renaming, rebasing, or deleting a custom style preserves
+unrelated stylesheets and assignments. Reopening with the same saved defaults
+reconstructs the same normalized assignments and effective formatting.
 
-These namespaced declarations are the authoritative representation used to
-reconstruct eVim's sparse normalized style. Standard CSS declarations in the
-same rule are derived interoperability output for ordinary browsers. They
-materialize the context-independent values contributed by that style's named
-ancestor chain; they do not flatten direct formatting or a paragraph-specific
-context into a Character style. Base defaults are emitted through the owned
-`body`, `p`, and heading rules so normal CSS inheritance preserves the intended
-Document -> Paragraph -> Character order. Editing a base style updates any
-canonical descendant rules whose materialized browser CSS changes.
-
-Version 1 encodes a class stable-ID suffix as lowercase hexadecimal UTF-8
-bytes. Every namespaced value is a CSS double-quoted string; control characters,
-quote, backslash, and `<`, `>`, `{`, `}` use lowercase hexadecimal CSS escapes
-followed by one space. Normalized lengths are decimal point values; derived
-standard CSS lengths use `pt`. Colors are four space-separated decimal RGBA
-components in `[0, 1]`; booleans are `true`/`false`; directions are
-`natural`/`ltr`/`rtl`; slants are `normal`/`italic`/`oblique`. Line spacing is
-`normal`, `multiplier N`, `at-least N`, or `exact N`. Family lists use quoted
-strings separated by comma-space; feature lists use quoted four-byte tags and
-unsigned values in tag order.
-
-After ID, name, role, optional parent, and optional next-style declarations,
-normalized properties occur in this schema order: Character font families,
-size, weight, slant, foreground, background, underline, strikethrough, language,
-direction, OpenType features, letter spacing, baseline shift; Paragraph spacing
-before, spacing after, line spacing, first-line indent, leading indent,
-trailing indent, alignment, base direction; Canvas background and top, right,
-bottom, left padding. Their keys use the corresponding lowercase hyphenated
-`character-`, `paragraph-`, and `canvas-` spellings. A rule uses `selector {`, a
-newline, two-space-indented declarations ending in semicolon-newline, then
-`}` and a newline. The writer's version-one golden fixtures fix exact spelling
-and derived CSS order. Unsupported rule syntax and unsupported versions stay
-opaque.
-
-The CSS-safe stable-ID encoding, normalized property schema keys, value grammar,
-derived CSS mapping, declaration order, whitespace, quoting, and escaping are
-fixed by `data-evim-version="1"` and golden fixtures. A writer change that would
-alter their interpretation requires a version increment; readers do not guess
-at unsupported versions.
-
-On import, only rules matching that canonical grammar become normalized named
-styles. Other rules pass through unchanged. Editing a style definition patches
-its rule and any canonical descendant rules whose materialized browser CSS
-changes. It may append the owned style element if absent, but it never rewrites
-an unrelated stylesheet. Creating or deleting a style inserts or removes only
-its canonical rule plus necessary assignment patches.
-
-A Paragraph style class is written on the paragraph-bearing element. A
-Character style class is written on a `span` enclosing the assigned range. When
-an element has multiple class tokens that identify supported eVim styles of the
-applicable role, the first such token in source order supplies the one
-normalized style assignment; later supported tokens have no semantic effect.
-All unsupported class tokens are preserved. Changing the named-style assignment
-removes all supported eVim class tokens of that role, inserts the selected class
-as the first class token, and retains unsupported tokens in their original
-relative order.
+A custom Paragraph style class is attached to its paragraph-bearing element,
+including `li` for a list item. A custom Character style class is attached to a
+`span` enclosing the assigned range. With several recognized class tokens of
+one role, the first supplies the normalized assignment. Assignment changes
+remove recognized tokens of that role, retain unsupported tokens in their
+original order, and add a selected custom class only when native HTML cannot
+represent the style.
 
 ### RTF adapter
 
@@ -1503,6 +1539,12 @@ Each adapter has corpus, property, and targeted golden tests. At minimum:
   assignments, and materialized dependent rules. Reopening reconstructs the
   same stable identities, sparse declarations, parent/next links, and effective
   values.
+- Native HTML style tests cover blank List Level 1 assignment followed by
+  typing, grouped list containers, existing numbering and nesting, empty
+  paragraph anchors, native heading/code assignments, exact undo/redo, source
+  patch locality, and clean-reopen equivalence. Export tests exercise both
+  inclusion settings, saved defaults, custom styles, direct formatting, and
+  omission of browser-default CSS declarations.
 - RTF tests cover nested state, `\plain`/`\pard` resets, font/color tables,
   Unicode and code-page text, `\par`/`\line`, paragraph and character style
   definitions, based-on/next relationships, and unknown controls adjacent to
@@ -1579,6 +1621,7 @@ WYSIWYG variants share their format's defaults. Loading defaults is presentation
 configuration and never changes source bytes, dirty state, or undo history.
 
 Format > Style contains Edit document style and Save as default <format> style.
+HTML also exposes Include style definitions in file, as specified above.
 Saving defaults exports the current style configuration to the corresponding
 JSON file. Existing open buffers keep their current configuration; subsequently
 opened buffers load the saved defaults.
@@ -2045,8 +2088,9 @@ replaced by a literal U+000D while existing semantic hard-line items are
 preserved. Visual Block `r<Enter>` removes the selected content and inserts
 exactly one semantic hard-line item in each nonempty selected visual row,
 regardless of the rectangle width; empty or short rows with no selected content
-remain unchanged. A literal CR or LF supplied through text input remains
-literal and may be rejected atomically when the active source pipeline cannot
+remain unchanged. Outside HTML visual typing's whitespace normalization, a
+literal CR or LF supplied through text input remains literal and may be rejected
+atomically when the active source pipeline cannot
 reverse-project it without changing the logical hard-line sequence. Dot repeat
 retains this typed operand distinction.
 
@@ -2316,8 +2360,12 @@ A successful write records the current source-snapshot identity as the
 buffer's persisted save point and may annotate the current history node with a
 monotonic write number. Saving does not create an undo unit. A failed write
 does not move the save point. The buffer is clean exactly when its current
-source-snapshot identity is the persisted identity; undoing away from a saved
-node makes it dirty and returning to that exact snapshot makes it clean again.
+source-snapshot identity is the persisted identity. Configuration-only history
+nodes share that source identity and remain clean; a source-changing edit makes
+it dirty and returning to the exact saved source snapshot makes it clean again.
+Dirty-state queries compare retained identities in constant time, never
+materializing or hashing the document. An asynchronously completed save carries
+the captured source identity even when its history node has been pruned.
 Changing file identity with a successful `:saveas` is not undone.
 
 History retention has configurable node and retained-byte budgets. The byte

@@ -2587,12 +2587,107 @@ impl FormattedDocument {
         self.styles.query_overlapping(range)
     }
 
+    /// Includes point annotations at an empty editable boundary, located in
+    /// `O(log n + k)` without materializing the complete style collection.
+    pub(crate) fn style_spans_touching(&self, range: &Range<usize>) -> Vec<StyleSpan> {
+        self.styles.query_touching(range)
+    }
+
     pub fn provenance(&self) -> &[ProvenanceSpan] {
         self.provenance.as_slice()
     }
 
+    /// A synthetic paragraph separator can recover from the end of its last
+    /// visible character, inside a now-redundant HTML whitespace wrapper.
+    /// Move only that zero-byte recovery point past the removed closing syntax
+    /// before applying the ordinary source shift to the untouched suffix.
+    pub(crate) fn relocate_synthetic_hard_line_source_boundary(
+        &self,
+        formatted_at: usize,
+        source_from: usize,
+        source_to: usize,
+    ) -> Result<Option<(Self, ProjectionSpliceStatistics)>, BlockIdentityError> {
+        let Some(end) = formatted_at
+            .checked_add(1)
+            .filter(|end| *end <= self.text.byte_len())
+        else {
+            return Ok(None);
+        };
+        if self.text.slice(formatted_at..end).as_deref() != Ok("\n") {
+            return Ok(None);
+        }
+        let index = self.provenance.partition_point_start(formatted_at);
+        let Some(old) = self.provenance.get(index) else {
+            return Ok(None);
+        };
+        if old.formatted != (formatted_at..end) || old.source != (source_from..source_from) {
+            return Ok(None);
+        }
+        if source_to < source_from
+            || source_to > self.source_content_end
+            || index > 0
+                && self
+                    .provenance
+                    .get(index - 1)
+                    .is_some_and(|span| span.source.end > source_to)
+            || self
+                .provenance
+                .get(index + 1)
+                .is_some_and(|span| span.source.start < source_to)
+        {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+        let mut relocated = old.clone();
+        relocated.source = source_to..source_to;
+        let mut stats = RangeSpliceStats::default();
+        let provenance = self
+            .provenance
+            .splice(
+                index..index + 1,
+                vec![relocated.clone()],
+                end,
+                end,
+                &mut stats,
+            )
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        let boundary_end = source_to
+            .checked_add(1)
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        let indices = self.source_boundaries.partition_point_start(source_from)
+            ..self.source_boundaries.partition_point_start(boundary_end);
+        let mut boundaries = self
+            .source_boundaries
+            .get_range(&indices)
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        let old_boundaries = source_text_boundaries([old]);
+        let old_count = boundaries.len();
+        boundaries.retain(|boundary| !old_boundaries.contains(boundary));
+        if old_count - boundaries.len() != old_boundaries.len() {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+        boundaries.extend(source_text_boundaries([relocated]));
+        normalize_source_boundaries(&mut boundaries);
+        let source_boundaries = self
+            .source_boundaries
+            .splice(indices, boundaries, source_to, source_to, &mut stats)
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        let mut projection = self.clone();
+        projection.provenance = provenance;
+        projection.source_boundaries = source_boundaries;
+        Ok(Some((
+            projection,
+            ProjectionSpliceStatistics {
+                range_indexes: stats,
+            },
+        )))
+    }
+
     pub(crate) fn provenance_for_region(&self, range: &Range<usize>) -> Vec<ProvenanceSpan> {
         self.provenance.query_overlapping(range)
+    }
+
+    pub(crate) fn provenance_touching(&self, range: &Range<usize>) -> Vec<ProvenanceSpan> {
+        self.provenance.query_touching(range)
     }
 
     /// Presentation recovery at the nearest real source boundary, in
@@ -3430,6 +3525,13 @@ pub(crate) struct ProjectionSpliceStatistics {
 }
 
 impl ProjectionSpliceStatistics {
+    pub(crate) fn include(&mut self, other: Self) {
+        self.range_indexes.nodes_visited += other.range_indexes.nodes_visited;
+        self.range_indexes.nodes_copied += other.range_indexes.nodes_copied;
+        self.range_indexes.leaves_copied += other.range_indexes.leaves_copied;
+        self.range_indexes.items_copied += other.range_indexes.items_copied;
+    }
+
     pub(crate) fn range_index_nodes_visited(self) -> usize {
         self.range_indexes.nodes_visited
     }
@@ -4937,6 +5039,79 @@ mod tests {
 
     fn markdown(source: &str) -> FormattedDocument {
         markdown_at(source, Revision(1))
+    }
+
+    #[test]
+    fn relocating_a_synthetic_separator_keeps_real_source_and_boundary_mappings() {
+        let source = "<p>A<span style=\"white-space: pre-wrap\"> </span></p><p>B</p>";
+        let decoded = Encoding::Utf8.decode(source.as_bytes()).unwrap();
+        let normalized = normalize(&decoded, FileFormat::Unix);
+        let document = project(&normalized, Format::Html, Revision(1), 0, source.len());
+        let from = source.find("</span>").unwrap();
+        let to = from + "</span>".len();
+        let (relocated, _) = document
+            .relocate_synthetic_hard_line_source_boundary(2, from, to)
+            .unwrap()
+            .unwrap();
+        assert_eq!(relocated.text(), document.text());
+        assert_eq!(relocated.blocks(), document.blocks());
+        let old = document.provenance();
+        let new = relocated.provenance();
+        assert_eq!(old.len(), new.len());
+        for (before, after) in old.iter().zip(new) {
+            if before.formatted == (2..3) {
+                assert_eq!(after.source, to..to);
+            } else {
+                assert_eq!(before, after);
+            }
+        }
+        assert_eq!(
+            relocated
+                .map_source_boundary(Revision(1), from, BoundaryAffinity::Upstream)
+                .unwrap()
+                .formatted_offset,
+            2
+        );
+        assert_eq!(
+            relocated
+                .map_source_boundary(Revision(1), to, BoundaryAffinity::Downstream)
+                .unwrap()
+                .formatted_offset,
+            2
+        );
+        assert_eq!(
+            relocated
+                .map_source_boundary(Revision(1), to, BoundaryAffinity::Upstream)
+                .unwrap()
+                .formatted_offset,
+            3
+        );
+        assert!(document
+            .relocate_synthetic_hard_line_source_boundary(2, from + 1, to)
+            .unwrap()
+            .is_none());
+        assert!(document
+            .relocate_synthetic_hard_line_source_boundary(0, 3, to)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            document
+                .relocate_synthetic_hard_line_source_boundary(
+                    2,
+                    from,
+                    source.find('B').unwrap() + 1
+                )
+                .err(),
+            Some(BlockIdentityError::InvalidProjection)
+        );
+        let source = "<pre>A\nB</pre>";
+        let decoded = Encoding::Utf8.decode(source.as_bytes()).unwrap();
+        let normalized = normalize(&decoded, FileFormat::Unix);
+        let document = project(&normalized, Format::Html, Revision(1), 0, source.len());
+        assert!(document
+            .relocate_synthetic_hard_line_source_boundary(1, 6, 7)
+            .unwrap()
+            .is_none());
     }
 
     fn plain(text: String, revision: Revision) -> FormattedDocument {

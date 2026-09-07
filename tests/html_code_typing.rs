@@ -118,11 +118,12 @@ fn literal_spaces_and_tabs_obey_pre_inheritance_and_normal_overrides() {
             assert!(saved.contains("  \t  "), "{saved}");
             assert!(!saved.contains("white-space"), "{saved}");
         } else {
-            assert!(saved.contains("white-space: pre-wrap"), "{saved}");
+            assert!(saved.contains("&nbsp;"), "{saved}");
+            assert!(!saved.contains("white-space: pre-wrap"), "{saved}");
         }
         let mut expected = before;
-        expected.insert_str(at, "  \t  ");
-        assert_eq!(core.document().text(), expected);
+        expected.insert_str(at, if literal { "  \t  " } else { "     " });
+        assert_eq!(core.document().text().replace('\u{a0}', " "), expected);
         key(&mut core, view, Key::Char('u'));
         assert_eq!(core.document().source_bytes(), source.as_bytes());
     }

@@ -40,10 +40,10 @@ impl Document {
         let snapshot = self.hard_line_snapshot();
         let mut payloads = Vec::new();
         let mut captures = Vec::new();
-        let mut delta = 0isize;
+        let mut capture_groups = Vec::new();
         let keep_styles = matches!(self.format(), Format::Html | Format::Rtf | Format::Markdown);
         for edit in &edits {
-            let destination = (edit.range.start as isize + delta) as usize;
+            let capture_start = captures.len();
             let mut text = String::new();
             let mut breaks = Vec::new();
             for fragment in &edit.fragments {
@@ -85,18 +85,58 @@ impl Document {
                         );
                         if keep_styles {
                             for mut style in self.capture_style_runs(range.clone())? {
-                                style.range = destination + start + style.range.start - range.start
-                                    ..destination + start + style.range.end - range.start;
-                                captures.push(style);
+                                style.range = start + style.range.start - range.start
+                                    ..start + style.range.end - range.start;
+                                captures.push((edit.range.start, style));
                             }
                         }
                     }
                 }
             }
-            delta += text.len() as isize - edit.range.len() as isize;
-            let payload = FormattedTextPayload::new(&snapshot, text, breaks)
+            let payload = FormattedTextPayload::new(&snapshot, text.clone(), breaks)
                 .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
             payloads.push(FormattedPayloadEdit::new(edit.range.clone(), payload));
+            capture_groups.push((text, capture_start..captures.len()));
+        }
+        if self.format() == Format::Html {
+            self.normalize_html_payload_edits(&mut payloads)?;
+        }
+        for ((text, capture_range), normalized) in capture_groups.into_iter().zip(&payloads) {
+            if normalized.payload.text() != text {
+                // HTML normalization preserves scalar order and may prepend a
+                // previously generated protected space while simplifying it.
+                // Capture boundaries are scalar boundaries, not byte counts.
+                let extra = normalized
+                    .payload
+                    .text()
+                    .chars()
+                    .count()
+                    .checked_sub(text.chars().count())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let boundaries = text
+                    .char_indices()
+                    .map(|(at, _)| at)
+                    .chain(std::iter::once(text.len()))
+                    .zip(
+                        normalized
+                            .payload
+                            .text()
+                            .char_indices()
+                            .map(|(at, _)| at)
+                            .chain(std::iter::once(normalized.payload.text().len()))
+                            .skip(extra),
+                    )
+                    .collect::<BTreeMap<_, _>>();
+                for (origin, capture) in &mut captures[capture_range] {
+                    *origin = normalized.range.start;
+                    capture.range = *boundaries
+                        .get(&capture.range.start)
+                        .ok_or(DocumentError::AmbiguousProjection)?
+                        ..*boundaries
+                            .get(&capture.range.end)
+                            .ok_or(DocumentError::AmbiguousProjection)?;
+                }
+            }
         }
         payloads.retain(|edit| {
             snapshot
@@ -127,8 +167,30 @@ impl Document {
             recovered_dirty: false,
         };
         let mut sources = PatchComposition::new(self.source_byte_len());
+        let mut formatted = PatchComposition::new(self.projection().text_tree().byte_len());
         let prepared = scratch.prepare_formatted_payload_edits(payloads)?;
-        publish(&mut scratch, prepared, &mut sources)?;
+        let captures = captures
+            .into_iter()
+            .map(
+                |(origin, mut capture)| -> Result<_, ModelTransactionError> {
+                    let destination = prepared
+                        .text_position_map()
+                        .map_text_point(
+                            self.text_point(origin)?,
+                            Association::BeforeInsertion,
+                            BoundaryAffinity::Downstream,
+                            DeletionRecovery::PreferFollowingThenPreceding,
+                        )?
+                        .value()
+                        .ok_or(DocumentError::AmbiguousProjection)?
+                        .offset();
+                    capture.range =
+                        destination + capture.range.start..destination + capture.range.end;
+                    Ok(capture)
+                },
+            )
+            .collect::<Result<Vec<_>, _>>()?;
+        publish(&mut scratch, prepared, &mut sources, &mut formatted)?;
         for mut capture in captures {
             if capture.range.is_empty() {
                 continue;
@@ -197,7 +259,7 @@ impl Document {
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                         let prepared = scratch.prepare_source_only_patches(patches)?;
-                        publish(&mut scratch, prepared, &mut sources)?;
+                        publish(&mut scratch, prepared, &mut sources, &mut formatted)?;
                     }
                 }
                 for (style, enabled) in [
@@ -215,7 +277,7 @@ impl Document {
                         style,
                         enabled,
                     )?;
-                    publish(&mut scratch, prepared, &mut sources)?;
+                    publish(&mut scratch, prepared, &mut sources, &mut formatted)?;
                 }
                 if capture.code
                     && !scratch
@@ -234,7 +296,7 @@ impl Document {
                         SemanticInlineStyle::Code,
                         true,
                     )?;
-                    publish(&mut scratch, prepared, &mut sources)?;
+                    publish(&mut scratch, prepared, &mut sources, &mut formatted)?;
                 }
             } else {
                 let current_runs = scratch.capture_style_runs(capture.range.clone())?;
@@ -255,7 +317,7 @@ impl Document {
                             style: named,
                         },
                     )?;
-                    publish(&mut scratch, prepared, &mut sources)?;
+                    publish(&mut scratch, prepared, &mut sources, &mut formatted)?;
                 }
                 let current_runs = scratch.capture_style_runs(capture.range.clone())?;
                 let clear = [
@@ -302,7 +364,7 @@ impl Document {
                             properties: clear,
                         },
                     )?;
-                    publish(&mut scratch, prepared, &mut sources)?;
+                    publish(&mut scratch, prepared, &mut sources, &mut formatted)?;
                 }
                 let mut authored = capture.properties.clone();
                 let current_runs = scratch.capture_style_runs(capture.range.clone())?;
@@ -325,7 +387,7 @@ impl Document {
                     authored,
                     None,
                 )?;
-                publish(&mut scratch, prepared, &mut sources)?;
+                publish(&mut scratch, prepared, &mut sources, &mut formatted)?;
                 if super::super::rich_text::resolved_character_at(
                     scratch.projection(),
                     capture.range.start,
@@ -337,29 +399,8 @@ impl Document {
                 }
             }
         }
-        let patches = sources
-            .patches()
-            .into_iter()
-            .map(|(range, bytes)| SourcePatch::primary(range, bytes))
-            .collect();
-        let text_edits = edits
-            .into_iter()
-            .map(|edit| {
-                let at = edit.range.start;
-                let mut replacement = String::new();
-                for fragment in edit.fragments {
-                    match fragment {
-                        ReplacementFragment::Literal(payload) => {
-                            replacement.push_str(payload.text())
-                        }
-                        ReplacementFragment::Capture(range) => {
-                            replacement.push_str(&self.text()[range])
-                        }
-                    }
-                }
-                TextEdit::new(at..edit.range.end, replacement)
-            })
-            .collect();
+        let patches = sources.source_patches(&scratch.state().source)?;
+        let text_edits = formatted.formatted_edits(&scratch)?;
         self.prepare_text_edits_with_patches(text_edits, Some(patches))
     }
     fn capture_style_runs(
@@ -453,10 +494,12 @@ fn publish(
     document: &mut Document,
     prepared: PreparedModelTransaction,
     sources: &mut PatchComposition,
+    formatted: &mut PatchComposition,
 ) -> Result<(), ModelTransactionError> {
     for patch in prepared.summary.source_patches.iter().rev() {
         sources.splice(patch.range(), patch.replacement());
     }
+    formatted.record_formatted(&prepared)?;
     document.commit_model_transaction(prepared)?;
     Ok(())
 }

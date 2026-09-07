@@ -110,8 +110,21 @@ fn paragraph_splits_preserve_visible_whitespace_at_both_edges() {
                         at,
                     })
                     .unwrap_or_else(|error| panic!("{source:?} at {at}: {error:?}"));
-                let mut expected = original.clone();
-                expected.insert(at, '\n');
+                let preserve = source.contains("white-space:pre-wrap");
+                let mut expected = String::new();
+                for (offset, ch) in original.char_indices() {
+                    if offset == at {
+                        expected.push('\n');
+                    }
+                    if !preserve && ch == ' ' && (offset == at || offset + 1 == at) {
+                        expected.push('\u{a0}');
+                    } else {
+                        expected.push(ch);
+                    }
+                }
+                if at == original.len() {
+                    expected.push('\n');
+                }
                 assert_eq!(document.text(), expected, "{source:?} at {at}");
                 let bytes = document.source_bytes();
                 assert_eq!(

@@ -291,6 +291,7 @@ pub struct PreparedArtifactWrite {
     pub(crate) document: DocumentId,
     pub(crate) revision: Revision,
     pub(crate) history: HistoryLocation,
+    pub(crate) source_identity: super::source::SourceSnapshotIdentity,
     pub(crate) purpose: ArtifactWritePurpose,
     pub(crate) storage: AtomicArtifactWrite,
 }

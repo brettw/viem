@@ -156,3 +156,36 @@ fn local_edit_in_large_document_shares_retained_projection_allocations() {
     document.set_history_retention_policy(HistoryRetentionPolicy::new(1, usize::MAX));
     assert!(document.history_status().retained_memory_bytes < after);
 }
+
+
+#[test]
+fn async_save_completion_stays_clean_after_pruned_configuration_only_edits() {
+    use evim_core::document::*;
+    let source = b"<p>Words</p>";
+    let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Html).unwrap();
+    let saved = document.history_status().current;
+    let prepared = document.prepare_artifact_write(ArtifactWriteIntent::SaveAs {
+        destination: ArtifactPath::from("configuration-save"),
+        overwrite: ArtifactOverwrite::ReplaceExisting,
+    }).unwrap();
+    for size in [18., 24.] {
+        let mut style = document.projection().style_sheet().block_style(&"Document".into()).unwrap().clone();
+        style.character.size = Some(size);
+        document.apply_style_request(StyleModelRequest::new(document.id(), document.revision(),
+            StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
+                origin: StyleDefinitionOrigin::SourceBacked,
+                edit: StyleDefinitionEdit::UpdateBlock(style),
+            }),
+        )).unwrap();
+    }
+    document.set_history_retention_policy(HistoryRetentionPolicy::new(1, usize::MAX));
+    assert!(!document.history_status().save_point_retained);
+    assert_eq!(document.source_bytes(), source);
+    let mut storage = InMemoryArtifactStorage::new();
+    let receipt = execute_prepared_artifact_write(&mut storage, &prepared).unwrap();
+    document.complete_artifact_write(prepared.succeeded(receipt)).unwrap();
+    assert_eq!(document.history_status().save_point, saved.node);
+    assert!(!document.is_dirty());
+    document.insert(0, "a").unwrap();
+    assert!(document.is_dirty());
+}

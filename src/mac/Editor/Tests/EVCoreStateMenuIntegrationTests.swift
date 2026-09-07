@@ -203,6 +203,55 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
     }
 
     @MainActor
+    func testHTMLStyleDefinitionsToggleIsSharedUndoableAndAvailableInSourceMode() throws {
+        let backend = EVCoreDocumentBackend()
+        let source = Data("<p>Text</p><!--preserve-->".utf8)
+        try backend.read(source: source, typeName: EVDocument.htmlType)
+        let first = try makeSurface(backend)
+        let second = try makeSurface(backend)
+
+        XCTAssertEqual(first.surface.presentation(for: .includeStyleDefinitionsInFile), .init(isEnabled: true, state: .off))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), source)
+        let original = try backend.documentState()
+        first.surface.perform(menuCommand: .includeStyleDefinitionsInFile, sender: nil)
+        XCTAssertEqual(first.surface.presentation(for: .includeStyleDefinitionsInFile).state, .on)
+        XCTAssertEqual(second.surface.presentation(for: .includeStyleDefinitionsInFile).state, .on)
+        XCTAssertEqual(try backend.formattedText(), "Text")
+
+        XCTAssertThrowsError(try first.session.setIncludeStyleDefinitionsInFile(false, expected: original)) { error in
+            guard case let EVCoreFrontendError.core(_, status) = error else {
+                return XCTFail("Unexpected stale-state error: \(error)")
+            }
+            XCTAssertEqual(status, UInt32(EVIM_STATUS_STALE_REVISION))
+        }
+        first.surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(first.surface.presentation(for: .includeStyleDefinitionsInFile).state, .off)
+        XCTAssertEqual(second.surface.presentation(for: .includeStyleDefinitionsInFile).state, .off)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), source)
+        first.surface.perform(menuCommand: .redo, sender: nil)
+        XCTAssertEqual(second.surface.presentation(for: .includeStyleDefinitionsInFile).state, .on)
+
+        try first.session.setFormat(.htmlSource, expected: backend.documentState())
+        XCTAssertEqual(first.surface.presentation(for: .includeStyleDefinitionsInFile), .init(isEnabled: true, state: .on))
+        first.surface.perform(menuCommand: .includeStyleDefinitionsInFile, sender: nil)
+        XCTAssertEqual(second.surface.presentation(for: .includeStyleDefinitionsInFile).state, .off)
+        try first.session.setFormat(.html, expected: backend.documentState())
+        XCTAssertEqual(first.surface.presentation(for: .includeStyleDefinitionsInFile), .init(isEnabled: true, state: .off))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), source)
+    }
+
+    @MainActor
+    func testHTMLStyleDefinitionsToggleRejectsOtherFormatsWithoutChangingState() throws {
+        let (backend, surface, session) = try makeSurface("Text")
+        XCTAssertEqual(surface.presentation(for: .includeStyleDefinitionsInFile), .init(isEnabled: false, state: .off))
+        let before = try backend.documentState()
+        XCTAssertThrowsError(try session.setIncludeStyleDefinitionsInFile(true, expected: before))
+        XCTAssertEqual(try backend.documentState().document_revision, before.document_revision)
+        XCTAssertEqual(try backend.formattedText(), "Text")
+        XCTAssertFalse(surface.canUndo)
+    }
+
+    @MainActor
     func testRejectedLineEndingConversionChangesNeitherBytesStateNorHistory() throws {
         let backend = EVCoreDocumentBackend()
         // In unix mode the CR is literal content. Converting to classic-Mac

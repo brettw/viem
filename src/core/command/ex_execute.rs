@@ -1381,6 +1381,12 @@ pub fn commit_ex(
     let model_transaction = match plan.mutation {
         ExMutation::None => None,
         ExMutation::Model(request) => {
+            let substitution_cursor = matches!(request, ModelRequest::ApplyFragmentEdits { .. })
+                .then(|| match plan.outcome.navigation {
+                    Some(ExNavigation::TextOffset(at)) => Some(at),
+                    _ => None,
+                })
+                .flatten();
             let navigation = match &request {
                 ModelRequest::NavigateHistory { navigation, .. } => Some(*navigation),
                 _ => None,
@@ -1388,6 +1394,16 @@ pub fn commit_ex(
             let prepared = document
                 .prepare_model_request(request)
                 .map_err(|error| ex_model_error(error, navigation))?;
+            if let Some(at) = substitution_cursor {
+                let cursor = super::prepared_cursor(
+                    document,
+                    &prepared,
+                    at,
+                    crate::document::Association::BeforeInsertion,
+                )
+                .map_err(ExExecuteError::Document)?;
+                plan.outcome.navigation = Some(ExNavigation::TextOffset(cursor));
+            }
             Some(
                 document
                     .commit_model_transaction(prepared)

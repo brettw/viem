@@ -5,7 +5,7 @@ use super::line_endings::NormalizedText;
 use super::rich_text::Builder;
 use super::{
     BlockKind, BlockProperties, CharacterProperties, Color, FontSlant, FormattedDocument,
-    LineSpacing, ParagraphAlignment, Revision, WritingDirection,
+    LineSpacing, ParagraphAlignment, Revision, StyleSheet, WritingDirection,
 };
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -38,6 +38,11 @@ pub(super) struct Token {
 }
 fn space(c: u8) -> bool {
     matches!(c, b' ' | b'\t' | b'\r' | b'\n' | 12)
+}
+// HTML token syntax includes form feed, but CSS document whitespace does not.
+// CR character references survive HTML preprocessing and behave as spaces.
+fn css_space(c: u8) -> bool {
+    matches!(c, b' ' | b'\t' | b'\r' | b'\n')
 }
 fn void(name: &str) -> bool {
     matches!(
@@ -285,8 +290,10 @@ struct Frame {
     paragraph_style: Option<super::StyleId>,
     named_character: Option<super::StyleId>,
     preserve_whitespace: bool,
+    preserve_newlines: bool,
     output_start: usize,
     source_inner_start: usize,
+    list_container_only: bool,
 }
 impl Default for Frame {
     fn default() -> Self {
@@ -302,10 +309,65 @@ impl Default for Frame {
             paragraph_style: None,
             named_character: None,
             preserve_whitespace: false,
+            preserve_newlines: false,
             output_start: 0,
             source_inner_start: 0,
+            list_container_only: false,
         }
     }
+}
+
+/// A list item whose only body is a nested list supplies ancestry, not a
+/// separate empty editable paragraph. A genuinely empty li still has its own
+/// paragraph, cursor, and marker geometry.
+fn list_container_items(tokens: &[Token]) -> std::collections::BTreeSet<usize> {
+    struct Item {
+        at: usize,
+        depth: usize,
+        has_list: bool,
+        has_body: bool,
+    }
+    let mut items: Vec<Item> = Vec::new();
+    let mut depth = 0usize;
+    let mut containers = std::collections::BTreeSet::new();
+    for token in tokens {
+        match &token.kind {
+            TokenKind::Tag(tag) if matches!(tag.name.as_str(), "ul" | "ol") => {
+                if tag.end {
+                    depth = depth.saturating_sub(1);
+                } else {
+                    if let Some(item) = items.last_mut().filter(|item| item.depth == depth) {
+                        item.has_list = true;
+                    }
+                    depth += 1;
+                }
+            }
+            TokenKind::Tag(tag) if tag.name == "li" => {
+                if tag.end {
+                    if let Some(item) = items.pop() {
+                        if item.has_list && !item.has_body {
+                            containers.insert(item.at);
+                        }
+                    }
+                } else {
+                    items.push(Item {
+                        at: token.range.start,
+                        depth,
+                        has_list: false,
+                        has_body: false,
+                    });
+                }
+            }
+            TokenKind::Opaque => {}
+            TokenKind::MappedText { text, .. } if text.bytes().all(css_space) => {}
+            _ => {
+                if let Some(item) = items.last_mut().filter(|item| item.depth == depth) {
+                    item.has_body = true;
+                }
+            }
+        }
+    }
+    containers
 }
 
 fn emit_block_boundary(builder: &mut Builder<'_>, stack: &[Frame], range: Range<usize>) {
@@ -333,6 +395,23 @@ pub(super) fn project(
     )
 }
 
+pub(super) fn project_with_configuration(
+    input: &NormalizedText,
+    revision: Revision,
+    start: usize,
+    end: usize,
+    configuration: Option<&StyleSheet>,
+) -> FormattedDocument {
+    project_tokens_with_configuration(
+        input,
+        revision,
+        start,
+        end,
+        super::html5_tree::tokens(&input.text),
+        configuration,
+    )
+}
+
 pub(super) fn project_tokens(
     input: &NormalizedText,
     revision: Revision,
@@ -340,14 +419,32 @@ pub(super) fn project_tokens(
     end: usize,
     tokens: Vec<Token>,
 ) -> FormattedDocument {
+    project_tokens_with_configuration(input, revision, start, end, tokens, None)
+}
+
+pub(super) fn project_tokens_with_configuration(
+    input: &NormalizedText,
+    revision: Revision,
+    start: usize,
+    end: usize,
+    tokens: Vec<Token>,
+    configuration: Option<&StyleSheet>,
+) -> FormattedDocument {
     let mut builder = Builder::new(input, revision);
     builder.style_sheet = super::html_styles::read_with_semantics(&input.text, &tokens).sheet;
+    if let Some(configuration) = configuration {
+        builder
+            .style_sheet
+            .retain_configuration_deletions(configuration);
+    }
     let mut stack = vec![Frame::default()];
     let mut pending_break: Option<Range<usize>> = None;
     let mut pending_space: Option<Range<usize>> = None;
     let mut pending_space_style = CharacterProperties::default();
     let mut pending_space_named = None;
+    let mut pending_space_is_segment_break = false;
     let mut paragraph_seen = false;
+    let container_items = list_container_items(&tokens);
     for token in tokens {
         match token.kind {
             TokenKind::Opaque => {}
@@ -359,7 +456,9 @@ pub(super) fn project_tokens(
                 if frame.hidden || frame.opaque {
                     continue;
                 }
-                if !frame.preserve_whitespace && value.bytes().all(space) {
+                let value = if value == "\r" { " ".into() } else { value };
+                let hard_break = frame.preserve_newlines && value == "\n";
+                if !frame.preserve_whitespace && !hard_break && value.bytes().all(css_space) {
                     if !builder.line_is_empty() && pending_break.is_none() {
                         if let Some(space) = pending_space
                             .as_mut()
@@ -370,6 +469,15 @@ pub(super) fn project_tokens(
                             pending_space = Some(token.range);
                             pending_space_style = frame.character.clone();
                             pending_space_named = frame.named_character.clone();
+                            pending_space_is_segment_break = false;
+                        }
+                        if value == "\n" && !pending_space_is_segment_break {
+                            // Spaces surrounding a segment break disappear
+                            // before that break becomes a space. The surviving
+                            // space therefore has the break's inline style.
+                            pending_space_style = frame.character.clone();
+                            pending_space_named = frame.named_character.clone();
+                            pending_space_is_segment_break = true;
                         }
                     }
                     continue;
@@ -391,6 +499,11 @@ pub(super) fn project_tokens(
                     .map(|ancestor| ancestor.character.clone())
                     .unwrap_or_default();
                 builder.named_character = frame.named_character.clone();
+                if hard_break {
+                    // Collapsible spaces adjacent to a preserved segment
+                    // break disappear even across an inline element boundary.
+                    pending_space = None;
+                }
                 if let Some(range) = pending_space.take() {
                     let named =
                         std::mem::replace(&mut builder.named_character, pending_space_named.take());
@@ -399,7 +512,7 @@ pub(super) fn project_tokens(
                 }
                 if !mapped {
                     builder.emit_read_only(&value);
-                } else if frame.preserve_whitespace && value == "\n" {
+                } else if hard_break {
                     builder.hard_break(token.range);
                 } else {
                     builder.emit(&value, token.range, &frame.character);
@@ -422,12 +535,30 @@ pub(super) fn project_tokens(
                             // that boundary and unexpectedly add a newline.
                             && pending_break.is_none()
                             && !matches!(closed.name.as_str(), "html" | "head" | "body")
+                            && !closed.list_container_only
                             && closed.output_start == builder.text.len()
                         {
                             builder.retain_empty_boundary(
                                 closed.source_inner_start,
                                 &closed.character,
                             );
+                            if closed.preserve_whitespace
+                                && builder.provenance.last().is_some_and(|span| {
+                                    span.formatted == (builder.text.len()..builder.text.len())
+                                        && span.source
+                                            == (closed.source_inner_start..closed.source_inner_start)
+                                })
+                            {
+                                // The selected empty source anchor has no
+                                // visible character on which to retain its
+                                // whitespace context. A point annotation
+                                // preserves it even in arbitrarily long pre
+                                // elements and through closed inline scopes.
+                                builder.spans.push(super::StyleSpan {
+                                    range: builder.text.len()..builder.text.len(),
+                                    application: super::StyleApplication::SourcePreservedWhitespace,
+                                });
+                            }
                         }
                         stack.truncate(index.max(1));
                         if !was_hidden && block(&tag.name) {
@@ -441,11 +572,21 @@ pub(super) fn project_tokens(
                 }
                 let mut frame = stack.last().cloned().unwrap_or_default();
                 frame.name = tag.name.clone();
+                frame.list_container_only =
+                    tag.name == "li" && container_items.contains(&token.range.start);
                 frame.hidden |= hidden(&tag.name);
                 frame.opaque |= atomic(&tag.name);
                 if !frame.hidden && !stack.last().unwrap().opaque && atomic(&tag.name) {
                     if let Some(range) = pending_break.take() {
                         emit_block_boundary(&mut builder, &stack, range);
+                    }
+                    if let Some(range) = pending_space.take() {
+                        let named = std::mem::replace(
+                            &mut builder.named_character,
+                            pending_space_named.take(),
+                        );
+                        builder.emit(" ", range, &pending_space_style);
+                        builder.named_character = named;
                     }
                     builder.emit_read_only("\u{fffc}");
                     paragraph_seen = true;
@@ -467,7 +608,8 @@ pub(super) fn project_tokens(
                 let first_item_paragraph = containing_item.is_some_and(|index| {
                     stack[index].output_start == builder.text.len() && pending_break.is_none()
                 });
-                let paragraph_element = paragraph(&tag.name) || containing_item.is_some();
+                let paragraph_element = (paragraph(&tag.name) || containing_item.is_some())
+                    && !frame.list_container_only;
                 let inside_pre = stack.iter().any(|frame| frame.name == "pre");
                 if block(&tag.name) && !frame.hidden && !frame.opaque {
                     pending_space = None;
@@ -560,6 +702,7 @@ pub(super) fn project_tokens(
                 }
                 if tag.name == "pre" {
                     frame.preserve_whitespace = true;
+                    frame.preserve_newlines = true;
                     frame.paragraph_style = Some("Code Block".into());
                 } else if tag.name == "code" {
                     frame.named_character = Some("Code".into());
@@ -640,9 +783,22 @@ pub(super) fn project_tokens(
                         if name.eq_ignore_ascii_case("white-space") {
                             match value.trim().to_ascii_lowercase().as_str() {
                                 "pre" | "pre-wrap" | "break-spaces" => {
-                                    frame.preserve_whitespace = true
+                                    frame.preserve_whitespace = true;
+                                    frame.preserve_newlines = true;
                                 }
-                                "normal" => frame.preserve_whitespace = false,
+                                "normal" | "nowrap" | "initial" => {
+                                    frame.preserve_whitespace = false;
+                                    frame.preserve_newlines = false;
+                                }
+                                "pre-line" => {
+                                    frame.preserve_whitespace = false;
+                                    frame.preserve_newlines = true;
+                                }
+                                "inherit" | "unset" => {
+                                    let parent = stack.last().unwrap();
+                                    frame.preserve_whitespace = parent.preserve_whitespace;
+                                    frame.preserve_newlines = parent.preserve_newlines;
+                                }
                                 _ => {}
                             }
                         }
@@ -698,7 +854,9 @@ pub(super) fn project_tokens(
                         });
                     let range = at..at + consumed;
                     at += consumed;
-                    if !frame.preserve_whitespace && value.bytes().all(space) {
+                    let value = if value == "\r" { " ".into() } else { value };
+                    let hard_break = frame.preserve_newlines && value == "\n";
+                    if !frame.preserve_whitespace && !hard_break && value.bytes().all(css_space) {
                         if !builder.line_is_empty() && pending_break.is_none() {
                             if let Some(space) =
                                 pending_space.as_mut().filter(|r| r.end == range.start)
@@ -708,6 +866,12 @@ pub(super) fn project_tokens(
                                 pending_space = Some(range);
                                 pending_space_style = frame.character.clone();
                                 pending_space_named = frame.named_character.clone();
+                                pending_space_is_segment_break = false;
+                            }
+                            if value == "\n" && !pending_space_is_segment_break {
+                                pending_space_style = frame.character.clone();
+                                pending_space_named = frame.named_character.clone();
+                                pending_space_is_segment_break = true;
                             }
                         }
                         continue;
@@ -729,6 +893,9 @@ pub(super) fn project_tokens(
                         .map(|ancestor| ancestor.character.clone())
                         .unwrap_or_default();
                     builder.named_character = frame.named_character.clone();
+                    if hard_break {
+                        pending_space = None;
+                    }
                     if let Some(range) = pending_space.take() {
                         let named = std::mem::replace(
                             &mut builder.named_character,
@@ -737,10 +904,13 @@ pub(super) fn project_tokens(
                         builder.emit(" ", range, &pending_space_style);
                         builder.named_character = named;
                     }
-                    if frame.preserve_whitespace && value == "\n" {
+                    if hard_break {
                         builder.hard_break(range);
                     } else {
                         builder.emit(&value, range, &frame.character);
+                    }
+                    if frame.preserve_whitespace {
+                        retain_whitespace_context(&mut builder, value.len());
                     }
                     paragraph_seen = true;
                 }
@@ -840,7 +1010,43 @@ pub(super) fn list_patches(
     input: &NormalizedText,
     targets: &[(Range<usize>, Option<super::ListStyle>, u64, Option<u64>)],
 ) -> Result<Vec<(Range<usize>, String)>, super::DocumentError> {
-    let tokens = tokenize(&input.text);
+    // Recovered elements identify omitted paragraph/list end tags without
+    // regenerating their untouched body bytes. Synthetic closes are authored
+    // only when the requested structural edit needs a real delimiter.
+    let mut tokens = super::html5_tree::tokens(&input.text);
+    let raw_tokens = tokenize(&input.text);
+    let mut claimed_closes = std::collections::BTreeSet::new();
+    for token in &mut tokens {
+        let TokenKind::Tag(tag) = &token.kind else {
+            continue;
+        };
+        if !tag.end {
+            continue;
+        }
+        if !token.range.is_empty() {
+            claimed_closes.insert(token.range.start);
+            continue;
+        }
+        // Tree construction may close a node implicitly even when its end
+        // tag immediately follows in source. Recover that delimiter through
+        // trivia and already-closed inline wrappers, never across new content.
+        for raw in raw_tokens
+            .iter()
+            .filter(|raw| raw.range.start >= token.range.start)
+        {
+            match &raw.kind {
+                TokenKind::Tag(close) if close.end => {
+                    if close.name == tag.name && claimed_closes.insert(raw.range.start) {
+                        token.range = raw.range.clone();
+                        break;
+                    }
+                }
+                TokenKind::Opaque => {}
+                TokenKind::Text if input.text[raw.range.clone()].trim().is_empty() => {}
+                _ => break,
+            }
+        }
+    }
     let mapper = Builder::new(input, Revision(0));
     let mut stack: Vec<usize> = Vec::new();
     let mut nodes: Vec<(usize, usize, Option<usize>)> = Vec::new();
@@ -852,7 +1058,9 @@ pub(super) fn list_patches(
             if let Some(at) = stack.iter().rposition(|open| matches!(&tokens[*open].kind, TokenKind::Tag(open_tag) if open_tag.name == tag.name)) {
                 let open = stack[at];
                 let parent_list = stack[..at].iter().rev().copied().find(|parent| matches!(&tokens[*parent].kind, TokenKind::Tag(t) if matches!(t.name.as_str(), "ul" | "ol")));
-                nodes.push((open, index, parent_list));
+                if !tokens[open].range.is_empty() {
+                    nodes.push((open, index, parent_list));
+                }
                 stack.truncate(at);
             }
         } else if !void(&tag.name) {
@@ -860,6 +1068,8 @@ pub(super) fn list_patches(
         }
     }
     let mut result = Vec::new();
+    let container_items = list_container_items(&tokens);
+    let mut removed_ancestors = std::collections::BTreeSet::new();
     let owners = targets
         .iter()
         .map(|(source, _, _, _)| {
@@ -907,6 +1117,65 @@ pub(super) fn list_patches(
             continue;
         }
         let Some(style) = selected[0].1 .1 else {
+            if selected.iter().any(|(_, target)| target.1.is_some()) {
+                continue;
+            }
+            result.push((
+                mapper.source_range(tokens[*parent].range.clone()),
+                String::new(),
+            ));
+            result.push((
+                mapper.source_range(tokens[*close].range.clone()),
+                String::new(),
+            ));
+            for (open, close, _) in &children {
+                let contains_paragraph = tokens[*open + 1..*close].iter().any(|token| matches!(&token.kind, TokenKind::Tag(tag) if !tag.end && paragraph(&tag.name)));
+                let name = if contains_paragraph { "div" } else { "p" };
+                let mut opening = input.text[tokens[*open].range.clone()].to_owned();
+                opening.replace_range(1..3, name);
+                let mut closing = input.text[tokens[*close].range.clone()].to_owned();
+                if closing.is_empty() {
+                    closing = format!("</{name}>");
+                } else {
+                    closing.replace_range(2..4, name);
+                }
+                result.push((mapper.source_range(tokens[*open].range.clone()), opening));
+                result.push((mapper.source_range(tokens[*close].range.clone()), closing));
+            }
+            // Native deeper-level authoring may have introduced ancestors
+            // whose entire body is this one list. Once every descendant item
+            // becomes a paragraph, remove that empty structural chain too.
+            let mut child_list = *parent;
+            loop {
+                let Some((item_open, item_close, Some(outer))) =
+                    nodes.iter().find(|(open, close, _)| {
+                        container_items.contains(&tokens[*open].range.start)
+                            && tokens[*open].range.end <= tokens[child_list].range.start
+                            && tokens[child_list].range.end <= tokens[*close].range.start
+                    })
+                else {
+                    break;
+                };
+                let children = nodes.iter().filter(|(open, _, owner)| *owner == Some(*outer) && matches!(&tokens[*open].kind, TokenKind::Tag(tag) if tag.name == "li")).count();
+                let child_lists = nodes.iter().filter(|(open, close, owner)| *owner == Some(*outer) && tokens[*item_open].range.end <= tokens[*open].range.start && tokens[*close].range.end <= tokens[*item_close].range.start && matches!(&tokens[*open].kind, TokenKind::Tag(tag) if matches!(tag.name.as_str(), "ul" | "ol"))).count();
+                if children != 1 || child_lists != 1 {
+                    break;
+                }
+                let Some((_, outer_close, _)) = nodes.iter().find(|(open, _, _)| *open == *outer)
+                else {
+                    break;
+                };
+                for index in [*item_open, *item_close, *outer, *outer_close] {
+                    if removed_ancestors.insert(index) {
+                        result.push((
+                            mapper.source_range(tokens[index].range.clone()),
+                            String::new(),
+                        ));
+                    }
+                }
+                child_list = *outer;
+            }
+            handled.extend(selected.into_iter().map(|(index, _)| index));
             continue;
         };
         if selected.iter().any(|(_, target)| target.1 != Some(style)) {
@@ -919,11 +1188,17 @@ pub(super) fn list_patches(
         };
         let mut opening = input.text[tokens[*parent].range.clone()].to_owned();
         opening.replace_range(1..1 + parent_tag.name.len(), name);
-        if style == super::ListStyle::Numbered {
+        if style == super::ListStyle::Numbered
+            && (selected[0].1 .2 != 1 || parent_tag.attribute("start").is_some())
+        {
             opening.insert_str(1 + name.len(), &format!(" start=\"{}\"", selected[0].1 .2));
         }
         let mut closing = input.text[tokens[*close].range.clone()].to_owned();
-        closing.replace_range(2..2 + parent_tag.name.len(), name);
+        if closing.is_empty() {
+            closing = format!("</{name}>");
+        } else {
+            closing.replace_range(2..2 + parent_tag.name.len(), name);
+        }
         result.push((mapper.source_range(tokens[*parent].range.clone()), opening));
         result.push((mapper.source_range(tokens[*close].range.clone()), closing));
         handled.extend(selected.into_iter().map(|(index, _)| index));
@@ -946,10 +1221,10 @@ pub(super) fn list_patches(
         };
         let mut wrap_open = list_name
             .map(|name| {
-                if name == "ol" {
+                if name == "ol" && *ordinal != 1 {
                     format!("<ol start=\"{ordinal}\">")
                 } else {
-                    "<ul>".to_owned()
+                    format!("<{name}>")
                 }
             })
             .unwrap_or_default();
@@ -973,7 +1248,11 @@ pub(super) fn list_patches(
             opening.replace_range(1..1 + tag.name.len(), desired_tag);
             let original_close = &input.text[tokens[*close].range.clone()];
             let mut closing = original_close.to_owned();
-            closing.replace_range(2..2 + tag.name.len(), desired_tag);
+            if closing.is_empty() {
+                closing = format!("</{desired_tag}>");
+            } else {
+                closing.replace_range(2..2 + tag.name.len(), desired_tag);
+            }
             let (leave_parent, resume_parent) = if tag.name == "li" {
                 let parent = parent.ok_or(super::DocumentError::AmbiguousProjection)?;
                 let TokenKind::Tag(parent_tag) = &tokens[parent].kind else {
@@ -1032,49 +1311,41 @@ pub(super) fn list_patches(
     Ok(result)
 }
 
-/// Canonical text spelling. Whitespace runs which could collapse at a new
-/// boundary are explicitly reversible inline pre-wrap spans. Ordinary interior
-/// single spaces retain compact character-reference spelling.
+/// Canonical text spelling. Semantic edits normalize collapsible spacing to
+/// ordinary or nonbreaking spaces before verification; no whitespace wrapper
+/// is needed. Existing whitespace-preserving elements use the separate encoder.
 pub(super) fn escape(text: &str) -> String {
+    escape_with_context(text, false, false)
+}
+
+pub(super) fn escape_with_context(text: &str, text_before: bool, text_after: bool) -> String {
     let mut out = String::new();
-    let mut at = 0;
-    while at < text.len() {
-        let c = text[at..].chars().next().unwrap();
-        if matches!(c, ' ' | '\t' | '\r') {
-            let start = at;
-            while at < text.len()
-                && text[at..]
-                    .chars()
-                    .next()
-                    .is_some_and(|c| matches!(c, ' ' | '\t' | '\r'))
-            {
-                at += text[at..].chars().next().unwrap().len_utf8();
+    let mut previous_is_content = text_before;
+    let mut characters = text.chars().peekable();
+    while let Some(ch) = characters.next() {
+        match ch {
+            ' ' | '\t' => {
+                let following = characters.peek().map(|ch| {
+                    !super::html_whitespace::collapsible(*ch)
+                }).unwrap_or(text_after);
+                let inside_run = characters.peek().is_some_and(|ch| matches!(ch, ' ' | '\t'));
+                if previous_is_content && (following || inside_run) {
+                    out.push(' ');
+                    previous_is_content = false;
+                } else {
+                    out.push_str("&nbsp;");
+                    previous_is_content = true;
+                }
+                continue;
             }
-            let run = &text[start..at];
-            let preserved = start == 0 || at == text.len() || run.len() > 1 || run != " ";
-            if preserved {
-                out.push_str("<span style=\"white-space: pre-wrap\">");
-            }
-            for c in run.chars() {
-                out.push_str(match c {
-                    ' ' => "&#32;",
-                    '\t' => "&#9;",
-                    _ => "&#13;",
-                });
-            }
-            if preserved {
-                out.push_str("</span>");
-            }
-            continue;
-        }
-        match c {
             '&' => out.push_str("&amp;"),
             '<' => out.push_str("&lt;"),
             '>' => out.push_str("&gt;"),
             '\n' => out.push_str("<br>"),
-            _ => out.push(c),
+            '\r' => out.push_str("&#13;"),
+            _ => out.push(ch),
         }
-        at += c.len_utf8();
+        previous_is_content = !super::html_whitespace::collapsible(ch);
     }
     out
 }
@@ -1140,7 +1411,8 @@ pub(super) fn whitespace_after_source_gap(gap: &str, inherited: bool) -> bool {
                     if name.eq_ignore_ascii_case("white-space") {
                         match value.trim().to_ascii_lowercase().as_str() {
                             "pre" | "pre-wrap" | "break-spaces" => current = true,
-                            "normal" => current = false,
+                            "normal" | "nowrap" | "pre-line" | "initial" => current = false,
+                            "inherit" | "unset" => current = stack.last().unwrap().1,
                             _ => {}
                         }
                     }

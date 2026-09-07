@@ -51,6 +51,165 @@ struct File {
 }
 
 impl StyleSheet {
+    pub(crate) fn has_html_native_definitions(&self) -> bool {
+        self.source_defined_blocks
+            .iter()
+            .any(|id| super::super::html_styles::is_native_style(self, id, false))
+            || self
+                .source_defined_characters
+                .iter()
+                .any(|id| super::super::html_styles::is_native_style(self, id, true))
+    }
+
+    /// Native HTML style edits may remain buffer configuration instead of CSS.
+    pub(crate) fn keep_html_native_configuration(&mut self, id: &StyleId, character: bool) {
+        if !super::super::html_styles::is_native_style(self, id, character) {
+            return;
+        }
+        if character {
+            self.html_configuration_characters.insert(id.clone());
+            self.source_defined_characters.remove(id);
+        } else {
+            self.html_configuration_blocks.insert(id.clone());
+            self.source_defined_blocks.remove(id);
+        }
+    }
+
+    pub(crate) fn keep_all_html_native_configuration(&mut self) {
+        let blocks = self.block_styles.keys().cloned().collect::<Vec<_>>();
+        let characters = self.character_styles.keys().cloned().collect::<Vec<_>>();
+        for id in blocks {
+            self.keep_html_native_configuration(&id, false);
+        }
+        for id in characters {
+            self.keep_html_native_configuration(&id, true);
+        }
+    }
+
+    pub(crate) fn clear_html_native_configuration(&mut self) {
+        self.html_configuration_blocks.clear();
+        self.html_configuration_characters.clear();
+    }
+
+    pub(super) fn retain_html_native_configuration(&mut self, previous: &Self) {
+        for id in &previous.html_configuration_blocks {
+            if self.source_defined_blocks.contains(id) {
+                continue;
+            }
+            self.html_configuration_blocks.insert(id.clone());
+            if previous.deleted_source_blocks.contains(id) {
+                self.deleted_source_blocks.insert(id.clone());
+            } else {
+                self.deleted_source_blocks.remove(id);
+            }
+            if let Some(style) = previous.block_styles.get(id) {
+                self.block_styles.insert(id.clone(), style.clone());
+                self.block_metadata
+                    .insert(id.clone(), previous.block_metadata[id].clone());
+            } else {
+                self.block_styles.remove(id);
+                self.block_metadata.remove(id);
+            }
+        }
+        for id in &previous.html_configuration_characters {
+            if self.source_defined_characters.contains(id) {
+                continue;
+            }
+            self.html_configuration_characters.insert(id.clone());
+            if let Some(style) = previous.character_styles.get(id) {
+                self.character_styles.insert(id.clone(), style.clone());
+                self.character_metadata
+                    .insert(id.clone(), previous.character_metadata[id].clone());
+            } else {
+                self.character_styles.remove(id);
+                self.character_metadata.remove(id);
+            }
+        }
+    }
+
+    pub(crate) fn mark_html_export_definitions_source_backed(&mut self) {
+        for id in self.block_styles.keys().cloned().collect::<Vec<_>>() {
+            if super::super::html_styles::is_native_style(self, &id, false) {
+                self.source_defined_blocks.insert(id.clone());
+                self.block_metadata.get_mut(&id).unwrap().origin =
+                    StyleDefinitionOrigin::SourceBacked;
+            }
+        }
+        for id in self.character_styles.keys().cloned().collect::<Vec<_>>() {
+            if super::super::html_styles::is_native_style(self, &id, true) {
+                self.source_defined_characters.insert(id.clone());
+                self.character_metadata.get_mut(&id).unwrap().origin =
+                    StyleDefinitionOrigin::SourceBacked;
+            }
+        }
+    }
+
+    pub(crate) fn materialize_html_export_defaults(&mut self) {
+        let blocks = self.block_styles.keys().cloned().collect::<Vec<_>>();
+        let characters = self.character_styles.keys().cloned().collect::<Vec<_>>();
+        for id in blocks {
+            if !super::super::html_styles::is_native_style(self, &id, false) {
+                continue;
+            }
+            let style = self.block_styles.get_mut(&id).unwrap();
+            if let Some(default) = self.default_blocks.get(&id) {
+                style.character = overlay(&default.character, &style.character);
+                style.block = overlay(&default.block, &style.block);
+            }
+            self.block_metadata.get_mut(&id).unwrap().origin = StyleDefinitionOrigin::SourceBacked;
+        }
+        for id in characters {
+            if !super::super::html_styles::is_native_style(self, &id, true) {
+                continue;
+            }
+            let style = self.character_styles.get_mut(&id).unwrap();
+            if let Some(default) = self.default_characters.get(&id) {
+                style.properties = overlay(&default.properties, &style.properties);
+            }
+            self.character_metadata.get_mut(&id).unwrap().origin =
+                StyleDefinitionOrigin::SourceBacked;
+        }
+        self.clear_html_native_configuration();
+    }
+
+    pub(crate) fn materialize_html_default_definition(
+        &mut self,
+        id: &StyleId,
+        character: bool,
+        include_native: bool,
+    ) {
+        let mut current = Some(id.clone());
+        while let Some(id) = current {
+            if !include_native && super::super::html_styles::is_native_style(self, &id, character) {
+                break;
+            }
+            if character {
+                let Some(style) = self.character_styles.get_mut(&id) else {
+                    break;
+                };
+                current = style.based_on.clone();
+                if let Some(default) = self.default_characters.get(&id) {
+                    style.properties = overlay(&default.properties, &style.properties);
+                }
+                self.character_metadata.get_mut(&id).unwrap().origin =
+                    StyleDefinitionOrigin::SourceBacked;
+                self.source_defined_characters.insert(id);
+            } else {
+                let Some(style) = self.block_styles.get_mut(&id) else {
+                    break;
+                };
+                current = style.based_on.clone();
+                if let Some(default) = self.default_blocks.get(&id) {
+                    style.character = overlay(&default.character, &style.character);
+                    style.block = overlay(&default.block, &style.block);
+                }
+                self.block_metadata.get_mut(&id).unwrap().origin =
+                    StyleDefinitionOrigin::SourceBacked;
+                self.source_defined_blocks.insert(id);
+            }
+        }
+    }
+
     pub fn has_user_default(&self, id: &StyleId, character: bool) -> bool {
         if character {
             self.default_characters.contains_key(id)
@@ -262,10 +421,11 @@ impl StyleSheet {
         self.install_default_layer(&previous.block_metadata, &previous.character_metadata);
         // Configuration-only overrides survive source reparsing too.
         for (id, style) in &previous.block_styles {
-            if previous
-                .block_metadata
-                .get(id)
-                .is_some_and(|m| m.origin == StyleDefinitionOrigin::GeneratedConfiguration)
+            if !self.source_defined_blocks.contains(id)
+                && previous
+                    .block_metadata
+                    .get(id)
+                    .is_some_and(|m| m.origin == StyleDefinitionOrigin::GeneratedConfiguration)
             {
                 self.block_styles.insert(id.clone(), style.clone());
                 self.block_metadata
@@ -273,10 +433,11 @@ impl StyleSheet {
             }
         }
         for (id, style) in &previous.character_styles {
-            if previous
-                .character_metadata
-                .get(id)
-                .is_some_and(|m| m.origin == StyleDefinitionOrigin::GeneratedConfiguration)
+            if !self.source_defined_characters.contains(id)
+                && previous
+                    .character_metadata
+                    .get(id)
+                    .is_some_and(|m| m.origin == StyleDefinitionOrigin::GeneratedConfiguration)
             {
                 self.character_styles.insert(id.clone(), style.clone());
                 self.character_metadata

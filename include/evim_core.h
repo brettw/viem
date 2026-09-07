@@ -107,6 +107,7 @@ typedef uint32_t EvimStatus;
 #define EVIM_DOCUMENT_STATE_IS_DIRTY (1u << 3)
 #define EVIM_DOCUMENT_STATE_READ_ONLY (1u << 4)
 #define EVIM_DOCUMENT_STATE_RECOVERED (1u << 5)
+#define EVIM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS (1u << 6)
 
 typedef struct EvimDocumentOptions {
   uint32_t struct_size;
@@ -1513,6 +1514,17 @@ typedef struct EvimSetFileFormatV1 {
 #define EVIM_SET_FILE_FORMAT_V1_SIZE \
   ((uint32_t)sizeof(EvimSetFileFormatV1))
 
+/* Shared HTML style-serialization policy bound to one exact snapshot. */
+typedef struct EvimSetIncludeStyleDefinitionsV1 {
+  uint32_t struct_size;
+  uint32_t enabled;
+  uint64_t document_id;
+  uint64_t document_revision;
+} EvimSetIncludeStyleDefinitionsV1;
+
+#define EVIM_SET_INCLUDE_STYLE_DEFINITIONS_V1_SIZE \
+  ((uint32_t)sizeof(EvimSetIncludeStyleDefinitionsV1))
+
 /* Source interpretation and lossless transcoding, with exact identity. */
 typedef struct EvimSetFormatV1 {
   uint32_t struct_size;
@@ -2103,6 +2115,11 @@ EvimStatus evim_core_view_set_linebreak(EvimCoreHandle core, EvimViewId view,
 EvimStatus evim_core_view_set_file_format(
     EvimCoreHandle core, EvimViewId view,
     const EvimSetFileFormatV1 *request, EvimCoreOutcomeV1 *out_outcome);
+/* HTML and HTML Source only. Enabled must be 0 or 1. Undoable and shared. */
+EvimStatus evim_core_view_set_include_style_definitions(
+    EvimCoreHandle core, EvimViewId view,
+    const EvimSetIncludeStyleDefinitionsV1 *request,
+    EvimCoreOutcomeV1 *out_outcome);
 EvimStatus evim_core_view_set_format(
     EvimCoreHandle core, EvimViewId view,
     const EvimSetFormatV1 *request, EvimCoreOutcomeV1 *out_outcome);

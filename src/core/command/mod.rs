@@ -2731,6 +2731,8 @@ impl CommandInterpreter {
 
         if self.needs_input_assistance(context.document(), &event)
             || !self.typing_style.values.is_empty()
+            || (self.mode == Mode::Replace
+                && context.document().format() == crate::document::Format::Html)
             || self
                 .insert_session
                 .as_ref()
@@ -3110,6 +3112,11 @@ impl CommandInterpreter {
             value.hard_break_offsets().to_vec(),
         )
         .expect("command register payload carries validated semantic hard breaks");
+        let edit = document.normalize_typing_payload(
+            FormattedPayloadEdit::new(start..end, payload)
+                .with_boundary_affinity(self.insertion_boundary_affinity()),
+        )?;
+        let typing_caret = edit.range().start + edit.payload().text().len();
         let model = if structural_list_enter {
             CommandModelRequest::Model(ModelRequest::ContinueList {
                 document: document.id(),
@@ -3120,12 +3127,15 @@ impl CommandInterpreter {
             CommandModelRequest::FormattedPayload(FormattedPayloadEditRequest::new(
                 document.id(),
                 document.revision(),
-                vec![FormattedPayloadEdit::new(start..end, payload)
-                    .with_boundary_affinity(self.insertion_boundary_affinity())],
+                vec![edit],
             ))
         };
 
-        next.cursor = start + input.len();
+        next.cursor = if structural_list_enter {
+            start + input.len()
+        } else {
+            typing_caret
+        };
         if let Some(session) = next.insert_session.as_mut() {
             if !session.replaying_program {
                 session.preserve_normal_repeat = false;
@@ -3189,7 +3199,7 @@ impl CommandInterpreter {
                         if let Some(program) = session.repeat_program.as_mut() {
                             program.push(EditSessionStep::Backspace);
                         }
-                        remove_inserted_suffix(&mut session.last_inserted, &entry.inserted);
+                        remove_typing_inserted_suffix(document.format(), &mut session.last_inserted, &entry.inserted);
                     }
                 }
                 return Ok(self.planned_flat_text_edit(
@@ -3216,7 +3226,7 @@ impl CommandInterpreter {
                 if let Some(program) = session.repeat_program.as_mut() {
                     program.push(EditSessionStep::Backspace);
                 }
-                remove_inserted_suffix(&mut session.last_inserted, &removed);
+                remove_typing_inserted_suffix(document.format(), &mut session.last_inserted, &removed);
             }
         }
         Ok(self.planned_flat_text_edit(document, next, start..self.cursor, "", true))
@@ -3309,7 +3319,7 @@ impl CommandInterpreter {
                 if let Some(program) = session.repeat_program.as_mut() {
                     program.push(step);
                 }
-                remove_inserted_suffix(&mut session.last_inserted, &removed);
+                remove_typing_inserted_suffix(document.format(), &mut session.last_inserted, &removed);
             }
         }
         Ok(self.planned_flat_text_edit(document, next, range, "", true))
@@ -9887,7 +9897,20 @@ impl CommandInterpreter {
                 },
             ),
         };
-        let inserted_len = fragment.text.len();
+        let inserted_payload = FormattedTextPayload::new(
+            &lines,
+            fragment.text.clone(),
+            fragment.hard_break_offsets.clone(),
+        )
+        .expect("Visual put carries validated semantic-break offsets");
+        let inserted_len = document
+            .normalize_typing_payload(FormattedPayloadEdit::new(
+                extent.range.clone(),
+                inserted_payload,
+            ))?
+            .payload()
+            .text()
+            .len();
         let before_revision = document.revision();
         let mapped_start = commit_planned_formatted_edits(
             document,
@@ -10098,7 +10121,7 @@ impl CommandInterpreter {
                                 | crate::document::Format::Markdown
                                 | crate::document::Format::MarkdownSource
                         ) {
-                            document.continue_rich_list(self.cursor)?;
+                            self.cursor = continue_list_with_cursor(document, self.cursor)?;
                         } else if edit.range.is_empty() {
                             let value = RegisterValue::characterwise(&edit.replacement);
                             let payload = FormattedTextPayload::new(
@@ -10111,7 +10134,15 @@ impl CommandInterpreter {
                         } else {
                             document.replace(edit.range.clone(), &edit.replacement)?;
                         }
-                        self.cursor = edit.range.start + edit.replacement.len();
+                        if !matches!(
+                            document.format(),
+                            crate::document::Format::Html
+                                | crate::document::Format::Rtf
+                                | crate::document::Format::Markdown
+                                | crate::document::Format::MarkdownSource
+                        ) {
+                            self.cursor = edit.range.start + edit.replacement.len();
+                        }
                         if let Some(session) = self.insert_session.as_mut() {
                             if !session.replaying_program {
                                 session.preserve_normal_repeat = false;
@@ -10486,10 +10517,8 @@ impl CommandInterpreter {
         if range.is_empty() {
             return Ok(CommandOutput::complete());
         }
-        let start = range.start;
         let removed = document.text()[range.clone()].to_owned();
-        document.delete(range)?;
-        self.cursor = start;
+        self.cursor = delete_with_cursor(document, range)?;
         if let Some(session) = self.insert_session.as_mut() {
             session.unit_floor = session.unit_floor.min(self.cursor);
             if !session.replaying_program {
@@ -10497,7 +10526,7 @@ impl CommandInterpreter {
                 if let Some(program) = session.repeat_program.as_mut() {
                     program.push(step);
                 }
-                remove_inserted_suffix(&mut session.last_inserted, &removed);
+                remove_typing_inserted_suffix(document.format(), &mut session.last_inserted, &removed);
             }
         }
         Ok(CommandOutput {
@@ -10545,28 +10574,19 @@ impl CommandInterpreter {
         let lines = document.hard_line_snapshot();
         let payload = FormattedTextPayload::new(&lines, input, value.hard_break_offsets().to_vec())
             .expect("insert register payload has validated semantic breaks");
+        let edit = document.normalize_typing_payload(
+            FormattedPayloadEdit::new(self.cursor..self.cursor, payload)
+                .with_boundary_affinity(self.insertion_boundary_affinity()),
+        )?;
         if !self.typing_style.values.is_empty() {
             self.cursor = document
                 .insert_with_typing_properties(
-                    FormattedPayloadEdit::new(self.cursor..self.cursor, payload)
-                        .with_boundary_affinity(self.insertion_boundary_affinity()),
+                    edit,
                     &self.typing_style.values,
                 )
                 .map_err(command_document_error)?;
         } else {
-            if matches!(
-                document.format(),
-                crate::document::Format::Html | crate::document::Format::Rtf
-            ) {
-                document.apply_formatted_payload_edits(vec![FormattedPayloadEdit::new(
-                    self.cursor..self.cursor,
-                    payload,
-                )
-                .with_boundary_affinity(self.insertion_boundary_affinity())])?;
-            } else {
-                document.insert_formatted_payload(self.cursor, payload)?;
-            }
-            self.cursor += input.len();
+            self.cursor = commit_typing_payload(document, edit)?;
         }
         self.finish_typing_caret(document)?;
         if let Some(session) = self.insert_session.as_mut() {
@@ -10663,7 +10683,8 @@ impl CommandInterpreter {
                 .as_ref()
                 .is_some_and(|session| session.placement == InsertPlacement::Replace);
         if journalable
-            && (!self.typing_style.values.is_empty()
+            && (document.format() == crate::document::Format::Html
+                || !self.typing_style.values.is_empty()
                 || self
                     .insert_session
                     .as_ref()
@@ -10780,17 +10801,19 @@ impl CommandInterpreter {
         let before = document.revision();
         let payload = FormattedTextPayload::new(&lines, input, value.hard_break_offsets().to_vec())
             .expect("replacement register payload has validated semantic breaks");
+        let edit = document.normalize_typing_payload(
+            FormattedPayloadEdit::new(start..end, payload)
+                .with_boundary_affinity(self.insertion_boundary_affinity()),
+        )?;
         if !self.typing_style.values.is_empty() {
             self.cursor = document
                 .insert_with_typing_properties(
-                    FormattedPayloadEdit::new(start..end, payload)
-                        .with_boundary_affinity(self.insertion_boundary_affinity()),
+                    edit,
                     &self.typing_style.values,
                 )
                 .map_err(command_document_error)?;
         } else {
-            document.replace_with_formatted_payload(start..end, payload)?;
-            self.cursor = start + input.len();
+            self.cursor = commit_typing_payload(document, edit)?;
         }
         self.finish_typing_caret(document)?;
         if let Some(session) = self.insert_session.as_mut() {
@@ -10867,7 +10890,7 @@ impl CommandInterpreter {
                         if let Some(program) = session.repeat_program.as_mut() {
                             program.push(EditSessionStep::Backspace);
                         }
-                        remove_inserted_suffix(&mut session.last_inserted, &entry.inserted);
+                        remove_typing_inserted_suffix(document.format(), &mut session.last_inserted, &entry.inserted);
                     }
                 }
                 return Ok(CommandOutput {
@@ -10885,15 +10908,14 @@ impl CommandInterpreter {
             return Ok(CommandOutput::complete());
         };
         let removed = document.text()[start..self.cursor].to_owned();
-        document.delete(start..self.cursor)?;
-        self.cursor = start;
+        self.cursor = delete_with_cursor(document, start..self.cursor)?;
         if let Some(session) = self.insert_session.as_mut() {
             if !session.replaying_program {
                 session.preserve_normal_repeat = false;
                 if let Some(program) = session.repeat_program.as_mut() {
                     program.push(EditSessionStep::Backspace);
                 }
-                remove_inserted_suffix(&mut session.last_inserted, &removed);
+                remove_typing_inserted_suffix(document.format(), &mut session.last_inserted, &removed);
             }
         }
         Ok(CommandOutput {
@@ -10922,7 +10944,7 @@ impl CommandInterpreter {
             }
             return Ok(CommandOutput::complete());
         };
-        document.delete(self.cursor..end)?;
+        self.cursor = delete_with_cursor(document, self.cursor..end)?;
         if let Some(session) = self.insert_session.as_mut() {
             if !session.replaying_program {
                 session.preserve_normal_repeat = false;
@@ -11290,10 +11312,10 @@ impl CommandInterpreter {
                 kind: MotionKind::Characterwise,
             },
         );
-        document.delete(start..end)?;
+        let cursor = delete_with_cursor(document, start..end)?;
         self.delete_register(register, value, DeletionClass::Small);
         self.cursor =
-            normalize_normal_cursor(document.text(), &document.hard_line_snapshot(), start);
+            normalize_normal_cursor(document.text(), &document.hard_line_snapshot(), cursor);
         if !self.replaying {
             self.last_repeat = Some(RepeatAction::DeleteForward { count });
         }
@@ -11336,10 +11358,10 @@ impl CommandInterpreter {
                 kind: MotionKind::Characterwise,
             },
         );
-        document.delete(start..self.cursor)?;
+        let cursor = delete_with_cursor(document, start..self.cursor)?;
         self.delete_register(register, value, DeletionClass::Small);
         self.cursor =
-            normalize_normal_cursor(document.text(), &document.hard_line_snapshot(), start);
+            normalize_normal_cursor(document.text(), &document.hard_line_snapshot(), cursor);
         if !self.replaying {
             self.last_repeat = Some(RepeatAction::DeleteBackward { count });
         }
@@ -11393,15 +11415,36 @@ impl CommandInterpreter {
         let payload =
             FormattedTextPayload::new(&lines, text.clone(), repeated.hard_break_offsets().to_vec())
                 .expect("repeated replacement carries valid semantic-break offsets");
-        document.replace_with_formatted_payload(start..end, payload)?;
+        let edit = document.normalize_typing_payload(FormattedPayloadEdit::new(start..end, payload))?;
+        let insertion_end = if is_single_semantic_hard_break(replacement) {
+            let inserted_bytes = edit.payload().text().len();
+            let prepared = document
+                .prepare_formatted_payload_request(FormattedPayloadEditRequest::new(
+                    document.id(), document.revision(), vec![edit],
+                ))
+                .map_err(command_document_error)?;
+            // HTML may protect an adjacent ordinary space in the same
+            // transaction. Map the replacement start, then cross only the
+            // inserted break; mapping the old end would cross a protected
+            // following space as well.
+            let cursor = prepared_cursor(document, &prepared, start, Association::BeforeInsertion)?
+                .checked_add(inserted_bytes)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            document.commit_model_transaction(prepared).map_err(command_document_error)?;
+            cursor
+        } else {
+            let cursor = edit.range().start + edit.payload().text().len();
+            document.apply_formatted_payload_edits(vec![edit])?;
+            cursor
+        };
         let new_lines = document.hard_line_snapshot();
         self.cursor = if is_single_semantic_hard_break(replacement) {
             // This may be EOF when the replacement created a trailing empty
             // hard line. EOF is that line's sole legal Normal-mode cursor.
-            start.saturating_add(1).min(document.text().len())
+            insertion_end
         } else {
             new_lines
-                .previous_grapheme_boundary(start.saturating_add(text.len()))
+                .previous_grapheme_boundary(insertion_end)
                 .unwrap_or(start)
         };
         if !self.replaying {
@@ -11473,15 +11516,18 @@ impl CommandInterpreter {
                 ));
             }
         };
-        let insertion_len = repeated.text.len();
         let payload = FormattedTextPayload::new(
             &lines,
             repeated.text.clone(),
             repeated.hard_break_offsets().to_vec(),
         )
         .expect("register values carry validated semantic-break offsets");
-        document.insert_formatted_payload(position, payload)?;
-        let insertion_end = position + insertion_len;
+        let edit = document.normalize_typing_payload(FormattedPayloadEdit::new(
+            position..position,
+            payload,
+        ))?;
+        let insertion_end = edit.range().start + edit.payload().text().len();
+        document.apply_formatted_payload_edits(vec![edit])?;
         let target = if follow {
             insertion_end
         } else {
@@ -14003,6 +14049,35 @@ impl CommandInterpreter {
 }
 
 impl CommandPlan {
+    /// Supporting HTML whitespace edits can change the UTF-8 length before a
+    /// deletion boundary or a newly split paragraph. Resolve those cursors
+    /// through the prepared transaction before publishing the controller.
+    pub(crate) fn map_prepared_html_cursor(
+        &mut self,
+        document: &Document,
+        prepared: &PreparedModelTransaction,
+    ) -> Result<(), DocumentError> {
+        if document.format() != crate::document::Format::Html {
+            return Ok(());
+        }
+        let target = match self.model.as_ref() {
+            Some(CommandModelRequest::Model(ModelRequest::ApplyTextEdits { edits, .. }))
+                if edits.iter().all(|edit| edit.replacement.is_empty()) =>
+            {
+                Some((self.success_controller.cursor, Association::BeforeInsertion))
+            }
+            Some(CommandModelRequest::Model(ModelRequest::ContinueList { at, .. })) => {
+                self.success_controller.cursor = prepared_break_cursor(document, prepared, *at)?;
+                return Ok(());
+            }
+            _ => None,
+        };
+        if let Some((at, association)) = target {
+            self.success_controller.cursor = prepared_cursor(document, prepared, at, association)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn prepare_model(
         &self,
         document: &Document,
@@ -14936,6 +15011,33 @@ fn linewise_edit_range(lines: &HardLineSnapshot, range: Range<usize>) -> Range<u
         .map_or(range.clone(), |separator| separator.start..range.end)
 }
 
+fn remove_typing_inserted_suffix(
+    format: crate::document::Format,
+    value: &mut RegisterValue,
+    removed: &str,
+) {
+    if format == crate::document::Format::Html {
+        // Repeat stores the user's input. The HTML typing adapter may spell
+        // those spaces as NBSP or turn a tab into a displayed ordinary space.
+        // Compare that local authored frontier by scalar, retaining its own
+        // byte coordinates when truncating the repeat register.
+        let mut authored = value.text.char_indices().rev();
+        let mut start = value.text.len();
+        let matches = removed.chars().rev().all(|actual| {
+            let Some((at, typed)) = authored.next() else { return false; };
+            start = at;
+            typed == actual
+                || (matches!(typed, ' ' | '\t' | '\r')
+                    && matches!(actual, ' ' | '\u{a0}'))
+        });
+        if matches {
+            value.truncate_inserted_payload(start);
+            return;
+        }
+    }
+    remove_inserted_suffix(value, removed);
+}
+
 fn remove_inserted_suffix(value: &mut RegisterValue, removed: &str) {
     if let Some(new_length) = value.text.len().checked_sub(removed.len()) {
         if value.text.get(new_length..) == Some(removed) {
@@ -14970,6 +15072,112 @@ fn replacement_payload_end(
         }
     }
     end
+}
+
+fn prepared_cursor(
+    document: &Document,
+    prepared: &PreparedModelTransaction,
+    at: usize,
+    association: Association,
+) -> Result<usize, DocumentError> {
+    Ok(prepared
+        .text_position_map()
+        .map_text_point(
+            document.text_point(at)?,
+            association,
+            BoundaryAffinity::Downstream,
+            DeletionRecovery::PreferFollowingThenPreceding,
+        )
+        .map_err(command_position_document_error)?
+        .value()
+        .ok_or(DocumentError::AmbiguousProjection)?
+        .offset())
+}
+
+fn commit_model_with_cursor(
+    document: &mut Document,
+    request: ModelRequest,
+    at: usize,
+    association: Association,
+) -> Result<usize, DocumentError> {
+    let prepared = document
+        .prepare_model_request(request)
+        .map_err(command_document_error)?;
+    let caret = prepared_cursor(document, &prepared, at, association)?;
+    document
+        .commit_model_transaction(prepared)
+        .map_err(command_document_error)?;
+    Ok(caret)
+}
+
+fn prepared_break_cursor(
+    document: &Document,
+    prepared: &PreparedModelTransaction,
+    at: usize,
+) -> Result<usize, DocumentError> {
+    let start = prepared_cursor(document, prepared, at, Association::BeforeInsertion)?;
+    // A protected space immediately after the break shares the old insertion
+    // boundary. AfterInsertion would also cross that supporting replacement.
+    let inserted = prepared
+        .summary()
+        .formatted_splices()
+        .iter()
+        .find(|splice| splice.old_range() == (at..at))
+        .map_or(0, |splice| splice.inserted_len());
+    start
+        .checked_add(inserted)
+        .ok_or(DocumentError::AmbiguousProjection)
+}
+
+fn continue_list_with_cursor(document: &mut Document, at: usize) -> Result<usize, DocumentError> {
+    let prepared = document
+        .prepare_model_request(ModelRequest::ContinueList {
+            document: document.id(),
+            revision: document.revision(),
+            at,
+        })
+        .map_err(command_document_error)?;
+    let cursor = if document.format() == crate::document::Format::Html {
+        prepared_break_cursor(document, &prepared, at)?
+    } else {
+        prepared_cursor(document, &prepared, at, Association::AfterInsertion)?
+    };
+    document
+        .commit_model_transaction(prepared)
+        .map_err(command_document_error)?;
+    Ok(cursor)
+}
+
+fn delete_with_cursor(document: &mut Document, range: Range<usize>) -> Result<usize, DocumentError> {
+    let at = range.start;
+    commit_model_with_cursor(
+        document,
+        ModelRequest::ApplyTextEdits {
+            document: document.id(),
+            revision: document.revision(),
+            edits: vec![TextEdit::new(range, "")],
+        },
+        at,
+        Association::BeforeInsertion,
+    )
+}
+
+fn commit_typing_payload(
+    document: &mut Document,
+    edit: FormattedPayloadEdit,
+) -> Result<usize, DocumentError> {
+    // This is the authored insertion boundary, before grapheme normalization.
+    // A grapheme-closed map can also include unchanged suffix characters (for
+    // example regional indicators), so mapping its endpoint would skip them.
+    let caret = edit.range().start + edit.payload().text().len();
+    let request = FormattedPayloadEditRequest::new(document.id(), document.revision(), vec![edit]);
+    let prepared = document
+        .prepare_formatted_payload_request(request)
+        .map_err(command_document_error)?;
+    document
+        .commit_model_transaction(prepared)
+        .map_err(command_document_error)?;
+    Ok(caret)
 }
 
 /// Text delivered as one frontend text event is literal formatted content.

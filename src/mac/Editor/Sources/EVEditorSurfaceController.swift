@@ -413,6 +413,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             performInput { _ = try session.setLinebreak(!self.linebreakEnabled) }
         case .flowParagraphs:
             performInput { try session.setParagraphFlow(!(try session.paragraphFlow())) }
+        case .includeStyleDefinitionsInFile:
+            let expected = documentState
+            let enabled = expected.flags & UInt32(EVIM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS) == 0
+            performInput { _ = try session.setIncludeStyleDefinitionsInFile(enabled, expected: expected) }
         case .lineEndingUnix:
             setFileFormat(UInt32(EVIM_FILE_FORMAT_UNIX), session: session)
         case .lineEndingWindows:
@@ -539,6 +543,12 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             EVMenuItemPresentation(isEnabled: wrapEnabled, state: linebreakEnabled ? .on : .off)
         case .flowParagraphs:
             EVMenuItemPresentation(isEnabled: [.markdownSource, .htmlSource].contains(backend.sourceFormat), state: (try? session?.paragraphFlow()) == true ? .on : .off)
+        case .includeStyleDefinitionsInFile:
+            EVMenuItemPresentation(
+                isEnabled: [.html, .htmlSource].contains(backend.sourceFormat)
+                    && documentState.flags & UInt32(EVIM_DOCUMENT_STATE_READ_ONLY) == 0,
+                state: documentState.flags & UInt32(EVIM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS) != 0 ? .on : .off
+            )
         case .lineEndingUnix:
             fileFormatPresentation(UInt32(EVIM_FILE_FORMAT_UNIX))
         case .lineEndingWindows:

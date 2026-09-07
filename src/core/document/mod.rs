@@ -17,6 +17,7 @@ mod html_paragraph;
 mod html_source;
 mod html_styles;
 mod html_typing;
+mod html_whitespace;
 mod lists;
 mod markdown_blocks;
 mod markdown_code;
@@ -260,6 +261,10 @@ impl TextPoint {
 pub struct TextEdit {
     pub range: Range<usize>,
     pub replacement: String,
+    // Only spaces synthesized by formatted editing receive the compactable
+    // &nbsp; spelling. An explicitly inserted NBSP remains nonbreaking.
+    html_protective_spaces: Vec<usize>,
+    html_normalized: bool,
 }
 
 impl TextEdit {
@@ -267,6 +272,8 @@ impl TextEdit {
         Self {
             range,
             replacement: replacement.into(),
+            html_protective_spaces: Vec::new(),
+            html_normalized: false,
         }
     }
 }
@@ -384,6 +391,8 @@ pub struct FormattedPayloadEdit {
     range: Range<usize>,
     payload: FormattedTextPayload,
     boundary_affinity: Option<BoundaryAffinity>,
+    html_protective_spaces: Vec<usize>,
+    typing_normalized: bool,
 }
 
 impl FormattedPayloadEdit {
@@ -392,6 +401,8 @@ impl FormattedPayloadEdit {
             range,
             payload,
             boundary_affinity: None,
+            html_protective_spaces: Vec::new(),
+            typing_normalized: false,
         }
     }
 
@@ -408,6 +419,15 @@ impl FormattedPayloadEdit {
 
     pub fn payload(&self) -> &FormattedTextPayload {
         &self.payload
+    }
+
+    fn text_edit(&self) -> TextEdit {
+        TextEdit {
+            range: self.range.clone(),
+            replacement: self.payload.text().to_owned(),
+            html_protective_spaces: self.html_protective_spaces.clone(),
+            html_normalized: self.typing_normalized,
+        }
     }
 }
 
@@ -712,6 +732,7 @@ impl std::error::Error for HardLineSourceRangeError {}
 #[derive(Clone)]
 struct DocumentState {
     revision: Revision,
+    include_style_definitions_in_file: bool,
     source: SourceSnapshot,
     projection: FormattedDocument,
     /// Exact primary-source extents for the projection's hard lines. The
@@ -738,7 +759,10 @@ fn document_state_source_digest(state: &DocumentState) -> SourceArtifactDigest {
     state.source.artifact_digest()
 }
 
-fn visit_document_state_memory(state: &DocumentState, visitor: &mut history_memory::MemoryVisitor<'_>) {
+fn visit_document_state_memory(
+    state: &DocumentState,
+    visitor: &mut history_memory::MemoryVisitor<'_>,
+) {
     state.source.visit_retained_memory(visitor);
     state.projection.visit_retained_memory(visitor);
     state.source_hard_lines.visit_retained_memory(visitor);
@@ -763,8 +787,12 @@ fn new_document_history(state: DocumentState) -> History<DocumentState, Position
         HistoryRetentionPolicy::default(),
         visit_document_state_source_buffers,
         document_state_source_digest,
+        |state| state.source.identity(),
     )
-    .with_retained_memory(visit_document_state_memory, PositionMap::visit_retained_memory)
+    .with_retained_memory(
+        visit_document_state_memory,
+        PositionMap::visit_retained_memory,
+    )
 }
 
 /// One editing buffer's document state and branching undo history.
@@ -817,7 +845,12 @@ impl Document {
             .checked_add(1)
             .ok_or_else(|| StyleDefaultsError::Json("style generation exhausted".into()))?;
         sheet.set_configuration_revision(StyleSheetRevision(generation));
-        let mut state = self.state().clone();
+        let mut state = if matches!(self.format(), Format::Html | Format::HtmlSource) {
+            self.reproject_html_configuration(&sheet)
+                .map_err(|error| StyleDefaultsError::Json(error.to_string()))?
+        } else {
+            self.state().clone()
+        };
         let assignment = state.projection.document_style().clone();
         state
             .projection
@@ -827,6 +860,36 @@ impl Document {
         // transaction still advances both style and projection identities.
         self.next_revision = self.next_revision.max(generation);
         Ok(())
+    }
+
+    /// Relative source declarations must resolve after buffer defaults and
+    /// native definitions have been installed in the parser's style sheet.
+    fn reproject_html_configuration(
+        &self,
+        sheet: &StyleSheet,
+    ) -> Result<DocumentState, DocumentError> {
+        let before = self.state();
+        let decoded = self.encoding().decode(&before.source.bytes())?;
+        let mut state = build_state_from_decoded_with_configuration(
+            before.source.clone(),
+            decoded,
+            before.format,
+            before.file_format,
+            before.file_format_origin,
+            before.line_ending_evidence,
+            before.revision,
+            Some(sheet),
+        )?;
+        state
+            .projection
+            .install_unchanged_text_storage(&before.projection)
+            .map_err(DocumentError::FormattedTextStorage)?;
+        state
+            .projection
+            .install_source_block_ids(&before.projection)
+            .map_err(block_identity_document_error)?;
+        state.include_style_definitions_in_file = before.include_style_definitions_in_file;
+        Ok(state)
     }
 
     pub fn export_style_defaults(&self) -> Result<Vec<u8>, StyleDefaultsError> {
@@ -866,6 +929,7 @@ impl Document {
         let projection = projection::layout_test_plain_projection(text);
         let state = DocumentState {
             revision: Revision(0),
+            include_style_definitions_in_file: false,
             source,
             projection,
             source_hard_lines: SourceHardLineIndex::new(
@@ -1088,6 +1152,11 @@ impl Document {
         self.state().revision
     }
 
+    /// Whether HTML native style definitions are included in this buffer's source.
+    pub fn include_style_definitions_in_file(&self) -> bool {
+        self.state().include_style_definitions_in_file
+    }
+
     /// Work performed to construct the initial immutable projection.
     ///
     /// The value remains the opening measurement after edits and history
@@ -1285,6 +1354,7 @@ impl Document {
             document: self.id,
             revision: self.revision(),
             history,
+            source_identity: self.state().source.identity(),
             purpose,
             storage: AtomicArtifactWrite::new(destination, bytes.into(), overwrite),
         };
@@ -1366,6 +1436,7 @@ impl Document {
                         SourceArtifactDigest::from_bytes(
                             pending.prepared.storage_request().bytes(),
                         ),
+                        pending.prepared.source_identity,
                     ))
                 } else {
                     None
@@ -1673,14 +1744,6 @@ impl Document {
             text[..prefix_len].to_owned()
         };
         Ok(Some(TextEdit::new(at..at, format!("\n{marker}"))))
-    }
-
-    pub(crate) fn continue_rich_list(&mut self, at: usize) -> Result<(), DocumentError> {
-        self.execute_compat_request(ModelRequest::ContinueList {
-            document: self.id,
-            revision: self.revision(),
-            at,
-        })
     }
 
     pub(crate) fn open_formatted_line(&mut self, at: usize) -> Result<(), DocumentError> {
@@ -2028,7 +2091,8 @@ impl Document {
         self.history.mark_saved()
     }
 
-    /// Whether the current history state differs from the save-point identity.
+    /// Whether the current source snapshot differs from the persisted one.
+    /// Undoable presentation configuration does not dirty unchanged source.
     pub fn is_dirty(&self) -> bool {
         self.recovered_dirty || self.history.status().is_dirty
     }
@@ -2366,6 +2430,28 @@ fn build_state_from_decoded(
     line_ending_evidence: LineEndingEvidence,
     revision: Revision,
 ) -> Result<DocumentState, DocumentError> {
+    build_state_from_decoded_with_configuration(
+        source,
+        decoded,
+        format,
+        file_format,
+        file_format_origin,
+        line_ending_evidence,
+        revision,
+        None,
+    )
+}
+
+fn build_state_from_decoded_with_configuration(
+    source: SourceSnapshot,
+    decoded: DecodedText,
+    format: Format,
+    file_format: FileFormat,
+    file_format_origin: FileFormatOrigin,
+    line_ending_evidence: LineEndingEvidence,
+    revision: Revision,
+    configuration: Option<&StyleSheet>,
+) -> Result<DocumentState, DocumentError> {
     let normalized = normalize(&decoded, file_format);
     let source_content_start = decoded.bom_len;
     let source_content_end = decoded
@@ -2378,15 +2464,34 @@ fn build_state_from_decoded(
         source_line_start = ending.source.end;
     }
     source_hard_lines.push(source_line_start..source_content_end);
-    let projection = project(
-        &normalized,
-        format,
-        revision,
-        source_content_start,
-        source_content_end,
-    );
+    let projection = match format {
+        Format::Html => html::project_tokens_with_configuration(
+            &normalized,
+            revision,
+            source_content_start,
+            source_content_end,
+            html5_tree::tokens(&normalized.text),
+            configuration,
+        ),
+        Format::HtmlSource => html_source::project_with_configuration(
+            &normalized,
+            revision,
+            source_content_start,
+            source_content_end,
+            configuration,
+        ),
+        _ => project(
+            &normalized,
+            format,
+            revision,
+            source_content_start,
+            source_content_end,
+        ),
+    };
     Ok(DocumentState {
         revision,
+        include_style_definitions_in_file: matches!(format, Format::Html | Format::HtmlSource)
+            && projection.style_sheet().has_html_native_definitions(),
         source,
         projection,
         source_hard_lines: SourceHardLineIndex::new(source_hard_lines)
@@ -2550,8 +2655,14 @@ fn ranges_overlap(first: &Range<usize>, second: &Range<usize>) -> bool {
 mod tests {
     #[test]
     fn retained_memory_ledger_matches_fresh_recount_after_groups_branches_and_pruning() {
-        let bytes: Vec<_> = "éπa".repeat(100).encode_utf16().flat_map(u16::to_le_bytes).collect();
-        let mut document = super::Document::from_bytes(bytes, super::Encoding::Utf16Le, super::Format::PlainText).unwrap();
+        let bytes: Vec<_> = "éπa"
+            .repeat(100)
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let mut document =
+            super::Document::from_bytes(bytes, super::Encoding::Utf16Le, super::Format::PlainText)
+                .unwrap();
         document.set_history_retention_policy(super::HistoryRetentionPolicy::new(8, usize::MAX));
         for index in 0..40 {
             document.begin_edit_group();

@@ -97,43 +97,59 @@ fn mac_literal_cr_rejects_an_entire_batch_or_structured_payload_before_commit() 
 }
 
 #[test]
-fn html_and_rtf_literal_cr_survive_reopen_in_every_line_ending_mode_and_encoding() {
+fn rtf_literal_cr_survives_reopen_in_every_line_ending_mode_and_encoding() {
     for encoding in ENCODINGS {
         for endings in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
-            for (format, source) in [(Format::Html, "<p>AB</p>"), (Format::Rtf, "{\\rtf1 AB}")] {
-                // RTF owns its byte grammar and code-page/Unicode decoding;
-                // the generic encoding hint does not encode its syntax.
-                let physical_encoding = if format == Format::Rtf {
-                    Encoding::Latin1
-                } else {
-                    encoding
-                };
-                let original = bytes(source, physical_encoding);
-                let mut document = Document::from_bytes_with_file_format(
-                    original.clone(),
-                    encoding,
-                    format,
-                    endings,
-                )
-                .unwrap();
-                assert_eq!(document.text(), "AB");
-                document.insert(1, "\r").unwrap();
+            let format = Format::Rtf;
+            // RTF owns its byte grammar and code-page/Unicode decoding;
+            // the generic encoding hint does not encode its syntax.
+            let original = bytes("{\\rtf1 AB}", Encoding::Latin1);
+            let mut document =
+                Document::from_bytes_with_file_format(original.clone(), encoding, format, endings)
+                    .unwrap();
+            assert_eq!(document.text(), "AB");
+            document.insert(1, "\r").unwrap();
+            assert_eq!(
+                document.text(),
+                "A\rB",
+                "{format:?}/{encoding:?}/{endings:?}"
+            );
+            let reopened = Document::from_bytes_with_file_format(
+                document.source_bytes(),
+                encoding,
+                format,
+                endings,
+            )
+            .unwrap();
+            assert_eq!(reopened.text(), "A\rB");
+            assert_eq!(reopened.line_count(), 1);
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), original);
+        }
+    }
+}
+
+#[test]
+fn html_exact_literal_cr_is_rejected_atomically_in_every_mode_and_encoding() {
+    // HTML preprocessing turns raw CR into LF; CSS treats escaped CR as a
+    // space, even under pre. Neither spelling represents exact U+000D text.
+    for encoding in ENCODINGS {
+        for endings in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
+            for source in ["<p>AB</p>", "<pre>AB</pre>"] {
+                let mut document = open(source, encoding, Format::Html, endings);
+                let original = document.source_bytes();
+                let revision = document.revision();
+                let history = document.history_status();
                 assert_eq!(
-                    document.text(),
-                    "A\rB",
-                    "{format:?}/{encoding:?}/{endings:?}"
+                    document.insert(1, "\r"),
+                    Err(DocumentError::VerificationFailed)
                 );
-                let reopened = Document::from_bytes_with_file_format(
-                    document.source_bytes(),
-                    encoding,
-                    format,
-                    endings,
-                )
-                .unwrap();
-                assert_eq!(reopened.text(), "A\rB");
-                assert_eq!(reopened.line_count(), 1);
-                assert!(document.undo());
                 assert_eq!(document.source_bytes(), original);
+                assert_eq!(document.text(), "AB");
+                assert_eq!(document.revision(), revision);
+                assert_eq!(document.history_status(), history);
+                document.insert(1, "x").unwrap();
+                assert_eq!(document.text(), "AxB");
             }
         }
     }

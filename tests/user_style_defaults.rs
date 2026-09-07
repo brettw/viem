@@ -229,10 +229,23 @@ fn saved_named_defaults_can_be_assigned_with_only_sparse_supporting_syntax() {
                 "{format:?} character={character}"
             );
             let syntax = String::from_utf8(doc.source_bytes()).unwrap();
-            assert!(
-                !syntax.contains("font-size: 25") && !syntax.contains("\\fs50"),
-                "{syntax}"
-            );
+            if format == Format::Html {
+                // A user-defined style has no native HTML counterpart. Its
+                // definition must travel with its assignment even when native
+                // style export is off and another editor has no user settings.
+                assert!(syntax.contains("font-size: 25pt"), "{syntax}");
+                assert!(!syntax.contains("body {"), "{syntax}");
+                let reopened = open(&syntax, format);
+                assert_eq!(
+                    DocumentLayoutStyles::character_at(reopened.projection(), 1, false)
+                        .unwrap()
+                        .size,
+                    25.0,
+                    "{syntax}"
+                );
+            } else {
+                assert!(!syntax.contains("\\fs50"), "{syntax}");
+            }
             assert!(syntax.contains("keep"));
             let mut reopened = open(&syntax, format);
             reopened.initialize_style_defaults(&saved).unwrap();

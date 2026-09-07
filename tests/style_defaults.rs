@@ -69,6 +69,14 @@ fn deleting_html_list_defaults_does_not_regenerate_them_on_reopen_or_edit() {
             "</li></ul>".repeat(level)
         );
         let mut document = open(&source, Format::Html);
+        document
+            .apply_model_request(ModelRequest::SetIncludeStyleDefinitionsInFile {
+                document: document.id(),
+                revision: document.revision(),
+                enabled: true,
+            })
+            .unwrap();
+        let definitions_enabled = document.source_bytes();
         let id = StyleId(format!("List{level}"));
         document
             .apply_style_request(StyleModelRequest::new(
@@ -104,6 +112,8 @@ fn deleting_html_list_defaults_does_not_regenerate_them_on_reopen_or_edit() {
             .block_style(&id)
             .is_none());
         assert!(document.undo());
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), definitions_enabled);
         assert!(document.undo());
         assert_eq!(document.source_bytes(), source.as_bytes());
     }

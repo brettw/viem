@@ -7,6 +7,42 @@ import XCTest
 
 final class EVStyleMenuBridgeTests: XCTestCase {
   @MainActor
+  func testBlankHTMLParagraphListStyleMenuAllowsTypingWithNativeMarkup() throws {
+    for source in ["", "<p></p>"] {
+      let backend = EVCoreDocumentBackend()
+      try backend.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
+      let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+      surface.loadViewIfNeeded()
+      let session = try XCTUnwrap(surface.session)
+      try session.sendText("i")
+      let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
+      let item = try XCTUnwrap(catalogue.entries.first { $0.stableID == "List1" })
+      XCTAssertTrue(item.presentation.isEnabled)
+      surface.perform(styleMenuAction: EVStyleMenuAction(
+        kind: .assign, role: .paragraph, stableID: item.stableID,
+        documentID: catalogue.documentID, documentRevision: catalogue.documentRevision,
+        styleSheetRevision: catalogue.styleSheetRevision), sender: nil)
+      XCTAssertEqual(surface.statusBarState.message, "")
+      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data("<ul><li></li></ul>".utf8))
+      XCTAssertEqual(surface.currentStyleMenuCatalogue()?.entries.first { $0.stableID == "List1" }?.presentation.state, .on)
+
+      surface.editorView.insertText("a", replacementRange: NSRange(location: NSNotFound, length: 0))
+      XCTAssertEqual(surface.statusBarState.message, "")
+      XCTAssertEqual(try backend.formattedText(), "a")
+      let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
+      XCTAssertEqual(saved, Data("<ul><li>a</li></ul>".utf8))
+      let reopened = EVCoreDocumentBackend()
+      try reopened.read(source: saved, typeName: EVDocument.htmlType)
+      XCTAssertEqual(try reopened.formattedText(), "a")
+      try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+      surface.perform(menuCommand: .undo, sender: nil)
+      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data("<ul><li></li></ul>".utf8))
+      surface.perform(menuCommand: .redo, sender: nil)
+      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), saved)
+    }
+  }
+
+  @MainActor
   func testHTMLSourceInternalStylesStayInEditorAndOutOfAssignmentMenus() throws {
     let source = "<h2 title='hello'>Body &amp; <em>words</em></h2>"
     let backend = EVCoreDocumentBackend()
@@ -52,6 +88,8 @@ final class EVStyleMenuBridgeTests: XCTestCase {
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     let session = try XCTUnwrap(surface.session)
+    try session.setIncludeStyleDefinitionsInFile(true, expected: backend.documentState())
+    let beforeDelete = try backend.serializedSource(typeName: EVDocument.htmlType)
     let sheet = try backend.styleSheetSnapshot()
     let heading = try XCTUnwrap(
       sheet.definition(namespace: .block, id: EVStyleID(rawValue: "Heading1")))
@@ -68,7 +106,7 @@ final class EVStyleMenuBridgeTests: XCTestCase {
     try reopened.read(source: saved, typeName: EVDocument.htmlType)
     XCTAssertNil(try reopened.styleSheetSnapshot().definition(for: heading.key))
     surface.perform(menuCommand: .undo, sender: nil)
-    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(original.utf8))
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), beforeDelete)
     XCTAssertTrue(surface.headingShortcutPresentation(level: 1).isEnabled)
   }
 

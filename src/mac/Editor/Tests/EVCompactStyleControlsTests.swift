@@ -131,6 +131,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     func testPrimaryFamilyAndFaceKeepImportedOrderedFallbackTail() throws {
         let (backend, surface, editor, _) = try makeEditor(html: true)
         defer { withExtendedLifetime(surface) {} }
+        try XCTUnwrap(surface.session).setIncludeStyleDefinitionsInFile(true, expected: backend.documentState())
         let tail = ["Georgia", "Apple Color Emoji", "Menlo"]
         XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList(["Helvetica"] + tail)))
         let imported = try backend.serializedSource(typeName: EVDocument.htmlType)
@@ -235,6 +236,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     func testStepperAutorepeatIsLiveAndOneSourceBackedUndoGesture() throws {
         let (backend, surface, editor, _) = try makeEditor(html: true)
         defer { withExtendedLifetime(surface) {} }
+        try XCTUnwrap(surface.session).setIncludeStyleDefinitionsInFile(true, expected: backend.documentState())
         let source = try backend.serializedSource(typeName: EVDocument.htmlType)
         let stepper = try control(EVStyleStepper.self, label: "Adjust size", in: editor.view)
         stepper.performTrackingGesture {

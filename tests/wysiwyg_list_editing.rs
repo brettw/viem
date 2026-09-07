@@ -127,7 +127,13 @@ fn wrapped_list_operators_and_registers_contain_body_text_only() {
             "{format:?}"
         );
         keys(&mut core, view, "0d$");
-        assert_eq!(core.document().text(), &before[end..], "{format:?}");
+        let remaining = &before[end..];
+        let expected = if format == Format::Html && remaining.starts_with(' ') {
+            format!("\u{a0}{}", &remaining[1..])
+        } else {
+            remaining.to_owned()
+        };
+        assert_eq!(core.document().text(), expected, "{format:?}");
         assert!(!core
             .document()
             .projection()
@@ -164,7 +170,10 @@ fn unicode_list_body_end_deletes_one_whole_grapheme() {
         let mut core = Core::new(doc);
         let view = core.add_view(MockTextMeasurementProvider::new(), 900., 600.);
         keys(&mut core, view, "$x");
-        assert_eq!(core.document().text(), "café ");
+        assert_eq!(core.document().text(), if format == Format::Html { "café\u{a0}" } else { "café " });
+        if format == Format::Html {
+            assert_eq!(core.document().source_bytes(), b"<ol><li>caf\xc3\xa9&nbsp;</li></ol>");
+        }
         assert_eq!(
             core.command_state(view)
                 .unwrap()

@@ -353,6 +353,8 @@ pub struct StyleSheet {
     deleted_source_blocks: BTreeSet<StyleId>,
     source_defined_blocks: BTreeSet<StyleId>,
     source_defined_characters: BTreeSet<StyleId>,
+    html_configuration_blocks: BTreeSet<StyleId>,
+    html_configuration_characters: BTreeSet<StyleId>,
     source_character_defaults: BTreeMap<StyleId, CharacterProperties>,
     default_blocks: BTreeMap<StyleId, BlockStyle>,
     default_characters: BTreeMap<StyleId, CharacterStyle>,
@@ -388,7 +390,8 @@ impl StyleSheet {
                 + map.iter().map(|(key, value)| id(key) + value.display_name.capacity() + 16).sum::<usize>();
         }
         for set in [&self.deleted_configuration_blocks, &self.deleted_configuration_characters,
-                    &self.deleted_source_blocks, &self.source_defined_blocks, &self.source_defined_characters] {
+                    &self.deleted_source_blocks, &self.source_defined_blocks, &self.source_defined_characters,
+                    &self.html_configuration_blocks, &self.html_configuration_characters] {
             bytes += style_map_heap_bytes(set.len(), std::mem::size_of::<StyleId>())
                 + set.iter().map(id).sum::<usize>();
         }
@@ -413,6 +416,8 @@ impl PartialEq for StyleSheet {
             && self.deleted_source_blocks == other.deleted_source_blocks
             && self.default_blocks == other.default_blocks
             && self.default_characters == other.default_characters
+            && self.html_configuration_blocks == other.html_configuration_blocks
+            && self.html_configuration_characters == other.html_configuration_characters
     }
 }
 
@@ -601,6 +606,8 @@ impl Default for StyleSheet {
             deleted_source_blocks: BTreeSet::new(),
             source_defined_blocks: BTreeSet::new(),
             source_defined_characters: BTreeSet::new(),
+            html_configuration_blocks: BTreeSet::new(),
+            html_configuration_characters: BTreeSet::new(),
             source_character_defaults: BTreeMap::new(),
             default_blocks: BTreeMap::new(),
             default_characters: BTreeMap::new(),
@@ -1137,6 +1144,7 @@ impl StyleSheet {
     pub(crate) fn retain_configuration_deletions(&mut self, previous: &Self) {
         self.retain_defaults(previous);
         self.retain_internal_styles(previous);
+        self.retain_html_native_configuration(previous);
         self.deleted_configuration_blocks = previous.deleted_configuration_blocks.clone();
         self.deleted_configuration_characters = previous.deleted_configuration_characters.clone();
         for id in &self.deleted_configuration_blocks {
@@ -3114,7 +3122,8 @@ pub enum StyleApplication {
     /// Raw script/style-like contents where even the opening boundary is literal.
     SourceRawText,
     /// Adapter context only: these HTML characters preserve literal whitespace.
-    /// It has no appearance or user-assignment meaning.
+    /// An empty range records the same context at a matching empty source
+    /// anchor. It has no appearance or user-assignment meaning.
     SourcePreservedWhitespace,
     /// The semantic paragraph underlying visible source syntax. Source hard
     /// lines may contain several paragraph elements, so this context is inline.

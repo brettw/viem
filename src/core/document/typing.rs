@@ -375,6 +375,7 @@ impl Document {
         edit: FormattedPayloadEdit,
         values: &[(StyleProperty, StylePropertyValue)],
     ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        let edit = self.normalize_typing_payload(edit)?;
         let properties = self.validate_typing_properties(values)?;
         let mut at = edit.range.start;
         if matches!(self.format(), Format::Markdown | Format::MarkdownSource)
@@ -402,6 +403,7 @@ impl Document {
                 edit.boundary_affinity
                     .unwrap_or(BoundaryAffinity::Downstream),
                 edit.payload.text(),
+                &edit.html_protective_spaces,
                 &properties,
             )?
             .or(super::markdown_typing::insertion(
@@ -420,18 +422,42 @@ impl Document {
             // Replacing one already-matching grapheme retains its existing
             // source-backed style, so no redundant wrapper/table edit is needed.
             let old_end = edit.range.end;
+            let authored_end = edit.range.start + edit.payload.text().len();
             let prepared = self.prepare_formatted_payload_edits(vec![edit])?;
-            let caret = prepared
-                .text_position_map()
-                .map_text_point(
-                    self.text_point(old_end)?,
-                    Association::AfterInsertion,
-                    BoundaryAffinity::Downstream,
-                    DeletionRecovery::PreferFollowingThenPreceding,
-                )?
-                .value()
-                .ok_or(DocumentError::AmbiguousProjection)?
-                .offset();
+            let caret = if self.format() == Format::Html {
+                // A right-hand protective space can be simplified in this
+                // transaction. Mapping AfterInsertion across its shared old
+                // boundary would skip that space as well as the typed text.
+                if let PreparedPublication::State(state) = &prepared.publication {
+                    if state
+                        .projection
+                        .is_logical_grapheme_boundary(authored_end)
+                        .map_err(DocumentError::FormattedTextStorage)?
+                    {
+                        authored_end
+                    } else {
+                        state
+                            .projection
+                            .next_logical_grapheme_boundary(authored_end)
+                            .map_err(DocumentError::FormattedTextStorage)?
+                            .ok_or(DocumentError::AmbiguousProjection)?
+                    }
+                } else {
+                    authored_end
+                }
+            } else {
+                prepared
+                    .text_position_map()
+                    .map_text_point(
+                        self.text_point(old_end)?,
+                        Association::AfterInsertion,
+                        BoundaryAffinity::Downstream,
+                        DeletionRecovery::PreferFollowingThenPreceding,
+                    )?
+                    .value()
+                    .ok_or(DocumentError::AmbiguousProjection)?
+                    .offset()
+            };
             return Ok((prepared, caret));
         }
         let mut caret = at + edit.payload.text().len();
@@ -498,16 +524,14 @@ impl Document {
             let patches = vec![SourcePatch::primary(
                 insertion.source,
                 self.encoding().encode_fragment(&insertion.syntax)?,
-            )];
+            )
+            .with_generated_text(self.format() == Format::Html)];
             if matches!(self.format(), Format::HtmlSource | Format::MarkdownSource) {
                 caret = insertion.source_caret;
                 at = caret - edit.payload.text().len();
                 scratch.prepare_html_source_patches(patches)?
             } else {
-                scratch.prepare_text_edits_with_patches(
-                    vec![TextEdit::new(edit.range, edit.payload.text())],
-                    Some(patches),
-                )?
+                scratch.prepare_text_edits_with_patches(vec![edit.text_edit()], Some(patches))?
             }
         } else {
             scratch.prepare_formatted_payload_edits(vec![edit])?
@@ -616,22 +640,8 @@ impl Document {
                 &mut formatted,
             )?;
         }
-        let patches = sources
-            .patches()
-            .into_iter()
-            .map(|(range, bytes)| SourcePatch::primary(range, bytes))
-            .collect();
-        let edits = formatted
-            .patches()
-            .into_iter()
-            .map(|(range, bytes)| {
-                TextEdit::new(
-                    range,
-                    String::from_utf8(bytes)
-                        .expect("formatted patches retain validated UTF-8 boundaries"),
-                )
-            })
-            .collect();
+        let patches = sources.source_patches(&scratch.state().source)?;
+        let edits = formatted.formatted_edits(&scratch)?;
         let prepared = self.prepare_text_edits_with_patches(edits, Some(patches))?;
         Ok((prepared, caret))
     }

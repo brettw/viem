@@ -36,6 +36,8 @@ fn deleting_each_builtin_heading_persists_default_assignment_and_undo() {
         let hidden = format!("<template><h{level} data-hidden='keep'>Hidden</h{level}></template>");
         let original = format!("<!doctype html><h{level} data-keep='x' style='text-align:center'>Head<br>line</h{level}><p>Tail</p><!--keep-->{hidden}");
         let mut document = html(&original);
+        enable_style_export(&mut document);
+        let before_delete = document.source_bytes();
         let ids = document
             .projection()
             .blocks()
@@ -97,7 +99,7 @@ fn deleting_each_builtin_heading_persists_default_assignment_and_undo() {
         assert!(document.undo());
         assert_eq!(document.source_bytes(), saved.as_bytes());
         assert!(document.undo());
-        assert_eq!(document.source_bytes(), original.as_bytes());
+        assert_eq!(document.source_bytes(), before_delete);
         assert_eq!(document.projection().blocks()[0].style, id);
     }
 }
@@ -105,6 +107,7 @@ fn deleting_each_builtin_heading_persists_default_assignment_and_undo() {
 #[test]
 fn deleted_heading_rules_follow_default_edits_and_explicit_recreation() {
     let mut document = html("<h1>Title</h1><p>Body</p><!--keep-->");
+    enable_style_export(&mut document);
     let heading = document
         .projection()
         .style_sheet()
@@ -189,6 +192,7 @@ fn deleted_heading_rules_follow_default_edits_and_explicit_recreation() {
 #[test]
 fn base_paragraph_relative_bold_preserves_selected_system_light_face() {
     let mut document = html("<p>Words</p>");
+    enable_style_export(&mut document);
     let mut paragraph = document
         .projection()
         .style_sheet()
@@ -222,6 +226,7 @@ fn base_paragraph_relative_bold_preserves_selected_system_light_face() {
 #[test]
 fn deleted_heading_rules_stay_passive_in_opaque_content_and_bases_remain_protected() {
     let mut seed = html("<h1>Title</h1>");
+    enable_style_export(&mut seed);
     definition(
         &mut seed,
         StyleDefinitionEdit::DeleteBlock("Heading1".into()),
@@ -231,7 +236,7 @@ fn deleted_heading_rules_stay_passive_in_opaque_content_and_bases_remain_protect
     let sheet = &saved[..saved.find("<h1").unwrap()];
     for source in [
         format!("<template>{sheet}</template><h1>Title</h1>"),
-        format!("{}<h1>Title</h1>", sheet.replace("Heading1", "Heading01")),
+        format!("{}<h1>Title</h1>", sheet.replace("\nh1 {\n", "\nh01 {\n")),
     ] {
         let document = html(&source);
         assert!(document
@@ -255,9 +260,20 @@ fn html(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap()
 }
 
+fn enable_style_export(document: &mut Document) {
+    document
+        .apply_model_request(ModelRequest::SetIncludeStyleDefinitionsInFile {
+            document: document.id(),
+            revision: document.revision(),
+            enabled: true,
+        })
+        .unwrap();
+}
+
 #[test]
 fn owned_styles_in_templates_atomic_content_and_script_text_are_not_adopted_or_edited() {
     let mut seed = html("<p>Body</p>");
+    enable_style_export(&mut seed);
     let mut paragraph = seed
         .projection()
         .style_sheet()
@@ -299,6 +315,8 @@ fn owned_styles_in_templates_atomic_content_and_script_text_are_not_adopted_or_e
             None,
             "{hidden}"
         );
+        enable_style_export(&mut document);
+        let before_edits = document.source_bytes();
         let text = document.text().to_owned();
         for size in [18.0, 22.0] {
             let mut paragraph = document
@@ -330,7 +348,7 @@ fn owned_styles_in_templates_atomic_content_and_script_text_are_not_adopted_or_e
         }
         assert!(document.undo());
         assert!(document.undo());
-        assert_eq!(document.source_bytes(), original.as_bytes());
+        assert_eq!(document.source_bytes(), before_edits);
     }
 }
 
@@ -509,7 +527,7 @@ fn canonical_character_styles_preserve_sparse_properties_ids_and_rule_locality()
     .unwrap();
     let source = String::from_utf8(document.source_bytes()).unwrap();
     assert!(
-        source.contains("<meta charset='utf-8'><style id=\"evim-styles\" data-evim-version=\"1\">")
+        source.contains("<meta charset='utf-8'><style id=\"evim-styles\" data-evim-version=\"2\">")
     );
     assert!(source.contains(".evim-c-416363656e7420ceb1 {\n"));
     assert!(source.contains("  --evim-prop-character-underline: \"false\";\n"));

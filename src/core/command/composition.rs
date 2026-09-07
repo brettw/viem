@@ -12,9 +12,10 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::document::{
     Association, BoundaryAffinity, CommittedModelTransaction, DeletionRecovery, Document,
-    DocumentError, DocumentId, FormattedPayloadEdit, FormattedTextPayload, FormattedTextTree,
-    MappingOutcome, ModelRequest, ModelTransactionError, PositionError, PreparedModelTransaction,
-    Revision, StyleProperty, StylePropertyValue, TextEdit, TextRange,
+    DocumentError, DocumentId, Format, FormattedPayloadEdit, FormattedPayloadEditRequest,
+    FormattedTextPayload, FormattedTextTree, MappingOutcome, ModelRequest, ModelTransactionError,
+    PositionError, PreparedModelTransaction, Revision, StyleProperty, StylePropertyValue, TextEdit,
+    TextRange,
 };
 
 /// Normalized composition input emitted after a frontend has converted its
@@ -202,32 +203,63 @@ impl CompositionSession {
             self.target.replacement_range.clone(),
             self.marked_text.clone(),
         );
-        let prepared = document
-            .prepare_model_request(ModelRequest::ApplyTextEdits {
+        let mut authored_caret = None;
+        let prepared = if document.format() == Format::Html {
+            let value = super::external_text_register_value(document, &self.marked_text);
+            let payload = FormattedTextPayload::new(
+                &document.hard_line_snapshot(),
+                self.marked_text.clone(),
+                value.hard_break_offsets().to_vec(),
+            )
+            .expect("composition text has validated semantic break offsets");
+            let normalized = document
+                .normalize_typing_payload(FormattedPayloadEdit::new(edit.range.clone(), payload))
+                .map_err(CompositionError::Document)?;
+            if normalized.payload().text().is_empty() {
+                document.prepare_formatted_payload_request(FormattedPayloadEditRequest::new(
+                    document.id(),
+                    document.revision(),
+                    vec![normalized],
+                ))
+            } else {
+                document
+                    .prepare_insertion_with_typing_properties(normalized, &[])
+                    .map(|(prepared, caret)| {
+                        authored_caret = Some(caret);
+                        prepared
+                    })
+            }
+        } else {
+            document.prepare_model_request(ModelRequest::ApplyTextEdits {
                 document: self.target.document_id,
                 revision: self.target.revision,
                 edits: vec![edit.clone()],
             })
-            .map_err(composition_model_error)?;
+        }
+        .map_err(composition_model_error)?;
 
-        // The model's grapheme-closed map supplies the legal target boundary.
-        // This also handles joins with adjacent text without flattening the
-        // immutable formatted tree merely to inspect a local boundary.
+        // HTML typing supplies the boundary after authored content, before
+        // any supporting right-hand space replacement. Other edits use the
+        // model's grapheme-closed map, including empty composition deletions.
         let point = document
-            .text_point(edit.range.start)
+            .text_point(edit.range.end)
             .map_err(CompositionError::Document)?;
-        let caret_offset = match prepared.text_position_map().map_text_point(
-            point,
-            Association::AfterInsertion,
-            BoundaryAffinity::Downstream,
-            DeletionRecovery::PreferFollowingThenPreceding,
-        )? {
-            MappingOutcome::Exact(point)
-            | MappingOutcome::Moved(point)
-            | MappingOutcome::CollapsedByDeletion(point)
-            | MappingOutcome::RecoveredFromProvenance(point) => point.offset(),
-            MappingOutcome::Ambiguous(_) | MappingOutcome::Unresolvable(_) => {
-                return Err(CompositionError::UnresolvableCommitCaret)
+        let caret_offset = if let Some(caret) = authored_caret {
+            caret
+        } else {
+            match prepared.text_position_map().map_text_point(
+                point,
+                Association::AfterInsertion,
+                BoundaryAffinity::Downstream,
+                DeletionRecovery::PreferFollowingThenPreceding,
+            )? {
+                MappingOutcome::Exact(point)
+                | MappingOutcome::Moved(point)
+                | MappingOutcome::CollapsedByDeletion(point)
+                | MappingOutcome::RecoveredFromProvenance(point) => point.offset(),
+                MappingOutcome::Ambiguous(_) | MappingOutcome::Unresolvable(_) => {
+                    return Err(CompositionError::UnresolvableCommitCaret)
+                }
             }
         };
         Ok(CompositionCommitRequest {

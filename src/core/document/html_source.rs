@@ -142,6 +142,16 @@ pub(super) fn project(
     start: usize,
     end: usize,
 ) -> FormattedDocument {
+    project_with_configuration(input, revision, start, end, None)
+}
+
+pub(super) fn project_with_configuration(
+    input: &NormalizedText,
+    revision: Revision,
+    start: usize,
+    end: usize,
+    configuration: Option<&StyleSheet>,
+) -> FormattedDocument {
     let recovered = super::html5_tree::tokens(&input.text);
     let mut pre_ranges = Vec::new();
     let mut open_pre = Vec::new();
@@ -174,7 +184,14 @@ pub(super) fn project(
     // HTML5 foster parenting can reorder recovered nodes. Source paragraphs
     // always follow the authoritative source order.
     pre_ranges.sort_by_key(|range| range.start);
-    let semantic = html::project_tokens(input, revision, start, end, recovered);
+    let semantic = html::project_tokens_with_configuration(
+        input,
+        revision,
+        start,
+        end,
+        recovered,
+        configuration,
+    );
     let plain = super::projection::project_plain(input, revision, start, end);
     let mut sheet = semantic.style_sheet().clone();
     sheet.install_html_source_styles();
@@ -574,16 +591,34 @@ impl Document {
     }
 }
 
+pub(super) struct TranslatedStyle {
+    pub patches: Vec<SourcePatch>,
+    pub style_sheet: StyleSheet,
+}
+
 pub(super) fn translate_style(
     document: &Document,
     intent: &PersistedStyleIntent,
-) -> Result<Vec<SourcePatch>, ModelTransactionError> {
+) -> Result<TranslatedStyle, ModelTransactionError> {
     let mut visible = Document::from_bytes_with_file_format(
         document.source_bytes(),
         document.encoding(),
         Format::Html,
         document.file_format(),
     )?;
+    // Source and WYSIWYG are two projections of the same styled document.
+    // Opening the temporary projection from bytes alone would discard saved
+    // defaults and native definitions intentionally kept outside the file.
+    let mut visible_state =
+        visible.reproject_html_configuration(document.projection().style_sheet())?;
+    visible_state.include_style_definitions_in_file = document.include_style_definitions_in_file();
+    visible_state.projection.install_configuration_styles(
+        visible_state.revision,
+        document.projection().style_sheet().clone(),
+        document.projection().document_style().clone(),
+    );
+    visible.history.initialize_projection(visible_state);
+    visible.next_revision = document.next_revision;
     let map = |range: TextRange| -> Result<TextRange, ModelTransactionError> {
         map_range(document, &visible, range)
     };
@@ -643,7 +678,10 @@ pub(super) fn translate_style(
         StyleModelIntent::Persisted(translated),
     );
     let committed = visible.apply_style_request(request)?;
-    Ok(committed.summary().source_patches().to_vec())
+    Ok(TranslatedStyle {
+        patches: committed.summary().source_patches().to_vec(),
+        style_sheet: visible.projection().style_sheet().clone(),
+    })
 }
 
 /// A strict restart checkpoint for independent source paragraphs. Stateful or

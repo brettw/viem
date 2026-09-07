@@ -173,6 +173,7 @@ pub(super) fn insertion(
     at: usize,
     affinity: BoundaryAffinity,
     text: &str,
+    protective_spaces: &[usize],
     desired: &CharacterProperties,
 ) -> Result<Option<Insertion>, DocumentError> {
     if !matches!(document.format(), Format::Html | Format::HtmlSource) || text.is_empty() {
@@ -224,7 +225,9 @@ pub(super) fn insertion(
     let escaped = if document.format() == Format::HtmlSource {
         text.to_owned()
     } else {
-        super::rich_text::escape_html_text(text, document.encoding())
+        let mut edit = super::TextEdit::new(at..at, text);
+        edit.html_protective_spaces = protective_spaces.to_vec();
+        super::rich_text::escape_html_text_edit(document, source, &edit)?
     };
     let (position, prefix, suffix) = if let Some(exit) = context.exit {
         (exit, opening, closing_preserved)

@@ -84,6 +84,7 @@ impl<'a> Builder<'a> {
         // Collapsible HTML whitespace may be emitted after an empty inline
         // element closes. Its source still precedes that element's typing
         // anchor, so the anchor follows the newly materialized space.
+        let mut moved_empty_boundary = false;
         for anchor in self
             .provenance
             .iter_mut()
@@ -92,6 +93,16 @@ impl<'a> Builder<'a> {
         {
             if !source.is_empty() && source.end <= anchor.source.start {
                 anchor.formatted = range.end..range.end;
+                moved_empty_boundary = true;
+            }
+        }
+        if moved_empty_boundary {
+            for span in self.spans.iter_mut().rev().take_while(|span| span.range.start >= start) {
+                if span.range == (start..start)
+                    && span.application == StyleApplication::SourcePreservedWhitespace
+                {
+                    span.range = range.end..range.end;
+                }
             }
         }
         self.provenance.push(ProvenanceSpan {
@@ -570,15 +581,44 @@ pub(super) fn character_clear_verified(
 /// Escape new text exactly without changing the source encoding. Characters
 /// unavailable in the original converter use HTML numeric references.
 pub(super) fn escape_html_text(text: &str, encoding: super::Encoding) -> String {
-    escape_html_text_in_context(text, encoding, false)
+    escape_html_text_in_context(text, encoding, false, false, false)
 }
 
-fn escape_html_text_in_context(text: &str, encoding: super::Encoding, preserve: bool) -> String {
+fn escape_html_text_in_context(
+    text: &str,
+    encoding: super::Encoding,
+    preserve: bool,
+    before: bool,
+    after: bool,
+) -> String {
+    escape_html_text_with_spaces(text, encoding, preserve, before, after, &[])
+}
+
+fn escape_html_text_with_spaces(
+    text: &str,
+    encoding: super::Encoding,
+    preserve: bool,
+    before: bool,
+    after: bool,
+    protective_spaces: &[usize],
+) -> String {
     let syntax = if preserve {
         super::html::escape_preserving_whitespace(text)
     } else {
-        super::html::escape(text)
+        super::html::escape_with_context(text, before, after)
     };
+    let mut nbsp_offsets = text.char_indices().filter_map(|(at, ch)| (ch == '\u{a0}').then_some(at));
+    let syntax = syntax.chars().map(|ch| {
+        if ch == '\u{a0}' {
+            if nbsp_offsets.next().is_some_and(|at| protective_spaces.binary_search(&at).is_ok()) {
+                "&nbsp;".to_owned()
+            } else {
+                "&#160;".to_owned()
+            }
+        } else {
+            ch.to_string()
+        }
+    }).collect::<String>();
     if encoding.encode_fragment(&syntax).is_ok() {
         return syntax;
     }
@@ -603,9 +643,41 @@ pub(super) fn escape_html_source_edit(
     source_start: usize,
     text: &str,
 ) -> Result<String, DocumentError> {
-    let preserve =
-        text.contains([' ', '\t']) && html_preserves_whitespace_at_source(document, source_start)?;
-    let syntax = escape_html_text_in_context(text, document.encoding(), preserve);
+    let neighbors = html_text_neighbors_at_source(document, source_start)?;
+    escape_html_source_edit_with_context(document, source_start, text, neighbors, &[], false)
+}
+
+pub(super) fn escape_html_text_edit(
+    document: &super::Document,
+    source_start: usize,
+    edit: &super::TextEdit,
+) -> Result<String, DocumentError> {
+    let (before, _) = html_text_neighbors_at_text(document, edit.range.start)?;
+    let (_, after) = html_text_neighbors_at_text(document, edit.range.end)?;
+    escape_html_source_edit_with_context(
+        document,
+        source_start,
+        &edit.replacement,
+        (before, after),
+        &edit.html_protective_spaces,
+        edit.html_normalized,
+    )
+}
+
+fn escape_html_source_edit_with_context(
+    document: &super::Document,
+    source_start: usize,
+    text: &str,
+    (before, after): (bool, bool),
+    protective_spaces: &[usize],
+    normalized: bool,
+) -> Result<String, DocumentError> {
+    // A normalized edit already accounts for the whole intended batch. Its
+    // spaces must not be reinterpreted against the old snapshot's neighbors.
+    let preserve = normalized
+        || text.contains([' ', '\t'])
+            && html_preserves_whitespace_at_source(document, source_start)?;
+    let syntax = escape_html_text_with_spaces(text, document.encoding(), preserve, before, after, protective_spaces);
     if source_start == 0
         || syntax
             .chars()
@@ -642,10 +714,176 @@ pub(super) fn escape_html_source_edit(
         Some(first) => format!(
             "&#x{:X};{}",
             first as u32,
-            escape_html_text_in_context(&text[first.len_utf8()..], document.encoding(), preserve)
+            escape_html_text_with_spaces(
+                &text[first.len_utf8()..],
+                document.encoding(),
+                preserve,
+                !super::html_whitespace::collapsible(first),
+                after
+                , &protective_spaces.iter().filter_map(|at| at.checked_sub(first.len_utf8())).collect::<Vec<_>>()
+            )
         ),
         None => "<!---->".to_owned(),
     })
+}
+
+fn html_text_neighbors_at_source(
+    document: &super::Document,
+    source_at: usize,
+) -> Result<(bool, bool), DocumentError> {
+    let Ok(mapped) = document.projection().map_source_boundary(
+        document.revision(),
+        source_at,
+        super::BoundaryAffinity::Downstream,
+    ) else {
+        return Ok((false, false));
+    };
+    html_text_neighbors_at_text(document, mapped.formatted_offset)
+}
+
+pub(super) fn html_text_neighbors_at_text(
+    document: &super::Document,
+    at: usize,
+) -> Result<(bool, bool), DocumentError> {
+    let tree = document.projection().text_tree();
+    let previous = tree
+        .previous_grapheme_boundary(at)
+        .map_err(DocumentError::FormattedTextStorage)?;
+    let next = tree
+        .next_grapheme_boundary(at)
+        .map_err(DocumentError::FormattedTextStorage)?;
+    let is_content = |character: Option<char>, sample: usize| {
+        character.is_some_and(|character| {
+            if character == '\n' {
+                return false;
+            }
+            !super::html_whitespace::collapsible(character)
+                || document
+                    .projection()
+                    .style_spans_for_region(&(sample..sample + 1))
+                    .iter()
+                    .any(|span| {
+                        span.range.contains(&sample)
+                            && span.application == StyleApplication::SourcePreservedWhitespace
+                    })
+        })
+    };
+    let before = if let Some(start) = previous {
+        let character = tree
+            .slice(start..at)
+            .map_err(DocumentError::FormattedTextStorage)?
+            .chars()
+            .next_back();
+        is_content(character, at - 1)
+    } else {
+        false
+    };
+    let after = if let Some(end) = next {
+        let character = tree
+            .slice(at..end)
+            .map_err(DocumentError::FormattedTextStorage)?
+            .chars()
+            .next();
+        is_content(character, at)
+    } else {
+        false
+    };
+    Ok((before, after))
+}
+
+/// Compact only syntax emitted by our text encoder in this document. Authored
+/// and reopened whitespace wrappers retain their exact source spelling.
+pub(super) fn generated_html_space_before(
+    document: &super::Document,
+    at: usize,
+) -> Result<Option<Range<usize>>, DocumentError> {
+    let tree = document.projection().text_tree();
+    if at == 0 || tree.slice(at - 1..at).as_deref() != Ok(" ") {
+        return Ok(None);
+    }
+    let spans = document.projection().provenance_for_region(&(at - 1..at));
+    let Some(space) = spans.iter().find(|span| span.formatted == (at - 1..at)) else {
+        return Ok(None);
+    };
+    let opening = document
+        .encoding()
+        .encode_fragment("<span style=\"white-space: pre-wrap\">")?;
+    let closing = document.encoding().encode_fragment("</span>")?;
+    let Some(start) = space.source.start.checked_sub(opening.len()) else {
+        return Ok(None);
+    };
+    let end = space.source.end + closing.len();
+    let range = start..end;
+    if !document
+        .state()
+        .source
+        .range_is_generated_text(range.clone())
+    {
+        return Ok(None);
+    }
+    let Some(bytes) = document.state().source.bytes_in(range.clone()) else {
+        return Ok(None);
+    };
+    if !bytes.starts_with(&opening) || !bytes.ends_with(&closing) {
+        return Ok(None);
+    }
+    let content = document.encoding().decode_region(
+        &bytes[opening.len()..bytes.len() - closing.len()],
+        space.source.start,
+    )?;
+    if !matches!(content.text.as_str(), " " | "&#32;") {
+        return Ok(None);
+    }
+    Ok(Some(range))
+}
+
+pub(super) fn compact_generated_html_space(
+    document: &super::Document,
+    edit: &super::TextEdit,
+    source_at: usize,
+) -> Result<Option<(Range<usize>, String)>, DocumentError> {
+    if !edit.range.is_empty()
+        || !edit
+            .replacement
+            .chars()
+            .next()
+            .is_some_and(|c| !super::html_whitespace::collapsible(c))
+    {
+        return Ok(None);
+    }
+    let at = edit.range.start;
+    let Some(wrapper) = generated_html_space_before(document, at)? else {
+        return Ok(None);
+    };
+    let closing = document.encoding().encode_fragment("</span>")?;
+    if source_at != wrapper.end - closing.len() && source_at != wrapper.end {
+        return Ok(None);
+    }
+    let tree = document.projection().text_tree();
+    let Some(previous) = tree
+        .previous_grapheme_boundary(at - 1)
+        .map_err(DocumentError::FormattedTextStorage)?
+    else {
+        return Ok(None);
+    };
+    if !tree
+        .slice(previous..at - 1)
+        .map_err(DocumentError::FormattedTextStorage)?
+        .chars()
+        .next_back()
+        .is_some_and(|c| !super::html_whitespace::collapsible(c))
+    {
+        return Ok(None);
+    }
+    let (_, after) = html_text_neighbors_at_source(document, source_at)?;
+    let syntax = escape_html_text_in_context(
+        &format!(" {}", edit.replacement),
+        document.encoding(),
+        false,
+        true,
+        after,
+    );
+    Ok(Some((wrapper, syntax)))
 }
 
 pub(super) fn html_preserves_whitespace_at_source(
@@ -661,6 +899,15 @@ pub(super) fn html_preserves_whitespace_at_source(
         return Ok(false);
     };
     let at = mapped.formatted_offset;
+    let point = at..at;
+    let boundary_provenance = projection.provenance_touching(&point);
+    if boundary_provenance.iter().any(|span| {
+        span.formatted == point && span.source == (source_start..source_start)
+    }) {
+        return Ok(projection.style_spans_touching(&point).iter().any(|span| {
+            span.range == point && span.application == StyleApplication::SourcePreservedWhitespace
+        }));
+    }
     let range = at.saturating_sub(1)..(at + 1).min(projection.text_tree().byte_len());
     let styles = projection.style_spans_for_region(&range);
     let preserved = |sample| {
@@ -674,15 +921,16 @@ pub(super) fn html_preserves_whitespace_at_source(
         if span.formatted.is_empty() {
             continue;
         }
-        if span.source.start == source_start && preserved(span.formatted.start)
-            || span.source.end == source_start && preserved(span.formatted.end - 1)
-        {
-            return Ok(true);
+        if span.source.start == source_start {
+            return Ok(preserved(span.formatted.start));
+        }
+        if span.source.end == source_start {
+            return Ok(preserved(span.formatted.end - 1));
         }
     }
-    // Empty elements have a source anchor but no character to annotate. Read
-    // only the local gap after the preceding visible character, never the
-    // complete code paragraph. The annotation seeds inherited pre behavior.
+    // For other source gaps, inspect only the local syntax after the previous
+    // visible character, never the complete code paragraph. Exact empty
+    // element anchors already carry their context above.
     let previous = provenance
         .iter()
         .filter(|span| !span.formatted.is_empty() && span.source.end <= source_start)

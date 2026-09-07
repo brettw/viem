@@ -135,6 +135,7 @@ pub const EVIM_DOCUMENT_STATE_CAN_REDO: u32 = 1 << 2;
 pub const EVIM_DOCUMENT_STATE_IS_DIRTY: u32 = 1 << 3;
 pub const EVIM_DOCUMENT_STATE_READ_ONLY: u32 = 1 << 4;
 pub const EVIM_DOCUMENT_STATE_RECOVERED: u32 = 1 << 5;
+pub const EVIM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS: u32 = 1 << 6;
 
 /// Immutable model/history metadata captured in one serial core query.
 #[repr(C)]
@@ -1958,6 +1959,30 @@ pub struct EvimSetFileFormatV1 {
 }
 
 pub const EVIM_SET_FILE_FORMAT_V1_SIZE: u32 = size_of::<EvimSetFileFormatV1>() as u32;
+
+/// Shared HTML style-serialization policy bound to one exact snapshot.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EvimSetIncludeStyleDefinitionsV1 {
+    pub struct_size: u32,
+    pub enabled: u32,
+    pub document_id: u64,
+    pub document_revision: u64,
+}
+
+pub const EVIM_SET_INCLUDE_STYLE_DEFINITIONS_V1_SIZE: u32 =
+    size_of::<EvimSetIncludeStyleDefinitionsV1>() as u32;
+
+impl Default for EvimSetIncludeStyleDefinitionsV1 {
+    fn default() -> Self {
+        Self {
+            struct_size: EVIM_SET_INCLUDE_STYLE_DEFINITIONS_V1_SIZE,
+            enabled: 0,
+            document_id: 0,
+            document_revision: 0,
+        }
+    }
+}
 
 /// Source-format interpretation change bound to one exact document snapshot.
 #[repr(C)]
@@ -4700,6 +4725,9 @@ fn summarize_document_state(document: &Document) -> EvimDocumentStateV1 {
     }
     if document.is_recovered() {
         flags |= EVIM_DOCUMENT_STATE_RECOVERED;
+    }
+    if document.include_style_definitions_in_file() {
+        flags |= EVIM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS;
     }
     EvimDocumentStateV1 {
         struct_size: EVIM_DOCUMENT_STATE_V1_SIZE,
@@ -9683,6 +9711,43 @@ pub unsafe extern "C" fn evim_core_view_set_file_format(
                     document: DocumentId(request.document_id),
                     revision: Revision(request.document_revision),
                     target,
+                },
+            )
+        })?;
+        unsafe { out_outcome.write(outcome) };
+        Ok(())
+    })
+}
+
+/// Change shared HTML style serialization through one exact model transaction.
+/// The enabled value must be zero or one; unsupported formats are rejected.
+///
+/// # Safety
+///
+/// `request` and `out_outcome` must identify distinct aligned readable and
+/// writable v1 values.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_set_include_style_definitions(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    request: *const EvimSetIncludeStyleDefinitionsV1,
+    out_outcome: *mut EvimCoreOutcomeV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let request = unsafe { read_core_request(request, out_outcome)? };
+        if request.struct_size < EVIM_SET_INCLUDE_STYLE_DEFINITIONS_V1_SIZE {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        unsafe { clear_outcome(out_outcome)? };
+        let enabled = parse_ffi_bool(request.enabled)?;
+        let outcome = with_core_mut(handle, |core| {
+            dispatch_event(
+                core,
+                view,
+                CoreEvent::SetIncludeStyleDefinitionsInFile {
+                    document: DocumentId(request.document_id),
+                    revision: Revision(request.document_revision),
+                    enabled,
                 },
             )
         })?;

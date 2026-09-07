@@ -1,5 +1,5 @@
-use super::source::SourceArtifactDigest;
 use super::history_memory::{AllocationId, MemoryVisitor, RetainedMemory};
+use super::source::{SourceArtifactDigest, SourceSnapshotIdentity};
 use super::{PositionError, PositionMap, Revision, SourcePartId, Splice, TextAnchor};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -374,6 +374,7 @@ pub(crate) struct History<T, M = ()> {
     next_change_number: u64,
     save_point: HistoryNodeId,
     save_point_digest: Option<SourceArtifactDigest>,
+    save_point_source: Option<SourceSnapshotIdentity>,
     retention: HistoryRetentionPolicy,
     retained_source_bytes: usize,
     accounting: Option<HistoryAccounting<T>>,
@@ -478,6 +479,7 @@ struct RetainedBuffer {
 }
 
 struct HistoryAccounting<T> {
+    source_identity: fn(&T) -> SourceSnapshotIdentity,
     visit_buffers: fn(&T, &mut dyn FnMut(usize, usize)),
     digest: fn(&T) -> SourceArtifactDigest,
 }
@@ -493,11 +495,13 @@ impl<T, M> History<T, M> {
         retention: HistoryRetentionPolicy,
         visit_buffers: fn(&T, &mut dyn FnMut(usize, usize)),
         digest: fn(&T) -> SourceArtifactDigest,
+        source_identity: fn(&T) -> SourceSnapshotIdentity,
     ) -> Self {
         Self::new_internal(
             initial,
             retention,
             Some(HistoryAccounting {
+                source_identity,
                 visit_buffers,
                 digest,
             }),
@@ -514,6 +518,7 @@ impl<T, M> History<T, M> {
         let retained_buffers = collect_retained_buffers(accounting.as_ref(), &initial);
         let retained_source_bytes = retained_buffers.iter().map(|buffer| buffer.bytes).sum();
         let save_point_digest = accounting.as_ref().map(|value| (value.digest)(&initial));
+        let save_point_source = accounting.as_ref().map(|value| (value.source_identity)(&initial));
         Self {
             nodes: vec![Node {
                 id: root_id,
@@ -534,6 +539,7 @@ impl<T, M> History<T, M> {
             next_change_number: 1,
             save_point: root_id,
             save_point_digest,
+            save_point_source,
             retention,
             retained_source_bytes,
             accounting,
@@ -689,7 +695,10 @@ impl<T, M> History<T, M> {
             redo_branch_count: current.children.len(),
             can_undo: current.parent.is_some(),
             can_redo: current.preferred_child.is_some(),
-            is_dirty: current.id != self.save_point,
+            is_dirty: match (&self.accounting, self.save_point_source) {
+                (Some(accounting), Some(saved)) => (accounting.source_identity)(&current.state) != saved,
+                _ => current.id != self.save_point,
+            },
             undo_summary: current
                 .incoming
                 .as_ref()
@@ -912,6 +921,8 @@ impl<T, M> History<T, M> {
             .accounting
             .as_ref()
             .map(|accounting| (accounting.digest)(&self.nodes[self.current].state));
+        self.save_point_source = self.accounting.as_ref()
+            .map(|accounting| (accounting.source_identity)(&self.nodes[self.current].state));
         self.save_point
     }
 
@@ -922,6 +933,7 @@ impl<T, M> History<T, M> {
         &mut self,
         location: HistoryLocation,
         digest: SourceArtifactDigest,
+        source_identity: SourceSnapshotIdentity,
     ) -> HistoryLocation {
         // A prepared write is an immutable, trusted capture. Its node may have
         // been pruned while host I/O was running; saving still establishes that
@@ -931,6 +943,7 @@ impl<T, M> History<T, M> {
         }
         self.save_point = location.node;
         self.save_point_digest = Some(digest);
+        self.save_point_source = Some(source_identity);
         location
     }
 
@@ -1024,7 +1037,14 @@ impl<T, M> History<T, M> {
 
         // Repeatedly removing the oldest eligible leaf deterministically
         // discards abandoned branches without touching the active ancestry.
-        while self.exceeds_retention(retained_count, if self.visit_state_memory.is_some() { self.retained_memory_bytes() } else { retained_bytes }) {
+        while self.exceeds_retention(
+            retained_count,
+            if self.visit_state_memory.is_some() {
+                self.retained_memory_bytes()
+            } else {
+                retained_bytes
+            },
+        ) {
             let candidate = (0..self.nodes.len())
                 .filter(|index| retained[*index] && !protected[*index])
                 .filter(|index| {
@@ -1051,7 +1071,14 @@ impl<T, M> History<T, M> {
         // explicitly protected states) can keep the tree over budget. Promote
         // one oldest ancestor at a time. An open unit stops promotion at its
         // fixed parent so both its before-state and result remain available.
-        while self.exceeds_retention(retained_count, if self.visit_state_memory.is_some() { self.retained_memory_bytes() } else { retained_bytes }) {
+        while self.exceeds_retention(
+            retained_count,
+            if self.visit_state_memory.is_some() {
+                self.retained_memory_bytes()
+            } else {
+                retained_bytes
+            },
+        ) {
             let active_path: Vec<_> = self
                 .root_path(self.current)
                 .into_iter()
@@ -1428,6 +1455,7 @@ mod tests {
             retention,
             visit_byte_state,
             digest_byte_state,
+            |state| state.0.identity(),
         )
     }
 
@@ -1641,6 +1669,48 @@ mod tests {
             history.select_node(saved.node),
             Err(HistoryError::NodeNotFound(saved.node))
         );
+    }
+
+    #[test]
+    fn source_identity_keeps_configuration_nodes_clean_across_branches_and_pruning() {
+        let source = SourceSnapshot::new(b"saved".to_vec());
+        let mut history = byte_history(source.clone(), HistoryRetentionPolicy::unlimited());
+        let root = history.status().current;
+        history.commit(ByteState(source.clone()), false);
+        let configuration = history.status().current;
+        assert_ne!(configuration, root);
+        assert!(!history.status().is_dirty);
+        history.mark_saved();
+        history.select_node(root.node).unwrap();
+        assert!(!history.status().is_dirty);
+        history.commit(ByteState(source.clone()), false);
+        assert!(!history.status().is_dirty);
+        history.set_retention_policy(HistoryRetentionPolicy::new(1, usize::MAX));
+        assert!(!history.status().save_point_retained);
+        assert!(!history.status().is_dirty);
+        // Identical serialized bytes from a new source edit are still a new
+        // snapshot; configuration-only sharing must not become byte equality.
+        let replaced = source.replace(0, 5, b"saved".to_vec()).unwrap();
+        history.commit(ByteState(replaced), false);
+        assert!(history.status().is_dirty);
+    }
+
+    #[test]
+    fn checking_dirty_state_does_not_digest_the_source() {
+        static DIGEST_CALLS: AtomicU64 = AtomicU64::new(0);
+        fn counted_digest(state: &ByteState) -> SourceArtifactDigest {
+            DIGEST_CALLS.fetch_add(1, Ordering::Relaxed);
+            state.0.artifact_digest()
+        }
+        let source = SourceSnapshot::new(vec![b'x'; 1_000_000]);
+        let mut history: History<ByteState> = History::new_accounted(
+            ByteState(source.clone()), HistoryRetentionPolicy::unlimited(),
+            visit_byte_state, counted_digest, |state| state.0.identity(),
+        );
+        let initial = DIGEST_CALLS.load(Ordering::Relaxed);
+        history.commit(ByteState(source), false);
+        for _ in 0..1_000 { assert!(!history.status().is_dirty); }
+        assert_eq!(DIGEST_CALLS.load(Ordering::Relaxed), initial);
     }
 
     #[test]

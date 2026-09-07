@@ -1981,6 +1981,150 @@ fn typed_view_options_are_local_or_shared_and_fail_atomically() {
 }
 
 #[test]
+fn html_style_definition_policy_is_revision_bound_shared_and_undoable() {
+    for format in [EVIM_FORMAT_HTML, EVIM_FORMAT_HTML_SOURCE] {
+        let source = b"<p>Text</p><!--preserve-->";
+        let core = create_core(
+            source,
+            EvimDocumentOptions {
+                format,
+                ..EvimDocumentOptions::default()
+            },
+        );
+        let mut context = Box::new(FakeProviderContext::new(core.handle));
+        let (view, mut outcome) = add_test_view(&core, &mut *context);
+        let before = document_state(&core);
+        assert_eq!(
+            before.flags & EVIM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS,
+            0
+        );
+        let valid = EvimSetIncludeStyleDefinitionsV1 {
+            enabled: 1,
+            document_id: before.document_id,
+            document_revision: before.document_revision,
+            ..EvimSetIncludeStyleDefinitionsV1::default()
+        };
+        for (request, expected) in [
+            (
+                EvimSetIncludeStyleDefinitionsV1 {
+                    enabled: 2,
+                    ..valid
+                },
+                EvimStatus::InvalidArgument,
+            ),
+            (
+                EvimSetIncludeStyleDefinitionsV1 {
+                    struct_size: 0,
+                    ..valid
+                },
+                EvimStatus::InvalidArgument,
+            ),
+            (
+                EvimSetIncludeStyleDefinitionsV1 {
+                    document_id: before.document_id + 1,
+                    ..valid
+                },
+                EvimStatus::InvalidArgument,
+            ),
+            (
+                EvimSetIncludeStyleDefinitionsV1 {
+                    document_revision: before.document_revision + 1,
+                    ..valid
+                },
+                EvimStatus::StaleRevision,
+            ),
+        ] {
+            assert_eq!(
+                unsafe {
+                    evim_core_view_set_include_style_definitions(
+                        core.handle,
+                        view,
+                        &request,
+                        &mut outcome,
+                    )
+                },
+                expected
+            );
+            assert_eq!(document_state(&core), before);
+        }
+        assert_eq!(
+            unsafe {
+                evim_core_view_set_include_style_definitions(
+                    core.handle,
+                    view,
+                    &valid,
+                    &mut outcome,
+                )
+            },
+            EvimStatus::Ok
+        );
+        let enabled = document_state(&core);
+        assert_ne!(
+            enabled.flags & EVIM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS,
+            0
+        );
+        assert_ne!(enabled.flags & EVIM_DOCUMENT_STATE_CAN_UNDO, 0);
+        let enabled_source = copy_core_bytes(
+            evim_core_copy_source_bytes,
+            &core,
+            enabled.document_revision,
+        );
+        assert!(enabled_source
+            .windows(b"<!--preserve-->".len())
+            .any(|bytes| bytes == b"<!--preserve-->"));
+        assert_eq!(
+            unsafe { evim_core_view_undo(core.handle, view, &mut outcome) },
+            EvimStatus::Ok
+        );
+        let undone = document_state(&core);
+        assert_eq!(
+            undone.flags & EVIM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS,
+            0
+        );
+        assert_eq!(
+            copy_core_bytes(evim_core_copy_source_bytes, &core, undone.document_revision),
+            source
+        );
+        assert_eq!(
+            unsafe { evim_core_view_redo(core.handle, view, &mut outcome) },
+            EvimStatus::Ok
+        );
+        let redone = document_state(&core);
+        assert_ne!(
+            redone.flags & EVIM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS,
+            0
+        );
+        assert_eq!(
+            copy_core_bytes(evim_core_copy_source_bytes, &core, redone.document_revision),
+            enabled_source
+        );
+    }
+    let core = create_core(
+        b"Text",
+        EvimDocumentOptions {
+            format: EVIM_FORMAT_PLAIN_TEXT,
+            ..EvimDocumentOptions::default()
+        },
+    );
+    let mut context = Box::new(FakeProviderContext::new(core.handle));
+    let (view, mut outcome) = add_test_view(&core, &mut *context);
+    let before = document_state(&core);
+    let request = EvimSetIncludeStyleDefinitionsV1 {
+        enabled: 1,
+        document_id: before.document_id,
+        document_revision: before.document_revision,
+        ..EvimSetIncludeStyleDefinitionsV1::default()
+    };
+    assert_eq!(
+        unsafe {
+            evim_core_view_set_include_style_definitions(core.handle, view, &request, &mut outcome)
+        },
+        EvimStatus::UnsupportedOperation
+    );
+    assert_eq!(document_state(&core), before);
+}
+
+#[test]
 fn zoom_reflows_only_a_bounded_viewport_of_a_large_document() {
     let source = "short proportional line\n".repeat(100_000);
     let core = create_core(source.as_bytes(), EvimDocumentOptions::default());
@@ -4476,6 +4620,10 @@ _Static_assert(sizeof(EvimSetFileFormatV1) == {set_file_format},
     "set file format");
 _Static_assert(EVIM_SET_FILE_FORMAT_V1_SIZE == sizeof(EvimSetFileFormatV1),
     "set file format size macro");
+_Static_assert(sizeof(EvimSetIncludeStyleDefinitionsV1) == {set_include_style_definitions},
+    "set include style definitions");
+_Static_assert(EVIM_SET_INCLUDE_STYLE_DEFINITIONS_V1_SIZE == sizeof(EvimSetIncludeStyleDefinitionsV1),
+    "set include style definitions size macro");
 _Static_assert(sizeof(EvimMarkSavedV1) == {mark_saved}, "mark saved");
 _Static_assert(EVIM_MARK_SAVED_V1_SIZE == sizeof(EvimMarkSavedV1),
     "mark saved size macro");
@@ -4581,6 +4729,9 @@ static void typecheck(void) {{
   EvimStatus (*set_file_format)(EvimCoreHandle, EvimViewId,
       const EvimSetFileFormatV1 *, EvimCoreOutcomeV1 *) =
       evim_core_view_set_file_format;
+  EvimStatus (*set_include_style_definitions)(EvimCoreHandle, EvimViewId,
+      const EvimSetIncludeStyleDefinitionsV1 *, EvimCoreOutcomeV1 *) =
+      evim_core_view_set_include_style_definitions;
   EvimStatus (*edit_style)(EvimCoreHandle, EvimViewId,
       const EvimStyleEditV1 *, EvimCoreOutcomeV1 *) =
       evim_core_view_edit_style;
@@ -4663,6 +4814,7 @@ static void typecheck(void) {{
   (void)use_selection_for_find; (void)reveal_selection;
   (void)set_viewport_origin; (void)set_scale;
   (void)set_linebreak; (void)set_file_format;
+  (void)set_include_style_definitions;
   (void)edit_style; (void)begin_style_group; (void)edit_style_in_group;
   (void)assign_style;
   (void)create_style; (void)delete_style;
@@ -4757,6 +4909,7 @@ static void typecheck(void) {{
         create_style = std::mem::size_of::<EvimCreateStyleV1>(),
         delete_style = std::mem::size_of::<EvimDeleteStyleV1>(),
         set_file_format = std::mem::size_of::<EvimSetFileFormatV1>(),
+        set_include_style_definitions = std::mem::size_of::<EvimSetIncludeStyleDefinitionsV1>(),
         mark_saved = std::mem::size_of::<EvimMarkSavedV1>(),
         key = std::mem::size_of::<EvimKeyInputV1>(),
         composition_begin = std::mem::size_of::<EvimCompositionBeginV1>(),

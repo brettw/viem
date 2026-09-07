@@ -346,6 +346,11 @@ pub enum CoreEvent {
         revision: Revision,
         target: FileFormat,
     },
+    SetIncludeStyleDefinitionsInFile {
+        document: DocumentId,
+        revision: Revision,
+        enabled: bool,
+    },
     SetFormat {
         document: DocumentId,
         revision: Revision,
@@ -684,7 +689,7 @@ fn command_model_transaction_error(error: ModelTransactionError) -> CoreError {
 fn execute_command_plan(
     document: &mut Document,
     interpreter: &mut CommandInterpreter,
-    plan: CommandPlan,
+    mut plan: CommandPlan,
 ) -> Result<(CommandStep, PositionMap, Vec<CommandPresentationRequest>), CoreError> {
     if plan.document() != document.id() {
         return Err(CoreError::Document(DocumentError::WrongDocument));
@@ -708,6 +713,10 @@ fn execute_command_plan(
     };
     let (changed, map) = match prepared {
         Some(prepared) => {
+            if let Err(error) = plan.map_prepared_html_cursor(document, &prepared) {
+                plan.publish_failure(interpreter, document.revision());
+                return Err(CoreError::Document(error));
+            }
             let committed = match document.commit_model_transaction(prepared) {
                 Ok(committed) => committed,
                 Err(error) => {
@@ -4390,6 +4399,20 @@ impl<P: TextMeasurementProvider> Core<P> {
                     },
                 );
             }
+            CoreEvent::SetIncludeStyleDefinitionsInFile {
+                document,
+                revision,
+                enabled,
+            } => {
+                return self.apply_native_model_request(
+                    view_id,
+                    ModelRequest::SetIncludeStyleDefinitionsInFile {
+                        document,
+                        revision,
+                        enabled,
+                    },
+                );
+            }
             CoreEvent::SetFormat {
                 document,
                 revision,
@@ -5350,6 +5373,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             CoreEvent::SetDirectCharacterProperties { .. }
             | CoreEvent::EditDirectProperty { .. }
             | CoreEvent::SetFileFormat { .. }
+            | CoreEvent::SetIncludeStyleDefinitionsInFile { .. }
             | CoreEvent::SetFormat { .. }
             | CoreEvent::SetEncoding { .. }
             | CoreEvent::SetListStyle { .. }
