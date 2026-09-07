@@ -31,6 +31,12 @@ struct EVStyleEditorInspection: Equatable {
     let preview: EVCoreTextStylePreviewInspection
 }
 
+private final class EVStyleEditorPanel: NSPanel {
+    // Use utility chrome without changing the editor's existing main-window
+    // responder routing when users work in its controls.
+    override var canBecomeMain: Bool { true }
+}
+
 @MainActor
 final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
     static let shared = EVStyleEditorCoordinator()
@@ -65,13 +71,16 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         if isNewWindow {
             let content = EVStyleEditorViewController()
             content.onClose = { [weak self] in self?.controller?.close() }
-            let panel = NSWindow(
+            let panel = EVStyleEditorPanel(
                 contentRect: NSRect(x: 0, y: 0, width: 760, height: 770),
-                styleMask: [.titled, .closable, .resizable],
+                styleMask: [.titled, .closable, .resizable, .utilityWindow],
                 backing: .buffered,
                 defer: false
             )
-            panel.title = "Edit Styles"
+            panel.title = "Styles"
+            panel.isFloatingPanel = false
+            panel.level = .normal
+            panel.hidesOnDeactivate = false
             panel.contentMinSize = NSSize(width: 700, height: 720)
             panel.backgroundColor = .windowBackgroundColor
             panel.isReleasedWhenClosed = false
@@ -79,7 +88,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             panel.contentViewController = content
             panel.delegate = self
             panel.setFrameAutosaveName("eVim Style Editor")
-            panel.setAccessibilityLabel("Edit Styles")
+            panel.setAccessibilityLabel("Styles")
             controller = NSWindowController(window: panel)
             contentController = content
         }
@@ -359,10 +368,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         closeButton.bezelStyle = .rounded
         closeButton.setAccessibilityLabel("Close style editor")
         closeButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 82).isActive = true
-        let liveApplyLabel = NSTextField(labelWithString: "Changes apply immediately")
-        liveApplyLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        liveApplyLabel.textColor = .secondaryLabelColor
-        let bottom = NSStackView(views: [liveApplyLabel, NSView(), closeButton])
+        let bottom = NSStackView(views: [NSView(), closeButton])
         bottom.orientation = .horizontal
         bottom.alignment = .centerY
 
@@ -370,9 +376,8 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
 
         let stack = NSStackView(views: [
             sectionTitle("Properties"), propertiesContainer, availabilityLabel,
-            separator(), sectionTitle("Formatting"), tabsContainer, formattingBox,
-            sectionTitle("Preview"), previewBox,
-            sectionTitle("Resolved formatting"), summaryScroll, separator(), bottom,
+            separator(), tabsContainer, formattingBox,
+            previewBox, summaryScroll, bottom,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -699,15 +704,16 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             if definition.capabilities.isEmpty {
                 availabilityLabel.stringValue = "This \(definition.origin.displayName) style is read-only. Effective and inherited values remain available for inspection."
             } else {
-                availabilityLabel.stringValue = "Default restores inherited formatting. Hover over a control to see whether it is inherited."
+                availabilityLabel.stringValue = ""
             }
             availabilityLabel.textColor = .secondaryLabelColor
         } else {
             availabilityLabel.stringValue = diagnosticMessage
             availabilityLabel.textColor = .systemRed
         }
+        availabilityLabel.isHidden = availabilityLabel.stringValue.isEmpty
 
-        compactControls.configure(definition, theme: themeStore.theme, sourceFormat: document?.backend.sourceFormat ?? .plainText)
+        compactControls.configure(definition, theme: themeStore.theme, sourceFormat: document?.backend.sourceFormat ?? .plainText, documentID: snapshot.identity.documentID)
         let canEditDeclarations = definition.capabilities.contains(.declarations)
         for property in EVStyleProperty.characterProperties + EVStyleProperty.paragraphProperties {
             propertyRows[property]?.configure(
@@ -904,6 +910,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             diagnosticMessage = rejection
             if let definition = selectedDefinition {
                 availabilityLabel.stringValue = rejection
+                availabilityLabel.isHidden = false
                 availabilityLabel.textColor = .systemRed
                 updatePreviewAndSummary(snapshot: snapshot, definition: definition)
             }
@@ -979,6 +986,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         basedOnPopup.isEnabled = false
         diagnosticMessage = ""
         availabilityLabel.stringValue = "No target document. Choose Edit Styles… from a document to retarget this window."
+        availabilityLabel.isHidden = false
         availabilityLabel.textColor = .secondaryLabelColor
         tabs.selectedSegment = EVStyleEditorTab.character.rawValue
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.character.rawValue)
@@ -1004,6 +1012,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.character.rawValue)
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.paragraph.rawValue)
         availabilityLabel.stringValue = diagnosticMessage.isEmpty ? "Styles are temporarily unavailable." : diagnosticMessage
+        availabilityLabel.isHidden = false
         availabilityLabel.textColor = .systemRed
         preview.showUnavailable()
         summary.string = availabilityLabel.stringValue

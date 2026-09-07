@@ -50,6 +50,19 @@ struct Piece {
 }
 
 impl SourceSnapshot {
+    pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+        fn visit(node: &Arc<Node>, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+            visitor.arc(node, |visitor| match node.as_ref() {
+                Node::Leaf(piece) => visitor.arc(&piece.bytes, |_| {}),
+                Node::Branch { left, right, .. } => {
+                    visit(left, visitor);
+                    visit(right, visitor);
+                }
+            });
+        }
+        if let Some(root) = &self.root { visit(root, visitor); }
+    }
+
     pub(crate) fn new(bytes: Vec<u8>) -> Self {
         let root = if bytes.is_empty() {
             None

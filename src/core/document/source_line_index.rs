@@ -37,6 +37,19 @@ enum NodeKind {
 }
 
 impl SourceHardLineIndex {
+    pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+        fn visit(node: &Arc<Node>, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+            visitor.arc(node, |visitor| match &node.kind {
+                NodeKind::Leaf(lengths) => visitor.arc(lengths, |_| {}),
+                NodeKind::Branch { left, right } => {
+                    visit(left, visitor);
+                    visit(right, visitor);
+                }
+            });
+        }
+        visit(&self.root, visitor);
+    }
+
     pub(crate) fn new(ranges: Vec<Range<usize>>) -> Option<Self> {
         let content_start = ranges.first()?.start;
         let mut expected = content_start;

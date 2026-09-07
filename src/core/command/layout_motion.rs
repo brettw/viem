@@ -208,6 +208,48 @@ pub fn g_dollar(
     Ok(row_end(&snapshot.rows[row_index]))
 }
 
+/// A flowed list's wrap separator belongs between words. Its space remains
+/// logical content, but the visual end command addresses the last visible
+/// grapheme rather than the whitespace consumed at the wrap.
+pub(crate) fn g_dollar_for_document(
+    document: &crate::document::Document,
+    snapshot: &LayoutSnapshot,
+    current: VisualPosition,
+) -> Result<VisualPosition, LayoutMotionError> {
+    let (row_index, _) = locate(snapshot, current)?;
+    let row = &snapshot.rows[row_index];
+    if row.wraps_to_next
+        && document
+            .projection()
+            .blocks_for_region(&(row.text_range.start..row.text_range.start))
+            .iter()
+            .any(|block| {
+                block.style.0 != "Code Block"
+                    && matches!(
+                        block.kind,
+                        crate::document::BlockKind::ListItem {
+                            marker_is_decoration: true,
+                            ..
+                        }
+                    )
+            })
+    {
+        let text = document
+            .projection()
+            .text_tree()
+            .slice(row.text_range.clone())
+            .map_err(|_| LayoutMotionError::TextDoesNotMatchLayout)?;
+        let end = row.text_range.start + text.trim_end_matches([' ', '\t']).len();
+        if end > row.text_range.start {
+            return Ok(VisualPosition {
+                text_offset: end,
+                affinity: BoundaryAffinity::Upstream,
+            });
+        }
+    }
+    Ok(row_end(row))
+}
+
 /// Shared desired-x implementation for visual vertical movement.
 pub fn move_visual_rows(
     snapshot: &LayoutSnapshot,

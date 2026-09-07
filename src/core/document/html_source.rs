@@ -142,7 +142,39 @@ pub(super) fn project(
     start: usize,
     end: usize,
 ) -> FormattedDocument {
-    let semantic = html::project(input, revision, start, end);
+    let recovered = super::html5_tree::tokens(&input.text);
+    let mut pre_ranges = Vec::new();
+    let mut open_pre = Vec::new();
+    let mut hidden_stack = Vec::new();
+    for token in &recovered {
+        if let TokenKind::Tag(tag) = &token.kind {
+            if tag.end {
+                let hidden = hidden_stack.pop().unwrap_or(false);
+                if tag.name == "pre" && !hidden {
+                    if let Some(start) = open_pre.pop() {
+                        if open_pre.is_empty() {
+                            pre_ranges.push(start..token.range.end);
+                        }
+                    }
+                }
+            } else {
+                let hidden = hidden_stack.last().copied().unwrap_or(false)
+                    || html::hidden(&tag.name)
+                    || html::atomic(&tag.name);
+                hidden_stack.push(hidden);
+                if tag.name == "pre" && !hidden {
+                    open_pre.push(token.range.start);
+                }
+            }
+        }
+    }
+    if let Some(start) = open_pre.first() {
+        pre_ranges.push(*start..input.text.len());
+    }
+    // HTML5 foster parenting can reorder recovered nodes. Source paragraphs
+    // always follow the authoritative source order.
+    pre_ranges.sort_by_key(|range| range.start);
+    let semantic = html::project_tokens(input, revision, start, end, recovered);
     let plain = super::projection::project_plain(input, revision, start, end);
     let mut sheet = semantic.style_sheet().clone();
     sheet.install_html_source_styles();
@@ -170,6 +202,7 @@ pub(super) fn project(
                 .filter(|span| {
                     span.range.start <= provenance.formatted.start
                         && provenance.formatted.end <= span.range.end
+                        && span.application != StyleApplication::SourcePreservedWhitespace
                 })
                 .map(|span| span.application),
         );
@@ -231,11 +264,14 @@ pub(super) fn project(
     styles.extend(syntax_spans(&input.text));
     // A physical source hard line is a cache unit. Keep every decoration
     // interval inside one such unit, including the real newline item.
-    let line_boundaries = input
+    let mut line_boundaries = input
         .text
         .match_indices('\n')
         .flat_map(|(at, _)| [at, at + 1])
         .collect::<Vec<_>>();
+    // Adjacent line breaks share a boundary. Splitting twice there would
+    // manufacture an empty style span, which is invalid layout input.
+    line_boundaries.dedup();
     let mut split = Vec::new();
     for span in styles {
         // These intervals describe a complete lexical token. Splitting them
@@ -288,6 +324,41 @@ pub(super) fn project(
         start,
         end,
     );
+    // Source keeps every character and physical hard line. A pre owns one
+    // paragraph across those lines, so paragraph spacing applies only at its
+    // outside edges. Mixed first/last source lines remain intact cache units.
+    let mut code_lines: Vec<Range<usize>> = Vec::new();
+    for range in pre_ranges {
+        let first = plain.hard_line_at_offset(range.start).unwrap_or(0);
+        let last = plain
+            .hard_line_at_offset(range.end.saturating_sub(1).max(range.start))
+            .unwrap_or(first);
+        let lines = first..last + 1;
+        if let Some(previous) = code_lines.last_mut().filter(|old| lines.start < old.end) {
+            previous.end = previous.end.max(lines.end);
+        } else {
+            code_lines.push(lines);
+        }
+    }
+    if !code_lines.is_empty() {
+        let mut paragraphs = Vec::new();
+        let mut line = 0;
+        for code in code_lines {
+            paragraphs.extend_from_slice(&plain.blocks()[line..code.start]);
+            let mut paragraph = plain.blocks()[code.start].clone();
+            paragraph.range.end = plain.blocks()[code.end - 1].range.end;
+            let code_style = StyleId::from("Code Block");
+            paragraph.style = if result.style_sheet().block_style(&code_style).is_some() {
+                code_style
+            } else {
+                result.style_sheet().base_paragraph.clone()
+            };
+            paragraphs.push(paragraph);
+            line = code.end;
+        }
+        paragraphs.extend_from_slice(&plain.blocks()[line..]);
+        result.install_paragraph_partition(paragraphs);
+    }
     let mut soft = BTreeSet::new();
     let mut prose_extents = Vec::new();
     for block in semantic.blocks() {
@@ -745,6 +816,13 @@ pub(super) fn can_inherit_literal_context(
     let Ok(after) = previous.text_tree().slice(edit.range.end..right) else {
         return false;
     };
+    // Malformed tag/reference prefixes can be ordinary projected prose, yet
+    // their interpretation depends on neighboring bytes. Inserting immediately
+    // after a literal '<' can change an ignored end tag into visible text and
+    // alter which source newline belongs to a prose paragraph.
+    if before.contains(['<', '&']) || after.contains(['<', '&']) {
+        return false;
+    }
     if before.trim().is_empty() && after.trim().is_empty() {
         return false;
     }
@@ -806,10 +884,26 @@ pub(super) fn inherited_literal_projection(
         }
     }
     styles.sort_by_key(|span| span.range.start);
+    let mut blocks = plain.blocks().to_vec();
+    if let Some(code) = previous
+        .blocks_for_region(region)
+        .into_iter()
+        .find(|block| {
+            block.style.0 == "Code Block"
+                && block.range.start <= region.start
+                && region.end <= block.range.end
+        })
+    {
+        for block in &mut blocks {
+            block.style = code.style.clone();
+            block.direct_paragraph = code.direct_paragraph.clone();
+            block.direct_default_character = code.direct_default_character.clone();
+        }
+    }
     FormattedDocument::from_parts(
         revision,
         input.text.clone(),
-        plain.blocks().to_vec(),
+        blocks,
         styles,
         plain.provenance().to_vec(),
         plain.decoding_diagnostics().to_vec(),

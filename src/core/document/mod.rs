@@ -9,6 +9,7 @@ pub use conversion::{ConversionLoss, ConversionWarning};
 mod encoding;
 mod formatted_text;
 mod history;
+mod history_memory;
 mod html;
 mod html5_tree;
 mod html_direct;
@@ -17,7 +18,9 @@ mod html_source;
 mod html_styles;
 mod html_typing;
 mod lists;
+mod markdown_blocks;
 mod markdown_code;
+mod markdown_source_edit;
 mod paragraph_flow;
 mod rich_text;
 mod rtf;
@@ -449,6 +452,13 @@ pub enum DocumentError {
         encoding: Encoding,
         character: char,
     },
+    /// The encoding accepts this scalar but the configured format pipeline
+    /// cannot retain it as requested text (for example NUL in HTML, or a
+    /// literal CR in a plain-text pipeline interpreting CR as line endings).
+    UnrepresentableFormattedCharacter {
+        format: Format,
+        character: char,
+    },
     InvalidRange {
         start: usize,
         end: usize,
@@ -532,6 +542,10 @@ impl fmt::Display for DocumentError {
             } => write!(
                 formatter,
                 "{character:?} is not representable in {encoding:?}"
+            ),
+            Self::UnrepresentableFormattedCharacter { format, character } => write!(
+                formatter,
+                "{character:?} cannot be represented as formatted text in {format:?}"
             ),
             Self::InvalidRange { start, end, length } => {
                 write!(
@@ -724,6 +738,25 @@ fn document_state_source_digest(state: &DocumentState) -> SourceArtifactDigest {
     state.source.artifact_digest()
 }
 
+fn visit_document_state_memory(state: &DocumentState, visitor: &mut history_memory::MemoryVisitor<'_>) {
+    state.source.visit_retained_memory(visitor);
+    state.projection.visit_retained_memory(visitor);
+    state.source_hard_lines.visit_retained_memory(visitor);
+    if std::env::var_os("EVIM_HISTORY_MEMORY_FRESH").is_some() {
+        let measure = |visit: &mut dyn FnMut(&mut history_memory::MemoryVisitor<'_>)| {
+            let mut memory = history_memory::RetainedMemory::default();
+            let roots = memory.capture(|visitor| visit(visitor));
+            let result = (memory.bytes(), memory.allocation_count());
+            memory.release(roots);
+            result
+        };
+        let source = measure(&mut |visitor| state.source.visit_retained_memory(visitor));
+        let projection = measure(&mut |visitor| state.projection.visit_retained_memory(visitor));
+        let lines = measure(&mut |visitor| state.source_hard_lines.visit_retained_memory(visitor));
+        eprintln!("fresh source={source:?} projection={projection:?} lines={lines:?}");
+    }
+}
+
 fn new_document_history(state: DocumentState) -> History<DocumentState, PositionMap> {
     History::new_accounted(
         state,
@@ -731,6 +764,7 @@ fn new_document_history(state: DocumentState) -> History<DocumentState, Position
         visit_document_state_source_buffers,
         document_state_source_digest,
     )
+    .with_retained_memory(visit_document_state_memory, PositionMap::visit_retained_memory)
 }
 
 /// One editing buffer's document state and branching undo history.
@@ -1569,20 +1603,17 @@ impl Document {
             .text_tree()
             .slice(line.clone())
             .map_err(DocumentError::FormattedTextStorage)?;
-        if matches!(self.format(), Format::Html | Format::Rtf) {
+        if matches!(self.format(), Format::Html | Format::Rtf | Format::Markdown) {
             let block = self
                 .projection()
                 .blocks_for_region(&(at..at))
                 .into_iter()
                 .find(|block| block.range.start <= at && at <= block.range.end)
                 .ok_or(DocumentError::VerificationFailed)?;
-            let BlockKind::ListItem {
-                ordered,
-                ordinal,
-                item_start,
-                ..
-            } = block.kind
-            else {
+            if self.format() == Format::Markdown && block.style.0 == "Code Block" {
+                return Ok(None);
+            }
+            let BlockKind::ListItem { item_start, .. } = block.kind else {
                 if self.format() == Format::Html
                     || (self.format() == Format::Rtf
                         && at == block.range.end
@@ -1597,31 +1628,20 @@ impl Document {
                 }
                 return Ok(None);
             };
-            let line = block.range;
             let text = self
                 .projection()
                 .text_tree()
-                .slice(line.clone())
+                .slice(block.range.clone())
                 .map_err(DocumentError::FormattedTextStorage)?;
-            let prefix_len = if !item_start {
-                0
-            } else if ordered {
-                format!("{ordinal}. ").len()
-            } else {
-                "• ".len()
-            };
-            if at < line.start + prefix_len {
-                return Ok(None);
+            if item_start && text.trim().is_empty() {
+                return Ok(Some(TextEdit::new(block.range, "")));
             }
-            if item_start && text[prefix_len..].trim().is_empty() {
-                return Ok(Some(TextEdit::new(line, "")));
-            }
-            let marker = if ordered {
-                format!("{}. ", ordinal.saturating_add(1))
-            } else {
-                "• ".to_owned()
-            };
-            return Ok(Some(TextEdit::new(at..at, format!("\n{marker}"))));
+            // List syntax and numbering belong to the adapter and layout.
+            // Enter inserts only a logical item boundary into editable text.
+            return Ok(Some(TextEdit::new(at..at, "\n")));
+        }
+        if let Some(edit) = self.markdown_source_empty_enter_edit(at)? {
+            return Ok(Some(edit));
         }
         let (prefix_len, kind) = projection::markdown_block_prefix(&text, 0, text.len());
         let BlockKind::ListItem {
@@ -1635,7 +1655,14 @@ impl Document {
         }
         let indent = text.bytes().take_while(|byte| *byte == b' ').count();
         if text[prefix_len..].trim().is_empty() {
-            return Ok(Some(TextEdit::new(line.clone(), " ".repeat(indent))));
+            return Ok(Some(TextEdit::new(
+                line.clone(),
+                if self.format() == Format::MarkdownSource {
+                    String::new()
+                } else {
+                    " ".repeat(indent)
+                },
+            )));
         }
         let marker = if ordered {
             let next = ordinal
@@ -1653,6 +1680,24 @@ impl Document {
             document: self.id,
             revision: self.revision(),
             at,
+        })
+    }
+
+    pub(crate) fn open_formatted_line(&mut self, at: usize) -> Result<(), DocumentError> {
+        self.execute_compat_request(ModelRequest::OpenLine {
+            document: self.id,
+            revision: self.revision(),
+            at,
+        })
+    }
+
+    /// Delete complete logical/visual lines with explicit structural ownership.
+    /// Partial paragraphs remain ordinary body-text edits in each adapter.
+    pub fn delete_lines(&mut self, range: Range<usize>) -> Result<(), DocumentError> {
+        self.execute_compat_request(ModelRequest::DeleteLines {
+            document: self.id,
+            revision: self.revision(),
+            range,
         })
     }
 
@@ -2357,7 +2402,7 @@ fn build_state_from_decoded(
 
 fn hard_line_source_range_from_state(state: &DocumentState, line: usize) -> Option<Range<usize>> {
     let projection = &state.projection;
-    if state.format == Format::Markdown {
+    if matches!(state.format, Format::Markdown | Format::MarkdownSource) {
         let formatted = projection.hard_line_range(line)?;
         let end = formatted.end + usize::from(line + 1 < projection.hard_line_count());
         let spans = projection.provenance_for_region(&(formatted.start..end));
@@ -2392,7 +2437,7 @@ fn hard_line_source_image_from_state(
     if line >= line_count {
         return Err(DocumentError::InvalidHardLineSourceImageTarget { line, line_count });
     }
-    if state.projection.blocks().len() != line_count {
+    if state.format != Format::MarkdownSource && state.projection.blocks().len() != line_count {
         return Err(DocumentError::HardLineSourceImageProjectionMismatch);
     }
 
@@ -2406,10 +2451,15 @@ fn hard_line_source_image_from_state(
         .ok_or(DocumentError::HardLineSourceImageProjectionMismatch)?;
     let block = state
         .projection
-        .blocks()
-        .get(line)
+        .blocks_for_region(&formatted_range)
+        .into_iter()
+        .find(|block| {
+            block.range.start <= formatted_range.start && formatted_range.end <= block.range.end
+        })
         .ok_or(DocumentError::HardLineSourceImageProjectionMismatch)?;
-    if block.id != hard_line_id || block.range != formatted_range {
+    if state.format != Format::MarkdownSource
+        && (block.id != hard_line_id || block.range != formatted_range)
+    {
         return Err(DocumentError::HardLineSourceImageProjectionMismatch);
     }
     let source_range = hard_line_source_range_from_state(state, line)
@@ -2498,6 +2548,28 @@ fn ranges_overlap(first: &Range<usize>, second: &Range<usize>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn retained_memory_ledger_matches_fresh_recount_after_groups_branches_and_pruning() {
+        let bytes: Vec<_> = "éπa".repeat(100).encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let mut document = super::Document::from_bytes(bytes, super::Encoding::Utf16Le, super::Format::PlainText).unwrap();
+        document.set_history_retention_policy(super::HistoryRetentionPolicy::new(8, usize::MAX));
+        for index in 0..40 {
+            document.begin_edit_group();
+            document.replace(0..2, "δ").unwrap();
+            document.replace(0..2, "é").unwrap();
+            document.end_edit_group();
+            if index % 3 == 0 {
+                document.try_undo().unwrap();
+                document.replace(0..2, "λ").unwrap();
+                document.replace(0..2, "é").unwrap();
+            }
+            let _ = document.projection().provenance();
+            document.history.assert_memory_matches_full_recount();
+        }
+        document.set_history_retention_policy(super::HistoryRetentionPolicy::new(1, usize::MAX));
+        document.history.assert_memory_matches_full_recount();
+    }
+
     use super::*;
 
     #[test]
@@ -3138,7 +3210,14 @@ mod tests {
             document
                 .set_list_style(0..10, Some(ListStyle::Bullet))
                 .unwrap();
-            assert_eq!(document.text(), "- alpha\n- beta\nthird");
+            assert_eq!(
+                document.text(),
+                if format == Format::Markdown {
+                    "alpha\nbeta\nthird"
+                } else {
+                    "- alpha\n- beta\nthird"
+                }
+            );
             assert_eq!(
                 document.source_bytes(),
                 if format == Format::Markdown {
@@ -3154,8 +3233,9 @@ mod tests {
                         ordered: false,
                         ordinal: 1,
                         level: 0,
-                        container_start: false,
-                        item_start: true
+                        container_start: true,
+                        item_start: true,
+                        marker_is_decoration: format == Format::Markdown
                     }
                 );
                 assert_eq!(
@@ -3164,10 +3244,22 @@ mod tests {
                 );
             }
             document
-                .set_list_style(0..14, Some(ListStyle::Numbered))
+                .set_list_style(
+                    0..if format == Format::Markdown { 10 } else { 14 },
+                    Some(ListStyle::Numbered),
+                )
                 .unwrap();
-            assert_eq!(document.text(), "1. alpha\n2. beta\nthird");
-            document.set_list_style(0..16, None).unwrap();
+            assert_eq!(
+                document.text(),
+                if format == Format::Markdown {
+                    "alpha\nbeta\nthird"
+                } else {
+                    "1. alpha\n2. beta\nthird"
+                }
+            );
+            document
+                .set_list_style(0..if format == Format::Markdown { 10 } else { 16 }, None)
+                .unwrap();
             assert_eq!(document.text(), "alpha\nbeta\nthird");
             assert!(document.undo());
             assert!(document.undo());
@@ -3191,19 +3283,23 @@ mod tests {
             document.source_bytes(),
             b"- **bold**\n\n  - child\n\n- Heading"
         );
-        assert_eq!(document.text(), "- bold\n  - child\n- Heading");
+        assert_eq!(document.text(), "bold\nchild\nHeading");
         assert_eq!(
             document.projection().blocks()[1].kind,
             BlockKind::ListItem {
                 ordered: false,
                 ordinal: 1,
                 level: 1,
-                container_start: false,
-                item_start: true
+                container_start: true,
+                item_start: true,
+                marker_is_decoration: true
             }
         );
         document
-            .set_list_style(9..9, Some(ListStyle::Numbered))
+            .set_list_style(
+                document.text().find("child").unwrap()..document.text().find("child").unwrap(),
+                Some(ListStyle::Numbered),
+            )
             .unwrap();
         assert_eq!(
             document.source_bytes(),

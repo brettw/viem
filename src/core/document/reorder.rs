@@ -29,6 +29,27 @@ pub(super) fn plan(
     if order.iter().copied().eq(selected.clone()) {
         return Ok(None);
     }
+    if document.format() == Format::Markdown {
+        for index in selected.clone() {
+            let line = document.projection().hard_line_range(index)
+                .ok_or(DocumentError::HardLineTransferProjectionMismatch)?;
+            let blocks = document.projection().blocks_for_region(&line);
+            let block = blocks.iter().find(|block| block.range.start <= line.start && line.end <= block.range.end)
+                .ok_or(DocumentError::HardLineTransferProjectionMismatch)?;
+            let source_line = document.physical_line_at_text(line.start)?;
+            let indented = source_line.text.starts_with('\t') || source_line.text.starts_with("    ");
+            // This operation moves independent source paragraph owners. A
+            // list marker depends on its surrounding container, and a code
+            // body depends on indentation/fences outside the visible row.
+            // Moving those raw bodies as independent paragraphs is not a
+            // verified structure-preserving permutation capability.
+            if block.range != line || block.style.0 == "Code Block" || indented
+                || matches!(block.kind, super::BlockKind::ListItem { .. })
+            {
+                return Err(DocumentError::UnsupportedFormatting);
+            }
+        }
+    }
     let infos = snapshot
         .lines(0..count)
         .map_err(|_| DocumentError::HardLineTransferProjectionMismatch)?;
@@ -45,7 +66,7 @@ pub(super) fn plan(
         )?)
     };
     let source = document.source_bytes();
-    let source_patches = match document.format() {
+    let mut source_patches = match document.format() {
         Format::PlainText | Format::MarkdownSource | Format::HtmlSource => {
             let physical = transfer::physical_hard_lines(document, count)?;
             let mut replacement = Vec::new();
@@ -98,6 +119,7 @@ pub(super) fn plan(
         .collect::<Vec<_>>()
         .join("\n");
     let expected_hard_breaks = transfer::hard_break_offsets(&origins, &contents)?;
+    transfer::preserve_source_blank_rows(document, &mut source_patches, &expected_text)?;
     let expected_signatures = signatures.map(|signatures| {
         indices
             .iter()

@@ -14,6 +14,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     var onEditEnded: (() -> Void)?
     private(set) var hasInvalidDraft = false
     private var definition: EVStyleDefinition?
+    private var documentID: UInt64?
     private var theme = EVTheme.paper
     private var sourceFormat = EVSourceFormat.plainText
     private let alignmentValues: [UInt32] = [UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_START), UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_CENTER), UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_END)]
@@ -25,6 +26,8 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private(set) var fallbackPopover: NSPopover?
     private let featureButton = NSButton()
     private var fields: [EVStyleProperty: NSTextField] = [:]
+    private var steppers: [EVStyleProperty: EVStyleStepper] = [:]
+    private var lastLineValues: [UInt32: Float] = [:]
     private var buttons: [EVStyleProperty: NSButton] = [:]
     private var wells: [EVStyleProperty: NSColorWell] = [:]
     private var directions: [EVStyleProperty: NSPopUpButton] = [:]
@@ -106,7 +109,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         lineValue.tag = Int(EVStyleProperty.paragraphLineSpacing.rawValue)
         lineValue.setAccessibilityLabel("Line spacing value")
         lineValue.widthAnchor.constraint(equalToConstant: 48).isActive = true
-        let line = labeled("Line spacing", control: row([icon(.lineSpacing), lineKind, lineValue, reset(.paragraphLineSpacing)], spacing: 3))
+        let line = labeled("Line spacing", control: row([icon(.lineSpacing), lineKind, lineValue, stepper(.paragraphLineSpacing, title: "Line spacing value"), reset(.paragraphLineSpacing)], spacing: 3))
         let spacing = row([
             numeric(.paragraphSpacingBefore, title: "Space before", icon: .before),
             numeric(.paragraphSpacingAfter, title: "Space after", icon: .after), line,
@@ -114,15 +117,18 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         configure(paragraphView, rows: [paraToolbar, separator(), indents, spacing])
     }
 
-    func configure(_ definition: EVStyleDefinition?, theme: EVTheme = .paper, sourceFormat: EVSourceFormat = .plainText) {
+    func configure(_ definition: EVStyleDefinition?, theme: EVTheme = .paper, sourceFormat: EVSourceFormat = .plainText, documentID: UInt64? = nil) {
         fallbackPopover?.close()
         fallbackPopover = nil
         self.theme = theme
         self.sourceFormat = sourceFormat
         updating = true
         defer { updating = false }
+        if self.definition?.key != definition?.key || self.documentID != documentID { lastLineValues = [:] }
+        self.documentID = documentID
         self.definition = definition
         editable = definition?.capabilities.contains(.declarations) == true
+        let paragraphEditable = editable && definition?.kind == .paragraph
         hasInvalidDraft = false
         let chosen = stringList(.characterFontFamilies).first ?? "Helvetica"
         fontFaces = EVFontCatalog.faces(for: chosen)
@@ -143,22 +149,25 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         for (property, field) in fields {
             if property == .characterLanguage { field.stringValue = string(property) }
             else { field.stringValue = Self.numberText(number(property, fallback: property == .characterSize ? 14 : 0)) }
-            field.isEnabled = editable
+            field.isEnabled = editable && (!EVStyleProperty.paragraphProperties.contains(property) || paragraphEditable)
             field.textColor = .labelColor
             setHelp(field, property)
+            synchronizeStepper(property, value: Double(number(property, fallback: property == .characterSize ? 14 : 0)), enabled: field.isEnabled)
         }
         refreshThemeColors(theme)
         for (property, popup) in directions { popup.selectItem(at: min(2, Int(unsigned(property)))); popup.isEnabled = editable; setHelp(popup, property) }
         for (property, button) in resetButtons { button.isEnabled = editable && definition?.properties[property]?.isDeclared == true }
         alignment.selectedSegment = alignmentValues.firstIndex(of: unsigned(.paragraphAlignment)) ?? 0
-        alignment.isEnabled = editable
-        lineKind.isEnabled = editable
+        alignment.isEnabled = paragraphEditable
+        lineKind.isEnabled = paragraphEditable
         lineValue.isEnabled = editable
         if case let .lineSpacing(value)? = definition?.properties[.paragraphLineSpacing]?.effective {
             lineKind.selectItem(withTag: Int(value.kind))
+            if value.kind != UInt32(EVIM_STYLE_LINE_SPACING_NORMAL) { lastLineValues[value.kind] = value.value }
             lineValue.stringValue = value.kind == UInt32(EVIM_STYLE_LINE_SPACING_NORMAL) ? "" : Self.numberText(value.value)
         } else { lineKind.selectItem(at: 0); lineValue.stringValue = "" }
-        lineValue.isEnabled = editable && lineKind.indexOfSelectedItem != 0
+        lineValue.isEnabled = paragraphEditable && lineKind.indexOfSelectedItem != 0
+        synchronizeStepper(.paragraphLineSpacing, value: Double(Float(lineValue.stringValue) ?? 0), enabled: lineValue.isEnabled)
         featureButton.isEnabled = editable && !EVFontCatalog.features(for: chosen).isEmpty
     }
 
@@ -219,9 +228,49 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         unit.textColor = .secondaryLabelColor
         unit.font = .systemFont(ofSize: 11)
         var items: [NSView] = symbol.map { [icon($0)] } ?? []
-        items += [field, unit, reset(property)]
+        items += [field, stepper(property, title: title), unit, reset(property)]
         return labeled(title, control: row(items, spacing: 3))
     }
+    private func stepper(_ property: EVStyleProperty, title: String) -> EVStyleStepper {
+        let control = EVStyleStepper()
+        control.controlSize = .small
+        control.valueWraps = false
+        control.autorepeat = true
+        control.isContinuous = true
+        control.tag = Int(property.rawValue)
+        control.target = self
+        control.action = #selector(stepperChanged(_:))
+        control.setAccessibilityLabel("Adjust \(title.lowercased())")
+        control.onGestureBegan = { [weak self] in
+            self?.onEditEnded?()
+            self?.onEditBegan?()
+        }
+        control.onGestureEnded = { [weak self] in self?.onEditEnded?() }
+        steppers[property] = control
+        return control
+    }
+
+    private func synchronizeStepper(_ property: EVStyleProperty, value: Double, enabled: Bool) {
+        guard let control = steppers[property] else { return }
+        let multiplier = property == .paragraphLineSpacing && lineKind.selectedItem?.tag == Int(EVIM_STYLE_LINE_SPACING_MULTIPLIER)
+        let positive = property == .characterSize || multiplier
+        control.increment = multiplier || property == .characterLetterSpacing ? 0.1 : 1
+        control.minValue = positive ? min(max(value, Double(Float.leastNormalMagnitude)), sourceFormat == .rtf && property == .characterSize ? 0.5 : 0.1)
+            : property == .paragraphLineSpacing ? 0 : -Double(Float.greatestFiniteMagnitude)
+        control.maxValue = Double(Float.greatestFiniteMagnitude)
+        control.doubleValue = value
+        control.isEnabled = enabled
+        setHelp(control, property)
+    }
+
+    @objc private func stepperChanged(_ sender: EVStyleStepper) {
+        guard !updating, editable, let property = EVStyleProperty(rawValue: UInt32(sender.tag)) else { return }
+        let field = property == .paragraphLineSpacing ? lineValue : fields[property]
+        guard let field else { return }
+        field.stringValue = Self.numberText(Float(sender.doubleValue))
+        controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: field))
+    }
+
     private func text(_ property: EVStyleProperty, title: String, width: CGFloat) -> NSView {
         let field = NSTextField()
         field.delegate = self
@@ -367,11 +416,18 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         let kind = UInt32(item.tag)
         let normal = kind == UInt32(EVIM_STYLE_LINE_SPACING_NORMAL)
         var value = Float(lineValue.stringValue)
-        if sender is NSPopUpButton, !normal, value.map({ $0.isFinite && $0 > 0 }) != true {
-            value = kind == UInt32(EVIM_STYLE_LINE_SPACING_MULTIPLIER) ? 1 : number(.characterSize, fallback: 14) * 1.2
+        if sender is NSPopUpButton, !normal {
+            value = lastLineValues[kind] ?? (kind == UInt32(EVIM_STYLE_LINE_SPACING_MULTIPLIER) ? 1 : number(.characterSize, fallback: 14) * 1.2)
             lineValue.stringValue = Self.numberText(value!)
         }
-        guard normal || value.map({ $0.isFinite && $0 > 0 }) == true else { lineValue.textColor = .systemRed; hasInvalidDraft = true; return }
+        let valid = value.map { $0.isFinite && (kind == UInt32(EVIM_STYLE_LINE_SPACING_MULTIPLIER) ? $0 > 0 : $0 >= 0) } == true
+        guard normal || valid else {
+            lineValue.textColor = .systemRed
+            steppers[.paragraphLineSpacing]?.isEnabled = false
+            hasInvalidDraft = true
+            return
+        }
+        if !normal, let value { lastLineValues[kind] = value }
         hasInvalidDraft = false
         lineValue.textColor = .labelColor
         send([.setDeclaration(.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: kind, value: normal ? 0 : value!)))])
@@ -386,7 +442,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         guard let field = notification.object as? NSTextField, !(field is NSComboBox), let property = EVStyleProperty(rawValue: UInt32(field.tag)), !updating else { return }
         if property == .characterLanguage { send([.setDeclaration(property, .string(field.stringValue))]); return }
         if property == .paragraphLineSpacing { lineSpacingChanged(field); return }
-        guard let value = Float(field.stringValue), value.isFinite, property != .characterSize || value > 0 else { field.textColor = .systemRed; hasInvalidDraft = true; return }
+        guard let value = Float(field.stringValue), value.isFinite, property != .characterSize || value > 0 else { field.textColor = .systemRed; steppers[property]?.isEnabled = false; hasInvalidDraft = true; return }
         field.textColor = .labelColor
         hasInvalidDraft = false
         send([.setDeclaration(property, .float(value))])

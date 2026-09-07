@@ -1,8 +1,8 @@
 //! Source-backed hard-line transfer planning.
 //!
-//! Plain/source views transfer physical lines. Markdown WYSIWYG transfers the
-//! complete source extent of each semantic line, including wrapped prose and
-//! its explicit paragraph/hard-break delimiter.
+//! Transfers use formatted hard-line addresses. Each Markdown view carries
+//! the complete mapped source separator, including hidden blank source rows.
+//! WYSIWYG additionally carries wrapped prose within its semantic hard line.
 
 use super::line_endings::normalize;
 use super::projection::{FormattedDocument, TransferredLineOrigin};
@@ -89,7 +89,13 @@ pub(crate) fn plan(
     let infos = snapshot
         .lines(0..line_count)
         .map_err(|_| DocumentError::HardLineTransferProjectionMismatch)?;
-    let signatures = projection_signatures(document.projection(), &infos)?;
+    // Source commands move literal syntax. A copied fence body can acquire a
+    // different semantic style at its destination, just as a source edit can.
+    let signatures = if document.format() == super::Format::MarkdownSource {
+        None
+    } else {
+        Some(projection_signatures(document.projection(), &infos)?)
+    };
     let physical = physical_hard_lines(document, line_count)?;
     let source_bytes = document.source_bytes();
     let mut boundary = document
@@ -111,7 +117,7 @@ pub(crate) fn plan(
         [first_formatted.content_range().start..last_formatted.content_range().end]
         .to_owned();
 
-    let source_patches = source_patches(
+    let mut source_patches = source_patches(
         operation,
         &physical,
         source_lines.clone(),
@@ -148,18 +154,21 @@ pub(crate) fn plan(
         .collect::<Vec<_>>()
         .join("\n");
     let expected_hard_breaks = hard_break_offsets(&origins, &contents)?;
-    let expected_signatures = origins
-        .iter()
-        .map(|origin| match origin {
-            TransferredLineOrigin::Existing(index) | TransferredLineOrigin::Copied(index) => {
-                signatures[*index].clone()
-            }
-        })
-        .collect();
+    let expected_signatures = signatures.map(|signatures| {
+        origins
+            .iter()
+            .map(|origin| match origin {
+                TransferredLineOrigin::Existing(index) | TransferredLineOrigin::Copied(index) => {
+                    signatures[*index].clone()
+                }
+            })
+            .collect()
+    });
 
     if apply_text_edits(snapshot.text(), &text_edits)? != expected_text {
         return Err(DocumentError::HardLineTransferProjectionMismatch);
     }
+    preserve_source_blank_rows(document, &mut source_patches, &expected_text)?;
 
     Ok(Some(HardLineTransferPlan {
         source_patches,
@@ -167,8 +176,118 @@ pub(crate) fn plan(
         expected_text,
         expected_hard_breaks,
         origins,
-        expected_signatures: Some(expected_signatures),
+        expected_signatures,
     }))
+}
+
+/// Joining transferred separator bytes can hide an intended empty Source
+/// row. Add only the missing physical endings at those joins; existing bytes
+/// and the transferred syntax remain untouched. This is a linear comparison
+/// and one normalization, regardless of the number of empty rows copied.
+pub(super) fn preserve_source_blank_rows(
+    document: &Document,
+    patches: &mut Vec<PlannedSourcePatch>,
+    expected: &str,
+) -> Result<(), DocumentError> {
+    if document.format() != super::Format::MarkdownSource {
+        return Ok(());
+    }
+    patches.sort_by_key(|patch| (patch.range.start, patch.range.end));
+    let mut bytes = document.source_bytes();
+    for patch in patches.iter().rev() {
+        bytes.splice(patch.range.clone(), patch.replacement.iter().copied());
+    }
+    let decoded = document.encoding().decode(&bytes)?;
+    let physical = normalize(&decoded, document.file_format());
+    let cooked = super::paragraph_flow::markdown_source(&physical).0;
+    if cooked.text == expected {
+        return Ok(());
+    }
+    let mut actual_at = 0;
+    let mut missing = Vec::<(usize, usize)>::new();
+    for ch in expected.chars() {
+        if cooked.text[actual_at..].starts_with(ch) {
+            actual_at += ch.len_utf8();
+        } else if ch == '\n' {
+            if let Some((_, count)) = missing.last_mut().filter(|(at, _)| *at == actual_at) {
+                *count += 1;
+            } else {
+                missing.push((actual_at, 1));
+            }
+        } else {
+            // Contextual syntax changes still use ordinary transaction
+            // verification; do not guess a source rewrite for them.
+            return Ok(());
+        }
+    }
+    if actual_at != cooked.text.len() {
+        return Ok(());
+    }
+    let ending = document
+        .encoding()
+        .encode_fragment(document.file_format().spelling())?;
+    for (at, count) in missing.into_iter().rev() {
+        let source_at = cooked
+            .units
+            .get(
+                cooked
+                    .units
+                    .partition_point(|unit| unit.normalized.end <= at),
+            )
+            .filter(|unit| unit.normalized.start == at)
+            .map_or(bytes.len(), |unit| unit.source.start);
+        let mut end = source_at;
+        let mut index = physical
+            .endings
+            .partition_point(|line| line.source.end <= end);
+        let mut source_endings = 0usize;
+        while index > 0 {
+            let previous = &physical.endings[index - 1];
+            let gap = document
+                .encoding()
+                .decode_region(&bytes[previous.source.end..end], previous.source.end)?;
+            if !gap.text.trim().is_empty() {
+                break;
+            }
+            source_endings += 1;
+            end = previous.source.start;
+            index -= 1;
+        }
+        // One raw terminal ending is visible already; every further visible
+        // empty paragraph requires a pair. An odd third ending is trivia.
+        let extra = count * 2 + usize::from(source_endings == 1)
+            - usize::from(source_endings > 1 && source_endings % 2 == 1);
+        let addition = ending.repeat(extra);
+        let mut old_cursor = 0;
+        let mut new_cursor = 0;
+        let mut installed = false;
+        for patch in patches.iter_mut() {
+            let start = new_cursor + patch.range.start - old_cursor;
+            let end = start + patch.replacement.len();
+            if source_at < start {
+                break;
+            }
+            if source_at <= end {
+                patch.replacement.splice(
+                    source_at - start..source_at - start,
+                    addition.iter().copied(),
+                );
+                installed = true;
+                break;
+            }
+            old_cursor = patch.range.end;
+            new_cursor = end;
+        }
+        if !installed {
+            let at = old_cursor + source_at - new_cursor;
+            patches.push(PlannedSourcePatch {
+                range: at..at,
+                replacement: addition,
+            });
+            patches.sort_by_key(|patch| (patch.range.start, patch.range.end));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn verify_projection(
@@ -197,10 +316,10 @@ pub(super) fn physical_hard_lines(
     let source = document.source_bytes();
     let decoded = document.encoding().decode(&source)?;
     let normalized = normalize(&decoded, document.file_format());
-    let normalized = if document.format() == super::Format::Markdown {
-        super::paragraph_flow::markdown(&normalized).0
-    } else {
-        normalized
+    let normalized = match document.format() {
+        super::Format::Markdown => super::paragraph_flow::markdown(&normalized).0,
+        super::Format::MarkdownSource => super::paragraph_flow::markdown_source(&normalized).0,
+        _ => normalized,
     };
     if normalized.endings.len().checked_add(1) != Some(expected_count) {
         return Err(DocumentError::HardLineTransferProjectionMismatch);

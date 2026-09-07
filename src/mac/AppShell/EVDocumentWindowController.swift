@@ -26,6 +26,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   private static var instances: [EVWeakDocumentWindow] = []
   private var isClosed = false
   private var closeQueue: [EVDocument] = []
+  private var closeReviewCompletion: ((Bool) -> Void)?
   private var closingAfterReview = false
   private var hasPresentedInitialWindow = false
   private var isPerformingDocumentHostEffect = false
@@ -119,22 +120,33 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
 
   public func windowShouldClose(_ sender: NSWindow) -> Bool {
     if closingAfterReview { return true }
-    guard closeQueue.isEmpty else { return false }
+    // Attached document windows enter through NSDocument's earlier preflight.
+    // Retain this route for a window whose controller has not been attached.
+    reviewDocumentsForClose { [weak self] approved in
+      if approved { DispatchQueue.main.async { self?.close() } }
+    }
+    return false
+  }
+
+  func reviewDocumentsForClose(completion: @escaping (Bool) -> Void) {
+    guard !isClosed, closeReviewCompletion == nil else { completion(false); return }
+    closeReviewCompletion = completion
     var seen = Set<ObjectIdentifier>()
     closeQueue = paneContainer.panes.compactMap(\.document).filter { doc in
       guard seen.insert(ObjectIdentifier(doc)).inserted else { return false }
       let outside = Self.instances.compactMap(\.value).filter { $0 !== self && !$0.isClosed }
         .contains { $0.paneContainer.panes.contains { $0.document === doc } }
-      return !outside && doc.editorBackend.persistenceState.isDirty
+      return !outside && (doc.editorBackend.persistenceState.isDirty || doc.isDocumentEdited)
     }
     reviewNextClose()
-    return false
   }
 
   private func reviewNextClose() {
     guard let document = closeQueue.first else {
       closingAfterReview = true
-      DispatchQueue.main.async { [weak self] in self?.close() }
+      let completion = closeReviewCompletion
+      closeReviewCompletion = nil
+      completion?(true)
       return
     }
     document.canClose(
@@ -145,8 +157,13 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   @objc private func reviewedDocument(
     _ document: NSDocument, shouldClose: Bool, contextInfo: UnsafeMutableRawPointer?
   ) {
+    guard closeQueue.first === document else { return }
     guard shouldClose else {
       closeQueue.removeAll()
+      closingAfterReview = false
+      let completion = closeReviewCompletion
+      closeReviewCompletion = nil
+      completion?(false)
       return
     }
     if !closeQueue.isEmpty { closeQueue.removeFirst() }
@@ -736,6 +753,66 @@ extension EVDocumentWindowController {
 
 @MainActor
 extension EVDocumentWindowController {
+  public func openDroppedFiles(
+    _ urls: [URL], in targetSurface: any EVEditorSurface,
+    completion: @escaping @MainActor (Result<Void, Error>) -> Void
+  ) {
+    openDroppedFiles(urls, in: targetSurface, using: { url, finished in
+      EVDocumentIdentity.open(url, display: false, completion: finished)
+    }, completion: completion)
+  }
+
+  func openDroppedFiles(
+    _ urls: [URL], in targetSurface: any EVEditorSurface,
+    using open: @escaping @MainActor (URL, @escaping @MainActor (EVDocument?, Error?) -> Void) -> Void,
+    completion: @escaping @MainActor (Result<Void, Error>) -> Void
+  ) {
+    guard !isClosed, !isPerformingDocumentHostEffect,
+      let target = paneContainer.panes.first(where: { $0.editorSurface === targetSurface }),
+      let original = target.document else {
+      completion(.failure(EVDocumentHostError.operationAlreadyInProgress)); return
+    }
+    guard !urls.isEmpty else { completion(.success(())); return }
+    let originalState = original.editorBackend.persistenceState
+    let replaceFirst = !originalState.isDirty && !original.isDocumentEdited
+    isPerformingDocumentHostEffect = true
+    func finish(_ result: Result<Void, Error>) {
+      isPerformingDocumentHostEffect = false
+      completion(result)
+    }
+    func next(_ remaining: ArraySlice<URL>, first: Bool) {
+      guard let url = remaining.first else { finish(.success(())); return }
+      guard url.isFileURL else { finish(.failure(EVDocumentHostError.invalidPath(url.absoluteString))); return }
+      open(url) { opened, error in
+        guard let opened else { finish(.failure(error ?? EVDocumentHostError.unsupportedRequest)); return }
+        // Opening may have displayed an asynchronous recovery or permission
+        // sheet. Preserve any edits or pane replacement made while it was open.
+        if first && replaceFirst && !self.isClosed,
+          self.paneContainer.panes.contains(where: { $0 === target }),
+          target.document === original,
+          original.editorBackend.persistenceState.documentID == originalState.documentID,
+          original.editorBackend.persistenceState.documentRevision == originalState.documentRevision,
+          !original.editorBackend.persistenceState.isDirty && !original.isDocumentEdited {
+          if opened !== original {
+            self.paneContainer.replace(target, with: self.makePane(document: opened))
+            self.rebindWindowDocument()
+            self.closeIfUnrepresented(original)
+          }
+          self.updateActiveDocumentChrome()
+        } else {
+          let controller = EVDocumentWindowController(document: opened,
+            editorSurface: opened.editorBackend.makeEditorSurface())
+          opened.addWindowController(controller)
+          controller.showWindow(nil)
+        }
+        let following = remaining.dropFirst()
+        if following.isEmpty { finish(.success(())) }
+        else { DispatchQueue.main.async { next(following, first: false) } }
+      }
+    }
+    next(urls[...], first: true)
+  }
+
   public func perform(
     documentHostRequests: [EVDocumentHostRequest],
     completion: @escaping @MainActor (Result<String?, Error>) -> Void

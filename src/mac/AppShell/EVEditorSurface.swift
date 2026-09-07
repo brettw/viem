@@ -161,6 +161,22 @@ public protocol EVDocumentHostEffectHandling: AnyObject {
     documentHostRequests: [EVDocumentHostRequest],
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
   )
+
+  /// A file drop targets the receiving surface, which may be an inactive pane.
+  /// The host owns document identity, dirty-state review, and native windows.
+  func openDroppedFiles(
+    _ urls: [URL], in targetSurface: any EVEditorSurface,
+    completion: @escaping @MainActor (Result<Void, Error>) -> Void
+  )
+}
+
+extension EVDocumentHostEffectHandling {
+  public func openDroppedFiles(
+    _ urls: [URL], in targetSurface: any EVEditorSurface,
+    completion: @escaping @MainActor (Result<Void, Error>) -> Void
+  ) {
+    completion(.failure(EVDocumentHostError.unsupportedRequest))
+  }
 }
 
 /// Optional editor-surface capability used by the AppKit shell to install the

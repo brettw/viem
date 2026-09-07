@@ -19,12 +19,24 @@ fn source() -> String {
 fn open(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf).unwrap()
 }
+fn numbering(document: &Document) -> Vec<u64> {
+    document
+        .projection()
+        .blocks()
+        .iter()
+        .filter_map(|block| match block.kind {
+            BlockKind::ListItem { ordinal, .. } => Some(ordinal),
+            _ => None,
+        })
+        .collect()
+}
 #[test]
 fn word_list_tables_preserve_bytes_and_project_nested_numbering_and_overrides() {
     let source = source();
     let document = open(&source);
     assert_eq!(document.source_bytes(), source.as_bytes());
-    assert_eq!(document.text(), "3. One\n• Child\n4. Two\n8. Restart\nTail");
+    assert_eq!(document.text(), "One\nChild\nTwo\nRestart\nTail");
+    assert_eq!(numbering(&document), vec![3, 1, 4, 8]);
     let lists = document.projection().list_structure();
     assert_eq!(lists.lists.len(), 3);
     assert_eq!(lists.lists[0].items.len(), 2);
@@ -38,7 +50,7 @@ fn word_list_tables_preserve_bytes_and_project_nested_numbering_and_overrides() 
         .lists
         .iter()
         .flat_map(|list| &list.items)
-        .all(|item| item.marker_is_synthetic));
+        .all(|item| item.marker_is_synthetic && item.marker_range.is_empty()));
     assert!(matches!(
         document.projection().blocks()[1].kind,
         BlockKind::ListItem {
@@ -54,7 +66,7 @@ fn text_and_list_edits_preserve_modern_tables_and_reopen_exactly() {
     let mut document = open(&source);
     let start = document.text().find("Child").unwrap();
     document.replace(start..start + 5, "Kid").unwrap();
-    assert_eq!(document.text(), "3. One\n• Kid\n4. Two\n8. Restart\nTail");
+    assert_eq!(document.text(), "One\nKid\nTwo\nRestart\nTail");
     assert_eq!(
         document.source_bytes(),
         source.replace("Child", "Kid").as_bytes()
@@ -66,7 +78,7 @@ fn text_and_list_edits_preserve_modern_tables_and_reopen_exactly() {
     assert!(document.undo());
     let at = document.text().find("Two").unwrap();
     document.set_list_style(at..at + 3, None).unwrap();
-    assert_eq!(document.text(), "3. One\n• Child\nTwo\n8. Restart\nTail");
+    assert_eq!(document.text(), "One\nChild\nTwo\nRestart\nTail");
     assert!(String::from_utf8(document.source_bytes())
         .unwrap()
         .contains(r"{\*\listtable"));
@@ -75,7 +87,7 @@ fn text_and_list_edits_preserve_modern_tables_and_reopen_exactly() {
     document
         .set_list_style(at..at + 3, Some(ListStyle::Bullet))
         .unwrap();
-    assert_eq!(document.text(), "3. One\n• Child\n• Two\n8. Restart\nTail");
+    assert_eq!(document.text(), "One\nChild\nTwo\nRestart\nTail");
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source.as_bytes());
 }
@@ -98,11 +110,9 @@ fn enter_continues_imported_decimal_list_as_one_undo_unit() {
     commands
         .handle(&mut document, InputEvent::Key(Key::Escape))
         .unwrap();
-    assert_eq!(
-        document.text(),
-        "3. One\n4. Next\n• Child\n5. Two\n8. Restart\nTail"
-    );
+    assert_eq!(document.text(), "One\nNext\nChild\nTwo\nRestart\nTail");
     assert!(String::from_utf8_lossy(&document.source_bytes()).contains(r"\par\ls0 {\*\pn"));
+    assert_eq!(numbering(&document), vec![3, 4, 1, 5, 8]);
     commands
         .handle(&mut document, InputEvent::key('u'))
         .unwrap();
@@ -170,7 +180,8 @@ fn level_overrides_and_nested_restarts_follow_the_word_numbering_stream() {
         r"\pard\ls1\ilvl0 D\par\pard\ls1\ilvl1 E\par\pard\ls2\ilvl0 F}"
     );
     let document = open(source);
-    assert_eq!(document.text(), "1. A\n5. B\n6. C\n2. D\n5. E\n• F");
+    assert_eq!(document.text(), "A\nB\nC\nD\nE\nF");
+    assert_eq!(numbering(&document), vec![1, 5, 6, 2, 5, 1]);
     assert_eq!(document.source_bytes(), source.as_bytes());
 }
 
@@ -201,12 +212,10 @@ fn nested_rtf_document_in_opaque_destination_cannot_supply_body_list_tables() {
 fn modern_empty_and_control_only_paragraphs_retain_list_properties() {
     let fixture = source();
     let header = &fixture[..fixture.find(r"\pard").unwrap()];
-    for (body, text) in [
-        (r"\pard\ls1\ilvl0\u233?}", "3. é"),
-        (r"\pard\ls1\ilvl0}", "3. "),
-    ] {
+    for (body, text) in [(r"\pard\ls1\ilvl0\u233?}", "é"), (r"\pard\ls1\ilvl0}", "")] {
         let document = open(&format!("{header}{body}"));
         assert_eq!(document.text(), text, "{body}");
+        assert_eq!(numbering(&document), vec![3]);
         assert_eq!(
             document.projection().blocks()[0]
                 .direct_paragraph
@@ -244,9 +253,9 @@ fn whole_item_delete_preserves_surviving_word_list_labels_and_tables() {
         assert_eq!(
             document.text(),
             match count {
-                1 => "• Child\n4. Two\n8. Restart\nTail",
-                2 => "4. Two\n8. Restart\nTail",
-                _ => "8. Restart\nTail",
+                1 => "Child\nTwo\nRestart\nTail",
+                2 => "Two\nRestart\nTail",
+                _ => "Restart\nTail",
             }
         );
         let saved = String::from_utf8(document.source_bytes()).unwrap();
@@ -291,10 +300,7 @@ fn inserted_item_restores_inherited_modern_selector_for_following_nested_items()
     ] {
         commands.handle(&mut document, event).unwrap();
     }
-    assert_eq!(
-        document.text(),
-        "3. One\n4. Next\n• Child\n5. Two\n8. Restart\nTail"
-    );
+    assert_eq!(document.text(), "One\nNext\nChild\nTwo\nRestart\nTail");
     assert!(document.undo());
     assert_eq!(document.source_bytes(), original.as_bytes());
 }

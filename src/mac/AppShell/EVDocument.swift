@@ -86,9 +86,45 @@ public final class EVDocument: NSDocument {
     var recoveryIdleDelay: TimeInterval = 4
     var recoveryDecisionHandler: (([EVRecoveryCandidate]) -> EVRecoveryOpenDecision)?
     var readOnlySaveDecisionHandler: (() -> Bool)?
+    var closeReviewDecisionHandler: ((@escaping (Bool) -> Void) -> Void)?
 
     public override var windowForSheet: NSWindow? {
         super.windowForSheet ?? EVDocumentWindowController.windowShowing(document: self)
+    }
+
+    public override func canClose(withDelegate delegate: Any, shouldClose: Selector?, contextInfo: UnsafeMutableRawPointer?) {
+        guard let closeReviewDecisionHandler else {
+            super.canClose(withDelegate: delegate, shouldClose: shouldClose, contextInfo: contextInfo)
+            return
+        }
+        closeReviewDecisionHandler { [self] approved in
+            replyToCloseReview(delegate: delegate, selector: shouldClose, approved: approved, contextInfo: contextInfo)
+        }
+    }
+
+    private func replyToCloseReview(delegate: Any?, selector: Selector?, approved: Bool, contextInfo: UnsafeMutableRawPointer?) {
+        guard let recipient = delegate as? NSObject, let selector,
+              recipient.responds(to: selector) else { return }
+        typealias Reply = @convention(c) (AnyObject, Selector, NSDocument, Bool, UnsafeMutableRawPointer?) -> Void
+        let reply = unsafeBitCast(recipient.method(for: selector), to: Reply.self)
+        reply(recipient, selector, self, approved, contextInfo)
+    }
+
+    public override func shouldCloseWindowController(
+        _ windowController: NSWindowController, delegate: Any?, shouldClose: Selector?,
+        contextInfo: UnsafeMutableRawPointer?
+    ) {
+        guard let controller = windowController as? EVDocumentWindowController else {
+            super.shouldCloseWindowController(windowController, delegate: delegate,
+                shouldClose: shouldClose, contextInfo: contextInfo)
+            return
+        }
+        // NSWindow calls this before windowShouldClose. Use the same pane-aware
+        // review here, rather than reviewing the primary document a second time
+        // after AppKit has already accepted its Save or Delete decision.
+        controller.reviewDocumentsForClose { [self] approved in
+            replyToCloseReview(delegate: delegate, selector: shouldClose, approved: approved, contextInfo: contextInfo)
+        }
     }
 
     public override func close() {

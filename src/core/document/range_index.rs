@@ -20,6 +20,8 @@ use std::sync::{Arc, OnceLock};
 pub(super) const RANGE_INDEX_LEAF_ITEMS: usize = 64;
 
 pub(super) trait RangedItem {
+    fn owned_heap_bytes(&self) -> usize { 0 }
+
     fn range(&self) -> &Range<usize>;
 
     fn with_range(&self, range: Range<usize>) -> Self;
@@ -44,6 +46,10 @@ pub(super) struct OrderedRangeStore<T> {
 }
 
 impl<T: Clone + RangedItem> OrderedRangeStore<T> {
+    pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+        self.inner.visit_retained_memory(visitor);
+    }
+
     pub(super) fn new(items: Vec<T>) -> Self {
         Self {
             inner: PersistentRangeStore::new(items),
@@ -201,6 +207,10 @@ pub(super) struct IntervalRangeStore<T> {
 }
 
 impl<T: Clone + RangedItem> IntervalRangeStore<T> {
+    pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+        self.inner.visit_retained_memory(visitor);
+    }
+
     pub(super) fn new(mut items: Vec<T>) -> Self {
         // Canonical ordering makes query output deterministic. Stable sorting
         // retains the declared cascade order for spans with the same start.
@@ -216,6 +226,10 @@ impl<T: Clone + RangedItem> IntervalRangeStore<T> {
 
     pub(super) fn len(&self) -> usize {
         self.inner.item_count
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.inner.item_count == 0
     }
 
     /// Reports spans with a non-empty intersection with `query`.
@@ -372,6 +386,25 @@ pub(super) struct RangeSpliceStats {
 }
 
 impl<T: Clone + RangedItem> PersistentRangeStore<T> {
+    fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+        fn visit<T: RangedItem>(node: &Arc<RangeNode<T>>, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+            visitor.arc(node, |visitor| match &node.kind {
+                RangeNodeKind::Leaf(items) => visitor.vector(items, items.iter().map(RangedItem::owned_heap_bytes).sum()),
+                RangeNodeKind::Branch { left, right, .. } => {
+                    visit(left, visitor);
+                    visit(right, visitor);
+                }
+            });
+        }
+        if let Some(root) = &self.root { visit(root, visitor); }
+        // The compatibility cache may be populated after a snapshot was first
+        // retained. It is a separate root, so refreshing history can discover
+        // it without revisiting the immutable range tree.
+        if let Some(flat) = self.compatibility_flat.get() {
+            visitor.arc(flat, |visitor| visitor.vector(flat, flat.iter().map(RangedItem::owned_heap_bytes).sum()));
+        }
+    }
+
     fn new(items: Vec<T>) -> Self {
         let item_count = items.len();
         let leaves = items
@@ -396,6 +429,10 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
         self.compatibility_flat
             .get_or_init(|| Arc::new(self.to_vec()))
             .as_slice()
+    }
+
+    fn clear_compatibility_cache(&mut self) {
+        self.compatibility_flat = OnceLock::new();
     }
 
     fn to_vec(&self) -> Vec<T> {
@@ -978,17 +1015,123 @@ fn join_positioned<T: Clone + RangedItem>(
     right: PositionedNode<T>,
     stats: &mut RangeSpliceStats,
 ) -> Option<PositionedNode<T>> {
+    let boundary_items = rightmost_leaf_item_count(&left.node)
+        .checked_add(leftmost_leaf_item_count(&right.node))?;
+    if boundary_items <= RANGE_INDEX_LEAF_ITEMS {
+        let (left_prefix, left_leaf) = take_last_leaf(left, stats)?;
+        let (right_leaf, right_suffix) = take_first_leaf(right, stats)?;
+        let merged = merge_positioned_leaves(&left_leaf, &right_leaf, stats)?;
+        let prefix_and_merged = join_optional_positioned(left_prefix, Some(merged), stats)?;
+        return join_optional_positioned(prefix_and_merged, right_suffix, stats)?;
+    }
+    join_positioned_balanced(left, right, stats)
+}
+
+fn join_positioned_balanced<T: Clone + RangedItem>(
+    left: PositionedNode<T>,
+    right: PositionedNode<T>,
+    stats: &mut RangeSpliceStats,
+) -> Option<PositionedNode<T>> {
     if left.node.height > right.node.height.saturating_add(1) {
         let (left_left, left_right) = positioned_children(&left)?;
-        let joined = join_positioned(left_right, right, stats)?;
+        let joined = join_positioned_balanced(left_right, right, stats)?;
         rebalance_positioned(left_left, joined, stats)
     } else if right.node.height > left.node.height.saturating_add(1) {
         let (right_left, right_right) = positioned_children(&right)?;
-        let joined = join_positioned(left, right_left, stats)?;
+        let joined = join_positioned_balanced(left, right_left, stats)?;
         rebalance_positioned(joined, right_right, stats)
     } else {
         Some(copied_branch(left, right, stats))
     }
+}
+
+fn rightmost_leaf_item_count<T>(node: &RangeNode<T>) -> usize {
+    match &node.kind {
+        RangeNodeKind::Leaf(items) => items.len(),
+        RangeNodeKind::Branch { right, .. } => rightmost_leaf_item_count(right),
+    }
+}
+
+fn leftmost_leaf_item_count<T>(node: &RangeNode<T>) -> usize {
+    match &node.kind {
+        RangeNodeKind::Leaf(items) => items.len(),
+        RangeNodeKind::Branch { left, .. } => leftmost_leaf_item_count(left),
+    }
+}
+
+fn take_last_leaf<T: Clone + RangedItem>(
+    positioned: PositionedNode<T>,
+    stats: &mut RangeSpliceStats,
+) -> Option<(Option<PositionedNode<T>>, PositionedNode<T>)> {
+    if matches!(&positioned.node.kind, RangeNodeKind::Leaf(_)) {
+        return Some((None, positioned));
+    }
+    let (left, right) = positioned_children(&positioned)?;
+    let (right_prefix, leaf) = take_last_leaf(right, stats)?;
+    let prefix = join_optional_positioned_balanced(Some(left), right_prefix, stats)?;
+    Some((prefix, leaf))
+}
+
+fn take_first_leaf<T: Clone + RangedItem>(
+    positioned: PositionedNode<T>,
+    stats: &mut RangeSpliceStats,
+) -> Option<(PositionedNode<T>, Option<PositionedNode<T>>)> {
+    if matches!(&positioned.node.kind, RangeNodeKind::Leaf(_)) {
+        return Some((positioned, None));
+    }
+    let (left, right) = positioned_children(&positioned)?;
+    let (leaf, left_suffix) = take_first_leaf(left, stats)?;
+    let suffix = join_optional_positioned_balanced(left_suffix, Some(right), stats)?;
+    Some((leaf, suffix))
+}
+
+fn join_optional_positioned_balanced<T: Clone + RangedItem>(
+    left: Option<PositionedNode<T>>,
+    right: Option<PositionedNode<T>>,
+    stats: &mut RangeSpliceStats,
+) -> Option<Option<PositionedNode<T>>> {
+    match (left, right) {
+        (None, None) => Some(None),
+        (Some(node), None) | (None, Some(node)) => Some(Some(node)),
+        (Some(left), Some(right)) => join_positioned_balanced(left, right, stats).map(Some),
+    }
+}
+
+fn merge_positioned_leaves<T: Clone + RangedItem>(
+    left: &PositionedNode<T>,
+    right: &PositionedNode<T>,
+    stats: &mut RangeSpliceStats,
+) -> Option<PositionedNode<T>> {
+    let item_count = left.node.item_count.checked_add(right.node.item_count)?;
+    if item_count > RANGE_INDEX_LEAF_ITEMS {
+        return None;
+    }
+    let mut items = positioned_leaf_items(left)?;
+    items.extend(positioned_leaf_items(right)?);
+    stats.items_copied = stats.items_copied.saturating_add(item_count);
+    stats.leaves_copied = stats.leaves_copied.saturating_add(1);
+    stats.nodes_copied = stats.nodes_copied.saturating_add(1);
+    Some(RangeNode::leaf(items))
+}
+
+fn positioned_leaf_items<T: Clone + RangedItem>(
+    positioned: &PositionedNode<T>,
+) -> Option<Vec<T>> {
+    let RangeNodeKind::Leaf(items) = &positioned.node.kind else {
+        return None;
+    };
+    items
+        .iter()
+        .map(|item| {
+            let range = item.range();
+            item.with_transform(
+                positioned.origin.checked_add(range.start)?
+                    ..positioned.origin.checked_add(range.end)?,
+                positioned.auxiliary_shift,
+                positioned.revision,
+            )
+        })
+        .collect()
 }
 
 fn rebalance_positioned<T: Clone + RangedItem>(
@@ -1802,13 +1945,38 @@ mod tests {
         );
         assert!(stats.nodes_visited <= 48, "{stats:?}");
         assert!(
-            stats.items_copied <= RANGE_INDEX_LEAF_ITEMS * 3,
+            stats.items_copied <= RANGE_INDEX_LEAF_ITEMS * 4,
             "{stats:?}"
         );
         assert!(
             changed.shared_leaf_count_with(&original) + 3 >= original.leaf_count(),
             "{stats:?}"
         );
+    }
+
+    #[test]
+    fn repeated_fixed_size_splices_do_not_fragment_leaves() {
+        let mut store = OrderedRangeStore::new(
+            (0..512)
+                .map(|index| Item(index * 2..index * 2 + 1, index))
+                .collect(),
+        );
+        let initial_leaves = store.leaf_count();
+        for step in 0..2_000 {
+            let index = step * 197 % store.len();
+            let mut stats = RangeSpliceStats::default();
+            store = store
+                .splice(
+                    index..index + 1,
+                    vec![Item(index * 2..index * 2 + 1, 10_000 + step)],
+                    index * 2 + 1,
+                    index * 2 + 1,
+                    &mut stats,
+                )
+                .unwrap();
+            assert!(store.invariant_holds());
+        }
+        assert_eq!(store.leaf_count(), initial_leaves);
     }
 
     #[test]

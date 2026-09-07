@@ -58,6 +58,17 @@ impl LongLineCheckpointCache {
             .next_back()
             .map(|(_, entry)| entry.checkpoint.clone())
     }
+    pub(crate) fn before_height(
+        &self,
+        range: Range<usize>,
+        height: f32,
+    ) -> Option<LongLineLayoutCheckpoint> {
+        self.entries
+            .range(range)
+            .rev()
+            .find(|(_, entry)| entry.checkpoint.completed_height() <= height)
+            .map(|(_, entry)| entry.checkpoint.clone())
+    }
     pub(crate) fn insert(&mut self, document: &Document, checkpoint: LongLineLayoutCheckpoint) {
         const MAX_CHECKPOINTS: usize = 256;
         let dependency = capture_dependency(document, &checkpoint);

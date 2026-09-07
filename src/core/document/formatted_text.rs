@@ -217,6 +217,21 @@ pub struct FormattedTextTree {
     root: Option<Arc<Node>>,
 }
 
+impl FormattedTextTree {
+    pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+        fn visit(node: &Arc<Node>, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+            visitor.arc(node, |visitor| match node.as_ref() {
+                Node::Leaf(leaf) => visitor.arc(&leaf.buffer, |_| {}),
+                Node::Branch(branch) => {
+                    visit(&branch.left, visitor);
+                    visit(&branch.right, visitor);
+                }
+            });
+        }
+        if let Some(root) = &self.root { visit(root, visitor); }
+    }
+}
+
 /// Snapshot-local logical grapheme navigation used by position maps.
 ///
 /// A bare [`FormattedTextTree`] implements Unicode extended-grapheme
@@ -247,6 +262,8 @@ pub(crate) struct FormattedTextSpliceStats {
     pub(crate) nodes_copied: usize,
     pub(crate) leaves_copied: usize,
     pub(crate) inserted_bytes: usize,
+    /// Original UTF-8 bytes scanned to recalculate split-leaf aggregates.
+    pub(crate) original_bytes_recounted: usize,
 }
 
 /// Test-only witness for bounded regional reads. Production queries use the
@@ -416,11 +433,10 @@ impl FormattedTextTree {
     }
 
     /// Apply a batch whose ranges are expressed in `self` and have already
-    /// been semantically validated as grapheme boundaries. Structural splices
-    /// run from right to left so their old-snapshot coordinates remain valid.
-    /// Intermediate states need only retain UTF-8 scalar boundaries: an edit
-    /// to the right may legitimately join a grapheme across the next edit's
-    /// old boundary.
+    /// been semantically validated as grapheme boundaries. The batch traverses
+    /// the original snapshot once, retaining unaffected subtrees. Boundaries
+    /// need not remain grapheme boundaries in the result: a replacement may
+    /// legitimately join a grapheme across another edit's old boundary.
     #[cfg(test)]
     pub(crate) fn splice_batch_with_stats(
         &self,
@@ -472,12 +488,28 @@ impl FormattedTextTree {
                 });
             }
         }
-        let mut result = self.clone();
-        let mut stats = FormattedTextSpliceStats::default();
-        for (range, replacement) in edits.iter().rev() {
-            result = result.splice_char_aligned(range.clone(), replacement, &mut stats)?;
+        let mut batch = BatchSplice {
+            edits,
+            next: 0,
+            deleted_until: 0,
+            stats: FormattedTextSpliceStats::default(),
+        };
+        batch.skip_noops();
+        if batch.next == edits.len() {
+            return Ok((self.clone(), batch.stats));
         }
-        Ok((result, stats))
+        let mut root = match &self.root {
+            Some(root) => batch.visit(root, 0)?,
+            None => None,
+        };
+        // An insertion at EOF belongs after the final subtree, including the
+        // sole boundary of an empty tree.
+        while batch.next < edits.len() {
+            debug_assert_eq!(edits[batch.next].0, self.byte_len()..self.byte_len());
+            let inserted = batch.take_replacement()?;
+            root = join_optional(root, inserted, &mut batch.stats)?;
+        }
+        Ok((Self { root }, batch.stats))
     }
 
     fn splice_char_aligned(
@@ -872,6 +904,158 @@ fn next_buffer_id() -> Result<FormattedBufferId, FormattedTextError> {
         .map_err(|_| FormattedTextError::LeafIdentityExhausted)
 }
 
+/// Consume sorted old-snapshot edits while descending only affected paths.
+/// Each original leaf is split into all of its surviving slices together, so
+/// dense delimiter edits never repeatedly recount the same remaining suffix.
+struct BatchSplice<'a> {
+    edits: &'a [(Range<usize>, &'a str)],
+    next: usize,
+    deleted_until: usize,
+    stats: FormattedTextSpliceStats,
+}
+
+impl BatchSplice<'_> {
+    fn skip_noops(&mut self) {
+        while self.next < self.edits.len()
+            && self.edits[self.next].0.is_empty()
+            && self.edits[self.next].1.is_empty()
+        {
+            self.next += 1;
+        }
+    }
+
+    fn take_replacement(&mut self) -> Result<Option<Arc<Node>>, FormattedTextError> {
+        let (range, replacement) = &self.edits[self.next];
+        let inserted = FormattedTextTree::try_from_text(*replacement)?.root;
+        let leaves = aggregate(inserted.as_ref()).leaves;
+        self.stats.inserted_bytes = self.stats.inserted_bytes.saturating_add(replacement.len());
+        self.stats.leaves_copied = self.stats.leaves_copied.saturating_add(leaves);
+        self.stats.nodes_copied = self
+            .stats
+            .nodes_copied
+            .saturating_add(leaves.saturating_mul(2).saturating_sub(1));
+        self.deleted_until = range.end;
+        self.next += 1;
+        self.skip_noops();
+        Ok(inserted)
+    }
+
+    fn visit(
+        &mut self,
+        node: &Arc<Node>,
+        start: usize,
+    ) -> Result<Option<Arc<Node>>, FormattedTextError> {
+        self.stats.nodes_visited = self.stats.nodes_visited.saturating_add(1);
+        let end = start + node.aggregate().bytes;
+        if self.deleted_until >= end {
+            return Ok(None);
+        }
+        if self.deleted_until <= start
+            && self
+                .edits
+                .get(self.next)
+                .map_or(true, |(range, _)| range.start >= end)
+        {
+            return Ok(Some(node.clone()));
+        }
+        match node.as_ref() {
+            Node::Branch(branch) => {
+                let left = self.visit(&branch.left, start)?;
+                let right = self.visit(&branch.right, start + branch.left.aggregate().bytes)?;
+                join_optional(left, right, &mut self.stats)
+            }
+            Node::Leaf(leaf) => {
+                let mut parts = Vec::new();
+                let mut at = start.max(self.deleted_until);
+                let mut retained_identity = false;
+                while let Some((range, _)) = self.edits.get(self.next) {
+                    if range.start >= end {
+                        break;
+                    }
+                    if at < range.start {
+                        parts.push(self.original_slice(
+                            node,
+                            leaf,
+                            at - start..range.start - start,
+                            &mut retained_identity,
+                        )?);
+                    }
+                    if let Some(inserted) = self.take_replacement()? {
+                        parts.push(inserted);
+                    }
+                    at = self.deleted_until;
+                }
+                if at < end {
+                    parts.push(self.original_slice(
+                        node,
+                        leaf,
+                        at - start..leaf.byte_len(),
+                        &mut retained_identity,
+                    )?);
+                }
+                join_batch_parts(&parts, &mut self.stats)
+            }
+        }
+    }
+
+    fn original_slice(
+        &mut self,
+        node: &Arc<Node>,
+        leaf: &Leaf,
+        local: Range<usize>,
+        retained_identity: &mut bool,
+    ) -> Result<Arc<Node>, FormattedTextError> {
+        if local == (0..leaf.byte_len()) {
+            return Ok(node.clone());
+        }
+        let (id, revision) = if *retained_identity {
+            (next_leaf_id()?, FormattedLeafRevision(0))
+        } else {
+            *retained_identity = true;
+            (
+                leaf.id,
+                FormattedLeafRevision(
+                    leaf.revision
+                        .0
+                        .checked_add(1)
+                        .ok_or(FormattedTextError::ArithmeticOverflow)?,
+                ),
+            )
+        };
+        self.stats.original_bytes_recounted = self
+            .stats
+            .original_bytes_recounted
+            .saturating_add(local.len());
+        self.stats.leaves_copied = self.stats.leaves_copied.saturating_add(1);
+        self.stats.nodes_copied = self.stats.nodes_copied.saturating_add(1);
+        new_leaf_with_identity(
+            id,
+            revision,
+            leaf.buffer_id,
+            leaf.buffer.clone(),
+            leaf.range.start + local.start..leaf.range.start + local.end,
+        )
+    }
+}
+
+/// Parts may include arbitrarily tall replacement subtrees. AVL joins retain
+/// those subtrees while balancing them with short surviving original slices.
+fn join_batch_parts(
+    nodes: &[Arc<Node>],
+    stats: &mut FormattedTextSpliceStats,
+) -> Result<Option<Arc<Node>>, FormattedTextError> {
+    match nodes.len() {
+        0 => Ok(None),
+        1 => Ok(Some(nodes[0].clone())),
+        length => {
+            let middle = length / 2;
+            let left = join_batch_parts(&nodes[..middle], stats)?;
+            let right = join_batch_parts(&nodes[middle..], stats)?;
+            join_optional(left, right, stats)
+        }
+    }
+}
+
 fn new_leaf(
     buffer_id: FormattedBufferId,
     buffer: Arc<str>,
@@ -1134,6 +1318,9 @@ fn split_leaf(
     retain: Retain,
     stats: &mut FormattedTextSpliceStats,
 ) -> NodeSplit {
+    stats.original_bytes_recounted = stats
+        .original_bytes_recounted
+        .saturating_add(leaf.byte_len());
     if !leaf.text().is_char_boundary(at) {
         return Err(FormattedTextError::NotCharBoundary(at));
     }
@@ -1824,6 +2011,185 @@ mod tests {
         assert_eq!(tree.slice(999_998..1_000_004).unwrap(), "ééé");
         assert_eq!(changed.slice(999_998..1_000_003).unwrap(), "éZé");
         assert_invariants(&changed);
+    }
+
+    #[test]
+    fn dense_batch_recounts_each_original_slice_only_once() {
+        let text = "**é👩‍💻** and _words_\n".repeat(8_000);
+        let tree = FormattedTextTree::try_from_text(text.as_str()).unwrap();
+        let edits = text
+            .match_indices(['*', '_'])
+            .map(|(at, _)| (at..at + 1, ""))
+            .collect::<Vec<_>>();
+        let (changed, stats) = tree.splice_prevalidated_batch_with_stats(&edits).unwrap();
+        let expected = text.replace(['*', '_'], "");
+        assert_eq!(changed.flatten(), expected);
+        assert_eq!(tree.flatten(), text);
+        assert_eq!(changed.utf16_len(), expected.encode_utf16().count());
+        assert_eq!(changed.hard_line_count(), 8_001);
+        assert!(stats.original_bytes_recounted <= text.len(), "{stats:?}");
+        assert!(stats.nodes_visited < edits.len() * 3, "{stats:?}");
+        assert_invariants(&changed);
+    }
+
+    #[test]
+    fn batch_keeps_unaffected_leaves_and_original_backing_boundaries() {
+        let text = "x\n".repeat(1_000_000);
+        let tree = FormattedTextTree::try_from_text(text.as_str()).unwrap();
+        let before = tree.leaves();
+        let target = &before[before.len() / 2];
+        let edits = (target.byte_range.start + 2..target.byte_range.end - 2)
+            .step_by(4)
+            .map(|at| (at..at + 1, "é"))
+            .collect::<Vec<_>>();
+        let boundary = target.byte_range.end - 1;
+        let captured = tree
+            .locate_byte(boundary, LeafBoundarySide::Following)
+            .unwrap()
+            .unwrap();
+        let (changed, stats) = tree.splice_batch_with_stats(&edits).unwrap();
+        let after = changed.leaves();
+        for leaf in before.iter().filter(|leaf| leaf.id != target.id) {
+            assert!(after
+                .iter()
+                .any(|other| other.id == leaf.id && other.revision == leaf.revision));
+        }
+        assert_eq!(
+            changed.resolve_stable_boundary(
+                captured.id,
+                captured.revision,
+                captured.buffer_id,
+                captured.buffer_byte,
+                LeafBoundarySide::Following
+            ),
+            Some(boundary + edits.len()),
+        );
+        assert!(
+            stats.original_bytes_recounted <= FORMATTED_TEXT_LEAF_BYTES,
+            "{stats:?}"
+        );
+        assert!(
+            stats.nodes_visited < edits.len() * 5 + tree.height() as usize * 4,
+            "{stats:?}"
+        );
+        let mut expected = text;
+        for (range, replacement) in edits.iter().rev() {
+            expected.replace_range(range.clone(), replacement);
+        }
+        assert_eq!(changed.flatten(), expected);
+        assert_invariants(&changed);
+    }
+
+    #[test]
+    fn batch_matches_old_snapshot_splices_across_leaf_and_edit_boundaries() {
+        let text = "aé👩‍💻\n".repeat(2_000);
+        let boundaries = text
+            .char_indices()
+            .map(|(at, _)| at)
+            .chain(std::iter::once(text.len()))
+            .collect::<Vec<_>>();
+        let original = FormattedTextTree::try_from_text(text.as_str()).unwrap();
+        let large = "large é\n".repeat(2_000);
+        let replacements = ["", "X", "é\n", "\u{301}", large.as_str()];
+        let mut seed = 17_u64;
+        for case in 0..48 {
+            let mut edits = Vec::new();
+            let mut at = 0;
+            while at + 1 < boundaries.len() {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                at = (at + (seed as usize % 401)).min(boundaries.len() - 1);
+                let end = (at + ((seed >> 32) as usize % 601)).min(boundaries.len() - 1);
+                edits.push((
+                    boundaries[at]..boundaries[end],
+                    replacements[(case + edits.len()) % replacements.len()],
+                ));
+                at = end + 1;
+            }
+            if edits
+                .last()
+                .is_some_and(|(range, _)| range.start == text.len())
+            {
+                edits.pop();
+            }
+            edits.push((text.len()..text.len(), "END"));
+            let (changed, stats) = original
+                .splice_prevalidated_batch_with_stats(&edits)
+                .unwrap();
+            let mut expected = text.clone();
+            for (range, replacement) in edits.iter().rev() {
+                expected.replace_range(range.clone(), replacement);
+            }
+            assert_eq!(changed.flatten(), expected, "case {case}");
+            assert_eq!(changed.utf16_len(), expected.encode_utf16().count());
+            assert!(
+                stats.original_bytes_recounted <= text.len(),
+                "case {case}: {stats:?}"
+            );
+            assert_invariants(&changed);
+        }
+        // Adjacent insertion/replacement endpoints preserve their declared order.
+        let tree = FormattedTextTree::try_from_text("abcd").unwrap();
+        let edits = [
+            (0..0, "<"),
+            (0..2, "A"),
+            (2..2, "|"),
+            (2..4, "B"),
+            (4..4, ">"),
+        ];
+        assert_eq!(
+            tree.splice_prevalidated_batch(&edits).unwrap().flatten(),
+            "<A|B>"
+        );
+        assert_eq!(
+            FormattedTextTree::default()
+                .splice_prevalidated_batch(&[(0..0, "é")])
+                .unwrap()
+                .flatten(),
+            "é"
+        );
+        let (unchanged, stats) = tree
+            .splice_prevalidated_batch_with_stats(&[(2..2, "")])
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            tree.root.as_ref().unwrap(),
+            unchanged.root.as_ref().unwrap()
+        ));
+        assert_eq!(stats, FormattedTextSpliceStats::default());
+    }
+
+    #[test]
+    fn batch_validates_original_boundaries_before_forming_new_graphemes() {
+        let tree = FormattedTextTree::try_from_text("a b").unwrap();
+        let (joined, _) = tree
+            .splice_batch_with_stats(&[(1..2, ""), (2..3, "\u{301}")])
+            .unwrap();
+        assert_eq!(joined.flatten(), "a\u{301}");
+        assert!(!joined.is_grapheme_boundary(1).unwrap());
+        assert_eq!(tree.flatten(), "a b");
+        assert!(matches!(
+            tree.splice_prevalidated_batch(&[(0..2, ""), (1..3, "")]),
+            Err(FormattedTextError::OverlappingSplices { .. }),
+        ));
+        assert!(matches!(
+            tree.splice_prevalidated_batch(&[(1..1, "a"), (1..1, "b")]),
+            Err(FormattedTextError::OverlappingSplices { .. }),
+        ));
+        let crlf = FormattedTextTree::try_from_text("\r\né").unwrap();
+        assert_eq!(
+            crlf.splice_batch_with_stats(&[(1..2, "")]),
+            Err(FormattedTextError::NotGraphemeBoundary(1)),
+        );
+        assert_eq!(
+            crlf.splice_prevalidated_batch(&[(1..2, "")])
+                .unwrap()
+                .flatten(),
+            "\ré",
+        );
+        assert_eq!(
+            crlf.splice_prevalidated_batch(&[(0..1, ""), (3..4, "x")]),
+            Err(FormattedTextError::NotCharBoundary(3)),
+        );
+        assert_eq!(crlf.flatten(), "\r\né");
     }
 
     #[test]

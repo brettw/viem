@@ -506,7 +506,7 @@ fn active_source_elements(tokens: &[html::Token]) -> Vec<&html::Token> {
 }
 
 pub(super) fn read_with_semantics(text: &str, semantic_tokens: &[html::Token]) -> OwnedSheet {
-    let mut sheet = StyleSheet::default();
+    let mut sheet = StyleSheet::for_format(super::Format::Html);
     sheet.mark_html_base_styles_source_backed();
     let tokens = html::tokenize(text);
     let eligible = active_source_elements(semantic_tokens)
@@ -557,7 +557,7 @@ pub(super) fn read_with_semantics(text: &str, semantic_tokens: &[html::Token]) -
         rules.clear();
         return OwnedSheet {
             sheet: {
-                let mut s = StyleSheet::default();
+                let mut s = StyleSheet::for_format(super::Format::Html);
                 s.mark_html_base_styles_source_backed();
                 s
             },
@@ -580,11 +580,11 @@ pub(super) fn read_with_semantics(text: &str, semantic_tokens: &[html::Token]) -
         .iter()
         .map(|rule| rule.definition.clone())
         .collect::<Vec<_>>();
-    let mut exact = StyleSheet::default();
+    let mut exact = StyleSheet::for_format(super::Format::Html);
     exact.mark_html_base_styles_source_backed();
     if exact.install_source_definitions(&definitions).is_err() {
         rules.clear();
-        sheet = StyleSheet::default();
+        sheet = StyleSheet::for_format(super::Format::Html);
         sheet.mark_html_base_styles_source_backed();
     } else {
         sheet = exact;

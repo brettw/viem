@@ -120,6 +120,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private(set) weak var surface: EVEditorSurfaceController?
     private let insertionIndicator = NSTextInsertionIndicator(frame: .zero)
     private let commandLineInsertionIndicator = NSTextInsertionIndicator(frame: .zero)
+    let documentScrollbars = EVDocumentScrollbars()
     private var markedTextValue = ""
     private var markedSelection = NSRange(location: NSNotFound, length: 0)
     private var markedTextTarget: EVMarkedTextTarget?
@@ -161,6 +162,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.masksToBounds = true
+        registerForDraggedTypes([.fileURL])
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
         setAccessibilityLabel("eVim editor")
@@ -174,6 +176,16 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         commandLineInsertionIndicator.isHidden = true
         commandLineInsertionIndicator.automaticModeOptions = [.showEffectsView, .showWhileTracking]
         addSubview(commandLineInsertionIndicator, positioned: .above, relativeTo: nil)
+        documentScrollbars.autoresizingMask = [.width, .height]
+        documentScrollbars.onScroll = { [weak self] axis, fraction in
+            self?.scrollDocument(axis: axis, fraction: fraction)
+        }
+        documentScrollbars.onGeometryChange = { [weak self] in
+            guard let self else { return }
+            self.needsLayout = true
+            self.surface?.viewDidLayout()
+        }
+        addSubview(documentScrollbars, positioned: .above, relativeTo: nil)
         caretAppearanceObserver = NotificationCenter.default.addObserver(
             forName: .evimCaretAppearanceDidChange,
             object: EVCaretAppearanceResolver.shared,
@@ -207,6 +219,18 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override var isFlipped: Bool { true }
+
+    var layoutViewportSize: CGSize {
+        let size = Self.layoutViewportSize(for: bounds.size)
+        let chrome = documentScrollbars.contentInsets
+        return CGSize(width: max(1, size.width - chrome.left - chrome.right),
+                      height: max(1, size.height - chrome.top - chrome.bottom))
+    }
+
+    override func layout() {
+        super.layout()
+        layoutDocumentScrollbars()
+    }
     override var acceptsFirstResponder: Bool { true }
     override var isOpaque: Bool {
         guard let surface,
@@ -260,13 +284,17 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         if let snapshot,
            let context = NSGraphicsContext.current?.cgContext
         {
+            context.saveGState()
+            context.clip(to: textViewportRect)
             let clusters = drawingClusters(in: dirtyRect, snapshot: snapshot)
             if let paint { drawPaintBackgrounds(clusters, paint: paint) }
             drawSelection(snapshot, in: context)
             drawText(snapshot, clusters: clusters, paint: paint, in: context)
+            drawListMarkers(snapshot, dirtyRect: dirtyRect, in: context)
             if let paint { drawTextDecorations(snapshot, clusters: clusters, paint: paint) }
             drawMarkedText(snapshot, clusters: clusters, in: context)
             drawCustomCaret(snapshot, in: context)
+            context.restoreGState()
         }
         drawCommandLineBand()
     }
@@ -299,6 +327,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         } else { commandOutputBar.isHidden = true }
         synchronizeEditingPreferences()
         reconcileMarkedTextWithCore()
+        updateDocumentScrollbars()
         updateCustomCaretPresentation()
         needsDisplay = true
         updateInsertionIndicator()
@@ -1101,9 +1130,73 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         NSRect(
             x: Self.canvasInsets.left,
             y: Self.canvasInsets.top,
-            width: max(0, bounds.width - Self.canvasInsets.left - Self.canvasInsets.right),
-            height: max(0, bounds.height - Self.canvasInsets.top - Self.canvasInsets.bottom)
+            width: layoutViewportSize.width,
+            height: layoutViewportSize.height
         )
+    }
+
+    private func layoutDocumentScrollbars() {
+        let bottom = commandOutputBar.isHidden
+            ? (commandLineRenderState()?.bandRect.minY ?? bounds.maxY)
+            : commandOutputBar.frame.minY
+        documentScrollbars.frame = NSRect(x: bounds.minX, y: bounds.minY,
+            width: bounds.width, height: max(0, bottom - bounds.minY))
+        documentScrollbars.needsLayout = true
+    }
+
+    private func updateDocumentScrollbars() {
+        layoutDocumentScrollbars()
+        guard let surface, let snapshot = surface.layoutSnapshot else { return }
+        let viewport = surface.viewportState
+        let height = max(1, CGFloat(snapshot.info.viewport_height))
+        let width = max(1, CGFloat(snapshot.info.viewport_width))
+        let step = discreteWheelScrollDistance(in: snapshot)
+        let horizontalMaximum = max(0, CGFloat(viewport.maximum_left))
+        if let paint = exactLayoutPaint(for: snapshot),
+           let canvas = nativeCanvas(paint.info).usingColorSpace(.sRGB) {
+            let luminance = 0.2126 * canvas.redComponent + 0.7152 * canvas.greenComponent + 0.0722 * canvas.blueComponent
+            let style: NSScroller.KnobStyle = luminance < 0.5 ? .light : .dark
+            // Legacy scrollers ignore knobStyle. Match their native appearance
+            // to the document canvas, which can differ from the system theme.
+            let appearance: NSAppearance.Name = luminance < 0.5 ? .darkAqua : .aqua
+            if documentScrollbars.appearance?.name != appearance {
+                documentScrollbars.appearance = NSAppearance(named: appearance)
+            }
+            documentScrollbars.verticalScroller.knobStyle = style
+            documentScrollbars.horizontalScroller.knobStyle = style
+        }
+        documentScrollbars.update(
+            vertical: .init(position: CGFloat(viewport.top),
+                maximum: max(0, CGFloat(snapshot.info.total_height) - height),
+                viewportLength: height, lineStep: step),
+            horizontal: .init(position: CGFloat(viewport.left), maximum: horizontalMaximum,
+                viewportLength: width, lineStep: step),
+            horizontalAvailable: horizontalMaximum > 0.5)
+    }
+
+    private func scrollDocument(axis: EVDocumentScrollbars.Axis, fraction: Double) {
+        guard let surface, let snapshot = surface.layoutSnapshot, let session = surface.session else { return }
+        let value = min(max(fraction, 0), 1)
+        beginTextInputGeometryUpdate()
+        defer {
+            inputContext?.invalidateCharacterCoordinates()
+            inputContext?.textInputClientDidScroll()
+            endTextInputGeometryUpdate()
+        }
+        switch axis {
+        case .vertical:
+            let maximum = max(0, CGFloat(snapshot.info.total_height - snapshot.info.viewport_height))
+            // The total height may still be estimated. A thumb at its lower
+            // endpoint requests the actual document end, allowing core to
+            // refine the final rows and clamp against their exact geometry.
+            let top = value == 1 ? CGFloat(Float.greatestFiniteMagnitude) : CGFloat(value) * maximum
+            surface.requestVerticalViewport(top: top)
+        case .horizontal:
+            surface.performInput {
+                _ = try session.setViewportOrigin(left: CGFloat(value) * CGFloat(surface.viewportState.maximum_left),
+                    expected: surface.viewportState)
+            }
+        }
     }
 
     private func isLineBreak(atUTF8Offset offset: Int) -> Bool {
@@ -1132,6 +1225,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         if event.keyCode == 109, event.modifierFlags.contains(.shift) { showEditorContextMenu(event); return }
         if !compositionActive, moveCommandLineSelection(with: event) { return }
         let textModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if textModifiers == [.option], let key = event.charactersIgnoringModifiers,
+           key == "-" || key == "=" {
+            surface.perform(menuCommand: key == "=" ? .zoomIn : .zoomOut, sender: event)
+            return
+        }
         if textModifiers == [.option], event.charactersIgnoringModifiers?.lowercased() == "i",
            !compositionActive,
            [UInt32(EVIM_MODE_INSERT), UInt32(EVIM_MODE_REPLACE)].contains(surface.viewPresentation.mode) {
@@ -1139,8 +1237,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             return
         }
 
-        if compositionActive, event.keyCode == 53 {
-            cancelActiveMarkedText(using: session, discardInputContext: true)
+        if event.keyCode == 53 || isControlEscape(event) {
+            cancelOperation(event)
             return
         }
 
@@ -1174,8 +1272,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     override func doCommand(by selector: Selector) {
         guard let surface else { return }
-        if compositionActive, selector == #selector(cancelOperation(_:)), let session = surface.session {
-            cancelActiveMarkedText(using: session, discardInputContext: true)
+        if selector == #selector(cancelOperation(_:)) {
+            cancelOperation(nil)
             return
         }
         guard let session = surface.session, let kind = keyKind(for: selector) else {
@@ -1184,6 +1282,27 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
         surface.performInput { _ = try session.sendKey(kind: kind) }
         reconcileMarkedTextWithCore()
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        guard let surface, let session = surface.session else { return }
+        if compositionActive {
+            cancelActiveMarkedText(using: session, discardInputContext: true)
+            return
+        }
+        // Press-and-hold can own an accent candidate for a letter that was
+        // already inserted, without giving the client a marked range. End
+        // that native input session even when there is no core overlay.
+        if window?.firstResponder === self {
+            inputContext?.discardMarkedText()
+        }
+        surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+    }
+
+    private func isControlEscape(_ event: NSEvent) -> Bool {
+        event.modifierFlags.contains(.control)
+            && (event.charactersIgnoringModifiers == "["
+                || event.charactersIgnoringModifiers == "\u{1b}")
     }
 
     func insertText(_ string: Any, replacementRange: NSRange) {
@@ -1452,6 +1571,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
         guard let snapshot = surface.layoutSnapshot else { return }
+        documentScrollbars.noteScrollActivity()
         let phases = event.phase.union(event.momentumPhase)
         let discrete = phases.isEmpty
         let deltaScale = event.hasPreciseScrollingDeltas
@@ -1471,17 +1591,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 endTextInputGeometryUpdate()
             }
         }
-        if deltaX != 0,
-           surface.viewportState.flags & UInt32(EVIM_VIEWPORT_STATE_WRAP) == 0,
-           let session = surface.session
+        if deltaX != 0, let session = surface.session
         {
-            let fallbackMaximum = max(
-                0,
-                CGFloat(snapshot.info.content_width - snapshot.info.viewport_width)
-            )
-            let maximum = surface.viewportState.flags & UInt32(EVIM_VIEWPORT_STATE_MAXIMUM_LEFT_EXACT) != 0
-                ? CGFloat(surface.viewportState.maximum_left)
-                : fallbackMaximum
+            let maximum = max(0, CGFloat(surface.viewportState.maximum_left))
             let proposed = min(
                 max(0, CGFloat(surface.viewportState.left) + deltaX),
                 maximum
@@ -1647,6 +1759,39 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         default:
             return
         }
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        fileDropOperation(on: sender.draggingPasteboard, sourceMask: sender.draggingSourceOperationMask)
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        draggingEntered(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        !draggingEntered(sender).isEmpty
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        guard !draggingEntered(sender).isEmpty else { return false }
+        return performFileDrop(on: sender.draggingPasteboard)
+    }
+
+    func fileDropOperation(on pasteboard: NSPasteboard, sourceMask: NSDragOperation) -> NSDragOperation {
+        guard surface?.acceptsFileDrops == true, !EVFileDrop.fileURLs(on: pasteboard).isEmpty else { return [] }
+        return EVFileDrop.operation(for: sourceMask)
+    }
+
+    @discardableResult
+    func performFileDrop(on pasteboard: NSPasteboard) -> Bool {
+        let urls = EVFileDrop.fileURLs(on: pasteboard)
+        guard !urls.isEmpty, let surface, surface.acceptsFileDrops else { return false }
+        // Commit native marked input before the host checks portable dirty
+        // state. A failed composition commit must never discard its overlay.
+        unmarkText()
+        guard !hasMarkedText(), surface.session?.hasActiveComposition != true else { return false }
+        return surface.openDroppedFiles(urls)
     }
 
     func unmarkText() {
@@ -2332,13 +2477,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func updateDragAutoscroll(for location: NSPoint) {
-        let textViewport = NSRect(
-            x: Self.canvasInsets.left,
-            y: Self.canvasInsets.top,
-            width: max(0, bounds.width - Self.canvasInsets.left - Self.canvasInsets.right),
-            height: max(0, bounds.height - Self.canvasInsets.top - Self.canvasInsets.bottom)
-        )
-        guard !textViewport.contains(location) else {
+        guard !textViewportRect.contains(location) else {
             stopDragAutoscroll()
             return
         }
@@ -2385,14 +2524,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             top += dragAutoscrollDistance(location.y - viewport.maxY)
         }
 
-        let fallbackMaximumLeft = max(
-            0,
-            CGFloat((surface.layoutSnapshot?.info.content_width ?? 0)
-                - (surface.layoutSnapshot?.info.viewport_width ?? 0))
-        )
-        let maximumLeft = current.flags & UInt32(EVIM_VIEWPORT_STATE_MAXIMUM_LEFT_EXACT) != 0
-            ? CGFloat(current.maximum_left)
-            : fallbackMaximumLeft
+        let maximumLeft = max(0, CGFloat(current.maximum_left))
         if location.x < viewport.minX {
             left = max(0, left - dragAutoscrollDistance(viewport.minX - location.x))
         } else if location.x > viewport.maxX {
@@ -2493,6 +2625,48 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
         if surface.showInvisibleCharactersEnabled {
             drawInvisibleMarkers(snapshot)
+        }
+    }
+
+    /// Marker furniture is drawn from its own exact-layout export. It never
+    /// participates in text slicing, caret, selection, search or accessibility text.
+    private func drawListMarkers(_ snapshot: EVLayoutExport, dirtyRect: NSRect, in context: CGContext) {
+        guard let session = surface?.session else { return }
+        for item in listMarkersForDrawing(in: snapshot, dirtyRect: dirtyRect) {
+            guard let row = row(for: item.row_index, in: snapshot.rows) else { continue }
+            let foreground = nativeForeground(item.paint)
+            if item.paint.flags & UInt32(EVIM_TEXT_PAINT_HAS_BACKGROUND) != 0 {
+                nativeColor(item.paint.background).setFill()
+                viewRect(item.typographic_bounds).fill()
+            }
+            let baseline = viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(item.x), y: CGFloat(row.baseline)))
+            let native = item.flags & UInt32(EVIM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0
+                && session.provider.renderRegistry.draw(identifier: item.render_run.identifier,
+                    metricsGeneration: item.render_run.metrics_generation, atBaseline: baseline,
+                    color: foreground.cgColor, in: context)
+            if !native {
+                let start = Int(item.label_byte_start), end = start + Int(item.label_byte_length)
+                if let value = String(bytes: snapshot.decorationLabels[start..<end], encoding: .utf8) {
+                    value.draw(at: viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(item.x), y: CGFloat(row.baseline - row.ascent))),
+                               withAttributes: [.font: NSFont.systemFont(ofSize: CGFloat(item.font_size)), .foregroundColor: foreground])
+                }
+            }
+            foreground.setFill()
+            if item.paint.flags & UInt32(EVIM_TEXT_PAINT_UNDERLINE) != 0 {
+                viewRect(x: CGFloat(item.x), y: floor(CGFloat(row.baseline) + max(1, CGFloat(row.descent) * 0.35)),
+                         width: CGFloat(item.advance), height: 1).fill()
+            }
+            if item.paint.flags & UInt32(EVIM_TEXT_PAINT_STRIKETHROUGH) != 0 {
+                viewRect(x: CGFloat(item.x), y: floor(CGFloat(row.baseline) - CGFloat(row.ascent) * 0.32),
+                         width: CGFloat(item.advance), height: 1).fill()
+            }
+        }
+    }
+
+    func listMarkersForDrawing(in snapshot: EVLayoutExport, dirtyRect: NSRect) -> [EvimLayoutDecorationV1] {
+        snapshot.decorations.filter { item in
+            row(for: item.row_index, in: snapshot.rows) != nil
+                && viewRect(item.ink_bounds).union(viewRect(item.typographic_bounds)).intersects(dirtyRect)
         }
     }
 

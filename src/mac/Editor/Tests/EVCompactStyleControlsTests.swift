@@ -207,4 +207,104 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterForeground]?.declared, .color(expected))
         withExtendedLifetime(surface) {}
     }
+    func testEveryNumericControlHasAnAdjacentNativeStepperAndInheritedValue() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        let fields = ["Size", "Tracking", "Baseline", "Start indent", "End indent", "First line", "Space before", "Space after", "Line spacing value"]
+        for title in fields {
+            let field = try control(NSTextField.self, label: title, in: editor.view)
+            let stepper = try control(EVStyleStepper.self, label: "Adjust \(title.lowercased())", in: editor.view)
+            XCTAssertTrue(stepper.superview === field.superview)
+            let siblings = try XCTUnwrap(field.superview as? NSStackView).arrangedSubviews
+            XCTAssertEqual(try XCTUnwrap(siblings.firstIndex(of: stepper)), try XCTUnwrap(siblings.firstIndex(of: field)) + 1)
+            XCTAssertEqual(stepper.isEnabled, field.isEnabled)
+            if field.isEnabled { XCTAssertEqual(stepper.doubleValue, field.doubleValue, accuracy: 0.0001) }
+        }
+        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared)
+        let size = try control(EVStyleStepper.self, label: "Adjust size", in: editor.view)
+        size.doubleValue += size.increment
+        XCTAssertTrue(size.sendAction(try XCTUnwrap(size.action), to: size.target))
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(15))
+        try control(NSButton.self, label: "Default font size", in: editor.view).performClick(nil)
+        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared)
+        XCTAssertEqual(size.doubleValue, 14)
+        editor.selectStyle(EVStyleKey.baseCharacter)
+        XCTAssertFalse(try control(EVStyleStepper.self, label: "Adjust start indent", in: editor.view).isEnabled)
+    }
+
+    func testStepperAutorepeatIsLiveAndOneSourceBackedUndoGesture() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        let source = try backend.serializedSource(typeName: EVDocument.htmlType)
+        let stepper = try control(EVStyleStepper.self, label: "Adjust size", in: editor.view)
+        stepper.performTrackingGesture {
+            for expected in [15, 16, 17] {
+                stepper.doubleValue += stepper.increment
+                XCTAssertTrue(stepper.sendAction(stepper.action, to: stepper.target))
+                XCTAssertTrue(editor.hasActiveStyleEditGroupForTesting)
+                XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterSize], .float(Float(expected)))
+            }
+        }
+        XCTAssertFalse(editor.hasActiveStyleEditGroupForTesting)
+        let changed = try backend.serializedSource(typeName: EVDocument.htmlType)
+        XCTAssertNotEqual(changed, source)
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), source)
+        XCTAssertEqual(stepper.doubleValue, 14)
+        surface.perform(menuCommand: .redo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), changed)
+        XCTAssertEqual(stepper.doubleValue, 17)
+        let indent = try control(EVStyleStepper.self, label: "Adjust first line", in: editor.view)
+        indent.doubleValue = -2
+        XCTAssertTrue(indent.sendAction(try XCTUnwrap(indent.action), to: indent.target))
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.paragraphFirstLineIndent]?.declared, .float(-2))
+        XCTAssertEqual(editor.inspection.diagnostic, "")
+    }
+
+    func testNumericFieldDraftDisablesStepperUntilValidAndLineKindRetainsValues() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 770), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = editor
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        let size = try control(NSTextField.self, label: "Size", in: editor.view)
+        let sizeStepper = try control(EVStyleStepper.self, label: "Adjust size", in: editor.view)
+        let before = try backend.serializedSource(typeName: EVDocument.htmlType)
+        XCTAssertTrue(window.makeFirstResponder(size))
+        let fieldEditor = try XCTUnwrap(size.currentEditor() as? NSTextView)
+        fieldEditor.insertText("-", replacementRange: NSRange(location: 0, length: fieldEditor.string.utf16.count))
+        XCTAssertTrue(editor.inspection.hasInvalidDraft)
+        XCTAssertFalse(sizeStepper.isEnabled)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), before)
+        fieldEditor.insertText("18.5", replacementRange: NSRange(location: 0, length: fieldEditor.string.utf16.count))
+        XCTAssertFalse(editor.inspection.hasInvalidDraft)
+        XCTAssertTrue(sizeStepper.isEnabled)
+        XCTAssertEqual(sizeStepper.doubleValue, 18.5)
+        window.makeFirstResponder(nil)
+        editor.selectTab(.paragraph)
+        let kind = try control(NSPopUpButton.self, label: "Line spacing kind", in: editor.view)
+        let line = try control(EVStyleStepper.self, label: "Adjust line spacing value", in: editor.view)
+        XCTAssertFalse(line.isEnabled)
+        kind.selectItem(withTitle: "Multiple")
+        XCTAssertTrue(kind.sendAction(try XCTUnwrap(kind.action), to: kind.target))
+        XCTAssertEqual(line.increment, 0.1)
+        line.doubleValue = 1.3
+        XCTAssertTrue(line.sendAction(try XCTUnwrap(line.action), to: line.target))
+        kind.selectItem(withTitle: "Normal")
+        XCTAssertTrue(kind.sendAction(try XCTUnwrap(kind.action), to: kind.target))
+        XCTAssertFalse(line.isEnabled)
+        kind.selectItem(withTitle: "Multiple")
+        XCTAssertTrue(kind.sendAction(try XCTUnwrap(kind.action), to: kind.target))
+        XCTAssertEqual(line.doubleValue, 1.3, accuracy: 0.0001)
+        XCTAssertTrue(line.isEnabled)
+        kind.selectItem(withTitle: "At least")
+        XCTAssertTrue(kind.sendAction(try XCTUnwrap(kind.action), to: kind.target))
+        line.doubleValue = 0
+        XCTAssertTrue(line.sendAction(try XCTUnwrap(line.action), to: line.target))
+        XCTAssertEqual(editor.inspection.diagnostic, "")
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.paragraphLineSpacing]?.declared,
+                       .lineSpacing(EVLineSpacing(kind: UInt32(EVIM_STYLE_LINE_SPACING_AT_LEAST), value: 0)))
+    }
+
 }

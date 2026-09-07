@@ -501,8 +501,10 @@ pub(super) fn character_assignment_patches(
     let number = handle(&read(input), id, true).ok_or(DocumentError::UnsupportedFormatting)?;
     let mut runs: Vec<(Range<usize>, CharacterProperties)> = Vec::new();
     let mut at = range.start;
-    let lists = projection.list_structure();
     for span in projection.provenance_for_region(range) {
+        if span.formatted.is_empty() {
+            continue;
+        }
         if span.formatted.start != at || span.formatted.end > range.end {
             return Err(DocumentError::AmbiguousProjection);
         }
@@ -515,12 +517,6 @@ pub(super) fn character_assignment_patches(
             continue;
         }
         if span.source.is_empty() {
-            if lists.lists.iter().flat_map(|list| &list.items).any(|item| {
-                item.marker_range.start <= span.formatted.start
-                    && span.formatted.end <= item.marker_range.end
-            }) {
-                continue;
-            }
             return Err(DocumentError::AmbiguousProjection);
         }
         let mut properties = CharacterProperties::default();

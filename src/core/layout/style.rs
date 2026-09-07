@@ -43,6 +43,12 @@ pub struct PaintStyleRun {
 pub struct ParagraphLayoutStyle {
     pub block_id: u64,
     pub text_range: Range<usize>,
+    /// Logical label prefix; layout hangs this generated/source-visible furniture
+    /// before the item body without changing its text or edit coordinates.
+    pub list_marker_range: Option<Range<usize>>,
+    /// Noneditable WYSIWYG label, measured separately from formatted text.
+    pub list_marker_decoration: Option<String>,
+    pub marker_paint: ResolvedTextPaint,
     pub spacing_before: f32,
     pub spacing_after: f32,
     pub line_spacing: LineSpacing,
@@ -199,6 +205,7 @@ impl DocumentLayoutStyles {
                     StyleApplication::Automatic(_)
                         | StyleApplication::SourceSyntax
                         | StyleApplication::SourceRawText
+                        | StyleApplication::SourcePreservedWhitespace
                 )
             });
         }
@@ -217,7 +224,7 @@ impl DocumentLayoutStyles {
     /// Resolve document, paragraph, named-character, semantic, and direct
     /// layers without consulting a platform or mutating the projection.
     pub fn resolve(document: &FormattedDocument) -> Result<Self, DocumentStyleError> {
-        Self::resolve_input(DocumentStyleInput::from(document))
+        Self::resolve_region(document, 0..document.text_tree().byte_len())
     }
 
     /// Resolve only blocks and character spans that can affect a contiguous
@@ -240,12 +247,18 @@ impl DocumentLayoutStyles {
         let regional_spans = document.style_spans_for_region(&text_range);
         validate_blocks_in_tree(text, &regional_blocks)?;
         validate_spans_in_tree(text, &regional_spans)?;
-        Self::resolve_validated(StyleCascadeInput {
+        let mut styles = Self::resolve_validated(StyleCascadeInput {
             blocks: &regional_blocks,
             style_spans: &regional_spans,
             style_sheet: document.style_sheet(),
             document_style: document.document_style(),
-        })
+        })?;
+        for (paragraph, block) in styles.paragraphs.iter_mut().zip(&regional_blocks) {
+            paragraph.list_marker_range = document
+                .list_marker_range_for_block(block)
+                .filter(|range| !range.is_empty());
+        }
+        Ok(styles)
     }
 
     pub fn resolve_input(input: DocumentStyleInput<'_>) -> Result<Self, DocumentStyleError> {
@@ -272,9 +285,76 @@ impl DocumentLayoutStyles {
                 None,
                 &CharacterProperties::default(),
             )?;
+            // A heading or code paragraph inside an item keeps its own style
+            // plus the containing list's inset. List-role paragraphs already
+            // declare that inset themselves.
+            let list_inset = if let crate::document::BlockKind::ListItem { level, .. } = block.kind
+            {
+                let id = StyleId(format!("List{}", u16::from(level) + 1));
+                let mut assigned = Some(&block.style);
+                let mut inherits_list = false;
+                while let Some(ancestor) = assigned {
+                    if ancestor == &id {
+                        inherits_list = true;
+                        break;
+                    }
+                    assigned = sheet
+                        .block_style(ancestor)
+                        .and_then(|style| style.based_on.as_ref());
+                }
+                if inherits_list || sheet.block_style(&id).is_none() {
+                    0.0
+                } else {
+                    sheet
+                        .resolve_assigned_paragraph_style(
+                            input.document_style,
+                            &id,
+                            &Default::default(),
+                            &Default::default(),
+                            None,
+                            &Default::default(),
+                        )?
+                        .leading_indent
+                }
+            } else {
+                0.0
+            };
+            let list_marker_range = match block.kind {
+                crate::document::BlockKind::ListItem {
+                    ordered,
+                    ordinal,
+                    item_start: true,
+                    marker_is_decoration: false,
+                    ..
+                } => {
+                    let length = if ordered {
+                        format!("{ordinal}. ").len()
+                    } else {
+                        "• ".len()
+                    };
+                    Some(block.range.start..(block.range.start + length).min(block.range.end))
+                }
+                _ => None,
+            };
             paragraphs.push(ParagraphLayoutStyle {
                 block_id: block.id,
                 text_range: block.range.clone(),
+                list_marker_range,
+                list_marker_decoration: match block.kind {
+                    crate::document::BlockKind::ListItem {
+                        ordered,
+                        ordinal,
+                        item_start: true,
+                        marker_is_decoration: true,
+                        ..
+                    } => Some(if ordered {
+                        format!("{ordinal}.")
+                    } else {
+                        "•".into()
+                    }),
+                    _ => None,
+                },
+                marker_paint: paint_style(&paragraph.character),
                 spacing_before: paragraph.spacing_before,
                 spacing_after: paragraph.spacing_after,
                 line_spacing: paragraph.line_spacing,
@@ -290,7 +370,7 @@ impl DocumentLayoutStyles {
                 } else {
                     paragraph.first_line_indent
                 },
-                leading_indent: paragraph.leading_indent,
+                leading_indent: paragraph.leading_indent + list_inset,
                 trailing_indent: paragraph.trailing_indent,
                 alignment: paragraph.alignment,
                 base_direction: paragraph.base_direction,
@@ -439,7 +519,9 @@ fn resolve_character_at(
     let mut source_block = block.clone();
     for span in active {
         match &span.application {
-            StyleApplication::SourceSyntax | StyleApplication::SourceRawText => {}
+            StyleApplication::SourceSyntax
+            | StyleApplication::SourceRawText
+            | StyleApplication::SourcePreservedWhitespace => {}
             StyleApplication::Automatic(id) => {
                 let mut chain = Vec::new();
                 let mut current = Some(id);

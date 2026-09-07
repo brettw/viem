@@ -329,4 +329,105 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     XCTAssertTrue(controller.document === second)
     XCTAssertFalse(NSDocumentController.shared.documents.contains { $0 === first })
   }
+
+  func testFileDropReplacesExactCleanPaneAndOpensRemainingFilesInNewWindows() throws {
+    let backend = Backend()
+    let original = EVDocument(editorBackend: backend)
+    original.makeWindowControllers()
+    let controller = try XCTUnwrap(original.windowControllers.first as? EVDocumentWindowController)
+    controller.showWindow(nil)
+    let target = controller.editorSurface
+    var split: Result<String?, Error>?
+    controller.perform(documentHostRequests: [.init(kind: .split, documentID: 0, documentRevision: 0)]) { split = $0 }
+    _ = try XCTUnwrap(split).get()
+    XCTAssertFalse(controller.editorSurface === target)
+    let firstBackend = Backend()
+    let first = EVDocument(editorBackend: firstBackend)
+    let second = EVDocument(editorBackend: Backend())
+    let urls = ["first", "second"].map { URL(fileURLWithPath: "/tmp/evim-drop-\(UUID().uuidString)-\($0).txt") }
+    first.fileURL = urls[0]; second.fileURL = urls[1]
+    for document in [original, first, second] { NSDocumentController.shared.addDocument(document) }
+    defer { for document in [original, first, second] { document.close() } }
+    let done = expectation(description: "files opened")
+    controller.openDroppedFiles(urls, in: target) { result in
+      if case .failure(let error) = result { XCTFail("\(error)") }
+      done.fulfill()
+    }
+    wait(for: [done], timeout: 5)
+    XCTAssertEqual(controller.paneCount, 2)
+    XCTAssertTrue(controller.activeDocument === first)
+    XCTAssertEqual(firstBackend.surfaces.count, 1)
+    XCTAssertEqual(second.windowControllers.count, 1)
+    XCTAssertTrue(second.windowControllers[0].window?.isVisible == true)
+    XCTAssertEqual(original.windowControllers.count, 1, "The other pane retains the original document")
+  }
+
+  func testFileDropOnDirtyPaneOpensNewWindowWithTheExistingBackend() throws {
+    let backend = Backend()
+    backend.persistenceState.isDirty = true
+    let original = EVDocument(editorBackend: backend)
+    original.makeWindowControllers()
+    let controller = try XCTUnwrap(original.windowControllers.first as? EVDocumentWindowController)
+    let incomingBackend = Backend()
+    let incoming = EVDocument(editorBackend: incomingBackend)
+    let url = URL(fileURLWithPath: "/tmp/evim-drop-\(UUID().uuidString).txt")
+    incoming.fileURL = url
+    incoming.makeWindowControllers()
+    NSDocumentController.shared.addDocument(incoming)
+    defer { original.close(); incoming.close() }
+    let done = expectation(description: "existing file opened in new window")
+    controller.openDroppedFiles([url], in: controller.editorSurface) { result in
+      if case .failure(let error) = result { XCTFail("\(error)") }
+      done.fulfill()
+    }
+    wait(for: [done], timeout: 5)
+    XCTAssertTrue(controller.activeDocument === original)
+    XCTAssertTrue(backend.persistenceState.isDirty)
+    XCTAssertEqual(incoming.windowControllers.count, 2)
+    XCTAssertEqual(incomingBackend.surfaces.count, 2)
+  }
+
+  func testFileDropRechecksDirtyStateAfterAsynchronousOpenAndFailurePreservesPane() throws {
+    let backend = Backend()
+    let original = EVDocument(editorBackend: backend)
+    original.makeWindowControllers()
+    let controller = try XCTUnwrap(original.windowControllers.first as? EVDocumentWindowController)
+    let incoming = EVDocument(editorBackend: Backend())
+    let url = URL(fileURLWithPath: "/tmp/evim-drop-\(UUID().uuidString).txt")
+    defer { original.close(); incoming.close() }
+    var resume: (@MainActor (EVDocument?, Error?) -> Void)?
+    let done = expectation(description: "delayed open")
+    controller.openDroppedFiles([url], in: controller.editorSurface, using: { _, completion in resume = completion }) { result in
+      if case .failure(let error) = result { XCTFail("\(error)") }
+      done.fulfill()
+    }
+    backend.persistenceState.isDirty = true
+    backend.persistenceStateDidChange?(backend.persistenceState)
+    try XCTUnwrap(resume)(incoming, nil)
+    wait(for: [done], timeout: 5)
+    XCTAssertTrue(controller.activeDocument === original)
+    XCTAssertEqual(incoming.windowControllers.count, 1)
+    backend.persistenceState.isDirty = false
+    backend.persistenceStateDidChange?(backend.persistenceState)
+    let cleanAgain = expectation(description: "changed revision with a clean save point")
+    controller.openDroppedFiles([url], in: controller.editorSurface, using: { _, completion in resume = completion }) { result in
+      if case .failure(let error) = result { XCTFail("\(error)") }
+      cleanAgain.fulfill()
+    }
+    backend.persistenceState.documentRevision += 1
+    try XCTUnwrap(resume)(incoming, nil)
+    wait(for: [cleanAgain], timeout: 5)
+    XCTAssertTrue(controller.activeDocument === original, "Type then undo/save still changes the captured revision")
+    XCTAssertEqual(incoming.windowControllers.count, 2)
+    let failed = expectation(description: "failed open")
+    controller.openDroppedFiles([url], in: controller.editorSurface, using: { _, completion in
+      completion(nil, CocoaError(.fileReadNoSuchFile))
+    }) { result in
+      if case .success = result { XCTFail("Missing file must report an error") }
+      failed.fulfill()
+    }
+    wait(for: [failed], timeout: 5)
+    XCTAssertTrue(controller.activeDocument === original)
+    XCTAssertFalse(backend.persistenceState.isDirty)
+  }
 }

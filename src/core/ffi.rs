@@ -1010,8 +1010,9 @@ pub const EVIM_VIEWPORT_STATE_HAS_LAYOUT: u32 = 1 << 3;
 pub const EVIM_VIEWPORT_STATE_LINEBREAK: u32 = 1 << 4;
 
 /// Current presentation origin and the exact dependency identity observed in
-/// the same serial query. `maximum_left` is usable only when its exact flag is
-/// set; `scale` is always the exact positive view-local magnification. A
+/// the same serial query. `maximum_left` describes visible rows only; without
+/// its exact flag it is a provisional lower bound, not an authoritative clamp.
+/// `scale` is always the exact positive view-local magnification. A
 /// missing exact top flag means the installed snapshot uses an estimated
 /// prefix; the value remains the view's current coordinate but must not be
 /// treated as a durable absolute document position.
@@ -1609,6 +1610,38 @@ pub struct EvimPositionedClusterV1 {
 }
 
 pub const EVIM_POSITIONED_CLUSTER_V1_SIZE: u32 = size_of::<EvimPositionedClusterV1>() as u32;
+
+/// Noneditable layout furniture, with label-local bytes in a separate export
+/// blob. These offsets never address formatted document text.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EvimLayoutDecorationV1 {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub row_index: u64,
+    pub label_byte_start: u64,
+    pub label_byte_length: u64,
+    pub x: f32,
+    pub advance: f32,
+    pub font_size: f32,
+    pub reserved: f32,
+    pub typographic_bounds: EvimLayoutRectV1,
+    pub ink_bounds: EvimLayoutRectV1,
+    pub render_run: EvimRenderRunHandleV1,
+    pub paint: EvimTextPaintV1,
+}
+pub const EVIM_LAYOUT_DECORATION_V1_SIZE: u32 = size_of::<EvimLayoutDecorationV1>() as u32;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EvimLayoutDecorationsInfoV1 {
+    pub struct_size: u32,
+    pub reserved: u32,
+    pub identity: EvimLayoutSnapshotIdentityV1,
+    pub decoration_count: u64,
+    pub label_bytes: u64,
+}
+pub const EVIM_LAYOUT_DECORATIONS_INFO_V1_SIZE: u32 =
+    size_of::<EvimLayoutDecorationsInfoV1>() as u32;
 
 /// One legal shaping caret stop positioned in document-layout coordinates.
 #[repr(C)]
@@ -2583,7 +2616,8 @@ fn document_status(error: DocumentError) -> EvimStatus {
         | DocumentError::HardLineSourceImageTopologyChanged { .. }
         | DocumentError::HardLineSourceImageTerminatorShapeChanged { .. }
         | DocumentError::HardLineSourceImageProjectionMismatch => EvimStatus::VerificationFailed,
-        DocumentError::LineEndingConversionWouldReinterpretContent => EvimStatus::PolicyRequired,
+        DocumentError::LineEndingConversionWouldReinterpretContent
+        | DocumentError::UnrepresentableFormattedCharacter { .. } => EvimStatus::PolicyRequired,
         DocumentError::UnsupportedFormatting | DocumentError::OpaqueDecodingConflict { .. } => {
             EvimStatus::UnsupportedOperation
         }
@@ -4619,7 +4653,7 @@ fn summarize_viewport_state(
         flags |= EVIM_VIEWPORT_STATE_MAXIMUM_LEFT_EXACT;
         maximum_left
     } else {
-        0.0
+        state.estimated_maximum_left()
     };
     if state.top_is_exact() {
         flags |= EVIM_VIEWPORT_STATE_TOP_EXACT;
@@ -8035,6 +8069,104 @@ pub unsafe extern "C" fn evim_core_view_copy_layout_paint(
     })
 }
 
+/// Copy noneditable list-marker furniture from one exact layout. Null buffers
+/// with zero capacity query counts; insufficient capacity writes only info.
+///
+/// # Safety
+/// Pointer regions must be aligned, writable to their capacities and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_copy_layout_decorations(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    expected: *const EvimLayoutSnapshotIdentityV1,
+    decorations: *mut EvimLayoutDecorationV1,
+    decoration_capacity: u64,
+    labels: *mut u8,
+    label_capacity: u64,
+    out_info: *mut EvimLayoutDecorationsInfoV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let regions = [
+            typed_pointer_region(expected, 1)?,
+            typed_pointer_region(decorations, decoration_capacity)?,
+            typed_pointer_region(labels, label_capacity)?,
+            typed_pointer_region(out_info, 1)?,
+        ];
+        for (index, left) in regions.iter().enumerate() {
+            for right in &regions[index + 1..] {
+                if regions_overlap(*left, *right) {
+                    return Err(EvimStatus::InvalidArgument);
+                }
+            }
+        }
+        let expected = unsafe { read_layout_identity(expected)? };
+        unsafe { out_info.write(EvimLayoutDecorationsInfoV1::default()) };
+        let (info, values, bytes) = with_core(handle, |core| {
+            let view_id = ViewId(view);
+            let snapshot = current_ffi_layout_snapshot(core, view_id)?;
+            validate_snapshot_identity(expected, snapshot, view_id)?;
+            let count = snapshot.rows.iter().map(|row| row.decorations.len()).sum();
+            let length = snapshot
+                .rows
+                .iter()
+                .flat_map(|row| &row.decorations)
+                .map(|item| item.text.len())
+                .sum();
+            let info = EvimLayoutDecorationsInfoV1 {
+                struct_size: EVIM_LAYOUT_DECORATIONS_INFO_V1_SIZE,
+                reserved: 0,
+                identity: snapshot_identity(snapshot, view_id),
+                decoration_count: checked_export_count(count)?,
+                label_bytes: checked_export_count(length)?,
+            };
+            let mut values = Vec::new();
+            let mut bytes = Vec::new();
+            if decoration_capacity >= info.decoration_count && label_capacity >= info.label_bytes {
+                values.reserve(count);
+                bytes.reserve(length);
+                for (row_index, row) in snapshot.rows.iter().enumerate() {
+                    for item in &row.decorations {
+                        values.push(EvimLayoutDecorationV1 {
+                            struct_size: EVIM_LAYOUT_DECORATION_V1_SIZE,
+                            flags: if item.render_run.is_some() {
+                                EVIM_POSITIONED_CLUSTER_HAS_RENDER_RUN
+                            } else {
+                                0
+                            },
+                            row_index: checked_export_count(row_index)?,
+                            label_byte_start: checked_export_count(bytes.len())?,
+                            label_byte_length: checked_export_count(item.text.len())?,
+                            x: item.x,
+                            advance: item.advance,
+                            font_size: item.font_size,
+                            reserved: 0.0,
+                            typographic_bounds: layout_rect_to_ffi(item.typographic_bounds),
+                            ink_bounds: layout_rect_to_ffi(item.ink_bounds),
+                            render_run: item.render_run.map(render_run_to_ffi).unwrap_or_default(),
+                            paint: text_paint_to_ffi(&item.paint),
+                        });
+                        bytes.extend_from_slice(item.text.as_bytes());
+                    }
+                }
+            }
+            Ok((info, values, bytes))
+        })?;
+        unsafe { out_info.write(info) };
+        if decoration_capacity < info.decoration_count || label_capacity < info.label_bytes {
+            return Err(EvimStatus::BufferTooSmall);
+        }
+        unsafe {
+            if !values.is_empty() {
+                std::ptr::copy_nonoverlapping(values.as_ptr(), decorations, values.len());
+            }
+            if !bytes.is_empty() {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), labels, bytes.len());
+            }
+        }
+        Ok(())
+    })
+}
+
 /// Atomically copy positioned rows, shaped clusters, and legal caret stops
 /// from one exact immutable layout snapshot. A zero-capacity/null-buffer call
 /// is the supported count query. No array element is written unless every
@@ -9423,6 +9555,32 @@ pub extern "C" fn evim_core_view_set_padding(
     })
 }
 
+/// Return the next portable zoom stop without mutating document or view state.
+/// `increasing` is 0 or 1; direct scales must lie within 25% through 500%.
+///
+/// # Safety
+/// `out_scale` must identify one aligned writable float.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_adjacent_zoom_scale(
+    scale: f32,
+    increasing: u32,
+    out_scale: *mut f32,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        if out_scale.is_null() || (out_scale as usize) % std::mem::align_of::<f32>() != 0 {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        unsafe { out_scale.write(0.0) };
+        if increasing > 1 {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let next = crate::layout::adjacent_zoom_scale(scale, increasing == 1)
+            .map_err(|_| EvimStatus::InvalidArgument)?;
+        unsafe { out_scale.write(next) };
+        Ok(())
+    })
+}
+
 /// Set one view's magnification and synchronously reflow its current viewport.
 /// The value is presentation-only and never changes document state.
 ///
@@ -9438,7 +9596,7 @@ pub unsafe extern "C" fn evim_core_view_set_scale(
 ) -> EvimStatus {
     ffi_boundary(|| {
         unsafe { clear_outcome(out_outcome)? };
-        if !scale.is_finite() || scale <= 0.0 {
+        if !crate::layout::valid_zoom_scale(scale) {
             return Err(EvimStatus::InvalidArgument);
         }
         let outcome = with_core_mut(handle, |core| {

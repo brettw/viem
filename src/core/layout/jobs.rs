@@ -419,14 +419,27 @@ pub(super) fn flow_text(text: String, origin: usize, lines: &[Range<usize>]) -> 
 }
 
 pub(crate) fn flow_paragraph_styles(styles: &mut DocumentLayoutStyles, lines: &[Range<usize>]) {
-    let mut paragraphs = Vec::new();
+    let mut paragraphs: Vec<super::ParagraphLayoutStyle> = Vec::new();
     for line in lines {
         if let Some(paragraph) = styles.paragraphs.iter().find(|paragraph| {
             paragraph.text_range.start <= line.start && line.start <= paragraph.text_range.end
         }) {
-            let mut paragraph = paragraph.clone();
-            paragraph.text_range = line.clone();
-            paragraphs.push(paragraph);
+            // A Source paragraph can retain explicit hard breaks while its soft
+            // breaks flow. Keep its original start/identity so continuation
+            // lines neither repeat paragraph spacing nor first-line indent.
+            // Older source projections may use several physical blocks for one
+            // flow line; extend their first block only as far as that line.
+            if let Some(previous) = paragraphs
+                .last_mut()
+                .filter(|previous| previous.block_id == paragraph.block_id)
+            {
+                previous.text_range.end = previous.text_range.end.max(line.end);
+            } else {
+                let mut paragraph = paragraph.clone();
+                paragraph.text_range.start = paragraph.text_range.start.min(line.start);
+                paragraph.text_range.end = paragraph.text_range.end.max(line.end);
+                paragraphs.push(paragraph);
+            }
         }
     }
     styles.paragraphs = paragraphs;
@@ -947,6 +960,27 @@ impl LayoutJobCandidate {
 
     pub fn next_long_line_checkpoint(&self) -> Option<&LongLineLayoutCheckpoint> {
         self.regional_snapshot().next_long_line_checkpoint()
+    }
+
+    pub(crate) fn retain_viewport_tail(&mut self, previous: Option<&RegionalLayoutSnapshot>) {
+        match &mut self.product {
+            LayoutJobProduct::RegionalHardLines(region)
+            | LayoutJobProduct::PartialViewport(region) => {
+                region.retain_viewport_tail(previous);
+            }
+        }
+    }
+
+    pub(crate) fn append_following_viewport_tail(
+        &mut self,
+        following: Option<&RegionalLayoutSnapshot>,
+    ) {
+        match &mut self.product {
+            LayoutJobProduct::RegionalHardLines(region)
+            | LayoutJobProduct::PartialViewport(region) => {
+                region.append_following_viewport_tail(following);
+            }
+        }
     }
 }
 
@@ -2158,13 +2192,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(view.viewport_left(), 60.0);
-        assert_eq!(view.maximum_viewport_left(), None);
+        assert_eq!(view.viewport_left(), 0.0);
+        assert_eq!(view.maximum_viewport_left(), Some(0.0));
         assert!(!view.snapshot().unwrap().content_width_is_exact);
     }
 
     #[test]
-    fn partial_viewport_retains_a_matching_exact_full_document_width() {
+    fn partial_viewport_ignores_a_matching_exact_offscreen_document_width() {
         let document = Document::new(format!("{}\nshort", "W".repeat(40)));
         let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
         let requirements = inspect_layout_provider(&engine);
@@ -2172,7 +2206,7 @@ mod tests {
         view.set_wrap(false);
         engine.relayout(&document, &mut view).unwrap();
         let exact_width = view.snapshot().unwrap().content_width;
-        let exact_maximum = view.maximum_viewport_left().unwrap();
+        assert!(view.maximum_viewport_left().unwrap() > 60.0);
         view.set_viewport_left(60.0).unwrap();
 
         let request = prepare_layout_job(
@@ -2196,8 +2230,8 @@ mod tests {
 
         assert!(view.snapshot().unwrap().content_width_is_exact);
         assert_eq!(view.snapshot().unwrap().content_width, exact_width);
-        assert_eq!(view.maximum_viewport_left(), Some(exact_maximum));
-        assert_eq!(view.viewport_left(), 60.0);
+        assert_eq!(view.maximum_viewport_left(), Some(0.0));
+        assert_eq!(view.viewport_left(), 0.0);
     }
 
     #[test]
@@ -2377,6 +2411,7 @@ mod tests {
         .unwrap();
         let snapshot = view.snapshot().unwrap();
         assert!(!snapshot.total_height_is_exact);
+        assert_eq!(view.maximum_viewport_left(), Some(0.0));
         assert!(view.regional_cached_ranges().is_empty());
         assert!(snapshot
             .caret_point(coverage_end, super::super::BoundaryAffinity::Upstream,)
@@ -2432,6 +2467,13 @@ mod tests {
         assert_eq!(regional.lines()[0].text_coverage(), 0..LONG_LINE_BYTES);
         assert!(regional.lines()[0].height_is_exact());
         assert!(regional.lines()[0].next_checkpoint().is_none());
+        install_layout_job(
+            &mut view,
+            target(&document, requirements.metrics_generation),
+            candidate,
+        )
+        .unwrap();
+        assert!(view.maximum_viewport_left().unwrap() > LONG_LINE_BYTES as f32 / 2.0);
     }
 
     #[test]

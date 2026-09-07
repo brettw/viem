@@ -110,8 +110,6 @@ pub(super) fn join_patches(
     if edit.range.start < first.range.start
         || second.range.end < edit.range.end
         || edit.replacement.contains('\n')
-        || matches!(first.kind, super::BlockKind::ListItem { .. })
-        || matches!(second.kind, super::BlockKind::ListItem { .. })
     {
         return Ok(None);
     }
@@ -145,6 +143,7 @@ pub(super) fn join_patches(
         .iter()
         .rev()
         .find(|token| matches!(&token.kind,TokenKind::Tag(tag) if paragraph(&tag.name)))
+        .or_else(|| first_stack.iter().rev().find(|token| matches!(&token.kind,TokenKind::Tag(tag) if tag.name == "li")))
         .copied()
         .ok_or(DocumentError::UnsupportedFormatting)?;
     let second_open = second_stack
@@ -187,6 +186,7 @@ pub(super) fn join_patches(
             TokenKind::Tag(tag) if paragraph(&tag.name) => Some(tag.name.as_str()),
             _ => None,
         })
+        .or_else(|| matches!(blocks[origin_index].kind, super::BlockKind::ListItem { .. }).then_some(""))
         .ok_or(DocumentError::UnsupportedFormatting)?;
     let parent = |stack: &Vec<&Token>| {
         stack.iter().filter(|token|matches!(&token.kind,TokenKind::Tag(tag) if structural(&tag.name)&&!paragraph(&tag.name))).map(|token|token.range.start).collect::<Vec<_>>()
@@ -262,7 +262,7 @@ pub(super) fn join_patches(
                 converter.source_range(token.range.clone()),
                 format!(
                     "{closing}{}",
-                    if following_join {
+                    if following_join || origin.is_empty() {
                         String::new()
                     } else {
                         format!("</{origin}>")
@@ -280,7 +280,7 @@ pub(super) fn join_patches(
     if !explicit {
         let value = format!(
             "{closing}{}",
-            if following_join {
+            if following_join || origin.is_empty() {
                 String::new()
             } else {
                 format!("</{origin}>")
@@ -324,6 +324,15 @@ fn opening(
     let css = [
         super::html_styles::block_css(&block.direct_paragraph),
         html::character_css(&character),
+        original
+            .and_then(|tag| tag.attribute("style"))
+            .and_then(|css| {
+                html::cascade_declarations(css)
+                    .into_iter()
+                    .filter(|(name, _)| name.eq_ignore_ascii_case("white-space"))
+                    .last()
+            })
+            .map_or_else(String::new, |(_, value)| format!("white-space: {value}")),
     ]
     .into_iter()
     .filter(|s| !s.is_empty())
@@ -482,13 +491,73 @@ pub(super) fn enter_patches(
     Ok(patches)
 }
 
+/// A paragraph split makes adjacent collapsible whitespace become leading or
+/// trailing whitespace. Preserve its existing formatted value explicitly so
+/// inserting a paragraph boundary cannot also delete a visible space.
+pub(super) fn split_whitespace_patches(
+    document: &super::Document,
+    at: usize,
+    block: &Block,
+) -> Result<Vec<(Range<usize>, String)>, DocumentError> {
+    let mut patches = Vec::new();
+    let start = at.saturating_sub(1).max(block.range.start);
+    let end = (at + 1).min(block.range.end);
+    let text = document.projection().text_tree();
+    for offset in start..end {
+        // Only ASCII HTML whitespace can collapse; inspecting a byte here
+        // does not create a range through a multibyte grapheme.
+        if !text
+            .is_char_boundary(offset)
+            .map_err(DocumentError::FormattedTextStorage)?
+            || !text
+                .is_char_boundary(offset + 1)
+                .map_err(DocumentError::FormattedTextStorage)?
+        {
+            continue;
+        }
+        let range = offset..offset + 1;
+        let value = text
+            .slice(range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        if !matches!(value.as_str(), " " | "\t" | "\r")
+            || document
+                .projection()
+                .style_spans_for_region(&range)
+                .iter()
+                .any(|span| {
+                    span.range.contains(&offset)
+                        && span.application == super::StyleApplication::SourcePreservedWhitespace
+                })
+        {
+            continue;
+        }
+        let source = super::rich_text::text_source_range(document, &range)?;
+        patches.push((
+            source,
+            super::rich_text::escape_html_text(&value, document.encoding()),
+        ));
+    }
+    Ok(patches)
+}
+
 /// Deleting complete paragraphs explicitly consumes their structural boundary,
 /// whose projection has no text byte. Unknown descendants remain untouched.
 pub(super) fn deletion_patches(
     document: &super::Document,
     input: &super::line_endings::NormalizedText,
     range: &Range<usize>,
+    whole_line: bool,
 ) -> Result<Option<Vec<(Range<usize>, String)>>, DocumentError> {
+    if !whole_line
+        && !document
+            .projection()
+            .text_tree()
+            .slice(range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?
+            .contains('\n')
+    {
+        return Ok(None);
+    }
     let paragraphs = document
         .projection()
         .blocks_for_region(range)
@@ -534,7 +603,6 @@ pub(super) fn deletion_patches(
         .map(|block| block.id)
         .collect::<std::collections::BTreeSet<_>>();
     let structure = document.projection().list_structure();
-    let mut markers = Vec::new();
     let mut owners = Vec::new();
     let mut preserve_ordinals = Vec::new();
     for list in &structure.lists {
@@ -559,7 +627,6 @@ pub(super) fn deletion_patches(
                         children.extend(item.child_lists.iter().copied());
                     }
                 }
-                markers.push(item.marker_range.clone());
                 owners.push(item.paragraph_id);
             } else if previous_removed && list.style == super::ListStyle::Numbered {
                 preserve_ordinals.push((item.paragraph_id, item.ordinal));
@@ -570,18 +637,7 @@ pub(super) fn deletion_patches(
     let tokens = html::tokenize(&input.text);
     let converter = super::rich_text::Builder::new(input, Revision(0));
     let source_stack = |block: &Block| -> Result<Vec<&Token>, DocumentError> {
-        let source_at = document
-            .projection()
-            .provenance_for_region(&block.range)
-            .into_iter()
-            .find(|span| !span.source.is_empty())
-            .map(|span| span.source.start)
-            .or_else(|| {
-                document
-                    .projection()
-                    .source_insertion_point(block.range.start, true)
-            })
-            .ok_or(DocumentError::AmbiguousProjection)?;
+        let source_at = super::rich_text::block_source_point(document.projection(), block)?;
         let at = input
             .units
             .iter()
@@ -592,10 +648,11 @@ pub(super) fn deletion_patches(
     };
     let mut patches = Vec::new();
     for span in document.projection().provenance_for_region(range) {
+        if span.formatted.is_empty() {
+            continue;
+        }
         if span.source.is_empty() {
-            if !markers.iter().any(|marker| {
-                marker.start <= span.formatted.start && span.formatted.end <= marker.end
-            }) && document
+            if document
                 .projection()
                 .text_tree()
                 .slice(span.formatted.clone())

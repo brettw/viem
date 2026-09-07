@@ -17,5 +17,6 @@ regex-automata = "=0.4.18"
 regex-syntax = "=0.8.11"
 unicode-linebreak = "=0.1.5"
 unicode-segmentation = "=1.12.0"
+unicode-bidi = { version = "=0.3.18", default-features = false, features = ["hardcoded-data"] }
 
 [dev-dependencies]

@@ -67,7 +67,9 @@ final class EVEditingReliabilityTests: XCTestCase {
             XCTAssertEqual(surface.statusBarState.message, "", "Typing \(character)")
         }
         surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
-        XCTAssertEqual(surface.formattedText, "3. First\n4. Added\n5. Second\nTail")
+        XCTAssertEqual(surface.formattedText, "First\nAdded\nSecond\nTail")
+        let layout = try XCTUnwrap(surface.layoutSnapshot)
+        XCTAssertEqual(String(decoding: layout.decorationLabels, as: UTF8.self), "3.4.5.")
         client.insertText("u", replacementRange: implicit)
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
     }
@@ -161,7 +163,9 @@ final class EVEditingReliabilityTests: XCTestCase {
             surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER)) }
             client.insertText("Second", replacementRange: implicit)
             surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
-            XCTAssertEqual(surface.formattedText, "1. First\n2. Second\nFollowing text", type)
+            XCTAssertEqual(surface.formattedText, "First\nSecond\nFollowing text", type)
+            let layout = try XCTUnwrap(surface.layoutSnapshot)
+            XCTAssertEqual(String(decoding: layout.decorationLabels, as: UTF8.self), "1.2.", type)
             XCTAssertEqual(surface.statusBarState.message, "")
             surface.perform(menuCommand: .undo, sender: nil)
             surface.perform(menuCommand: .undo, sender: nil)

@@ -163,18 +163,21 @@ fn large_fenced_code_edit_is_local_and_fresh_projection_matches() {
 #[test]
 fn nested_lists_and_code_delimiters_survive_supported_conversion() {
     let mut document = open(
-        "- parent\n  4. child\n- tail\nUse ``a`b``.",
+        "- parent\n  4. child\n- tail\n\nUse ``a`b``.",
         Format::Markdown,
     );
     convert(&mut document, Format::Html);
-    assert_eq!(document.text(), "• parent\n4. child\n• tail\nUse a`b.");
+    assert_eq!(document.text(), "parent\nchild\ntail\nUse a`b.");
     assert!(String::from_utf8(document.source_bytes())
         .unwrap()
         .contains(
             "<ul><li>parent<ol start=\"4\"><li value=\"4\">child</li></ol></li><li>tail</li></ul>"
         ));
     convert(&mut document, Format::Markdown);
-    assert_eq!(document.text(), "- parent\n  4. child\n- tail\nUse a`b.");
+    assert_eq!(document.text(), "parent\nchild\ntail\nUse a`b.");
+    assert!(String::from_utf8(document.source_bytes())
+        .unwrap()
+        .contains("  4. child"));
 }
 #[test]
 fn simple_direct_emphasis_writes_tags_without_private_css_flags() {
@@ -348,4 +351,31 @@ fn grown_inline_code_delimiters_can_be_cleared_with_exact_visible_text() {
         .unwrap();
     assert_eq!(document.text(), "Use a`b now");
     assert_eq!(document.source_bytes(), b"Use a`b now");
+}
+
+#[test]
+fn conversion_preserves_first_words_when_list_labels_are_decorations() {
+    for (source, from, to) in [
+        (
+            "- **First** words stay intact.\n- Second item.",
+            Format::Markdown,
+            Format::Html,
+        ),
+        (
+            "<ol start='9'><li><b>First</b> words stay intact.</li><li>Second item.</li></ol>",
+            Format::Html,
+            Format::Markdown,
+        ),
+    ] {
+        let mut document = open(source, from);
+        let before = document.text().to_owned();
+        convert(&mut document, to);
+        assert_eq!(document.text(), before);
+        convert(&mut document, from);
+        assert_eq!(document.text(), before);
+        assert_eq!(
+            document.projection().list_structure().lists[0].items.len(),
+            2
+        );
+    }
 }

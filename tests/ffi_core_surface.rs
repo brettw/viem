@@ -1860,7 +1860,7 @@ fn typed_view_options_are_local_or_shared_and_fail_atomically() {
     assert_eq!(second_context.shape_calls, second_shape_calls);
 
     let scaled_state = first_state;
-    for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+    for invalid in [0.0, -1.0, 0.249, 5.001, f32::NAN, f32::INFINITY] {
         outcome = EvimCoreOutcomeV1 {
             flags: u32::MAX,
             ..EvimCoreOutcomeV1::default()

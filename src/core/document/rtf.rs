@@ -104,6 +104,29 @@ pub(super) fn tokenize(input: &NormalizedText) -> Vec<Token> {
     tokens
 }
 
+/// Removing text immediately before a closing scope can create a new empty
+/// insertion anchor. A text-only splice cannot manufacture that parser state.
+/// The caller supplies a bounded following window; an inconclusive window is
+/// conservative, while ordinary interior deletion retains the regional path.
+pub(super) fn deletion_needs_group_reparse(input: &NormalizedText) -> bool {
+    for token in tokenize(input) {
+        match token.kind {
+            Kind::Character('\r' | '\n') => {}
+            Kind::Open | Kind::Close | Kind::Binary => return true,
+            Kind::Character(_) | Kind::Byte(_) => return false,
+            Kind::Symbol('*') => return true,
+            Kind::Symbol(_) => return false,
+            Kind::Control(name, _) => {
+                if matches!(name.as_str(), "u" | "par" | "line" | "tab" | "emdash" | "endash" | "bullet" | "lquote" | "rquote" | "ldblquote" | "rdblquote") {
+                    return false;
+                }
+                if non_body(&name) { return true; }
+            }
+        }
+    }
+    true
+}
+
 pub(super) fn windows_1252(value: u8) -> char {
     const C1: [char; 32] = [
         '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž',
@@ -791,6 +814,7 @@ pub(super) fn project(
                         level,
                         container_start: first,
                         item_start: true,
+                        marker_is_decoration: true,
                     },
                 )
                 .unwrap_or_else(|| {
@@ -802,17 +826,10 @@ pub(super) fn project(
                             level: 0,
                             container_start: false,
                             item_start: true,
+                            marker_is_decoration: true,
                         })
                         .unwrap_or(super::BlockKind::Paragraph)
                 });
-            builder.marker_origin = if paragraph_list.is_some() {
-                state
-                    .list_origin
-                    .clone()
-                    .or(Some(token.range.start..token.range.start))
-            } else {
-                state.list_origin.clone()
-            };
             builder.paragraph_style = state.paragraph_style.clone();
             builder.named_character = state.named_character.clone();
             builder.paragraph = state.paragraph.clone();
@@ -826,9 +843,6 @@ pub(super) fn project(
                         .paragraph
                         .first_line_indent
                         .or(defaults.paragraph.first_line_indent);
-                }
-                if matches!(token.kind, Kind::Close) {
-                    builder.emit_list_marker();
                 }
             }
             if state.list.is_none() && paragraph_list.is_none() {
@@ -903,7 +917,6 @@ pub(super) fn project(
                         .as_ref()
                         .is_some_and(|origin| origin.end >= paragraph_source_start)
                 {
-                    builder.emit_list_marker();
                     builder.retain_empty_boundary(
                         builder
                             .source_range(token.range.start..token.range.start)
@@ -935,9 +948,9 @@ pub(super) fn project(
                                 level: 0,
                                 container_start: false,
                                 item_start: true,
+                                marker_is_decoration: true,
                             })
                             .unwrap_or(super::BlockKind::Paragraph);
-                        builder.marker_origin = Some(token.range.clone());
                         if list.is_none() {
                             builder.empty_boundary_at(token.range.end);
                         }
@@ -1021,6 +1034,14 @@ pub(super) fn project(
                     }
                     "par" | "line" if !state.hidden => {
                         flush(&mut pending_unicode, &mut builder);
+                        if builder.line_is_empty() {
+                            builder.retain_empty_boundary(
+                                builder
+                                    .source_range(token.range.start..token.range.start)
+                                    .start,
+                                &state.character,
+                            );
+                        }
                         builder.paragraph = state.paragraph.clone();
                         if let Some((id, level, ..)) = paragraph_list {
                             if let Some(defaults) = list_tables.level(id, level) {

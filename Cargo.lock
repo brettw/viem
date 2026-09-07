@@ -43,6 +43,7 @@ dependencies = [
  "regex-syntax",
  "serde",
  "serde_json",
+ "unicode-bidi",
  "unicode-linebreak",
  "unicode-segmentation",
 ]
@@ -345,6 +346,12 @@ checksum = "5fed54709c5b3a53d09bb1c113ea4f5ceafd1e772ddcb0030a82e1d56c087b08"
 dependencies = [
  "new_debug_unreachable",
 ]
+
+[[package]]
+name = "unicode-bidi"
+version = "0.3.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c1cb5db39152898a79168971543b1cb5020dff7fe43c8dc468b0885f5e29df5"
 
 [[package]]
 name = "unicode-ident"

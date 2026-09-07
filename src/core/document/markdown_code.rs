@@ -1,5 +1,5 @@
-//! Minimal source patches for literal backticks in Markdown code. Delimiter
-//! growth is a supporting syntax edit in the same transaction as the text.
+//! Source-local code-body insertion and literal delimiter edits. Fence growth
+//! is a supporting syntax patch in the same transaction as authored text.
 use super::{Document, DocumentError, Format, Revision, SemanticInlineStyle, StyleApplication};
 use std::ops::Range;
 
@@ -8,7 +8,7 @@ pub(super) fn patches(
     range: &Range<usize>,
     replacement: &str,
 ) -> Result<Option<Vec<(Range<usize>, String)>>, DocumentError> {
-    if document.format() != Format::Markdown || !replacement.contains(['`', '~']) {
+    if document.format() != Format::Markdown {
         return Ok(None);
     }
     let block = document
@@ -19,6 +19,57 @@ pub(super) fn patches(
     let code_block = block
         .as_ref()
         .is_some_and(|block| block.style.0 == "Code Block");
+    if code_block && !replacement.contains(['`', '~']) {
+        let block = block.as_ref().unwrap();
+        if block.range.is_empty() {
+            return Ok(None);
+        }
+        // The final code-body boundary is inside its fence, even when the
+        // typing caret's ordinary downstream side would be after that syntax.
+        // Keep this common path local: no full code-body or source capture.
+        if replacement.contains('\n') || range.is_empty() && range.end == block.range.end {
+            let source = if range.is_empty() {
+                let at = document
+                    .projection()
+                    .source_insertion_point(range.start, range.start != block.range.end)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                at..at
+            } else {
+                document
+                    .projection()
+                    .source_range(range.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?
+            };
+            let mut separator = document.file_format().spelling().to_owned();
+            if replacement.contains('\n') && matches!(block.kind, super::BlockKind::ListItem { .. })
+            {
+                let first = document
+                    .projection()
+                    .source_insertion_point(block.range.start, true)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let line = document
+                    .state()
+                    .source_hard_lines
+                    .line_at_offset(first)
+                    .and_then(|index| document.state().source_hard_lines.get(index))
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let prefix = document
+                    .state()
+                    .source
+                    .bytes_in(line.start..first)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let prefix = document.encoding().decode_region(&prefix, line.start)?.text;
+                if prefix.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
+                    separator.push_str(&prefix);
+                }
+            }
+            return Ok(Some(vec![(source, replacement.replace('\n', &separator))]));
+        }
+        return Ok(None);
+    }
+    if !replacement.contains(['`', '~']) {
+        return Ok(None);
+    }
     let content = if code_block {
         block.unwrap().range
     } else {

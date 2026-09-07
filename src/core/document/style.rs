@@ -129,6 +129,17 @@ pub struct CharacterProperties {
 }
 
 impl CharacterProperties {
+    pub(super) fn owned_heap_bytes(&self) -> usize {
+        self.font_families.as_ref().map_or(0, |families| {
+            families.capacity() * std::mem::size_of::<String>()
+                + families.iter().map(|name| name.capacity() + 16).sum::<usize>()
+        }) + self.language.as_ref().map_or(0, |value| value.capacity() + 16)
+            + self.open_type_features.as_ref().map_or(0, |features| {
+                style_map_heap_bytes(features.len(), std::mem::size_of::<(String, u32)>())
+                    + features.keys().map(|name| name.capacity() + 16).sum::<usize>()
+            })
+    }
+
     /// Exact normalized declaration keys which differ between two sparse
     /// layers. Absence and an explicit default-valued declaration are
     /// intentionally different.
@@ -345,6 +356,45 @@ pub struct StyleSheet {
     source_character_defaults: BTreeMap<StyleId, CharacterProperties>,
     default_blocks: BTreeMap<StyleId, BlockStyle>,
     default_characters: BTreeMap<StyleId, CharacterStyle>,
+}
+
+// Maps do not expose node capacities. Charge a conservative estimate for their
+// partially occupied nodes; strings and property payloads are added separately.
+fn style_map_heap_bytes(len: usize, item_size: usize) -> usize {
+    if len == 0 { 0 } else { (3 * len + 11) * item_size + (len + 1) * 128 }
+}
+
+impl StyleSheet {
+    pub(super) fn owned_heap_bytes(&self) -> usize {
+        fn id(value: &StyleId) -> usize { value.0.capacity() + 16 }
+        fn character(value: &CharacterStyle) -> usize {
+            id(&value.id) + value.based_on.as_ref().map_or(0, id) + value.properties.owned_heap_bytes()
+        }
+        fn block(value: &BlockStyle) -> usize {
+            id(&value.id) + value.based_on.as_ref().map_or(0, id)
+                + value.next_paragraph_style.as_ref().map_or(0, id) + value.character.owned_heap_bytes()
+        }
+        let mut bytes = id(&self.base_document) + id(&self.base_paragraph) + id(&self.base_character);
+        for map in [&self.block_styles, &self.default_blocks] {
+            bytes += style_map_heap_bytes(map.len(), std::mem::size_of::<(StyleId, BlockStyle)>())
+                + map.iter().map(|(key, value)| id(key) + block(value)).sum::<usize>();
+        }
+        for map in [&self.character_styles, &self.default_characters] {
+            bytes += style_map_heap_bytes(map.len(), std::mem::size_of::<(StyleId, CharacterStyle)>())
+                + map.iter().map(|(key, value)| id(key) + character(value)).sum::<usize>();
+        }
+        for map in [&self.block_metadata, &self.character_metadata] {
+            bytes += style_map_heap_bytes(map.len(), std::mem::size_of::<(StyleId, StyleDefinitionMetadata)>())
+                + map.iter().map(|(key, value)| id(key) + value.display_name.capacity() + 16).sum::<usize>();
+        }
+        for set in [&self.deleted_configuration_blocks, &self.deleted_configuration_characters,
+                    &self.deleted_source_blocks, &self.source_defined_blocks, &self.source_defined_characters] {
+            bytes += style_map_heap_bytes(set.len(), std::mem::size_of::<StyleId>())
+                + set.iter().map(id).sum::<usize>();
+        }
+        bytes + style_map_heap_bytes(self.source_character_defaults.len(), std::mem::size_of::<(StyleId, CharacterProperties)>())
+            + self.source_character_defaults.iter().map(|(key, value)| id(key) + value.owned_heap_bytes()).sum::<usize>()
+    }
 }
 
 // Imported-definition tracking is parser provenance, not a semantic declaration.
@@ -1103,6 +1153,48 @@ impl StyleSheet {
         self.block_styles.values()
     }
 
+    /// Prose defaults approximate the common one-em collapsed HTML
+    /// paragraph gap using two half-em sides in eVim's additive spacing model.
+    /// Plain text and RTF retain their adapter-specific defaults.
+    pub(crate) fn for_format(format: super::Format) -> Self {
+        let mut sheet = Self::default();
+        if matches!(
+            format,
+            super::Format::Markdown
+                | super::Format::MarkdownSource
+                | super::Format::Html
+                | super::Format::HtmlSource
+        ) {
+            let paragraph = sheet.block_styles.get_mut(&sheet.base_paragraph).unwrap();
+            paragraph.block.spacing_before = Some(7.0);
+            paragraph.block.spacing_after = Some(7.0);
+            for level in 1..=3 {
+                let list = sheet
+                    .block_styles
+                    .get_mut(&StyleId(format!("List{level}")))
+                    .unwrap();
+                list.block.leading_indent = Some(32.0 * level as f32);
+                // The label hangs outside the body box independently of the
+                // first-line body indent, which remains a signed user value.
+                list.block.first_line_indent = Some(0.0);
+                list.block.spacing_before = Some(0.0);
+                list.block.spacing_after = Some(0.0);
+            }
+            if matches!(
+                format,
+                super::Format::Markdown | super::Format::MarkdownSource
+            ) {
+                sheet
+                    .block_styles
+                    .get_mut(&StyleId("Code Block".into()))
+                    .unwrap()
+                    .block
+                    .leading_indent = Some(32.0);
+            }
+        }
+        sheet
+    }
+
     pub fn block_style_count(&self) -> usize {
         self.block_styles.len()
     }
@@ -1111,6 +1203,12 @@ impl StyleSheet {
     /// Materialize generated list defaults only when a document actually
     /// needs that nesting level. Existing source/custom definitions win.
     pub(crate) fn ensure_list_level(&mut self, level: u16) {
+        let first = self
+            .block_styles
+            .get(&StyleId("List1".into()))
+            .map(|style| style.block.clone())
+            .unwrap_or_default();
+        let step = first.leading_indent.unwrap_or(20.0);
         for level in 4..=level {
             let id = StyleId(format!("List{level}"));
             if self.block_styles.contains_key(&id)
@@ -1128,8 +1226,10 @@ impl StyleSheet {
                     role: BlockRole::Paragraph,
                     character: CharacterProperties::default(),
                     block: BlockProperties {
-                        leading_indent: Some(20.0 * f32::from(level)),
-                        first_line_indent: Some(-20.0),
+                        leading_indent: Some(step * f32::from(level)),
+                        first_line_indent: Some(first.first_line_indent.unwrap_or(-20.0)),
+                        spacing_before: first.spacing_before,
+                        spacing_after: first.spacing_after,
                         ..Default::default()
                     },
                 },
@@ -3013,6 +3113,9 @@ pub enum StyleApplication {
     SourceSyntax,
     /// Raw script/style-like contents where even the opening boundary is literal.
     SourceRawText,
+    /// Adapter context only: these HTML characters preserve literal whitespace.
+    /// It has no appearance or user-assignment meaning.
+    SourcePreservedWhitespace,
     /// The semantic paragraph underlying visible source syntax. Source hard
     /// lines may contain several paragraph elements, so this context is inline.
     SourceParagraph {
@@ -3021,6 +3124,17 @@ pub enum StyleApplication {
     },
     Direct(CharacterProperties),
     Semantic(SemanticInlineStyle),
+}
+
+impl StyleApplication {
+    pub(super) fn owned_heap_bytes(&self) -> usize {
+        match self {
+            Self::Named(id) | Self::Automatic(id) => id.0.capacity() + 16,
+            Self::SourceParagraph { style, defaults } => style.0.capacity() + 16 + defaults.owned_heap_bytes(),
+            Self::Direct(properties) => properties.owned_heap_bytes(),
+            _ => 0,
+        }
+    }
 }
 
 #[cfg(test)]

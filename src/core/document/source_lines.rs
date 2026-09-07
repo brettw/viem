@@ -144,52 +144,10 @@ impl Document {
         let decoded = self.encoding().decode_region(&bytes, range.start)?;
         Ok(line_endings::normalize(&decoded, self.file_format()).text)
     }
-    /// Delete row text while retaining generated list furniture for an item
-    /// whose other visual rows or paragraphs survive the operation.
+    /// Explicit row deletion removes complete items structurally. Adapters
+    /// retain the surrounding list when only part of a wrapped item is covered.
     pub fn delete_visual_text(&mut self, range: Range<usize>) -> Result<(), DocumentError> {
-        self.validate_range(&range)?;
-        let mut retain = Vec::new();
-        for list in self.projection().list_structure().lists {
-            for item in list.items {
-                if !item.marker_is_synthetic
-                    || item.marker_range.start >= range.end
-                    || item.marker_range.end <= range.start
-                {
-                    continue;
-                }
-                let complete = item.paragraph_ids.iter().all(|id| {
-                    self.projection()
-                        .blocks()
-                        .iter()
-                        .find(|block| block.id == *id)
-                        .is_some_and(|block| {
-                            range.start <= block.range.start && block.range.end <= range.end
-                        })
-                });
-                if !complete {
-                    retain.push(item.marker_range);
-                }
-            }
-        }
-        if retain.is_empty() {
-            return self.replace(range, "");
-        }
-        retain.sort_by_key(|range| range.start);
-        let mut edits = Vec::new();
-        let mut at = range.start;
-        for marker in retain {
-            if at < marker.start {
-                edits.push(TextEdit::new(at..marker.start, ""));
-            }
-            at = at.max(marker.end);
-        }
-        if at < range.end {
-            edits.push(TextEdit::new(at..range.end, ""));
-        }
-        if edits.is_empty() {
-            return self.set_list_style(range, None);
-        }
-        self.apply_edits(edits)
+        self.delete_lines(range)
     }
 }
 

@@ -1,4 +1,5 @@
 use super::source::SourceArtifactDigest;
+use super::history_memory::{AllocationId, MemoryVisitor, RetainedMemory};
 use super::{PositionError, PositionMap, Revision, SourcePartId, Splice, TextAnchor};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -12,6 +13,8 @@ static NEXT_HISTORY_NODE_ID: AtomicU64 = AtomicU64::new(1);
 /// A budget is a target rather than permission to discard the active state.
 /// Consequently one oversized current snapshot, or the parent and result of
 /// an open undo unit, may temporarily exceed these values.
+/// The byte target charges retained source, derived projections, position maps,
+/// and history bookkeeping; it does not mean serialized document bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HistoryRetentionPolicy {
     node_budget: usize,
@@ -341,6 +344,10 @@ pub struct HistoryStatus {
     /// Bytes in unique immutable source-buffer allocations reachable from all
     /// retained nodes. Structurally shared buffers are charged exactly once.
     pub retained_source_bytes: usize,
+    /// Conservative retained heap estimate, including shared source/projection
+    /// allocations, history maps and metadata. Shared allocations count once.
+    /// This is the byte-budget charge; it is distinct from source byte length.
+    pub retained_memory_bytes: usize,
     /// Whether the persisted state remains available for history navigation.
     /// Its identity and digest survive when this is false.
     pub save_point_retained: bool,
@@ -370,6 +377,10 @@ pub(crate) struct History<T, M = ()> {
     retention: HistoryRetentionPolicy,
     retained_source_bytes: usize,
     accounting: Option<HistoryAccounting<T>>,
+    memory: RetainedMemory,
+    memory_metadata_bytes: usize,
+    visit_state_memory: Option<fn(&T, &mut MemoryVisitor<'_>)>,
+    visit_map_memory: Option<fn(&M, &mut MemoryVisitor<'_>)>,
 }
 
 struct Node<T, M> {
@@ -381,11 +392,12 @@ struct Node<T, M> {
     preferred_child: Option<usize>,
     incoming: Option<HistoryEdge<M>>,
     retained_buffers: Vec<RetainedBuffer>,
+    memory_roots: Vec<AllocationId>,
+    memory_metadata_bytes: usize,
 }
 
 struct HistoryEdge<M> {
-    forward: M,
-    reverse: M,
+    map: M,
     record: HistoryUnitRecord,
 }
 
@@ -398,6 +410,24 @@ struct HistoryUnitRecord {
 }
 
 impl HistoryUnitRecord {
+    fn owned_heap_bytes(&self) -> usize {
+        let mut bytes = self.semantic.changes.capacity() * std::mem::size_of::<HistorySemanticChangeKind>()
+            + self.transactions.capacity() * std::mem::size_of::<HistoryTransactionSummary>();
+        for transaction in &self.transactions {
+            bytes += transaction.source_patches.capacity() * std::mem::size_of::<HistorySourcePatch>()
+                + transaction.formatted_splices.capacity() * std::mem::size_of::<Splice>();
+        }
+        if let Some(restoration) = &self.restoration {
+            for snapshot in [&restoration.before, &restoration.after] {
+                if !snapshot.marks.is_empty() {
+                    bytes += (3 * snapshot.marks.len() + 11) * std::mem::size_of::<(char, TextAnchor)>()
+                        + (snapshot.marks.len() + 1) * 128;
+                }
+            }
+        }
+        bytes
+    }
+
     fn new(
         transaction: HistoryTransactionSummary,
         restoration: Option<HistoryRestoration>,
@@ -494,6 +524,8 @@ impl<T, M> History<T, M> {
                 preferred_child: None,
                 incoming: None,
                 retained_buffers,
+                memory_roots: Vec::new(),
+                memory_metadata_bytes: 0,
             }],
             node_indexes: HashMap::from([(root_id, 0)]),
             change_indexes: HashMap::from([(root_change, 0)]),
@@ -505,7 +537,80 @@ impl<T, M> History<T, M> {
             retention,
             retained_source_bytes,
             accounting,
+            memory: RetainedMemory::default(),
+            memory_metadata_bytes: 0,
+            visit_state_memory: None,
+            visit_map_memory: None,
         }
+    }
+
+    pub(crate) fn with_retained_memory(
+        mut self,
+        state: fn(&T, &mut MemoryVisitor<'_>),
+        map: fn(&M, &mut MemoryVisitor<'_>),
+    ) -> Self {
+        self.visit_state_memory = Some(state);
+        self.visit_map_memory = Some(map);
+        self.refresh_node_memory(self.current);
+        self
+    }
+
+    fn refresh_node_memory(&mut self, index: usize) {
+        let Some(visit_state) = self.visit_state_memory else { return; };
+        let node = &self.nodes[index];
+        let roots = self.memory.capture(|visitor| {
+            // The state's lazy caches are separate roots. Revisiting these
+            // top-level handles discovers newly materialized compatibility
+            // views without traversing unchanged immutable tree nodes.
+            visitor.arc(&node.state, |_| {});
+            visit_state(&node.state, visitor);
+            if let (Some(edge), Some(visit_map)) = (&node.incoming, self.visit_map_memory) {
+                visit_map(&edge.map, visitor);
+            }
+        });
+        let node = &mut self.nodes[index];
+        let previous = std::mem::replace(&mut node.memory_roots, roots);
+        self.memory.release(previous);
+        self.memory_metadata_bytes = self.memory_metadata_bytes.saturating_sub(node.memory_metadata_bytes);
+        node.memory_metadata_bytes = node.children.capacity() * std::mem::size_of::<usize>()
+            + node.retained_buffers.capacity() * std::mem::size_of::<RetainedBuffer>()
+            + node.memory_roots.capacity() * std::mem::size_of::<AllocationId>()
+            + node.incoming.as_ref().map_or(0, |edge| edge.record.owned_heap_bytes());
+        self.memory_metadata_bytes = self.memory_metadata_bytes.saturating_add(node.memory_metadata_bytes);
+    }
+
+    fn release_node_memory(&mut self, index: usize) {
+        self.memory.release(std::mem::take(&mut self.nodes[index].memory_roots));
+        self.memory_metadata_bytes = self.memory_metadata_bytes.saturating_sub(self.nodes[index].memory_metadata_bytes);
+        self.nodes[index].memory_metadata_bytes = 0;
+    }
+
+    fn retained_memory_bytes(&self) -> usize {
+        if self.visit_state_memory.is_none() { return self.retained_source_bytes; }
+        if std::env::var_os("EVIM_HISTORY_MEMORY_BREAKDOWN").is_some() {
+            eprintln!("  ledger allocations {}", self.memory.allocation_count());
+        }
+        self.memory.bytes()
+            .saturating_add(self.nodes.capacity() * std::mem::size_of::<Node<T, M>>())
+            .saturating_add(self.node_indexes.capacity() * 48)
+            .saturating_add(self.change_indexes.capacity() * 48)
+            .saturating_add(self.memory_metadata_bytes)
+    }
+
+    #[cfg(test)]
+    pub(super) fn assert_memory_matches_full_recount(&mut self) {
+        self.refresh_node_memory(self.current);
+        let mut fresh = RetainedMemory::default();
+        for node in &self.nodes {
+            fresh.capture(|visitor| {
+                visitor.arc(&node.state, |_| {});
+                self.visit_state_memory.unwrap()(&node.state, visitor);
+                if let Some(edge) = &node.incoming {
+                    self.visit_map_memory.unwrap()(&edge.map, visitor);
+                }
+            });
+        }
+        self.memory.assert_same_allocations(&fresh);
     }
 
     /// Install initial projection-only configuration without changing the
@@ -518,7 +623,9 @@ impl<T, M> History<T, M> {
                 (accounting.digest)(&state)
             );
         }
-        self.nodes[0].state = Arc::new(state);
+        let previous = std::mem::replace(&mut self.nodes[0].state, Arc::new(state));
+        self.refresh_node_memory(0);
+        drop(previous);
     }
 
     pub(crate) fn current(&self) -> &Arc<T> {
@@ -595,6 +702,7 @@ impl<T, M> History<T, M> {
             }),
             retention: self.retention,
             retained_source_bytes: self.retained_source_bytes,
+            retained_memory_bytes: self.retained_memory_bytes(),
             save_point_retained: self.node_indexes.contains_key(&self.save_point),
             save_point_digest: self.save_point_digest,
         }
@@ -741,6 +849,7 @@ impl<T, M> History<T, M> {
             return Err(HistoryError::Boundary(HistoryBoundary::Oldest));
         };
         edge.record.attach_command_restoration(restoration);
+        self.enforce_retention();
         Ok(())
     }
 
@@ -843,6 +952,7 @@ impl<T, M> History<T, M> {
     }
 
     fn move_to_index(&mut self, target: usize) -> HistoryNavigation {
+        self.refresh_node_memory(self.current);
         let from = self.location(self.current);
         if target == self.current {
             return HistoryNavigation { from, to: from };
@@ -891,8 +1001,9 @@ impl<T, M> History<T, M> {
     }
 
     fn enforce_retention(&mut self) {
+        self.refresh_node_memory(self.current);
         if self.nodes.len() <= 1
-            && !self.exceeds_retention(self.nodes.len(), self.retained_source_bytes)
+            && !self.exceeds_retention(self.nodes.len(), self.retained_memory_bytes())
         {
             return;
         }
@@ -913,7 +1024,7 @@ impl<T, M> History<T, M> {
 
         // Repeatedly removing the oldest eligible leaf deterministically
         // discards abandoned branches without touching the active ancestry.
-        while self.exceeds_retention(retained_count, retained_bytes) {
+        while self.exceeds_retention(retained_count, if self.visit_state_memory.is_some() { self.retained_memory_bytes() } else { retained_bytes }) {
             let candidate = (0..self.nodes.len())
                 .filter(|index| retained[*index] && !protected[*index])
                 .filter(|index| {
@@ -928,6 +1039,7 @@ impl<T, M> History<T, M> {
             };
             retained[candidate] = false;
             retained_count -= 1;
+            self.release_node_memory(candidate);
             remove_buffer_references(
                 &self.nodes[candidate].retained_buffers,
                 &mut buffer_references,
@@ -939,7 +1051,7 @@ impl<T, M> History<T, M> {
         // explicitly protected states) can keep the tree over budget. Promote
         // one oldest ancestor at a time. An open unit stops promotion at its
         // fixed parent so both its before-state and result remain available.
-        while self.exceeds_retention(retained_count, retained_bytes) {
+        while self.exceeds_retention(retained_count, if self.visit_state_memory.is_some() { self.retained_memory_bytes() } else { retained_bytes }) {
             let active_path: Vec<_> = self
                 .root_path(self.current)
                 .into_iter()
@@ -963,6 +1075,7 @@ impl<T, M> History<T, M> {
                 .all(|child| *child == next));
             retained[oldest] = false;
             retained_count -= 1;
+            self.release_node_memory(oldest);
             remove_buffer_references(
                 &self.nodes[oldest].retained_buffers,
                 &mut buffer_references,
@@ -1016,6 +1129,7 @@ impl<T, M> History<T, M> {
             }
         }
 
+        let mut removed_edges = Vec::new();
         for node in &mut compacted {
             node.parent = node.parent.and_then(|parent| old_to_new[parent]);
             node.children = node
@@ -1028,7 +1142,7 @@ impl<T, M> History<T, M> {
                 .and_then(|child| old_to_new[child])
                 .or_else(|| node.children.last().copied());
             if node.parent.is_none() {
-                node.incoming = None;
+                removed_edges.push(node.incoming.take());
             }
         }
 
@@ -1044,6 +1158,10 @@ impl<T, M> History<T, M> {
         }
         let all_retained = vec![true; self.nodes.len()];
         self.retained_source_bytes = self.buffer_reference_counts(&all_retained).1;
+        // Keep removed edges alive until their old allocation identities have
+        // been released, preventing allocator address reuse during accounting.
+        for index in 0..self.nodes.len() { self.refresh_node_memory(index); }
+        drop(removed_edges);
     }
 
     #[cfg(test)]
@@ -1102,13 +1220,15 @@ impl<T> History<T> {
     /// Commit a state for history users which do not retain edge metadata.
     /// Document history uses [`History::commit_with_maps`] instead.
     pub(crate) fn commit(&mut self, state: T, grouping: bool) {
+        self.refresh_node_memory(self.current);
         let retained_buffers = collect_retained_buffers(self.accounting.as_ref(), &state);
         if grouping {
             if let Some(group) = self.group_node {
                 debug_assert_eq!(group, self.current);
-                self.nodes[group].state = Arc::new(state);
+                let previous = std::mem::replace(&mut self.nodes[group].state, Arc::new(state));
                 self.nodes[group].retained_buffers = retained_buffers;
                 self.enforce_retention();
+                drop(previous);
                 return;
             }
         }
@@ -1139,10 +1259,13 @@ impl<T> History<T> {
             preferred_child: None,
             incoming,
             retained_buffers,
+            memory_roots: Vec::new(),
+            memory_metadata_bytes: 0,
         });
         self.node_indexes.insert(id, index);
         self.change_indexes.insert(change, index);
         self.nodes[parent].children.push(index);
+        self.refresh_node_memory(parent);
         self.nodes[parent].preferred_child = Some(index);
         self.current = index;
         self.group_node = grouping.then_some(index);
@@ -1162,13 +1285,14 @@ impl<T> History<T, PositionMap> {
         state: T,
         grouping: bool,
         forward: PositionMap,
-        reverse: PositionMap,
         transaction: HistoryTransactionSummary,
         restoration: HistoryRestoration,
     ) -> Result<(), PositionError> {
+        self.refresh_node_memory(self.current);
         // Check that the two directions meet at the same revision and length.
         // They need not be mathematical inverses for inserted/deleted content,
         // whose identity is intentionally unrecoverable.
+        let reverse = forward.inverted()?;
         let _ = forward.then(&reverse)?;
         let _ = reverse.then(&forward)?;
         let retained_buffers = collect_retained_buffers(self.accounting.as_ref(), &state);
@@ -1180,18 +1304,17 @@ impl<T> History<T, PositionMap> {
                     .incoming
                     .as_ref()
                     .expect("a non-root group node has an incoming edge");
-                let composed_forward = edge.forward.then(&forward)?;
-                let composed_reverse = reverse.then(&edge.reverse)?;
-                self.nodes[group].state = Arc::new(state);
+                let composed_forward = edge.map.then(&forward)?;
+                let previous_state = std::mem::replace(&mut self.nodes[group].state, Arc::new(state));
                 self.nodes[group].retained_buffers = retained_buffers;
                 let edge = self.nodes[group]
                     .incoming
                     .as_mut()
                     .expect("a non-root group node has an incoming edge");
-                edge.forward = composed_forward;
-                edge.reverse = composed_reverse;
+                let previous_map = std::mem::replace(&mut edge.map, composed_forward);
                 edge.record.append(transaction, Some(restoration));
                 self.enforce_retention();
+                drop((previous_state, previous_map));
                 return Ok(());
             }
         }
@@ -1212,15 +1335,17 @@ impl<T> History<T, PositionMap> {
             children: Vec::new(),
             preferred_child: None,
             incoming: Some(HistoryEdge {
-                forward,
-                reverse,
+                map: forward,
                 record: HistoryUnitRecord::new(transaction, Some(restoration)),
             }),
             retained_buffers,
+            memory_roots: Vec::new(),
+            memory_metadata_bytes: 0,
         });
         self.node_indexes.insert(id, index);
         self.change_indexes.insert(change, index);
         self.nodes[parent].children.push(index);
+        self.refresh_node_memory(parent);
         self.nodes[parent].preferred_child = Some(index);
         self.current = index;
         self.group_node = grouping.then_some(index);
@@ -1261,14 +1386,14 @@ impl<T> History<T, PositionMap> {
                 .incoming
                 .as_ref()
                 .expect("every non-root document history node has an edge");
-            map = map.then(&edge.reverse)?;
+            map = map.then(&edge.map.inverted()?)?;
         }
         for child in &to_path[common..] {
             let edge = self.nodes[*child]
                 .incoming
                 .as_ref()
                 .expect("every non-root document history node has an edge");
-            map = map.then(&edge.forward)?;
+            map = map.then(&edge.map)?;
         }
         Ok(map)
     }

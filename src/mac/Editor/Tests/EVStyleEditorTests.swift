@@ -69,9 +69,12 @@ final class EVStyleEditorTests: XCTestCase {
         defer { coordinator.close() }
         let originalWindow = try XCTUnwrap(coordinator.styleWindow)
 
-        XCTAssertFalse(originalWindow is NSPanel)
+        XCTAssertTrue(originalWindow is NSPanel)
+        XCTAssertEqual(originalWindow.title, "Styles")
         XCTAssertTrue(originalWindow.styleMask.contains(.titled))
+        XCTAssertTrue(originalWindow.styleMask.contains(.utilityWindow))
         XCTAssertTrue(originalWindow.styleMask.contains(.resizable))
+        XCTAssertTrue(originalWindow.canBecomeMain)
         XCTAssertNil(originalWindow.sheetParent)
         XCTAssertEqual(originalWindow.level, .normal)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, EVStyleKey.baseParagraph)

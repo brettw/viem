@@ -262,24 +262,24 @@ fn whole_list_item_delete_consumes_structure_and_preserves_following_ordinals() 
         (
             "<ul><li data-x='old'><b>one</b><!--keep--></li><li>two</li></ul>",
             "dd",
-            "• two",
+            "two",
         ),
         (
             "<ol start='3'><li>one</li><li data-x='keep'>two</li><li>three</li></ol>",
             "dd",
-            "4. two\n5. three",
+            "two\nthree",
         ),
         (
             "<ol><li>one</li><li>two</li><li>three</li></ol>",
             "jdd",
-            "1. one\n3. three",
+            "one\nthree",
         ),
-        ("<ol><li>one</li><li>two</li></ol>", "jdd", "1. one"),
+        ("<ol><li>one</li><li>two</li></ol>", "jdd", "one"),
         ("<ul><li>one</li></ul>", "dd", ""),
         (
             "<ul><li><p>one</p><p>more</p></li><li>two</li></ul>",
             "2dd",
-            "• two",
+            "two",
         ),
     ] {
         let mut document = html(source);

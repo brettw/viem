@@ -3,6 +3,66 @@ use evim_core::document::{
 };
 
 #[test]
+fn removing_last_rtf_group_character_retains_empty_typing_context() {
+    use evim_core::document::FontSlant;
+    use evim_core::layout::DocumentLayoutStyles;
+    for encoding in [Encoding::Utf8, Encoding::Latin1] {
+        let original = r"{\rtf1 Before {\i x} after}";
+        let bytes: Vec<u8> = match encoding {
+            Encoding::Utf8 | Encoding::Latin1 => original.as_bytes().to_vec(),
+            _ => unreachable!(),
+        };
+        let mut document = Document::from_bytes(bytes.clone(), encoding, Format::Rtf).unwrap();
+        document.replace(7..8, "").unwrap();
+        let fresh = Document::from_bytes(document.source_bytes(), encoding, Format::Rtf).unwrap();
+        assert_eq!(document.text(), "Before  after");
+        assert_eq!(
+            document.projection().provenance(),
+            fresh.projection().provenance()
+        );
+        assert!(document
+            .projection()
+            .provenance()
+            .iter()
+            .any(|span| span.formatted == (7..7)));
+        document.insert(7, "é").unwrap();
+        let style =
+            DocumentLayoutStyles::semantic_character_at(document.projection(), 7, false).unwrap();
+        assert_eq!(style.slant, FontSlant::Italic);
+        assert_eq!(document.text(), "Before é after");
+        assert!(document.undo());
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), bytes);
+    }
+}
+
+#[test]
+fn ordinary_rtf_group_interior_deletion_remains_regional() {
+    let source = format!("{{\\rtf1 {}}}", "{\\i many words}\\par ".repeat(10_000));
+    let mut document =
+        Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Rtf).unwrap();
+    let at = document.projection().hard_line_range(5_000).unwrap().start + 1;
+    let prepared = document
+        .prepare_model_request(ModelRequest::ApplyTextEdits {
+            document: document.id(),
+            revision: document.revision(),
+            edits: vec![TextEdit::new(at..at + 1, "")],
+        })
+        .unwrap();
+    assert_eq!(
+        prepared.summary().projection_work().scope(),
+        ProjectionWorkScope::RegionalHardLines
+    );
+    assert!(prepared.summary().projection_work().decoded_source_bytes() < 256);
+    document.commit_model_transaction(prepared).unwrap();
+    let fresh = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Rtf).unwrap();
+    assert_eq!(
+        document.projection().provenance(),
+        fresh.projection().provenance()
+    );
+}
+
+#[test]
 fn ordinary_rich_edits_reparse_one_line_and_share_unaffected_indexes() {
     for format in [Format::Html, Format::Rtf] {
         let mut source = if format == Format::Rtf {

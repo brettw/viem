@@ -2084,7 +2084,11 @@ Tab, Backspace, Forward Delete, arrow movement, Home/End, Page Up/Down,
 macOS marked-text/IME composition is required. An active composition is a
 temporary marked range, updates visually as one composition, and commits as a
 single source transaction/undo unit. Cancelled composition restores the
-pre-composition projection without changing source.
+pre-composition projection without changing source. Escape/Ctrl-[ and AppKit's
+cancel responder action discard input-context candidate state, including the
+press-and-hold accent picker even when it has no marked-text range. Cancelling
+an active marked range preserves its prior mode and source; dismissing a picker
+must not delete the already committed base letter.
 Core commands must not see partially decoded key events as text.
 
 Insert/Replace source transactions are grouped according to the undo-unit rules
@@ -2316,9 +2320,13 @@ source-snapshot identity is the persisted identity; undoing away from a saved
 node makes it dirty and returning to that exact snapshot makes it clean again.
 Changing file identity with a successful `:saveas` is not undone.
 
-History retention has configurable node and retained-byte budgets and must
-account for structurally shared source buffers rather than charging each
-snapshot its apparent full size. Pruning removes the oldest non-current leaf
+History retention has configurable node and retained-byte budgets. The byte
+budget includes retained source, derived projections and their materialized
+caches, position maps, and history bookkeeping. A conservative heap estimate
+is acceptable; serialized source-byte length alone is not. Structurally shared
+allocations are charged once, and retained-memory accounting for a new
+persistent snapshot must not traverse unchanged shared subtrees. Source-buffer bytes remain a separate
+diagnostic metric. Pruning removes the oldest non-current leaf
 branches first. If the retained current ancestry alone exceeds the budget, the
 oldest retained state is promoted to a new root, making older changes
 explicitly unavailable without affecting the current document. The active
@@ -2423,6 +2431,17 @@ line-mode policy, status bar, and scrollbar. Split creation distributes the
 available height and allows native divider resizing. Closing a pane keeps a
 shared document alive in its other panes. Save, style commands, and validation
 route to the focused pane. Closing the final view reviews unsaved changes.
+Each distinct document being closed receives one native unsaved-changes review;
+accepting Save or Delete/Don't Save must not trigger a second review. Cancel
+keeps the window and its unsaved content available for a later close attempt.
+
+Finder file drops target the receiving editor pane. The first dropped file
+replaces that pane's document when it is clean, including an empty untitled
+document. If the target has unsaved changes, the file opens in a new window.
+Additional dropped files open in new windows. Opening failures preserve the
+target; asynchronous opening rechecks the original pane identity and dirty
+state before replacement. File drops open files without inserting their paths
+into the prose or overwriting files on disk.
 
 Document identity resolves standardized paths and symlinks and compares native
 file identity for hard links. Opening an already represented file reuses the
@@ -2682,6 +2701,12 @@ serialization. Semantic paragraph boundaries and preformatted code retain
 their breaks. Toggling it changes only view layout; it does not change document
 history or other views of the same buffer.
 
+Zoom In and Zoom Out advance through 25, 33, 50, 67, 75, 80, 90, 100,
+110, 125, 150, 175, 200, 250, 300, 400, and 500 percent, saturating at
+25 and 500 percent. On macOS their shortcuts are Option-Equals and
+Option-Hyphen. The portable checked scale API accepts intermediate scales
+within that range; each control chooses the next strictly adjacent stop.
+
 Menu validation comes from current core state and pipeline capabilities.
 Actions that cannot apply to the current selection or adapter are disabled.
 Rich-formatting actions are disabled for plain text; `Document Format…` may
@@ -2715,6 +2740,11 @@ checkboxes, or `Cancel` and `OK` buttons.
   auxiliary window or panel. It is never an application-modal dialog or a
   document-modal sheet. The user can focus and edit any document while it is
   open.
+- Its title is **Styles**, with the compact utility-panel title bar and window
+  buttons used by the native font picker. Formatting controls, preview, and
+  resolved summary have no section headings. Omit the inherited-formatting
+  instruction, live-apply footer text, and separator above the Close button;
+  relevant availability and error messages remain visible when needed.
 - Exactly one style-editor window exists application-wide. Invoking any
   `Edit Styles…` action while it is closed creates it. Invoking one while it is
   open brings the existing window forward, retargets it to the invoking
@@ -2833,6 +2863,12 @@ Expose controls for all initial Paragraph Layout properties:
 Controls that are meaningless for the chosen line-spacing kind are disabled
 without erasing their last valid draft value. Only the active kind and its
 applicable value form the committed declaration.
+
+Numeric style fields have native up/down steppers on their right edge. A
+step uses the displayed resolved value and creates an explicit declaration;
+inherited reset remains available. Invalid drafts disable the stepper without
+committing. Indents, paragraph spacing, baseline offsets, and tracking retain
+their supported signed ranges. Held autorepeat is one continuous undo gesture.
 
 #### Live application, preview, and undo
 
@@ -3512,6 +3548,20 @@ scroll.
   text.
 - Horizontal scroll state is meaningful only when wrapping is off or content
   intentionally overflows.
+- Every document view has native scrollbars. The vertical scrollbar follows
+  the macOS Show scroll bars preference, including live preference changes:
+  legacy scrollbars remain visible, while overlay scrollbars appear during
+  scrolling and fade after a short idle delay. Scrollbar interaction changes
+  the core-owned viewport without moving the editing caret.
+- The horizontal scrollbar is available only when a displayed row intersecting
+  the current vertical viewport extends beyond its width. Its range reflects
+  those visible rows, excluding overscan and wider rows elsewhere in the
+  document. Scrolling vertically clamps the horizontal origin to the new
+  visible range. Showing and hiding the horizontal scrollbar fades with a short
+  delay to avoid flicker at viewport boundaries. Visibility changes must not
+  trigger repeated reflow; legacy scrollbar gutters remain stable while fading.
+- Scrollbar extents use bounded current layout and the existing document-height
+  estimates. Updating a scrollbar must not shape or scan the whole document.
 
 ## macOS frontend requirements
 
@@ -3805,16 +3855,31 @@ The two Markdown views share one physical Markdown serialization:
   boundaries use two current-fileformat endings. Splitting heading or list text
   may add a supporting ending to preserve a following paragraph. Untouched
   source bytes remain exact.
-- **Markdown Source** preserves every decoded source character, including formatting
-  delimiters, in editable display text. Parsed styles apply to the associated
-  source spans, including heading and emphasis delimiters. Editing a delimiter
-  reparses and updates formatting immediately. Formatting commands update the
-  source delimiters, and switching between these views preserves source bytes.
+- **Markdown Source** keeps formatting delimiters and ordinary source-line
+  endings editable, with parsed styles applied to their source spans. Blank
+  source lines used to separate paragraphs project to styled paragraph
+  boundaries, without additional raw blank rows. Their pairing and intentional
+  empty-paragraph semantics match WYSIWYG. Ordinary source continuation lines
+  share one paragraph style and retain internal line breaks when source flow is
+  off; paragraph spacing applies only around the complete paragraph. Code-block
+  whitespace remains literal. Paragraph separators retain their complete source provenance, so editing and
+  saving preserve physical bytes outside the explicit patch set. Editing a
+  delimiter reparses and updates formatting immediately. Formatting commands
+  update source delimiters, and switching views preserves source bytes. Enter on
+  an empty list item removes its marker and inserts the source separator needed
+  for subsequent typing to remain a separate, unnumbered ordinary paragraph.
 
 Opening a Markdown file retains the existing WYSIWYG default. The status popup
 can select the source-visible Markdown view. New bold uses `**`, italic uses
 `*`, and headings use one through six `#` characters followed by one space.
 Untouched alternative delimiters and physical line endings remain exact.
+
+Switching Markdown Source and WYSIWYG must preserve source bytes and anchors
+without quadratic work in document length and formatting-change count.
+Reprojection maps use ordered batch traversal of provenance and changes;
+the frontend refreshes each affected view once and exports only its viewport
+text. Large-document regressions must cover the first switch in both
+directions, rather than relying only on a warmed projection cache.
 
 The built-in Code character style and Code Block paragraph style use the system
 monospace family and dark green (`#006400`). HTML `<code>` and `<pre>` and
@@ -3823,6 +3888,41 @@ editable and preserved. New simple HTML bold and italic formatting uses `<b>`
 and `<i>` where those tags express the requested change. More complex or
 interacting properties use sparse CSS declarations as needed. Existing untouched
 HTML spelling remains exact.
+
+Markdown and HTML Paragraph defaults have 7pt space before and 7pt space after
+at the default 14pt font size. Their additive spacing yields the common one-em
+gap between adjacent paragraphs. Code Block inherits this outer spacing;
+Markdown Code Block also has a 32pt logical start indent. User defaults and
+explicit source style declarations can override these defaults without
+materializing them in untouched source.
+
+Each fenced Markdown block or HTML `<pre>` is one paragraph, including in
+source-visible views. Its internal source endings produce explicit line breaks
+within that paragraph, so spacing is applied only around the block. These
+breaks preserve code indentation and blank rows and are distinct from automatic
+word wrapping. HTML entities are decoded in WYSIWYG code; source-visible code
+retains the literal source. Enter inside HTML preformatted content inserts a
+`<br>` when needed to preserve the requested line on reprojection.
+Typing spaces or tabs in an HTML context that already preserves whitespace
+uses literal source whitespace; it does not add nested preservation spans.
+Explicit HTML whitespace overrides retain their own semantics.
+
+Markdown ordered and bulleted item continuations flow together into item
+paragraphs, including lazy continuations and indented continuation paragraphs.
+Ordered display labels count from the first source ordinal; untouched source
+marker spellings remain exact. Markdown and HTML list levels default to a
+32pt logical start inset per level, zero paragraph spacing, zero first-line body
+indent, and hanging labels. The label gutter is independent of the signed
+first-line body indent, so explicit positive and negative values remain active.
+The measured label occupies the hanging area; first-row item text and following
+rows align at the body inset, including when the ordinal gains a digit. A
+heading or code paragraph within an item retains its own paragraph style and
+the enclosing list inset. In every WYSIWYG format, bullets and ordered labels,
+including their following gap, are layout decorations outside the formatted
+text. They have no text, register, selection, hit-test, or caret positions. The
+first body grapheme is the first editable character. At a wrapped list row end,
+`$` and `A` target the final body grapheme and its following boundary before
+wrap-separator whitespace. Source-visible views retain literal list syntax.
 
 The two HTML views similarly share one physical HTML serialization:
 
@@ -3852,7 +3952,8 @@ identities and generated buffer configuration, like generated Markdown styles.
 Their customization survives edits and history navigation in that buffer,
 never changes HTML bytes, and returns to defaults when a document is reopened.
 
-HTML Source uses physical source lines as its displayed paragraph units.
+HTML Source uses physical source lines as its displayed paragraph units, except
+that each preformatted block shares one paragraph across its source lines.
 Recovered semantic paragraph styles contribute character defaults and named
 style identity to their source spans. Paragraph spacing and alignment remain
 editable source properties and take full effect in WYSIWYG; independent HTML
@@ -3941,18 +4042,21 @@ between them, or removes list structure from the current paragraph or selected
 paragraphs. Enter continues an item; Enter on an empty item exits the list.
 Numbered continuation and repeat calculate the next ordinal from current
 structure. One list action and its supporting source patches form one undo unit.
-New plain-text and Markdown lists use `- ` or decimal `1. ` markers, with
+New plain-text lists and Markdown source use `- ` or decimal `1. ` markers, with
 sequential numbers across the selected items. Source-visible Markdown displays
-and edits those markers. Rich HTML/RTF markers are generated, have synthetic
-provenance, and are not independently editable source characters.
+and edits those markers; Markdown WYSIWYG renders canonical bullets and ordered
+labels as described above. Markdown/HTML/RTF WYSIWYG labels are shaped and painted
+from list metadata by layout; source marker syntax remains losslessly preserved.
 
-Deleting complete rich list items consumes their generated labels and selected
-paragraph boundaries as one structural edit. Surviving items retain their
+Linewise deletion of complete list items removes their source structure and
+selected paragraph boundaries as one structural edit. Characterwise deletion or
+replacement of the entire body retains an empty list item. Deleting partial
+visual rows retains the containing item. For HTML/RTF, surviving items retain their
 displayed ordinals. The transaction may add explicit HTML `li value` attributes
 or scoped RTF numbering overrides to preserve those ordinals; source tables and
-unrelated opaque content remain untouched. Partial deletion of a generated
-label remains unsupported. Enter advances following item numbers within the
-same list until an explicit restart or container boundary. HTML `li value`
+unrelated opaque content remain untouched. Markdown numbering follows the
+container's starting ordinal while preserving untouched source label spellings.
+Enter advances following item numbers within the same list until an explicit restart or container boundary. HTML `li value`
 restarts bound that change; RTF updates the affected legacy numbering controls
 or adds scoped overrides while preserving table handles. New RTF paragraphs
 clear inherited modern numbering with `\ls0`; the original selector resumes

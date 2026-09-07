@@ -303,7 +303,10 @@ fn rich_paragraph_layout_indents_first_hard_line_and_invalidates_spacing_only() 
         assert_ne!(rows[1].paragraph_id, rows[2].paragraph_id);
         assert_eq!(rows[0].carets[0].x - rows[1].carets[0].x, 24.0);
         assert_eq!(rows[1].y - rows[0].y, rows[0].line_advance);
-        assert_eq!(rows[2].y - rows[1].y, rows[1].line_advance + 18.0);
+        assert_eq!(
+            rows[2].y - rows[1].y,
+            rows[1].line_advance + 18.0 + if format == Format::Html { 7.0 } else { 0.0 }
+        );
         let shaped = engine.provider().request_calls();
         let old_y = rows[2].y;
         let selected = range(&document, 0, 1);
@@ -438,8 +441,8 @@ fn rtf_paragraph_direct_clear_retains_generated_list_and_inline_styles() {
             properties: BTreeSet::from([StyleProperty::ParagraphAlignment]),
         },
     );
-    assert_eq!(document.text(), "1. One body\nTail");
-    assert_eq!(direct(&document, 3).bold, Some(true));
+    assert_eq!(document.text(), "One body\nTail");
+    assert_eq!(direct(&document, 0).bold, Some(true));
     assert_eq!(
         document.projection().blocks()[0].direct_paragraph.alignment,
         None

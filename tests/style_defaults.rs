@@ -42,7 +42,7 @@ fn rich_default_list_paragraph_styles_are_assignable_source_backed_and_undoable(
                     .unwrap()
                     .block
                     .leading_indent,
-                Some(20.0 * level as f32)
+                Some((if format == Format::Html { 32.0 } else { 20.0 }) * level as f32)
             );
             assert_eq!(
                 reopened
@@ -149,7 +149,10 @@ fn defaults_define_only_three_list_levels_and_import_synthesizes_used_depth() {
             .style_sheet()
             .block_style(&"List6".into())
             .unwrap();
-        assert_eq!(sixth.block.leading_indent, Some(120.0));
+        assert_eq!(
+            sixth.block.leading_indent,
+            Some(if format == Format::Rtf { 120.0 } else { 192.0 })
+        );
     }
 }
 
@@ -157,8 +160,8 @@ fn defaults_define_only_three_list_levels_and_import_synthesizes_used_depth() {
 fn editing_list_depth_adds_missing_styles_and_undo_restores_prior_sheet() {
     let mut document = open("- One\n  - Two\n    - Three", Format::MarkdownSource);
     assert_eq!(lists(&document).len(), 3);
-    let last = document.text().rfind("    -").unwrap();
-    document.replace(last..last, "  ").unwrap();
+    let end = document.text().len();
+    document.insert(end, "\n      - Four").unwrap();
     assert_eq!(lists(&document), ["List1", "List2", "List3", "List4"]);
     assert!(document.undo());
     assert_eq!(lists(&document), ["List1", "List2", "List3"]);

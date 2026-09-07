@@ -16,7 +16,6 @@ pub(super) struct Builder<'a> {
     pub kind: BlockKind,
     pub paragraph: BlockProperties,
     pub defaults: CharacterProperties,
-    pub marker_origin: Option<Range<usize>>,
     pub style_sheet: StyleSheet,
     pub paragraph_style: Option<super::StyleId>,
     pub named_character: Option<super::StyleId>,
@@ -41,7 +40,6 @@ impl<'a> Builder<'a> {
             style_sheet: StyleSheet::default(),
             paragraph_style: None,
             named_character: None,
-            marker_origin: None,
             line_start: 0,
             paragraph_start: 0,
             paragraphs: Vec::new(),
@@ -79,7 +77,6 @@ impl<'a> Builder<'a> {
         if let Some(index) = self.pending_empty_seed.take() {
             self.provenance.remove(index);
         }
-        self.emit_list_marker();
         let start = self.text.len();
         self.text.push_str(value);
         let range = start..self.text.len();
@@ -107,7 +104,7 @@ impl<'a> Builder<'a> {
                 .spans
                 .iter_mut()
                 .rev()
-                .take(2)
+                .take(3)
                 .find(|span| span.range.end == start && span.application == application)
             {
                 last.range.end = range.end;
@@ -119,7 +116,7 @@ impl<'a> Builder<'a> {
             }
         }
         if *style != CharacterProperties::default() {
-            if let Some(last) = self.spans.iter_mut().rev().take(2).find(|s| {
+            if let Some(last) = self.spans.iter_mut().rev().take(3).find(|s| {
                 s.range.end == start && s.application == StyleApplication::Direct(style.clone())
             }) {
                 last.range.end = range.end;
@@ -154,6 +151,9 @@ impl<'a> Builder<'a> {
     }
     pub fn empty_boundary_at(&mut self, input_at: usize) {
         if self.line_is_empty() {
+            if let Some(index) = self.pending_empty_seed.take() {
+                self.provenance.remove(index);
+            }
             let at = self.text.len();
             self.pending_empty_seed = Some(self.provenance.len());
             self.provenance.push(ProvenanceSpan {
@@ -190,7 +190,6 @@ impl<'a> Builder<'a> {
         self.text.push_str(value);
     }
     fn finish_line(&mut self) {
-        self.emit_list_marker();
         let mut style = self
             .paragraph_style
             .clone()
@@ -217,33 +216,6 @@ impl<'a> Builder<'a> {
             direct_default_character: self.defaults.clone(),
         });
     }
-    pub fn emit_list_marker(&mut self) {
-        if self.text.len() == self.paragraph_start {
-            if let BlockKind::ListItem {
-                ordered,
-                ordinal,
-                item_start: true,
-                ..
-            } = self.kind
-            {
-                // List labels are generated paragraph furniture. They have no
-                // editable source interior; authoring goes through list intent.
-                let start = self.text.len();
-                self.text.push_str(&if ordered {
-                    format!("{ordinal}. ")
-                } else {
-                    "• ".to_owned()
-                });
-                if let Some(origin) = &self.marker_origin {
-                    let at = self.source_range(origin.clone()).end;
-                    self.provenance.push(ProvenanceSpan {
-                        formatted: start..self.text.len(),
-                        source: at..at,
-                    });
-                }
-            }
-        }
-    }
     pub fn hard_break(&mut self, input_range: Range<usize>) {
         self.pending_empty_seed = None;
         self.finish_line();
@@ -253,7 +225,6 @@ impl<'a> Builder<'a> {
         self.line_start = self.text.len();
     }
     fn finish_paragraph(&mut self) {
-        self.emit_list_marker();
         let mut style = self
             .paragraph_style
             .clone()
@@ -314,6 +285,15 @@ pub(super) fn text_source_range(
     if document.projection().text_tree().byte_len() != 0 || !range.is_empty() {
         return editable_source_range(document.projection(), range);
     }
+    if let Some(anchor) = document
+        .projection()
+        .provenance()
+        .iter()
+        .rev()
+        .find(|span| span.formatted.is_empty() && span.source.is_empty())
+    {
+        return Ok(anchor.source.clone());
+    }
     let decoded = document.encoding().decode(&document.source_bytes())?;
     let normalized = super::line_endings::normalize(&decoded, document.file_format());
     let at = match document.format() {
@@ -324,6 +304,51 @@ pub(super) fn text_source_range(
     }
     .ok_or(DocumentError::AmbiguousProjection)?;
     Ok(at..at)
+}
+
+/// A structural list action identifies its source container from actual body
+/// provenance. Empty items use their innermost editable anchor; decoration
+/// never contributes a competing source boundary to the formatted model.
+pub(super) fn list_item_source_point(
+    projection: &FormattedDocument,
+    item: &super::ListItemNode,
+) -> Result<usize, DocumentError> {
+    let block = projection
+        .blocks()
+        .iter()
+        .find(|block| block.id == item.paragraph_id)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    block_source_point(projection, block)
+}
+
+pub(super) fn block_source_point(
+    projection: &FormattedDocument,
+    block: &Block,
+) -> Result<usize, DocumentError> {
+    if block.range.is_empty() {
+        let spans = projection.provenance();
+        let end = spans.partition_point(|span| span.formatted.start <= block.range.start);
+        return spans[..end]
+            .iter()
+            .rev()
+            .take_while(|span| span.formatted.start == block.range.start)
+            .find(|span| span.formatted.is_empty() && span.source.is_empty())
+            .map(|span| span.source.start)
+            .ok_or(DocumentError::AmbiguousProjection);
+    }
+    let spans = projection.provenance_for_region(&block.range);
+    spans
+        .iter()
+        .find(|span| !span.formatted.is_empty() && !span.source.is_empty())
+        .map(|span| span.source.start)
+        .or_else(|| {
+            spans
+                .iter()
+                .rev()
+                .find(|span| span.formatted == block.range && span.source.is_empty())
+                .map(|span| span.source.start)
+        })
+        .ok_or(DocumentError::AmbiguousProjection)
 }
 
 /// A visible selection is editable only when all its source bytes are visible,
@@ -429,6 +454,7 @@ pub(super) fn character_edit_verified(
             match &span.application {
                 StyleApplication::Direct(layer) => overlay(&mut direct, layer),
                 StyleApplication::Named(style) => named = Some(style),
+                StyleApplication::SourcePreservedWhitespace => {}
                 StyleApplication::Semantic(_)
                 | StyleApplication::Automatic(_)
                 | StyleApplication::SourceSyntax
@@ -544,7 +570,15 @@ pub(super) fn character_clear_verified(
 /// Escape new text exactly without changing the source encoding. Characters
 /// unavailable in the original converter use HTML numeric references.
 pub(super) fn escape_html_text(text: &str, encoding: super::Encoding) -> String {
-    let syntax = super::html::escape(text);
+    escape_html_text_in_context(text, encoding, false)
+}
+
+fn escape_html_text_in_context(text: &str, encoding: super::Encoding, preserve: bool) -> String {
+    let syntax = if preserve {
+        super::html::escape_preserving_whitespace(text)
+    } else {
+        super::html::escape(text)
+    };
     if encoding.encode_fragment(&syntax).is_ok() {
         return syntax;
     }
@@ -569,7 +603,9 @@ pub(super) fn escape_html_source_edit(
     source_start: usize,
     text: &str,
 ) -> Result<String, DocumentError> {
-    let syntax = escape_html_text(text, document.encoding());
+    let preserve =
+        text.contains([' ', '\t']) && html_preserves_whitespace_at_source(document, source_start)?;
+    let syntax = escape_html_text_in_context(text, document.encoding(), preserve);
     if source_start == 0
         || syntax
             .chars()
@@ -606,10 +642,65 @@ pub(super) fn escape_html_source_edit(
         Some(first) => format!(
             "&#x{:X};{}",
             first as u32,
-            escape_html_text(&text[first.len_utf8()..], document.encoding())
+            escape_html_text_in_context(&text[first.len_utf8()..], document.encoding(), preserve)
         ),
         None => "<!---->".to_owned(),
     })
+}
+
+pub(super) fn html_preserves_whitespace_at_source(
+    document: &super::Document,
+    source_start: usize,
+) -> Result<bool, DocumentError> {
+    let projection = document.projection();
+    let Ok(mapped) = projection.map_source_boundary(
+        document.revision(),
+        source_start,
+        super::BoundaryAffinity::Downstream,
+    ) else {
+        return Ok(false);
+    };
+    let at = mapped.formatted_offset;
+    let range = at.saturating_sub(1)..(at + 1).min(projection.text_tree().byte_len());
+    let styles = projection.style_spans_for_region(&range);
+    let preserved = |sample| {
+        styles.iter().any(|span| {
+            span.range.contains(&sample)
+                && span.application == StyleApplication::SourcePreservedWhitespace
+        })
+    };
+    let provenance = projection.provenance_for_region(&range);
+    for span in &provenance {
+        if span.formatted.is_empty() {
+            continue;
+        }
+        if span.source.start == source_start && preserved(span.formatted.start)
+            || span.source.end == source_start && preserved(span.formatted.end - 1)
+        {
+            return Ok(true);
+        }
+    }
+    // Empty elements have a source anchor but no character to annotate. Read
+    // only the local gap after the preceding visible character, never the
+    // complete code paragraph. The annotation seeds inherited pre behavior.
+    let previous = provenance
+        .iter()
+        .filter(|span| !span.formatted.is_empty() && span.source.end <= source_start)
+        .max_by_key(|span| span.source.end);
+    let start = previous.map_or(0, |span| span.source.end);
+    if source_start.saturating_sub(start) > 1024 {
+        return Ok(false);
+    }
+    let bytes = document
+        .state()
+        .source
+        .bytes_in(start..source_start)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let gap = document.encoding().decode_region(&bytes, start)?;
+    Ok(super::html::whitespace_after_source_gap(
+        &gap.text,
+        previous.is_some_and(|span| preserved(span.formatted.end - 1)),
+    ))
 }
 
 pub(super) fn resolved_character_at(

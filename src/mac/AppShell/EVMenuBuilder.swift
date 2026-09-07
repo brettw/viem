@@ -406,8 +406,8 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(coreItem("Flow Source Paragraphs", command: .flowParagraphs))
         menu.addItem(coreItem("Show Invisible Characters", command: .showInvisibleCharacters))
         menu.addItem(.separator())
-        menu.addItem(coreItem("Zoom In", command: .zoomIn))
-        menu.addItem(coreItem("Zoom Out", command: .zoomOut))
+        menu.addItem(coreItem("Zoom In", command: .zoomIn, key: "=", modifiers: [.option]))
+        menu.addItem(coreItem("Zoom Out", command: .zoomOut, key: "-", modifiers: [.option]))
         menu.addItem(coreItem("Actual Size", command: .actualSize))
         menu.addItem(.separator())
         menu.addItem(responderItem(

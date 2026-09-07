@@ -32,14 +32,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     var pasteboard: any EVPasteboardAccess = EVAppKitPasteboardAccess.shared
     var findPasteboard: any EVPasteboardAccess = EVAppKitPasteboardAccess.find
 
-    /// Deterministic native-menu zoom stops. The exact selected value is
-    /// stored by core as per-view state; AppKit never derives scale from the
-    /// current font or transforms an already laid-out bitmap.
-    private static let zoomStops: [Float] = [
-        0.25, 0.33, 0.50, 0.67, 0.75, 0.80, 0.90, 1.00,
-        1.10, 1.25, 1.50, 1.75, 2.00, 2.50, 3.00, 4.00,
-    ]
-
     var editorView: EVEditorView { view as! EVEditorView }
 
     /// Compatibility/testing convenience. This is deliberately an explicit
@@ -115,7 +107,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         super.viewDidLayout()
         guard view.bounds.width > 0, view.bounds.height > 0 else { return }
         do {
-            let viewportSize = EVEditorView.layoutViewportSize(for: view.bounds.size)
+            let viewportSize = editorView.layoutViewportSize
             _ = try session?.resize(width: viewportSize.width, height: viewportSize.height)
             refreshPresentation()
         } catch {
@@ -126,7 +118,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     func attachToCore() throws {
         guard session == nil else { return }
         let size = isViewLoaded ? view.bounds.size : NSSize(width: 920, height: 655)
-        let viewportSize = EVEditorView.layoutViewportSize(for: size)
+        let viewportSize = isViewLoaded ? editorView.layoutViewportSize : EVEditorView.layoutViewportSize(for: size)
         let attachedSession = try EVCoreViewSession(
             document: backend,
             width: viewportSize.width,
@@ -563,11 +555,11 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             EVMenuItemPresentation(isEnabled: isVisualMode)
         case .zoomIn:
             EVMenuItemPresentation(
-                isEnabled: zoomScale < (Self.zoomStops.last ?? zoomScale)
+                isEnabled: ((try? session?.adjacentZoomScale(from: zoomScale, increasing: true)) ?? zoomScale) != zoomScale
             )
         case .zoomOut:
             EVMenuItemPresentation(
-                isEnabled: zoomScale > (Self.zoomStops.first ?? zoomScale)
+                isEnabled: ((try? session?.adjacentZoomScale(from: zoomScale, increasing: false)) ?? zoomScale) != zoomScale
             )
         case .actualSize:
             .enabled
@@ -847,14 +839,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         increasing: Bool,
         session: EVCoreViewSession
     ) {
-        let epsilon: Float = 0.0001
-        let target: Float?
-        if increasing {
-            target = Self.zoomStops.first(where: { $0 > current + epsilon })
-        } else {
-            target = Self.zoomStops.last(where: { $0 < current - epsilon })
-        }
-        guard let target else { return }
+        guard let target = try? session.adjacentZoomScale(from: current, increasing: increasing) else { return }
         setZoom(target, session: session)
     }
 

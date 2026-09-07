@@ -1,5 +1,5 @@
 //! Portable list containers derived from paragraph identities. Source adapters
-//! supply the structure; generated labels are explicit synthetic content.
+//! supply the structure; WYSIWYG labels are non-text layout decorations.
 use super::{BlockKind, FormattedDocument, ListStyle, Revision};
 use std::ops::Range;
 
@@ -14,6 +14,8 @@ pub struct ListItemNode {
     pub paragraph_id: u64,
     pub paragraph_ids: Vec<u64>,
     pub ordinal: u64,
+    /// Literal marker text in source modes; an empty body-start boundary for
+    /// layout decorations. Decorations never contribute editable characters.
     pub marker_range: Range<usize>,
     pub marker_is_synthetic: bool,
     pub child_lists: Vec<ListIdentity>,
@@ -38,6 +40,43 @@ pub struct ListStructure {
 }
 
 impl FormattedDocument {
+    /// The label is a short prefix even when its paragraph spans megabytes.
+    /// Source modes can retain indentation and alternate marker spelling.
+    pub(crate) fn list_marker_range_for_block(&self, block: &super::Block) -> Option<Range<usize>> {
+        let BlockKind::ListItem {
+            ordered,
+            ordinal,
+            item_start: true,
+            marker_is_decoration,
+            ..
+        } = block.kind
+        else {
+            return None;
+        };
+        if marker_is_decoration {
+            return Some(block.range.start..block.range.start);
+        }
+        let mut end = (block.range.start + 128).min(block.range.end);
+        while end > block.range.start && !self.text_tree().is_char_boundary(end).ok()? {
+            end -= 1;
+        }
+        let text = self.text_tree().slice(block.range.start..end).ok()?;
+        let prefix = super::markdown_blocks::marker_prefix_length(&text);
+        let canonical = if ordered {
+            format!("{ordinal}. ")
+        } else {
+            "• ".to_owned()
+        };
+        let length = if let Some(prefix) = prefix {
+            prefix
+        } else if text.starts_with(&canonical) {
+            canonical.len()
+        } else {
+            return None;
+        };
+        Some(block.range.start..(block.range.start + length).min(block.range.end))
+    }
+
     /// Enumerate list containers and their item/child relationships. Paragraph
     /// styles remain assigned to the paragraph inside each item.
     pub fn list_structure(&self) -> ListStructure {
@@ -50,6 +89,7 @@ impl FormattedDocument {
                 level,
                 container_start,
                 item_start,
+                ..
             } = block.kind
             else {
                 stack.clear();
@@ -112,21 +152,16 @@ impl FormattedDocument {
                     continue;
                 }
             }
-            let text = self
-                .text_tree()
-                .slice(block.range.clone())
-                .unwrap_or_default();
-            let (source_prefix, kind) =
-                super::projection::markdown_block_prefix(&text, 0, text.len());
-            let length = if matches!(kind, BlockKind::ListItem { .. }) {
-                source_prefix
-            } else if ordered {
-                format!("{ordinal}. ").len()
-            } else {
-                "• ".len()
-            };
-            let marker_range = block.range.start..(block.range.start + length).min(block.range.end);
-            let marker_is_synthetic = self
+            let marker_range = self
+                .list_marker_range_for_block(block)
+                .unwrap_or(block.range.start..block.range.start);
+            let marker_is_synthetic = matches!(
+                block.kind,
+                BlockKind::ListItem {
+                    marker_is_decoration: true,
+                    ..
+                }
+            ) || self
                 .provenance_for_region(&marker_range)
                 .iter()
                 .any(|span| span.is_synthetic());

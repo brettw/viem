@@ -482,6 +482,7 @@ pub struct ViewportState {
     left: f32,
     top: f32,
     maximum_left: Option<f32>,
+    estimated_maximum_left: f32,
     scale: f32,
     wrap: bool,
     linebreak: bool,
@@ -523,6 +524,10 @@ impl ViewportState {
 
     pub fn maximum_left(self) -> Option<f32> {
         self.maximum_left
+    }
+
+    pub fn estimated_maximum_left(self) -> f32 {
+        self.estimated_maximum_left
     }
 
     pub fn scale(self) -> f32 {
@@ -1879,10 +1884,15 @@ impl<P: TextMeasurementProvider> Core<P> {
             metrics_generation: requirements.metrics_generation,
             left: presentation_layout.viewport_left(),
             top: presentation_layout.viewport_top(),
-            maximum_left: if presentation_layout.wrap() || snapshot_is_current {
+            maximum_left: if snapshot_is_current {
                 presentation_layout.maximum_viewport_left()
             } else {
                 None
+            },
+            estimated_maximum_left: if snapshot_is_current {
+                presentation_layout.estimated_maximum_viewport_left()
+            } else {
+                presentation_layout.viewport_left()
             },
             scale: presentation_layout.scale(),
             wrap: presentation_layout.wrap(),
@@ -2424,6 +2434,113 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
     }
 
+    /// Measure the terminal viewport backward by hard-line band. A trailing
+    /// empty line must not cause an overscan job to capture a preceding giant
+    /// paragraph in full; long bands use the same resumable chunks as caret
+    /// navigation, and only their viewport tail is retained between chunks.
+    fn materialize_document_end(
+        &mut self,
+        view_id: ViewId,
+        staged_layout: &mut ViewLayout,
+        requirements: LayoutProviderRequirements,
+        immediate_layout_context: LayoutExecutionContext,
+    ) -> Result<Vec<LongLineLayoutCheckpoint>, CoreError> {
+        let flow = self.presentation_flow(view_id);
+        let count = self.document.projection().presentation_line_count(flow);
+        let height = staged_layout.height().max(f32::EPSILON);
+        let mut following = None;
+        let mut following_height = 0.0;
+        let mut checkpoints = Vec::new();
+        for line in (0..count).rev() {
+            let range = self
+                .document
+                .projection()
+                .presentation_line_range(line, flow)
+                .ok_or(LayoutError::InvalidTextOffset(self.document.text().len()))?;
+            let long = staged_layout.wrap() && range.len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES;
+            let mut checkpoint = if long {
+                let view = self.views.get_mut(&view_id).expect("view was validated");
+                view.long_line_checkpoints.discard_stale(
+                    &self.document,
+                    staged_layout,
+                    requirements,
+                );
+                view.long_line_checkpoints
+                    .before(range.clone(), range.end)
+                    .and_then(|last| {
+                        view.long_line_checkpoints.before_height(
+                            range.clone(),
+                            (last.completed_height() - height).max(0.0),
+                        )
+                    })
+            } else {
+                None
+            };
+            let mut chunk_tail = None;
+            loop {
+                let work_start = checkpoint
+                    .as_ref()
+                    .map_or(range.start, LongLineLayoutCheckpoint::next_text_offset);
+                let region = match checkpoint.take() {
+                    Some(checkpoint) => {
+                        ViewportLayoutRegion::resume_long_line(checkpoint, f32::MAX, height)?
+                    }
+                    None => ViewportLayoutRegion::new(line..line + 1, f32::MAX, height)?,
+                };
+                let job_id = self.allocate_layout_job_id()?;
+                let request = prepare_layout_job(
+                    &self.document,
+                    staged_layout,
+                    requirements,
+                    job_id,
+                    LayoutJobPriority::NewlyExposedRows,
+                    LayoutJobRegion::Viewport(region),
+                    LayoutCancellationToken::new(),
+                )?;
+                let mut candidate = {
+                    let view = self.views.get_mut(&view_id).expect("view remains attached");
+                    compute_layout_job(&mut view.engine, &request, immediate_layout_context)?
+                };
+                let next = candidate.next_long_line_checkpoint().cloned();
+                candidate.retain_viewport_tail(chunk_tail.as_ref());
+                if let Some(next) = next {
+                    if next.next_text_offset() <= work_start {
+                        return Err(LayoutJobError::InvalidLongLineCheckpoint(
+                            "document-end continuation did not advance",
+                        )
+                        .into());
+                    }
+                    chunk_tail = Some(candidate.regional_snapshot().clone());
+                    checkpoints.push(next.clone());
+                    if checkpoints.len() > 256 {
+                        checkpoints.remove(0);
+                    }
+                    checkpoint = Some(next);
+                    continue;
+                }
+                following_height += candidate.regional_snapshot().lines()[0].height();
+                candidate.append_following_viewport_tail(following.as_ref());
+                if following_height >= f64::from(height) || line == 0 {
+                    install_layout_job(
+                        staged_layout,
+                        LayoutInstallTarget {
+                            document_id: self.document.id(),
+                            document_revision: self.document.revision(),
+                            measurement_environment_id: requirements.measurement_environment_id,
+                            metrics_generation: requirements.metrics_generation,
+                        },
+                        candidate,
+                    )?;
+                    staged_layout.set_viewport_top(f32::MAX)?;
+                    return Ok(checkpoints);
+                }
+                following = Some(candidate.regional_snapshot().clone());
+                break;
+            }
+        }
+        unreachable!("a formatted document always has one hard line")
+    }
+
     /// Stage and atomically install the exact local layout needed for an
     /// absolute vertical presentation request. The requested y is first
     /// resolved through the compact height index. Its hard line and within-line
@@ -2484,78 +2601,90 @@ impl<P: TextMeasurementProvider> Core<P> {
         };
         let offset_from_target_line = (f64::from(requested_top) - target_line_top).max(0.0);
 
-        let visible_end = staged_layout
-            .hard_line_at_y(f64::from(requested_top) + f64::from(viewport_height))
-            .map_err(LayoutError::from)?
-            .map_or(hard_line_count, |hit| hit.hard_line().saturating_add(1));
-        let visible_start = target_line;
-        let visible_end = visible_end.max(target_line.saturating_add(1));
-        let overscan = (visible_end - visible_start).max(MIN_OVERSCAN_LINES);
-        let mut start = visible_start.saturating_sub(overscan);
-        let mut end = visible_end.saturating_add(overscan).min(hard_line_count);
-        let mut next_requested_top = requested_top;
-
-        loop {
-            let region = LayoutJobRegion::Viewport(ViewportLayoutRegion::new(
-                start..end,
-                next_requested_top,
-                viewport_height,
-            )?);
-            let job_id = self.allocate_layout_job_id()?;
-            let request = prepare_layout_job(
-                &self.document,
+        let mut new_checkpoints = Vec::new();
+        if target_hit.is_none() {
+            new_checkpoints = self.materialize_document_end(
+                view_id,
                 &mut staged_layout,
                 requirements,
-                job_id,
-                LayoutJobPriority::NewlyExposedRows,
-                region,
-                LayoutCancellationToken::new(),
+                immediate_layout_context,
             )?;
-            let candidate = {
-                let view = self
-                    .views
-                    .get_mut(&view_id)
-                    .expect("view remains attached during serial layout");
-                compute_layout_job(&mut view.engine, &request, immediate_layout_context)?
-            };
-            install_layout_job(
-                &mut staged_layout,
-                LayoutInstallTarget {
-                    document_id: self.document.id(),
-                    document_revision,
-                    measurement_environment_id: requirements.measurement_environment_id,
-                    metrics_generation: requirements.metrics_generation,
-                },
-                candidate,
-            )?;
-
-            let refined_line_top = staged_layout
-                .hard_line_prefix_height(target_line)
+        } else {
+            let visible_end = staged_layout
+                .hard_line_at_y(f64::from(requested_top) + f64::from(viewport_height))
                 .map_err(LayoutError::from)?
-                .height();
-            let refined_line_height = staged_layout
-                .hard_line_range_height(target_line..target_line + 1)
-                .map_err(LayoutError::from)?
-                .height();
-            let anchored_top = refined_line_top + offset_from_target_line.min(refined_line_height);
-            staged_layout.set_viewport_top(anchored_top.min(f64::from(f32::MAX)) as f32)?;
+                .map_or(hard_line_count, |hit| hit.hard_line().saturating_add(1));
+            let visible_start = target_line;
+            let visible_end = visible_end.max(target_line.saturating_add(1));
+            let overscan = (visible_end - visible_start).max(MIN_OVERSCAN_LINES);
+            let mut start = visible_start.saturating_sub(overscan);
+            let mut end = visible_end.saturating_add(overscan).min(hard_line_count);
+            let mut next_requested_top = requested_top;
 
-            let (extend_before, extend_after) = viewport_layout_extension_needed(&staged_layout);
-            if !extend_before && !extend_after {
-                break;
+            loop {
+                let region = LayoutJobRegion::Viewport(ViewportLayoutRegion::new(
+                    start..end,
+                    next_requested_top,
+                    viewport_height,
+                )?);
+                let job_id = self.allocate_layout_job_id()?;
+                let request = prepare_layout_job(
+                    &self.document,
+                    &mut staged_layout,
+                    requirements,
+                    job_id,
+                    LayoutJobPriority::NewlyExposedRows,
+                    region,
+                    LayoutCancellationToken::new(),
+                )?;
+                let candidate = {
+                    let view = self
+                        .views
+                        .get_mut(&view_id)
+                        .expect("view remains attached during serial layout");
+                    compute_layout_job(&mut view.engine, &request, immediate_layout_context)?
+                };
+                install_layout_job(
+                    &mut staged_layout,
+                    LayoutInstallTarget {
+                        document_id: self.document.id(),
+                        document_revision,
+                        measurement_environment_id: requirements.measurement_environment_id,
+                        metrics_generation: requirements.metrics_generation,
+                    },
+                    candidate,
+                )?;
+
+                let refined_line_top = staged_layout
+                    .hard_line_prefix_height(target_line)
+                    .map_err(LayoutError::from)?
+                    .height();
+                let refined_line_height = staged_layout
+                    .hard_line_range_height(target_line..target_line + 1)
+                    .map_err(LayoutError::from)?
+                    .height();
+                let anchored_top =
+                    refined_line_top + offset_from_target_line.min(refined_line_height);
+                staged_layout.set_viewport_top(anchored_top.min(f64::from(f32::MAX)) as f32)?;
+
+                let (extend_before, extend_after) =
+                    viewport_layout_extension_needed(&staged_layout);
+                if !extend_before && !extend_after {
+                    break;
+                }
+                let growth = (end - start).max(1);
+                let previous = start..end;
+                if extend_before {
+                    start = start.saturating_sub(growth);
+                }
+                if extend_after {
+                    end = end.saturating_add(growth).min(hard_line_count);
+                }
+                if start == previous.start && end == previous.end {
+                    break;
+                }
+                next_requested_top = staged_layout.viewport_top();
             }
-            let growth = (end - start).max(1);
-            let previous = start..end;
-            if extend_before {
-                start = start.saturating_sub(growth);
-            }
-            if extend_after {
-                end = end.saturating_add(growth).min(hard_line_count);
-            }
-            if start == previous.start && end == previous.end {
-                break;
-            }
-            next_requested_top = staged_layout.viewport_top();
         }
 
         staged_layout.set_viewport_left(left)?;
@@ -2596,6 +2725,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             .expect("view remains attached for atomic layout publication");
         cancel_active_layout_work(view);
         view.layout = staged_layout;
+        for checkpoint in new_checkpoints {
+            view.long_line_checkpoints
+                .insert(&self.document, checkpoint);
+        }
         view.observed_metrics_generation = requirements.metrics_generation;
         update_viewport_anchor(&self.document, view);
         Ok(())
@@ -3540,8 +3673,8 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// Insert/Replace group. A policy rejection, stale identity, or other
     /// preparation failure therefore changes neither the document nor
     /// controller grouping. Once preparation succeeds, the prior owner gets
-    /// its exact restoration endpoint, and a fresh candidate is prepared
-    /// against the now-closed history group before publication.
+    /// its exact restoration endpoint. The verified candidate is then rebound
+    /// only to the closed group, preserving all source/revision preconditions.
     fn apply_native_model_request(
         &mut self,
         view_id: ViewId,
@@ -3594,14 +3727,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                 }));
             }
         }
-        drop(preflight);
-
         // Preserve the restoration endpoint of the view which owns an open
         // edit group, even when another view invoked this native operation.
         self.finalize_open_edit_group(view_id)?;
         let prepared = self
             .document
-            .prepare_model_request(request)
+            .rebind_prepared_after_group_close(preflight)
             .map_err(command_model_transaction_error)?;
         debug_assert!(!prepared.is_no_op());
         debug_assert_eq!(prepared.text_position_map(), &expected_map);
@@ -6337,6 +6468,14 @@ fn splice_paragraph_styles(
             .max(inserted.end);
             start..end
         };
+        paragraph.list_marker_range = match paragraph.list_marker_range {
+            Some(marker) if marker.end <= replaced.start => Some(marker),
+            Some(marker) if marker.start >= replaced.end => Some(
+                mapped_suffix_offset(marker.start, replaced.end, inserted.end)?
+                    ..mapped_suffix_offset(marker.end, replaced.end, inserted.end)?,
+            ),
+            _ => None,
+        };
         paragraph.text_range = mapped;
         output.push(paragraph);
     }
@@ -6543,7 +6682,9 @@ fn viewport_layout_extension_needed(layout: &ViewLayout) -> (bool, bool) {
     let top = layout.viewport_top();
     let bottom = top + layout.height();
     (
-        top < vertical.start && hard_lines.start > 0,
+        (top < vertical.start
+            || (bottom > vertical.end && hard_lines.end == document_hard_line_count))
+            && hard_lines.start > 0,
         bottom > vertical.end && hard_lines.end < document_hard_line_count,
     )
 }
@@ -9705,7 +9846,11 @@ mod tests {
         let (provider, _, calls, generation) = ControlledFailureProvider::new_counted();
         let invalidation = Arc::clone(&provider.invalidate_during_shape);
         invalidation.store(true, Ordering::Release);
-        let mut core = Core::new(Document::new(&"one line of text\n".repeat(100_000)));
+        let mut document = Document::new(&"one line of text\n".repeat(100_000));
+        // This oversized fixture checks metric retries and undo identity, not
+        // retention pruning when the active projection exceeds its byte target.
+        document.set_history_retention_policy(crate::document::HistoryRetentionPolicy::unlimited());
+        let mut core = Core::new(document);
         let view = core.try_add_view(provider, 300.0, 100.0).unwrap();
         assert!(calls.load(Ordering::Acquire) <= 3);
         assert_eq!(
@@ -11128,6 +11273,81 @@ mod long_line_focus_tests {
         .unwrap();
         assert_eq!(core.layout(view).unwrap().viewport_top(), 0.0);
         assert!(!core.document().is_dirty());
+    }
+
+    #[test]
+    fn terminal_empty_line_does_not_capture_a_long_preceding_paragraph_as_overscan() {
+        let source = "word ".repeat(40_000) + "\nshort\nlast\n";
+        let mut core = Core::new(Document::new(source.clone()));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 400.0, 300.0);
+        let before = core.next_layout_job.unwrap();
+        core.handle(
+            view,
+            CoreEvent::SetViewportOrigin {
+                left: 0.0,
+                top: Some(f32::MAX),
+            },
+        )
+        .unwrap();
+        assert!(
+            core.next_layout_job.unwrap() - before >= 4,
+            "the long paragraph advances through bounded chunk jobs, not one full overscan capture"
+        );
+        assert!(core.views[&view].long_line_checkpoints.len() >= 3);
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+        assert!(snapshot.rows.len() < 100);
+        assert!(snapshot.rows.first().unwrap().fragment_index > 0);
+        assert_eq!(snapshot.rows.last().unwrap().text_range.end, source.len());
+    }
+
+    #[test]
+    fn document_end_reuses_checkpoints_and_a_failed_chunk_keeps_the_old_viewport() {
+        let source = "abcdef ".repeat(30_000);
+        let mut core = Core::new(Document::new(source.clone()));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 90.0, 200.0);
+        let original = core.viewport_state(view).unwrap();
+        core.views
+            .get_mut(&view)
+            .unwrap()
+            .engine
+            .provider_mut()
+            .fail_next_batch("end chunk failed");
+        let request = CoreEvent::SetViewportOrigin {
+            left: 0.0,
+            top: Some(f32::MAX),
+        };
+        assert!(core.handle(view, request.clone()).is_err());
+        assert_eq!(core.viewport_state(view).unwrap(), original);
+        core.handle(view, request.clone()).unwrap();
+        assert!(core.views[&view].long_line_checkpoints.len() >= 3);
+        assert!(core.layout(view).unwrap().snapshot().unwrap().rows.len() < 100);
+        core.handle(
+            view,
+            CoreEvent::SetViewportOrigin {
+                left: 0.0,
+                top: Some(0.0),
+            },
+        )
+        .unwrap();
+        let jobs = core.next_layout_job.unwrap();
+        core.handle(view, request).unwrap();
+        assert!(
+            core.next_layout_job.unwrap() - jobs <= 2,
+            "returning to the document end resumes at the checkpoint before its viewport tail"
+        );
+        assert_eq!(
+            core.layout(view)
+                .unwrap()
+                .snapshot()
+                .unwrap()
+                .rows
+                .last()
+                .unwrap()
+                .text_range
+                .end,
+            source.len()
+        );
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
     }
 
     #[test]

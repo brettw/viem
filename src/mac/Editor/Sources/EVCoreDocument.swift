@@ -56,6 +56,8 @@ struct EVLayoutExport {
     var rows: [EvimVisualRowV1]
     var clusters: [EvimPositionedClusterV1]
     var carets: [EvimPositionedCaretV1]
+    var decorations: [EvimLayoutDecorationV1] = []
+    var decorationLabels: [UInt8] = []
 }
 
 @MainActor
@@ -839,6 +841,13 @@ final class EVCoreViewSession {
         return outcome
     }
 
+    func adjacentZoomScale(from scale: Float, increasing: Bool) throws -> Float {
+        var result: Float = 0
+        try checked(evim_core_adjacent_zoom_scale(scale, increasing ? 1 : 0, &result),
+                    operation: "Choose adjacent zoom")
+        return result
+    }
+
     @discardableResult
     func setScale(_ scale: CGFloat) throws -> EvimCoreOutcomeV1 {
         var outcome = EvimCoreOutcomeV1()
@@ -1217,7 +1226,9 @@ final class EVCoreViewSession {
             }
         }
         try checked(copied, operation: "Copy layout snapshot")
-        return EVLayoutExport(info: copiedInfo, rows: rows, clusters: clusters, carets: carets)
+        let furniture = try layoutDecorationsExport(identity: copiedInfo.identity)
+        return EVLayoutExport(info: copiedInfo, rows: rows, clusters: clusters, carets: carets,
+                              decorations: furniture.0, decorationLabels: furniture.1)
     }
 
     /// Font registration can retire the presentation while the view is idle.

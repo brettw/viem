@@ -239,6 +239,15 @@ impl CommandInterpreter {
         };
         let mut end = if matches!(shape, LineShape::Start | LineShape::StartNonblank) {
             self.cursor
+        } else if shape == LineShape::End {
+            let target = VisualPosition {
+                text_offset: last.text_range.start,
+                affinity: BoundaryAffinity::Downstream,
+            };
+            match g_dollar_for_document(document, snapshot, target) {
+                Ok(position) => position.text_offset,
+                Err(error) => return Ok(Err(error)),
+            }
         } else {
             last.text_range.end
         };
@@ -367,10 +376,11 @@ impl CommandInterpreter {
                 Key::Char('^') => g_caret(&snapshot, document.text(), current),
                 Key::Char('$') | Key::End => {
                     if count == 1 {
-                        g_dollar(&snapshot, current)
+                        g_dollar_for_document(document, &snapshot, current)
                     } else {
-                        gj(&snapshot, current, count - 1, None)
-                            .and_then(|motion| g_dollar(&snapshot, motion.position))
+                        gj(&snapshot, current, count - 1, None).and_then(|motion| {
+                            g_dollar_for_document(document, &snapshot, motion.position)
+                        })
                     }
                 }
                 Key::Char('_') => {
@@ -678,9 +688,7 @@ impl CommandInterpreter {
             ) {
                 let edits = self.visual_indent_edits(document, &range, operator, applications)?;
                 document.apply_edits(edits)?;
-            } else if matches!(operator, Operator::Delete | Operator::Change)
-                && replacement.is_empty()
-            {
+            } else if operator == Operator::Delete && extent.whole {
                 document.delete_visual_text(range.clone())?;
             } else {
                 document.replace(range.clone(), &replacement)?;
@@ -912,7 +920,7 @@ impl CommandInterpreter {
         let snapshot = self.line_layout.as_ref()?;
         let position = self.current_visual_position(snapshot).ok()?;
         let point = if at_end {
-            g_dollar(snapshot, position)
+            g_dollar_for_document(document, snapshot, position)
         } else if nonblank {
             g_caret(snapshot, document.text(), position)
         } else {

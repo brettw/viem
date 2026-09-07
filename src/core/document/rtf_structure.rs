@@ -10,7 +10,18 @@ pub(super) fn deletion_patches(
     document: &Document,
     input: &NormalizedText,
     range: &Range<usize>,
+    whole_line: bool,
 ) -> Result<Option<Vec<(Range<usize>, String)>>, DocumentError> {
+    if !whole_line
+        && !document
+            .projection()
+            .text_tree()
+            .slice(range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?
+            .contains('\n')
+    {
+        return Ok(None);
+    }
     let projection = document.projection();
     let paragraphs = projection
         .blocks_for_region(range)
@@ -37,11 +48,11 @@ pub(super) fn deletion_patches(
         .map(|block| block.id)
         .collect::<BTreeSet<_>>();
     let structure = projection.list_structure();
-    let mut markers = Vec::new();
     let mut origins = Vec::new();
     let mut surviving = Vec::new();
     let converter = super::rich_text::Builder::new(input, Revision(0));
     let tokens = rtf::tokenize(input);
+    let numbering_origins = ListOriginIndex::new(input);
     let mut stack = Vec::new();
     let mut pn_groups = Vec::new();
     let mut hidden_groups = Vec::new();
@@ -85,13 +96,7 @@ pub(super) fn deletion_patches(
         .collect::<Vec<_>>();
     let mut selectors = Vec::new();
     for block in &paragraphs {
-        let first = projection
-            .provenance_for_region(&block.range)
-            .into_iter()
-            .find(|span| !span.source.is_empty())
-            .map(|span| span.source.start)
-            .or_else(|| projection.source_insertion_point(block.range.start, true))
-            .ok_or(DocumentError::AmbiguousProjection)?;
+        let first = super::rich_text::block_source_point(projection, block)?;
         let start = if block.range.start == 0 {
             0
         } else {
@@ -121,28 +126,24 @@ pub(super) fn deletion_patches(
         let mut modern_deleted = false;
         for item in &list.items {
             let removed = item.paragraph_ids.iter().any(|id| selected.contains(id));
-            let marker = projection
-                .provenance_for_region(&item.marker_range)
-                .into_iter()
-                .find(|span| span.is_synthetic())
+            let body_at = super::rich_text::list_item_source_point(projection, item)?;
+            let origin = numbering_origins
+                .at(body_at)
                 .ok_or(DocumentError::AmbiguousProjection)?;
-            let legacy = pn_groups
-                .iter()
-                .find(|group| group.end == marker.source.start);
+            let legacy = pn_groups.iter().find(|group| group.end == origin);
             if removed {
                 if !item.paragraph_ids.iter().all(|id| selected.contains(id)) {
                     return Err(DocumentError::AmbiguousProjection);
                 }
-                markers.push(item.marker_range.clone());
                 if let Some(group) = legacy {
                     origins.push(group.clone());
                 } else {
                     modern_deleted = true;
                 }
             } else if modern_deleted
-                || selectors.iter().any(|selector| {
-                    selector.start < marker.source.start && marker.source.start <= selector.end
-                })
+                || selectors
+                    .iter()
+                    .any(|selector| selector.start < origin && origin <= selector.end)
             {
                 let spans = item
                     .paragraph_ids
@@ -159,7 +160,7 @@ pub(super) fn deletion_patches(
                 let body = if let (Some(first), Some(last)) = (spans.first(), spans.last()) {
                     first.source.start..last.source.end
                 } else {
-                    marker.source.start..marker.source.start
+                    body_at..body_at
                 };
                 surviving.push((body, Some(list.style), item.ordinal, Some(item.ordinal)));
             }
@@ -174,10 +175,10 @@ pub(super) fn deletion_patches(
             .flat_map(|list| &list.items)
             .filter(|item| !selected.contains(&item.paragraph_id))
             .any(|item| {
-                projection
-                    .provenance_for_region(&item.marker_range)
-                    .iter()
-                    .any(|span| span.is_synthetic() && span.source.start == origin.end)
+                super::rich_text::list_item_source_point(projection, item)
+                    .ok()
+                    .and_then(|at| numbering_origins.at(at))
+                    == Some(origin.end)
             })
         {
             return Err(DocumentError::AmbiguousProjection);
@@ -186,12 +187,11 @@ pub(super) fn deletion_patches(
     let mut ranges = origins;
     ranges.extend(selectors);
     for span in projection.provenance_for_region(range) {
+        if span.formatted.is_empty() {
+            continue;
+        }
         if span.source.is_empty() {
-            if !markers.iter().any(|marker| {
-                marker.start <= span.formatted.start && span.formatted.end <= marker.end
-            }) {
-                return Err(DocumentError::AmbiguousProjection);
-            }
+            return Err(DocumentError::AmbiguousProjection);
         } else {
             ranges.push(span.source);
         }
@@ -281,6 +281,86 @@ pub(super) fn renumber_legacy_patches(
         }
     }
     None
+}
+
+/// Resolve the active numbering control from source grammar at an actual body
+/// boundary. This replaces the former generated-label provenance dependency.
+pub(super) struct ListOriginIndex {
+    entries: Vec<(usize, Option<usize>)>,
+}
+
+impl ListOriginIndex {
+    pub(super) fn new(input: &NormalizedText) -> Self {
+        #[derive(Clone, Copy)]
+        struct Context {
+            origin: Option<usize>,
+            hidden: bool,
+            start: bool,
+            numbering: bool,
+        }
+        let converter = super::rich_text::Builder::new(input, Revision(0));
+        let mut state = Context {
+            origin: None,
+            hidden: false,
+            start: true,
+            numbering: false,
+        };
+        let mut stack = Vec::new();
+        let mut entries = Vec::new();
+        for token in rtf::tokenize(input) {
+            let source = converter.source_range(token.range.clone());
+            let previous_origin = state.origin;
+            match token.kind {
+                Kind::Open => {
+                    stack.push(state);
+                    state.start = true;
+                    state.numbering = false;
+                }
+                Kind::Close => {
+                    let numbering = state.numbering;
+                    if let Some(parent) = stack.pop() {
+                        state = parent;
+                        if numbering && !state.hidden {
+                            state.origin = Some(source.end);
+                        }
+                    }
+                }
+                Kind::Symbol('*') if state.start => state.hidden = true,
+                Kind::Control(name, _) => {
+                    if state.start
+                        && name == "pn"
+                        && stack.last().is_some_and(|parent| !parent.hidden)
+                    {
+                        state.numbering = true;
+                    }
+                    if state.start && rtf::non_body(&name) {
+                        state.hidden = true;
+                    }
+                    if !matches!(name.as_str(), "rtf" | "ansi" | "mac" | "pc" | "pca") {
+                        state.start = false;
+                    }
+                    if !state.hidden {
+                        match name.as_str() {
+                            "ls" | "ilvl" => state.origin = Some(source.end),
+                            "pard" => state.origin = None,
+                            _ => {}
+                        }
+                    }
+                }
+                Kind::Character('\r' | '\n') => {}
+                _ => state.start = false,
+            }
+            if previous_origin != state.origin {
+                entries.push((source.end, state.origin));
+            }
+        }
+        Self { entries }
+    }
+
+    pub(super) fn at(&self, source_at: usize) -> Option<usize> {
+        let end = self.entries.partition_point(|(at, _)| *at <= source_at);
+        end.checked_sub(1).and_then(|index| self.entries[index].1)
+    }
 }
 
 /// The original modern selector resumes after the new paragraph's terminator,

@@ -56,7 +56,7 @@ fn source_flow_is_view_local_reversible_and_retains_pre_code_rows() {
         (
             Format::MarkdownSource,
             "One\ntwo.\n\n```\ncode\nlines\n```\nLast.",
-            7,
+            6,
         ),
         (
             Format::HtmlSource,
@@ -68,6 +68,7 @@ fn source_flow_is_view_local_reversible_and_retains_pre_code_rows() {
         let first = core.add_view(MockTextMeasurementProvider::new(), 2000.0, 800.0);
         let second = core.add_view(MockTextMeasurementProvider::new(), 2000.0, 800.0);
         let history = core.document().history_status();
+        let formatted = core.document().text().to_owned();
         let normal_rows = core.layout(first).unwrap().snapshot().unwrap().rows.len();
         let before = core.layout(first).unwrap().configuration_generation();
         core.handle(first, CoreEvent::SetParagraphFlow(true))
@@ -82,7 +83,7 @@ fn source_flow_is_view_local_reversible_and_retains_pre_code_rows() {
         );
         assert!(core.layout(first).unwrap().configuration_generation() > before);
         assert_eq!(core.document().history_status(), history);
-        assert_eq!(core.document().text(), source);
+        assert_eq!(core.document().text(), formatted);
         assert_eq!(core.document().source_bytes(), source.as_bytes());
         core.handle(first, CoreEvent::SetParagraphFlow(false))
             .unwrap();

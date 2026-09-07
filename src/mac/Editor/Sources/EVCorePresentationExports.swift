@@ -212,6 +212,39 @@ extension EVCoreViewSession {
         )
     }
 
+    func layoutDecorationsExport(identity: EvimLayoutSnapshotIdentityV1) throws
+        -> ([EvimLayoutDecorationV1], [UInt8]) {
+        var expected = identity
+        var info = EvimLayoutDecorationsInfoV1()
+        let query = evim_core_view_copy_layout_decorations(document.core, viewID, &expected,
+                                                          nil, 0, nil, 0, &info)
+        if query != UInt32(EVIM_STATUS_BUFFER_TOO_SMALL) {
+            try checkedPresentationExport(query, operation: "Read list marker layout")
+        }
+        guard info.decoration_count <= UInt64(Int.max), info.label_bytes <= UInt64(Int.max) else {
+            throw EVCoreFrontendError.core(operation: "Read list marker layout", status: UInt32(EVIM_STATUS_LENGTH_OVERFLOW))
+        }
+        if info.decoration_count == 0 { return ([], []) }
+        var decorations = Array(repeating: EvimLayoutDecorationV1(), count: Int(info.decoration_count))
+        var labels = Array(repeating: UInt8(0), count: Int(info.label_bytes))
+        let copied = decorations.withUnsafeMutableBufferPointer { items in
+            labels.withUnsafeMutableBufferPointer { bytes in
+                evim_core_view_copy_layout_decorations(document.core, viewID, &expected,
+                    items.baseAddress, UInt64(items.count), bytes.baseAddress, UInt64(bytes.count), &info)
+            }
+        }
+        try checkedPresentationExport(copied, operation: "Copy list marker layout")
+        guard decorations.allSatisfy({ item in
+            item.struct_size >= UInt32(MemoryLayout<EvimLayoutDecorationV1>.size)
+                && item.label_byte_start <= UInt64(labels.count)
+                && item.label_byte_length <= UInt64(labels.count) - item.label_byte_start
+                && item.paint.struct_size >= UInt32(MemoryLayout<EvimTextPaintV1>.size)
+        }), String(bytes: labels, encoding: .utf8) != nil else {
+            throw EVCoreFrontendError.core(operation: "Copy list marker layout", status: UInt32(EVIM_STATUS_CORE_FAILURE))
+        }
+        return (decorations, labels)
+    }
+
     func layoutPaintExport() throws -> EVLayoutPaintExport {
         var info = EvimLayoutPaintInfoV1()
         info.struct_size = UInt32(MemoryLayout<EvimLayoutPaintInfoV1>.size)

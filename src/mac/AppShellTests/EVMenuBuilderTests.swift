@@ -31,6 +31,19 @@ final class EVMenuBuilderTests: XCTestCase {
         func currentStyleMenuCatalogue() -> EVStyleMenuCatalogue? { catalogue }
     }
 
+    func testZoomShortcutsAreOptionEqualsAndOptionHyphen() throws {
+        let owner = Owner()
+        let menu = EVMenuBuilder(owner: owner).buildMainMenu(for: NSApplication.shared)
+        let view = try XCTUnwrap(menu.item(withTitle: "View")?.submenu)
+        for (title, key, command) in [("Zoom In", "=", EVMenuCommand.zoomIn), ("Zoom Out", "-", EVMenuCommand.zoomOut)] {
+            let item = try XCTUnwrap(view.item(withTitle: title))
+            XCTAssertEqual(item.keyEquivalent, key)
+            XCTAssertEqual(item.keyEquivalentModifierMask, [.option])
+            XCTAssertEqual(item.tag, command.rawValue)
+            XCTAssertEqual(item.action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
+        }
+    }
+
     func testTopLevelMenuOrderMatchesSpecification() {
         let owner = Owner()
         let builder = EVMenuBuilder(owner: owner)
@@ -230,6 +243,8 @@ final class EVMenuBuilderTests: XCTestCase {
             "Paragraph/Heading 4": ("4", [.command]),
             "Paragraph/Heading 5": ("5", [.command]),
             "Paragraph/Heading 6": ("6", [.command]),
+            "View/Zoom In": ("=", [.option]),
+            "View/Zoom Out": ("-", [.option]),
             "View/Enter Full Screen": ("f", [.command, .control]),
             "Window/Minimize": ("m", [.command]),
         ]

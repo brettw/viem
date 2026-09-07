@@ -143,7 +143,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
     }
 
     @MainActor
-    func testDocumentPaddingUsesTheFullCoreViewport() throws {
+    func testDocumentPaddingUsesCoreViewportAfterNativeScrollbarGutters() throws {
         let backend = EVCoreDocumentBackend()
         try backend.read(source: Data("one line".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -153,12 +153,13 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
         surface.view.frame = NSRect(origin: .zero, size: viewSize)
         surface.viewDidLayout()
 
-        let expected = EVEditorView.layoutViewportSize(for: viewSize)
+        let expected = surface.editorView.layoutViewportSize
+        let chrome = surface.editorView.documentScrollbars.contentInsets
         let layout = try XCTUnwrap(surface.layoutSnapshot)
         XCTAssertEqual(CGFloat(layout.info.viewport_width), expected.width, accuracy: 0.01)
         XCTAssertEqual(CGFloat(layout.info.viewport_height), expected.height, accuracy: 0.01)
-        XCTAssertEqual(expected.width, 420)
-        XCTAssertEqual(expected.height, 260)
+        XCTAssertEqual(expected.width + chrome.left + chrome.right, 420)
+        XCTAssertEqual(expected.height + chrome.top + chrome.bottom, 260)
     }
 
     @MainActor

@@ -17,6 +17,7 @@ use super::{
 use std::fmt;
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Format {
@@ -39,6 +40,9 @@ pub enum BlockKind {
         level: u8,
         container_start: bool,
         item_start: bool,
+        /// WYSIWYG labels are layout decorations with no logical text range.
+        /// Source-visible modes retain their literal marker syntax in text.
+        marker_is_decoration: bool,
     },
 }
 
@@ -67,6 +71,10 @@ pub struct Block {
 }
 
 impl RangedItem for Block {
+    fn owned_heap_bytes(&self) -> usize {
+        self.style.0.capacity() + 16 + self.direct_default_character.owned_heap_bytes()
+    }
+
     fn range(&self) -> &Range<usize> {
         &self.range
     }
@@ -100,6 +108,8 @@ pub struct StyleSpan {
 }
 
 impl RangedItem for StyleSpan {
+    fn owned_heap_bytes(&self) -> usize { self.application.owned_heap_bytes() }
+
     fn range(&self) -> &Range<usize> {
         &self.range
     }
@@ -1226,7 +1236,7 @@ pub struct FormattedDocument {
     source_boundaries: IntervalRangeStore<SourceTextBoundary>,
     source_ordered: bool,
     decoding_diagnostics: IntervalRangeStore<DecodingDiagnostic>,
-    style_sheet: StyleSheet,
+    style_sheet: Arc<StyleSheet>,
     document_style: DocumentStyleAssignment,
     source_content_start: usize,
     source_content_end: usize,
@@ -1276,6 +1286,46 @@ impl LogicalGraphemeSnapshot for FormattedDocument {
 }
 
 impl FormattedDocument {
+    pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+        let trace = std::env::var_os("EVIM_HISTORY_MEMORY_BREAKDOWN").is_some();
+        let mut before = visitor.retained_bytes();
+        self.text.visit_retained_memory(visitor);
+        if trace { eprintln!("  text {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
+        visitor.arc(&self.flat_text, |_| {});
+        if let Some(text) = self.flat_text.get() { visitor.arc(text, |_| {}); }
+        if trace { eprintln!("  flat {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
+        self.blocks.visit_retained_memory(visitor);
+        if trace { eprintln!("  blocks {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
+        self.hard_lines.visit_retained_memory(visitor);
+        if trace { eprintln!("  hard_lines {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
+        if let Some(lines) = &self.flow_lines { lines.visit_retained_memory(visitor); }
+        self.styles.visit_retained_memory(visitor);
+        if trace { eprintln!("  styles {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
+        self.provenance.visit_retained_memory(visitor);
+        if trace { eprintln!("  provenance {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
+        self.source_boundaries.visit_retained_memory(visitor);
+        if trace { eprintln!("  boundaries {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
+        self.decoding_diagnostics.visit_retained_memory(visitor);
+        visitor.arc(&self.style_sheet, |visitor| {
+            visitor.owned(
+                Arc::as_ptr(&self.style_sheet) as usize,
+                1,
+                self.style_sheet.owned_heap_bytes(),
+            );
+        });
+        visitor.owned(
+            self as *const Self as usize,
+            0,
+            self.document_style.style.0.capacity()
+                + 16
+                + self
+                    .document_style
+                    .direct_default_character
+                    .owned_heap_bytes(),
+        );
+        if trace { eprintln!("  sheet/doc {}", visitor.retained_bytes() - before); }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         revision: Revision,
@@ -1302,11 +1352,10 @@ impl FormattedDocument {
         let flat_text: Arc<str> = flat_text.into();
         let text = FormattedTextTree::try_from_shared(flat_text.clone())
             .expect("a materialized Rust string has representable text-tree aggregates");
-        // `from_parts` is private and all current projector builders produce a
-        // validated one-block-per-line partition. Publication through
-        // `Document` validates it again and returns a typed error. Keeping the
-        // seed helper checked prevents a malformed internal fixture from
-        // silently inventing separator extents in release builds.
+        // Seed paragraph boundary records here. Adapters with explicit
+        // intra-paragraph hard breaks install their complete hard-line
+        // partition before publication through `Document`. Keeping this seed
+        // checked rejects malformed paragraph separators in release builds.
         let hard_lines = seed_hard_lines_from_current_blocks(&blocks, flat_text.as_ref())
             .expect("private projectors emit a valid current-adapter hard-line partition");
         let compatibility_text = Arc::new(OnceLock::new());
@@ -1330,7 +1379,7 @@ impl FormattedDocument {
             source_boundaries,
             source_ordered,
             decoding_diagnostics: IntervalRangeStore::new(decoding_diagnostics),
-            style_sheet,
+            style_sheet: Arc::new(style_sheet),
             document_style,
             source_content_start,
             source_content_end,
@@ -1890,6 +1939,19 @@ impl FormattedDocument {
             }
         }
         self.style_sheet = previous.style_sheet.clone();
+        if let Some(level) = blocks
+            .iter()
+            .filter_map(|block| match block.kind {
+                BlockKind::ListItem { level, .. } => Some(u16::from(level) + 1),
+                _ => None,
+            })
+            .max()
+        {
+            let required = StyleId(format!("List{level}"));
+            if self.style_sheet.block_style(&required).is_none() {
+                Arc::make_mut(&mut self.style_sheet).ensure_list_level(level);
+            }
+        }
         self.document_style = previous.document_style.clone();
         self.blocks = OrderedRangeStore::new(blocks);
         self.blocks.reuse_equal_chunks(&previous.blocks);
@@ -1921,7 +1983,7 @@ impl FormattedDocument {
         }
         self.blocks = OrderedRangeStore::new(blocks);
         self.style_sheet = parsed_sheet;
-        self.style_sheet
+        Arc::make_mut(&mut self.style_sheet)
             .retain_configuration_deletions(&previous.style_sheet);
         self.document_style = parsed_document;
         // Source adapters do not author these configuration-only root layers.
@@ -2022,6 +2084,19 @@ impl FormattedDocument {
         }
 
         self.style_sheet = previous.style_sheet.clone();
+        if let Some(level) = blocks
+            .iter()
+            .filter_map(|block| match block.kind {
+                BlockKind::ListItem { level, .. } => Some(u16::from(level) + 1),
+                _ => None,
+            })
+            .max()
+        {
+            let required = StyleId(format!("List{level}"));
+            if self.style_sheet.block_style(&required).is_none() {
+                Arc::make_mut(&mut self.style_sheet).ensure_list_level(level);
+            }
+        }
         self.document_style = previous.document_style.clone();
         for block in &mut blocks {
             if self.style_sheet.configuration_deleted(&block.style, true) {
@@ -2080,7 +2155,7 @@ impl FormattedDocument {
         }
         self.blocks = OrderedRangeStore::new(blocks);
         self.style_sheet = parsed_sheet;
-        self.style_sheet
+        Arc::make_mut(&mut self.style_sheet)
             .retain_configuration_deletions(&previous.style_sheet);
         self.document_style = parsed_document;
         self.document_style.direct_canvas = previous.document_style.direct_canvas.clone();
@@ -2632,7 +2707,7 @@ impl FormattedDocument {
         document_style: DocumentStyleAssignment,
     ) {
         self.revision = revision;
-        self.style_sheet = style_sheet;
+        self.style_sheet = Arc::new(style_sheet);
         self.document_style = document_style;
     }
 
@@ -2698,6 +2773,90 @@ impl FormattedDocument {
     /// The normalized document-root style assignment for this projection.
     pub fn document_style(&self) -> &DocumentStyleAssignment {
         &self.document_style
+    }
+
+    pub(crate) fn has_monotonic_grapheme_provenance(&self) -> bool {
+        let spans = self.provenance();
+        spans
+            .iter()
+            .all(|span| !span.source.is_empty() || span.formatted.is_empty())
+            && spans.windows(2).all(|pair| {
+                pair[0].source.end <= pair[1].source.start
+                    && pair[0].formatted.end <= pair[1].formatted.start
+            })
+    }
+
+    /// Batch counterpart of `source_range` for a complete reprojection diff.
+    /// Adjacent graphemes share an ordered provenance frontier, avoiding four
+    /// independent interval-tree queries and temporary vectors per item.
+    pub(crate) fn source_grapheme_ranges(
+        &self,
+    ) -> impl Iterator<Item = (usize, &str, Option<Range<usize>>)> {
+        let spans = self.provenance();
+        let ordered_ends = spans
+            .windows(2)
+            .all(|pair| pair[0].formatted.end <= pair[1].formatted.end);
+        let mut first_start = 0;
+        let mut after_end = 0;
+        let mut boundary = move |at: usize| {
+            while first_start < spans.len() && spans[first_start].formatted.start < at {
+                first_start += 1;
+            }
+            while after_end < spans.len() && spans[after_end].formatted.end <= at {
+                after_end += 1;
+            }
+            let following = spans
+                .get(first_start)
+                .filter(|span| span.formatted.start == at)
+                .map(|span| span.source.start);
+            let preceding = after_end
+                .checked_sub(1)
+                .and_then(|index| spans.get(index))
+                .filter(|span| span.formatted.end == at)
+                .map(|span| span.source.end);
+            (following, preceding)
+        };
+        let text = self.text();
+        let mut at = 0;
+        // ASCII pairs cannot join across a grapheme boundary except CRLF.
+        // Ask the Unicode segmenter at every non-ASCII adjacency, preserving
+        // combining sequences, emoji ZWJ chains, and regional-indicator pairs.
+        let graphemes = std::iter::from_fn(move || {
+            if at == text.len() {
+                return None;
+            }
+            let offset = at;
+            let bytes = text.as_bytes();
+            let length = if bytes[at].is_ascii() && bytes.get(at + 1).map_or(true, u8::is_ascii) {
+                if bytes[at] == b'\r' && bytes.get(at + 1) == Some(&b'\n') {
+                    2
+                } else {
+                    1
+                }
+            } else {
+                text[at..].graphemes(true).next().unwrap().len()
+            };
+            at += length;
+            Some((offset, &text[offset..at]))
+        });
+        graphemes.map(move |(offset, item)| {
+            let source = if ordered_ends && !spans.is_empty() {
+                let (following, preceding) = boundary(offset);
+                let start = following
+                    .or(preceding)
+                    .or_else(|| (offset == 0).then_some(self.source_content_start));
+                let (following, preceding) = boundary(offset + item.len());
+                let end = preceding.or(following).or_else(|| {
+                    (offset + item.len() == text.len()).then_some(self.source_content_end)
+                });
+                start
+                    .zip(end)
+                    .and_then(|(start, end)| (start <= end).then_some(start..end))
+            } else {
+                self.source_range(offset..offset + item.len())
+            };
+            (offset, item, source)
+        })
     }
 
     pub(crate) fn source_range(&self, range: Range<usize>) -> Option<Range<usize>> {
@@ -2771,6 +2930,11 @@ impl FormattedDocument {
     /// whether one code span contains the entire replacement range.
     pub(crate) fn markdown_replacement_begins_in_code(&self, range: &Range<usize>) -> bool {
         let at = range.start;
+        if self.blocks_for_region(range).iter().any(|block| {
+            block.style.0 == "Code Block" && block.range.start <= at && range.end <= block.range.end
+        }) {
+            return true;
+        }
         self.styles.query_touching(&(at..at)).iter().any(|span| {
             span.range.start <= at
                 && at < span.range.end
@@ -2996,7 +3160,15 @@ fn inherit_split_direct_assignments(
     old: &Block,
     edits: &[EditMapping],
 ) -> Result<(), BlockIdentityError> {
-    let split_inside_old = edits.iter().any(|edit| {
+    if old.direct_paragraph == BlockProperties::default()
+        && old.direct_default_character == CharacterProperties::default()
+    {
+        return Ok(());
+    }
+    let first = edits.partition_point(|edit| edit.old.end < old.range.start);
+    let last = edits.partition_point(|edit| edit.old.start <= old.range.end);
+    let local_edits = &edits[first..last];
+    let split_inside_old = local_edits.iter().any(|edit| {
         old.range.start <= edit.old.start
             && edit.old.end <= old.range.end
             && new_text.as_bytes()[edit.new.clone()].contains(&b'\n')
@@ -3008,7 +3180,7 @@ fn inherit_split_direct_assignments(
     // An edit crossing a paragraph boundary does not have one unambiguous
     // parent assignment. The normal retained-ID rule still handles the
     // surviving block; only a self-contained split fans declarations out.
-    if edits.iter().any(|edit| {
+    if local_edits.iter().any(|edit| {
         (edit.old.start < old.range.start && old.range.start < edit.old.end)
             || (edit.old.start < old.range.end && old.range.end < edit.old.end)
     }) {
@@ -3017,7 +3189,7 @@ fn inherit_split_direct_assignments(
 
     let mapped_start = map_old_boundary_before(old.range.start, edits)?;
     let mut mapped_end = map_old_boundary_before(old.range.end, edits)?;
-    for edit in edits
+    for edit in local_edits
         .iter()
         .filter(|edit| edit.old.is_empty() && edit.old.start == old.range.end)
     {
@@ -3027,9 +3199,12 @@ fn inherit_split_direct_assignments(
         return Err(BlockIdentityError::InvalidProjection);
     }
 
-    for candidate in new_blocks.iter_mut().filter(|candidate| {
-        mapped_start <= candidate.range.start && candidate.range.end <= mapped_end
-    }) {
+    let first = new_blocks.partition_point(|candidate| candidate.range.start < mapped_start);
+    let last = new_blocks.partition_point(|candidate| candidate.range.start <= mapped_end);
+    for candidate in new_blocks[first..last]
+        .iter_mut()
+        .filter(|candidate| candidate.range.end <= mapped_end)
+    {
         candidate.direct_paragraph = old.direct_paragraph.clone();
         candidate.direct_default_character = old.direct_default_character.clone();
     }
@@ -3040,37 +3215,28 @@ fn map_old_boundary_before(
     old_offset: usize,
     edits: &[EditMapping],
 ) -> Result<usize, BlockIdentityError> {
-    let mut old_cursor = 0usize;
-    let mut new_cursor = 0usize;
-    for edit in edits {
-        if old_offset < edit.old.start {
-            return new_cursor
-                .checked_add(
-                    old_offset
-                        .checked_sub(old_cursor)
-                        .ok_or(BlockIdentityError::InvalidProjection)?,
-                )
-                .ok_or(BlockIdentityError::InvalidProjection);
-        }
+    let index = edits.partition_point(|edit| edit.old.end < old_offset);
+    if let Some(edit) = edits.get(index).filter(|edit| edit.old.start <= old_offset) {
         if old_offset == edit.old.start {
             return Ok(edit.new.start);
-        }
-        if old_offset < edit.old.end {
-            return Err(BlockIdentityError::InvalidProjection);
         }
         if old_offset == edit.old.end {
             return Ok(edit.new.end);
         }
-        old_cursor = edit.old.end;
-        new_cursor = edit.new.end;
+        return Err(BlockIdentityError::InvalidProjection);
     }
-    new_cursor
-        .checked_add(
-            old_offset
-                .checked_sub(old_cursor)
-                .ok_or(BlockIdentityError::InvalidProjection)?,
-        )
-        .ok_or(BlockIdentityError::InvalidProjection)
+    match index.checked_sub(1).and_then(|index| edits.get(index)) {
+        Some(edit) => edit
+            .new
+            .end
+            .checked_add(
+                old_offset
+                    .checked_sub(edit.old.end)
+                    .ok_or(BlockIdentityError::InvalidProjection)?,
+            )
+            .ok_or(BlockIdentityError::InvalidProjection),
+        None => Ok(old_offset),
+    }
 }
 
 fn block_identity_witness(
@@ -3292,6 +3458,7 @@ pub(crate) fn splice_line_local_projection(
     new_source: Range<usize>,
     target_text: FormattedTextTree,
     new_source_content_end: usize,
+    source_paragraphs: bool,
 ) -> Result<(FormattedDocument, ProjectionSpliceStatistics), BlockIdentityError> {
     if regional.revision != revision
         || regional.source_content_start != new_source.start
@@ -3321,16 +3488,25 @@ pub(crate) fn splice_line_local_projection(
         .blocks
         .get_range(&old_block_indices)
         .ok_or(BlockIdentityError::InvalidProjection)?;
-    if previous_region_blocks
-        .first()
-        .map(|block| block.range.start)
-        != Some(old_formatted.start)
-        || previous_region_blocks.last().map(|block| block.range.end) != Some(old_formatted.end)
+    let partial_code_block = previous_region_blocks.len() == 1
+        && previous_region_blocks[0].style.0 == "Code Block"
+        && previous_region_blocks[0].range.start <= old_formatted.start
+        && old_formatted.end <= previous_region_blocks[0].range.end
+        && regional.blocks.len() == 1
+        && regional.blocks.as_slice()[0].style.0 == "Code Block";
+    if !partial_code_block
+        && !source_paragraphs
+        && (previous_region_blocks
+            .first()
+            .map(|block| block.range.start)
+            != Some(old_formatted.start)
+            || previous_region_blocks.last().map(|block| block.range.end)
+                != Some(old_formatted.end))
     {
         return Err(BlockIdentityError::InvalidProjection);
     }
     let mut regional_blocks = regional.blocks.to_vec();
-    if regional_blocks.len() != previous_region_blocks.len() {
+    if !source_paragraphs && regional_blocks.len() != previous_region_blocks.len() {
         return Err(BlockIdentityError::InvalidProjection);
     }
 
@@ -3354,16 +3530,68 @@ pub(crate) fn splice_line_local_projection(
         return Err(BlockIdentityError::InvalidProjection);
     }
 
-    for (candidate, old) in regional_blocks.iter_mut().zip(&previous_region_blocks) {
-        candidate.range = shift_region_range(&candidate.range, old_formatted.start)?;
-        candidate.id = old.id;
-        candidate.direct_paragraph = old.direct_paragraph.clone();
-        candidate.direct_default_character = old.direct_default_character.clone();
-        if previous
-            .style_sheet
-            .configuration_deleted(&candidate.style, true)
-        {
-            candidate.style = previous.style_sheet.base_paragraph.clone();
+    if source_paragraphs {
+        let regional_lines = regional.hard_lines.as_slice();
+        let mut used = std::collections::BTreeSet::new();
+        let last = regional_blocks.len().saturating_sub(1);
+        for (index, candidate) in regional_blocks.iter_mut().enumerate() {
+            let line = regional_lines
+                .partition_point(|line| line.range.start <= candidate.range.start)
+                .saturating_sub(1);
+            let old_line = previous
+                .hard_lines
+                .get(old_hard_lines.start + line)
+                .ok_or(BlockIdentityError::InvalidProjection)?;
+            let old = previous_region_blocks
+                .iter()
+                .find(|block| {
+                    block.range.start <= old_line.range.start
+                        && old_line.range.start <= block.range.end
+                })
+                .ok_or(BlockIdentityError::InvalidProjection)?;
+            candidate.range = shift_region_range(&candidate.range, old_formatted.start)?;
+            if index == 0 && old.range.start < old_formatted.start {
+                candidate.range.start = old.range.start;
+            }
+            if index == last {
+                let tail = previous_region_blocks
+                    .last()
+                    .ok_or(BlockIdentityError::InvalidProjection)?;
+                if tail.range.end > old_formatted.end {
+                    candidate.range.end = tail.range.end - old_formatted.end + new_formatted_end;
+                }
+            }
+            candidate.id = if used.insert(old.id) {
+                old.id
+            } else {
+                old_line.id
+            };
+            used.insert(candidate.id);
+            candidate.direct_paragraph = old.direct_paragraph.clone();
+            candidate.direct_default_character = old.direct_default_character.clone();
+            if previous
+                .style_sheet
+                .configuration_deleted(&candidate.style, true)
+            {
+                candidate.style = previous.style_sheet.base_paragraph.clone();
+            }
+        }
+    } else {
+        for (candidate, old) in regional_blocks.iter_mut().zip(&previous_region_blocks) {
+            candidate.range = shift_region_range(&candidate.range, old_formatted.start)?;
+            if partial_code_block {
+                candidate.range =
+                    old.range.start..old.range.end - old_formatted.len() + regional.text().len();
+            }
+            candidate.id = old.id;
+            candidate.direct_paragraph = old.direct_paragraph.clone();
+            candidate.direct_default_character = old.direct_default_character.clone();
+            if previous
+                .style_sheet
+                .configuration_deleted(&candidate.style, true)
+            {
+                candidate.style = previous.style_sheet.base_paragraph.clone();
+            }
         }
     }
 
@@ -3551,11 +3779,35 @@ pub(crate) fn splice_line_local_projection(
             .map_or(previous.source_boundaries.len(), |end| {
                 previous.source_boundaries.partition_point_start(end)
             });
+    let old_boundaries = previous
+        .source_boundaries
+        .get_range(&boundary_indices)
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+    let (boundary_prefix, boundary_suffix) = shared_transformed_edges(
+        &old_boundaries,
+        &regional_boundaries,
+        |old, new| old == new,
+        |old, new| {
+            transformed_source_boundary_eq(
+                old,
+                new,
+                old_source.end,
+                new_source.end,
+                old_formatted.end,
+                new_formatted_end,
+            )
+        },
+    );
+    let narrowed_boundary_indices = boundary_indices.start + boundary_prefix
+        ..boundary_indices.end - boundary_suffix;
+    let narrowed_regional_boundaries = regional_boundaries
+        [boundary_prefix..regional_boundaries.len() - boundary_suffix]
+        .to_vec();
     let source_boundaries = previous
         .source_boundaries
         .splice_transformed(
-            boundary_indices,
-            regional_boundaries,
+            narrowed_boundary_indices,
+            narrowed_regional_boundaries,
             old_source.end,
             new_source.end,
             Some((old_formatted.end, new_formatted_end)),
@@ -3563,11 +3815,31 @@ pub(crate) fn splice_line_local_projection(
             &mut range_stats,
         )
         .ok_or(BlockIdentityError::InvalidProjection)?;
+    let (provenance_prefix, provenance_suffix) = shared_transformed_edges(
+        &old_provenance,
+        &regional_provenance,
+        |old, new| old == new,
+        |old, new| {
+            transformed_provenance_eq(
+                old,
+                new,
+                old_formatted.end,
+                new_formatted_end,
+                old_source.end,
+                new_source.end,
+            )
+        },
+    );
+    let narrowed_provenance_indices = provenance_indices.start + provenance_prefix
+        ..provenance_indices.end - provenance_suffix;
+    let narrowed_regional_provenance = regional_provenance
+        [provenance_prefix..regional_provenance.len() - provenance_suffix]
+        .to_vec();
     let provenance = previous
         .provenance
         .splice_transformed(
-            provenance_indices,
-            regional_provenance,
+            narrowed_provenance_indices,
+            narrowed_regional_provenance,
             old_formatted.end,
             new_formatted_end,
             Some((old_source.end, new_source.end)),
@@ -3645,7 +3917,10 @@ pub(crate) fn splice_line_local_projection(
                 })
                 .max()
             {
-                sheet.ensure_list_level(level);
+                let required = StyleId(format!("List{level}"));
+                if sheet.block_style(&required).is_none() {
+                    Arc::make_mut(&mut sheet).ensure_list_level(level);
+                }
             }
             sheet
         },
@@ -3689,6 +3964,64 @@ where
         return Err(BlockIdentityError::InvalidProjection);
     }
     Ok(indices)
+}
+
+/// Find records which can remain on the persistent index's shared prefix and
+/// lazily shifted suffix. A line-local parser deliberately sees complete hard
+/// lines, but changing one scalar must not consequently replace every
+/// per-scalar provenance record in a long line.
+fn shared_transformed_edges<T>(
+    old: &[T],
+    new: &[T],
+    prefix_matches: impl Fn(&T, &T) -> bool,
+    suffix_matches: impl Fn(&T, &T) -> bool,
+) -> (usize, usize) {
+    let prefix = old
+        .iter()
+        .zip(new)
+        .take_while(|(old, new)| prefix_matches(old, new))
+        .count();
+    let suffix_limit = old.len().min(new.len()).saturating_sub(prefix);
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take(suffix_limit)
+        .take_while(|(old, new)| suffix_matches(old, new))
+        .count();
+    (prefix, suffix)
+}
+
+fn transformed_provenance_eq(
+    old: &ProvenanceSpan,
+    new: &ProvenanceSpan,
+    old_formatted_end: usize,
+    new_formatted_end: usize,
+    old_source_end: usize,
+    new_source_end: usize,
+) -> bool {
+    let formatted_shift = new_formatted_end as i128 - old_formatted_end as i128;
+    let source_shift = new_source_end as i128 - old_source_end as i128;
+    shift_range_i128(&old.formatted, formatted_shift).as_ref() == Some(&new.formatted)
+        && shift_range_i128(&old.source, source_shift).as_ref() == Some(&new.source)
+}
+
+fn transformed_source_boundary_eq(
+    old: &SourceTextBoundary,
+    new: &SourceTextBoundary,
+    old_source_end: usize,
+    new_source_end: usize,
+    old_formatted_end: usize,
+    new_formatted_end: usize,
+) -> bool {
+    if old.side != new.side {
+        return false;
+    }
+    let source_shift = new_source_end as i128 - old_source_end as i128;
+    let formatted_shift = new_formatted_end as i128 - old_formatted_end as i128;
+    shift_range_i128(&old.source, source_shift).as_ref() == Some(&new.source)
+        && shift_range_i128(&(old.formatted..old.formatted), formatted_shift)
+            .is_some_and(|range| range.start == new.formatted)
 }
 
 fn validate_source_neighbors<T>(
@@ -3849,18 +4182,55 @@ fn project_markdown(
     source_content_end: usize,
     preserve_markers: bool,
 ) -> FormattedDocument {
+    let list_context = super::markdown_blocks::source_context(normalized);
     if preserve_markers {
+        let (cooked, explicit) = super::paragraph_flow::markdown_source(normalized);
+        let soft = super::paragraph_flow::markdown_soft_breaks(normalized);
+        let soft_sources = normalized
+            .endings
+            .iter()
+            .filter(|ending| soft.contains(&ending.normalized.start))
+            .map(|ending| (ending.source.start, ending.source.end))
+            .collect::<std::collections::BTreeSet<_>>();
+        let cooked_soft = cooked
+            .endings
+            .iter()
+            .filter(|ending| soft_sources.contains(&(ending.source.start, ending.source.end)))
+            .map(|ending| ending.normalized.start)
+            .collect();
         let mut projected = project_markdown_lines(
-            normalized,
+            &cooked,
             revision,
             source_content_start,
             source_content_end,
             true,
+            &list_context,
         );
-        projected.install_flow_ranges(super::paragraph_flow::flow_ranges(
-            normalized,
-            &super::paragraph_flow::markdown_soft_breaks(normalized),
-        ));
+        let flows = super::paragraph_flow::flow_ranges(&cooked, &cooked_soft);
+        let mut paragraphs: Vec<Block> = Vec::new();
+        let mut flow_index = 0;
+        for block in projected.blocks() {
+            while flow_index + 1 < flows.len() && flows[flow_index].end < block.range.start {
+                flow_index += 1;
+            }
+            let join = paragraphs.last().is_some_and(|previous| {
+                previous.style.0 != "Code Block" && block.style.0 != "Code Block"
+                    && (flows[flow_index].start <= previous.range.start && block.range.end <= flows[flow_index].end
+                        || (previous.kind == BlockKind::Paragraph && block.kind == BlockKind::Paragraph
+                            || matches!((&previous.kind, &block.kind),
+                                (BlockKind::ListItem { ordered:a, ordinal:b, level:c, .. }, BlockKind::ListItem { ordered:d, ordinal:e, level:f, item_start:false, .. })
+                                if a == d && b == e && c == f))
+                            && projected.provenance_for_region(&(previous.range.end..block.range.start)).iter()
+                                .any(|span| !span.formatted.is_empty() && explicit.contains(&span.source.end)))
+            });
+            if join {
+                paragraphs.last_mut().unwrap().range.end = block.range.end;
+            } else {
+                paragraphs.push(block.clone());
+            }
+        }
+        projected.install_paragraph_partition(paragraphs);
+        projected.install_flow_ranges(flows);
         return projected;
     }
     let (cooked, explicit) = super::paragraph_flow::markdown(normalized);
@@ -3870,6 +4240,7 @@ fn project_markdown(
         source_content_start,
         source_content_end,
         false,
+        &list_context,
     );
     if let Some(ending) = normalized
         .endings
@@ -3888,8 +4259,10 @@ fn project_markdown(
         let mut paragraphs: Vec<Block> = Vec::new();
         for block in projected.blocks() {
             let join = paragraphs.last().is_some_and(|previous| {
-                previous.kind == BlockKind::Paragraph
-                    && block.kind == BlockKind::Paragraph
+                (previous.kind == BlockKind::Paragraph && block.kind == BlockKind::Paragraph
+                    || matches!((&previous.kind, &block.kind),
+                        (BlockKind::ListItem { ordered:a, ordinal:b, level:c, .. }, BlockKind::ListItem { ordered:d, ordinal:e, level:f, item_start:false, .. })
+                        if a == d && b == e && c == f))
                     && previous.style.0 != "Code Block"
                     && block.style.0 != "Code Block"
                     && projected
@@ -3908,12 +4281,24 @@ fn project_markdown(
     projected
 }
 
+fn markdown_presented_kind(mut kind: BlockKind, preserve_markers: bool) -> BlockKind {
+    if let BlockKind::ListItem {
+        marker_is_decoration,
+        ..
+    } = &mut kind
+    {
+        *marker_is_decoration = !preserve_markers;
+    }
+    kind
+}
+
 fn project_markdown_lines(
     normalized: &NormalizedText,
     revision: Revision,
     source_content_start: usize,
     source_content_end: usize,
     preserve_markers: bool,
+    list_context: &[(Range<usize>, super::markdown_blocks::ListLine)],
 ) -> FormattedDocument {
     let mut builder = MarkdownBuilder::new(
         &normalized.text,
@@ -3923,11 +4308,23 @@ fn project_markdown_lines(
     );
     builder.preserve_markers = preserve_markers;
     let input_lines = normalized_hard_line_ranges(normalized);
+    let mut hard_breaks = Vec::new();
 
     let mut line_index = 0;
     while line_index < input_lines.len() {
         let line = &input_lines[line_index];
         let output_start = builder.output.len();
+        let source_at = builder.unit_at(line.start).map(|unit| unit.source.start);
+        let context = source_at.and_then(|at| {
+            list_context
+                .get(
+                    list_context
+                        .partition_point(|(range, _)| range.start <= at)
+                        .saturating_sub(1),
+                )
+                .filter(|(range, _)| range.start <= at && at <= range.end)
+                .map(|(_, context)| context)
+        });
         if let Some((delimiter, length)) = markdown_fence(&normalized.text[line.clone()]) {
             let mut closing = line_index + 1;
             while closing < input_lines.len() {
@@ -3948,20 +4345,35 @@ fn project_markdown_lines(
                 for index in body_start..body_end {
                     let output_start = builder.output.len();
                     builder.emit_range(input_lines[index].start, input_lines[index].end);
+                    if input_lines[index].is_empty() {
+                        let at = builder
+                            .unit_at(input_lines[index].start)
+                            .map_or(source_content_end, |unit| unit.source.start);
+                        builder.provenance.push(ProvenanceSpan {
+                            formatted: output_start..output_start,
+                            source: at..at,
+                        });
+                    }
                     builder.push_semantic_style(output_start, SemanticInlineStyle::Code);
+                    if index + 1 < body_end {
+                        if let Some(ending) = normalized.endings.get(index) {
+                            hard_breaks.push(builder.output.len());
+                            builder.emit_unit_at(ending.normalized.start);
+                        }
+                    }
+                }
+                {
                     builder.blocks.push(Block {
                         id: 0,
                         range: output_start..builder.output.len(),
-                        kind: BlockKind::Paragraph,
+                        kind: markdown_presented_kind(
+                            context.map_or(BlockKind::Paragraph, |context| context.kind.clone()),
+                            preserve_markers,
+                        ),
                         style: "Code Block".into(),
                         direct_paragraph: BlockProperties::default(),
                         direct_default_character: CharacterProperties::default(),
                     });
-                    if index + 1 < body_end {
-                        if let Some(ending) = normalized.endings.get(index) {
-                            builder.emit_unit_at(ending.normalized.start);
-                        }
-                    }
                 }
             } else {
                 let body_at = input_lines
@@ -3977,24 +4389,54 @@ fn project_markdown_lines(
                 builder.blocks.push(Block {
                     id: 0,
                     range: output_start..output_start,
-                    kind: BlockKind::Paragraph,
+                    kind: markdown_presented_kind(
+                        context.map_or(BlockKind::Paragraph, |context| context.kind.clone()),
+                        preserve_markers,
+                    ),
                     style: "Code Block".into(),
                     direct_paragraph: BlockProperties::default(),
                     direct_default_character: CharacterProperties::default(),
                 });
             }
             if let Some(ending) = normalized.endings.get(after - 1) {
+                hard_breaks.push(builder.output.len());
                 builder.emit_unit_at(ending.normalized.start);
             }
             line_index = after;
             continue;
         }
-        let (content_start, kind) = markdown_block_prefix(&normalized.text, line.start, line.end);
-        if preserve_markers || matches!(kind, BlockKind::ListItem { .. }) {
+        let (mut content_start, mut kind) =
+            markdown_block_prefix(&normalized.text, line.start, line.end);
+        if let Some(context) = context {
+            kind = context.kind.clone();
+            content_start = builder
+                .units
+                .get(
+                    builder
+                        .units
+                        .partition_point(|unit| unit.source.start < context.content_start),
+                )
+                .map_or(line.end, |unit| unit.normalized.start)
+                .min(line.end);
+        } else if matches!(kind, BlockKind::ListItem { .. }) {
+            kind = BlockKind::Paragraph;
+            content_start = line.start;
+        }
+        if preserve_markers {
             builder.emit_range(line.start, content_start);
         }
+        kind = markdown_presented_kind(kind, preserve_markers);
         builder.parse_inline(content_start, line.end);
         let output_end = builder.output.len();
+        if output_start == output_end && matches!(kind, BlockKind::ListItem { .. }) {
+            // The source label belongs to list structure. An empty item still
+            // exposes a text insertion boundary immediately after that label.
+            let at = context.map_or(source_content_end, |context| context.content_start);
+            builder.provenance.push(ProvenanceSpan {
+                formatted: output_start..output_start,
+                source: at..at,
+            });
+        }
         let style = match kind {
             BlockKind::Heading(level) => format!("Heading{level}").as_str().into(),
             BlockKind::Paragraph => "Paragraph".into(),
@@ -4011,22 +4453,33 @@ fn project_markdown_lines(
             direct_default_character: CharacterProperties::default(),
         });
         if let Some(ending) = normalized.endings.get(line_index) {
+            hard_breaks.push(builder.output.len());
             builder.emit_unit_at(ending.normalized.start);
         }
         line_index += 1;
     }
 
-    FormattedDocument::from_parts(
+    let text_len = builder.output.len();
+    let mut projection = FormattedDocument::from_parts(
         revision,
         builder.output,
         builder.blocks,
         builder.styles,
         builder.provenance,
         builder.decoding_diagnostics,
-        StyleSheet::default(),
+        StyleSheet::for_format(Format::Markdown),
         source_content_start,
         source_content_end,
-    )
+    );
+    let mut start = 0;
+    let mut lines = Vec::with_capacity(hard_breaks.len() + 1);
+    for at in hard_breaks {
+        lines.push(start..at);
+        start = at + 1;
+    }
+    lines.push(start..text_len);
+    projection.install_hard_line_partition(lines);
+    projection
 }
 
 pub(super) fn markdown_fence(line: &str) -> Option<(u8, usize)> {
@@ -4062,6 +4515,7 @@ pub(crate) fn markdown_block_prefix(text: &str, start: usize, end: usize) -> (us
                     level,
                     container_start: false,
                     item_start: true,
+                    marker_is_decoration: false,
                 },
             );
         }
@@ -4079,6 +4533,7 @@ pub(crate) fn markdown_block_prefix(text: &str, start: usize, end: usize) -> (us
                         level,
                         container_start: false,
                         item_start: true,
+                        marker_is_decoration: false,
                     },
                 );
             }
@@ -4136,7 +4591,7 @@ impl<'a> MarkdownBuilder<'a> {
                 if let Some(next) = self.next_boundary(at) {
                     if next < end {
                         let escaped = self.source_text[next..].chars().next().unwrap();
-                        if matches!(escaped, '\\' | '*' | '_' | '`' | '#') {
+                        if escaped.is_ascii_punctuation() {
                             if self.preserve_markers {
                                 self.emit_range(at, next + escaped.len_utf8());
                             } else {
@@ -4305,7 +4760,7 @@ impl<'a> MarkdownBuilder<'a> {
                 if let Some(next) = self.next_boundary(at) {
                     if next < end {
                         let escaped = self.source_text[next..].chars().next().unwrap();
-                        if matches!(escaped, '\\' | '*' | '_' | '`' | '#') {
+                        if escaped.is_ascii_punctuation() {
                             self.emit_escaped(at, next);
                             at = next + escaped.len_utf8();
                             continue;
@@ -4506,6 +4961,126 @@ mod tests {
         blocks[0].direct_paragraph.spacing_after = Some(9.0);
         blocks[0].direct_default_character.font_families = Some(vec!["Assigned Serif".to_owned()]);
         document.blocks = OrderedRangeStore::new(blocks);
+    }
+
+    #[test]
+    fn many_separate_paragraph_splits_inherit_direct_properties_locally() {
+        const COUNT: usize = 5_000;
+        let old_text = "a\n".repeat(COUNT);
+        let new_text = "a\nb\n".repeat(COUNT);
+        let mut before = plain(old_text.clone(), Revision(1));
+        let next_id = before.assign_initial_block_ids(1).unwrap();
+        let mut blocks = before.blocks().to_vec();
+        for block in &mut blocks {
+            block.direct_paragraph.spacing_after = Some(9.0);
+        }
+        before.install_paragraph_partition(blocks);
+        let mut after = plain(new_text.clone(), Revision(2));
+        let edits = (0..COUNT)
+            .map(|index| TextEdit::new(index * 2..index * 2 + 1, "a\nb"))
+            .collect::<Vec<_>>();
+        let map = PositionMap::for_text_snapshots(
+            DocumentId(1),
+            Revision(1),
+            Revision(2),
+            &before,
+            &after,
+            edits
+                .iter()
+                .map(|edit| {
+                    super::super::Splice::new(edit.range.clone(), edit.replacement.len()).unwrap()
+                })
+                .collect(),
+        )
+        .unwrap();
+        after
+            .install_reconciled_block_ids(&before, &edits, &map, next_id)
+            .unwrap();
+        assert_eq!(after.blocks().len(), COUNT * 2 + 1);
+        assert!(after
+            .blocks()
+            .iter()
+            .all(|block| block.direct_paragraph.spacing_after == Some(9.0)));
+    }
+
+    #[test]
+    fn batched_grapheme_provenance_matches_checked_point_queries() {
+        for (format, source) in [
+            (
+                Format::PlainText,
+                "A\r\nB e\u{301} क्‍ष 👩🏽‍💻 🇺🇸🇨🇦\n\u{301}end",
+            ),
+            (
+                Format::MarkdownSource,
+                "# e\u{301} **bold**\n\n- item\n  continuation\n\n```\ncode\n\n```",
+            ),
+            (
+                Format::Markdown,
+                "# e\u{301} **bold**\n\n- item\n  continuation\n\n```\ncode\n\n```",
+            ),
+            (
+                Format::Html,
+                "<p>A&amp;B<i></i>é👩🏽‍💻</p><ul><li>item</li></ul>",
+            ),
+            (
+                Format::Html,
+                "<table>before<tr><td>cell</td></tr>after</table>",
+            ),
+            (Format::Rtf, "{\\rtf1 A{\\b }B\\par C}"),
+        ] {
+            let document = super::super::Document::from_bytes(
+                source.as_bytes().to_vec(),
+                super::super::Encoding::Utf8,
+                format,
+            )
+            .unwrap();
+            let projection = document.projection();
+            let expected = projection
+                .text()
+                .grapheme_indices(true)
+                .map(|(at, item)| (at, item, projection.source_range(at..at + item.len())))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                projection.source_grapheme_ranges().collect::<Vec<_>>(),
+                expected,
+                "{format:?}"
+            );
+        }
+        for spans in [
+            vec![],
+            vec![
+                ProvenanceSpan {
+                    formatted: 0..2,
+                    source: 0..2,
+                },
+                ProvenanceSpan {
+                    formatted: 1..1,
+                    source: 1..1,
+                },
+            ],
+        ] {
+            let base = plain("ab".into(), Revision(0));
+            let projection = FormattedDocument::from_parts(
+                Revision(0),
+                "ab".into(),
+                base.blocks().to_vec(),
+                vec![],
+                spans,
+                vec![],
+                StyleSheet::default(),
+                0,
+                2,
+            );
+            let expected = projection
+                .text()
+                .grapheme_indices(true)
+                .map(|(at, item)| (at, item, projection.source_range(at..at + item.len())))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                projection.source_grapheme_ranges().collect::<Vec<_>>(),
+                expected
+            );
+        }
     }
 
     #[test]

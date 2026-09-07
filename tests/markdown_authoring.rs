@@ -94,7 +94,7 @@ fn flowed_paragraph_styles_flatten_only_soft_source_breaks() {
             assert_eq!(
                 document.text(),
                 if list {
-                    "Before\n- First soft continuation\nTail"
+                    "Before\nFirst soft continuation\nTail"
                 } else {
                     "Before\nFirst soft continuation\nTail"
                 }
@@ -122,14 +122,14 @@ fn removing_structural_markers_keeps_neighboring_paragraphs_separate() {
         ("Before\n# Heading\nTail", "Before\n\nHeading\n\nTail"),
         ("# First\n## Second\nTail", "First\n\nSecond\n\nTail"),
         (
-            "Before\n- First\n- Second\nTail",
+            "Before\n- First\n- Second\n\nTail",
             "Before\n\nFirst\n\nSecond\n\nTail",
         ),
     ] {
         let mut document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
                 .unwrap();
-        let before = document.text().replace("- ", "");
+        let before = document.text().to_owned();
         if source.contains("- ") {
             document
                 .set_list_style(0..document.text().len(), None::<ListStyle>)

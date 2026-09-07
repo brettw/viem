@@ -175,12 +175,28 @@ pub(super) fn support_patches(
             }
         };
         for index in boundaries {
-            if !resulting_prose(index) || !resulting_prose(index + 1) {
+            let untouched_list = |at: usize| {
+                !(first..=last).contains(&at)
+                    && projection.hard_line_range(at).is_some_and(|line| {
+                        projection
+                            .blocks_for_region(&line)
+                            .iter()
+                            .any(|block| matches!(block.kind, BlockKind::ListItem { .. }))
+                    })
+            };
+            if !(resulting_prose(index) && resulting_prose(index + 1)
+                || (first..=last).contains(&index) && untouched_list(index + 1)
+                || untouched_list(index) && (first..=last).contains(&(index + 1)))
+            {
                 continue;
             }
             let end = projection.hard_line_range(index).unwrap().end;
-            let source = projection
-                .source_range(end..end + 1)
+            let spans = projection.provenance_for_region(&(end..end + 1));
+            let source = spans
+                .iter()
+                .find(|span| !span.formatted.is_empty())
+                .zip(spans.iter().rev().find(|span| !span.formatted.is_empty()))
+                .map(|(first, last)| first.source.start..last.source.end)
                 .ok_or(DocumentError::AmbiguousProjection)?;
             let bytes = document
                 .state()

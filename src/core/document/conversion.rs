@@ -134,6 +134,16 @@ pub(super) fn convert(document: &Document, target: Format) -> Result<Conversion,
         let block = &blocks[index];
         if index > 0 {
             output.push('\n');
+            if !to_html
+                && !matches!(block.kind, BlockKind::ListItem { .. })
+                && (matches!(blocks[index - 1].kind, BlockKind::ListItem { .. })
+                    || block.kind == BlockKind::Paragraph
+                        && blocks[index - 1].kind == BlockKind::Paragraph)
+            {
+                // A bare source ending would continue list prose or merge
+                // two ordinary paragraphs under Markdown's flow rules.
+                output.push('\n');
+            }
         }
         if block.style.0 == "Code Block" {
             let start = block.range.start;
@@ -351,21 +361,12 @@ fn whitespace_attribute(text: &str) -> &'static str {
         ""
     }
 }
-fn list_body(document: &FormattedDocument, block: &super::Block) -> Range<usize> {
-    let mut body = block.range.clone();
-    if matches!(
-        block.kind,
-        BlockKind::ListItem {
-            item_start: true,
-            ..
-        }
-    ) {
-        let text = &document.text()[body.clone()];
-        let indent = text.len() - text.trim_start_matches(' ').len();
-        body.start += indent + text[indent..].find(' ').map_or(0, |at| at + 1);
-    }
-    body
+fn list_body(_document: &FormattedDocument, block: &super::Block) -> Range<usize> {
+    // Conversion always consumes a WYSIWYG projection. List labels are layout
+    // decorations, so the complete block range is body content.
+    block.range.clone()
 }
+
 fn html_list(
     document: &FormattedDocument,
     blocks: &[super::Block],

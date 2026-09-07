@@ -19,6 +19,7 @@ pub(super) fn source_lines(input: &NormalizedText) -> Vec<Range<usize>> {
 
 pub(super) fn markdown_soft_breaks(input: &NormalizedText) -> BTreeSet<usize> {
     let lines = source_lines(input);
+    let lists = super::markdown_blocks::classify(input);
     let mut prose = Vec::with_capacity(lines.len());
     let mut fence = None;
     for line in &lines {
@@ -48,8 +49,14 @@ pub(super) fn markdown_soft_breaks(input: &NormalizedText) -> BTreeSet<usize> {
         .enumerate()
         .filter_map(|(i, ending)| {
             let previous = &input.text[lines[i].clone()];
-            (prose[i]
+            ((prose[i]
                 && prose.get(i + 1) == Some(&true)
+                && lists[i].is_none()
+                && lists.get(i + 1).is_some_and(Option::is_none)
+                || lists[i]
+                    .as_ref()
+                    .zip(lists.get(i + 1).and_then(Option::as_ref))
+                    .is_some_and(|(a, b)| a.paragraph == b.paragraph && !a.code && !b.code))
                 && !previous.ends_with("  ")
                 && !previous.ends_with('\\'))
             .then_some(ending.normalized.start)
@@ -75,8 +82,23 @@ pub(super) fn flow_ranges(input: &NormalizedText, soft: &BTreeSet<usize>) -> Vec
 /// newline; repeated pairs retain authored empty paragraphs. Deleting a
 /// semantic boundary owns its complete physical separator extent.
 pub(super) fn markdown(input: &NormalizedText) -> (NormalizedText, BTreeSet<usize>) {
+    markdown_projection(input, false)
+}
+
+/// Source syntax remains visible, but blank paragraph-separator lines share
+/// the same mapped boundary as WYSIWYG. Ordinary source endings still belong
+/// to the optional per-view flow policy.
+pub(super) fn markdown_source(input: &NormalizedText) -> (NormalizedText, BTreeSet<usize>) {
+    markdown_projection(input, true)
+}
+
+fn markdown_projection(
+    input: &NormalizedText,
+    preserve_markers: bool,
+) -> (NormalizedText, BTreeSet<usize>) {
     let lines = source_lines(input);
     let soft = markdown_soft_breaks(input);
+    let lists = super::markdown_blocks::classify(input);
     let mut replacements: Vec<(Range<usize>, &'static str, bool)> = Vec::new();
     let mut explicit = BTreeSet::new();
     let mut fence = None;
@@ -93,17 +115,33 @@ pub(super) fn markdown(input: &NormalizedText) -> (NormalizedText, BTreeSet<usiz
             fence = markdown_fence(text);
         }
         let ending = &input.endings[i];
-        if was_fenced || fence.is_some() || text.starts_with("    ") || text.starts_with('\t') {
-            // A closing fence's terminal source ending is syntax, while line
-            // endings inside the code body remain explicit content.
-            if was_fenced && fence.is_none() && ending.normalized.end == input.text.len() {
-                replacements.push((ending.normalized.clone(), "", false));
-            }
+        if fence.is_some()
+            || lists[i]
+                .as_ref()
+                .zip(lists.get(i + 1).and_then(Option::as_ref))
+                .is_some_and(|(line, next)| {
+                    line.code && next.code && line.paragraph == next.paragraph
+                })
+            || (!was_fenced
+                && lists[i].is_none()
+                && (text.starts_with("    ") || text.starts_with('\t')))
+        {
+            // Code-body endings remain literal content; closing-fence
+            // separators below still obey ordinary paragraph separation.
             i += 1;
             continue;
         }
         if soft.contains(&ending.normalized.start) {
-            replacements.push((ending.normalized.clone(), " ", false));
+            if preserve_markers {
+                i += 1;
+                continue;
+            }
+            let end = lists
+                .get(i + 1)
+                .and_then(Option::as_ref)
+                .filter(|line| line.marker.is_none())
+                .map_or(ending.normalized.end, |line| line.content_start);
+            replacements.push((ending.normalized.start..end, " ", false));
         } else if lines
             .get(i + 1)
             .is_some_and(|line| input.text[line.clone()].trim().is_empty())
@@ -127,6 +165,11 @@ pub(super) fn markdown(input: &NormalizedText) -> (NormalizedText, BTreeSet<usiz
                     ));
                 }
                 i = last;
+            } else if preserve_markers {
+                // An ordinary terminal source ending remains editable.
+                if text.ends_with("  ") || text.ends_with('\\') {
+                    explicit.insert(ending.source.end);
+                }
             } else if !text.ends_with("  ") && !text.ends_with('\\') {
                 replacements.push((ending.normalized.clone(), "", false));
             } else {
@@ -143,20 +186,35 @@ pub(super) fn markdown(input: &NormalizedText) -> (NormalizedText, BTreeSet<usiz
                 explicit.insert(ending.source.end);
             }
         } else if text.ends_with("  ") || text.ends_with('\\') {
-            let count = if text.ends_with('\\') {
-                1
-            } else {
-                text.len() - text.trim_end_matches(' ').len()
-            };
-            replacements.push((
-                ending.normalized.start - count..ending.normalized.end,
-                "\n",
-                true,
-            ));
+            if !preserve_markers {
+                let count = if text.ends_with('\\') {
+                    1
+                } else {
+                    text.len() - text.trim_end_matches(' ').len()
+                };
+                replacements.push((
+                    ending.normalized.start - count..ending.normalized.end,
+                    "\n",
+                    true,
+                ));
+            }
             explicit.insert(ending.source.end);
         }
         i += 1;
     }
+    for (index, context) in lists.iter().enumerate() {
+        if let Some(context) = context
+            .as_ref()
+            .filter(|context| !preserve_markers && context.marker.is_none())
+        {
+            if context.content_start > lines[index].start
+                && (index == 0 || !soft.contains(&input.endings[index - 1].normalized.start))
+            {
+                replacements.push((lines[index].start..context.content_start, "", false));
+            }
+        }
+    }
+    replacements.sort_by_key(|(range, _, _)| range.start);
     let mut result = NormalizedText {
         text: String::new(),
         units: Vec::new(),

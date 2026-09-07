@@ -1048,6 +1048,13 @@ pub struct PositionMap {
 }
 
 impl PositionMap {
+    pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+        for transition in [&self.forward, &self.reverse] {
+            for ordinal in &transition.ordinal { visitor.vector(&ordinal.pieces, 0); }
+            visitor.vector(&transition.surviving_content, 0);
+        }
+    }
+
     pub fn identity(
         document: DocumentId,
         domain: PositionDomain,
@@ -1582,33 +1589,20 @@ impl CompiledOrdinalMap {
         special.dedup();
 
         let mut pieces = Vec::with_capacity(special.len().saturating_mul(2));
+        let mut evaluator = OrdinalStepCursor::new(step, association, recovery);
         let mut cursor = 0usize;
         for point in special {
             if cursor < point {
-                pieces.push(compile_raw_interval(
-                    cursor,
-                    point - 1,
-                    association,
-                    recovery,
-                    step,
-                )?);
+                pieces.push(compile_raw_interval(cursor, point - 1, &mut evaluator)?);
             }
-            pieces.push(compile_raw_interval(
-                point,
-                point,
-                association,
-                recovery,
-                step,
-            )?);
+            pieces.push(compile_raw_interval(point, point, &mut evaluator)?);
             cursor = point.saturating_add(1);
         }
         if cursor <= step.source_len {
             pieces.push(compile_raw_interval(
                 cursor,
                 step.source_len,
-                association,
-                recovery,
-                step,
+                &mut evaluator,
             )?);
         }
         Ok(Self {
@@ -1712,15 +1706,102 @@ fn ordinal_policy_index(association: Association, recovery: DeletionRecovery) ->
         }
 }
 
+/// Evaluate the sorted compilation frontier once. Previously every interval
+/// endpoint rescanned all earlier splices, making a format change with S
+/// delimiter edits take O(S²) work for each of twelve policy/direction maps.
+struct OrdinalStepCursor<'a> {
+    step: &'a PositionMapStep,
+    association: Association,
+    recovery: DeletionRecovery,
+    next: usize,
+    delta: isize,
+    #[cfg(test)]
+    visited_splices: usize,
+}
+
+impl<'a> OrdinalStepCursor<'a> {
+    fn new(
+        step: &'a PositionMapStep,
+        association: Association,
+        recovery: DeletionRecovery,
+    ) -> Self {
+        Self {
+            step,
+            association,
+            recovery,
+            next: 0,
+            delta: 0,
+            #[cfg(test)]
+            visited_splices: 0,
+        }
+    }
+
+    fn map(&mut self, offset: usize) -> Result<MappingOutcome<usize>, PositionError> {
+        while let Some(splice) = self
+            .step
+            .splices
+            .get(self.next)
+            .filter(|splice| splice.old.end <= offset && splice.old.start < offset)
+        {
+            self.delta = checked_delta(self.delta, splice)?;
+            self.next += 1;
+            #[cfg(test)]
+            {
+                self.visited_splices += 1;
+            }
+        }
+        if let Some(splice) = self
+            .step
+            .splices
+            .get(self.next)
+            .filter(|splice| splice.old.start < offset && offset < splice.old.end)
+        {
+            if self.recovery == DeletionRecovery::Unresolvable {
+                return Ok(MappingOutcome::Unresolvable(
+                    UnresolvableAnchor::DeletedContent {
+                        revision: self.step.source_revision,
+                        range: splice.old.clone(),
+                    },
+                ));
+            }
+            let start = add_signed(splice.old.start, self.delta)?;
+            return Ok(MappingOutcome::CollapsedByDeletion(recovery_target(
+                self.recovery,
+                splice,
+                self.step,
+                start,
+            )));
+        }
+        let mut mapped = add_signed(offset, self.delta)?;
+        if self.association == Association::AfterInsertion {
+            for splice in self.step.splices[self.next..]
+                .iter()
+                .take_while(|splice| splice.old.start == offset)
+            {
+                mapped = mapped
+                    .checked_add(splice.inserted_len)
+                    .ok_or(PositionError::ArithmeticOverflow)?;
+                #[cfg(test)]
+                {
+                    self.visited_splices += 1;
+                }
+            }
+        }
+        Ok(if mapped == offset {
+            MappingOutcome::Exact(mapped)
+        } else {
+            MappingOutcome::Moved(mapped)
+        })
+    }
+}
+
 fn compile_raw_interval(
     start: usize,
     end: usize,
-    association: Association,
-    recovery: DeletionRecovery,
-    step: &PositionMapStep,
+    evaluator: &mut OrdinalStepCursor<'_>,
 ) -> Result<OrdinalPiece, PositionError> {
-    let first = map_ordinal_through_step(start, association, recovery, step)?;
-    let last = map_ordinal_through_step(end, association, recovery, step)?;
+    let first = evaluator.map(start)?;
+    let last = evaluator.map(end)?;
     let mapping = mapping_for_interval(start, end, first, last)?;
     Ok(OrdinalPiece {
         start,
@@ -1997,6 +2078,7 @@ fn invert_step(step: &PositionMapStep) -> Result<PositionMapStep, PositionError>
     })
 }
 
+#[cfg(test)]
 fn map_ordinal_through_step(
     offset: usize,
     association: Association,
@@ -2240,6 +2322,80 @@ mod tests {
             MappingOutcome::RecoveredFromProvenance(_) => 3,
             MappingOutcome::Ambiguous(_) => 4,
             MappingOutcome::Unresolvable(_) => 5,
+        }
+    }
+
+    #[test]
+    fn splice_compilation_sweep_matches_reference_for_all_anchor_policies() {
+        let cases = [
+            vec![],
+            vec![
+                Splice::new(0..0, 3).unwrap(),
+                Splice::new(0..3, 2).unwrap(),
+                Splice::new(3..3, 4).unwrap(),
+                Splice::new(5..8, 0).unwrap(),
+                Splice::new(8..8, 2).unwrap(),
+            ],
+            vec![Splice::new(0..12, 0).unwrap()],
+            vec![
+                Splice::new(2..5, 2).unwrap(),
+                Splice::new(5..8, 0).unwrap(),
+                Splice::new(8..12, 4).unwrap(),
+            ],
+            vec![
+                Splice::new(3..3, 1).unwrap(),
+                Splice::new(3..3, 2).unwrap(),
+                Splice::new(12..12, 4).unwrap(),
+            ],
+        ];
+        for splices in cases {
+            let step = PositionMapStep {
+                source_revision: Revision(1),
+                target_revision: Revision(2),
+                source_len: 12,
+                target_len: computed_target_len(12, &splices).unwrap(),
+                splices,
+            };
+            for step in [&step, &invert_step(&step).unwrap()] {
+                for policy in 0..6 {
+                    let (association, recovery) = ordinal_policy(policy);
+                    let compiled =
+                        CompiledOrdinalMap::from_step(step, association, recovery).unwrap();
+                    let mut cursor = OrdinalStepCursor::new(step, association, recovery);
+                    for at in 0..=step.source_len {
+                        let expected =
+                            map_ordinal_through_step(at, association, recovery, step).unwrap();
+                        assert_eq!(cursor.map(at).unwrap(), expected);
+                        assert_eq!(cursor.map(at).unwrap(), expected, "repeated boundary");
+                        assert_eq!(compiled.map(at).unwrap(), expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compiling_many_disjoint_splices_visits_each_frontier_only_once() {
+        let count = 20_000;
+        let splices = (0..count)
+            .map(|index| Splice::new(index * 4 + 1..index * 4 + 3, 1).unwrap())
+            .collect::<Vec<_>>();
+        let step = PositionMapStep {
+            source_revision: Revision(1),
+            target_revision: Revision(2),
+            source_len: count * 4,
+            target_len: count * 3,
+            splices,
+        };
+        for policy in 0..6 {
+            let (association, recovery) = ordinal_policy(policy);
+            let mut cursor = OrdinalStepCursor::new(&step, association, recovery);
+            for at in 0..=step.source_len {
+                cursor.map(at).unwrap();
+            }
+            assert!(cursor.visited_splices <= count * 2);
+            let map = CompiledOrdinalMap::from_step(&step, association, recovery).unwrap();
+            assert!(map.pieces.len() <= count * 4 + 1);
         }
     }
 

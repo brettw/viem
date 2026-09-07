@@ -285,11 +285,7 @@ fn visual_row_delete_keeps_list_marker_when_item_continues_and_handles_nested_fo
             .clone();
         assert!(row.end < original.len(), "{format:?} row must wrap");
         keys(&mut core, view, "dd");
-        assert_eq!(
-            core.document().text(),
-            format!("• {}", &original[row.end..]),
-            "{format:?}"
-        );
+        assert_eq!(core.document().text(), &original[row.end..], "{format:?}");
         keys(&mut core, view, "u");
         assert_eq!(core.document().source_bytes(), source.as_bytes());
     }
@@ -315,20 +311,29 @@ fn visual_line_selection_and_insert_placements_follow_row_boundaries() {
     assert_eq!(core.document().text(), original);
 }
 #[test]
-fn deleting_a_marker_only_row_removes_the_list_assignment() {
+fn narrow_list_row_contains_body_text_and_partial_deletion_retains_decoration() {
     let source = "<ul><li>abcdefghijklmnopqrstuvwxyz</li></ul>";
     let document =
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
     let (mut core, view) = editor(document, 80.0);
-    assert_eq!(
-        core.layout(view).unwrap().snapshot().unwrap().rows[0].text_range,
-        0.."• ".len()
-    );
+    let row = &core.layout(view).unwrap().snapshot().unwrap().rows[0];
+    let end = row.text_range.end;
+    assert!(!row.text_range.is_empty());
+    assert_eq!(row.decorations.len(), 1);
+    assert_eq!(row.clusters[0].text_range.start, 0);
     keys(&mut core, view, "dd");
-    assert_eq!(core.document().text(), "abcdefghijklmnopqrstuvwxyz");
+    assert_eq!(core.document().text(), &"abcdefghijklmnopqrstuvwxyz"[end..]);
+    assert_eq!(core.document().projection().list_structure().lists.len(), 1);
+    assert_eq!(
+        core.layout(view).unwrap().snapshot().unwrap().rows[0]
+            .decorations
+            .len(),
+        1
+    );
     keys(&mut core, view, "u");
     assert_eq!(core.document().source_bytes(), source.as_bytes());
 }
+
 #[test]
 fn counted_visual_line_and_hidden_source_visual_line_use_the_selected_domain() {
     let original = "abcdefgh ijklmnop qrstuv wxyz\nTail";

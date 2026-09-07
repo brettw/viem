@@ -1,3 +1,4 @@
+use super::direction::paragraph_is_right_to_left;
 use super::height_index::{
     HardLineHeightHit, HeightMeasurement, ViewHeightIndex, ViewHeightIndexError,
     ViewHeightIndexStatistics,
@@ -339,6 +340,19 @@ pub struct PositionedCluster {
     pub render_run: Option<RenderRunHandle>,
 }
 
+/// Drawable list furniture. It has no formatted text range or caret stops.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PositionedDecoration {
+    pub text: String,
+    pub x: f32,
+    pub advance: f32,
+    pub typographic_bounds: LayoutRect,
+    pub ink_bounds: LayoutRect,
+    pub render_run: Option<RenderRunHandle>,
+    pub paint: ResolvedTextPaint,
+    pub font_size: f32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PositionedCaret {
     pub point: CaretPoint,
@@ -368,6 +382,7 @@ pub struct VisualRow {
     pub wrapped_from_previous: bool,
     pub wraps_to_next: bool,
     pub clusters: Vec<PositionedCluster>,
+    pub decorations: Vec<PositionedDecoration>,
     pub carets: Vec<PositionedCaret>,
 }
 
@@ -392,14 +407,23 @@ impl VisualRow {
     /// Union of provider-reported glyph ink in absolute layout coordinates.
     /// Empty hard lines have caret/line geometry but no ink bounds.
     pub fn ink_bounds(&self) -> Option<LayoutRect> {
-        let mut bounds = self.clusters.first()?.ink_bounds;
-        for cluster in &self.clusters[1..] {
+        let mut ink = self
+            .clusters
+            .iter()
+            .map(|cluster| cluster.ink_bounds)
+            .chain(
+                self.decorations
+                    .iter()
+                    .map(|decoration| decoration.ink_bounds),
+            );
+        let mut bounds = ink.next()?;
+        for cluster in ink {
             let right = bounds.x + bounds.width;
             let bottom = bounds.y + bounds.height;
-            let cluster_right = cluster.ink_bounds.x + cluster.ink_bounds.width;
-            let cluster_bottom = cluster.ink_bounds.y + cluster.ink_bounds.height;
-            let x = bounds.x.min(cluster.ink_bounds.x);
-            let y = bounds.y.min(cluster.ink_bounds.y);
+            let cluster_right = cluster.x + cluster.width;
+            let cluster_bottom = cluster.y + cluster.height;
+            let x = bounds.x.min(cluster.x);
+            let y = bounds.y.min(cluster.y);
             bounds = LayoutRect {
                 x,
                 y,
@@ -439,6 +463,9 @@ pub struct LayoutSnapshot {
     /// into this geometry.
     pub content_width: f32,
     pub content_width_is_exact: bool,
+    /// Per-row horizontal extents, computed once with immutable geometry.
+    /// Scroll queries only inspect the rows intersecting their viewport.
+    row_content_widths: Vec<f32>,
     pub total_height: f32,
     pub total_height_is_exact: bool,
     pub diagnostics: Vec<ShapingDiagnostic>,
@@ -620,6 +647,124 @@ impl RegionalLayoutSnapshot {
             .find_map(RegionalHardLineLayout::next_checkpoint)
     }
 
+    /// Keep only the terminal viewport while advancing a long hard line in
+    /// bounded chunks. A short last chunk borrows visible rows from the prior
+    /// tail instead of leaving blank space above the document endpoint.
+    pub(crate) fn retain_viewport_tail(&mut self, previous: Option<&Self>) {
+        debug_assert_eq!(self.lines.len(), 1);
+        let owned = self.lines[0].text_coverage.clone();
+        let top = (self.lines[0].height as f32 - self.viewport_height).max(0.0);
+        let mut rows = Vec::new();
+        let mut paints = Vec::new();
+        let mut boundaries = Vec::new();
+        let mut diagnostics = Vec::new();
+        if let Some(previous) = previous {
+            debug_assert_eq!(previous.document_revision, self.document_revision);
+            debug_assert_eq!(
+                previous.configuration_generation,
+                self.configuration_generation
+            );
+            debug_assert_eq!(
+                previous.lines[0].hard_line_range,
+                self.lines[0].hard_line_range
+            );
+            debug_assert_eq!(previous.lines[0].text_coverage.end, owned.start);
+            rows.extend(
+                previous.lines[0]
+                    .rows
+                    .iter()
+                    .filter(|row| row.y + row.height() > top)
+                    .cloned(),
+            );
+            paints.extend(previous.paint_runs.iter().cloned());
+            boundaries.extend(previous.grapheme_boundaries.iter().copied());
+            diagnostics.extend(previous.diagnostics.iter().cloned());
+        }
+        let last = self.lines[0].rows.last().cloned();
+        rows.extend(
+            self.lines[0]
+                .rows
+                .drain(..)
+                .filter(|row| row.y + row.height() > top),
+        );
+        // Bottom padding can exceed the viewport, but a snapshot still needs
+        // an editable terminal row to anchor its document-end geometry.
+        if rows.is_empty() {
+            rows.extend(last);
+        }
+        if let Some(first) = rows.first() {
+            self.lines[0].text_coverage.start = first.text_range.start;
+        }
+        self.lines[0].rows = rows;
+        paints.extend(self.paint_runs.iter().filter_map(|run| {
+            let mut run = run.clone();
+            run.text_range.start = run.text_range.start.max(owned.start);
+            run.text_range.end = run.text_range.end.min(owned.end);
+            (run.text_range.start < run.text_range.end).then_some(run)
+        }));
+        let retained = self.lines[0].text_coverage.clone();
+        self.paint_runs = paints
+            .into_iter()
+            .filter_map(|mut run| {
+                run.text_range.start = run.text_range.start.max(retained.start);
+                run.text_range.end = run.text_range.end.min(retained.end);
+                (run.text_range.start < run.text_range.end).then_some(run)
+            })
+            .collect();
+        boundaries.extend(self.grapheme_boundaries.iter().copied());
+        boundaries.retain(|at| retained.start <= *at && *at <= retained.end);
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        self.grapheme_boundaries = boundaries;
+        diagnostics.extend(self.diagnostics.iter().cloned());
+        diagnostics.retain(|entry| {
+            entry.text_range.start <= retained.end && retained.start <= entry.text_range.end
+        });
+        self.diagnostics = diagnostics;
+    }
+
+    /// Add the already measured short/empty bands following this terminal
+    /// paragraph, keeping only the part of this paragraph still visible above
+    /// them. Each band retains its own relative y and exact full-band height.
+    pub(crate) fn append_following_viewport_tail(&mut self, following: Option<&Self>) {
+        let Some(following) = following else {
+            return;
+        };
+        debug_assert_eq!(self.lines.len(), 1);
+        debug_assert_eq!(self.hard_lines.end, following.hard_lines.start);
+        debug_assert_eq!(self.document_revision, following.document_revision);
+        debug_assert_eq!(
+            self.configuration_generation,
+            following.configuration_generation
+        );
+        let following_height = following.lines.iter().map(|line| line.height).sum::<f64>();
+        let needed = (f64::from(self.viewport_height) - following_height).max(0.0);
+        let top = (self.lines[0].height - needed).max(0.0) as f32;
+        let last = self.lines[0].rows.last().cloned();
+        self.lines[0].rows.retain(|row| row.y + row.height() > top);
+        if self.lines[0].rows.is_empty() {
+            self.lines[0].rows.extend(last);
+        }
+        let start = self.lines[0].rows.first().unwrap().text_range.start;
+        self.lines[0].text_coverage.start = start;
+        self.lines.extend(following.lines.iter().cloned());
+        self.hard_lines.end = following.hard_lines.end;
+        self.paint_runs.extend(following.paint_runs.iter().cloned());
+        self.paint_runs.retain_mut(|run| {
+            run.text_range.start = run.text_range.start.max(start);
+            run.text_range.start < run.text_range.end
+        });
+        self.grapheme_boundaries
+            .extend(following.grapheme_boundaries.iter().copied());
+        self.grapheme_boundaries.retain(|at| *at >= start);
+        self.grapheme_boundaries.sort_unstable();
+        self.grapheme_boundaries.dedup();
+        self.diagnostics
+            .extend(following.diagnostics.iter().cloned());
+        self.diagnostics
+            .retain(|entry| entry.text_range.end >= start);
+    }
+
     fn rebind_revision(&mut self, revision: LayoutRevision) {
         self.revision = revision;
         for line in &mut self.lines {
@@ -778,6 +923,11 @@ fn estimated_regional_line_bytes(line: &RegionalHardLineLayout) -> usize {
             );
         for cluster in &row.clusters {
             bytes = bytes.saturating_add(cluster.fallback_font.len());
+        }
+        for item in &row.decorations {
+            bytes = bytes
+                .saturating_add(std::mem::size_of::<PositionedDecoration>())
+                .saturating_add(item.text.len());
         }
     }
     bytes
@@ -1258,7 +1408,7 @@ impl ViewLayout {
     }
 
     pub fn set_scale(&mut self, scale: f32) -> Result<(), LayoutError> {
-        if !scale.is_finite() || scale <= 0.0 {
+        if !super::valid_zoom_scale(scale) {
             return Err(LayoutError::InvalidScale);
         }
         if self.scale != scale {
@@ -1323,10 +1473,10 @@ impl ViewLayout {
     }
 
     /// Set the horizontal presentation offset. Non-finite values are rejected
-    /// without changing state, negative values clamp to zero, wrapping forces
-    /// zero, and an exact current content width supplies the upper clamp.
+    /// without changing state, negative values clamp to zero, and the exact width
+    /// of the currently visible rows supplies the upper clamp.
     ///
-    /// When only partial or stale geometry is installed there is no honest
+    /// When visible coverage is incomplete or stale there is no honest
     /// upper bound, so the non-negative request is retained until exact layout
     /// becomes available.
     pub fn set_viewport_left(&mut self, left: f32) -> Result<(), LayoutError> {
@@ -1337,22 +1487,59 @@ impl ViewLayout {
         Ok(())
     }
 
-    /// Exact maximum horizontal offset for the current view dependencies.
-    /// `None` means the installed geometry is partial or stale and must not be
-    /// used to clamp presentation state prematurely. Wrapped views always
-    /// return zero.
+    /// Exact maximum horizontal offset for rows intersecting this viewport.
+    /// A partial document snapshot is sufficient when it covers the viewport;
+    /// distant rows and estimated document height cannot enlarge this range.
     pub fn maximum_viewport_left(&self) -> Option<f32> {
-        if self.wrap {
-            return Some(0.0);
-        }
+        self.visible_content_width()
+            .filter(|(_, exact)| *exact)
+            .map(|(width, _)| (width - self.width).max(0.0))
+    }
+
+    /// Current visible lower bound when coverage is incomplete. Never derives
+    /// a horizontal extent from rows outside the current vertical viewport.
+    pub fn estimated_maximum_viewport_left(&self) -> f32 {
+        self.visible_content_width()
+            .map_or(self.viewport_left, |(width, _)| {
+                (width - self.width).max(0.0)
+            })
+    }
+
+    fn visible_content_width(&self) -> Option<(f32, bool)> {
         let snapshot = self.snapshot.as_ref()?;
-        if snapshot.configuration_generation != self.configuration_generation
-            || !snapshot.content_width_is_exact
-            || !self.height_index.total_height().is_exact()
-        {
+        if snapshot.configuration_generation != self.configuration_generation {
             return None;
         }
-        Some((snapshot.content_width - self.width).max(0.0))
+        let top = self.viewport_top;
+        let bottom = top + self.height;
+        let start = snapshot
+            .rows
+            .partition_point(|row| row.y + row.height() <= top);
+        let end = snapshot.rows.partition_point(|row| row.y < bottom);
+        let width = snapshot.row_content_widths[start.min(end)..end]
+            .iter()
+            .copied()
+            .fold(self.width, f32::max);
+        let exact = match &snapshot.coverage {
+            LayoutCoverage::FullDocument { .. } => true,
+            LayoutCoverage::PartialHardLines {
+                hard_lines,
+                document_hard_line_count,
+                text_ranges,
+                vertical_range,
+                ..
+            } => {
+                let reaches_document_end = hard_lines.end == *document_hard_line_count
+                    && snapshot.rows.last().is_some_and(|row| {
+                        text_ranges
+                            .last()
+                            .is_some_and(|range| range.end == row.hard_line_range.end)
+                    });
+                top >= vertical_range.start
+                    && (bottom <= vertical_range.end || reaches_document_end)
+            }
+        };
+        Some((width, exact))
     }
 
     /// Vertical scroll position in the unpaginated layout coordinate space.
@@ -1366,6 +1553,7 @@ impl ViewLayout {
             return Err(LayoutError::InvalidGeometry);
         }
         self.viewport_top = self.clamp_viewport_top(top);
+        self.viewport_left = self.clamp_viewport_left(self.viewport_left);
         Ok(())
     }
 
@@ -1796,9 +1984,6 @@ impl ViewLayout {
     }
 
     fn clamp_viewport_left(&self, requested: f32) -> f32 {
-        if self.wrap {
-            return 0.0;
-        }
         let requested = requested.max(0.0);
         self.maximum_viewport_left()
             .map_or(requested, |maximum| requested.min(maximum))
@@ -1858,11 +2043,16 @@ fn partial_snapshot_from_region(
                 "a materialized viewport must contain visual rows",
             ),
         )?;
-        let end = rows.last().map(|row| row.y + row.height()).ok_or(
+        let mut end = rows.last().map(|row| row.y + row.height()).ok_or(
             ViewHeightIndexError::InconsistentLayoutSnapshot(
                 "a materialized viewport must contain visual rows",
             ),
         )?;
+        if let Some(last) = region.lines.last().filter(|line| line.height_is_exact) {
+            end = height_as_layout_unit(
+                height_index.prefix_height(last.hard_line_index)?.height() + last.height,
+            )?;
+        }
         if !start.is_finite() || !end.is_finite() || start < 0.0 || end <= start {
             return Err(ViewHeightIndexError::InconsistentLayoutSnapshot(
                 "partial long-line rows have invalid vertical coverage",
@@ -1871,7 +2061,14 @@ fn partial_snapshot_from_region(
         start..end
     };
 
-    let content_width = content_width_from_rows(&rows, region.viewport_width);
+    let row_content_widths = rows
+        .iter()
+        .map(|row| content_width_from_row(row, region.viewport_width))
+        .collect::<Vec<_>>();
+    let content_width = row_content_widths
+        .iter()
+        .copied()
+        .fold(region.viewport_width, f32::max);
     let content_width_is_exact = fully_materialized
         && region.hard_lines.start == 0
         && region.hard_lines.end == region.document_hard_line_count;
@@ -1907,6 +2104,7 @@ fn partial_snapshot_from_region(
         rows,
         content_width,
         content_width_is_exact,
+        row_content_widths,
         total_height: height_as_layout_unit(total.height())?,
         total_height_is_exact: total.is_exact(),
         diagnostics: region.diagnostics.clone(),
@@ -2020,6 +2218,11 @@ fn translate_row_vertically(row: &mut VisualRow, delta: f32) -> Result<(), ViewH
             checked_layout_coordinate_sum(cluster.typographic_bounds.y, delta)?;
         cluster.ink_bounds.y = checked_layout_coordinate_sum(cluster.ink_bounds.y, delta)?;
     }
+    for decoration in &mut row.decorations {
+        decoration.typographic_bounds.y =
+            checked_layout_coordinate_sum(decoration.typographic_bounds.y, delta)?;
+        decoration.ink_bounds.y = checked_layout_coordinate_sum(decoration.ink_bounds.y, delta)?;
+    }
     Ok(())
 }
 
@@ -2036,24 +2239,28 @@ fn checked_layout_coordinate_sum(left: f32, right: f32) -> Result<f32, ViewHeigh
 /// rows. The viewport width is the minimum canvas extent, so ordinary content
 /// that fits produces no horizontal scroll range. Provider ink overhangs are
 /// included to keep the complete drawn result reachable.
-fn content_width_from_rows(rows: &[VisualRow], viewport_width: f32) -> f32 {
-    rows.iter().fold(viewport_width, |content_width, row| {
-        let positioned_right = row
-            .clusters
-            .iter()
-            .flat_map(|cluster| {
-                [
-                    cluster.x + cluster.advance,
-                    cluster.typographic_bounds.x + cluster.typographic_bounds.width,
-                    cluster.ink_bounds.x + cluster.ink_bounds.width,
-                ]
-            })
-            .chain(row.carets.iter().map(|caret| caret.x))
-            .fold(row.paragraph_content_x, f32::max);
-        let paragraph_box_right = row.paragraph_content_x + row.paragraph_content_width;
-        let trailing_canvas = (viewport_width - paragraph_box_right).max(0.0);
-        content_width.max(positioned_right + trailing_canvas)
-    })
+fn content_width_from_row(row: &VisualRow, viewport_width: f32) -> f32 {
+    let positioned_right = row
+        .clusters
+        .iter()
+        .flat_map(|cluster| {
+            [
+                cluster.x + cluster.advance,
+                cluster.typographic_bounds.x + cluster.typographic_bounds.width,
+                cluster.ink_bounds.x + cluster.ink_bounds.width,
+            ]
+        })
+        .chain(row.decorations.iter().flat_map(|item| {
+            [
+                item.x + item.advance,
+                item.ink_bounds.x + item.ink_bounds.width,
+            ]
+        }))
+        .chain(row.carets.iter().map(|caret| caret.x))
+        .fold(row.paragraph_content_x, f32::max);
+    let paragraph_box_right = row.paragraph_content_x + row.paragraph_content_width;
+    let trailing_canvas = (viewport_width - paragraph_box_right).max(0.0);
+    viewport_width.max(positioned_right + trailing_canvas)
 }
 
 fn snapshot_hard_line_count(snapshot: &LayoutSnapshot) -> usize {
@@ -2331,6 +2538,7 @@ pub struct LayoutEngine<P: TextMeasurementProvider> {
     provider: P,
     next_layout_revision: u64,
     shape_cache: VecDeque<ShapeCacheEntry>,
+    decoration_shape_cache: VecDeque<ShapeCacheEntry>,
     cache_capacity: usize,
 }
 
@@ -2340,6 +2548,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             provider,
             next_layout_revision: 1,
             shape_cache: VecDeque::new(),
+            decoration_shape_cache: VecDeque::new(),
             cache_capacity: DEFAULT_CACHE_ENTRIES,
         }
     }
@@ -2354,12 +2563,16 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
 
     pub fn clear_caches(&mut self) {
         self.shape_cache.clear();
+        self.decoration_shape_cache.clear();
     }
 
     pub fn set_cache_capacity(&mut self, capacity: usize) {
         self.cache_capacity = capacity;
         while self.shape_cache.len() > capacity {
             self.shape_cache.pop_front();
+        }
+        while self.decoration_shape_cache.len() > capacity {
+            self.decoration_shape_cache.pop_front();
         }
     }
 
@@ -2749,7 +2962,13 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 &control,
             )?;
             let right_to_left = line_slice.checkpoint.as_ref().map_or_else(
-                || paragraph_is_right_to_left(&paragraph.style, &clusters),
+                || {
+                    paragraph_is_right_to_left(
+                        &paragraph.style,
+                        &region_text[local_context_ranges[line_offset].clone()],
+                        line_slice.shaping_context_range.start,
+                    )
+                },
                 |checkpoint| checkpoint.right_to_left,
             );
             let (paragraph_first_box, continuation_box) = paragraph_row_boxes(
@@ -2759,7 +2978,13 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 right_to_left,
             );
             let first_row_box = if line_slice.checkpoint.is_none() && paragraph.is_first_hard_line {
-                paragraph_first_box
+                list_first_row_box(
+                    paragraph_first_box,
+                    continuation_box,
+                    &paragraph.style,
+                    &clusters,
+                    right_to_left,
+                )
             } else {
                 continuation_box
             };
@@ -2847,6 +3072,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     wrapped_from_previous: starting_row > 0,
                     wraps_to_next: false,
                     clusters: Vec::new(),
+                    decorations: Vec::new(),
                     carets: vec![
                         PositionedCaret {
                             point: point_downstream,
@@ -2860,14 +3086,29 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         },
                     ],
                 });
-                y += line_advance;
+                if paragraph.is_first_hard_line && starting_row == 0 {
+                    self.decorate_list_row(
+                        rows.last_mut().unwrap(),
+                        &paragraph.style,
+                        right_to_left,
+                        document_id,
+                        document_revision,
+                        view.default_style_is_override
+                            .then_some(&view.default_style),
+                        view.scale,
+                        measurement_environment_id,
+                        metrics_generation,
+                        &control,
+                    )?;
+                }
+                y += rows.last().unwrap().height();
             } else {
                 for (relative_row, cluster_range) in row_cluster_ranges.iter().enumerate() {
                     control.checkpoint()?;
                     let row_in_line = starting_row + relative_row;
                     let rows_in_line =
                         starting_row + row_cluster_ranges.len() + usize::from(extends_past_work);
-                    let row = position_row(
+                    let mut row = position_row(
                         &clusters[cluster_range.clone()],
                         paragraph.paragraph_id,
                         if relative_row == 0 {
@@ -2889,6 +3130,21 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         layout_revision,
                         &control,
                     )?;
+                    if paragraph.is_first_hard_line && row_in_line == 0 {
+                        self.decorate_list_row(
+                            &mut row,
+                            &paragraph.style,
+                            right_to_left,
+                            document_id,
+                            document_revision,
+                            view.default_style_is_override
+                                .then_some(&view.default_style),
+                            view.scale,
+                            measurement_environment_id,
+                            metrics_generation,
+                            &control,
+                        )?;
+                    }
                     y += row.height();
                     work_statistics.positioned_cluster_count = work_statistics
                         .positioned_cluster_count
@@ -2963,6 +3219,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
 
         let paint_start = lines.first().expect("nonempty range").text_coverage.start;
         let paint_end = lines.last().expect("nonempty range").text_coverage.end;
+        if self.provider.measurement_environment_id() != measurement_environment_id {
+            return Err(LayoutError::MeasurementEnvironmentChangedDuringShape.into());
+        }
+        if self.provider.metrics_generation() != metrics_generation {
+            return Err(LayoutError::MetricsChangedDuringShape.into());
+        }
         let paint_runs = document_styles
             .paint_runs
             .iter()
@@ -3227,7 +3489,11 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             fragment_cursor += count;
             let (clusters, empty_metrics) =
                 flatten_line_fragments(line_range, line_fragments, control)?;
-            let right_to_left = paragraph_is_right_to_left(&paragraph.style, &clusters);
+            let right_to_left = paragraph_is_right_to_left(
+                &paragraph.style,
+                &text[line_range.clone()],
+                line_range.start,
+            );
             let (paragraph_first_box, continuation_box) = paragraph_row_boxes(
                 content_insets.left,
                 usable_width,
@@ -3235,7 +3501,13 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 right_to_left,
             );
             let first_row_box = if paragraph.is_first_hard_line {
-                paragraph_first_box
+                list_first_row_box(
+                    paragraph_first_box,
+                    continuation_box,
+                    &paragraph.style,
+                    &clusters,
+                    right_to_left,
+                )
             } else {
                 continuation_box
             };
@@ -3292,6 +3564,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     wrapped_from_previous: false,
                     wraps_to_next: false,
                     clusters: Vec::new(),
+                    decorations: Vec::new(),
                     carets: vec![
                         PositionedCaret {
                             point: point_downstream,
@@ -3305,7 +3578,22 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         },
                     ],
                 });
-                y += line_advance;
+                if paragraph.is_first_hard_line {
+                    self.decorate_list_row(
+                        rows.last_mut().unwrap(),
+                        &paragraph.style,
+                        right_to_left,
+                        document_id,
+                        document_revision,
+                        view.default_style_is_override
+                            .then_some(&view.default_style),
+                        view.scale,
+                        measurement_environment_id,
+                        metrics_generation,
+                        control,
+                    )?;
+                }
+                y += rows.last().unwrap().height();
                 continue;
             }
 
@@ -3317,7 +3605,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 } else {
                     continuation_box
                 };
-                let row = position_row(
+                let mut row = position_row(
                     logical_clusters,
                     paragraph.paragraph_id,
                     row_box,
@@ -3335,16 +3623,44 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     layout_revision,
                     control,
                 )?;
+                if paragraph.is_first_hard_line && row_in_line == 0 {
+                    self.decorate_list_row(
+                        &mut row,
+                        &paragraph.style,
+                        right_to_left,
+                        document_id,
+                        document_revision,
+                        view.default_style_is_override
+                            .then_some(&view.default_style),
+                        view.scale,
+                        measurement_environment_id,
+                        metrics_generation,
+                        control,
+                    )?;
+                }
                 y += row.height();
                 rows.push(row);
             }
         }
 
+        if self.provider.measurement_environment_id() != measurement_environment_id {
+            return Err(LayoutError::MeasurementEnvironmentChangedDuringShape.into());
+        }
+        if self.provider.metrics_generation() != metrics_generation {
+            return Err(LayoutError::MetricsChangedDuringShape.into());
+        }
         if has_previous_paragraph {
             y += previous_spacing_after;
         }
         y += content_insets.bottom;
-        let content_width = content_width_from_rows(&rows, view.width);
+        let row_content_widths = rows
+            .iter()
+            .map(|row| content_width_from_row(row, view.width))
+            .collect::<Vec<_>>();
+        let content_width = row_content_widths
+            .iter()
+            .copied()
+            .fold(view.width, f32::max);
         let snapshot = LayoutSnapshot {
             revision: layout_revision,
             document_id,
@@ -3368,6 +3684,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             rows,
             content_width,
             content_width_is_exact: true,
+            row_content_widths,
             total_height: y,
             total_height_is_exact: true,
             diagnostics,
@@ -3420,6 +3737,99 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             metrics_generation,
             control,
         )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn decorate_list_row(
+        &mut self,
+        row: &mut VisualRow,
+        paragraph: &ParagraphLayoutStyle,
+        right_to_left: bool,
+        document_id: DocumentId,
+        document_revision: Revision,
+        override_style: Option<&ResolvedTextStyle>,
+        scale: f32,
+        environment: MeasurementEnvironmentId,
+        metrics: MetricsGeneration,
+        control: &LayoutRunControl<'_>,
+    ) -> Result<(), LayoutComputationError> {
+        let Some(marker) = &paragraph.list_marker_decoration else {
+            return Ok(());
+        };
+        // The trailing measured space is the gutter gap, never document text.
+        let text = format!("{marker} ");
+        let mut style = override_style
+            .unwrap_or(&paragraph.default_shaping_style)
+            .clone();
+        // A decimal label is an isolated left-to-right run even in an RTL item.
+        style.direction = TextDirection::LeftToRight;
+        // Furniture has a separate bounded cache: many distinct ordinals must
+        // never evict reusable prose fragments (or vice versa).
+        std::mem::swap(&mut self.shape_cache, &mut self.decoration_shape_cache);
+        let result = self.shape_ranges_with_origin(
+            document_id,
+            document_revision,
+            &text,
+            &[0..text.len()],
+            &[0..text.len()],
+            0,
+            &[],
+            std::slice::from_ref(&style),
+            &[TextDirection::LeftToRight],
+            scale,
+            environment,
+            metrics,
+            control,
+        );
+        std::mem::swap(&mut self.shape_cache, &mut self.decoration_shape_cache);
+        let fragments = result?;
+        let shaped = &fragments[0];
+        let width: f32 = shaped.clusters.iter().map(|cluster| cluster.advance).sum();
+        let marker_width: f32 = shaped
+            .clusters
+            .iter()
+            .filter(|cluster| cluster.text_range.start < marker.len())
+            .map(|cluster| cluster.advance)
+            .sum();
+        let old_baseline = row.baseline;
+        for cluster in &shaped.clusters {
+            row.ascent = row.ascent.max(cluster.metrics.ascent);
+            row.descent = row.descent.max(cluster.metrics.descent);
+            row.leading = row.leading.max(cluster.metrics.leading);
+        }
+        row.baseline = row.y + row.ascent;
+        row.line_advance = line_advance(row.natural_height(), paragraph.line_spacing);
+        let delta = row.baseline - old_baseline;
+        for cluster in &mut row.clusters {
+            cluster.typographic_bounds.y += delta;
+            cluster.ink_bounds.y += delta;
+        }
+        let mut x = if right_to_left {
+            row.paragraph_content_x + row.paragraph_content_width + (width - marker_width)
+        } else {
+            row.paragraph_content_x - width
+        };
+        for index in fragment_visual_order(&shaped.clusters) {
+            let cluster = &shaped.clusters[index];
+            if cluster.text_range.start < marker.len() {
+                row.decorations.push(PositionedDecoration {
+                    text: text[cluster.text_range.clone()].into(),
+                    x,
+                    advance: cluster.advance,
+                    typographic_bounds: position_shaped_bounds(
+                        cluster.typographic_bounds,
+                        x,
+                        row.baseline,
+                    ),
+                    ink_bounds: position_shaped_bounds(cluster.ink_bounds, x, row.baseline),
+                    render_run: cluster.render_run,
+                    paint: paragraph.marker_paint.clone(),
+                    font_size: style.size * scale,
+                });
+            }
+            x += cluster.advance;
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4146,6 +4556,7 @@ fn position_row(
         wrapped_from_previous: row_in_line > 0,
         wraps_to_next: row_in_line + 1 < rows_in_line,
         clusters,
+        decorations: Vec::new(),
         carets,
     })
 }
@@ -4249,6 +4660,9 @@ fn resolve_line_paragraph(
         style: ParagraphLayoutStyle {
             block_id: 0,
             text_range: line.clone(),
+            list_marker_range: None,
+            list_marker_decoration: None,
+            marker_paint: ResolvedTextPaint::default(),
             spacing_before: 0.0,
             spacing_after: 0.0,
             line_spacing: LineSpacing::Normal,
@@ -4274,20 +4688,6 @@ fn shaping_base_direction(direction: WritingDirection) -> TextDirection {
     }
 }
 
-fn paragraph_is_right_to_left(
-    paragraph: &ParagraphLayoutStyle,
-    clusters: &[ShapedCluster],
-) -> bool {
-    match paragraph.base_direction {
-        WritingDirection::LeftToRight => false,
-        WritingDirection::RightToLeft => true,
-        WritingDirection::Natural => clusters
-            .iter()
-            .find(|cluster| cluster.advance > 0.0)
-            .is_some_and(|cluster| cluster.bidi_level % 2 == 1),
-    }
-}
-
 fn paragraph_row_boxes(
     canvas_left: f32,
     canvas_width: f32,
@@ -4308,6 +4708,50 @@ fn paragraph_row_boxes(
         row_box(first_left, first_right),
         row_box(continuation_left, continuation_right),
     )
+}
+
+/// List labels occupy an outside gutter. The measured label width determines
+/// its left/right edge, so body text aligns with all continuation rows even
+/// when proportional digits or a large font change the marker's advance.
+fn list_first_row_box(
+    first: ParagraphRowBox,
+    continuation: ParagraphRowBox,
+    paragraph: &ParagraphLayoutStyle,
+    clusters: &[ShapedCluster],
+    right_to_left: bool,
+) -> ParagraphRowBox {
+    let Some(marker) = &paragraph.list_marker_range else {
+        return first;
+    };
+    if marker.is_empty()
+        || clusters.first().map(|cluster| cluster.text_range.start) != Some(marker.start)
+    {
+        return first;
+    }
+    let mut width = 0.0;
+    let mut end = marker.start;
+    for cluster in clusters
+        .iter()
+        .take_while(|cluster| cluster.text_range.end <= marker.end)
+    {
+        width += cluster.advance;
+        end = cluster.text_range.end;
+    }
+    if end != marker.end {
+        return first;
+    }
+    let indent = paragraph.first_line_indent;
+    if right_to_left {
+        row_box(
+            continuation.x,
+            continuation.x + continuation.width - indent + width,
+        )
+    } else {
+        row_box(
+            continuation.x + indent - width,
+            continuation.x + continuation.width,
+        )
+    }
 }
 
 fn row_box(left: f32, right: f32) -> ParagraphRowBox {
@@ -4866,7 +5310,7 @@ mod tests {
     fn unattached_view_starts_with_one_compact_estimated_hard_line() {
         let view = ViewLayout::new(100.0, 100.0);
         assert_eq!(view.viewport_left(), 0.0);
-        assert_eq!(view.maximum_viewport_left(), Some(0.0));
+        assert_eq!(view.maximum_viewport_left(), None);
         let height = view.content_height();
         assert_eq!(height.height(), DEFAULT_ESTIMATED_HARD_LINE_HEIGHT);
         assert!(!height.is_exact());
@@ -5040,6 +5484,8 @@ mod tests {
 
         view.set_wrap(true);
         assert_eq!(view.viewport_left(), 0.0);
+        assert_eq!(view.maximum_viewport_left(), None);
+        engine.relayout(&document, &mut view).unwrap();
         assert_eq!(view.maximum_viewport_left(), Some(0.0));
         view.set_viewport_left(30.0).unwrap();
         assert_eq!(view.viewport_left(), 0.0);

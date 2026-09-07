@@ -84,13 +84,13 @@ pub(super) fn block(name: &str) -> bool {
                 | "dd"
         )
 }
-fn hidden(name: &str) -> bool {
+pub(super) fn hidden(name: &str) -> bool {
     matches!(
         name,
         "head" | "script" | "style" | "template" | "title" | "noscript"
     )
 }
-fn atomic(name: &str) -> bool {
+pub(super) fn atomic(name: &str) -> bool {
     matches!(
         name,
         "img"
@@ -282,7 +282,6 @@ struct Frame {
     opaque: bool,
     list_counter: u64,
     has_list_item: bool,
-    item_paragraphs: usize,
     paragraph_style: Option<super::StyleId>,
     named_character: Option<super::StyleId>,
     preserve_whitespace: bool,
@@ -300,7 +299,6 @@ impl Default for Frame {
             opaque: false,
             list_counter: 0,
             has_list_item: false,
-            item_paragraphs: 0,
             paragraph_style: None,
             named_character: None,
             preserve_whitespace: false,
@@ -310,13 +308,38 @@ impl Default for Frame {
     }
 }
 
+fn emit_block_boundary(builder: &mut Builder<'_>, stack: &[Frame], range: Range<usize>) {
+    if stack.iter().any(|frame| frame.name == "pre") {
+        if !builder.line_is_empty() {
+            builder.hard_break(range);
+        }
+    } else {
+        builder.paragraph_break(range);
+    }
+}
+
 pub(super) fn project(
     input: &NormalizedText,
     revision: Revision,
     start: usize,
     end: usize,
 ) -> FormattedDocument {
-    let tokens = super::html5_tree::tokens(&input.text);
+    project_tokens(
+        input,
+        revision,
+        start,
+        end,
+        super::html5_tree::tokens(&input.text),
+    )
+}
+
+pub(super) fn project_tokens(
+    input: &NormalizedText,
+    revision: Revision,
+    start: usize,
+    end: usize,
+    tokens: Vec<Token>,
+) -> FormattedDocument {
     let mut builder = Builder::new(input, revision);
     builder.style_sheet = super::html_styles::read_with_semantics(&input.text, &tokens).sheet;
     let mut stack = vec![Frame::default()];
@@ -352,11 +375,15 @@ pub(super) fn project(
                     continue;
                 }
                 if let Some(range) = pending_break.take() {
-                    builder.paragraph_break(range);
+                    emit_block_boundary(&mut builder, &stack, range);
                 }
-                builder.kind = frame.kind.clone();
-                builder.paragraph = frame.paragraph.clone();
-                builder.paragraph_style = frame.paragraph_style.clone();
+                let paragraph_frame = stack
+                    .iter()
+                    .find(|frame| frame.name == "pre")
+                    .unwrap_or(frame);
+                builder.kind = paragraph_frame.kind.clone();
+                builder.paragraph = paragraph_frame.paragraph.clone();
+                builder.paragraph_style = paragraph_frame.paragraph_style.clone();
                 builder.defaults = stack
                     .iter()
                     .rev()
@@ -377,6 +404,9 @@ pub(super) fn project(
                 } else {
                     builder.emit(&value, token.range, &frame.character);
                 }
+                if frame.preserve_whitespace {
+                    retain_whitespace_context(&mut builder, value.len());
+                }
                 paragraph_seen = true;
             }
             TokenKind::Tag(tag) => {
@@ -386,6 +416,12 @@ pub(super) fn project(
                         let closed = &stack[index];
                         if !closed.hidden
                             && !closed.opaque
+                            // An empty element beyond a deferred paragraph
+                            // boundary has no editable content in this line.
+                            // Anchoring here would make later typing realize
+                            // that boundary and unexpectedly add a newline.
+                            && pending_break.is_none()
+                            && !matches!(closed.name.as_str(), "html" | "head" | "body")
                             && closed.output_start == builder.text.len()
                         {
                             builder.retain_empty_boundary(
@@ -409,7 +445,7 @@ pub(super) fn project(
                 frame.opaque |= atomic(&tag.name);
                 if !frame.hidden && !stack.last().unwrap().opaque && atomic(&tag.name) {
                     if let Some(range) = pending_break.take() {
-                        builder.paragraph_break(range);
+                        emit_block_boundary(&mut builder, &stack, range);
                     }
                     builder.emit_read_only("\u{fffc}");
                     paragraph_seen = true;
@@ -418,34 +454,34 @@ pub(super) fn project(
                     pending_space = None;
                     pending_break = None;
                     builder.hard_break(token.range.clone());
+                    if frame.preserve_whitespace {
+                        retain_whitespace_context(&mut builder, 1);
+                    }
                 }
-                let containing_item = if matches!(
-                    tag.name.as_str(),
-                    "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
-                ) {
-                    stack.iter().rposition(|frame| frame.name == "li")
-                } else {
-                    None
-                };
+                let containing_item =
+                    if block(&tag.name) && !matches!(tag.name.as_str(), "li" | "ul" | "ol") {
+                        stack.iter().rposition(|frame| frame.name == "li")
+                    } else {
+                        None
+                    };
                 let first_item_paragraph = containing_item.is_some_and(|index| {
-                    stack[index].item_paragraphs == 0
-                        && stack[index].output_start == builder.text.len()
+                    stack[index].output_start == builder.text.len() && pending_break.is_none()
                 });
+                let paragraph_element = paragraph(&tag.name) || containing_item.is_some();
+                let inside_pre = stack.iter().any(|frame| frame.name == "pre");
                 if block(&tag.name) && !frame.hidden && !frame.opaque {
                     pending_space = None;
-                    if paragraph(&tag.name) {
+                    if paragraph_element {
                         if let Some(range) = pending_break.take() {
-                            builder.paragraph_break(range);
+                            emit_block_boundary(&mut builder, &stack, range);
                         } else if paragraph_seen && !first_item_paragraph {
-                            builder.paragraph_break(token.range.clone());
+                            emit_block_boundary(&mut builder, &stack, token.range.clone());
                         }
                         paragraph_seen = true;
                     } else if !builder.line_is_empty() {
                         pending_break = Some(token.range.clone());
                     }
-                    frame.kind = if tag.name.len() == 2 && tag.name.starts_with('h') {
-                        BlockKind::Heading(tag.name.as_bytes()[1] - b'0')
-                    } else if tag.name == "li" {
+                    frame.kind = if tag.name == "li" {
                         let level = stack
                             .iter()
                             .filter(|f| matches!(f.name.as_str(), "ul" | "ol"))
@@ -469,12 +505,12 @@ pub(super) fn project(
                                 level,
                                 container_start,
                                 item_start: true,
+                                marker_is_decoration: true,
                             }
                         } else {
                             BlockKind::Paragraph
                         }
                     } else if let Some(index) = containing_item {
-                        stack[index].item_paragraphs += 1;
                         if let BlockKind::ListItem {
                             ordered,
                             ordinal,
@@ -489,16 +525,16 @@ pub(super) fn project(
                                 level,
                                 container_start: container_start && first_item_paragraph,
                                 item_start: first_item_paragraph,
+                                marker_is_decoration: true,
                             }
                         } else {
                             BlockKind::Paragraph
                         }
+                    } else if tag.name.len() == 2 && tag.name.starts_with('h') {
+                        BlockKind::Heading(tag.name.as_bytes()[1] - b'0')
                     } else {
                         BlockKind::Paragraph
                     };
-                    if tag.name == "li" {
-                        frame.item_paragraphs = 0;
-                    }
                 }
                 match tag.name.as_str() {
                     "b" | "strong" => frame.character.bold = Some(true),
@@ -519,7 +555,7 @@ pub(super) fn project(
                     }
                     _ => {}
                 }
-                if paragraph(&tag.name) {
+                if paragraph_element {
                     frame.paragraph_style = None;
                 }
                 if tag.name == "pre" {
@@ -527,6 +563,15 @@ pub(super) fn project(
                     frame.paragraph_style = Some("Code Block".into());
                 } else if tag.name == "code" {
                     frame.named_character = Some("Code".into());
+                } else if containing_item.is_some()
+                    && tag.name.len() == 2
+                    && tag.name.starts_with('h')
+                {
+                    frame.paragraph_style = Some(
+                        format!("Heading{}", tag.name.as_bytes()[1] - b'0')
+                            .as_str()
+                            .into(),
+                    );
                 }
                 if let Some(classes) = tag.attribute("class") {
                     if paragraph(&tag.name) {
@@ -612,21 +657,15 @@ pub(super) fn project(
                     frame.character.direction = Some(dir);
                     frame.paragraph.base_direction = Some(dir);
                 }
-                if paragraph(&tag.name) && !frame.hidden && !frame.opaque {
+                if paragraph_element && !inside_pre && !frame.hidden && !frame.opaque {
                     if let Some(range) = pending_break.take() {
-                        builder.paragraph_break(range);
+                        emit_block_boundary(&mut builder, &stack, range);
                     }
                     builder.kind = frame.kind.clone();
                     builder.paragraph = frame.paragraph.clone();
-                    if tag.name == "li" {
-                        builder.marker_origin = Some(token.range.clone());
-                    } else if containing_item.is_none() {
-                        builder.marker_origin = None;
-                    }
-                    builder.emit_list_marker();
                     builder.empty_boundary_at(token.range.end);
                 }
-                if paragraph(&tag.name) && !frame.hidden && !frame.opaque {
+                if paragraph_element && !inside_pre && !frame.hidden && !frame.opaque {
                     builder.kind = frame.kind.clone();
                     builder.paragraph = frame.paragraph.clone();
                     builder.defaults = frame.character.clone();
@@ -674,11 +713,15 @@ pub(super) fn project(
                         continue;
                     }
                     if let Some(range) = pending_break.take() {
-                        builder.paragraph_break(range);
+                        emit_block_boundary(&mut builder, &stack, range);
                     }
-                    builder.kind = frame.kind.clone();
-                    builder.paragraph = frame.paragraph.clone();
-                    builder.paragraph_style = frame.paragraph_style.clone();
+                    let paragraph_frame = stack
+                        .iter()
+                        .find(|frame| frame.name == "pre")
+                        .unwrap_or(frame);
+                    builder.kind = paragraph_frame.kind.clone();
+                    builder.paragraph = paragraph_frame.paragraph.clone();
+                    builder.paragraph_style = paragraph_frame.paragraph_style.clone();
                     builder.defaults = stack
                         .iter()
                         .rev()
@@ -1036,6 +1079,78 @@ pub(super) fn escape(text: &str) -> String {
     out
 }
 
+fn retain_whitespace_context(builder: &mut Builder<'_>, length: usize) {
+    let end = builder.text.len();
+    let start = end - length;
+    let application = super::StyleApplication::SourcePreservedWhitespace;
+    // Keep annotations within hard lines, like the other rich style layers.
+    let newline = &builder.text[start..end] == "\n";
+    let follows_newline = start > 0 && builder.text.as_bytes()[start - 1] == b'\n';
+    if let Some(previous) = builder.spans.iter_mut().rev().take(3).find(|span| {
+        !newline && !follows_newline && span.range.end == start && span.application == application
+    }) {
+        previous.range.end = end;
+    } else {
+        builder.spans.push(super::StyleSpan {
+            range: start..end,
+            application,
+        });
+    }
+}
+
+pub(super) fn escape_preserving_whitespace(text: &str) -> String {
+    let mut result = String::new();
+    for ch in text.chars() {
+        match ch {
+            '&' => result.push_str("&amp;"),
+            '<' => result.push_str("&lt;"),
+            '>' => result.push_str("&gt;"),
+            '\n' => result.push_str("<br>"),
+            '\r' => result.push_str("&#13;"),
+            _ => result.push(ch),
+        }
+    }
+    result
+}
+
+/// A bounded gap begins at an existing visible-text source boundary. If it
+/// opens a pre or declares supported whitespace behavior, retain that context
+/// for an otherwise empty insertion anchor. Unmatched closes are conservative.
+pub(super) fn whitespace_after_source_gap(gap: &str, inherited: bool) -> bool {
+    let mut current = inherited;
+    let mut stack = Vec::new();
+    for token in tokenize(gap) {
+        let TokenKind::Tag(tag) = token.kind else {
+            continue;
+        };
+        if tag.end {
+            if let Some(index) = stack.iter().rposition(|(name, _)| name == &tag.name) {
+                current = stack[index].1;
+                stack.truncate(index);
+            } else {
+                current = false;
+            }
+        } else if !void(&tag.name) {
+            stack.push((tag.name.clone(), current));
+            if tag.name == "pre" {
+                current = true;
+            }
+            if let Some(css) = tag.attribute("style") {
+                for (name, value) in cascade_declarations(css) {
+                    if name.eq_ignore_ascii_case("white-space") {
+                        match value.trim().to_ascii_lowercase().as_str() {
+                            "pre" | "pre-wrap" | "break-spaces" => current = true,
+                            "normal" => current = false,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    current
+}
+
 pub(super) fn reference(input: &str, attribute: bool) -> Option<(String, usize)> {
     let input = input.strip_prefix('&')?;
     if let Some(numeric) = input.strip_prefix('#') {
@@ -1378,7 +1493,7 @@ pub(super) fn declarations(css: &str) -> Vec<(&str, &str)> {
         .map(|(k, v)| (k.trim(), v.trim()))
         .collect()
 }
-fn cascade_declarations(css: &str) -> Vec<(String, String)> {
+pub(super) fn cascade_declarations(css: &str) -> Vec<(String, String)> {
     let css = css_without_comments(css);
     let mut declarations = declarations(&css)
         .into_iter()

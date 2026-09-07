@@ -740,7 +740,9 @@ typedef struct EvimViewportOriginV1 {
 #define EVIM_VIEWPORT_STATE_LINEBREAK (1u << 4)
 
 /*
- * maximum_left is authoritative only with MAXIMUM_LEFT_EXACT. scale is the
+ * maximum_left describes rows intersecting the current vertical viewport.
+ * It is authoritative only with MAXIMUM_LEFT_EXACT; otherwise it is a
+ * provisional visible lower bound, not an upper clamp. scale is the
  * exact positive view-local magnification used by the current configuration.
  * A missing TOP_EXACT flag means the current top depends on estimated prefix
  * heights; it remains presentation state but is not an exact absolute
@@ -1191,6 +1193,33 @@ typedef struct EvimPositionedClusterV1 {
 
 #define EVIM_POSITIONED_CLUSTER_V1_SIZE \
   ((uint32_t)sizeof(EvimPositionedClusterV1))
+
+/* Noneditable list furniture; label offsets address only the separate label
+ * byte blob. No decoration creates formatted offsets, caret or selection stops. */
+typedef struct EvimLayoutDecorationV1 {
+  uint32_t struct_size;
+  uint32_t flags;
+  uint64_t row_index;
+  uint64_t label_byte_start;
+  uint64_t label_byte_length;
+  float x;
+  float advance;
+  float font_size;
+  float reserved;
+  EvimLayoutRectV1 typographic_bounds;
+  EvimLayoutRectV1 ink_bounds;
+  EvimRenderRunHandleV1 render_run;
+  EvimTextPaintV1 paint;
+} EvimLayoutDecorationV1;
+#define EVIM_LAYOUT_DECORATION_V1_SIZE ((uint32_t)sizeof(EvimLayoutDecorationV1))
+typedef struct EvimLayoutDecorationsInfoV1 {
+  uint32_t struct_size;
+  uint32_t reserved;
+  EvimLayoutSnapshotIdentityV1 identity;
+  uint64_t decoration_count;
+  uint64_t label_bytes;
+} EvimLayoutDecorationsInfoV1;
+#define EVIM_LAYOUT_DECORATIONS_INFO_V1_SIZE ((uint32_t)sizeof(EvimLayoutDecorationsInfoV1))
 
 typedef struct EvimPositionedCaretV1 {
   uint32_t struct_size;
@@ -1829,6 +1858,13 @@ EvimStatus evim_core_view_copy_layout_snapshot(
  */
 EvimStatus evim_core_view_layout_paint_info(
     EvimCoreHandle core, EvimViewId view, EvimLayoutPaintInfoV1 *out_info);
+/* Exact-layout, atomic decorations export; zero-capacity buffers query counts. */
+EvimStatus evim_core_view_copy_layout_decorations(
+    EvimCoreHandle core, EvimViewId view,
+    const EvimLayoutSnapshotIdentityV1 *expected,
+    EvimLayoutDecorationV1 *decorations, uint64_t decoration_capacity,
+    uint8_t *labels, uint64_t label_capacity,
+    EvimLayoutDecorationsInfoV1 *out_info);
 EvimStatus evim_core_view_copy_layout_paint(
     EvimCoreHandle core, EvimViewId view,
     const EvimLayoutSnapshotIdentityV1 *expected,
@@ -2019,10 +2055,15 @@ EvimStatus evim_core_view_resize(EvimCoreHandle core, EvimViewId view,
                                  float width, float height,
                                  EvimCoreOutcomeV1 *out_outcome);
 /*
- * Change only this view's magnification. The scale must be finite and greater
- * than zero. Shaping/wrapping/layout are refreshed synchronously; source and
+ * Change only this view's magnification. The scale must be finite and within
+ * 0.25 through 5.0 inclusive. Shaping/wrapping/layout are refreshed synchronously; source and
  * semantic projections are unchanged.
  */
+/* Adjacent zoom stop (25%..500% inclusive); increasing must be 0 or 1.
+ * Saturates at endpoints; invalid input returns INVALID_ARGUMENT and zero. */
+EvimStatus evim_core_adjacent_zoom_scale(float scale, uint32_t increasing,
+                                       float *out_scale);
+/* Arbitrary finite view scales within 0.25..5.0 are accepted. */
 EvimStatus evim_core_view_set_scale(EvimCoreHandle core, EvimViewId view,
                                     float scale,
                                     EvimCoreOutcomeV1 *out_outcome);

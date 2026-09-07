@@ -46,8 +46,8 @@ use ex_execute::{
 };
 use insert_motion::{ctrl_u_delete_range_since, ctrl_w_delete_range};
 use layout_motion::{
-    align_viewport, g0, g_caret, g_dollar, gj, gk, screen_motion, viewport_line, LayoutMotionError,
-    ScreenMotion, Viewport, ViewportAlignment, ViewportLine, VisualPosition,
+    align_viewport, g0, g_caret, g_dollar_for_document, gj, gk, screen_motion, viewport_line,
+    LayoutMotionError, ScreenMotion, Viewport, ViewportAlignment, ViewportLine, VisualPosition,
 };
 use registers::{
     is_valid_register, DeletionClass, RegisterReadContext, RegisterWriteEffect, Registers,
@@ -408,6 +408,7 @@ enum PlannedPostCommit {
     None,
     ReplaceJournal(Vec<ReplaceJournalEntry>),
     NormalizeNormalCursor,
+    NormalizeTypingCursor,
 }
 
 #[derive(Clone, Debug)]
@@ -3072,7 +3073,16 @@ impl CommandInterpreter {
             next.invalidate_replace_restoration();
         }
         let input = value.text.as_str();
+        let structural_list_enter = list_enter.is_some()
+            && matches!(
+                document.format(),
+                crate::document::Format::Html
+                    | crate::document::Format::Rtf
+                    | crate::document::Format::Markdown
+                    | crate::document::Format::MarkdownSource
+            );
         if input.is_empty()
+            && !structural_list_enter
             && list_enter
                 .as_ref()
                 .map_or(true, |edit| edit.range.is_empty())
@@ -3089,7 +3099,7 @@ impl CommandInterpreter {
         let (end, post_commit) = if self.mode == Mode::Insert {
             (
                 list_enter.as_ref().map_or(start, |edit| edit.range.end),
-                PlannedPostCommit::None,
+                PlannedPostCommit::NormalizeTypingCursor,
             )
         } else {
             next.plan_replace_payload_state(document, &snapshot, &value)
@@ -3100,11 +3110,7 @@ impl CommandInterpreter {
             value.hard_break_offsets().to_vec(),
         )
         .expect("command register payload carries validated semantic hard breaks");
-        let model = if list_enter.is_some()
-            && matches!(
-                document.format(),
-                crate::document::Format::Html | crate::document::Format::Rtf
-            ) {
+        let model = if structural_list_enter {
             CommandModelRequest::Model(ModelRequest::ContinueList {
                 document: document.id(),
                 revision: document.revision(),
@@ -3405,7 +3411,7 @@ impl CommandInterpreter {
         let post_commit = if journalable {
             PlannedPostCommit::ReplaceJournal(journal_entries)
         } else {
-            PlannedPostCommit::None
+            PlannedPostCommit::NormalizeTypingCursor
         };
         (end, post_commit)
     }
@@ -5172,7 +5178,7 @@ impl CommandInterpreter {
                     Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock
                 ) && self.visual_to_line_end;
                 let position = if retain_line_end {
-                    match g_dollar(context.snapshot, result.position) {
+                    match g_dollar_for_document(document, context.snapshot, result.position) {
                         Ok(position) => position,
                         Err(error) => return layout_error(error),
                     }
@@ -5228,7 +5234,7 @@ impl CommandInterpreter {
                 } else {
                     current
                 };
-                g_dollar(context.snapshot, row)?.text_offset
+                g_dollar_for_document(document, context.snapshot, row)?.text_offset
             }
             _ => unreachable!("caller filters visual-row motions"),
         };
@@ -7559,7 +7565,7 @@ impl CommandInterpreter {
         } else {
             current
         };
-        match g_dollar(context.snapshot, row) {
+        match g_dollar_for_document(document, context.snapshot, row) {
             Ok(position) => {
                 self.visual_to_line_end = false;
                 self.desired_x = None;
@@ -8854,7 +8860,10 @@ impl CommandInterpreter {
             extent.range = covered_line_range(&lines, extent.range);
             extent.kind = MotionKind::Linewise;
         }
-        if extent.range.is_empty() && operator != Operator::Change {
+        if extent.range.is_empty()
+            && operator != Operator::Change
+            && !(operator == Operator::Delete && extent.kind == MotionKind::Linewise)
+        {
             return Ok(CommandOutput::complete());
         }
 
@@ -8886,7 +8895,13 @@ impl CommandInterpreter {
                 if operator == Operator::Change {
                     document.begin_edit_group();
                 }
-                if let Err(error) = document.replace(edit_range.clone(), replacement) {
+                let result = if operator == Operator::Delete && extent.kind == MotionKind::Linewise
+                {
+                    document.delete_lines(edit_range.clone())
+                } else {
+                    document.replace(edit_range.clone(), replacement)
+                };
+                if let Err(error) = result {
                     if operator == Operator::Change {
                         document.end_edit_group();
                     }
@@ -10078,7 +10093,10 @@ impl CommandInterpreter {
                     if let Some(edit) = document.list_enter_edit(self.cursor)? {
                         if matches!(
                             document.format(),
-                            crate::document::Format::Html | crate::document::Format::Rtf
+                            crate::document::Format::Html
+                                | crate::document::Format::Rtf
+                                | crate::document::Format::Markdown
+                                | crate::document::Format::MarkdownSource
                         ) {
                             document.continue_rich_list(self.cursor)?;
                         } else if edit.range.is_empty() {
@@ -10550,6 +10568,7 @@ impl CommandInterpreter {
             }
             self.cursor += input.len();
         }
+        self.finish_typing_caret(document)?;
         if let Some(session) = self.insert_session.as_mut() {
             if !session.replaying_program {
                 session.preserve_normal_repeat = false;
@@ -10564,6 +10583,19 @@ impl CommandInterpreter {
             cursor_moved: true,
             ..CommandOutput::complete()
         })
+    }
+
+    fn finish_typing_caret(&mut self, document: &Document) -> Result<(), DocumentError> {
+        let lines = document.hard_line_snapshot();
+        if !lines.is_grapheme_boundary(self.cursor) {
+            // The inserted suffix may join unchanged following combining
+            // marks or regional indicators. The typing caret associates after
+            // the resulting grapheme, not an interior UTF-8 insertion end.
+            self.cursor = lines
+                .next_grapheme_boundary(self.cursor)
+                .ok_or(DocumentError::NotGraphemeBoundary(self.cursor))?;
+        }
+        Ok(())
     }
 
     pub(crate) fn insertion_boundary_affinity(&self) -> BoundaryAffinity {
@@ -10760,6 +10792,7 @@ impl CommandInterpreter {
             document.replace_with_formatted_payload(start..end, payload)?;
             self.cursor = start + input.len();
         }
+        self.finish_typing_caret(document)?;
         if let Some(session) = self.insert_session.as_mut() {
             if !session.replaying_program {
                 session.preserve_normal_repeat = false;
@@ -11047,10 +11080,14 @@ impl CommandInterpreter {
             let mut output = CommandOutput::complete();
             for iteration in 0..iterations {
                 if opens_lines && (open_line_before_first || iteration > 0) {
-                    let lines = document.hard_line_snapshot();
-                    let payload = FormattedTextPayload::new(&lines, "\n", vec![0])
-                        .expect("a repeated open-line separator is a semantic hard break");
-                    document.insert_formatted_payload(self.cursor, payload)?;
+                    if self.line_mode == LineMode::PhysicalSource {
+                        let lines = document.hard_line_snapshot();
+                        let payload = FormattedTextPayload::new(&lines, "\n", vec![0])
+                            .expect("a repeated open-line separator is a semantic hard break");
+                        document.insert_formatted_payload(self.cursor, payload)?;
+                    } else {
+                        document.open_formatted_line(self.cursor)?;
+                    }
                     self.cursor += 1;
                     output.merge(CommandOutput {
                         document_changed: true,
@@ -11188,12 +11225,11 @@ impl CommandInterpreter {
                     line_end(&document.hard_line_snapshot(), self.cursor)
                 }
             });
-        let insertion = "\n";
         document.begin_edit_group();
         if self.line_mode == LineMode::PhysicalSource {
             self.open_physical_line(document, above)?;
         } else {
-            document.insert(position, insertion)?;
+            document.open_formatted_line(position)?;
             self.cursor = if above { position } else { position + 1 };
         }
         self.mode = Mode::Insert;
@@ -14000,6 +14036,8 @@ impl CommandPlan {
         match self.post_commit {
             PlannedPostCommit::None => {}
             PlannedPostCommit::ReplaceJournal(entries) => {
+                next.finish_typing_caret(document)
+                    .expect("committed typing ends at a valid UTF-8 boundary");
                 if let Some(session) = next.insert_session.as_mut() {
                     let continues_frontier = session.replace_journal.last().map_or(true, |entry| {
                         entry.start.checked_add(entry.inserted.len())
@@ -14023,6 +14061,10 @@ impl CommandPlan {
             PlannedPostCommit::NormalizeNormalCursor => {
                 next.cursor =
                     normalize_normal_cursor_snapshot(&document.hard_line_snapshot(), next.cursor);
+            }
+            PlannedPostCommit::NormalizeTypingCursor => {
+                next.finish_typing_caret(document)
+                    .expect("committed typing ends at a valid UTF-8 boundary");
             }
         }
         match self.line_undo {
@@ -16336,6 +16378,50 @@ mod tests {
     }
 
     #[test]
+    fn typing_caret_follows_a_grapheme_joined_to_unchanged_suffix() {
+        for (original, mode, input, expected, caret) in [
+            ("\u{301}", 'i', "🇨🇦", "🇨🇦\u{301}", "🇨🇦\u{301}".len()),
+            ("\u{301}tail", 'i', "e", "e\u{301}tail", "e\u{301}".len()),
+            ("🇨🇦", 'i', "🇫", "🇫🇨🇦", "🇫🇨".len()),
+            ("x🇨🇦", 'R', "🇫", "🇫🇨🇦", "🇫🇨".len()),
+        ] {
+            for planned in [false, true] {
+                let mut document = Document::new(original);
+                let mut commands = CommandInterpreter::new();
+                key(&mut commands, &mut document, Key::Char(mode));
+                if planned {
+                    let context = CommandContext::new(&document);
+                    let CommandResolution::Planned(plan) =
+                        commands.resolve(&context, InputEvent::text(input)).unwrap()
+                    else {
+                        panic!("ordinary typing should use the immutable plan");
+                    };
+                    let prepared = plan.prepare_model(&document).unwrap().unwrap();
+                    document.commit_model_transaction(prepared).unwrap();
+                    plan.publish_success(&mut commands, &document, true);
+                } else {
+                    commands
+                        .handle(&mut document, InputEvent::text(input))
+                        .unwrap();
+                }
+                assert_eq!(document.text(), expected);
+                assert_eq!(
+                    commands.cursor(),
+                    caret,
+                    "{original:?} {mode} {input:?}, planned={planned}"
+                );
+                assert!(document.text_point(commands.cursor()).is_ok());
+                key(&mut commands, &mut document, Key::Escape);
+                keys(&mut commands, &mut document, "u");
+                assert_eq!(document.text(), original);
+                key(&mut commands, &mut document, Key::Ctrl('r'));
+                assert_eq!(document.text(), expected);
+                assert!(document.text_point(commands.cursor()).is_ok());
+            }
+        }
+    }
+
+    #[test]
     fn replace_mode_replaces_graphemes_without_splitting_them() {
         let mut document = Document::new("a\u{301}bc");
         let mut commands = CommandInterpreter::new();
@@ -16471,7 +16557,9 @@ mod tests {
                 key(&mut commands, &mut document, Key::Enter);
                 assert_eq!(
                     document.text(),
-                    if source.starts_with('-') {
+                    if format == Format::Markdown {
+                        "first\n"
+                    } else if source.starts_with('-') {
                         "- first\n- "
                     } else {
                         "3. first\n4. "
@@ -16484,7 +16572,9 @@ mod tests {
                 key(&mut commands, &mut document, Key::Enter);
                 assert_eq!(
                     document.text(),
-                    if source.starts_with('-') {
+                    if format == Format::Markdown {
+                        "first\nsecond\n"
+                    } else if source.starts_with('-') {
                         "- first\n- second\n"
                     } else {
                         "3. first\n4. second\n"
@@ -17938,7 +18028,7 @@ mod tests {
             assert!(snapshot.rows.len() >= 3);
             let initial = commands.current_visual_position(&snapshot).unwrap();
             let third_row = gj(&snapshot, initial, 2, None).unwrap().position;
-            let expected = g_dollar(&snapshot, third_row).unwrap();
+            let expected = layout_motion::g_dollar(&snapshot, third_row).unwrap();
             let mut context =
                 LayoutCommandContext::new(&snapshot, true, Viewport::new(0.0, 500.0).unwrap());
             if let Some(entry) = entry {

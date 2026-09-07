@@ -272,3 +272,39 @@ fn native_list_action_uses_exact_current_paragraph_or_visual_range() {
     .unwrap();
     assert_eq!(core.document().text(), "one\ntwo\nthree");
 }
+
+#[test]
+fn rejected_native_format_change_keeps_pending_insert_undo_group_open() {
+    let mut core = Core::new(
+        Document::from_bytes(b"__word__".to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap(),
+    );
+    let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 100.0);
+    let original_revision = core.document().revision();
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('i'))))
+        .unwrap();
+    core.handle(view, CoreEvent::Input(InputEvent::text("X")))
+        .unwrap();
+    let history = core.document().history_status();
+    assert!(core
+        .handle(
+            view,
+            CoreEvent::SetFormat {
+                document: core.document().id(),
+                revision: original_revision,
+                target: Format::Markdown
+            }
+        )
+        .is_err());
+    assert_eq!(core.document().history_status(), history);
+    core.handle(view, CoreEvent::Input(InputEvent::text("Y")))
+        .unwrap();
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+        .unwrap();
+    assert_eq!(core.document().source_bytes(), b"XY__word__");
+    core.handle(
+        view,
+        CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
+    )
+    .unwrap();
+    assert_eq!(core.document().source_bytes(), b"__word__");
+}

@@ -6,6 +6,113 @@ import XCTest
 
 final class EVTextInputClientTests: XCTestCase {
     @MainActor
+    func testEscapeDiscardsAccentPickerStateWithoutMarkedText() throws {
+        for route in 0..<3 {
+            let backend = EVCoreDocumentBackend()
+            try backend.read(source: Data("base".utf8), typeName: "public.plain-text")
+            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+            surface.loadViewIfNeeded()
+            let session = try XCTUnwrap(surface.session)
+            surface.performInput { _ = try session.sendText("i") }
+            let view = RecordingEditorView(surface: surface)
+            surface.view = view
+            let window = textInputWindow(view)
+            defer { window.contentView = nil }
+
+            // A long press starts with an ordinary letter. The system can
+            // retain an accent candidate without marking any client text.
+            view.insertText("o", replacementRange: NSRange(location: NSNotFound, length: 0))
+            XCTAssertFalse(view.hasMarkedText())
+            let revision = try backend.revision()
+            switch route {
+            case 0: view.keyDown(with: keyEvent(keyCode: 53))
+            case 1: view.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+            default: view.cancelOperation(nil)
+            }
+
+            XCTAssertEqual(view.inputContextDiscardCount, 1, "route \(route)")
+            XCTAssertTrue(view.inputContextHandledKeyCodes.isEmpty)
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+            XCTAssertEqual(try backend.formattedText(), "obase")
+            XCTAssertEqual(try backend.revision(), revision)
+            _ = try session.undo()
+            XCTAssertEqual(try backend.formattedText(), "base")
+            _ = try session.redo()
+            XCTAssertEqual(try backend.formattedText(), "obase")
+        }
+    }
+
+    @MainActor
+    func testDirectCancelActionAndControlBracketCancelEveryMarkedTargetLocally() throws {
+        for command in ["i", "R", "", "v", ":draft", "/draft"] {
+            for directAction in [true, false] {
+                let backend = EVCoreDocumentBackend()
+                try backend.read(source: Data("base".utf8), typeName: "public.plain-text")
+                let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+                surface.loadViewIfNeeded()
+                let session = try XCTUnwrap(surface.session)
+                surface.performInput { if !command.isEmpty { _ = try session.sendText(command) } }
+                let view = RecordingEditorView(surface: surface)
+                surface.view = view
+                let window = textInputWindow(view)
+                defer { window.contentView = nil }
+                let mode = surface.viewPresentation.mode
+                let prompt = surface.commandLine?.text
+                let revision = try backend.revision()
+
+                view.setMarkedText("ô", selectedRange: NSRange(location: 1, length: 0),
+                                   replacementRange: NSRange(location: NSNotFound, length: 0))
+                XCTAssertTrue(view.hasMarkedText(), command)
+                if directAction { view.cancelOperation(nil) }
+                else { view.keyDown(with: keyEvent(keyCode: 33, modifiers: .control, characters: "[")) }
+
+                XCTAssertFalse(view.hasMarkedText(), command)
+                XCTAssertFalse(session.hasActiveComposition, command)
+                XCTAssertEqual(view.inputContextDiscardCount, 1, command)
+                XCTAssertTrue(view.inputContextHandledKeyCodes.isEmpty)
+                XCTAssertEqual(surface.viewPresentation.mode, mode, command)
+                XCTAssertEqual(surface.commandLine?.text, prompt, command)
+                XCTAssertEqual(try backend.revision(), revision, command)
+                XCTAssertEqual(try backend.formattedText(), "base", command)
+            }
+        }
+    }
+
+    @MainActor
+    func testAccentReplacementCancellationRetainsOriginalLetterAndUndoGroup() throws {
+        let backend = EVCoreDocumentBackend()
+        try backend.read(source: Data("base".utf8), typeName: "public.plain-text")
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        let session = try XCTUnwrap(surface.session)
+        surface.performInput { _ = try session.sendText("i") }
+        let view = RecordingEditorView(surface: surface)
+        surface.view = view
+        let window = textInputWindow(view)
+        defer { window.contentView = nil }
+        view.insertText("o", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let revision = try backend.revision()
+        view.setMarkedText("ô", selectedRange: NSRange(location: 1, length: 0),
+                           replacementRange: NSRange(location: 0, length: 1))
+        XCTAssertEqual(surface.fullPresentedText(), "ôbase")
+
+        view.cancelOperation(nil)
+
+        XCTAssertFalse(view.hasMarkedText())
+        XCTAssertEqual(view.inputContextDiscardCount, 1)
+        XCTAssertEqual(surface.fullPresentedText(), "obase")
+        XCTAssertEqual(try backend.revision(), revision)
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_INSERT))
+        // A second Escape now performs the ordinary mode transition.
+        view.keyDown(with: keyEvent(keyCode: 53))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+        _ = try session.undo()
+        XCTAssertEqual(try backend.formattedText(), "base")
+        _ = try session.redo()
+        XCTAssertEqual(try backend.formattedText(), "obase")
+    }
+
+    @MainActor
     func testActiveCompositionRoutesEditingKeysThroughAppKitInterpretation() throws {
         let backend = EVCoreDocumentBackend()
         try backend.read(source: Data("base".utf8), typeName: "public.plain-text")
@@ -618,16 +725,25 @@ private final class RecordingTextInputContext: NSTextInputContext {
     }
 }
 
-private func keyEvent(keyCode: UInt16) -> NSEvent {
+@MainActor
+private func textInputWindow(_ view: EVEditorView) -> NSWindow {
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
+                          styleMask: .borderless, backing: .buffered, defer: false)
+    window.contentView = view
+    XCTAssertTrue(window.makeFirstResponder(view))
+    return window
+}
+
+private func keyEvent(keyCode: UInt16, modifiers: NSEvent.ModifierFlags = [], characters: String = "") -> NSEvent {
     NSEvent.keyEvent(
         with: .keyDown,
         location: .zero,
-        modifierFlags: [],
+        modifierFlags: modifiers,
         timestamp: 0,
         windowNumber: 0,
         context: nil,
-        characters: "",
-        charactersIgnoringModifiers: "",
+        characters: characters,
+        charactersIgnoringModifiers: characters,
         isARepeat: false,
         keyCode: keyCode
     )!
