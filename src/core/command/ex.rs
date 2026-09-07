@@ -101,6 +101,7 @@ pub enum ExAction {
     Normal {
         commands: String,
     },
+    Sort(SortOptions),
     Substitute(Substitute),
     RepeatSubstitute {
         pattern: RepeatPattern,
@@ -127,6 +128,17 @@ pub enum ExAction {
 pub struct RegisterCount {
     pub register: Option<char>,
     pub count: Option<u64>,
+}
+
+/// Portable sort keys use Unicode scalar order, independent of host locale.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SortOptions {
+    pub ignore_case: bool,
+    pub unique: bool,
+    pub match_only: bool,
+    /// 10=n, 16=x, 8=o, 2=b. Numeric modes are mutually exclusive.
+    pub radix: Option<u32>,
+    pub pattern: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -220,6 +232,7 @@ pub enum ExParseErrorKind {
     UnterminatedSubstitutePattern,
     InvalidSubstituteFlag(char),
     DuplicateSubstituteFlag(char),
+    InvalidSortArgument(String),
     InvalidOption(String),
 }
 
@@ -227,6 +240,10 @@ impl fmt::Display for ExParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "Ex parse error at byte {}: ", self.offset)?;
         match &self.kind {
+            ExParseErrorKind::InvalidSortArgument(argument) => write!(
+                formatter,
+                "invalid sort argument {argument:?}; supported flags: i, u, r, n, x, o, b"
+            ),
             ExParseErrorKind::Empty => formatter.write_str("empty command"),
             ExParseErrorKind::InvalidAddress => formatter.write_str("invalid address"),
             ExParseErrorKind::AddressOverflow => formatter.write_str("address offset overflow"),
@@ -536,6 +553,7 @@ impl<'a> Parser<'a> {
             CommandName::Normal => Ok(ExAction::Normal {
                 commands: required_string(args, args_offset, "Normal-mode command")?,
             }),
+            CommandName::Sort => parse_sort(args, args_offset).map(ExAction::Sort),
             CommandName::Substitute => parse_substitute(args, args_offset),
             CommandName::RepeatSubstitute => {
                 let (flags, count) = parse_repeat_substitute_tail(args, args_offset)?;
@@ -633,6 +651,7 @@ enum CommandName {
     Copy,
     Move,
     Normal,
+    Sort,
     Substitute,
     RepeatSubstitute,
     RepeatWithSearch,
@@ -671,6 +690,7 @@ impl CommandName {
             Self::Copy => "copy",
             Self::Move => "move",
             Self::Normal => "normal",
+            Self::Sort => "sort",
             Self::Substitute => "substitute",
             Self::RepeatSubstitute => "&",
             Self::RepeatWithSearch => "~",
@@ -700,6 +720,7 @@ impl CommandName {
                 | Self::Put
                 | Self::Join
                 | Self::Normal
+                | Self::Sort
         )
     }
 
@@ -715,6 +736,7 @@ impl CommandName {
                 | Self::Copy
                 | Self::Move
                 | Self::Normal
+                | Self::Sort
                 | Self::Substitute
                 | Self::RepeatSubstitute
                 | Self::RepeatWithSearch
@@ -730,6 +752,11 @@ struct CommandSpec {
 }
 
 const COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        name: CommandName::Sort,
+        spelling: "sort",
+        minimum: 3,
+    },
     CommandSpec {
         name: CommandName::CheckTime,
         spelling: "checktime",
@@ -1063,6 +1090,50 @@ fn parse_address_argument(value: &str, offset: usize) -> Result<ExAddress, ExPar
 
 fn parse_name_list(args: &str) -> Vec<char> {
     args.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
+fn parse_sort(args: &str, offset: usize) -> Result<SortOptions, ExParseError> {
+    let mut options = SortOptions::default();
+    let mut at = 0;
+    while at < args.len() {
+        let ch = args[at..].chars().next().unwrap();
+        let invalid = || ExParseError {
+            offset: offset + at,
+            kind: ExParseErrorKind::InvalidSortArgument(args[at..].into()),
+        };
+        match ch {
+            ch if ch.is_whitespace() => {}
+            'i' => options.ignore_case = true,
+            'u' => options.unique = true,
+            'r' => options.match_only = true,
+            'n' | 'x' | 'o' | 'b' => {
+                if options.radix.is_some() {
+                    return Err(invalid());
+                }
+                options.radix = Some(match ch {
+                    'n' => 10,
+                    'x' => 16,
+                    'o' => 8,
+                    _ => 2,
+                });
+            }
+            ch if !ch.is_alphanumeric()
+                && !matches!(ch, '\\' | '"' | '|')
+                && options.pattern.is_none() =>
+            {
+                let (pattern, next, closed) = read_delimited(args, at + ch.len_utf8(), ch);
+                if !closed {
+                    return Err(invalid());
+                }
+                options.pattern = Some(pattern);
+                at = next;
+                continue;
+            }
+            _ => return Err(invalid()),
+        }
+        at += ch.len_utf8();
+    }
+    Ok(options)
 }
 
 fn parse_substitute(args: &str, offset: usize) -> Result<ExAction, ExParseError> {

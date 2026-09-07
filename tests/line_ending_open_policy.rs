@@ -28,7 +28,14 @@ fn default_policy_is_shared_by_plain_text_and_markdown_in_every_encoding() {
             let document = Document::from_bytes(source.clone(), encoding, format).unwrap();
             assert_eq!(document.file_format(), FileFormat::Dos);
             assert_eq!(document.file_format_origin(), FileFormatOrigin::Detected);
-            assert_eq!(document.text(), "alpha\nbeta\n");
+            assert_eq!(
+                document.text(),
+                if format == Format::Markdown {
+                    "alpha beta"
+                } else {
+                    "alpha\nbeta\n"
+                }
+            );
             assert_eq!(document.source_bytes(), source);
         }
     }

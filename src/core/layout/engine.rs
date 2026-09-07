@@ -54,6 +54,23 @@ pub struct LongLineLayoutCheckpoint {
 }
 
 impl LongLineLayoutCheckpoint {
+    /// Retarget a disposable composition checkpoint whose consumed prefix is
+    /// byte-identical to the source view. Never install it in the base cache.
+    pub(crate) fn for_unchanged_prefix(
+        &self,
+        full_range: Range<usize>,
+        unchanged_end: usize,
+    ) -> Option<Self> {
+        if full_range.start != self.hard_line_range.start
+            || self.next_text_offset > unchanged_end
+            || self.next_text_offset > full_range.end
+        {
+            return None;
+        }
+        let mut next = self.clone();
+        next.hard_line_range = full_range;
+        Some(next)
+    }
     pub fn document_id(&self) -> DocumentId {
         self.document_id
     }
@@ -1133,6 +1150,7 @@ impl LayoutJobViewConfiguration {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewLayout {
+    paragraph_flow: bool,
     width: f32,
     height: f32,
     viewport_left: f32,
@@ -1162,6 +1180,7 @@ pub type ViewLayoutState = ViewLayout;
 impl ViewLayout {
     pub fn new(width: f32, height: f32) -> Self {
         Self {
+            paragraph_flow: false,
             width: finite_nonnegative(width),
             height: finite_nonnegative(height),
             viewport_left: 0.0,
@@ -1216,6 +1235,17 @@ impl ViewLayout {
         }
         if self.wrap != wrap {
             self.wrap = wrap;
+            self.bump_configuration(true);
+        }
+    }
+
+    pub fn paragraph_flow(&self) -> bool {
+        self.paragraph_flow
+    }
+
+    pub fn set_paragraph_flow(&mut self, enabled: bool) {
+        if self.paragraph_flow != enabled {
+            self.paragraph_flow = enabled;
             self.bump_configuration(true);
         }
     }
@@ -2245,7 +2275,7 @@ struct LineParagraphLayout {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct HardLineLayoutSlice {
+pub(crate) struct HardLineLayoutSlice {
     pub full_range: Range<usize>,
     pub work_range: Range<usize>,
     pub shaping_context_range: Range<usize>,
@@ -2346,11 +2376,24 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         document: &Document,
         view: &mut ViewLayout,
     ) -> Result<(), LayoutError> {
-        let document_styles = DocumentLayoutStyles::resolve(document.projection())?;
-        let text = document.text();
-        let hard_lines = document
-            .projection()
-            .hard_lines_for_region(&(0..text.len()));
+        let mut document_styles = DocumentLayoutStyles::resolve(document.projection())?;
+        let hard_lines = if view.paragraph_flow() {
+            (0..document.projection().presentation_line_count(true))
+                .filter_map(|index| document.projection().presentation_line_range(index, true))
+                .collect::<Vec<_>>()
+        } else {
+            document
+                .projection()
+                .hard_lines_for_region(&(0..document.projection().text_tree().byte_len()))
+        };
+        let flowed;
+        let text = if view.paragraph_flow() {
+            flowed = super::jobs::flow_text(document.text().to_owned(), 0, &hard_lines);
+            super::jobs::flow_paragraph_styles(&mut document_styles, &hard_lines);
+            &flowed
+        } else {
+            document.text()
+        };
         self.relayout_text_with_document_styles_and_hard_lines(
             document.id(),
             document.revision(),
@@ -2471,7 +2514,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn layout_hard_line_slices_cancellable(
+    pub(crate) fn layout_hard_line_slices_cancellable(
         &mut self,
         document_id: DocumentId,
         document_revision: Revision,

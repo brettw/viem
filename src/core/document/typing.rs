@@ -7,6 +7,118 @@ use crate::document::{FontSlant, StylePropertyValue};
 use super::replacement::PatchComposition;
 
 impl Document {
+    /// Source-visible emphasis ends can be crossed without editing their
+    /// spelling. Only closing ranges certified by the current semantic spans
+    /// participate; marker-like prose, escapes and code are never skipped.
+    pub(crate) fn markdown_source_typing_exit(
+        &self,
+        at: usize,
+        requested: &[(StyleProperty, StylePropertyValue)],
+    ) -> Result<Option<(usize, Vec<(StyleProperty, StylePropertyValue)>)>, DocumentError> {
+        if self.format() != Format::MarkdownSource {
+            return Ok(None);
+        }
+        self.text_point(at)?;
+        let desired = self.validate_typing_properties(requested)?;
+        let off = |style| match style {
+            SemanticInlineStyle::Strong => desired.bold == Some(false),
+            SemanticInlineStyle::Emphasis => desired.slant == Some(FontSlant::Upright),
+            SemanticInlineStyle::Code => false,
+        };
+        let text = self.projection().text_tree();
+        let spans = self.projection().style_spans_for_region(
+            &(at.saturating_sub(1)..at.saturating_add(1).min(text.byte_len())),
+        );
+        let mut closures = Vec::new();
+        for span in &spans {
+            let StyleApplication::Semantic(
+                style @ (SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis),
+            ) = span.application
+            else {
+                continue;
+            };
+            if span.range.start >= at || span.range.end <= at {
+                continue;
+            }
+            let width = if style == SemanticInlineStyle::Strong {
+                2
+            } else {
+                1
+            };
+            let paired = spans.iter().any(|other| {
+                other.range == span.range
+                    && other.application
+                        == StyleApplication::Semantic(if style == SemanticInlineStyle::Strong {
+                            SemanticInlineStyle::Emphasis
+                        } else {
+                            SemanticInlineStyle::Strong
+                        })
+            });
+            let width = if paired { 3 } else { width };
+            if span.range.len() < width * 2 {
+                continue;
+            }
+            let opening = text
+                .slice(span.range.start..span.range.start + width)
+                .map_err(DocumentError::FormattedTextStorage)?;
+            if !opening.bytes().all(|byte| byte == b'*')
+                && !opening.bytes().all(|byte| byte == b'_')
+            {
+                continue;
+            }
+            let closing = span.range.end - width..span.range.end;
+            if text
+                .slice(closing.clone())
+                .map_err(DocumentError::FormattedTextStorage)?
+                != opening
+            {
+                continue;
+            }
+            closures.push((closing, style));
+        }
+        closures.sort_by_key(|(range, _)| (range.start, range.end));
+        let mut position = at;
+        let mut exit = None;
+        for (closing, style) in &closures {
+            if closing.start > position {
+                break;
+            }
+            // Equal ranges represent combined emphasis. A point in the
+            // interior of a delimiter is not a legal semantic exit boundary.
+            if closing.start < at || closing.end < position {
+                continue;
+            }
+            position = closing.end;
+            if off(*style) {
+                exit = Some(position);
+            }
+        }
+        let Some(exit) = exit else {
+            return Ok(None);
+        };
+        let mut preserved = Vec::new();
+        let active = |style| {
+            spans.iter().any(|span| {
+                span.range.start < at
+                    && at < span.range.end
+                    && span.application == StyleApplication::Semantic(style)
+            })
+        };
+        if desired.bold.is_none() && active(SemanticInlineStyle::Strong) {
+            preserved.push((
+                StyleProperty::CharacterBold,
+                StylePropertyValue::Boolean(true),
+            ));
+        }
+        if desired.slant.is_none() && active(SemanticInlineStyle::Emphasis) {
+            preserved.push((
+                StyleProperty::CharacterSlant,
+                StylePropertyValue::FontSlant(FontSlant::Italic),
+            ));
+        }
+        Ok(Some((exit, preserved)))
+    }
+
     /// Validate a sparse typing declaration without creating source syntax.
     pub fn validate_typing_properties(
         &self,
@@ -264,7 +376,7 @@ impl Document {
         values: &[(StyleProperty, StylePropertyValue)],
     ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
         let properties = self.validate_typing_properties(values)?;
-        let at = edit.range.start;
+        let mut at = edit.range.start;
         if matches!(self.format(), Format::Markdown | Format::MarkdownSource)
             && edit.payload.text().trim().is_empty()
         {
@@ -273,17 +385,37 @@ impl Document {
         }
         let single_replacement = !edit.range.is_empty()
             && self.hard_line_snapshot().next_grapheme_boundary(at) == Some(edit.range.end);
-        if (edit.range.is_empty() || single_replacement)
-            && self.typing_context_matches(
+        let context_matches = self.typing_context_matches(
+            at,
+            if single_replacement {
+                BoundaryAffinity::Downstream
+            } else {
+                edit.boundary_affinity
+                    .unwrap_or(BoundaryAffinity::Downstream)
+            },
+            &properties,
+        );
+        let structural = if edit.range.is_empty() && !context_matches {
+            super::super::html_typing::insertion(
+                self,
                 at,
-                if single_replacement {
-                    BoundaryAffinity::Downstream
-                } else {
-                    edit.boundary_affinity
-                        .unwrap_or(BoundaryAffinity::Downstream)
-                },
+                edit.boundary_affinity
+                    .unwrap_or(BoundaryAffinity::Downstream),
+                edit.payload.text(),
                 &properties,
-            )
+            )?
+            .or(super::markdown_typing::insertion(
+                self,
+                at,
+                edit.boundary_affinity
+                    .unwrap_or(BoundaryAffinity::Downstream),
+                edit.payload.text(),
+                &properties,
+            )?)
+        } else {
+            None
+        };
+        if structural.is_none() && (edit.range.is_empty() || single_replacement) && context_matches
         {
             // Replacing one already-matching grapheme retains its existing
             // source-backed style, so no redundant wrapper/table edit is needed.
@@ -362,7 +494,24 @@ impl Document {
             scratch.commit_model_transaction(prepared)?;
             Ok(())
         };
-        let first = scratch.prepare_formatted_payload_edits(vec![edit])?;
+        let first = if let Some(insertion) = structural {
+            let patches = vec![SourcePatch::primary(
+                insertion.source,
+                self.encoding().encode_fragment(&insertion.syntax)?,
+            )];
+            if matches!(self.format(), Format::HtmlSource | Format::MarkdownSource) {
+                caret = insertion.source_caret;
+                at = caret - edit.payload.text().len();
+                scratch.prepare_html_source_patches(patches)?
+            } else {
+                scratch.prepare_text_edits_with_patches(
+                    vec![TextEdit::new(edit.range, edit.payload.text())],
+                    Some(patches),
+                )?
+            }
+        } else {
+            scratch.prepare_formatted_payload_edits(vec![edit])?
+        };
         publish(&mut scratch, first, &mut sources, &mut formatted)?;
         let projection = scratch.projection();
         let start = if projection
@@ -440,13 +589,23 @@ impl Document {
                     )?;
                 }
             }
-        } else {
+        } else if !scratch.typing_context_matches(caret, BoundaryAffinity::Upstream, &properties) {
+            let changed_values = values
+                .iter()
+                .filter(|value| {
+                    let property = scratch
+                        .validate_typing_properties(std::slice::from_ref(value))
+                        .expect("the complete sparse declaration was validated");
+                    !scratch.typing_context_matches(caret, BoundaryAffinity::Upstream, &property)
+                })
+                .cloned()
+                .collect();
             let prepared =
                 scratch.prepare_model_request(ModelRequest::SetDirectCharacterProperties {
                     document: scratch.id(),
                     revision: scratch.revision(),
                     range: selection.clone(),
-                    values: values.to_vec(),
+                    values: changed_values,
                 })?;
             apply(
                 &mut scratch,

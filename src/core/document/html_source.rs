@@ -277,7 +277,7 @@ pub(super) fn project(
             )
     });
     styles.sort_by_key(|span| span.range.start);
-    FormattedDocument::from_parts(
+    let mut result = FormattedDocument::from_parts(
         revision,
         input.text.clone(),
         plain.blocks().to_vec(),
@@ -287,7 +287,57 @@ pub(super) fn project(
         sheet,
         start,
         end,
-    )
+    );
+    let mut soft = BTreeSet::new();
+    let mut prose_extents = Vec::new();
+    for block in semantic.blocks() {
+        if block.style.0 == "Code Block" {
+            continue;
+        }
+        let spans = semantic.provenance_for_region(&block.range);
+        if let (Some(first), Some(last)) = (spans.first(), spans.last()) {
+            if first.source.start < last.source.end {
+                prose_extents.push(first.source.start..last.source.end);
+            }
+        }
+    }
+    prose_extents.sort_by_key(|range| range.start);
+    let mut protected_depth = 0usize;
+    let mut token_index = 0;
+    for ending in &input.endings {
+        while token_index < tokens.len() && tokens[token_index].range.end <= ending.normalized.start
+        {
+            if let TokenKind::Tag(tag) = &tokens[token_index].kind {
+                if matches!(
+                    tag.name.as_str(),
+                    "pre" | "code" | "script" | "style" | "textarea"
+                ) {
+                    if tag.end {
+                        protected_depth = protected_depth.saturating_sub(1);
+                    } else {
+                        protected_depth += 1;
+                    }
+                }
+            }
+            token_index += 1;
+        }
+        let token_is_prose = tokens.get(token_index).map_or(true, |token| {
+            token.range.start > ending.normalized.start
+                || matches!(token.kind, TokenKind::Text | TokenKind::MappedText { .. })
+        });
+        let extent = prose_extents.partition_point(|range| range.start <= ending.source.start);
+        if protected_depth == 0
+            && token_is_prose
+            && extent
+                .checked_sub(1)
+                .and_then(|index| prose_extents.get(index))
+                .is_some_and(|range| ending.source.end <= range.end)
+        {
+            soft.insert(ending.normalized.start);
+        }
+    }
+    result.install_flow_ranges(super::paragraph_flow::flow_ranges(input, &soft));
+    result
 }
 
 impl Document {

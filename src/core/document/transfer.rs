@@ -1,8 +1,8 @@
 //! Source-backed hard-line transfer planning.
 //!
-//! The initial plain-text and Markdown adapters each map one source line to
-//! one formatted hard line. This module makes that constraint explicit and
-//! rejects a projection with another shape instead of flattening its syntax.
+//! Plain/source views transfer physical lines. Markdown WYSIWYG transfers the
+//! complete source extent of each semantic line, including wrapped prose and
+//! its explicit paragraph/hard-break delimiter.
 
 use super::line_endings::normalize;
 use super::projection::{FormattedDocument, TransferredLineOrigin};
@@ -23,9 +23,11 @@ pub(crate) struct PlannedSourcePatch {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct LineSignature {
+pub(super) struct LineSignature {
     kind: super::BlockKind,
     style: StyleId,
+    paragraph: super::BlockProperties,
+    character: super::CharacterProperties,
     inline_styles: Vec<(Range<usize>, StyleApplication)>,
 }
 
@@ -36,13 +38,13 @@ pub(crate) struct HardLineTransferPlan {
     pub(crate) expected_text: String,
     pub(crate) expected_hard_breaks: Vec<usize>,
     pub(crate) origins: Vec<TransferredLineOrigin>,
-    expected_signatures: Vec<LineSignature>,
+    pub(super) expected_signatures: Option<Vec<LineSignature>>,
 }
 
 #[derive(Clone, Debug)]
-struct PhysicalHardLine {
-    content: Range<usize>,
-    separator: Option<Range<usize>>,
+pub(super) struct PhysicalHardLine {
+    pub(super) content: Range<usize>,
+    pub(super) separator: Option<Range<usize>>,
 }
 
 pub(crate) fn plan(
@@ -90,9 +92,12 @@ pub(crate) fn plan(
     let signatures = projection_signatures(document.projection(), &infos)?;
     let physical = physical_hard_lines(document, line_count)?;
     let source_bytes = document.source_bytes();
-    let boundary = document
+    let mut boundary = document
         .encoding()
         .encode_fragment(document.file_format().spelling())?;
+    if document.format() == super::Format::Markdown {
+        boundary.extend_from_within(..);
+    }
 
     let first_physical = &physical[source_lines.start];
     let last_physical = &physical[source_lines.end - 1];
@@ -116,6 +121,7 @@ pub(crate) fn plan(
         source_body_bytes,
         trailing_separator,
         &boundary,
+        document,
     )?;
     let mut text_edits = formatted_edits(
         operation,
@@ -161,7 +167,7 @@ pub(crate) fn plan(
         expected_text,
         expected_hard_breaks,
         origins,
-        expected_signatures,
+        expected_signatures: Some(expected_signatures),
     }))
 }
 
@@ -169,25 +175,33 @@ pub(crate) fn verify_projection(
     candidate: &FormattedDocument,
     plan: &HardLineTransferPlan,
 ) -> Result<(), DocumentError> {
+    let Some(expected) = &plan.expected_signatures else {
+        return Ok(());
+    };
     let snapshot = candidate.hard_line_snapshot(super::DocumentId(0));
     let infos = snapshot
         .lines(0..snapshot.line_count())
         .map_err(|_| DocumentError::HardLineTransferProjectionMismatch)?;
     let actual = projection_signatures(candidate, &infos)?;
-    if actual == plan.expected_signatures {
+    if &actual == expected {
         Ok(())
     } else {
         Err(DocumentError::HardLineTransferProjectionMismatch)
     }
 }
 
-fn physical_hard_lines(
+pub(super) fn physical_hard_lines(
     document: &Document,
     expected_count: usize,
 ) -> Result<Vec<PhysicalHardLine>, DocumentError> {
     let source = document.source_bytes();
     let decoded = document.encoding().decode(&source)?;
     let normalized = normalize(&decoded, document.file_format());
+    let normalized = if document.format() == super::Format::Markdown {
+        super::paragraph_flow::markdown(&normalized).0
+    } else {
+        normalized
+    };
     if normalized.endings.len().checked_add(1) != Some(expected_count) {
         return Err(DocumentError::HardLineTransferProjectionMismatch);
     }
@@ -227,6 +241,7 @@ fn source_patches(
     body_bytes: Vec<u8>,
     trailing_separator: Option<Range<usize>>,
     new_boundary: &[u8],
+    document: &Document,
 ) -> Result<Vec<PlannedSourcePatch>, DocumentError> {
     let line_count = physical.len();
     let insertion = if destination == line_count {
@@ -234,16 +249,28 @@ fn source_patches(
     } else {
         physical[destination].content.start
     };
+    let boundary = |range: &Range<usize>| -> Result<Vec<u8>, DocumentError> {
+        let bytes = &source[range.clone()];
+        if document.format() == super::Format::Markdown {
+            let decoded = document.encoding().decode_region(bytes, range.start)?;
+            if matches!(decoded.text.as_str(), "\n" | "\r" | "\r\n") {
+                return Ok(concat(bytes, bytes));
+            }
+        }
+        Ok(bytes.to_vec())
+    };
 
     match operation {
         HardLineTransfer::Copy => {
             let replacement = if destination == line_count {
                 let separator = trailing_separator
                     .as_ref()
-                    .map_or(new_boundary, |range| &source[range.clone()]);
-                concat(separator, &body_bytes)
+                    .map(&boundary)
+                    .transpose()?
+                    .unwrap_or_else(|| new_boundary.to_vec());
+                concat(&separator, &body_bytes)
             } else if let Some(separator) = trailing_separator {
-                source[body.start..separator.end].to_vec()
+                concat(&body_bytes, &boundary(&separator)?)
             } else {
                 concat(&body_bytes, new_boundary)
             };
@@ -254,7 +281,7 @@ fn source_patches(
         }
         HardLineTransfer::Move if destination < source_lines.start => {
             if let Some(separator) = trailing_separator {
-                let transfer = source[body.start..separator.end].to_vec();
+                let transfer = concat(&body_bytes, &boundary(&separator)?);
                 Ok(vec![
                     PlannedSourcePatch {
                         range: insertion..insertion,
@@ -271,7 +298,7 @@ fn source_patches(
                     .checked_sub(1)
                     .and_then(|index| physical[index].separator.clone())
                     .ok_or(DocumentError::HardLineTransferProjectionMismatch)?;
-                let transfer = concat(&body_bytes, &source[previous.clone()]);
+                let transfer = concat(&body_bytes, &boundary(&previous)?);
                 Ok(vec![
                     PlannedSourcePatch {
                         range: insertion..insertion,
@@ -288,9 +315,9 @@ fn source_patches(
             let separator =
                 trailing_separator.ok_or(DocumentError::HardLineTransferProjectionMismatch)?;
             let transfer = if destination == line_count {
-                concat(&source[separator.clone()], &body_bytes)
+                concat(&boundary(&separator)?, &body_bytes)
             } else {
-                source[body.start..separator.end].to_vec()
+                concat(&body_bytes, &boundary(&separator)?)
             };
             Ok(vec![
                 PlannedSourcePatch {
@@ -397,7 +424,7 @@ fn transferred_origins(
     origins
 }
 
-fn hard_break_offsets(
+pub(super) fn hard_break_offsets(
     origins: &[TransferredLineOrigin],
     contents: &[String],
 ) -> Result<Vec<usize>, DocumentError> {
@@ -420,37 +447,35 @@ fn hard_break_offsets(
     Ok(offsets)
 }
 
-fn projection_signatures(
+pub(super) fn projection_signatures(
     projection: &FormattedDocument,
     infos: &[super::HardLineInfo],
 ) -> Result<Vec<LineSignature>, DocumentError> {
-    if projection.blocks().len() != infos.len() {
-        return Err(DocumentError::HardLineTransferProjectionMismatch);
-    }
     infos
         .iter()
-        .zip(projection.blocks())
-        .map(|(line, block)| {
+        .map(|line| {
             let content = line.content_range();
-            if block.range != content {
-                return Err(DocumentError::HardLineTransferProjectionMismatch);
-            }
+            let block = projection
+                .blocks_for_region(&content)
+                .into_iter()
+                .find(|block| block.range.start <= content.start && content.end <= block.range.end)
+                .ok_or(DocumentError::HardLineTransferProjectionMismatch)?;
             let mut inline_styles = Vec::new();
-            for span in projection.style_spans() {
+            for span in projection.style_spans_for_region(&content) {
                 if span.range.end <= content.start || content.end <= span.range.start {
                     continue;
                 }
-                if span.range.start < content.start || content.end < span.range.end {
-                    return Err(DocumentError::HardLineTransferProjectionMismatch);
-                }
                 inline_styles.push((
-                    span.range.start - content.start..span.range.end - content.start,
+                    span.range.start.max(content.start) - content.start
+                        ..span.range.end.min(content.end) - content.start,
                     span.application.clone(),
                 ));
             }
             Ok(LineSignature {
                 kind: block.kind.clone(),
                 style: block.style.clone(),
+                paragraph: block.direct_paragraph.clone(),
+                character: block.direct_default_character.clone(),
                 inline_styles,
             })
         })

@@ -34,7 +34,7 @@ struct EVDocumentFormatIntegrationTests {
 
         try backend.read(source: source, typeName: "net.daringfireball.markdown")
 
-        #expect(try backend.formattedText() == "café\nThis is bold.\n")
+        #expect(try backend.formattedText() == "café\nThis is bold.")
         #expect(try backend.serializedSource(typeName: "net.daringfireball.markdown") == source)
         #expect(backend.encodingLabel == "UTF-8")
         #expect(backend.formatLabel == "Markdown WYSIWYG")

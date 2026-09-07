@@ -104,6 +104,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case zoomOut
     case actualSize
     case newWindowForDocument
+    case flowParagraphs
 
     /// Standard text actions must reach native field editors first. The custom
     /// document view implements the same selectors using core intentions.

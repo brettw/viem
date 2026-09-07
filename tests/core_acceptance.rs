@@ -66,7 +66,7 @@ fn text_pipelines_preserve_no_op_bytes_and_patch_locally_in_every_encoding() {
         (
             Format::Markdown,
             "# café\r\n\r\nThis is **bold**.",
-            "café\n\nThis is bold.",
+            "café\nThis is bold.",
         ),
     ];
 

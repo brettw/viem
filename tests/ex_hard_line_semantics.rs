@@ -196,7 +196,7 @@ fn ex_move_uses_local_delete_and_insert_patches_in_both_directions() {
 #[test]
 fn command_line_markdown_transfer_targets_last_copied_line_first_nonblank() {
     let mut document = Document::from_bytes(
-        b"# H\n  **one**\n_two_\ntail".to_vec(),
+        b"# H\n\n  **one**\n\n_two_\n\ntail".to_vec(),
         Encoding::Utf8,
         Format::Markdown,
     )
@@ -207,7 +207,7 @@ fn command_line_markdown_transfer_targets_last_copied_line_first_nonblank() {
 
     assert_eq!(
         document.source_bytes(),
-        b"# H\n  **one**\n_two_\ntail\n# H\n  **one**"
+        b"# H\n\n  **one**\n\n_two_\n\ntail\n\n# H\n\n  **one**"
     );
     assert_eq!(commands.cursor(), "H\n  one\ntwo\ntail\nH\n  ".len());
 }
@@ -241,13 +241,14 @@ fn ex_put_uses_the_target_line_ending_spelling() {
 fn normal_join_removes_only_the_forced_mac_separator() {
     for format in [Format::PlainText, Format::Markdown] {
         for encoding in [Encoding::Utf8, Encoding::Latin1] {
-            let mut document = Document::from_bytes_with_file_format(
-                b"a\rb\nc".to_vec(),
-                encoding,
-                format,
-                FileFormat::Mac,
-            )
-            .unwrap();
+            let source = if format == Format::Markdown {
+                b"a\r\rb\nc".to_vec()
+            } else {
+                b"a\rb\nc".to_vec()
+            };
+            let mut document =
+                Document::from_bytes_with_file_format(source, encoding, format, FileFormat::Mac)
+                    .unwrap();
             let mut commands = CommandInterpreter::new();
             commands
                 .handle(&mut document, InputEvent::Key(Key::Char('J')))

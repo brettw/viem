@@ -54,7 +54,7 @@ import XCTest
         try document.read(from: Data("# first\r\n**second**\r\nlast".utf8), ofType: EVDocument.markdownType)
         let target = directory.appendingPathComponent("range.md")
         _ = try await perform(window, backend: backend, kind: .write, path: target.path, range: 1...1).get()
-        XCTAssertEqual(try Data(contentsOf: target), Data("**second**\r\n".utf8))
+        XCTAssertEqual(try Data(contentsOf: target), Data("**second**\r\nlast".utf8))
         let original = try XCTUnwrap(document.fileURL)
         let refusal = await perform(window, backend: backend, kind: .write, path: original.path, range: 1...1)
         if case .success = refusal { XCTFail("Partial overwrite did not require force") }

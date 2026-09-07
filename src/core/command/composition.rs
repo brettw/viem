@@ -312,6 +312,17 @@ pub struct CompositionOverlay {
 }
 
 impl CompositionOverlay {
+    /// Persistent text for bounded layout capture. Only the marked payload
+    /// allocates new leaves; the immutable document prefix/suffix remain shared.
+    pub(crate) fn layout_text_tree(
+        &self,
+    ) -> Result<FormattedTextTree, crate::document::FormattedTextError> {
+        self.base_text.splice_prevalidated_batch(&[(
+            self.replacement_range.clone(),
+            self.marked_text.as_str(),
+        )])
+    }
+
     pub fn document_id(&self) -> DocumentId {
         self.document_id
     }

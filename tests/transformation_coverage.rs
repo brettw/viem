@@ -71,7 +71,7 @@ fn inserted_breaks_use_every_forced_fileformat_in_both_adapters_and_all_encoding
                 let expected_text = match format {
                     Format::PlainText => format!("one{delimiter}new{delimiter}two"),
                     Format::Markdown => {
-                        format!("# **one**{delimiter}new{delimiter}_two_")
+                        format!("# **one**{delimiter}{delimiter}new{delimiter}{delimiter}_two_")
                     }
                     _ => unreachable!("fixture enumerates plain text and Markdown WYSIWYG"),
                 };

@@ -370,7 +370,7 @@ fn latin1_utf16_and_markdown_sources_round_trip_exactly() {
         },
     );
     assert_eq!(source_bytes(&utf16_be_markdown, 0), utf16_be_source);
-    assert_eq!(formatted_utf8(&utf16_be_markdown, 0), "é\n".as_bytes());
+    assert_eq!(formatted_utf8(&utf16_be_markdown, 0), "é".as_bytes());
 
     let detected_markdown_source = b"# title\r\nbody\r\n";
     let detected_markdown = create(
@@ -386,7 +386,7 @@ fn latin1_utf16_and_markdown_sources_round_trip_exactly() {
         source_bytes(&detected_markdown, 0),
         detected_markdown_source
     );
-    assert_eq!(formatted_utf8(&detected_markdown, 0), b"title\nbody\n");
+    assert_eq!(formatted_utf8(&detected_markdown, 0), b"title\nbody");
 }
 
 #[test]

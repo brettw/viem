@@ -15,8 +15,10 @@ mod html_direct;
 mod html_paragraph;
 mod html_source;
 mod html_styles;
+mod html_typing;
 mod lists;
 mod markdown_code;
+mod paragraph_flow;
 mod rich_text;
 mod rtf;
 mod rtf_direct;
@@ -38,6 +40,7 @@ pub use selected_styles::SelectedNamedStyles;
 pub use source_lines::PhysicalSourceLine;
 mod style;
 pub(crate) use style::is_character_property;
+mod reorder;
 mod transaction;
 mod transfer;
 
@@ -2110,6 +2113,30 @@ impl Document {
 
         let source_lines = &self.state().source_hard_lines;
         let source_line_count = source_lines.len();
+        if self.format() == Format::Markdown {
+            let first = self.line_start(lines.start).expect("validated line");
+            let last = self.line_end(lines.end - 1).expect("validated line");
+            let range = first..last + usize::from(lines.end < formatted_line_count);
+            let spans = self.projection().provenance_for_region(&range);
+            let first_source = spans
+                .first()
+                .map(|span| span.source.start)
+                .or_else(|| self.projection().source_insertion_point(first, true));
+            let last_source = spans
+                .last()
+                .map(|span| span.source.end)
+                .or_else(|| self.projection().source_insertion_point(last, true));
+            if let (Some(start), Some(end)) = (first_source, last_source) {
+                if let (Some(start), Some(end)) = (
+                    source_lines.line_at_offset(start),
+                    source_lines.line_at_offset(end.saturating_sub(1)),
+                ) {
+                    return Ok(
+                        source_lines.get(start).unwrap().start..source_lines.get(end).unwrap().end
+                    );
+                }
+            }
+        }
         if source_line_count != formatted_line_count {
             return Err(HardLineSourceRangeError::ProjectionMismatch {
                 source_line_count,
@@ -2328,6 +2355,34 @@ fn build_state_from_decoded(
     })
 }
 
+fn hard_line_source_range_from_state(state: &DocumentState, line: usize) -> Option<Range<usize>> {
+    let projection = &state.projection;
+    if state.format == Format::Markdown {
+        let formatted = projection.hard_line_range(line)?;
+        let end = formatted.end + usize::from(line + 1 < projection.hard_line_count());
+        let spans = projection.provenance_for_region(&(formatted.start..end));
+        let start = spans
+            .first()
+            .map(|span| span.source.start)
+            .or_else(|| projection.source_insertion_point(formatted.start, true))?;
+        let end = spans
+            .last()
+            .map(|span| span.source.end)
+            .or_else(|| projection.source_insertion_point(formatted.end, true))?;
+        let first = state.source_hard_lines.line_at_offset(start)?;
+        let last = state
+            .source_hard_lines
+            .line_at_offset(end.saturating_sub(1).max(start))?;
+        return Some(
+            state.source_hard_lines.get(first)?.start..state.source_hard_lines.get(last)?.end,
+        );
+    }
+    if state.source_hard_lines.len() != projection.hard_line_count() {
+        return None;
+    }
+    state.source_hard_lines.get(line)
+}
+
 fn hard_line_source_image_from_state(
     document: DocumentId,
     state: &DocumentState,
@@ -2337,8 +2392,7 @@ fn hard_line_source_image_from_state(
     if line >= line_count {
         return Err(DocumentError::InvalidHardLineSourceImageTarget { line, line_count });
     }
-    if state.source_hard_lines.len() != line_count || state.projection.blocks().len() != line_count
-    {
+    if state.projection.blocks().len() != line_count {
         return Err(DocumentError::HardLineSourceImageProjectionMismatch);
     }
 
@@ -2358,9 +2412,7 @@ fn hard_line_source_image_from_state(
     if block.id != hard_line_id || block.range != formatted_range {
         return Err(DocumentError::HardLineSourceImageProjectionMismatch);
     }
-    let source_range = state
-        .source_hard_lines
-        .get(line)
+    let source_range = hard_line_source_range_from_state(state, line)
         .ok_or(DocumentError::HardLineSourceImageProjectionMismatch)?;
     let source_bytes = state
         .source
@@ -2875,7 +2927,17 @@ mod tests {
                     original.as_slice()
                 );
                 let decoded = encoding.decode(&document.source_bytes()).unwrap();
-                assert_eq!(decoded.text, format!("{source_text}a\rb\nc"));
+                assert_eq!(
+                    decoded.text,
+                    format!(
+                        "{source_text}a{}b\nc",
+                        if format == Format::Markdown {
+                            "\r\r"
+                        } else {
+                            "\r"
+                        }
+                    )
+                );
 
                 assert!(document.undo());
                 assert_eq!(document.source_bytes(), original);
@@ -2898,7 +2960,7 @@ mod tests {
             .insert_formatted_payload(markdown.text().len(), payload)
             .unwrap();
         assert_eq!(markdown.text(), "before*literal*\n# title");
-        assert_eq!(markdown.source_bytes(), b"before\\*literal\\*\n\\# title");
+        assert_eq!(markdown.source_bytes(), b"before\\*literal\\*\n\n\\# title");
 
         let mut unix = Document::from_bytes_with_file_format(
             b"x".to_vec(),
@@ -2990,7 +3052,7 @@ mod tests {
         let mut document =
             Document::from_bytes(source.clone(), Encoding::Utf8, Format::Markdown).unwrap();
         assert_eq!(document.source_bytes(), source);
-        assert_eq!(document.text(), "Hello world!\n");
+        assert_eq!(document.text(), "Hello world!");
         assert_eq!(
             document.projection().blocks()[0].kind,
             BlockKind::Heading(1)
@@ -2998,7 +3060,7 @@ mod tests {
         assert_eq!(document.projection().style_spans().len(), 1);
 
         document.replace(6..11, "earth").unwrap();
-        assert_eq!(document.text(), "Hello earth!\n");
+        assert_eq!(document.text(), "Hello earth!");
         assert_eq!(document.source_bytes(), b"# Hello **earth**!\n");
     }
 
@@ -3067,13 +3129,24 @@ mod tests {
     #[test]
     fn list_actions_change_all_selected_paragraphs_and_undo_exact_source() {
         for format in [Format::PlainText, Format::Markdown, Format::MarkdownSource] {
-            let bytes = b"alpha\r\nbeta\r\nthird".to_vec();
+            let bytes = if format == Format::Markdown {
+                b"alpha\r\n\r\nbeta\r\n\r\nthird".to_vec()
+            } else {
+                b"alpha\r\nbeta\r\nthird".to_vec()
+            };
             let mut document = Document::from_bytes(bytes.clone(), Encoding::Utf8, format).unwrap();
             document
                 .set_list_style(0..10, Some(ListStyle::Bullet))
                 .unwrap();
             assert_eq!(document.text(), "- alpha\n- beta\nthird");
-            assert_eq!(document.source_bytes(), b"- alpha\r\n- beta\r\nthird");
+            assert_eq!(
+                document.source_bytes(),
+                if format == Format::Markdown {
+                    b"- alpha\r\n\r\n- beta\r\n\r\nthird".as_slice()
+                } else {
+                    b"- alpha\r\n- beta\r\nthird".as_slice()
+                }
+            );
             if format != Format::PlainText {
                 assert_eq!(
                     document.projection().blocks()[0].kind,
@@ -3106,7 +3179,7 @@ mod tests {
     #[test]
     fn list_actions_preserve_hidden_markdown_syntax_and_nested_indentation() {
         let mut document = Document::from_bytes(
-            b"**bold**\n  child\n# Heading".to_vec(),
+            b"**bold**\n\n  child\n\n# Heading".to_vec(),
             Encoding::Utf8,
             Format::Markdown,
         )
@@ -3114,7 +3187,10 @@ mod tests {
         document
             .set_list_style(0..document.text().len(), Some(ListStyle::Bullet))
             .unwrap();
-        assert_eq!(document.source_bytes(), b"- **bold**\n  - child\n- Heading");
+        assert_eq!(
+            document.source_bytes(),
+            b"- **bold**\n\n  - child\n\n- Heading"
+        );
         assert_eq!(document.text(), "- bold\n  - child\n- Heading");
         assert_eq!(
             document.projection().blocks()[1].kind,
@@ -3131,12 +3207,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             document.source_bytes(),
-            b"- **bold**\n  1. child\n- Heading"
+            b"- **bold**\n\n  1. child\n\n- Heading"
         );
     }
 
     #[test]
-    fn markdown_source_marker_change_in_large_document_projects_only_its_line() {
+    fn markdown_source_marker_change_in_large_document_projects_only_neighboring_lines() {
         let bytes = "unchanged line\n".repeat(20_000).into_bytes();
         let mut document =
             Document::from_bytes(bytes, Encoding::Utf8, Format::MarkdownSource).unwrap();
@@ -3149,7 +3225,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             prepared.summary().projection_work().projected_hard_lines(),
-            1
+            2
         );
         document.commit_model_transaction(prepared).unwrap();
         assert_eq!(
@@ -3185,10 +3261,10 @@ mod tests {
             }
             let original = bytes.clone();
             let mut document = Document::from_bytes(bytes, encoding, Format::Markdown).unwrap();
-            assert_eq!(document.text(), "Hé x\n");
+            assert_eq!(document.text(), "Hé x");
             assert_eq!(document.source_bytes(), original);
             document.replace(4..5, "y").unwrap();
-            assert_eq!(document.text(), "Hé y\n");
+            assert_eq!(document.text(), "Hé y");
             assert_eq!(document.projection().style_spans().len(), 1);
         }
     }
@@ -3824,7 +3900,7 @@ mod tests {
     #[test]
     fn markdown_headings_and_following_blocks_keep_source_backed_ids() {
         let mut document = Document::from_bytes(
-            b"# Head\nbody\nlast".to_vec(),
+            b"# Head\n\nbody\n\nlast".to_vec(),
             Encoding::Utf8,
             Format::Markdown,
         )

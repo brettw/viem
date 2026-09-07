@@ -357,6 +357,12 @@ pub(super) fn project(
                 builder.kind = frame.kind.clone();
                 builder.paragraph = frame.paragraph.clone();
                 builder.paragraph_style = frame.paragraph_style.clone();
+                builder.defaults = stack
+                    .iter()
+                    .rev()
+                    .find(|ancestor| paragraph(&ancestor.name))
+                    .map(|ancestor| ancestor.character.clone())
+                    .unwrap_or_default();
                 builder.named_character = frame.named_character.clone();
                 if let Some(range) = pending_space.take() {
                     let named =
@@ -673,6 +679,12 @@ pub(super) fn project(
                     builder.kind = frame.kind.clone();
                     builder.paragraph = frame.paragraph.clone();
                     builder.paragraph_style = frame.paragraph_style.clone();
+                    builder.defaults = stack
+                        .iter()
+                        .rev()
+                        .find(|ancestor| paragraph(&ancestor.name))
+                        .map(|ancestor| ancestor.character.clone())
+                        .unwrap_or_default();
                     builder.named_character = frame.named_character.clone();
                     if let Some(range) = pending_space.take() {
                         let named = std::mem::replace(

@@ -212,8 +212,8 @@ fn ranged_writes_copy_exact_source_lines_in_every_encoding_and_line_mode() {
 
     let cases = [
         Case {
-            source: "# one\r\n**two**\n_three_\r\nlast",
-            selected: "**two**\n_three_\r\n",
+            source: "# one\r\n**two**\n\n_three_\r\n\r\nlast",
+            selected: "**two**\n\n_three_\r\n\r\n",
             encoding: Encoding::Utf8,
             format: Format::Markdown,
             file_format: FileFormat::Dos,
@@ -236,8 +236,8 @@ fn ranged_writes_copy_exact_source_lines_in_every_encoding_and_line_mode() {
             lines: HardLineRange { start: 0, end: 1 },
         },
         Case {
-            source: "# a\r\n**b**\nlast",
-            selected: "**b**\n",
+            source: "# a\r\n**b**\n\nlast",
+            selected: "**b**\n\n",
             encoding: Encoding::Utf16Be,
             format: Format::Markdown,
             file_format: FileFormat::Dos,

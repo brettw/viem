@@ -9,7 +9,7 @@ use std::ops::Range;
 fn paragraph(name: &str) -> bool {
     matches!(name, "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
 }
-fn structural(name: &str) -> bool {
+pub(super) fn structural(name: &str) -> bool {
     paragraph(name)
         || matches!(
             name,
@@ -54,7 +54,7 @@ fn void(name: &str) -> bool {
             | "wbr"
     )
 }
-fn stack_at(tokens: &[Token], at: usize) -> Vec<&Token> {
+pub(super) fn stack_at(tokens: &[Token], at: usize) -> Vec<&Token> {
     let mut open: Vec<&Token> = Vec::new();
     for token in tokens.iter().take_while(|token| token.range.end <= at) {
         let TokenKind::Tag(tag) = &token.kind else {

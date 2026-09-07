@@ -785,6 +785,18 @@ final class EVCoreViewSession {
         return value
     }
 
+    func paragraphFlow() throws -> Bool {
+        var value: UInt32 = 0
+        try checked(evim_core_view_paragraph_flow(document.core, viewID, &value), operation: "Read paragraph flow")
+        return value != 0
+    }
+
+    func setParagraphFlow(_ enabled: Bool) throws {
+        var outcome = EvimCoreOutcomeV1(); outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        try checked(evim_core_view_set_paragraph_flow(document.core, viewID, enabled ? 1 : 0, &outcome), operation: "Change paragraph flow")
+        finish(outcome, composition: .cancelIfChanged)
+    }
+
     func lineMode() throws -> EVLineMode {
         var value: UInt32 = 0
         try checked(evim_core_view_line_mode(document.core, viewID, &value), operation: "Read line mode")

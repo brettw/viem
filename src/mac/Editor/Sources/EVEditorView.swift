@@ -260,11 +260,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         if let snapshot,
            let context = NSGraphicsContext.current?.cgContext
         {
-            if let paint { drawPaintBackgrounds(snapshot, paint: paint) }
+            let clusters = drawingClusters(in: dirtyRect, snapshot: snapshot)
+            if let paint { drawPaintBackgrounds(clusters, paint: paint) }
             drawSelection(snapshot, in: context)
-            drawText(snapshot, paint: paint, in: context)
-            if let paint { drawTextDecorations(snapshot, paint: paint) }
-            drawMarkedText(snapshot, in: context)
+            drawText(snapshot, clusters: clusters, paint: paint, in: context)
+            if let paint { drawTextDecorations(snapshot, clusters: clusters, paint: paint) }
+            drawMarkedText(snapshot, clusters: clusters, in: context)
             drawCustomCaret(snapshot, in: context)
         }
         drawCommandLineBand()
@@ -2432,16 +2433,49 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     // MARK: - Drawing
 
+    /// Long-line layout slices deliberately include offscreen shaping context.
+    /// Only ink, backgrounds, and decorations intersecting this paint damage
+    /// reach AppKit/Core Text; geometry and editing coverage remain intact.
+    func drawingClusters(in dirtyRect: NSRect, snapshot: EVLayoutExport) -> [EvimPositionedClusterV1] {
+        let origin = viewPoint(fromLayoutPoint: .zero)
+        let fringe = 1 / max(window?.backingScaleFactor ?? 1, 1)
+        let damage = dirtyRect.intersection(bounds)
+        guard !damage.isEmpty else { return [] }
+        let query = damage.offsetBy(dx: -origin.x, dy: -origin.y)
+            .insetBy(dx: -fringe, dy: -fringe)
+        let minX = Float(query.minX), maxX = Float(query.maxX)
+        let minY = Float(query.minY), maxY = Float(query.maxY)
+        return snapshot.clusters.filter { cluster in
+            let ink = cluster.ink_bounds
+            let cell = cluster.typographic_bounds
+            let left = min(ink.x, cell.x)
+            let top = min(ink.y, cell.y)
+            let right = max(ink.x + ink.width, cell.x + cell.width)
+            let bottom = max(ink.y + ink.height, cell.y + cell.height)
+            return left < maxX && minX < right && top < maxY && minY < bottom
+        }
+    }
+
     private func drawText(
         _ snapshot: EVLayoutExport,
+        clusters: [EvimPositionedClusterV1],
         paint: EVLayoutPaintExport?,
         in context: CGContext
     ) {
         guard let surface else { return }
-        for cluster in snapshot.clusters {
+        var colors: [UInt64: (NSColor, CGColor)] = [:]
+        for cluster in clusters {
             guard let row = row(for: cluster.row_index, in: snapshot.rows) else { continue }
-            let color = paint.map { resolvedTextPaint(for: cluster, paint: $0).foreground }
-                ?? resolvedColor(.textColor)
+            let run = paint.flatMap { paintRun(containing: cluster.text_start, in: $0) }
+            let key = run?.text_start ?? UInt64.max
+            let color: (NSColor, CGColor)
+            if let cached = colors[key] { color = cached }
+            else {
+                let native = paint.map { nativeForeground(run?.paint ?? $0.info.default_paint) }
+                    ?? resolvedColor(.textColor)
+                color = (native, native.cgColor)
+                colors[key] = color
+            }
             let baseline = viewPoint(
                 fromLayoutPoint: CGPoint(x: CGFloat(cluster.x), y: CGFloat(row.baseline))
             )
@@ -2450,11 +2484,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                    identifier: cluster.render_run.identifier,
                    metricsGeneration: cluster.render_run.metrics_generation,
                    atBaseline: baseline,
-                   color: color,
+                   color: color.1,
                    in: context
                ) == true
             if drewNative { continue }
-            drawFallback(cluster, row: row, color: color)
+            drawFallback(cluster, row: row, color: color.0)
         }
 
         if surface.showInvisibleCharactersEnabled {
@@ -2462,8 +2496,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    private func drawPaintBackgrounds(_ snapshot: EVLayoutExport, paint: EVLayoutPaintExport) {
-        for cluster in snapshot.clusters {
+    private func drawPaintBackgrounds(_ clusters: [EvimPositionedClusterV1], paint: EVLayoutPaintExport) {
+        for cluster in clusters {
             guard let background = resolvedTextPaint(for: cluster, paint: paint).background else {
                 continue
             }
@@ -2472,8 +2506,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    private func drawTextDecorations(_ snapshot: EVLayoutExport, paint: EVLayoutPaintExport) {
-        for decoration in textDecorationsForDrawing(in: snapshot, paint: paint) {
+    private func drawTextDecorations(_ snapshot: EVLayoutExport, clusters: [EvimPositionedClusterV1], paint: EVLayoutPaintExport) {
+        for decoration in textDecorationsForDrawing(in: snapshot, paint: paint, clusters: clusters) {
             decoration.color.setFill()
             decoration.rect.fill()
         }
@@ -2481,11 +2515,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     func textDecorationsForDrawing(
         in snapshot: EVLayoutExport,
-        paint: EVLayoutPaintExport? = nil
+        paint: EVLayoutPaintExport? = nil,
+        clusters: [EvimPositionedClusterV1]? = nil
     ) -> [EVTextDecoration] {
         guard let paint = paint ?? exactLayoutPaint(for: snapshot) else { return [] }
         var result: [EVTextDecoration] = []
-        for cluster in snapshot.clusters {
+        for cluster in clusters ?? snapshot.clusters {
             guard let row = row(for: cluster.row_index, in: snapshot.rows) else { continue }
             let resolved = resolvedTextPaint(for: cluster, paint: paint)
             let thickness: CGFloat = 1
@@ -2581,7 +2616,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private func drawSelection(_ snapshot: EVLayoutExport, in _: CGContext) {
         let color = EVThemeStore.shared.theme.selection.color
         color.setFill()
-        for rect in selectionRectsForDrawing(in: snapshot) {
+        for rect in selectionRectsForDrawing(in: snapshot) where rect.intersects(bounds) {
             rect.fill()
         }
     }
@@ -2607,7 +2642,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             && left.metrics_generation == right.metrics_generation
     }
 
-    private func drawMarkedText(_ snapshot: EVLayoutExport, in _: CGContext) {
+    private func drawMarkedText(_ snapshot: EVLayoutExport, clusters: [EvimPositionedClusterV1], in _: CGContext) {
         guard let surface else { return }
         guard case .document? = markedTextTarget,
               let overlay = surface.compositionOverlay,
@@ -2619,7 +2654,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             resolvedColor(.selectedTextBackgroundColor)
                 .withAlphaComponent(0.34)
                 .setFill()
-            for cluster in snapshot.clusters
+            for cluster in clusters
                 where selected.lowerBound < Int(cluster.text_end)
                     && Int(cluster.text_start) < selected.upperBound
             {
@@ -2629,7 +2664,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
         resolvedColor(.controlAccentColor).setFill()
         let thickness = max(1.0 / (window?.backingScaleFactor ?? 1), 1)
-        for cluster in snapshot.clusters
+        for cluster in clusters
             where marked.lowerBound < Int(cluster.text_end)
                 && Int(cluster.text_start) < marked.upperBound
         {
@@ -2700,20 +2735,34 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
         color.setFill()
         rect.fill()
-        guard let cluster = geometry.cluster,
-              let row = row(for: cluster.row_index, in: snapshot.rows)
-        else { return }
-        let baseline = viewPoint(
-            fromLayoutPoint: CGPoint(x: CGFloat(cluster.x), y: CGFloat(row.baseline))
-        )
-        _ = surface.session?.provider.renderRegistry.draw(
-            identifier: cluster.render_run.identifier,
-            metricsGeneration: cluster.render_run.metrics_generation,
-            atBaseline: baseline,
-            color: EVCaretAppearanceResolver.glyphColor(contrastingWith: color),
-            in: context,
-            clip: rect
-        )
+        // Ink can cross a caret cell, especially with italics, kerning, and
+        // tightly spaced rows. The fill covers that ink too, so redraw every
+        // intersecting fragment, not just the character associated with the
+        // caret. Keep the logical cell unchanged and allow one device pixel
+        // beyond outline bounds when deciding which antialiased ink to draw.
+        let glyphColor = EVCaretAppearanceResolver.glyphColor(contrastingWith: color)
+        for cluster in caretRedrawClusters(in: rect, snapshot: snapshot) {
+            guard let row = row(for: cluster.row_index, in: snapshot.rows) else { continue }
+            let baseline = viewPoint(
+                fromLayoutPoint: CGPoint(x: CGFloat(cluster.x), y: CGFloat(row.baseline))
+            )
+            _ = surface.session?.provider.renderRegistry.draw(
+                identifier: cluster.render_run.identifier,
+                metricsGeneration: cluster.render_run.metrics_generation,
+                atBaseline: baseline,
+                color: glyphColor,
+                in: context,
+                clip: rect
+            )
+        }
+    }
+
+    func caretRedrawClusters(in rect: NSRect, snapshot: EVLayoutExport) -> [EvimPositionedClusterV1] {
+        let fringe = 1 / max(window?.backingScaleFactor ?? 1, 1)
+        return snapshot.clusters.filter {
+            $0.flags & UInt32(EVIM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0
+                && viewRect($0.ink_bounds).insetBy(dx: -fringe, dy: -fringe).intersects(rect)
+        }
     }
 
     private func associatedItemGeometry(_ snapshot: EVLayoutExport) -> (
@@ -3046,15 +3095,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             .foregroundColor: NSColor.tertiaryLabelColor,
         ]
         for row in snapshot.rows where row.flags & UInt32(EVIM_VISUAL_ROW_WRAPS_TO_NEXT) == 0 {
-            "¶".draw(
-                at: viewPoint(
-                    fromLayoutPoint: NSPoint(
-                        x: CGFloat(row.paragraph_content_x + row.width) + 4,
-                        y: CGFloat(row.baseline - row.ascent)
-                    )
-                ),
-                withAttributes: attributes
-            )
+            let point = viewPoint(fromLayoutPoint: NSPoint(
+                x: CGFloat(row.paragraph_content_x + row.width) + 4,
+                y: CGFloat(row.baseline - row.ascent)))
+            guard NSRect(origin: point, size: NSSize(width: 14, height: 14)).intersects(bounds) else { continue }
+            "¶".draw(at: point, withAttributes: attributes)
         }
     }
 

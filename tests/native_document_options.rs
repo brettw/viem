@@ -92,7 +92,7 @@ fn format_switch_preserves_source_and_anchors_between_distant_markers() {
     };
     document.commit_model_transaction(prepared).unwrap();
     assert_eq!(document.source_bytes(), original);
-    assert_eq!(document.text(), "Heading\nbold middle tail\n");
+    assert_eq!(document.text(), "Heading\nbold middle tail");
     assert_eq!(mapped.offset(), document.text().find("middle").unwrap());
     assert!(document.undo());
     assert_eq!(document.format(), Format::PlainText);

@@ -1728,6 +1728,16 @@ so the original content remains recognizable. Normal and Visual modes use the
 same block treatment; selection painting must still make the active endpoint
 unambiguous.
 
+The block redraw includes ink from every intersecting shaped fragment, including
+neighboring italic overhangs and ink from tightly spaced rows. The overlap query
+allows a device-pixel antialiasing fringe around reported outline bounds. The
+block's logical selection geometry does not expand to those ink bounds.
+Native painting culls clusters against the damaged visible region using ink
+and typographic bounds, including the antialiasing fringe. Offscreen context
+retained for shaping a long paragraph must not be redrawn on every caret blink.
+Paint colors are resolved once per run; cached colors preserve transparency,
+synthetic stroke, and native color-glyph behavior.
+
 The Replace caret is custom rendered as a solid caret-color underline or low
 horizontal bar spanning the same associated-item geometry. An empty hard line,
 empty document, or end-of-line position has explicit block and underline
@@ -2332,6 +2342,12 @@ document behind the prompt. Command output replaces the prompt with selectable,
 read-only text and an explicit close button. A new `:` replaces that output with
 an editable prompt; ordinary editor input dismisses the output.
 
+In Visual Character, Line, or Block mode, `:` opens an Ex prompt prefilled with
+the selected logical hard-line range. The range is bound to that document
+revision; an intervening edit in another view makes execution stale rather
+than silently applying the old numeric addresses. Escape changes no source,
+and `gv` can restore the remembered selection.
+
 `:e`/`:edit` replaces the active pane after the usual unsaved-change review.
 The case-sensitive `:E` opens a document in a new native window. `:pwd` displays
 the working directory; `:cd`/`:chdir` changes the application's directory for
@@ -2354,7 +2370,7 @@ Required Ex commands and common unambiguous abbreviations are:
   `:close`/`:clo`, `:write`, `:saveas`, `:quit`, `:qall`, `:wq`,
   `:xit`, `:wall`, and force `!` variants where meaningful;
 - editing: `:undo`, `:redo`, `:delete`, `:yank`, `:put`, `:join`,
-  `:copy`, `:move`, and `:normal` for the supported Normal command subset;
+  `:copy`, `:move`, `:sort`, and `:normal` for the supported Normal command subset;
 - search/change: `:substitute` with ranges and repeat flags, `:&`, and `:~`;
 - navigation/info: numeric line addresses, `:goto`, `:marks`, `:registers`,
   `:jumps`, and `:pwd`; and
@@ -2377,6 +2393,25 @@ presentation are frontend responsibilities driven by typed core requests and
 results. Write commands serialize the authoritative source artifact, preserving
 unchanged source slices exactly; they never export a newly normalized formatted
 document as a substitute for the source.
+
+`:[range]sor[t][!]` defaults to all hard lines. It supports `i` (Unicode
+case-insensitive comparison), `u` (remove duplicate full lines), mutually
+exclusive `n`/`x`/`o`/`b` numeric keys, and an optional Regex v1 pattern. The
+pattern skips through its match by default; `r` selects the match itself as the
+key, and `//` reuses the last search without changing search history. Pattern
+matching uses `ignorecase` but not `smartcase`. Missing numeric keys sort first;
+numeric keys are signed, saturating 64-bit integers. Ascending order is stable;
+`!` reverses it, including equal-key runs. Unique keeps the first resulting full
+line under the selected case policy. `f`, locale `l`, count/register arguments,
+and command chaining are not supported.
+
+Sorting is one verified source permutation and undo unit; original encoding,
+final terminator, and delimiter spellings are retained. Source-visible formats
+sort literal displayed source rows and reparse their styling. WYSIWYG sorting
+supports complete Markdown paragraphs with one hard line and balanced sibling
+HTML `p`/heading elements, retaining each paragraph's source syntax and styles.
+RTF sorting and ambiguous or split rich paragraph owners return an unsupported
+result without changing source.
 
 ### Stacked document views
 
@@ -2586,6 +2621,7 @@ The menu hierarchy is:
   - separator
   - Word Wrap
   - Wrap at Word Boundaries
+  - Flow Source Paragraphs
   - Show Invisible Characters
   - separator
   - Zoom In
@@ -2638,6 +2674,13 @@ reflects `linebreak` and is disabled when wrapping is off. Resizing a wrapped
 view reflows automatically and has no menu command. `Line Endings` is a radio
 group over the buffer's `fileformat` value and follows the verified conversion
 rules in "Changing `fileformat`".
+
+`Flow Source Paragraphs` is a portable per-view option, initially off, available
+in Markdown Source and HTML Source. It suppresses nonstructural physical line
+breaks in layout while retaining source characters, editing coordinates, and
+serialization. Semantic paragraph boundaries and preformatted code retain
+their breaks. Toggling it changes only view layout; it does not change document
+history or other views of the same buffer.
 
 Menu validation comes from current core state and pipeline capabilities.
 Actions that cannot apply to the current selection or adapter are disabled.
@@ -3753,7 +3796,15 @@ line-ending controls because its grammar owns those interpretations.
 The two Markdown views share one physical Markdown serialization:
 
 - **Markdown WYSIWYG** is the existing projection with formatting delimiters
-  hidden.
+  hidden. Ordinary source line endings within a prose paragraph become spaces;
+  blank source lines separate paragraphs. Each pair of source endings is one
+  semantic paragraph separator; repeated pairs retain editable empty paragraphs.
+  An unmatched terminal source ending is trivia, including after a closing code
+  fence. Two-space and backslash hard breaks remain within their paragraph;
+  endings inside preformatted code remain content. Newly authored paragraph
+  boundaries use two current-fileformat endings. Splitting heading or list text
+  may add a supporting ending to preserve a following paragraph. Untouched
+  source bytes remain exact.
 - **Markdown Source** preserves every decoded source character, including formatting
   delimiters, in editable display text. Parsed styles apply to the associated
   source spans, including heading and emphasis delimiters. Editing a delimiter
@@ -3777,7 +3828,10 @@ The two HTML views similarly share one physical HTML serialization:
 
 - **HTML WYSIWYG** displays the interpreted document. Typed `<`, `&`, quotes,
   and other syntax-sensitive characters are encoded as appropriate HTML text
-  or entity syntax and must not accidentally create markup.
+  or entity syntax and must not accidentally create markup. Nonstructural
+  source line endings collapse with HTML whitespace. Return and open-below at
+  the end of a document retain editable blank rows using `<br>` where needed;
+  later input, Backspace, and undo preserve those semantic boundaries.
 - **HTML Source** displays every decoded source character, including tags,
   comments, attributes, entities, and uninterpreted script/style contents.
   Encoding and logical line-ending normalization still use the shared pipeline;
@@ -3803,7 +3857,9 @@ Recovered semantic paragraph styles contribute character defaults and named
 style identity to their source spans. Paragraph spacing and alignment remain
 editable source properties and take full effect in WYSIWYG; independent HTML
 paragraphs on one physical source line cannot each align that same displayed
-line differently. Source view does not invent additional visible line breaks.
+line differently. With Flow Source Paragraphs enabled, nonstructural physical
+breaks flow within the corresponding structural presentation paragraph. The
+default source view does not invent additional visible line breaks.
 
 ### Authored-input assistance
 
@@ -3851,6 +3907,14 @@ overrides, without including automatic source-syntax colors. Formatting with a
 selection continues to modify that exact range. Bold, Italic, and other
 supported character actions work in RTF as well as the compatible HTML and
 Markdown views.
+
+Turning off an inherited inline property at the end of its element exits that
+formatting context. In a source-visible view the caret moves over the matching
+closing markup; in a formatted view its visible boundary remains unchanged and
+the insertion context moves outside the element. At an interior text position,
+the action retains that position and splits formatting around subsequent input
+rather than skipping the remaining text. Nested unrelated formatting remains
+in effect. Toggling a property without typing does not change source or history.
 
 Marked text remains an IME overlay until commit, when its text and pending
 formatting become one transaction. In Replace mode, Backspace restores the

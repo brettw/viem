@@ -23,6 +23,22 @@ fn encoded(text: &str, encoding: Encoding) -> Vec<u8> {
     }
 }
 
+fn paragraph_source(text: &str, format: Format) -> String {
+    if format == Format::Markdown {
+        text.replace('\r', "\r\r")
+    } else {
+        text.to_owned()
+    }
+}
+
+fn paragraph_lines(lines: &[&str], format: Format) -> String {
+    lines.join(if format == Format::Markdown {
+        "\r\r"
+    } else {
+        "\r"
+    })
+}
+
 fn request(
     document: &Document,
     operation: HardLineTransfer,
@@ -58,9 +74,10 @@ fn mac_copy_preserves_markdown_source_literal_lf_and_all_encodings() {
         Encoding::Utf16Be,
     ] {
         for format in [Format::PlainText, Format::Markdown] {
-            let source = "# Hé\r**one**\nraw\r_last_";
-            let expected_source = "**one**\nraw\r# Hé\r**one**\nraw\r_last_";
-            let original = encoded(source, encoding);
+            let source = paragraph_source("# Hé\r**one**\nraw\r_last_", format);
+            let expected_source =
+                paragraph_source("**one**\nraw\r# Hé\r**one**\nraw\r_last_", format);
+            let original = encoded(&source, encoding);
             let mut document = Document::from_bytes_with_file_format(
                 original.clone(),
                 encoding,
@@ -79,11 +96,11 @@ fn mac_copy_preserves_markdown_source_literal_lf_and_all_encodings() {
             assert_eq!(prepared.summary().source_patches().len(), 1);
             assert_eq!(
                 apply_patches(&original, &prepared),
-                encoded(expected_source, encoding)
+                encoded(&expected_source, encoding)
             );
             document.commit_model_transaction(prepared).unwrap();
 
-            assert_eq!(document.source_bytes(), encoded(expected_source, encoding));
+            assert_eq!(document.source_bytes(), encoded(&expected_source, encoding));
             assert_eq!(document.line_count(), 4);
             let all = document
                 .hard_line_snapshot()
@@ -117,7 +134,7 @@ fn mac_copy_preserves_markdown_source_literal_lf_and_all_encodings() {
 #[test]
 fn copy_final_unterminated_line_synthesizes_only_the_required_boundary() {
     let mut document = Document::from_bytes_with_file_format(
-        b"# one\r**two**".to_vec(),
+        b"# one\r\r**two**".to_vec(),
         Encoding::Utf8,
         Format::Markdown,
         FileFormat::Mac,
@@ -129,16 +146,16 @@ fn copy_final_unterminated_line_synthesizes_only_the_required_boundary() {
     assert_eq!(prepared.summary().source_patches().len(), 1);
     let patch = &prepared.summary().source_patches()[0];
     assert_eq!(patch.range(), 0..0);
-    assert_eq!(patch.replacement(), b"**two**\r");
+    assert_eq!(patch.replacement(), b"**two**\r\r");
     document.commit_model_transaction(prepared).unwrap();
-    assert_eq!(document.source_bytes(), b"**two**\r# one\r**two**");
+    assert_eq!(document.source_bytes(), b"**two**\r\r# one\r\r**two**");
     assert_eq!(document.text(), "two\none\ntwo");
 }
 
 #[test]
 fn copy_to_eof_rotates_an_existing_separator_and_handles_trailing_empty_lines() {
     let mut unterminated = Document::from_bytes_with_file_format(
-        b"# one\r**two**".to_vec(),
+        b"# one\r\r**two**".to_vec(),
         Encoding::Utf8,
         Format::Markdown,
         FileFormat::Mac,
@@ -147,13 +164,13 @@ fn copy_to_eof_rotates_an_existing_separator_and_handles_trailing_empty_lines() 
     let prepared = unterminated
         .prepare_model_request(request(&unterminated, HardLineTransfer::Copy, 0..1, 2))
         .unwrap();
-    assert_eq!(prepared.summary().source_patches()[0].range(), 13..13);
+    assert_eq!(prepared.summary().source_patches()[0].range(), 14..14);
     assert_eq!(
         prepared.summary().source_patches()[0].replacement(),
-        b"\r# one"
+        b"\r\r# one"
     );
     unterminated.commit_model_transaction(prepared).unwrap();
-    assert_eq!(unterminated.source_bytes(), b"# one\r**two**\r# one");
+    assert_eq!(unterminated.source_bytes(), b"# one\r\r**two**\r\r# one");
 
     let mut trailing = Document::from_bytes_with_file_format(
         b"a\r".to_vec(),
@@ -172,7 +189,7 @@ fn copy_to_eof_rotates_an_existing_separator_and_handles_trailing_empty_lines() 
 
 #[test]
 fn move_final_unterminated_line_earlier_uses_two_local_patches() {
-    let original = b"# a\r**b**\nraw".to_vec();
+    let original = b"# a\r\r**b**\nraw".to_vec();
     let mut document = Document::from_bytes_with_file_format(
         original.clone(),
         Encoding::Utf8,
@@ -188,14 +205,14 @@ fn move_final_unterminated_line_earlier_uses_two_local_patches() {
     assert_eq!(prepared.summary().source_patches()[0].range(), 0..0);
     assert_eq!(
         prepared.summary().source_patches()[0].replacement(),
-        b"**b**\nraw\r"
+        b"**b**\nraw\r\r"
     );
-    assert_eq!(prepared.summary().source_patches()[1].range(), 3..13);
+    assert_eq!(prepared.summary().source_patches()[1].range(), 3..14);
     assert_eq!(prepared.summary().source_patches()[1].replacement(), b"");
-    assert_eq!(apply_patches(&original, &prepared), b"**b**\nraw\r# a");
+    assert_eq!(apply_patches(&original, &prepared), b"**b**\nraw\r\r# a");
 
     document.commit_model_transaction(prepared).unwrap();
-    assert_eq!(document.source_bytes(), b"**b**\nraw\r# a");
+    assert_eq!(document.source_bytes(), b"**b**\nraw\r\r# a");
     assert_eq!(document.text(), "b\nraw\na");
     assert_eq!(document.line_count(), 2);
     assert_eq!(document.projection().hard_line_id(0), Some(moved_id));
@@ -212,9 +229,9 @@ fn move_to_eof_preserves_syntax_and_global_final_line_state() {
         Encoding::Utf16Be,
     ] {
         for format in [Format::PlainText, Format::Markdown] {
-            let source = "# a\r**bé**\r_last_";
-            let expected = "**bé**\r_last_\r# a";
-            let original = encoded(source, encoding);
+            let source = paragraph_source("# a\r**bé**\r_last_", format);
+            let expected = paragraph_source("**bé**\r_last_\r# a", format);
+            let original = encoded(&source, encoding);
             let mut document = Document::from_bytes_with_file_format(
                 original.clone(),
                 encoding,
@@ -229,10 +246,10 @@ fn move_to_eof_preserves_syntax_and_global_final_line_state() {
             assert_eq!(prepared.summary().source_patches().len(), 2);
             assert_eq!(
                 apply_patches(&original, &prepared),
-                encoded(expected, encoding)
+                encoded(&expected, encoding)
             );
             document.commit_model_transaction(prepared).unwrap();
-            assert_eq!(document.source_bytes(), encoded(expected, encoding));
+            assert_eq!(document.source_bytes(), encoded(&expected, encoding));
             assert_eq!(document.projection().hard_line_id(2), Some(first_id));
             assert_eq!(document.history_status().node_count, 2);
             assert!(document.undo());
@@ -386,7 +403,12 @@ fn every_valid_gap_reorders_source_lines_without_regeneration() {
             if trailing_break {
                 lines.push("");
             }
-            let source = lines.join("\r");
+            let separator = if format == Format::Markdown {
+                "\r\r"
+            } else {
+                "\r"
+            };
+            let source = lines.join(separator);
             let line_count = lines.len();
 
             for start in 0..line_count {
@@ -403,10 +425,10 @@ fn every_valid_gap_reorders_source_lines_without_regeneration() {
                         )
                         .unwrap();
                         copy.transfer_hard_lines(HardLineTransfer::Copy, start..end, destination)
-                            .unwrap();
+                            .unwrap_or_else(|error| panic!("copy {start}..{end} to {destination}, {format:?}, trailing={trailing_break}: {error:?}"));
                         assert_eq!(
                             copy.source_bytes(),
-                            expected_copy.join("\r").as_bytes(),
+                            paragraph_lines(&expected_copy, format).as_bytes(),
                             "copy {start}..{end} to {destination}, {format:?}, trailing={trailing_break}"
                         );
 
@@ -468,10 +490,10 @@ fn every_valid_gap_reorders_source_lines_without_regeneration() {
                         .unwrap();
                         moved_document
                             .transfer_hard_lines(HardLineTransfer::Move, start..end, destination)
-                            .unwrap();
+                            .unwrap_or_else(|error| panic!("move {start}..{end} to {destination}, {format:?}, trailing={trailing_break}: {error:?}"));
                         assert_eq!(
                             moved_document.source_bytes(),
-                            expected_move.join("\r").as_bytes(),
+                            paragraph_lines(&expected_move, format).as_bytes(),
                             "move {start}..{end} to {destination}, {format:?}, trailing={trailing_break}"
                         );
                     }
@@ -484,7 +506,7 @@ fn every_valid_gap_reorders_source_lines_without_regeneration() {
 #[test]
 fn mixed_dos_delimiter_spellings_are_carried_without_normalization() {
     let mut copy = Document::from_bytes_with_file_format(
-        b"# a\r\n**b**\n_c_".to_vec(),
+        b"# a\r\n\r\n**b**\n\n_c_".to_vec(),
         Encoding::Utf8,
         Format::Markdown,
         FileFormat::Dos,
@@ -492,10 +514,10 @@ fn mixed_dos_delimiter_spellings_are_carried_without_normalization() {
     .unwrap();
     copy.transfer_hard_lines(HardLineTransfer::Copy, 1..2, 0)
         .unwrap();
-    assert_eq!(copy.source_bytes(), b"**b**\n# a\r\n**b**\n_c_");
+    assert_eq!(copy.source_bytes(), b"**b**\n\n# a\r\n\r\n**b**\n\n_c_");
 
     let mut moved = Document::from_bytes_with_file_format(
-        b"# a\r\n**b**\n_c_".to_vec(),
+        b"# a\r\n\r\n**b**\n\n_c_".to_vec(),
         Encoding::Utf8,
         Format::Markdown,
         FileFormat::Dos,
@@ -504,5 +526,54 @@ fn mixed_dos_delimiter_spellings_are_carried_without_normalization() {
     moved
         .transfer_hard_lines(HardLineTransfer::Move, 0..1, 3)
         .unwrap();
-    assert_eq!(moved.source_bytes(), b"**b**\n_c_\r\n# a");
+    assert_eq!(moved.source_bytes(), b"**b**\n\n_c_\r\n\r\n# a");
+}
+
+#[test]
+fn markdown_transfers_complete_wrapped_paragraphs_and_explicit_hard_lines() {
+    for (source, expected, line) in [
+        (
+            "First soft\ncontinued\n\nSecond",
+            "First soft continued\nSecond\nFirst soft continued",
+            0,
+        ),
+        ("**one**\\\ntwo\n\nthird", "one\ntwo\nthird\none", 0),
+    ] {
+        let mut document =
+            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
+                .unwrap();
+        let ids = (0..document.line_count())
+            .map(|index| document.projection().hard_line_id(index).unwrap())
+            .collect::<Vec<_>>();
+        let count = document.line_count();
+        let prepared = document
+            .prepare_model_request(request(
+                &document,
+                HardLineTransfer::Copy,
+                line..line + 1,
+                count,
+            ))
+            .unwrap();
+        assert_eq!(prepared.summary().source_patches().len(), 1);
+        assert_eq!(
+            prepared.summary().source_patches()[0].range(),
+            source.len()..source.len()
+        );
+        document.commit_model_transaction(prepared).unwrap();
+        assert_eq!(document.text(), expected);
+        for (index, id) in ids.iter().enumerate() {
+            assert_eq!(document.projection().hard_line_id(index), Some(*id));
+        }
+        assert_ne!(document.projection().hard_line_id(count), Some(ids[line]));
+        let reopened =
+            Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Markdown)
+                .unwrap();
+        assert_eq!(reopened.text(), document.text());
+        assert_eq!(
+            reopened.projection().style_spans(),
+            document.projection().style_spans()
+        );
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
 }

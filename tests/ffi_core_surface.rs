@@ -1510,7 +1510,7 @@ fn native_paragraph_style_request_is_revision_and_selection_checked() {
 
 #[test]
 fn native_format_encoding_and_list_requests_validate_exact_identity() {
-    let core = create_core(b"__alpha__\nbeta", EvimDocumentOptions::default());
+    let core = create_core(b"__alpha__\n\nbeta", EvimDocumentOptions::default());
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, _) = add_test_view(&core, provider.as_mut());
     let state = document_state(&core);
@@ -1533,7 +1533,7 @@ fn native_format_encoding_and_list_requests_validate_exact_identity() {
             &core,
             changed.document_revision
         ),
-        b"__alpha__\nbeta"
+        b"__alpha__\n\nbeta"
     );
     assert_eq!(
         copy_core_bytes(
@@ -5782,7 +5782,7 @@ fn readonly_ex_error_has_a_distinct_abi_status_and_no_host_write_effect() {
 #[test]
 fn ranged_source_export_preserves_delimiters_and_rejects_stale_identity() {
     let core = create_core(
-        b"first\r\n**second**\r\nlast",
+        b"first\r\n\r\n**second**\r\n\r\nlast",
         EvimDocumentOptions {
             format: EVIM_FORMAT_MARKDOWN,
             ..EvimDocumentOptions::default()
@@ -5807,7 +5807,7 @@ fn ranged_source_export_preserves_delimiters_and_rejects_stale_identity() {
         },
         EvimStatus::BufferTooSmall
     );
-    assert_eq!(required, b"**second**\r\n".len() as u64);
+    assert_eq!(required, b"**second**\r\n\r\n".len() as u64);
     assert_eq!(complete, 0);
     let mut bytes = vec![0; required as usize];
     assert_eq!(
@@ -5826,7 +5826,7 @@ fn ranged_source_export_preserves_delimiters_and_rejects_stale_identity() {
         },
         EvimStatus::Ok
     );
-    assert_eq!(bytes, b"**second**\r\n");
+    assert_eq!(bytes, b"**second**\r\n\r\n");
     assert_eq!(
         unsafe {
             evim_core_copy_hard_line_source_bytes(

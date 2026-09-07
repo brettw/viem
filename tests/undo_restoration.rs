@@ -49,7 +49,7 @@ fn grouped_history_retains_ordered_exact_transactions_without_copying_patch_payl
 
 #[test]
 fn history_navigation_restores_exact_source_and_interpretation_metadata() {
-    let original = b"**one**\r\ntwo".to_vec();
+    let original = b"**one**\r\n\r\ntwo".to_vec();
     let mut document = Document::from_bytes_with_file_format(
         original.clone(),
         Encoding::Utf8,

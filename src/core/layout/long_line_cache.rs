@@ -50,6 +50,9 @@ impl LongLineCheckpointCache {
         range: Range<usize>,
         at: usize,
     ) -> Option<LongLineLayoutCheckpoint> {
+        if at < range.start {
+            return None;
+        }
         self.entries
             .range(range.start..=at)
             .next_back()
@@ -70,7 +73,7 @@ impl LongLineCheckpointCache {
             self.entries.remove(&oldest);
         }
     }
-    pub(crate) fn rebase(&mut self, document: &Document, map: &PositionMap) {
+    pub(crate) fn rebase(&mut self, document: &Document, map: &PositionMap, flow: bool) {
         self.entries.retain(|_, entry| {
             let Some(dependency) = &mut entry.dependency else {
                 return false;
@@ -99,14 +102,16 @@ impl LongLineCheckpointCache {
                 return false;
             }
             let checkpoint = &mut entry.checkpoint;
-            if document.line_start(checkpoint.hard_line_index)
-                != Some(checkpoint.hard_line_range.start)
-            {
-                return false;
-            }
-            let Some(end) = document.line_end(checkpoint.hard_line_index) else {
+            let Some(line) = document
+                .projection()
+                .presentation_line_range(checkpoint.hard_line_index, flow)
+            else {
                 return false;
             };
+            if line.start != checkpoint.hard_line_range.start {
+                return false;
+            }
+            let end = line.end;
             if end < prefix.end().offset() {
                 return false;
             }

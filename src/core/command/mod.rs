@@ -18,6 +18,7 @@ mod command_line_edit;
 mod input_assistance;
 mod line_mode;
 mod registers;
+mod sort;
 mod typing_style;
 pub use command_line_edit::{CommandLineEditAction, CommandLineEditRequest, CommandLineSnapshot};
 pub use line_mode::{LineLocation, LineMode};
@@ -740,6 +741,7 @@ struct CommandLineState {
     return_mode: Mode,
     count: usize,
     operator: Option<PendingOperator>,
+    visual_range_revision: Option<Revision>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4557,7 +4559,8 @@ impl CommandInterpreter {
         let controller_only = matches!(
             key,
             Key::Char(
-                '"' | 'g'
+                '"' | ':'
+                    | 'g'
                     | 'z'
                     | 'i'
                     | 'a'
@@ -4620,6 +4623,7 @@ impl CommandInterpreter {
         let explicit_count = self.count.take();
         let count = explicit_count.unwrap_or(1).max(1);
         let output = match key {
+            Key::Char(':') => self.enter_visual_ex(document),
             Key::Char('"') => {
                 self.register_pending = true;
                 CommandOutput::pending()
@@ -5615,6 +5619,7 @@ impl CommandInterpreter {
         let explicit_count = self.count.take();
         let count = explicit_count.unwrap_or(1).max(1);
         match key {
+            Key::Char(':') => Ok(self.enter_visual_ex(document)),
             Key::Char('g') => {
                 self.pending = Pending::G {
                     count,
@@ -9266,6 +9271,7 @@ impl CommandInterpreter {
         let explicit_count = self.count.take();
         let count = explicit_count.unwrap_or(1).max(1);
         match key {
+            Key::Char(':') => Ok(self.enter_visual_ex(document)),
             Key::Char('"') => {
                 self.register_pending = true;
                 Ok(CommandOutput::pending())
@@ -11055,7 +11061,8 @@ impl CommandInterpreter {
                 for step in &program.steps {
                     let next = match step {
                         EditSessionStep::TypingStyle(value) => {
-                            self.typing_style = value.clone();
+                            self.typing_style = Default::default();
+                            self.set_typing_properties(document, value.values.clone())?;
                             CommandOutput::complete()
                         }
                         EditSessionStep::AssistedText(value) => {
@@ -12280,6 +12287,39 @@ impl CommandInterpreter {
             .operator = Some(operator);
     }
 
+    fn enter_visual_ex(&mut self, document: &Document) -> CommandOutput {
+        let (anchor, active) = if self.mode == Mode::VisualBlock {
+            let Some(memory) = self.visual_block_memory() else {
+                return CommandOutput::unsupported("Visual Block has no resolved selection");
+            };
+            (memory.anchor, memory.active)
+        } else {
+            (self.visual_anchor.unwrap_or(self.cursor), self.cursor)
+        };
+        let Some(first) = document.hard_line_at_offset(anchor.min(active)) else {
+            return CommandOutput::unsupported("Visual selection has no starting hard line");
+        };
+        let Some(last) = document.hard_line_at_offset(anchor.max(active)) else {
+            return CommandOutput::unsupported("Visual selection has no ending hard line");
+        };
+        // Ex addresses complete logical hard lines, including when the source
+        // selection was characterwise or a rectangle of wrapped visual rows.
+        // Leaving Visual records its stable reselect memory before the prompt.
+        if self.mode == Mode::VisualBlock {
+            self.leave_visual_block();
+        } else {
+            self.leave_visual();
+        }
+        self.enter_command_line(CommandLineKind::Ex);
+        let state = self.command_line_state.as_mut().unwrap();
+        state.buffer.set(format!("{},{}", first + 1, last + 1));
+        state.visual_range_revision = Some(document.revision());
+        CommandOutput {
+            mode_changed: true,
+            ..CommandOutput::pending()
+        }
+    }
+
     fn enter_command_line(&mut self, kind: CommandLineKind) {
         let return_mode = self.mode;
         let requested_register = self.requested_register;
@@ -12290,6 +12330,7 @@ impl CommandInterpreter {
             return_mode,
             count: 1,
             operator: None,
+            visual_range_revision: None,
         });
         self.clear_pending();
         self.requested_register = requested_register;
@@ -12385,6 +12426,18 @@ impl CommandInterpreter {
                     return Ok(CommandOutput::unsupported("command line"));
                 };
                 self.mode = state.return_mode;
+                if state
+                    .visual_range_revision
+                    .is_some_and(|revision| revision != document.revision())
+                {
+                    return Ok(CommandOutput {
+                        status: CommandStatus::Error(
+                            "Visual Ex range is stale; reselect the range".into(),
+                        ),
+                        mode_changed: true,
+                        ..CommandOutput::complete()
+                    });
+                }
                 match state.kind {
                     CommandLineKind::SearchForward | CommandLineKind::SearchBackward => {
                         let direction = match state.kind {
@@ -12667,6 +12720,7 @@ impl CommandInterpreter {
                     &document.hard_line_snapshot(),
                     offset,
                 );
+                self.boundary_affinity = BoundaryAffinity::Downstream;
             }
             Some(ExNavigation::HistoryRestoration) => {
                 self.cursor = normalize_normal_cursor(
@@ -12693,7 +12747,12 @@ impl CommandInterpreter {
         }
         CommandOutput {
             status: CommandStatus::Complete,
-            cursor_moved: self.cursor != old_cursor,
+            // An explicit post-transaction cursor is authoritative even if its
+            // ordinal equals the old one. Otherwise the coordinator would map
+            // it again through the edit (for example :sort starting at zero).
+            cursor_moved: self.cursor != old_cursor
+                || (outcome.document_changed
+                    && matches!(outcome.navigation, Some(ExNavigation::TextOffset(_)))),
             document_changed: outcome.document_changed,
             mode_changed: true,
             history_navigation: matches!(
@@ -15546,9 +15605,17 @@ mod tests {
         super::nth_line_start(&document.hard_line_snapshot(), one_based)
     }
 
+    fn forced_mac_source(text: &str, format: Format) -> Vec<u8> {
+        if format == Format::Markdown {
+            text.replace('\r', "\r\r").into_bytes()
+        } else {
+            text.as_bytes().to_vec()
+        }
+    }
+
     fn forced_mac_document(format: Format, encoding: Encoding) -> Document {
         Document::from_bytes_with_file_format(
-            b"a\rb\nc".to_vec(),
+            forced_mac_source("a\rb\nc", format),
             encoding,
             format,
             FileFormat::Mac,
@@ -16985,7 +17052,7 @@ mod tests {
                 keys(&mut commands, &mut document, "dd");
                 assert_eq!(document.text(), "b\nc", "{format:?} {encoding:?}: first dd");
                 assert_eq!(document.line_count(), 1);
-                assert_eq!(document.source_bytes(), b"b\nc");
+                assert_eq!(document.source_bytes(), forced_mac_source("b\nc", format));
                 assert_eq!(commands.register('1').unwrap().text, "a\n");
                 assert_eq!(commands.register('1').unwrap().hard_break_offsets(), &[1]);
 
@@ -16993,11 +17060,14 @@ mod tests {
                 let mut commands = CommandInterpreter::new();
                 keys(&mut commands, &mut document, "Gdd");
                 assert_eq!(document.text(), "a", "{format:?} {encoding:?}: final dd");
-                assert_eq!(document.source_bytes(), b"a");
+                assert_eq!(document.source_bytes(), forced_mac_source("a", format));
                 assert_eq!(commands.register('1').unwrap().text, "b\nc\n");
                 assert_eq!(commands.register('1').unwrap().hard_break_offsets(), &[3]);
                 assert!(document.undo());
-                assert_eq!(document.source_bytes(), b"a\rb\nc");
+                assert_eq!(
+                    document.source_bytes(),
+                    forced_mac_source("a\rb\nc", format)
+                );
 
                 let mut document = forced_mac_document(format, encoding);
                 let mut commands = CommandInterpreter::new();
@@ -17013,13 +17083,16 @@ mod tests {
                     "J removes only the Mac separator"
                 );
                 assert_eq!(document.line_count(), 1);
-                assert_eq!(document.source_bytes(), b"a b\nc");
+                assert_eq!(document.source_bytes(), forced_mac_source("a b\nc", format));
 
                 let mut document = forced_mac_document(format, encoding);
                 let mut commands = CommandInterpreter::new();
                 keys(&mut commands, &mut document, "G>>");
                 assert_eq!(document.text(), "a\n    b\nc");
-                assert_eq!(document.source_bytes(), b"a\r    b\nc");
+                assert_eq!(
+                    document.source_bytes(),
+                    forced_mac_source("a\r    b\nc", format)
+                );
             }
         }
     }
@@ -17038,9 +17111,15 @@ mod tests {
                 keys(&mut commands, &mut characterwise, "ggP");
                 assert_eq!(characterwise.text(), "b\nca\nb\nc");
                 assert_eq!(characterwise.line_count(), 2);
-                assert_eq!(characterwise.source_bytes(), b"b\nca\rb\nc");
+                assert_eq!(
+                    characterwise.source_bytes(),
+                    forced_mac_source("b\nca\rb\nc", format)
+                );
                 keys(&mut commands, &mut characterwise, "u");
-                assert_eq!(characterwise.source_bytes(), b"a\rb\nc");
+                assert_eq!(
+                    characterwise.source_bytes(),
+                    forced_mac_source("a\rb\nc", format)
+                );
 
                 let mut linewise = forced_mac_document(format, encoding);
                 let mut commands = CommandInterpreter::new();
@@ -17052,16 +17131,25 @@ mod tests {
                 keys(&mut commands, &mut linewise, "ggP");
                 assert_eq!(linewise.text(), "b\nc\na\nb\nc");
                 assert_eq!(linewise.line_count(), 3);
-                assert_eq!(linewise.source_bytes(), b"b\nc\ra\rb\nc");
+                assert_eq!(
+                    linewise.source_bytes(),
+                    forced_mac_source("b\nc\ra\rb\nc", format)
+                );
                 keys(&mut commands, &mut linewise, "u");
-                assert_eq!(linewise.source_bytes(), b"a\rb\nc");
+                assert_eq!(
+                    linewise.source_bytes(),
+                    forced_mac_source("a\rb\nc", format)
+                );
 
                 let mut counted = forced_mac_document(format, encoding);
                 let mut commands = CommandInterpreter::new();
                 keys(&mut commands, &mut counted, "jyygg2P");
                 assert_eq!(counted.text(), "b\nc\nb\nc\na\nb\nc");
                 assert_eq!(counted.line_count(), 4);
-                assert_eq!(counted.source_bytes(), b"b\nc\rb\nc\ra\rb\nc");
+                assert_eq!(
+                    counted.source_bytes(),
+                    forced_mac_source("b\nc\rb\nc\ra\rb\nc", format)
+                );
             }
         }
     }
@@ -22488,6 +22576,11 @@ mod tests {
                     (FileFormat::Dos, "\r\n"),
                     (FileFormat::Mac, "\r"),
                 ] {
+                    let delimiter = if format == Format::Markdown {
+                        delimiter.repeat(2)
+                    } else {
+                        delimiter.to_owned()
+                    };
                     let original = encoding.encode_fragment("abcdef").unwrap();
                     let mut document = Document::from_bytes_with_file_format(
                         original.clone(),
@@ -22558,7 +22651,7 @@ mod tests {
 
     #[test]
     fn visual_literal_cr_acceptance_and_rejection_follow_line_ending_projection() {
-        for format in [Format::PlainText, Format::Markdown] {
+        for format in [Format::PlainText, Format::MarkdownSource] {
             let mut dos = Document::from_bytes_with_file_format(
                 b"a\r\nb".to_vec(),
                 Encoding::Utf8,
@@ -22701,8 +22794,24 @@ mod tests {
                     b"\rb\r\rd".as_slice(),
                 ),
             ] {
+                let source = if format == Format::Markdown {
+                    String::from_utf8(source.to_vec())
+                        .unwrap()
+                        .replace(file_format.spelling(), &file_format.spelling().repeat(2))
+                        .into_bytes()
+                } else {
+                    source.to_vec()
+                };
+                let expected = if format == Format::Markdown {
+                    String::from_utf8(expected.to_vec())
+                        .unwrap()
+                        .replace(file_format.spelling(), &file_format.spelling().repeat(2))
+                        .into_bytes()
+                } else {
+                    expected.to_vec()
+                };
                 let mut document = Document::from_bytes_with_file_format(
-                    source.to_vec(),
+                    source.clone(),
                     Encoding::Utf8,
                     format,
                     file_format,

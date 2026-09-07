@@ -13120,6 +13120,57 @@ pub unsafe extern "C" fn evim_core_view_set_line_mode(
     })
 }
 
+/// Read effective structural paragraph flow. WYSIWYG Markdown/HTML always
+/// flow; source modes have an independent per-view option, initially false.
+/// # Safety
+/// `out_enabled` must identify one aligned writable u32.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_paragraph_flow(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    out_enabled: *mut u32,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        if out_enabled.is_null() || (out_enabled as usize) % std::mem::align_of::<u32>() != 0 {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let enabled = with_core_mut(handle, |core| {
+            core.paragraph_flow(ViewId(view)).map_err(core_status)
+        })?;
+        unsafe {
+            out_enabled.write(u32::from(enabled));
+        }
+        Ok(())
+    })
+}
+
+/// Change source-mode paragraph flow without changing source, undo, or other views.
+/// # Safety
+/// `out_outcome` must identify one aligned writable outcome.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_set_paragraph_flow(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    enabled: u32,
+    out_outcome: *mut EvimCoreOutcomeV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        unsafe {
+            clear_outcome(out_outcome)?;
+        }
+        if enabled > 1 {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let outcome = with_core_mut(handle, |core| {
+            dispatch_event(core, view, CoreEvent::SetParagraphFlow(enabled != 0))
+        })?;
+        unsafe {
+            out_outcome.write(outcome);
+        }
+        Ok(())
+    })
+}
+
 /// Set the application smart-quotes preference for one existing view. This is
 /// presentation/input policy only and never changes source or undo state.
 #[no_mangle]

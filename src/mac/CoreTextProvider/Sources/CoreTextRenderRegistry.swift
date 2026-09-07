@@ -126,6 +126,27 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
     in context: CGContext,
     clip: CGRect? = nil
   ) -> Bool {
+    draw(
+      identifier: identifier,
+      metricsGeneration: metricsGeneration,
+      atBaseline: baseline,
+      color: color.cgColor,
+      in: context,
+      clip: clip
+    )
+  }
+
+  /// Accepts a paint color already resolved by the caller, so a viewport can
+  /// reuse one native color across every cluster in the same paint run.
+  @discardableResult
+  public func draw(
+    identifier: UInt64,
+    metricsGeneration: UInt64,
+    atBaseline baseline: CGPoint,
+    color: CGColor,
+    in context: CGContext,
+    clip: CGRect? = nil
+  ) -> Bool {
     lock.lock()
     let resource = generation == metricsGeneration ? resources[identifier] : nil
     lock.unlock()
@@ -135,16 +156,20 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
     if let clip {
       context.clip(to: clip)
     }
-    context.setFillColor(color.cgColor)
+    context.setFillColor(color)
     context.setTextDrawingMode(.fill)
     context.textMatrix = .identity
     context.translateBy(x: baseline.x, y: baseline.y)
     context.scaleBy(x: 1, y: -1)
 
     for batch in resource.batches {
-      context.setLineWidth(batch.strokeWidth)
-      context.setStrokeColor((color.usingColorSpace(.deviceRGB) ?? color).cgColor)
-      context.setTextDrawingMode(batch.strokeWidth > 0 ? .fillStroke : .fill)
+      if batch.strokeWidth > 0 {
+        context.setLineWidth(batch.strokeWidth)
+        context.setStrokeColor(color)
+        context.setTextDrawingMode(.fillStroke)
+      } else {
+        context.setTextDrawingMode(.fill)
+      }
       batch.glyphs.withUnsafeBufferPointer { glyphBuffer in
         batch.positions.withUnsafeBufferPointer { positionBuffer in
           guard let glyphBase = glyphBuffer.baseAddress,

@@ -333,6 +333,7 @@ pub enum CoreEvent {
     },
     SetWrap(bool),
     SetLineBreak(bool),
+    SetParagraphFlow(bool),
     /// Change the view-local domain used by unprefixed line commands.
     SetLineMode(crate::command::LineMode),
     SetSmartQuotes(bool),
@@ -965,8 +966,12 @@ impl<P: TextMeasurementProvider> Core<P> {
         let at = range
             .as_ref()
             .map_or(view.commands.cursor(), |range| range.start);
-        let upstream =
-            range.is_none() && view.commands.boundary_affinity() == BoundaryAffinity::Upstream;
+        let upstream = range.is_none()
+            && if matches!(view.commands.mode(), Mode::Insert | Mode::Replace) {
+                view.commands.insertion_boundary_affinity()
+            } else {
+                view.commands.boundary_affinity()
+            } == BoundaryAffinity::Upstream;
         let mut first =
             DocumentLayoutStyles::semantic_character_at(self.document.projection(), at, upstream)
                 .map_err(LayoutError::from)?;
@@ -1903,6 +1908,24 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// Capture an owned, revision-tagged layout request during one serial
     /// coordinator turn. The returned request contains only the requested
     /// regional text and can be computed without access to this `Core`.
+    pub fn paragraph_flow(&self, view_id: ViewId) -> Result<bool, CoreError> {
+        let view = self
+            .views
+            .get(&view_id)
+            .ok_or(CoreError::UnknownView(view_id))?;
+        Ok(match self.document.format() {
+            Format::Markdown | Format::Html => true,
+            Format::MarkdownSource | Format::HtmlSource => view.layout.paragraph_flow(),
+            _ => false,
+        })
+    }
+
+    fn presentation_flow(&self, view_id: ViewId) -> bool {
+        self.views
+            .get(&view_id)
+            .is_some_and(|view| view.layout.paragraph_flow())
+    }
+
     pub fn prepare_view_layout_job(
         &mut self,
         view_id: ViewId,
@@ -2117,13 +2140,20 @@ impl<P: TextMeasurementProvider> Core<P> {
     ) -> Result<(), CoreError> {
         const MIN_OVERSCAN_LINES: usize = 8;
 
-        let hard_line_count = self.document.line_count();
+        let flow = self.presentation_flow(view_id);
+        let hard_line_count = self.document.projection().presentation_line_count(flow);
         let document_revision = self.document.revision();
         let (focus_offset, viewport_top, viewport_height, preserved_anchor, visual_block_endpoints) = {
             let view = self
                 .views
                 .get_mut(&view_id)
                 .ok_or(CoreError::UnknownView(view_id))?;
+            if !matches!(
+                self.document.format(),
+                Format::MarkdownSource | Format::HtmlSource
+            ) {
+                view.layout.set_paragraph_flow(false);
+            }
             let document_is_stale = view.layout.snapshot().is_some_and(|snapshot| {
                 snapshot.document_id != self.document.id()
                     || snapshot.document_revision != self.document.revision()
@@ -2157,7 +2187,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         };
         let focus_line = self
             .document
-            .hard_line_at_offset(focus_offset)
+            .projection()
+            .presentation_line_at_offset(focus_offset, flow)
             .ok_or(LayoutError::InvalidTextOffset(focus_offset))?;
         if self.materialize_long_line_focus(
             view_id,
@@ -2227,11 +2258,13 @@ impl<P: TextMeasurementProvider> Core<P> {
         if let Some((anchor, active)) = visual_block_endpoints {
             let anchor_line = self
                 .document
-                .hard_line_at_offset(anchor)
+                .projection()
+                .presentation_line_at_offset(anchor, flow)
                 .ok_or(LayoutError::InvalidTextOffset(anchor))?;
             let active_line = self
                 .document
-                .hard_line_at_offset(active)
+                .projection()
+                .presentation_line_at_offset(active, flow)
                 .ok_or(LayoutError::InvalidTextOffset(active))?;
             start = start.min(anchor_line.min(active_line));
             end = end.max(anchor_line.max(active_line).saturating_add(1));
@@ -2309,14 +2342,13 @@ impl<P: TextMeasurementProvider> Core<P> {
         intent: ImmediateLayoutIntent,
         preserved_anchor: Option<ViewportTextAnchor>,
     ) -> Result<bool, CoreError> {
-        let line_start = self
+        let flow = self.presentation_flow(view_id);
+        let line = self
             .document
-            .line_start(focus_line)
+            .projection()
+            .presentation_line_range(focus_line, flow)
             .ok_or(LayoutError::InvalidTextOffset(focus_offset))?;
-        let line_end = self
-            .document
-            .line_end(focus_line)
-            .ok_or(LayoutError::InvalidTextOffset(focus_offset))?;
+        let (line_start, line_end) = (line.start, line.end);
         let (mut checkpoint, top, height) = {
             let view = self
                 .views
@@ -2406,7 +2438,8 @@ impl<P: TextMeasurementProvider> Core<P> {
     ) -> Result<(), CoreError> {
         const MIN_OVERSCAN_LINES: usize = 8;
 
-        let hard_line_count = self.document.line_count();
+        let flow = self.presentation_flow(view_id);
+        let hard_line_count = self.document.projection().presentation_line_count(flow);
         let document_revision = self.document.revision();
         let (mut staged_layout, requirements, immediate_layout_context, metrics_changed) = {
             let view = self
@@ -2623,7 +2656,8 @@ impl<P: TextMeasurementProvider> Core<P> {
 
     fn rebase_viewport_anchors(&mut self, map: &PositionMap) -> Result<(), CoreError> {
         for view in self.views.values_mut() {
-            view.long_line_checkpoints.rebase(&self.document, map);
+            view.long_line_checkpoints
+                .rebase(&self.document, map, view.layout.paragraph_flow());
             let Some(current) = view.viewport_anchor else {
                 continue;
             };
@@ -2713,13 +2747,43 @@ impl<P: TextMeasurementProvider> Core<P> {
             )
         };
 
-        let base_line_count = self.document.line_count();
+        let flow = composed_layout.paragraph_flow();
+        let base_line_count = self.document.projection().presentation_line_count(flow);
         let replaced = overlay.replacement_range();
-        let affected_start = hard_line_for_boundary(&self.document, replaced.start)?;
-        let affected_end = hard_line_for_boundary(&self.document, replaced.end)?
+        let affected_start = self
+            .document
+            .projection()
+            .presentation_line_at_offset(replaced.start, flow)
+            .ok_or(LayoutError::InvalidTextOffset(replaced.start))?;
+        let affected_end = self
+            .document
+            .projection()
+            .presentation_line_at_offset(replaced.end, flow)
+            .ok_or(LayoutError::InvalidTextOffset(replaced.end))?
             .saturating_add(1)
             .min(base_line_count);
         let affected = affected_start..affected_end;
+        let affected_line = self
+            .document
+            .projection()
+            .presentation_line_range(affected_start, flow)
+            .ok_or(LayoutError::InvalidTextOffset(replaced.start))?;
+        if affected.len() == 1
+            && composed_layout.wrap()
+            && affected_line.len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES
+            && !overlay.marked_text().contains('\n')
+        {
+            return self.materialize_long_composition_layout(
+                view_id,
+                overlay,
+                affinity,
+                composed_layout,
+                affected_line,
+                affected_start,
+                base_line_count,
+                reveal_selection,
+            );
+        }
         let base_region = base_coverage
             .filter(|visible| ranges_touch(visible, &affected))
             .map_or_else(
@@ -2728,25 +2792,59 @@ impl<P: TextMeasurementProvider> Core<P> {
             );
         let base_text_start = self
             .document
-            .line_start(base_region.start)
-            .ok_or(LayoutError::InvalidTextOffset(replaced.start))?;
+            .projection()
+            .presentation_line_range(base_region.start, flow)
+            .ok_or(LayoutError::InvalidTextOffset(replaced.start))?
+            .start;
         let base_text_end = self
             .document
-            .line_end(base_region.end - 1)
-            .ok_or(LayoutError::InvalidTextOffset(replaced.end))?;
+            .projection()
+            .presentation_line_range(base_region.end - 1, flow)
+            .ok_or(LayoutError::InvalidTextOffset(replaced.end))?
+            .end;
         let text_origin = overlay
             .overlay_offset_for_base_boundary(base_text_start, Association::BeforeInsertion)
             .ok_or(LayoutError::InvalidTextOffset(base_text_start))?;
         let text_end = overlay
             .overlay_offset_for_base_boundary(base_text_end, Association::AfterInsertion)
             .ok_or(LayoutError::InvalidTextOffset(base_text_end))?;
-        let text = overlay
+        let mut text = overlay
             .text_in_range(text_origin..text_end)
             .ok_or(LayoutError::InvalidTextOffset(text_end))?;
+        if flow {
+            let mut bytes = text.into_bytes();
+            for line in base_region.clone() {
+                let range = self
+                    .document
+                    .projection()
+                    .presentation_line_range(line, true)
+                    .unwrap();
+                let original = self
+                    .document
+                    .projection()
+                    .text_tree()
+                    .slice(range.clone())
+                    .map_err(DocumentError::FormattedTextStorage)?;
+                for (relative, _) in original.match_indices('\n') {
+                    let at = range.start + relative;
+                    if replaced.contains(&at) {
+                        continue;
+                    }
+                    if let Some(mapped) =
+                        overlay.overlay_offset_for_base_boundary(at, Association::AfterInsertion)
+                    {
+                        if let Some(byte) = bytes.get_mut(mapped.saturating_sub(text_origin)) {
+                            if *byte == b'\n' {
+                                *byte = b' ';
+                            }
+                        }
+                    }
+                }
+            }
+            text = String::from_utf8(bytes).expect("ASCII whitespace changes preserve UTF-8");
+        }
         let line_ranges = hard_line_ranges_with_origin(&text, text_origin);
-        let overlay_line_count = overlay
-            .hard_line_count(base_line_count)
-            .ok_or(LayoutError::InvalidTextOffset(overlay.utf8_len()))?;
+        let overlay_line_count = base_line_count - base_region.len() + line_ranges.len();
         let requested_end = base_region
             .start
             .checked_add(line_ranges.len())
@@ -2758,15 +2856,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             .into());
         }
         let following_base_range = (base_region.end < base_line_count).then(|| {
-            let start = self
-                .document
-                .line_start(base_region.end)
-                .expect("validated following hard line has a start");
-            let end = self
-                .document
-                .line_end(base_region.end)
-                .expect("validated following hard line has an end");
-            start..end
+            self.document
+                .projection()
+                .presentation_line_range(base_region.end, flow)
+                .expect("validated following presentation line")
         });
         let following_line_range = following_base_range
             .as_ref()
@@ -2781,13 +2874,45 @@ impl<P: TextMeasurementProvider> Core<P> {
 
         let style_end = following_base_range
             .as_ref()
-            .map_or(base_text_end, |range| range.end);
-        let styles = DocumentLayoutStyles::resolve_region(
+            .map(|range| {
+                self.document
+                    .projection()
+                    .text_tree()
+                    .next_grapheme_boundary(range.start)
+                    .map(|next| next.unwrap_or(range.start).min(range.end))
+            })
+            .transpose()
+            .map_err(DocumentError::FormattedTextStorage)?
+            .unwrap_or(base_text_end);
+        let mut styles = DocumentLayoutStyles::resolve_region(
             self.document.projection(),
             base_text_start..style_end,
         )
         .map_err(LayoutError::from)?;
-        let styles = composition_layout_styles(styles, &overlay, affinity)?;
+        if flow {
+            let mut base_ranges = base_region
+                .clone()
+                .map(|line| {
+                    self.document
+                        .projection()
+                        .presentation_line_range(line, true)
+                        .expect("validated presentation line")
+                })
+                .collect::<Vec<_>>();
+            base_ranges.extend(following_base_range.clone());
+            crate::layout::resolve_flow_paragraph_styles(
+                self.document.projection(),
+                &mut styles,
+                &base_ranges,
+            )
+            .map_err(LayoutError::from)?;
+        }
+        let mut styles = composition_layout_styles(styles, &overlay, affinity)?;
+        if flow {
+            let mut overlay_ranges = line_ranges.clone();
+            overlay_ranges.extend(following_line_range.clone());
+            crate::layout::flow_paragraph_styles(&mut styles, &overlay_ranges);
+        }
         composed_layout
             .synchronize_document_hard_line_count(overlay_line_count, true)
             .map_err(LayoutError::from)?;
@@ -2834,6 +2959,184 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
         view.composition_layout = Some(composed_layout);
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn materialize_long_composition_layout(
+        &mut self,
+        view_id: ViewId,
+        overlay: CompositionOverlay,
+        affinity: BoundaryAffinity,
+        mut composed_layout: ViewLayout,
+        base_range: std::ops::Range<usize>,
+        line_index: usize,
+        line_count: usize,
+        reveal_selection: bool,
+    ) -> Result<(), CoreError> {
+        let flow = composed_layout.paragraph_flow();
+        let replaced = overlay.replacement_range();
+        let marked = overlay.marked_range();
+        let full_range = base_range.start
+            ..overlay
+                .overlay_offset_for_base_boundary(base_range.end, Association::AfterInsertion)
+                .ok_or(LayoutError::InvalidTextOffset(base_range.end))?;
+        let tree = overlay
+            .layout_text_tree()
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let focus = overlay.selected_range_in_overlay().end;
+        let mut checkpoint = {
+            let view = self
+                .views
+                .get_mut(&view_id)
+                .ok_or(CoreError::UnknownView(view_id))?;
+            let requirements = inspect_layout_provider(&view.engine);
+            view.long_line_checkpoints
+                .discard_stale(&self.document, &view.layout, requirements);
+            view.long_line_checkpoints
+                .before(
+                    base_range.clone(),
+                    replaced.start.saturating_sub(128).max(base_range.start),
+                )
+                .and_then(|checkpoint| {
+                    checkpoint.for_unchanged_prefix(
+                        full_range.clone(),
+                        replaced.start.saturating_sub(128),
+                    )
+                })
+        };
+        let to_base = |offset: usize, end: bool| {
+            if offset <= marked.start {
+                offset
+            } else if offset < marked.end {
+                if end {
+                    replaced.end
+                } else {
+                    replaced.start
+                }
+            } else {
+                replaced.end + offset - marked.end
+            }
+        };
+        loop {
+            let work_start = checkpoint
+                .as_ref()
+                .map_or(full_range.start, LongLineLayoutCheckpoint::next_text_offset);
+            let (work_end, capture) =
+                crate::layout::capture_composition_range(&tree, work_start, full_range.clone())?;
+            let mut text = tree
+                .slice(capture.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            if flow {
+                text = text.replace('\n', " ");
+            }
+            let following_base =
+                (work_end == full_range.end && line_index + 1 < line_count).then(|| {
+                    self.document
+                        .projection()
+                        .presentation_line_range(line_index + 1, flow)
+                        .unwrap()
+                });
+            let following = following_base
+                .as_ref()
+                .map(|range| map_base_range_to_overlay(&overlay, range))
+                .transpose()?;
+            let style_end = following_base
+                .as_ref()
+                .map(|range| {
+                    self.document
+                        .projection()
+                        .text_tree()
+                        .next_grapheme_boundary(range.start)
+                        .map(|next| next.unwrap_or(range.start).min(range.end))
+                })
+                .transpose()
+                .map_err(DocumentError::FormattedTextStorage)?
+                .unwrap_or_else(|| to_base(capture.end, true));
+            let mut styles = DocumentLayoutStyles::resolve_region(
+                self.document.projection(),
+                to_base(capture.start, false)..style_end,
+            )
+            .map_err(LayoutError::from)?;
+            if flow {
+                let mut ranges = vec![base_range.clone()];
+                ranges.extend(following_base.clone());
+                crate::layout::resolve_flow_paragraph_styles(
+                    self.document.projection(),
+                    &mut styles,
+                    &ranges,
+                )
+                .map_err(LayoutError::from)?;
+            }
+            let mut styles = composition_layout_styles(styles, &overlay, affinity)?;
+            if flow {
+                let mut ranges = vec![full_range.clone()];
+                ranges.extend(following.clone());
+                crate::layout::flow_paragraph_styles(&mut styles, &ranges);
+            }
+            let captured_view = composed_layout.capture_for_regional_layout_job(capture.clone());
+            let job_id = self.allocate_layout_job_id()?;
+            if !composed_layout.begin_layout_job(job_id) {
+                return Err(CoreError::IdentifierExhausted(
+                    CoreIdentifierKind::LayoutJob,
+                ));
+            }
+            let view = self
+                .views
+                .get_mut(&view_id)
+                .ok_or(CoreError::UnknownView(view_id))?;
+            let region = view
+                .engine
+                .layout_hard_line_slices_cancellable(
+                    self.document.id(),
+                    self.document.revision(),
+                    &text,
+                    capture.start,
+                    &[crate::layout::HardLineLayoutSlice {
+                        full_range: full_range.clone(),
+                        work_range: work_start..work_end,
+                        shaping_context_range: capture,
+                        hard_line_index: line_index,
+                        checkpoint,
+                    }],
+                    line_count,
+                    overlay.utf8_len(),
+                    following,
+                    &styles,
+                    &captured_view,
+                    &LayoutCancellationToken::new(),
+                )
+                .map_err(|error| match error {
+                    LayoutComputationError::Layout(error) => CoreError::Layout(error),
+                    LayoutComputationError::Cancelled => {
+                        CoreError::LayoutJob(LayoutJobError::Cancelled)
+                    }
+                })?;
+            let coverage = region.lines()[0].text_coverage();
+            if coverage.start <= focus && focus <= coverage.end {
+                let top = composed_layout.viewport_top();
+                composed_layout
+                    .publish_layout_job_viewport(job_id, region, top)
+                    .map_err(LayoutError::from)?;
+                if reveal_selection {
+                    reveal_layout_endpoint(
+                        &mut composed_layout,
+                        focus,
+                        BoundaryAffinity::Downstream,
+                    )?;
+                }
+                view.composition_layout = Some(composed_layout);
+                return Ok(());
+            }
+            checkpoint = Some(
+                region
+                    .next_long_line_checkpoint()
+                    .cloned()
+                    .filter(|next| next.next_text_offset() > work_start)
+                    .ok_or(LayoutJobError::InvalidLongLineCheckpoint(
+                        "composition continuation did not advance toward its caret",
+                    ))?,
+            );
+        }
     }
 
     fn rematerialize_active_composition(
@@ -3037,6 +3340,30 @@ impl<P: TextMeasurementProvider> Core<P> {
         Ok(())
     }
 
+    fn pending_typing_outcome(
+        &mut self,
+        view_id: ViewId,
+        previous_cursor: usize,
+    ) -> Result<CoreOutcome, CoreError> {
+        let moved = self
+            .views
+            .get(&view_id)
+            .expect("view checked")
+            .commands
+            .cursor()
+            != previous_cursor;
+        if moved {
+            self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::RevealCaret)?;
+        }
+        Ok(CoreOutcome {
+            command: None,
+            document_changed: false,
+            position_map: None,
+            layout_changed: moved,
+            composition_changes: Vec::new(),
+        })
+    }
+
     /// Publish one source-backed semantic inline-style change as a standalone
     /// undo unit. Selection identity and model capability are validated before
     /// an existing Insert/Replace unit is closed, so rejection is atomic with
@@ -3067,18 +3394,18 @@ impl<P: TextMeasurementProvider> Core<P> {
                 )],
                 _ => return Err(CoreError::Document(DocumentError::UnsupportedFormatting)),
             };
+            let previous_cursor = self
+                .views
+                .get(&view_id)
+                .expect("view checked")
+                .commands
+                .cursor();
             self.views
                 .get_mut(&view_id)
                 .expect("view checked")
                 .commands
                 .set_typing_properties(&self.document, values)?;
-            return Ok(CoreOutcome {
-                command: None,
-                document_changed: false,
-                position_map: None,
-                layout_changed: false,
-                composition_changes: Vec::new(),
-            });
+            return self.pending_typing_outcome(view_id, previous_cursor);
         }
         let current = self
             .active_linear_selection_identity(view_id)?
@@ -3826,18 +4153,18 @@ impl<P: TextMeasurementProvider> Core<P> {
                     if self.list_selection_identity(view_id)? != expected {
                         return Err(CoreError::StaleLogicalSelection);
                     }
+                    let previous_cursor = self
+                        .views
+                        .get(&view_id)
+                        .expect("view checked")
+                        .commands
+                        .cursor();
                     self.views
                         .get_mut(&view_id)
                         .expect("view checked")
                         .commands
                         .set_typing_properties(&self.document, values)?;
-                    return Ok(CoreOutcome {
-                        command: None,
-                        document_changed: false,
-                        position_map: None,
-                        layout_changed: false,
-                        composition_changes: Vec::new(),
-                    });
+                    return self.pending_typing_outcome(view_id, previous_cursor);
                 }
                 let actual = self
                     .active_linear_selection_identity(view_id)?
@@ -3870,18 +4197,13 @@ impl<P: TextMeasurementProvider> Core<P> {
                     if !matches!(commands.mode(), Mode::Insert | Mode::Replace) {
                         return Err(CoreError::Document(DocumentError::UnsupportedFormatting));
                     }
+                    let previous_cursor = commands.cursor();
                     if let Some(value) = value {
                         commands.set_typing_properties(&self.document, vec![(property, value)])?;
                     } else {
                         commands.clear_typing_property(property);
                     }
-                    return Ok(CoreOutcome {
-                        command: None,
-                        document_changed: false,
-                        position_map: None,
-                        layout_changed: false,
-                        composition_changes: Vec::new(),
-                    });
+                    return self.pending_typing_outcome(view_id, previous_cursor);
                 }
                 let actual = if character {
                     self.active_linear_selection_identity(view_id)?
@@ -4295,6 +4617,33 @@ impl<P: TextMeasurementProvider> Core<P> {
                     document_changed: false,
                     position_map: None,
                     layout_changed: false,
+                    composition_changes: Vec::new(),
+                })
+            }
+            CoreEvent::SetParagraphFlow(enabled) => {
+                if !matches!(
+                    self.document.format(),
+                    Format::MarkdownSource | Format::HtmlSource
+                ) {
+                    return Err(CoreError::Document(DocumentError::UnsupportedFormatting));
+                }
+                let view = self.views.get_mut(&view_id).expect("view checked");
+                let before = view.layout.configuration_generation();
+                view.layout.set_paragraph_flow(enabled);
+                let changed = before != view.layout.configuration_generation();
+                if changed {
+                    cancel_active_layout_work(view);
+                }
+                self.materialize_immediate_viewport(
+                    view_id,
+                    ImmediateLayoutIntent::PreserveViewport,
+                )?;
+                self.rematerialize_active_composition(view_id, true)?;
+                Ok(CoreOutcome {
+                    command: None,
+                    document_changed: false,
+                    position_map: None,
+                    layout_changed: changed,
                     composition_changes: Vec::new(),
                 })
             }
@@ -5722,15 +6071,6 @@ impl<P: TextMeasurementProvider> Core<P> {
             composition_changes,
         })
     }
-}
-
-fn hard_line_for_boundary(document: &Document, offset: usize) -> Result<usize, LayoutError> {
-    if offset == document.projection().text_tree().byte_len() {
-        return Ok(document.line_count().saturating_sub(1));
-    }
-    document
-        .hard_line_at_offset(offset)
-        .ok_or(LayoutError::InvalidTextOffset(offset))
 }
 
 fn ranges_touch(left: &std::ops::Range<usize>, right: &std::ops::Range<usize>) -> bool {
@@ -8695,6 +9035,105 @@ mod tests {
         assert!(core.composition_overlay(view).unwrap().is_none());
         assert_eq!(core.document().revision(), revision);
         assert_eq!(core.document().source_bytes(), original);
+    }
+
+    #[test]
+    fn composition_in_long_plain_and_flowed_paragraphs_uses_bounded_slices() {
+        for flow in [false, true] {
+            let mut source = ("word ".repeat(30) + "\n").repeat(2_000);
+            if !flow {
+                source = source.replace('\n', " ");
+            }
+            let prefix = "intro ".repeat(40) + "\n\n";
+            source.insert_str(0, &prefix);
+            let document = Document::from_bytes(
+                source.as_bytes().to_vec(),
+                crate::document::Encoding::Utf8,
+                if flow {
+                    crate::document::Format::MarkdownSource
+                } else {
+                    crate::document::Format::PlainText
+                },
+            )
+            .unwrap();
+            let mut core = Core::new(document);
+            let (provider, bytes, _, generation) =
+                InstrumentedCoordinatorProvider::new(ProviderThreading::AnyWorker);
+            let view = core.add_view(provider, 240.0, 120.0);
+            if flow {
+                core.handle(view, CoreEvent::SetParagraphFlow(true))
+                    .unwrap();
+            }
+            for at in [
+                prefix.len() + (source.len() - prefix.len()) / 2,
+                prefix.len(),
+            ] {
+                let expected_line = core
+                    .document()
+                    .projection()
+                    .presentation_line_at_offset(at, flow)
+                    .unwrap();
+                core.handle(
+                    view,
+                    CoreEvent::PlaceCursor {
+                        document_revision: core.document().revision(),
+                        text_offset: at,
+                        affinity: BoundaryAffinity::Downstream,
+                        extend_selection: false,
+                    },
+                )
+                .unwrap();
+                core.handle(view, begin_composition(&core, at..at)).unwrap();
+                for value in ["é", "かな", "👩🏽‍💻"] {
+                    let before = bytes.load(Ordering::Acquire);
+                    core.handle(
+                        view,
+                        CoreEvent::Composition(CompositionEvent::Update(CompositionUpdate::new(
+                            value,
+                            value.len()..value.len(),
+                        ))),
+                    )
+                    .unwrap();
+                    let shaped = bytes.load(Ordering::Acquire) - before;
+                    assert!(
+                        shaped < MAX_LONG_LINE_LAYOUT_SLICE_BYTES * 2,
+                        "flow={flow} at={at} shaped={shaped}"
+                    );
+                    let layout = core.presentation_layout(view).unwrap();
+                    let snapshot = layout.snapshot().unwrap();
+                    assert!(snapshot.coverage.contains_text_offset(at + value.len()));
+                    assert!(snapshot
+                        .rows
+                        .iter()
+                        .all(|row| row.hard_line_index == expected_line));
+                    snapshot
+                        .logical_endpoint_geometry(at + value.len(), BoundaryAffinity::Downstream)
+                        .unwrap();
+                    assert_eq!(core.document().source_bytes(), source.as_bytes());
+                }
+                generation.fetch_add(1, Ordering::AcqRel);
+                core.handle(
+                    view,
+                    CoreEvent::Resize {
+                        width: 180.0,
+                        height: 100.0,
+                    },
+                )
+                .unwrap();
+                assert_eq!(
+                    core.presentation_layout(view)
+                        .unwrap()
+                        .snapshot()
+                        .unwrap()
+                        .metrics_generation,
+                    MetricsGeneration(generation.load(Ordering::Acquire))
+                );
+                core.handle(view, CoreEvent::Composition(CompositionEvent::Cancel))
+                    .unwrap();
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+                assert!(!core.document.undo());
+            }
+        }
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Width-independent shaping and per-view unpaginated layout.
 
+mod composition;
 mod engine;
 mod height_index;
 mod jobs;
@@ -8,6 +9,10 @@ mod measurement;
 mod mock;
 mod style;
 
+pub(crate) use composition::capture_range as capture_composition_range;
+pub(crate) use engine::HardLineLayoutSlice;
+
+pub(crate) use jobs::{flow_paragraph_styles, resolve_flow_paragraph_styles};
 pub(crate) use long_line_cache::LongLineCheckpointCache;
 
 pub use engine::{

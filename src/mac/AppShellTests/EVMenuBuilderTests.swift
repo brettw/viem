@@ -73,7 +73,7 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
         XCTAssertEqual(try titles(in: submenu("View", of: menu)), [
             "Show Status Bar", "Word Wrap", "Wrap at Word Boundaries",
-            "Show Invisible Characters", "Zoom In", "Zoom Out", "Actual Size",
+            "Flow Source Paragraphs", "Show Invisible Characters", "Zoom In", "Zoom Out", "Actual Size",
             "Enter Full Screen",
         ])
         XCTAssertEqual(try titles(in: submenu("Window", of: menu)), [
@@ -114,7 +114,7 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
         XCTAssertEqual(tokens(in: try submenu("View", of: main)), [
             "Show Status Bar", "-", "Word Wrap", "Wrap at Word Boundaries",
-            "Show Invisible Characters", "-", "Zoom In", "Zoom Out", "Actual Size",
+            "Flow Source Paragraphs", "Show Invisible Characters", "-", "Zoom In", "Zoom Out", "Actual Size",
             "-", "Enter Full Screen",
         ])
         XCTAssertEqual(tokens(in: try submenu("Window", of: main)), [

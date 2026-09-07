@@ -2045,6 +2045,10 @@ EvimStatus evim_core_view_line_location(EvimCoreHandle handle, EvimViewId view, 
 #define EVIM_LINE_MODE_VISUAL 0u
 #define EVIM_LINE_MODE_PHYSICAL_SOURCE 1u
 /* View-local command policy; physical source lines are unsupported for RTF. */
+/* WYS Markdown/HTML flow structurally; source modes default off per view.
+   Setter is supported for Markdown Source and HTML Source only. */
+EvimStatus evim_core_view_paragraph_flow(EvimCoreHandle core, EvimViewId view, uint32_t *out_enabled);
+EvimStatus evim_core_view_set_paragraph_flow(EvimCoreHandle core, EvimViewId view, uint32_t enabled, EvimCoreOutcomeV1 *out_outcome);
 EvimStatus evim_core_view_line_mode(EvimCoreHandle core, EvimViewId view, uint32_t *out_mode);
 EvimStatus evim_core_view_set_line_mode(EvimCoreHandle core, EvimViewId view, uint32_t mode, EvimCoreOutcomeV1 *out_outcome);
 /* Application input preference; enabled must be 0 or 1. No source/undo change. */

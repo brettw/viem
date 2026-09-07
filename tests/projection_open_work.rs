@@ -72,7 +72,7 @@ fn opening_decodes_each_encoding_once_and_preserves_exact_source() {
 
 #[test]
 fn large_open_reports_one_linear_decode_pass() {
-    let line = "0123456789abcdef **styled** payload\n";
+    let line = "0123456789abcdef **styled** payload\n\n";
     let source_text = line.repeat(32_768);
     let source = source_text.as_bytes().to_vec();
     let document = Document::from_bytes(source.clone(), Encoding::Utf8, Format::Markdown).unwrap();

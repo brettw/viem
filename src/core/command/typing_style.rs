@@ -36,6 +36,31 @@ impl CommandInterpreter {
         {
             return Err(DocumentError::UnsupportedFormatting);
         }
+        let exit = document
+            .html_typing_exit(self.cursor, &next.values)?
+            .or(document.markdown_source_typing_exit(self.cursor, &next.values)?);
+        if let Some((at, preserved)) = exit {
+            // A combining scalar can attach to a visible closing delimiter.
+            // Never move a source caret into that grapheme's interior.
+            document.text_point(at)?;
+            for (property, value) in preserved {
+                if !next.values.iter().any(|(current, _)| *current == property) {
+                    next.values.push((property, value));
+                }
+            }
+            // This is a presentation-only movement across closing markup;
+            // no source transaction or empty undo entry is created.
+            self.cursor = at;
+            self.position_revision = Some(document.revision());
+            self.boundary_affinity = if at == document.projection().text_tree().byte_len() {
+                BoundaryAffinity::Upstream
+            } else {
+                BoundaryAffinity::Downstream
+            };
+            self.visual_position = None;
+            self.desired_x = None;
+            self.preferred_column = None;
+        }
         if next != self.typing_style {
             if let Some(session) = self.insert_session.as_mut() {
                 if !session.replaying_program {

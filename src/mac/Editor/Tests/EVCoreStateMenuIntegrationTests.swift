@@ -728,7 +728,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
 
     @MainActor
     func testMarkdownSemanticStyleMenuUsesLogicalSelectionWhenGeometryIsOffscreen() throws {
-        let source = (0 ..< 300).map { "row \($0)" }.joined(separator: "\n")
+        let source = (0 ..< 300).map { "row \($0)" }.joined(separator: "\n\n")
         let (backend, surface, session) = try makeMarkdownSurface(source)
         surface.view.frame = NSRect(x: 0, y: 0, width: 320, height: 100)
         surface.viewDidLayout()
@@ -749,7 +749,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
 
         surface.perform(menuCommand: .bold, sender: nil)
 
-        XCTAssertEqual(surface.formattedText, source)
+        XCTAssertEqual(surface.formattedText, source.replacingOccurrences(of: "\n\n", with: "\n"))
         let expectedSource = "**row 0**" + String(source.dropFirst(5))
         XCTAssertEqual(
             try backend.serializedSource(typeName: EVDocument.markdownType),

@@ -73,7 +73,17 @@ fn mac_capture_and_paste_preserve_literal_lf_in_all_text_encodings() {
             );
             assert_eq!(
                 document.source_bytes(),
-                encoded(&format!("{source}a\rb\nc"), encoding)
+                encoded(
+                    &format!(
+                        "{source}a{}b\nc",
+                        if format == Format::Markdown {
+                            "\r\r"
+                        } else {
+                            "\r"
+                        }
+                    ),
+                    encoding
+                )
             );
             assert_eq!(committed.text_position_map().source_revision(), Revision(0));
             assert_eq!(committed.text_position_map().target_revision(), Revision(1));

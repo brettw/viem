@@ -1215,11 +1215,12 @@ pub struct FormattedDocument {
     blocks: OrderedRangeStore<Block>,
     /// Authoritative hard-line structure. This is intentionally distinct from
     /// both the block tree and the text tree's lexical U+000A aggregates. The
-    /// current plain/Markdown adapters seed one line per paragraph, but future
-    /// list/table/container blocks may own multiple lines and must populate
-    /// this index independently. A pipeline may also retain U+000A as ordinary
+    /// paragraphs may contain several explicit breaks, and flow-normalized
+    /// paragraphs may consume several physical source lines. This index is
+    /// populated independently from paragraph identity. A pipeline may also retain U+000A as ordinary
     /// content (for example forced legacy-Mac input).
     hard_lines: OrderedRangeStore<HardLine>,
+    flow_lines: Option<OrderedRangeStore<HardLine>>,
     styles: IntervalRangeStore<StyleSpan>,
     provenance: IntervalRangeStore<ProvenanceSpan>,
     source_boundaries: IntervalRangeStore<SourceTextBoundary>,
@@ -1229,6 +1230,7 @@ pub struct FormattedDocument {
     document_style: DocumentStyleAssignment,
     source_content_start: usize,
     source_content_end: usize,
+    source_insertion_end: usize,
 }
 
 impl PartialEq for FormattedDocument {
@@ -1237,6 +1239,7 @@ impl PartialEq for FormattedDocument {
             && self.text() == other.text()
             && self.blocks == other.blocks
             && self.hard_lines == other.hard_lines
+            && self.flow_lines == other.flow_lines
             && self.styles == other.styles
             && self.provenance == other.provenance
             && self.decoding_diagnostics == other.decoding_diagnostics
@@ -1244,6 +1247,7 @@ impl PartialEq for FormattedDocument {
             && self.document_style == other.document_style
             && self.source_content_start == other.source_content_start
             && self.source_content_end == other.source_content_end
+            && self.source_insertion_end == other.source_insertion_end
     }
 }
 
@@ -1320,6 +1324,7 @@ impl FormattedDocument {
             flat_text: compatibility_text,
             blocks: OrderedRangeStore::new(blocks),
             hard_lines: OrderedRangeStore::new(hard_lines),
+            flow_lines: None,
             styles: IntervalRangeStore::new(styles),
             provenance: IntervalRangeStore::new(provenance),
             source_boundaries,
@@ -1329,7 +1334,55 @@ impl FormattedDocument {
             document_style,
             source_content_start,
             source_content_end,
+            source_insertion_end: source_content_end,
         }
+    }
+
+    pub(crate) fn install_flow_ranges(&mut self, ranges: Vec<Range<usize>>) {
+        let length = self.text.byte_len();
+        self.flow_lines = Some(OrderedRangeStore::new(
+            ranges
+                .into_iter()
+                .map(|range| HardLine {
+                    id: 0,
+                    separator_length: usize::from(range.end < length),
+                    range,
+                })
+                .collect(),
+        ));
+    }
+
+    pub fn presentation_line_count(&self, flow: bool) -> usize {
+        if flow {
+            self.flow_lines
+                .as_ref()
+                .map_or(self.hard_lines.len(), OrderedRangeStore::len)
+        } else {
+            self.hard_lines.len()
+        }
+    }
+
+    pub fn presentation_line_range(&self, index: usize, flow: bool) -> Option<Range<usize>> {
+        let lines = if flow {
+            self.flow_lines.as_ref().unwrap_or(&self.hard_lines)
+        } else {
+            &self.hard_lines
+        };
+        lines.get(index).map(|line| line.range)
+    }
+
+    pub fn presentation_line_at_offset(&self, offset: usize, flow: bool) -> Option<usize> {
+        if offset > self.text.byte_len() {
+            return None;
+        }
+        let lines = if flow {
+            self.flow_lines.as_ref().unwrap_or(&self.hard_lines)
+        } else {
+            &self.hard_lines
+        };
+        lines
+            .partition_point(|line| line.range.start <= offset)
+            .checked_sub(1)
     }
 
     pub fn revision(&self) -> Revision {
@@ -2044,6 +2097,76 @@ impl FormattedDocument {
     ) -> Result<u64, BlockIdentityError> {
         let previous_blocks = previous.blocks.to_vec();
         let mut blocks = self.blocks.to_vec();
+        if self.hard_lines.len() == origins.len()
+            && (previous_blocks.len() != previous.hard_lines.len()
+                || blocks.len() != self.hard_lines.len())
+        {
+            validate_block_partition(previous.text(), &previous_blocks)?;
+            validate_block_partition(self.text(), &blocks)?;
+            let old_lines = previous.hard_lines.to_vec();
+            if next_id == 0
+                || old_lines
+                    .iter()
+                    .any(|line| line.id == 0 || line.id >= next_id)
+            {
+                return Err(BlockIdentityError::InvalidProjection);
+            }
+            let mut next_id = next_id;
+            let mut lines = self.hard_lines.to_vec();
+            for (line, origin) in lines.iter_mut().zip(origins) {
+                line.id = match origin {
+                    TransferredLineOrigin::Existing(index) => {
+                        old_lines
+                            .get(*index)
+                            .ok_or(BlockIdentityError::InvalidProjection)?
+                            .id
+                    }
+                    TransferredLineOrigin::Copied(index) => {
+                        if old_lines.get(*index).is_none() {
+                            return Err(BlockIdentityError::InvalidProjection);
+                        }
+                        let id = next_id;
+                        next_id = next_id
+                            .checked_add(1)
+                            .ok_or(BlockIdentityError::Exhausted)?;
+                        id
+                    }
+                };
+            }
+            for block in &mut blocks {
+                let first = lines.partition_point(|line| line.range.start < block.range.start);
+                let line = lines
+                    .get(first)
+                    .filter(|line| line.range.start == block.range.start)
+                    .ok_or(BlockIdentityError::InvalidProjection)?;
+                let source_index = match origins[first] {
+                    TransferredLineOrigin::Existing(index)
+                    | TransferredLineOrigin::Copied(index) => index,
+                };
+                let source_line = &old_lines[source_index];
+                let source_index = previous_blocks
+                    .partition_point(|block| block.range.start <= source_line.range.start)
+                    .saturating_sub(1);
+                let source = previous_blocks
+                    .get(source_index)
+                    .filter(|block| {
+                        block.range.start <= source_line.range.start
+                            && source_line.range.end <= block.range.end
+                    })
+                    .ok_or(BlockIdentityError::InvalidProjection)?;
+                block.id = line.id;
+                block.direct_paragraph = source.direct_paragraph.clone();
+                block.direct_default_character = source.direct_default_character.clone();
+            }
+            self.style_sheet = previous.style_sheet.clone();
+            self.document_style = previous.document_style.clone();
+            self.blocks = OrderedRangeStore::new(blocks);
+            self.blocks.reuse_equal_chunks(&previous.blocks);
+            self.hard_lines = OrderedRangeStore::new(lines);
+            self.hard_lines.reuse_equal_chunks(&previous.hard_lines);
+            self.styles.reuse_equal_chunks(&previous.styles);
+            return Ok(next_id);
+        }
         if previous_blocks.len() != previous.hard_lines.len()
             || blocks.len() != self.hard_lines.len()
             || blocks.len() != origins.len()
@@ -2305,9 +2428,8 @@ impl FormattedDocument {
         self.hard_lines.get(line).map(|line| line.range)
     }
 
-    /// Stable identity of one projected hard line. Current plain-text and
-    /// Markdown adapters have one hard line per block, so these identities
-    /// deliberately follow the corresponding stable block identities.
+    /// Stable identity of one projected hard line, independent of the
+    /// paragraph-bearing block which contains it.
     pub fn hard_line_id(&self, line: usize) -> Option<u64> {
         self.hard_lines.get(line).map(|line| line.id)
     }
@@ -2682,7 +2804,7 @@ impl FormattedDocument {
             return Some(self.source_content_start);
         }
         if at == self.text.byte_len() && matches!(side, Side::Downstream) {
-            return Some(self.source_content_end);
+            return Some(self.source_insertion_end);
         }
 
         let adjacent = self.provenance.query_touching(&(at..at));
@@ -3287,6 +3409,62 @@ pub(crate) fn splice_line_local_projection(
         )
         .ok_or(BlockIdentityError::InvalidProjection)?;
 
+    let flow_lines = if let Some(old_flow) = &previous.flow_lines {
+        let indices = old_flow.partition_point(|line| line.range.end < old_formatted.start)
+            ..old_flow.partition_point(|line| line.range.start <= old_formatted.end);
+        let old = old_flow
+            .get_range(&indices)
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        let parsed = regional.flow_lines.as_ref().unwrap_or(&regional.hard_lines);
+        let mut next = parsed
+            .as_slice()
+            .iter()
+            .map(|line| {
+                Ok(HardLine {
+                    id: line.id,
+                    range: shift_region_range(&line.range, old_formatted.start)?,
+                    separator_length: line.separator_length,
+                })
+            })
+            .collect::<Result<Vec<_>, BlockIdentityError>>()?;
+        let (Some(first), Some(last)) = (old.first(), old.last()) else {
+            return Err(BlockIdentityError::InvalidProjection);
+        };
+        // Source restart regions retain an unchanged neighboring physical line
+        // (or validated inherited HTML prose context). Connections outside the
+        // region therefore keep their old classification. Extend the edge
+        // records without reading or rebuilding the untouched prose suffix.
+        if first.range.start < old_formatted.start {
+            next.first_mut()
+                .ok_or(BlockIdentityError::InvalidProjection)?
+                .range
+                .start = first.range.start;
+        }
+        if last.range.end > old_formatted.end {
+            let tail = next
+                .last_mut()
+                .ok_or(BlockIdentityError::InvalidProjection)?;
+            tail.range.end = (last.range.end as i128 + new_formatted_end as i128
+                - old_formatted.end as i128)
+                .try_into()
+                .map_err(|_| BlockIdentityError::InvalidProjection)?;
+            tail.separator_length = last.separator_length;
+        }
+        Some(
+            old_flow
+                .splice(
+                    indices,
+                    next,
+                    old_formatted.end,
+                    new_formatted_end,
+                    &mut range_stats,
+                )
+                .ok_or(BlockIdentityError::InvalidProjection)?,
+        )
+    } else {
+        None
+    };
+
     let style_indices = contained_interval_indices(&previous.styles, &old_formatted)?;
     let regional_styles = regional
         .styles
@@ -3447,6 +3625,7 @@ pub(crate) fn splice_line_local_projection(
         flat_text: Arc::new(OnceLock::new()),
         blocks,
         hard_lines,
+        flow_lines,
         styles,
         provenance,
         source_boundaries,
@@ -3473,6 +3652,9 @@ pub(crate) fn splice_line_local_projection(
         document_style: previous.document_style.clone(),
         source_content_start: previous.source_content_start,
         source_content_end: new_source_content_end,
+        source_insertion_end: (previous.source_insertion_end as i128
+            + new_source_content_end as i128
+            - previous.source_content_end as i128) as usize,
     };
     Ok((
         candidate,
@@ -3661,6 +3843,72 @@ pub(crate) fn layout_test_plain_projection(text: String) -> FormattedDocument {
 }
 
 fn project_markdown(
+    normalized: &NormalizedText,
+    revision: Revision,
+    source_content_start: usize,
+    source_content_end: usize,
+    preserve_markers: bool,
+) -> FormattedDocument {
+    if preserve_markers {
+        let mut projected = project_markdown_lines(
+            normalized,
+            revision,
+            source_content_start,
+            source_content_end,
+            true,
+        );
+        projected.install_flow_ranges(super::paragraph_flow::flow_ranges(
+            normalized,
+            &super::paragraph_flow::markdown_soft_breaks(normalized),
+        ));
+        return projected;
+    }
+    let (cooked, explicit) = super::paragraph_flow::markdown(normalized);
+    let mut projected = project_markdown_lines(
+        &cooked,
+        revision,
+        source_content_start,
+        source_content_end,
+        false,
+    );
+    if let Some(ending) = normalized
+        .endings
+        .last()
+        .filter(|ending| ending.normalized.end == normalized.text.len())
+    {
+        if cooked
+            .units
+            .last()
+            .map_or(true, |unit| unit.source.end <= ending.source.start)
+        {
+            projected.source_insertion_end = ending.source.start;
+        }
+    }
+    if !explicit.is_empty() {
+        let mut paragraphs: Vec<Block> = Vec::new();
+        for block in projected.blocks() {
+            let join = paragraphs.last().is_some_and(|previous| {
+                previous.kind == BlockKind::Paragraph
+                    && block.kind == BlockKind::Paragraph
+                    && previous.style.0 != "Code Block"
+                    && block.style.0 != "Code Block"
+                    && projected
+                        .provenance_for_region(&(previous.range.end..block.range.start))
+                        .iter()
+                        .any(|span| explicit.contains(&span.source.end))
+            });
+            if join {
+                paragraphs.last_mut().unwrap().range.end = block.range.end;
+            } else {
+                paragraphs.push(block.clone());
+            }
+        }
+        projected.install_paragraph_partition(paragraphs);
+    }
+    projected
+}
+
+fn project_markdown_lines(
     normalized: &NormalizedText,
     revision: Revision,
     source_content_start: usize,
@@ -4518,7 +4766,7 @@ mod tests {
 
     #[test]
     fn line_local_source_ranges_decline_cross_line_and_relational_mappings() {
-        let projected = markdown("**a**\n_b_");
+        let projected = markdown("**a**\n\n_b_");
         assert_eq!(projected.line_local_visible_source_runs(0..3), None);
 
         let relational = FormattedDocument::from_parts(

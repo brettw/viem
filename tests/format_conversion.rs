@@ -294,7 +294,7 @@ fn ordinary_prose_after_a_fence_keeps_regional_editing_in_a_large_document() {
         (0..10_000)
             .map(|index| format!("prose {index}"))
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n\n")
     );
     let mut document = open(&source, Format::Markdown);
     let at = document.text().find("prose 5000").unwrap();

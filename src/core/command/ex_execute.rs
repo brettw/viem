@@ -644,6 +644,7 @@ pub enum ExExecuteError {
     EmptyRegister(Option<char>),
     NoPreviousSubstitute,
     NoPreviousSearch,
+    InvalidSortArgument(String),
     InvalidRegex(String),
     UnsupportedRegexAtom(String),
     UnsupportedReplacementAtom(String),
@@ -735,6 +736,7 @@ impl fmt::Display for ExExecuteError {
             },
             Self::NoPreviousSubstitute => formatter.write_str("no previous substitute"),
             Self::NoPreviousSearch => formatter.write_str("no previous search pattern"),
+            Self::InvalidSortArgument(error) => write!(formatter, "invalid sort argument: {error}"),
             Self::InvalidRegex(error) => write!(formatter, "invalid regular expression: {error}"),
             Self::UnsupportedRegexAtom(atom) => {
                 write!(
@@ -1247,6 +1249,43 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
             )?;
             plan.stage_hard_line_transfer(document, HardLineTransfer::Move, source, destination);
             plan.outcome.navigation = Some(ExNavigation::TextOffset(cursor));
+        }
+        ExAction::Sort(options) => {
+            let lines = if command.range.is_none() {
+                HardLineRange {
+                    start: 0,
+                    end: document.line_count() - 1,
+                }
+            } else {
+                resolve_range(
+                    command.range.as_ref(),
+                    context.current_line,
+                    document.line_count(),
+                )?
+            };
+            let (source_lines, order) =
+                super::sort::ordered_lines(document, context, lines, options, command.bang)?;
+            if !source_lines.is_empty() {
+                let first = order.first().copied().unwrap_or(source_lines.start);
+                let snapshot = document.hard_line_snapshot();
+                let destination = snapshot
+                    .line(source_lines.start)
+                    .unwrap()
+                    .content_range()
+                    .start;
+                let content = snapshot.line(first).unwrap().content_range();
+                let indent = snapshot.text()[content]
+                    .char_indices()
+                    .find(|(_, c)| !c.is_whitespace())
+                    .map_or(0, |(at, _)| at);
+                plan.outcome.navigation = Some(ExNavigation::TextOffset(destination + indent));
+                plan.mutation = ExMutation::Model(ModelRequest::ReorderHardLines {
+                    document: document.id(),
+                    revision: document.revision(),
+                    source_lines,
+                    order,
+                });
+            }
         }
         ExAction::Normal { commands } => {
             let range = resolve_range(
@@ -2672,7 +2711,7 @@ mod tests {
         assert_eq!(yank.register_effects[0].value.text, "four\nfive\n");
 
         let mut substituted = Document::from_bytes(
-            b"**x**\n__x__\n*x*\n_x_\n_x_".to_vec(),
+            b"**x**\n\n__x__\n\n*x*\n\n_x_\n\n_x_".to_vec(),
             Encoding::Latin1,
             Format::Markdown,
         )
@@ -2684,7 +2723,10 @@ mod tests {
             ":4substitute/x/y/g 3",
         )
         .unwrap();
-        assert_eq!(substituted.source_bytes(), b"**x**\n__x__\n*x*\n_y_\n_y_");
+        assert_eq!(
+            substituted.source_bytes(),
+            b"**x**\n\n__x__\n\n*x*\n\n_y_\n\n_y_"
+        );
 
         let mut joined = Document::new("one\ntwo\nthree\nfour\nfive");
         execute(&mut joined, &mut ExExecutionState::default(), 0, ":4join 3").unwrap();
@@ -3051,7 +3093,7 @@ mod tests {
 
     #[test]
     fn markdown_copy_and_move_preserve_source_syntax_and_target_the_last_line() {
-        let source = b"# H\n  **one**\n_two_\ntail";
+        let source = b"# H\n\n  **one**\n\n_two_\n\ntail";
         let mut copied = Document::from_bytes(
             source.to_vec(),
             crate::document::Encoding::Utf8,
@@ -3067,7 +3109,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             copied.source_bytes(),
-            b"# H\n  **one**\n_two_\ntail\n# H\n  **one**"
+            b"# H\n\n  **one**\n\n_two_\n\ntail\n\n# H\n\n  **one**"
         );
         assert_eq!(copied.text(), "H\n  one\ntwo\ntail\nH\n  one");
         assert_eq!(
@@ -3099,7 +3141,7 @@ mod tests {
             ":1,2move 4",
         )
         .unwrap();
-        assert_eq!(moved.source_bytes(), b"_two_\ntail\n# H\n  **one**");
+        assert_eq!(moved.source_bytes(), b"_two_\n\ntail\n\n# H\n\n  **one**");
         assert_eq!(moved.text(), "two\ntail\nH\n  one");
         assert_eq!(
             moved_outcome.navigation,

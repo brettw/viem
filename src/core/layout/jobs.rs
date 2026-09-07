@@ -402,6 +402,60 @@ impl LayoutJobRequest {
     }
 }
 
+/// Source-flow shaping substitutes only classified internal source breaks.
+/// UTF-8 byte positions remain identical to the editable source projection.
+pub(super) fn flow_text(text: String, origin: usize, lines: &[Range<usize>]) -> String {
+    let mut bytes = text.into_bytes();
+    for line in lines {
+        let start = line.start.max(origin) - origin;
+        let end = line.end.saturating_sub(origin).min(bytes.len());
+        for byte in &mut bytes[start.min(end)..end] {
+            if *byte == b'\n' {
+                *byte = b' ';
+            }
+        }
+    }
+    String::from_utf8(bytes).expect("ASCII whitespace replacement preserves UTF-8")
+}
+
+pub(crate) fn flow_paragraph_styles(styles: &mut DocumentLayoutStyles, lines: &[Range<usize>]) {
+    let mut paragraphs = Vec::new();
+    for line in lines {
+        if let Some(paragraph) = styles.paragraphs.iter().find(|paragraph| {
+            paragraph.text_range.start <= line.start && line.start <= paragraph.text_range.end
+        }) {
+            let mut paragraph = paragraph.clone();
+            paragraph.text_range = line.clone();
+            paragraphs.push(paragraph);
+        }
+    }
+    styles.paragraphs = paragraphs;
+}
+
+/// A bounded long-line capture may start after the first physical block in a
+/// flowed source paragraph. Fetch only that block's cascade before extending
+/// its paragraph geometry over the complete presentation line.
+pub(crate) fn resolve_flow_paragraph_styles(
+    projection: &crate::document::FormattedDocument,
+    styles: &mut DocumentLayoutStyles,
+    lines: &[Range<usize>],
+) -> Result<(), DocumentStyleError> {
+    for line in lines {
+        if !styles.paragraphs.iter().any(|paragraph| {
+            paragraph.text_range.start <= line.start && line.start <= paragraph.text_range.end
+        }) {
+            let origin = DocumentLayoutStyles::resolve_region(projection, line.start..line.start)?;
+            if let Some(paragraph) = origin.paragraphs.into_iter().find(|paragraph| {
+                paragraph.text_range.start <= line.start && line.start <= paragraph.text_range.end
+            }) {
+                styles.paragraphs.push(paragraph);
+            }
+        }
+    }
+    flow_paragraph_styles(styles, lines);
+    Ok(())
+}
+
 fn retain_regional_styles(
     mut styles: DocumentLayoutStyles,
     line_ranges: &[Range<usize>],
@@ -424,6 +478,22 @@ fn retain_regional_styles(
     styles
 }
 
+fn following_style_end(
+    document: &Document,
+    following: Option<&Range<usize>>,
+    default_end: usize,
+) -> Result<usize, FormattedTextError> {
+    let Some(following) = following else {
+        return Ok(default_end);
+    };
+    Ok(document
+        .projection()
+        .text_tree()
+        .next_grapheme_boundary(following.start)?
+        .unwrap_or(following.start)
+        .min(following.end))
+}
+
 fn paragraph_matches_line(paragraph: Range<usize>, line: &Range<usize>) -> bool {
     if line.is_empty() {
         paragraph.start == line.start
@@ -436,14 +506,12 @@ fn paragraph_matches_line(paragraph: Range<usize>, line: &Range<usize>) -> bool 
 fn document_line_range(
     document: &Document,
     hard_line: usize,
+    flow: bool,
 ) -> Result<Range<usize>, LayoutJobError> {
-    let start = document
-        .line_start(hard_line)
-        .ok_or(LayoutJobError::InvalidDocumentLineIndex { hard_line })?;
-    let end = document
-        .line_end(hard_line)
-        .ok_or(LayoutJobError::InvalidDocumentLineIndex { hard_line })?;
-    Ok(start..end)
+    document
+        .projection()
+        .presentation_line_range(hard_line, flow)
+        .ok_or(LayoutJobError::InvalidDocumentLineIndex { hard_line })
 }
 
 fn validate_long_line_checkpoint(
@@ -594,7 +662,9 @@ where
             newest: newest_job,
         });
     }
-    let hard_line_count = document.line_count();
+    let hard_line_count = document
+        .projection()
+        .presentation_line_count(view.paragraph_flow());
     let requested_lines = region.hard_lines();
     if requested_lines.end > hard_line_count {
         return Err(LayoutJobError::RegionOutsideDocument { hard_line_count });
@@ -606,13 +676,7 @@ where
             if cancellation.is_cancelled() {
                 return Err(LayoutJobError::Cancelled);
             }
-            let start = document
-                .line_start(hard_line)
-                .ok_or(LayoutJobError::InvalidDocumentLineIndex { hard_line })?;
-            let end = document
-                .line_end(hard_line)
-                .ok_or(LayoutJobError::InvalidDocumentLineIndex { hard_line })?;
-            Ok(start..end)
+            document_line_range(document, hard_line, view.paragraph_flow())
         })
         .collect::<Result<Vec<_>, LayoutJobError>>()?;
     let checkpoint = match &region {
@@ -656,13 +720,15 @@ where
             .text_tree()
             .slice(capture_range.clone())?;
         let following_line_range = if work_end == full_range.end && range.end < hard_line_count {
-            Some(document_line_range(document, range.end)?)
+            Some(document_line_range(
+                document,
+                range.end,
+                view.paragraph_flow(),
+            )?)
         } else {
             None
         };
-        let style_end = following_line_range
-            .as_ref()
-            .map_or(context_end, |following| following.end);
+        let style_end = following_style_end(document, following_line_range.as_ref(), context_end)?;
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }
@@ -671,6 +737,18 @@ where
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }
+        let (text, styles) = if view.paragraph_flow() {
+            let mut styles = styles;
+            let mut style_ranges = vec![full_range.clone()];
+            style_ranges.extend(following_line_range.clone());
+            resolve_flow_paragraph_styles(document.projection(), &mut styles, &style_ranges)?;
+            (
+                flow_text(text, context_start, std::slice::from_ref(&full_range)),
+                styles,
+            )
+        } else {
+            (text, styles)
+        };
         let styles = retain_regional_styles(
             styles,
             std::slice::from_ref(&capture_range),
@@ -708,16 +786,18 @@ where
             .text_tree()
             .slice(text_origin..text_end)?;
         let following_line_range = if range.end < hard_line_count {
-            Some(document_line_range(document, range.end)?)
+            Some(document_line_range(
+                document,
+                range.end,
+                view.paragraph_flow(),
+            )?)
         } else {
             None
         };
         // Resolve document-root values once, but visit only the requested
         // blocks, intersecting spans, and one following paragraph needed to
         // determine the requested region's trailing spacing.
-        let style_end = following_line_range
-            .as_ref()
-            .map_or(text_end, |following| following.end);
+        let style_end = following_style_end(document, following_line_range.as_ref(), text_end)?;
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }
@@ -726,6 +806,15 @@ where
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }
+        let (text, styles) = if view.paragraph_flow() {
+            let mut styles = styles;
+            let mut ranges = line_ranges.clone();
+            ranges.extend(following_line_range.clone());
+            resolve_flow_paragraph_styles(document.projection(), &mut styles, &ranges)?;
+            (flow_text(text, text_origin, &line_ranges), styles)
+        } else {
+            (text, styles)
+        };
         let styles = retain_regional_styles(styles, &line_ranges, following_line_range.as_ref());
         let captured_view = view.capture_for_regional_layout_job(text_origin..text_end);
         (

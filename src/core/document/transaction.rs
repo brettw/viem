@@ -7,6 +7,10 @@
 
 #[path = "fragments.rs"]
 mod fragments;
+#[path = "markdown_block_styles.rs"]
+mod markdown_block_styles;
+#[path = "markdown_typing.rs"]
+mod markdown_typing;
 #[path = "replacement.rs"]
 mod replacement;
 #[path = "typing.rs"]
@@ -243,6 +247,14 @@ pub enum ModelRequest {
         revision: Revision,
         target: super::Encoding,
     },
+    /// Reorder a nonempty hard-line span, optionally removing duplicates.
+    /// `order` contains distinct pre-edit ordinals inside `source_lines`.
+    ReorderHardLines {
+        document: DocumentId,
+        revision: Revision,
+        source_lines: Range<usize>,
+        order: Vec<usize>,
+    },
     TransferHardLines {
         document: DocumentId,
         revision: Revision,
@@ -285,6 +297,7 @@ impl ModelRequest {
             | Self::SetFileFormat { document, .. }
             | Self::SetFormat { document, .. }
             | Self::SetEncoding { document, .. }
+            | Self::ReorderHardLines { document, .. }
             | Self::TransferHardLines { document, .. }
             | Self::RestoreHardLineSource { document, .. }
             | Self::NavigateHistory { document, .. } => *document,
@@ -307,6 +320,7 @@ impl ModelRequest {
             | Self::SetFileFormat { revision, .. }
             | Self::SetFormat { revision, .. }
             | Self::SetEncoding { revision, .. }
+            | Self::ReorderHardLines { revision, .. }
             | Self::TransferHardLines { revision, .. }
             | Self::RestoreHardLineSource { revision, .. }
             | Self::NavigateHistory { revision, .. } => *revision,
@@ -997,6 +1011,14 @@ impl Document {
             ModelRequest::SetFileFormat { target, .. } => self.prepare_file_format(target),
             ModelRequest::SetFormat { target, .. } => self.prepare_format(target),
             ModelRequest::SetEncoding { target, .. } => self.prepare_encoding(target),
+            ModelRequest::ReorderHardLines {
+                source_lines,
+                order,
+                ..
+            } => match super::reorder::plan(self, source_lines, order)? {
+                Some(plan) => self.prepare_hard_line_transfer_plan(plan),
+                None => Ok(self.no_op_prepared()),
+            },
             ModelRequest::TransferHardLines {
                 operation,
                 source_lines,
@@ -2495,6 +2517,7 @@ impl Document {
             return Ok(self.no_op_prepared());
         }
 
+        let translate_source = explicit_source_patches.is_none();
         let mut source_patches = Vec::with_capacity(edits.len());
         if let Some(patches) = explicit_source_patches {
             source_patches = patches;
@@ -2674,12 +2697,24 @@ impl Document {
                     Format::Markdown if in_code && !edit.replacement.contains('`') => {
                         edit.replacement.clone()
                     }
-                    Format::Markdown => escape_markdown_insert(&edit.replacement),
+                    Format::Markdown => {
+                        escape_markdown_insert(&edit.replacement).replace('\n', "\n\n")
+                    }
                 };
                 let syntax = spell_logical_breaks(&syntax, self.state().file_format);
                 let replacement = self.state().encoding.encode_fragment(&syntax)?;
                 source_patches.push(SourcePatch::primary(source_range, replacement));
             }
+        }
+        if translate_source && self.format() == Format::Markdown {
+            markdown_block_styles::preserve_split_boundaries(
+                self,
+                edits
+                    .iter()
+                    .filter(|edit| edit.replacement.contains('\n'))
+                    .map(|edit| &edit.range),
+                &mut source_patches,
+            )?;
         }
         if self.format() == Format::Html {
             for edit in &edits {
@@ -3071,6 +3106,16 @@ impl Document {
             let replacement = self.state().encoding.encode_fragment(&syntax)?;
             source_patches.push(SourcePatch::primary(source_range, replacement));
         }
+        if self.format() == Format::Markdown {
+            markdown_block_styles::preserve_split_boundaries(
+                self,
+                edits
+                    .iter()
+                    .filter(|edit| !edit.payload.break_offsets().is_empty())
+                    .map(|edit| &edit.range),
+                &mut source_patches,
+            )?;
+        }
         validate_source_patches(&mut source_patches)?;
 
         let source = apply_source_patches(&self.state().source, &source_patches)?;
@@ -3143,9 +3188,16 @@ impl Document {
         source_lines: Range<usize>,
         destination: usize,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        let Some(mut plan) = transfer::plan(self, operation, source_lines, destination)? else {
+        let Some(plan) = transfer::plan(self, operation, source_lines, destination)? else {
             return Ok(self.no_op_prepared());
         };
+        self.prepare_hard_line_transfer_plan(plan)
+    }
+
+    fn prepare_hard_line_transfer_plan(
+        &self,
+        mut plan: transfer::HardLineTransferPlan,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         let mut source_patches = plan
             .source_patches
             .drain(..)
@@ -3189,6 +3241,12 @@ impl Document {
             &candidate.projection,
             map_splices,
         )?;
+        let source_mode_styles = plan.expected_signatures.is_none().then(|| {
+            (
+                candidate.projection.style_sheet().clone(),
+                candidate.projection.document_style().clone(),
+            )
+        });
         let next_projected_block_id = candidate
             .projection
             .install_transferred_block_ids(
@@ -3197,6 +3255,13 @@ impl Document {
                 self.next_projected_block_id,
             )
             .map_err(super::block_identity_document_error)?;
+        if let Some((sheet, document_style)) = source_mode_styles {
+            candidate.projection.install_configuration_styles(
+                after_revision,
+                sheet,
+                document_style,
+            );
+        }
         let projection_work = ProjectionWorkStatistics::full(&candidate);
         Ok(self.prepared(
             after_revision,
@@ -3258,10 +3323,7 @@ impl Document {
             return Ok(self.no_op_prepared());
         }
 
-        let source_range = self
-            .state()
-            .source_hard_lines
-            .get(target_line)
+        let source_range = super::hard_line_source_range_from_state(self.state(), target_line)
             .ok_or(DocumentError::HardLineSourceImageProjectionMismatch)?;
         let mut source_patches = hard_line_byte_difference(
             &current.source_bytes,
@@ -3750,7 +3812,11 @@ impl Document {
             format!("{} ", "#".repeat(usize::from(level)))
         };
         let mut edits = Vec::new();
-        let mut patches = Vec::new();
+        let mut patches = if self.format() == Format::Markdown {
+            markdown_block_styles::support_patches(self, &range, level > 0, level == 0)?
+        } else {
+            Vec::new()
+        };
         for index in first..self.projection().hard_line_count() {
             let line = self
                 .projection()
@@ -3759,10 +3825,22 @@ impl Document {
             if index != first && line.start >= range.end {
                 break;
             }
+            let source_index = if self.format() == Format::Markdown {
+                let source_at = self
+                    .projection()
+                    .source_insertion_point(line.start, true)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                self.state()
+                    .source_hard_lines
+                    .line_at_offset(source_at)
+                    .ok_or(DocumentError::AmbiguousProjection)?
+            } else {
+                index
+            };
             let source_line = self
                 .state()
                 .source_hard_lines
-                .get(index)
+                .get(source_index)
                 .ok_or(DocumentError::VerificationFailed)?;
             let bytes = self
                 .state()
@@ -3835,7 +3913,11 @@ impl Document {
             .hard_line_at_offset(range.start)
             .ok_or(DocumentError::VerificationFailed)?;
         let mut edits = Vec::new();
-        let mut patches = Vec::new();
+        let mut patches = if self.format() == Format::Markdown {
+            markdown_block_styles::support_patches(self, &range, style.is_some(), style.is_none())?
+        } else {
+            Vec::new()
+        };
         let mut ordinal = 1usize;
         for index in first..self.projection().hard_line_count() {
             let line = self
@@ -3879,10 +3961,22 @@ impl Document {
             if visible[..remove_visible] == prefix {
                 continue;
             }
+            let source_index = if self.format() == Format::Markdown {
+                let source_at = self
+                    .projection()
+                    .source_insertion_point(line.start, true)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                self.state()
+                    .source_hard_lines
+                    .line_at_offset(source_at)
+                    .ok_or(DocumentError::AmbiguousProjection)?
+            } else {
+                index
+            };
             let source_line = self
                 .state()
                 .source_hard_lines
-                .get(index)
+                .get(source_index)
                 .ok_or(DocumentError::VerificationFailed)?;
             let bytes = self
                 .state()
@@ -4234,9 +4328,33 @@ impl Document {
             super::rich_text::text_source_range(self, &(at..at))?.start
         } else {
             self.projection()
-                .source_insertion_point(at, at == block.range.start)
+                .source_insertion_point(
+                    at,
+                    at == block.range.start && at < self.projection().text_tree().byte_len(),
+                )
                 .ok_or(DocumentError::AmbiguousProjection)?
         };
+        if at > 0
+            && at == self.projection().text_tree().byte_len()
+            && next == block.style
+            && self
+                .projection()
+                .hard_line_at_offset(at)
+                .and_then(|line| self.projection().hard_line_range(line))
+                .is_some_and(|line| line.is_empty())
+        {
+            // The existing empty final paragraph already carries its style.
+            // Further Return presses add hard breaks within that paragraph.
+            // In particular, never choose source_content_end beyond </body>.
+            let patch = SourcePatch::primary(
+                source_at..source_at,
+                self.encoding().encode_fragment("<br>")?,
+            );
+            return self.prepare_text_edits_with_patches(
+                vec![TextEdit::new(at..at, "\n")],
+                Some(vec![patch]),
+            );
+        }
         let spans = self
             .projection()
             .provenance_for_region(&block.range)
@@ -5473,7 +5591,9 @@ impl Document {
                 .encoding
                 .decode_region(&regional_bytes, new_source.start)?;
             let normalized = normalize(&decoded, self.state().file_format);
-            if normalized.endings.len() + 1 != region.hard_lines.len() {
+            if self.format() != Format::Markdown
+                && normalized.endings.len() + 1 != region.source_lines.len()
+            {
                 return Err(DocumentError::VerificationFailed.into());
             }
             let regional_projection = if region.inherit_html_context {
@@ -6050,6 +6170,29 @@ impl Document {
             first_line = first_line.min(line);
             last_line = last_line.max(line);
         }
+        if self.format() == Format::MarkdownSource {
+            // A source marker can change whether either adjacent physical
+            // break is prose whitespace. Capture one unchanged neighbor on
+            // each side, never the complete (possibly enormous) flow group.
+            first_line = first_line.saturating_sub(1);
+            last_line = (last_line + 1).min(self.projection().hard_line_count() - 1);
+        } else if self.format() == Format::Markdown {
+            let start = self.projection().hard_line_range(first_line).unwrap().start;
+            let end = self.projection().hard_line_range(last_line).unwrap().end;
+            let blocks = self.projection().blocks_for_region(&(start..end));
+            if let (Some(first), Some(last)) = (blocks.first(), blocks.last()) {
+                first_line = first_line.min(
+                    self.projection()
+                        .hard_line_at_offset(first.range.start)
+                        .unwrap(),
+                );
+                last_line = last_line.max(
+                    self.projection()
+                        .hard_line_at_offset(last.range.end)
+                        .unwrap(),
+                );
+            }
+        }
         let hard_lines = first_line..last_line.saturating_add(1);
         if hard_lines.is_empty() || hard_lines.len() > MAX_LINE_LOCAL_PROJECTION_HARD_LINES {
             return Ok(None);
@@ -6086,9 +6229,6 @@ impl Document {
                 else {
                     return Ok(None);
                 };
-                if last + 1 - first != hard_lines.len() {
-                    return Ok(None);
-                }
                 first..last + 1
             } else {
                 return Ok(None);
@@ -6128,6 +6268,29 @@ impl Document {
                 &edits[0],
             );
         if self.format() == Format::HtmlSource && !inherit_html_context {
+            let flow_first = self
+                .projection()
+                .presentation_line_at_offset(old_formatted.start, true)
+                .unwrap();
+            let flow_last = self
+                .projection()
+                .presentation_line_at_offset(old_formatted.end, true)
+                .unwrap();
+            if self
+                .projection()
+                .presentation_line_range(flow_first, true)
+                .unwrap()
+                .start
+                != old_formatted.start
+                || self
+                    .projection()
+                    .presentation_line_range(flow_last, true)
+                    .unwrap()
+                    .end
+                    != old_formatted.end
+            {
+                return Ok(None);
+            }
             let old_text = self
                 .projection()
                 .text_tree()
@@ -6766,6 +6929,9 @@ fn structured_payload_syntax(
             syntax.push_str(segment);
         }
         syntax.push_str(file_format.spelling());
+        if format == Format::Markdown && !in_code {
+            syntax.push_str(file_format.spelling());
+        }
         start = hard_break
             .checked_add(1)
             .expect("validated payload break offset is representable");

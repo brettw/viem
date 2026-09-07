@@ -38,7 +38,7 @@ fn encode_fragment(encoding: Encoding, text: &str) -> Vec<u8> {
 
 #[test]
 fn source_image_restores_markdown_spelling_when_formatted_text_is_identical() {
-    let original = b"__bold__\r\nnext".to_vec();
+    let original = b"__bold__\r\n\r\nnext".to_vec();
     let mut document =
         Document::from_bytes(original.clone(), Encoding::Utf8, Format::Markdown).unwrap();
     assert_eq!(document.file_format(), FileFormat::Dos);
@@ -50,7 +50,7 @@ fn source_image_restores_markdown_spelling_when_formatted_text_is_identical() {
     document
         .set_semantic_style(0..4, SemanticInlineStyle::Strong, true)
         .unwrap();
-    let alternate = b"**bold**\r\nnext".to_vec();
+    let alternate = b"**bold**\r\n\r\nnext".to_vec();
     assert_eq!(document.source_bytes(), alternate);
     assert_eq!(document.text(), "bold\nnext");
 
@@ -141,8 +141,64 @@ fn source_image_restores_markdown_crlf_and_bom_exactly_in_every_encoding() {
 }
 
 #[test]
+fn source_image_restores_a_flowed_paragraph_and_its_original_physical_lines() {
+    for encoding in [
+        Encoding::Utf8,
+        Encoding::Latin1,
+        Encoding::Utf16Le,
+        Encoding::Utf16Be,
+    ] {
+        for suffix in ["\r\n", "\r\n\r\nlast\r\n"] {
+            let source = format!("# lead\r\n\r\n__one\r\ncontinued__{suffix}");
+            let original = encode_source(encoding, &source);
+            let mut document =
+                Document::from_bytes(original.clone(), encoding, Format::Markdown).unwrap();
+            let original_text = document.text().to_owned();
+            assert!(original_text.starts_with("lead\none continued"));
+            let image = document.capture_hard_line_source_image(1).unwrap();
+            let paragraph_source = if suffix.contains("last") {
+                "__one\r\ncontinued__\r\n\r\n"
+            } else {
+                "__one\r\ncontinued__\r\n"
+            };
+            assert_eq!(
+                image.source_byte_len(),
+                encode_fragment(encoding, paragraph_source).len()
+            );
+            let paragraph = document.projection().hard_line_range(1).unwrap();
+            document
+                .replace(paragraph.start..paragraph.start + 3, "ONE")
+                .unwrap();
+            let changed = encode_source(encoding, &source.replacen("one", "ONE", 1));
+            assert_eq!(document.source_bytes(), changed);
+
+            let prepared = document
+                .prepare_model_request(ModelRequest::RestoreHardLineSource {
+                    document: document.id(),
+                    revision: document.revision(),
+                    target_line: 1,
+                    image,
+                })
+                .unwrap();
+            assert_eq!(prepared.summary().source_patches().len(), 1);
+            assert_eq!(
+                prepared.summary().source_patches()[0].replacement(),
+                encode_fragment(encoding, "one")
+            );
+            document.commit_model_transaction(prepared).unwrap();
+            assert_eq!(document.source_bytes(), original);
+            assert_eq!(document.text(), original_text);
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), changed);
+            assert!(document.redo());
+            assert_eq!(document.source_bytes(), original);
+        }
+    }
+}
+
+#[test]
 fn source_image_restores_malformed_opaque_bytes_and_diagnostics() {
-    let original = b"**a\xffb**\r\nnext".to_vec();
+    let original = b"**a\xffb**\r\n\r\nnext".to_vec();
     let mut document =
         Document::from_bytes(original.clone(), Encoding::Utf8, Format::Markdown).unwrap();
     assert_eq!(document.text(), "a\u{fffd}b\nnext");
@@ -150,7 +206,7 @@ fn source_image_restores_malformed_opaque_bytes_and_diagnostics() {
     let image = document.capture_hard_line_source_image(0).unwrap();
 
     document.replace(0.."a\u{fffd}b".len(), "clean").unwrap();
-    let changed = b"**clean**\r\nnext".to_vec();
+    let changed = b"**clean**\r\n\r\nnext".to_vec();
     assert_eq!(document.source_bytes(), changed);
     assert!(document.decoding_diagnostics().is_empty());
 

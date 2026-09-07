@@ -14,6 +14,56 @@ fn fixture(format: Format, source: &str) -> (Core<MockTextMeasurementProvider>, 
     let view = core.add_view(MockTextMeasurementProvider::new(), 300., 100.);
     (core, view)
 }
+#[test]
+fn source_italic_input_before_existing_strong_word_keeps_unicode_and_whitespace() {
+    let source = "A **word** and more prose.\nA continuation.\n\nLast paragraph.";
+    let (mut core, view) = fixture(Format::MarkdownSource, source);
+    core.handle(view, key(Key::Char('i'))).unwrap();
+    core.handle(
+        view,
+        CoreEvent::PlaceCursor {
+            document_revision: core.document().revision(),
+            text_offset: source.find("word").unwrap(),
+            affinity: BoundaryAffinity::Downstream,
+            extend_selection: false,
+        },
+    )
+    .unwrap();
+    toggle(&mut core, view, SemanticInlineStyle::Emphasis, true);
+    core.handle(view, CoreEvent::Input(InputEvent::text("é👩🏽‍💻 ")))
+        .unwrap();
+    assert!(String::from_utf8_lossy(&core.document().source_bytes()).contains("é👩🏽‍💻 "));
+}
+#[test]
+fn wys_italic_cycle_before_existing_strong_word_in_flowed_paragraph() {
+    let source = "A **word** and more prose.\nA continuation.\n\nLast paragraph.";
+    let (mut core, view) = fixture(Format::Markdown, source);
+    core.handle(view, key(Key::Char('i'))).unwrap();
+    core.handle(
+        view,
+        CoreEvent::PlaceCursor {
+            document_revision: core.document().revision(),
+            text_offset: 2,
+            affinity: BoundaryAffinity::Downstream,
+            extend_selection: false,
+        },
+    )
+    .unwrap();
+    toggle(&mut core, view, SemanticInlineStyle::Emphasis, true);
+    core.handle(view, CoreEvent::Input(InputEvent::text("é👩🏽‍💻 ")))
+        .expect("italic text");
+    toggle(&mut core, view, SemanticInlineStyle::Emphasis, false);
+    core.handle(view, CoreEvent::Input(InputEvent::text("plain ")))
+        .expect("plain text");
+    core.handle(view, key(Key::Escape)).unwrap();
+    core.handle(view, key(Key::Char('u'))).unwrap();
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+    core.handle(view, key(Key::Ctrl('r'))).unwrap();
+    assert_eq!(
+        core.document().text(),
+        "A é👩🏽‍💻 plain word and more prose. A continuation.\nLast paragraph."
+    );
+}
 fn toggle(
     core: &mut Core<MockTextMeasurementProvider>,
     view: evim_core::ViewId,

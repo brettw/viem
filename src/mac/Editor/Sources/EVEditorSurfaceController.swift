@@ -419,6 +419,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             performInput { _ = try session.setWrap(!self.wrapEnabled) }
         case .wrapAtWordBoundaries:
             performInput { _ = try session.setLinebreak(!self.linebreakEnabled) }
+        case .flowParagraphs:
+            performInput { try session.setParagraphFlow(!(try session.paragraphFlow())) }
         case .lineEndingUnix:
             setFileFormat(UInt32(EVIM_FILE_FORMAT_UNIX), session: session)
         case .lineEndingWindows:
@@ -543,6 +545,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             EVMenuItemPresentation(isEnabled: true, state: wrapEnabled ? .on : .off)
         case .wrapAtWordBoundaries:
             EVMenuItemPresentation(isEnabled: wrapEnabled, state: linebreakEnabled ? .on : .off)
+        case .flowParagraphs:
+            EVMenuItemPresentation(isEnabled: [.markdownSource, .htmlSource].contains(backend.sourceFormat), state: (try? session?.paragraphFlow()) == true ? .on : .off)
         case .lineEndingUnix:
             fileFormatPresentation(UInt32(EVIM_FILE_FORMAT_UNIX))
         case .lineEndingWindows:

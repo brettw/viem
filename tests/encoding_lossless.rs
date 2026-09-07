@@ -192,7 +192,7 @@ fn markdown_preserves_opaque_bytes_and_maps_diagnostic_to_visible_content() {
     )
     .unwrap();
 
-    assert_eq!(document.text(), format!("A {REPLACEMENT} B\n"));
+    assert_eq!(document.text(), format!("A {REPLACEMENT} B"));
     assert_eq!(document.source_bytes(), source);
     assert_eq!(document.decoding_diagnostics()[0].source_range, 6..7);
     assert_eq!(document.decoding_diagnostics()[0].formatted_range, 2..5);
@@ -205,7 +205,7 @@ fn markdown_preserves_opaque_bytes_and_maps_diagnostic_to_visible_content() {
     assert_eq!(document.decoding_diagnostics()[0].source_range, 6..7);
 
     document.replace(2..5, "x").unwrap();
-    assert_eq!(document.text(), "A x C\n");
+    assert_eq!(document.text(), "A x C");
     assert_eq!(document.source_bytes(), b"# A **x C**\n");
     assert!(document.decoding_diagnostics().is_empty());
 }
@@ -256,23 +256,23 @@ fn markdown_with_malformed_utf16_keeps_syntax_bom_and_history_losslessly() {
         )
         .unwrap();
 
-        assert_eq!(document.text(), format!("{REPLACEMENT}\n"));
+        assert_eq!(document.text(), format!("{REPLACEMENT}"));
         assert_eq!(document.source_bytes(), source);
         assert_eq!(document.decoding_diagnostics()[0].source_range, 10..12);
         assert_eq!(document.decoding_diagnostics()[0].formatted_range, 0..3);
 
         document.replace(0..3, "x").unwrap();
-        assert_eq!(document.text(), "x\n");
+        assert_eq!(document.text(), "x");
         assert_eq!(document.source_bytes(), edited);
         assert!(document.decoding_diagnostics().is_empty());
 
         assert!(document.undo());
-        assert_eq!(document.text(), format!("{REPLACEMENT}\n"));
+        assert_eq!(document.text(), format!("{REPLACEMENT}"));
         assert_eq!(document.source_bytes(), source);
         assert_eq!(document.decoding_diagnostics()[0].source_range, 10..12);
 
         assert!(document.redo());
-        assert_eq!(document.text(), "x\n");
+        assert_eq!(document.text(), "x");
         assert_eq!(document.source_bytes(), edited);
         assert!(document.decoding_diagnostics().is_empty());
     }

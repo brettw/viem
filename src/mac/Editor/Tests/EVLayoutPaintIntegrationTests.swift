@@ -134,6 +134,96 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
   }
 
   @MainActor
+  func testBlockCaretRetainsItalicInkFromNeighboringCharactersAfterResizeAndMetricsChange() throws {
+    let backend = EVCoreDocumentBackend()
+    let source = "<p style='font-family: Georgia; font-size: 56pt'><i>fifty riffraff</i></p>"
+    try backend.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
+    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+    surface.loadViewIfNeeded()
+    let session = try XCTUnwrap(surface.session)
+    for width in [700, 280, 600] {
+      surface.view.frame = NSRect(x: 0, y: 0, width: width, height: 180)
+      surface.viewDidLayout()
+      _ = try session.resize(width: CGFloat(width), height: 180)
+      _ = session.provider.invalidateMetrics()
+      surface.refreshPresentation()
+      let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+      let first = try XCTUnwrap(snapshot.clusters.first { $0.text_start == 0 })
+      let second = try XCTUnwrap(snapshot.clusters.first { $0.text_start == 1 })
+      let rect = surface.editorView.viewRect(second.typographic_bounds)
+      XCTAssertGreaterThan(surface.editorView.viewRect(first.ink_bounds).maxX, rect.minX,
+                           "This fixture must have an italic overhang entering the next caret cell")
+      let redraw = surface.editorView.caretRedrawClusters(in: rect, snapshot: snapshot)
+      let damage = surface.editorView.drawingClusters(in: rect, snapshot: snapshot)
+      XCTAssertTrue(damage.contains { $0.text_start == 0 }, "Paint culling must retain neighboring ink")
+      XCTAssertTrue(redraw.contains { $0.text_start == 0 }, "The block must restore the previous f's overhang")
+      XCTAssertTrue(redraw.contains { $0.text_start == 1 }, "The block must restore its own i")
+      XCTAssertTrue(redraw.allSatisfy {
+        $0.render_run.metrics_generation == session.provider.metricsGeneration
+      })
+      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+    }
+  }
+
+  @MainActor
+  func testCaretInkLookupRemainsViewportBoundedInLargeDocument() throws {
+    let backend = EVCoreDocumentBackend()
+    try backend.read(source: Data(String(repeating: "fifty riffraff\n", count: 20_000).utf8),
+                     typeName: EVDocument.plainTextType)
+    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+    surface.loadViewIfNeeded()
+    let session = try XCTUnwrap(surface.session)
+    _ = try session.resize(width: 300, height: 160)
+    surface.refreshPresentation()
+    let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+    let cluster = try XCTUnwrap(snapshot.clusters.first)
+    let redraw = surface.editorView.caretRedrawClusters(
+      in: surface.editorView.viewRect(cluster.typographic_bounds), snapshot: snapshot)
+    XCTAssertLessThan(snapshot.rows.count, 100)
+    XCTAssertFalse(redraw.isEmpty)
+    XCTAssertLessThan(redraw.count, 10)
+  }
+
+  @MainActor
+  func testLongFlowedParagraphDrawsOnlyVisibleInkAfterResizeAndMetricsInvalidation() throws {
+    let source = String(repeating: "naturally flowing prose with neighboring letters\n", count: 6_000)
+    for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+      let backend = EVCoreDocumentBackend()
+      try backend.read(source: Data(source.utf8), typeName: type)
+      let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+      surface.loadViewIfNeeded()
+      let session = try XCTUnwrap(surface.session)
+      if type == EVDocument.markdownSourceType { _ = try session.setParagraphFlow(true) }
+      var previousIdentity: EvimLayoutSnapshotIdentityV1?
+      for width in [420, 280] {
+        surface.view.frame = NSRect(x: 0, y: 0, width: width, height: 200)
+        surface.viewDidLayout()
+        _ = session.provider.invalidateMetrics()
+        surface.refreshPresentation()
+        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+        if let previousIdentity {
+          XCTAssertFalse(previousIdentity.isSameLayout(as: snapshot.info.identity))
+        }
+        previousIdentity = snapshot.info.identity
+        XCTAssertGreaterThan(snapshot.clusters.count, 10_000,
+                             "Keep substantial shaping context so this exercises native culling")
+        let visible = surface.editorView.drawingClusters(in: surface.editorView.bounds, snapshot: snapshot)
+        XCTAssertFalse(visible.isEmpty)
+        XCTAssertLessThan(visible.count, 2_000, "Only viewport ink may reach native drawing")
+        XCTAssertLessThan(visible.count * 10, snapshot.clusters.count)
+        XCTAssertTrue(visible.allSatisfy { $0.render_run.metrics_generation == session.provider.metricsGeneration })
+        let first = try XCTUnwrap(visible.first)
+        let damage = surface.editorView.viewRect(first.typographic_bounds)
+        let local = surface.editorView.drawingClusters(in: damage, snapshot: snapshot)
+        XCTAssertTrue(local.contains { $0.text_start == first.text_start })
+        XCTAssertLessThan(local.count, 10, "Caret damage must not redraw a long paragraph")
+        _ = try render(surface.editorView)
+        XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+      }
+    }
+  }
+
+  @MainActor
   func testEmptyDocumentCaretWidthUsesCurrentTypingFont() throws {
     let surface = try makeSurface(text: "")
     let session = try XCTUnwrap(surface.session)
