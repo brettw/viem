@@ -11,6 +11,24 @@ protocol EVPasteboardAccess: AnyObject {
     func evimCanReadString() -> Bool
     @discardableResult func evimClearContents() -> Int
     @discardableResult func evimSetString(_ string: String) -> Bool
+    func evimData(forType type: NSPasteboard.PasteboardType) -> Data?
+    @discardableResult func evimWrite(_ content: EVClipboardRepresentations) -> Bool
+}
+
+extension EVPasteboardAccess {
+    func evimData(forType type: NSPasteboard.PasteboardType) -> Data? { nil }
+    @discardableResult func evimWrite(_ content: EVClipboardRepresentations) -> Bool {
+        guard evimIsWritable else { return false }
+        evimClearContents()
+        return evimSetString(content.plainText)
+    }
+}
+
+struct EVClipboardRepresentations {
+    static let fragmentType = NSPasteboard.PasteboardType("com.evim.clipboard.fragment.v1")
+    let plainText: String
+    var richText: Data? = nil
+    var fragment: Data? = nil
 }
 
 /// Do not retain AppKit's process-wide pasteboard proxy in every surface.
@@ -43,6 +61,18 @@ final class EVAppKitPasteboardAccess: EVPasteboardAccess {
     func evimSetString(_ string: String) -> Bool {
         nativePasteboard.setString(string, forType: .string)
     }
+    func evimData(forType type: NSPasteboard.PasteboardType) -> Data? {
+        nativePasteboard.data(forType: type)
+    }
+    @discardableResult func evimWrite(_ content: EVClipboardRepresentations) -> Bool {
+        let item = NSPasteboardItem()
+        guard item.setString(content.plainText, forType: .string) else { return false }
+        if let data = content.richText, !item.setData(data, forType: .rtf) { return false }
+        if let data = content.fragment, !item.setData(data, forType: EVClipboardRepresentations.fragmentType) { return false }
+        let board = nativePasteboard
+        board.clearContents()
+        return board.writeObjects([item])
+    }
 }
 
 struct EVClipboardTurnSnapshot: Equatable {
@@ -50,6 +80,7 @@ struct EVClipboardTurnSnapshot: Equatable {
     let generation: UInt64
     let plainText: String?
     let isWritable: Bool
+    var fragmentJSON: Data? = nil
 }
 
 struct EVHostEffectAccessCounters: Equatable {
@@ -66,6 +97,7 @@ struct EVClipboardWriteEffect: Equatable {
     let documentRevision: UInt64
     let plainText: String
     let hardBreaks: [UInt64]
+    var fragmentJSON: Data? = nil
 }
 
 enum EVExOptionValue: Equatable {
@@ -132,7 +164,7 @@ struct EVHostEffectBatch: Equatable {
     let navigationUTF8Offset: UInt64?
     let navigationRestoresHistory: Bool
     let substitutionCount: UInt64
-    let clipboardWrites: [EVClipboardWriteEffect]
+    var clipboardWrites: [EVClipboardWriteEffect]
     let exEffects: [EVExHostEffect]
 }
 
@@ -158,11 +190,12 @@ private struct EVRawEffectBatch {
 
 extension EVCoreViewSession {
     func withCommandTurnContext<Result>(
-        _ body: (UnsafePointer<EvimCommandTurnContextV1>) -> Result
+        _ body: (UnsafePointer<EvimCommandTurnContextV2>) -> Result
     ) -> Result {
         let snapshots = commandTurnHost?.clipboardSnapshotsForCommandTurn() ?? []
         var arena = Data()
         var ranges: [Range<Int>?] = []
+        var fragmentRanges: [Range<Int>?] = []
         ranges.reserveCapacity(snapshots.count)
         for snapshot in snapshots {
             if let text = snapshot.plainText {
@@ -172,12 +205,17 @@ extension EVCoreViewSession {
             } else {
                 ranges.append(nil)
             }
+            if let fragment = snapshot.fragmentJSON, snapshot.plainText != nil {
+                let start = arena.count
+                arena.append(fragment)
+                fragmentRanges.append(start ..< arena.count)
+            } else { fragmentRanges.append(nil) }
         }
 
         return arena.withUnsafeBytes { bytes in
             let entries = snapshots.enumerated().map { index, snapshot in
-                var entry = EvimClipboardTurnEntryV1()
-                entry.struct_size = UInt32(MemoryLayout<EvimClipboardTurnEntryV1>.size)
+                var entry = EvimClipboardTurnEntryV2()
+                entry.struct_size = UInt32(MemoryLayout<EvimClipboardTurnEntryV2>.size)
                 entry.target = snapshot.target
                 entry.generation = snapshot.generation
                 if snapshot.plainText != nil {
@@ -191,11 +229,16 @@ extension EVCoreViewSession {
                 if snapshot.isWritable {
                     entry.flags |= UInt32(EVIM_CLIPBOARD_TURN_WRITABLE)
                 }
+                if let range = fragmentRanges[index] {
+                    entry.fragment_json.data = bytes.bindMemory(to: UInt8.self).baseAddress?
+                        .advanced(by: range.lowerBound)
+                    entry.fragment_json.length = UInt64(range.count)
+                }
                 return entry
             }
             return entries.withUnsafeBufferPointer { entryBuffer in
-                var context = EvimCommandTurnContextV1()
-                context.struct_size = UInt32(MemoryLayout<EvimCommandTurnContextV1>.size)
+                var context = EvimCommandTurnContextV2()
+                context.struct_size = UInt32(MemoryLayout<EvimCommandTurnContextV2>.size)
                 context.clipboards = entryBuffer.baseAddress
                 context.clipboard_count = UInt64(entryBuffer.count)
                 return withUnsafePointer(to: &context, body)
@@ -298,7 +341,13 @@ extension EVCoreViewSession {
               copiedInfo.hard_break_count == info.hard_break_count,
               copiedInfo.string_bytes == info.string_bytes
         else { throw EVCoreFrontendError.invalidHostEffect }
-        return try raw.exported()
+        var exported = try raw.exported()
+        for index in exported.clipboardWrites.indices {
+            exported.clipboardWrites[index].fragmentJSON = try readClipboardJSON(operation: "Read clipboard formats") { bytes, capacity, required in
+                evim_effect_batch_copy_clipboard_json(handle, UInt64(index), bytes, capacity, required)
+            }
+        }
+        return exported
     }
 }
 

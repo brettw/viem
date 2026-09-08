@@ -541,7 +541,8 @@ fn persisted_style_capabilities_are_explicit_for_plain_and_markdown() {
             ),
         ] {
             if format != Format::PlainText
-                && matches!(&intent, PipelineEditIntent::AssignBlockStyle { style } if style.0 == "Paragraph")
+                && (matches!(&intent, PipelineEditIntent::AssignBlockStyle { style } if style.0 == "Paragraph")
+                    || matches!(&intent, PipelineEditIntent::AssignCharacterStyle { style } if style.0 == "Character"))
             {
                 assert_eq!(
                     pipeline.capabilities(range, &intent).unwrap().decision,
@@ -577,6 +578,13 @@ fn persisted_style_capabilities_are_explicit_for_plain_and_markdown() {
             range,
             style: StyleId::from("Character"),
         };
+        if format != Format::PlainText {
+            document
+                .apply_style_request(request(&document, StyleModelIntent::Persisted(persisted)))
+                .unwrap();
+            assert_eq!(document.source_bytes(), bytes);
+            continue;
+        }
         let error = document
             .apply_style_request(request(&document, StyleModelIntent::Persisted(persisted)))
             .unwrap_err();

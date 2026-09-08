@@ -7,8 +7,17 @@
 
 #[path = "fragments.rs"]
 mod fragments;
+#[path = "clipboard_fragment.rs"]
+mod clipboard_fragment;
+pub use clipboard_fragment::ClipboardFragment;
+#[path = "named_character.rs"]
+mod named_character;
 #[path = "markdown_block_styles.rs"]
 mod markdown_block_styles;
+#[path = "markdown_quote_edit.rs"]
+mod markdown_quote_edit;
+#[path = "list_indent.rs"]
+mod list_indent;
 #[path = "markdown_list_edit.rs"]
 mod markdown_list_edit;
 #[path = "markdown_list_structure.rs"]
@@ -218,6 +227,12 @@ pub enum ModelRequest {
         range: Range<usize>,
         style: Option<super::ListStyle>,
     },
+    IndentList {
+        document: DocumentId,
+        revision: Revision,
+        range: Range<usize>,
+        unindent: bool,
+    },
     SetParagraphStyle {
         document: DocumentId,
         revision: Revision,
@@ -315,6 +330,7 @@ impl ModelRequest {
             | Self::DeleteLines { document, .. }
             | Self::SetSemanticStyle { document, .. }
             | Self::SetListStyle { document, .. }
+            | Self::IndentList { document, .. }
             | Self::SetParagraphStyle { document, .. }
             | Self::AssignNamedStyle { document, .. }
             | Self::EditNamedStyleDefinition { document, .. }
@@ -341,6 +357,7 @@ impl ModelRequest {
             | Self::DeleteLines { revision, .. }
             | Self::SetSemanticStyle { revision, .. }
             | Self::SetListStyle { revision, .. }
+            | Self::IndentList { revision, .. }
             | Self::SetParagraphStyle { revision, .. }
             | Self::AssignNamedStyle { revision, .. }
             | Self::EditNamedStyleDefinition { revision, .. }
@@ -1069,6 +1086,7 @@ impl Document {
                 enabled,
                 ..
             } => self.prepare_semantic_style(range, style, enabled),
+            ModelRequest::IndentList { range, unindent, .. } => self.prepare_list_indent(range, unindent),
             ModelRequest::SetListStyle { range, style, .. } => {
                 self.prepare_list_style(range, style)
             }
@@ -1614,6 +1632,15 @@ impl Document {
             return Ok(prepared);
         }
         if matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
+            if let PersistedStyleIntent::AssignCharacterStyle { range, style } = &intent {
+                if style.0 == "Code" || style == &self.projection().style_sheet().base_character {
+                    self.validate_style_text_range(*range)?;
+                    return self.prepare_markdown_named_character(
+                        range.start().offset()..range.end().offset(),
+                        style,
+                    );
+                }
+            }
             if let PersistedStyleIntent::AssignBlockStyle {
                 target: StyleBlockTarget::Paragraphs(range),
                 style,
@@ -2008,31 +2035,7 @@ impl Document {
                     return Err(StyleError::UnknownStyle(style.clone()).into());
                 }
                 let range = range.start().offset()..range.end().offset();
-                let mut position = range.start;
-                let mut sources: Vec<Range<usize>> = Vec::new();
-                for span in self.projection().provenance_for_region(&range) {
-                    if span.formatted.start != position
-                        || span.formatted.end > range.end
-                        || span.source.is_empty()
-                    {
-                        return Err(DocumentError::AmbiguousProjection.into());
-                    }
-                    position = span.formatted.end;
-                    if self.text().get(span.formatted.clone()) == Some("\n") {
-                        continue;
-                    }
-                    if let Some(last) = sources
-                        .last_mut()
-                        .filter(|last| last.end == span.source.start)
-                    {
-                        last.end = span.source.end;
-                    } else {
-                        sources.push(span.source);
-                    }
-                }
-                if position != range.end {
-                    return Err(DocumentError::AmbiguousProjection.into());
-                }
+                let sources = named_character::html_source_runs(self, &range)?;
                 if sources.is_empty() {
                     return Ok(self.no_op_prepared());
                 }
@@ -2048,9 +2051,47 @@ impl Document {
                     )
                 };
                 let mut patches = Vec::with_capacity(sources.len() * 2);
+                let mapped_text = self
+                    .projection()
+                    .provenance_for_region(&range)
+                    .into_iter()
+                    .filter(|span| !span.formatted.is_empty() && !span.source.is_empty())
+                    .map(|span| (span.source.start, span.formatted.start))
+                    .collect::<BTreeMap<_, _>>();
+                let named_properties = super::html_styles::character_chain(&expected, style);
                 for source in sources {
-                    patches.push((source.start..source.start, opening.clone()));
-                    patches.push((source.end..source.end, closing.into()));
+                    let mut preserved = CharacterProperties::default();
+                    if style.0 != "Code" {
+                        let at = *mapped_text
+                            .range(..=source.start)
+                            .next_back()
+                            .ok_or(DocumentError::AmbiguousProjection)?
+                            .1;
+                        for span in self.projection().style_spans_for_region(&(at..at + 1)) {
+                            if let StyleApplication::Direct(properties) = span.application {
+                                super::rich_text::overlay(&mut preserved, &properties);
+                            }
+                        }
+                        let original_direct = preserved.clone();
+                        let mut retained = preserved.clone();
+                        super::html_styles::remove_named_overrides(&mut retained, &named_properties);
+                        for property in retained.declared_properties() {
+                            super::style::clear_character_property(style, &mut preserved, property)?;
+                        }
+                        if preserved != CharacterProperties::default() {
+                            // Properties such as numeric weight and relative
+                            // bold share source syntax; restore their complete
+                            // sparse declaration together after the assignment.
+                            preserved = original_direct;
+                        }
+                    }
+                    let (direct_open, direct_close) = if preserved == CharacterProperties::default() {
+                        (String::new(), String::new())
+                    } else {
+                        super::html::character_wrapper(&preserved)
+                    };
+                    patches.push((source.start..source.start, format!("{opening}{direct_open}")));
+                    patches.push((source.end..source.end, format!("{direct_close}{closing}")));
                 }
                 patches
             }
@@ -2161,6 +2202,12 @@ impl Document {
             return Err(DocumentError::VerificationFailed.into());
         }
         if let PersistedStyleIntent::AssignCharacterStyle { range, style } = &intent {
+            named_character::verify_assignment(
+                self.projection(),
+                &candidate.projection,
+                &(range.start().offset()..range.end().offset()),
+                style,
+            )?;
             for (offset, grapheme) in
                 self.text()[range.start().offset()..range.end().offset()].grapheme_indices(true)
             {
@@ -2245,11 +2292,8 @@ impl Document {
         if let PersistedStyleIntent::AssignBlockStyle { style, .. } = &mut intent {
             if StyleSheet::builtin_block(style) {
                 let native = super::rtf_styles::read(&input);
-                let name = if let Some(level) = style.0.strip_prefix("Heading") {
-                    format!("Heading {level}")
-                } else {
-                    format!("List Level {}", style.0.strip_prefix("List").unwrap())
-                };
+                let name = before.block_style_metadata(style)
+                    .ok_or(DocumentError::UnsupportedFormatting)?.display_name.clone();
                 let matches = native
                     .entries
                     .iter()
@@ -2473,7 +2517,9 @@ impl Document {
                 } else {
                     old_named
                 };
-                if new_named != expected {
+                if new_named.unwrap_or(&actual.base_character)
+                    != expected.unwrap_or(&before.base_character)
+                {
                     return Err(DocumentError::VerificationFailed.into());
                 }
                 let direct = |spans: &Vec<super::StyleSpan>| {
@@ -4413,6 +4459,12 @@ impl Document {
         if !matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
+        if style.0 == "Block quote"
+            || style.0 == "Paragraph" && self.projection().blocks_for_region(&range)
+                .iter().any(|block| block.style.0 == "Block quote")
+        {
+            return self.prepare_markdown_quote_style(range, style.0 == "Block quote");
+        }
         let level = if style.0 == "Paragraph" {
             0
         } else {
@@ -4712,6 +4764,18 @@ impl Document {
                 }
             })
             .collect::<Vec<_>>();
+        if blocks.is_empty()
+            && self.text().is_empty()
+            && self.format() == Format::Html
+            && style.is_some()
+        {
+            targets.push((
+                super::rich_text::text_source_range(self, &range)?,
+                style,
+                1,
+                None,
+            ));
+        }
         let selected = blocks.iter().map(|block| block.id).collect::<BTreeSet<_>>();
         let mut containers = std::collections::BTreeMap::new();
         for list in self.projection().list_structure().lists {
@@ -4764,6 +4828,8 @@ impl Document {
                 .collect::<Vec<_>>();
             let source = if let (Some(first), Some(last)) = (spans.first(), spans.last()) {
                 first.source.start..last.source.end
+            } else if self.format() == Format::Html && self.text().is_empty() {
+                super::rich_text::text_source_range(self, &body)?
             } else {
                 let marker = self
                     .projection()
@@ -4791,7 +4857,19 @@ impl Document {
         } else {
             super::rtf::list_patches(&normalized, &targets, self.projection())?
         };
-        let patches = raw_patches
+        let mut raw_patches = raw_patches;
+        raw_patches.sort_by_key(|(range, _)| (range.start, range.end));
+        let mut merged: Vec<(Range<usize>, String)> = Vec::new();
+        for (range, syntax) in raw_patches {
+            if let Some((_, previous)) = merged.last_mut().filter(|(previous, _)| {
+                previous.is_empty() && range.is_empty() && previous.start == range.start
+            }) {
+                previous.push_str(&syntax);
+            } else {
+                merged.push((range, syntax));
+            }
+        }
+        let patches = merged
             .into_iter()
             .map(|(range, syntax)| {
                 self.state()
@@ -4807,6 +4885,9 @@ impl Document {
         &self,
         at: usize,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if let Some(prepared) = self.prepare_markdown_quote_enter(at)? {
+            return Ok(prepared);
+        }
         if self.format() == Format::MarkdownSource {
             return self.prepare_markdown_source_list_enter(at);
         }
@@ -4819,7 +4900,8 @@ impl Document {
             .into_iter()
             .find(|block| block.range.start <= at && at <= block.range.end)
             .ok_or(DocumentError::VerificationFailed)?;
-        if self.format() == Format::Html && block.style.0 == "Code Block" {
+        if self.format() == Format::Html && (block.style.0 == "Code Block"
+            || block.style.0 == "Block quote" && super::html_quotes::in_native_pre(self, at)?) {
             // Code is one paragraph. A br also works at the beginning of an
             // empty pre, where HTML5 would discard a literal initial newline.
             return self.prepare_text_edits(vec![TextEdit::new(at..at, "\n")]);

@@ -745,8 +745,9 @@ where
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }
-        let styles =
+        let mut styles =
             DocumentLayoutStyles::resolve_region(document.projection(), context_start..style_end)?;
+        styles.apply_source_quote_policy(document.format(), view.paragraph_flow());
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }
@@ -814,8 +815,9 @@ where
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }
-        let styles =
+        let mut styles =
             DocumentLayoutStyles::resolve_region(document.projection(), text_origin..style_end)?;
+        styles.apply_source_quote_policy(document.format(), view.paragraph_flow());
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }

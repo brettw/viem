@@ -563,7 +563,10 @@ pub(super) fn project_tokens_with_configuration(
                         stack.truncate(index.max(1));
                         if !was_hidden && block(&tag.name) {
                             pending_space = None;
-                            if !builder.line_is_empty() || paragraph(&tag.name) {
+                            if !builder.line_is_empty()
+                                || paragraph(&tag.name)
+                                || tag.name == "blockquote"
+                            {
                                 pending_break = Some(token.range.clone());
                             }
                         }
@@ -608,7 +611,9 @@ pub(super) fn project_tokens_with_configuration(
                 let first_item_paragraph = containing_item.is_some_and(|index| {
                     stack[index].output_start == builder.text.len() && pending_break.is_none()
                 });
-                let paragraph_element = (paragraph(&tag.name) || containing_item.is_some())
+                let paragraph_element = (paragraph(&tag.name)
+                    || tag.name == "blockquote"
+                    || containing_item.is_some())
                     && !frame.list_container_only;
                 let inside_pre = stack.iter().any(|frame| frame.name == "pre");
                 if block(&tag.name) && !frame.hidden && !frame.opaque {
@@ -619,7 +624,9 @@ pub(super) fn project_tokens_with_configuration(
                         } else if paragraph_seen && !first_item_paragraph {
                             emit_block_boundary(&mut builder, &stack, token.range.clone());
                         }
-                        paragraph_seen = true;
+                        // A quote is a container: its first explicit child
+                        // paragraph does not create an extra empty paragraph.
+                        paragraph_seen = tag.name != "blockquote";
                     } else if !builder.line_is_empty() {
                         pending_break = Some(token.range.clone());
                     }
@@ -698,12 +705,26 @@ pub(super) fn project_tokens_with_configuration(
                     _ => {}
                 }
                 if paragraph_element {
-                    frame.paragraph_style = None;
+                    frame.paragraph_style = stack
+                        .iter()
+                        .any(|ancestor| ancestor.name == "blockquote")
+                        .then(|| super::StyleId::from("Block quote"));
+                }
+                if tag.name == "blockquote" {
+                    frame.paragraph_style = Some("Block quote".into());
                 }
                 if tag.name == "pre" {
                     frame.preserve_whitespace = true;
                     frame.preserve_newlines = true;
-                    frame.paragraph_style = Some("Code Block".into());
+                    if frame
+                        .paragraph_style
+                        .as_ref()
+                        .is_some_and(|style| style.0 == "Block quote")
+                    {
+                        frame.named_character = Some("Code".into());
+                    } else {
+                        frame.paragraph_style = Some("Code Block".into());
+                    }
                 } else if tag.name == "code" {
                     frame.named_character = Some("Code".into());
                 } else if containing_item.is_some()
@@ -737,6 +758,9 @@ pub(super) fn project_tokens_with_configuration(
                         }
                     }
                 }
+                if paragraph_element && stack.iter().any(|ancestor| ancestor.name == "blockquote") {
+                    frame.paragraph_style = Some("Block quote".into());
+                }
                 if frame.paragraph_style.is_none() {
                     if let BlockKind::Heading(level) = frame.kind {
                         if builder
@@ -759,8 +783,8 @@ pub(super) fn project_tokens_with_configuration(
                                 BlockKind::Heading(level) => {
                                     format!("Heading{level}").as_str().into()
                                 }
-                                BlockKind::ListItem { level, .. } => {
-                                    format!("List{}", u16::from(level) + 1).as_str().into()
+                                BlockKind::ListItem { ordered, level, .. } => {
+                                    builder.style_sheet.list_style_id(ordered, level)
                                 }
                                 _ => builder.style_sheet.base_paragraph.clone(),
                             });

@@ -275,13 +275,14 @@ impl CompositionSession {
     /// Preserve the invoking caret's pending character declarations when a
     /// native IME commits its marked overlay. Preparation remains read-only;
     /// text and formatting share the same exact map and atomic publication.
-    pub(crate) fn prepare_commit_with_typing_properties(
+    pub(crate) fn prepare_commit_with_typing_style(
         &self,
         document: &Document,
+        named: Option<&crate::document::StyleId>,
         values: &[(StyleProperty, StylePropertyValue)],
         affinity: BoundaryAffinity,
     ) -> Result<CompositionCommitRequest, CompositionError> {
-        if values.is_empty() || self.marked_text.is_empty() {
+        if named.is_none() && values.is_empty() || self.marked_text.is_empty() {
             return self.prepare_commit(document);
         }
         self.validate_document(document)?;
@@ -297,9 +298,10 @@ impl CompositionSession {
         )
         .expect("composition literal text has validated semantic break offsets");
         let (prepared, caret_offset) = document
-            .prepare_insertion_with_typing_properties(
+            .prepare_insertion_with_typing_style(
                 FormattedPayloadEdit::new(edit.range.clone(), payload)
                     .with_boundary_affinity(affinity),
+                named,
                 values,
             )
             .map_err(composition_model_error)?;

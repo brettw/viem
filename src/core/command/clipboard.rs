@@ -86,6 +86,12 @@ impl ClipboardContent {
     /// Constructs clipboard contents authored by the core, retaining the
     /// exact register shape and hard-break markers as the portable payload.
     pub fn from_register(value: RegisterValue) -> Self {
+        if let Some(source) = value
+            .clipboard_fragment()
+            .and_then(|fragment| fragment.source_mode_text())
+        {
+            return Self::from_plain_text(source);
+        }
         Self {
             plain_text: value.text.clone(),
             portable_register: Some(value),
@@ -467,5 +473,304 @@ mod tests {
         let writes_only = ClipboardCommandContext::new().with_write(target);
         assert!(writes_only.read(target).is_none());
         assert!(writes_only.can_write(target));
+    }
+}
+
+#[cfg(test)]
+mod rich_tests {
+    use super::*;
+    use crate::command::{CommandInterpreter, CommandStatus, InputEvent, Key, Mode};
+    use crate::document::{Document, Encoding, FileFormat, Format};
+
+    fn open(source: &[u8], format: Format) -> Document {
+        Document::from_bytes_with_file_format(
+            source.to_vec(),
+            Encoding::Utf8,
+            format,
+            FileFormat::Unix,
+        )
+        .unwrap()
+    }
+    fn key(
+        commands: &mut CommandInterpreter,
+        document: &mut Document,
+        context: &ClipboardCommandContext,
+        character: char,
+    ) -> crate::command::CommandOutput {
+        let output = commands
+            .handle_with_clipboard_context(document, InputEvent::Key(Key::Char(character)), context)
+            .unwrap();
+        assert!(
+            matches!(
+                output.status,
+                CommandStatus::Complete | CommandStatus::Pending
+            ),
+            "{:?}",
+            output.status
+        );
+        output
+    }
+    #[test]
+    fn star_copy_alias_has_yank_motion_and_visual_semantics_without_changing_other_c() {
+        let context = ClipboardCommandContext::new().with_write(ClipboardTarget::Primary);
+        for command in ["\"*cw", "\"*cc", "vll\"*c", "\"*2cw"] {
+            let mut document = open(b"one two three", Format::PlainText);
+            let mut commands = CommandInterpreter::new();
+            let mut writes = Vec::new();
+            for c in command.chars() {
+                writes.extend(key(&mut commands, &mut document, &context, c).clipboard_writes);
+            }
+            assert_eq!(document.source_bytes(), b"one two three", "{command}");
+            assert_eq!(commands.mode(), Mode::Normal, "{command}");
+            assert_eq!(writes.len(), 1, "{command}");
+            assert!(!writes[0].content().plain_text().is_empty());
+            if command == "\"*cc" {
+                assert_eq!(writes[0].content().plain_text(), "one two three");
+            }
+        }
+        let mut document = open(b"one two", Format::PlainText);
+        let mut commands = CommandInterpreter::new();
+        for c in "cw".chars() {
+            key(&mut commands, &mut document, &context, c);
+        }
+        assert_eq!(commands.mode(), Mode::Insert);
+        assert_eq!(document.text(), " two");
+    }
+
+    #[test]
+    fn wrapped_visual_row_clipboard_yanks_preserve_source_and_resolved_styles() {
+        use crate::layout::MockTextMeasurementProvider;
+        use crate::{Core, CoreEvent};
+
+        let source = b"<p><B title='keep'>abcdefgh ijklmnop qrstuvwxyz</B></p>";
+        for input in ["\"*yy", "\"*cc", "V\"*y", "V\"*c"] {
+            let mut core = Core::new(open(source, Format::Html));
+            let view = core.add_view(MockTextMeasurementProvider::new(), 55.0, 200.0);
+            let row = core.layout(view).unwrap().snapshot().unwrap().rows[0]
+                .text_range
+                .clone();
+            assert!(row.end < core.document().text().len());
+            let selected = core.document().text()[row].to_owned();
+            let context = ClipboardCommandContext::new().with_write(ClipboardTarget::Primary);
+            let mut writes = Vec::new();
+            for character in input.chars() {
+                let result = core
+                    .handle(
+                        view,
+                        CoreEvent::InputWithClipboard {
+                            input: InputEvent::Key(Key::Char(character)),
+                            clipboard: context.clone(),
+                        },
+                    )
+                    .unwrap();
+                let output = result.command.unwrap();
+                assert!(
+                    matches!(
+                        output.status,
+                        CommandStatus::Complete | CommandStatus::Pending
+                    ),
+                    "{input}: {:?}",
+                    output.status
+                );
+                writes.extend(output.clipboard_writes);
+            }
+            assert_eq!(writes.len(), 1, "{input}");
+            let content = writes[0].content();
+            assert_eq!(content.plain_text(), selected, "{input}");
+            let fragment = content
+                .portable_register()
+                .unwrap()
+                .clipboard_fragment()
+                .unwrap();
+            let value: serde_json::Value = serde_json::from_str(fragment.json()).unwrap();
+            assert_eq!(value["character_runs"][0]["bold"], true);
+            assert!(value["source_text"]
+                .as_str()
+                .unwrap()
+                .contains("<B title='keep'>"));
+            assert_eq!(core.document().source_bytes(), source);
+            assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
+        }
+    }
+
+    #[test]
+    fn copy_alias_uses_visible_projection_in_each_line_policy_without_synthetic_eof_break() {
+        use crate::command::LineMode;
+        use crate::layout::MockTextMeasurementProvider;
+        use crate::{Core, CoreEvent};
+        for (format, source, expected) in [
+            (Format::PlainText, "word", "word"),
+            (Format::MarkdownSource, "__word__", "__word__"),
+            (
+                Format::HtmlSource,
+                "<p><b>word</b></p>",
+                "<p><b>word</b></p>",
+            ),
+            (Format::Markdown, "__word__", "word"),
+            (Format::Html, "<p><b>word</b></p>", "word"),
+        ] {
+            for policy in [LineMode::Visual, LineMode::PhysicalSource] {
+                for input in ["V\"*c", "\"*cc"] {
+                    let mut core = Core::new(open(source.as_bytes(), format));
+                    let view = core.add_view(MockTextMeasurementProvider::new(), 1000.0, 200.0);
+                    core.handle(view, CoreEvent::SetLineMode(policy)).unwrap();
+                    let context =
+                        ClipboardCommandContext::new().with_write(ClipboardTarget::Primary);
+                    let mut writes = Vec::new();
+                    for character in input.chars() {
+                        let output = core
+                            .handle(
+                                view,
+                                CoreEvent::InputWithClipboard {
+                                    input: InputEvent::Key(Key::Char(character)),
+                                    clipboard: context.clone(),
+                                },
+                            )
+                            .unwrap()
+                            .command
+                            .unwrap();
+                        assert!(
+                            matches!(
+                                output.status,
+                                CommandStatus::Complete | CommandStatus::Pending
+                            ),
+                            "{input} {format:?} {policy:?}: {:?}",
+                            output.status
+                        );
+                        writes.extend(output.clipboard_writes);
+                    }
+                    assert_eq!(writes.len(), 1);
+                    assert_eq!(
+                        writes[0].content().plain_text(),
+                        expected,
+                        "{input} {format:?} {policy:?}"
+                    );
+                    assert_eq!(core.document().source_bytes(), source.as_bytes());
+                    assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rectangular_clipboard_yank_and_copy_alias_preserve_segment_payloads() {
+        use crate::layout::MockTextMeasurementProvider;
+        use crate::{Core, CoreEvent};
+        let source = b"<p><b>ab</b> outside-one<br><b>ab</b> outside-two</p>";
+        for operation in ['y', 'c'] {
+            let mut core = Core::new(open(source, Format::Html));
+            let view = core.add_view(MockTextMeasurementProvider::new(), 1000.0, 200.0);
+            let context = ClipboardCommandContext::new().with_write(ClipboardTarget::Primary);
+            let mut writes = Vec::new();
+            for key in [
+                Key::Ctrl('v'),
+                Key::Char('l'),
+                Key::Char('j'),
+                Key::Char('"'),
+                Key::Char('*'),
+                Key::Char(operation),
+            ] {
+                let output = core
+                    .handle(
+                        view,
+                        CoreEvent::InputWithClipboard {
+                            input: InputEvent::Key(key),
+                            clipboard: context.clone(),
+                        },
+                    )
+                    .unwrap()
+                    .command
+                    .unwrap();
+                assert!(
+                    matches!(
+                        output.status,
+                        CommandStatus::Complete | CommandStatus::Pending
+                    ),
+                    "{key:?}: {:?}",
+                    output.status
+                );
+                writes.extend(output.clipboard_writes);
+            }
+            assert_eq!(writes.len(), 1);
+            let content = writes[0].content();
+            assert_eq!(content.plain_text(), "ab\nab");
+            let fragment = content
+                .portable_register()
+                .unwrap()
+                .clipboard_fragment()
+                .unwrap();
+            let value: serde_json::Value = serde_json::from_str(fragment.json()).unwrap();
+            assert_eq!(value["source_segments"].as_array().unwrap().len(), 2);
+            assert!(!fragment.json().contains("outside"));
+            assert!(crate::document::ClipboardFragment::from_json(
+                fragment.json(),
+                content.plain_text()
+            )
+            .is_ok());
+            assert_eq!(core.document().source_bytes(), source);
+        }
+    }
+
+    #[test]
+    fn clipboard_yank_and_insert_paste_roundtrip_authored_source_without_touching_ordinary_yanks() {
+        for (format, source) in [
+            (Format::Markdown, b"__bold__".as_slice()),
+            (Format::Html, b"<P><B title='x'>A&#38;B</B></P>".as_slice()),
+        ] {
+            let mut source_document = open(source, format);
+            let mut commands = CommandInterpreter::new();
+            let context = ClipboardCommandContext::new().with_write(ClipboardTarget::Clipboard);
+            let mut output = None;
+            for c in "v$\"+y".chars() {
+                output = Some(key(&mut commands, &mut source_document, &context, c));
+            }
+            let content = output.unwrap().clipboard_writes[0].content().clone();
+            let fragment = content
+                .portable_register()
+                .unwrap()
+                .clipboard_fragment()
+                .unwrap();
+            assert!(fragment.json().contains("source_bytes"));
+            let context = ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(
+                ClipboardTarget::Clipboard,
+                ClipboardGeneration(1),
+                content,
+            ));
+            let mut target = open(b"", format);
+            let mut commands = CommandInterpreter::new();
+            key(&mut commands, &mut target, &context, 'i');
+            commands
+                .handle_with_clipboard_context(
+                    &mut target,
+                    InputEvent::Key(Key::Ctrl('r')),
+                    &context,
+                )
+                .unwrap();
+            key(&mut commands, &mut target, &context, '+');
+            commands
+                .handle_with_clipboard_context(&mut target, InputEvent::Key(Key::Escape), &context)
+                .unwrap();
+            assert_eq!(target.source_bytes(), source);
+            assert!(target.undo());
+            assert!(target.source_bytes().is_empty());
+            assert!(target.redo());
+            assert_eq!(target.source_bytes(), source);
+            assert_eq!(source_document.source_bytes(), source);
+
+            let mut ordinary = CommandInterpreter::new();
+            for c in "v$y".chars() {
+                key(
+                    &mut ordinary,
+                    &mut source_document,
+                    &ClipboardCommandContext::new(),
+                    c,
+                );
+            }
+            assert!(ordinary
+                .register('0')
+                .unwrap()
+                .clipboard_fragment()
+                .is_none());
+        }
     }
 }

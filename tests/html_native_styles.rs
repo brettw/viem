@@ -56,7 +56,7 @@ fn blank_paragraph_accepts_native_list_assignment_then_typing() {
         ),
     ] {
         let mut document = html(source);
-        assign(&mut document, 0..0, "List1");
+        assign(&mut document, 0..0, "BulletedList1");
         assert_eq!(document.source_bytes(), styled.as_bytes(), "{source}");
         assert_eq!(document.text(), "");
         assert!(matches!(
@@ -69,7 +69,7 @@ fn blank_paragraph_accepts_native_list_assignment_then_typing() {
         ));
         assert_eq!(
             document.projection().blocks()[0].style,
-            StyleId::from("List1")
+            StyleId::from("BulletedList1")
         );
         assert_reopen(&document);
         let mut core = Core::new(document);
@@ -101,7 +101,7 @@ fn neighboring_paragraphs_share_one_native_list_and_retain_author_bytes() {
             document: document.id(),
             revision: document.revision(),
             range: 0..7,
-            style: "List1".into(),
+            style: "BulletedList1".into(),
         })
         .unwrap();
     let patches = prepared.summary().source_patches();
@@ -128,12 +128,12 @@ fn native_list_assignment_retains_existing_numbering_and_nested_structure() {
         (
             "<ol start='9'><li data-keep='x'>one</li><li>two</li></ol>",
             0,
-            "List1",
+            "NumberedList1",
         ),
         (
             "<ul><li>one<ul><li data-keep='x'>child</li></ul></li></ul>",
             4,
-            "List2",
+            "BulletedList2",
         ),
     ] {
         let mut document = html(source);
@@ -161,7 +161,7 @@ fn basic_paragraph_and_code_styles_use_native_elements() {
 #[test]
 fn list_to_paragraph_and_numbered_list_use_only_required_markup() {
     let mut document = html("<p data-keep='x'>one</p><p>two</p>");
-    assign(&mut document, 0..7, "List1");
+    assign(&mut document, 0..7, "BulletedList1");
     document
         .set_list_style(0..7, Some(ListStyle::Numbered))
         .unwrap();
@@ -206,7 +206,7 @@ fn empty_paragraph_among_other_blocks_has_its_own_source_anchor() {
         ("<p>one</p><p></p>", 4, "<p>one</p><ul><li></li></ul>"),
     ] {
         let mut document = html(source);
-        assign(&mut document, offset..offset, "List1");
+        assign(&mut document, offset..offset, "BulletedList1");
         assert_eq!(document.source_bytes(), expected.as_bytes());
         assert_reopen(&document);
         document.insert(offset, "a").unwrap();
@@ -230,7 +230,7 @@ fn blank_paragraph_heading_and_code_assignments_replace_the_owning_element() {
 #[test]
 fn omitted_paragraph_end_tags_become_native_list_items_without_rewriting_content() {
     let mut document = html("<p data-keep='a'>one<p data-keep='b'>two");
-    assign(&mut document, 0..7, "List1");
+    assign(&mut document, 0..7, "BulletedList1");
     assert_eq!(
         document.source_bytes(),
         b"<ul><li data-keep='a'>one</li><li data-keep='b'>two</li></ul>"
@@ -243,7 +243,7 @@ fn deeper_list_assignment_uses_native_ancestor_items_without_phantom_paragraphs(
     for level in 2..=3 {
         for (source, text) in [("<p>one</p>", "one"), ("<p></p>", "")] {
             let mut document = html(source);
-            assign(&mut document, 0..0, &format!("List{level}"));
+            assign(&mut document, 0..0, &format!("BulletedList{level}"));
             let expected = format!(
                 "{}{text}{}",
                 "<ul><li>".repeat(level),
@@ -254,7 +254,7 @@ fn deeper_list_assignment_uses_native_ancestor_items_without_phantom_paragraphs(
             assert_eq!(document.projection().blocks().len(), 1);
             assert_eq!(
                 document.projection().blocks()[0].style,
-                StyleId(format!("List{level}"))
+                StyleId(format!("BulletedList{level}"))
             );
             assert_reopen(&document);
             document.insert(text.len(), "a").unwrap();

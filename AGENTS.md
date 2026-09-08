@@ -905,6 +905,23 @@ typing style. At paragraph start or end, the only interior side is used. Empty
 paragraphs retain an explicit paragraph-style assignment and typing-character
 declarations even though they contain no text.
 
+Choosing an assignable character style with no selection sets a view-local
+pending named style for subsequent typing. This retains the style's identity,
+separate from direct character declarations, and immediately updates character
+style menu state. The gesture itself does not change source bytes or revision,
+mark the buffer dirty, or add an undo entry. Choosing it in Normal mode carries
+it into the next Insert or Replace session. Text and its pending style commit
+together in one verified transaction; failed preparation preserves the pending
+style and editor state.
+
+With a selection, character-style assignment applies to the selected text in
+each containing block. Format wrappers must remain inside paragraph, heading,
+list-item, and preformatted containers, splitting into multiple local patches
+where necessary. It must preserve unselected text and formatting, paragraph
+structure, and untouched source spelling. Markdown's native Code and Base
+Character assignments use inline-code delimiters and their removal; styles
+without a representable Markdown assignment remain unavailable.
+
 Splitting a paragraph normally copies its paragraph-style assignment and direct
 paragraph declarations to the new paragraph. A paragraph style may name a
 `next_paragraph_style`; when present, Enter at the paragraph's terminal boundary
@@ -923,13 +940,15 @@ contains; only its first paragraph carries the generated marker. Independent
 source list containers remain distinct even when adjacent. The initial list
 container follows its first item's identity; surviving item identities support
 recovery when that item is deleted. Paragraphs inside an item continue to use
-Paragraph-role block styles. Generated `List1` through `List3` Paragraph styles
-provide initial indentation. Encountering or creating a deeper level synthesizes
-the missing levels on demand; unused deeper levels are not eagerly installed.
-Supported source list properties can override the defaults. Assigning one of
-these paragraph styles adjusts paragraph presentation; the separate list commands
-create or change bullet/number structure. Rich-format assignment persists the
-needed definition and assignment in the source.
+Paragraph-role block styles. Eight generated internal Paragraph styles provide
+four levels each for Bulleted List and Numbered List: `BulletedList1` through
+`BulletedList4` and `NumberedList1` through `NumberedList4`. The style editor
+shows these definitions; the Paragraph menu shows an internal list style only
+when it is the current uniform assignment. This flag is separate from internal
+source-syntax styles. Existing deeper lists remain lossless and render using
+the fourth style plus the additional structural inset. Authored legacy `ListN`
+definitions remain readable. Supported source list properties can override
+defaults; list commands create or change the actual bullet/number structure.
 Generated markers have explicit synthetic provenance and caret/edit rules.
 
 Future List-role styles will use the same block-style record and inheritance
@@ -938,10 +957,17 @@ Document and Paragraph roles. They may contribute indentation and spacing at
 the reserved structural cascade layer and reference a Character style for the
 generated marker.
 
-The same structural contribution mechanism may later support quotations,
-tables, callouts, or other block containers without adding format-specific
-fields to paragraph styles. These future node kinds and properties are not part
-of the initial implementation or command commitment.
+HTML and Markdown expose the Paragraph style `Block quote`, mapped to native
+`blockquote` containers and Markdown `>` prefixes. WYSIWYG quotes use the same
+indentation and noneditable left border in both formats. Source HTML retains
+its tags and applies quote presentation to their source paragraph. Markdown
+Source retains every `>`; quote indentation and border apply when Flow Source
+Paragraphs is enabled and are suppressed when it is disabled. Assigning or
+removing quotation treatment uses local source patches and preserves contained
+inline and block syntax, text, hard-line structure, and exact history bytes.
+Enter continues the quotation in a new paragraph; the generated quote style
+therefore uses itself as its next-paragraph style.
+Future tables, callouts, and other container kinds remain outside this scope.
 
 ### Semantic edit intentions and reverse projection
 
@@ -1294,8 +1320,9 @@ until their source range is edited.
 
 HTML authoring MUST use native elements whenever they represent the selected
 style: `p` for Paragraph, `h1` through `h6` for headings, `li` inside `ul` or
-`ol` for list items, `pre` for Code Block, and `code` for inline Code. Applying
-List Level 1 to a blank paragraph creates an editable `<ul><li></li></ul>`;
+`ol` for list items, `pre` for Code Block, `blockquote` for Block quote, and
+`code` for inline Code. Applying Bulleted List to a blank paragraph creates an
+editable `<ul><li></li></ul>`;
 typing then inserts inside `li`. List markers are decorations, never inserted
 text or characters in style spans. Existing ordered lists retain their
 numbering and nested lists retain their structure. Applying a deeper built-in
@@ -1578,8 +1605,18 @@ Each adapter has corpus, property, and targeted golden tests. At minimum:
   that row. Rows are not assumed to have a uniform global height.
 - Internal register operations SHOULD preserve formatted structure and rich
   styles together with enough portable semantics for the destination adapter
-  to translate a paste. Plain-text system clipboard interchange is required;
-  rich clipboard interchange is desirable but may be added separately.
+  to translate a paste. WYSIWYG system Copy publishes plain text, macOS rich
+  text (RTF), and a versioned private eVim fragment containing selected source
+  bytes, pipeline metadata, and resolved styling. Compatible contiguous private
+  pastes reconstruct the selected source through verified local transactions.
+  Rectangular copies retain the exact source fragments for their selected
+  segments separately, without including intervening unselected source;
+  rectangular paste retains its plain-text editing behavior. Source
+  views copy the original selected source as plain text only. Copy Source
+  (`Shift-Command-C`) publishes only plain text containing the source fragment
+  corresponding to the selection, including markup in WYSIWYG views. Paste
+  and Match Style ignores the private fragment and uses plain text. Malformed
+  external private data cannot prevent ordinary commands or plain-text paste.
 
 ### Application theme and settings
 
@@ -1848,7 +1885,7 @@ Required movements are:
 - hard-line: `0`, `^`, `$`, `g_`, `|`, `+`, `-`, Enter;
 - words: `w`, `W`, `e`, `E`, `b`, `B`, `ge`, `gE`;
 - character find: `f{char}`, `F{char}`, `t{char}`, `T{char}`, `;`, `,`;
-- document: `gg`, `G`, `{count}G`, `{count}%`;
+- document: `gg`, `G`, `{count}G`, `{count}%`, Control-Home, Control-End;
 - structure: `%`, `(`, `)`, `{`, `}`;
 - viewport: `H`, `M`, `L`, `Ctrl-F`, `Ctrl-B`, `Ctrl-D`, `Ctrl-U`,
   `Ctrl-E`, `Ctrl-Y`, `zz`, `zt`, `zb`; and
@@ -1857,6 +1894,11 @@ Required movements are:
 Sentence and paragraph motions should use Unicode-aware human-language rules
 with Vim-compatible blank-line behavior. Their exact segmentation rules must
 be test fixtures, not ad hoc calls to a frontend API.
+
+Control-Home and Control-End move to the document's first and last legal text
+points, independent of the Visual/Physical line setting. Insert and Replace
+retain their mode; active Visual selections extend to the destination. In a
+command prompt, these keys move to the prompt's beginning or end.
 
 ### Search
 
@@ -2146,6 +2188,12 @@ motions, supported operators, `x`, `s`, `r`, `J`, `~`, `u`, `U`, `>`, `<`,
 `y`, `d`, `c`, `p`, and `P`. Visual selection is inclusive in Normal/Visual
 Vim terms while internal APIs use explicit half-open ranges.
 
+Backspace (the macOS Delete key) and Forward Delete delete the active selection
+using the same operator, register, repeat, and undo behavior as Visual `d`, then
+return to Normal mode. This includes mouse selections started from Normal mode
+and character, line, or block selections. With no selection, Normal-mode
+Backspace retains its leftward motion and Forward Delete retains `x` behavior.
+
 ### Registers, repeat, undo, and macros
 
 - Required registers: unnamed (`"`), numbered delete registers `1`-`9`, yank
@@ -2176,6 +2224,9 @@ Vim terms while internal APIs use explicit half-open ranges.
   the text payload as normalized character or semantic-break events.
 - Required commands: `u`, `Ctrl-R`, `U`, `.`, `q{a-z}`/`q`, `@{a-z}`, and
   `@@`.
+- Explicit `"*c` copies using the `*` clipboard register: in Visual mode it
+  yanks the selection, and in Normal mode it accepts the same motion/count
+  grammar as `"*y`. Other uses of `c` retain their change semantics.
 - `U` restores the hard line on which the latest eligible change was made,
   even if the cursor subsequently moved to another line. Its baseline is an
   exact source-backed line image identified by stable projected identity, not
@@ -2398,6 +2449,19 @@ document behind the prompt. Command output replaces the prompt with selectable,
 read-only text and an explicit close button. A new `:` replaces that output with
 an editable prompt; ordinary editor input dismisses the output.
 
+Filename arguments to `:edit`/`:E`, `:write`, `:saveas`, `:wq`, `:xit`,
+`:split`/`:vsplit`, and `:cd`/`:chdir` support Rust-backed prefix completion.
+Tab selects the first case-insensitive alphabetical match and cycles forward;
+Shift+Tab starts with the last match and cycles backward. Matches use the
+filename's actual spelling; directories include a trailing `/`, and directory
+commands offer only directories. Relative paths use the application's working
+directory; `~/` uses the current user's home directory. Dotfiles require a dot
+prefix. Typing `/` immediately after a selected directory completion accepts
+its existing slash, so the next completion searches inside that directory.
+Other typing or caret movement accepts the suggestion and acts normally.
+Ctrl-E restores the input before the active completion cycle, Ctrl-Y accepts
+it, and Escape cancels the prompt. Completion never changes document history.
+
 In Visual Character, Line, or Block mode, `:` opens an Ex prompt prefilled with
 the selected logical hard-line range. The range is bound to that document
 revision; an intervening edit in another view makes execution stale rather
@@ -2590,6 +2654,7 @@ The menu hierarchy is:
   - separator
   - Cut (`Command-X`)
   - Copy (`Command-C`)
+  - Copy Source (`Shift-Command-C`)
   - Paste (`Command-V`)
   - Paste and Match Style (`Option-Shift-Command-V`)
   - Delete
@@ -2751,8 +2816,8 @@ history or other views of the same buffer.
 
 Zoom In and Zoom Out advance through 25, 33, 50, 67, 75, 80, 90, 100,
 110, 125, 150, 175, 200, 250, 300, 400, and 500 percent, saturating at
-25 and 500 percent. On macOS their shortcuts are Option-Equals and
-Option-Hyphen. The portable checked scale API accepts intermediate scales
+25 and 500 percent. On macOS their shortcuts are Command-Equals and
+Command-Hyphen. The portable checked scale API accepts intermediate scales
 within that range; each control chooses the next strictly adjacent stop.
 
 Menu validation comes from current core state and pipeline capabilities.
@@ -2760,6 +2825,9 @@ Actions that cannot apply to the current selection or adapter are disabled.
 Rich-formatting actions are disabled for plain text; `Document Format…` may
 offer an explicit conversion when an appropriate adapter exists. Style and
 formatting items show a checkmark, mixed state, or no mark as appropriate.
+Character and Paragraph menus reserve the same mark column for every item,
+so labels align whether or not the item is checked. Active named styles remain
+checked when menu validation refreshes their command state.
 Undo and Redo use the core-provided action label. The Services, window
 management, recent-document, open-window, and Help-search contents remain
 system or dynamically supplied.
@@ -3377,6 +3445,16 @@ viewport request, so the frontend does not guess an expansion direction or
 range. A demand whose source, layout, configuration, or metrics identity is no
 longer current is rejected as stale.
 
+The synchronous frontend input boundary satisfies these demands and retries the
+same still-uncommitted input before returning its result. This applies to Page
+Up/Down and other layout-dependent commands in every editing mode; a request for
+more layout must never silently consume the keystroke. Retries preserve pending
+counts, registers, selection, and undo grouping, and publish command effects
+only once. Paging replaces the cached region with a bounded band around the
+viewport and required command endpoints, rather than retaining every earlier
+page. The low-level command API continues to expose typed demands to callers
+that schedule layout themselves.
+
 #### Permitted synchronization primitives
 
 - Immutable snapshot and buffer-piece lifetimes may use atomic reference
@@ -3913,7 +3991,9 @@ The two Markdown views share one physical Markdown serialization:
   whitespace remains literal. Paragraph separators retain their complete source provenance, so editing and
   saving preserve physical bytes outside the explicit patch set. Editing a
   delimiter reparses and updates formatting immediately. Formatting commands
-  update source delimiters, and switching views preserves source bytes. Enter on
+  update source delimiters, and switching views preserves source bytes. Enter
+  in ordinary prose starts a new paragraph using two current-fileformat source
+  endings; preformatted code retains literal line breaks. Enter on
   an empty list item removes its marker and inserts the source separator needed
   for subsequent typing to remain a separate, unnumbered ordinary paragraph.
 
@@ -4085,9 +4165,20 @@ boundaries. Triple-click selects the line using the active view's Visual or
 Physical Source line policy. These native gestures invoke the same core
 selection algebra and operator behavior as keyboard selection.
 
-The Format > Paragraph > List menu applies bulleted or numbered lists, changes
-between them, or removes list structure from the current paragraph or selected
-paragraphs. Enter continues an item; Enter on an empty item exits the list.
+The Paragraph menu starts with Bulleted List, Numbered List, Indent, and
+Unindent, followed by a separator and the paragraph-style choices. List commands
+apply to the current paragraph or selected paragraphs. Indent and Unindent
+change actual item nesting by one level, including the item's contained
+paragraphs and child lists. Indent requires a preceding sibling to become the
+parent and cannot move any selected descendant past the fourth level. Unindent
+requires an existing parent; top-level items cannot be unindented. Availability
+uses the same verified preparation as execution, including each adapter's
+source constraints. Existing deeper source lists can still be unindented.
+Modern RTF list items use local level-selector patches when their authored list
+table has a compatible target level; legacy flat RTF lists and unavailable
+target levels leave Indent and Unindent disabled.
+Remove List remains available among the Format paragraph controls. Enter
+continues an item; Enter on an empty item exits the list.
 Numbered continuation and repeat calculate the next ordinal from current
 structure. One list action and its supporting source patches form one undo unit.
 New plain-text lists and Markdown source use `- ` or decimal `1. ` markers, with

@@ -31,6 +31,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private var lastErrorMessage = ""
     var pasteboard: any EVPasteboardAccess = EVAppKitPasteboardAccess.shared
     var findPasteboard: any EVPasteboardAccess = EVAppKitPasteboardAccess.find
+    private var pasteMatchesStyle = false
+    private var nativeCopyRepresentations: EVClipboardRepresentations?
 
     var editorView: EVEditorView { view as! EVEditorView }
 
@@ -356,9 +358,13 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             performInput { _ = try session.redo() }
         case .copy:
             copyOrCutSelection(cut: false)
+        case .copySource:
+            copySelectedSource()
         case .cut:
             copyOrCutSelection(cut: true)
         case .paste, .pasteAndMatchStyle:
+            pasteMatchesStyle = menuCommand == .pasteAndMatchStyle
+            defer { pasteMatchesStyle = false }
             pastePlainText()
         case .delete:
             performInput {
@@ -439,6 +445,12 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                     : menuCommand == .numberedList ? UInt32(EVIM_LIST_STYLE_NUMBERED) : UInt32(EVIM_LIST_STYLE_NONE)
                 _ = try session.setListStyle(style, expected: selection)
             }
+        case .increaseIndent, .decreaseIndent:
+            guard presentation(for: menuCommand).isEnabled else { return }
+            performInput {
+                _ = try session.indentList(unindent: menuCommand == .decreaseIndent,
+                                          expected: session.listSelection())
+            }
         case .bold:
             toggleSemanticStyle(UInt32(EVIM_SEMANTIC_STYLE_STRONG), session: session)
         case .showFonts:
@@ -508,6 +520,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             headingShortcutPresentation(level: UInt32(menuCommand.rawValue - EVMenuCommand.heading0.rawValue))
         case .bulletedList, .numberedList, .removeList:
             EVMenuItemPresentation(isEnabled: (try? session?.listSelection()) != nil)
+        case .increaseIndent, .decreaseIndent:
+            listIndentPresentation(unindent: menuCommand == .decreaseIndent)
         case .save, .saveAs, .pageSetup,
              .selectAll, .selectWord, .selectSentence, .selectParagraph,
              .selectHardLine, .selectVisualRow, .find, .findAndReplace,
@@ -523,7 +537,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 isEnabled: canRedo,
                 title: historyTitle(prefix: "Redo", category: documentState.redo_action_category)
             )
-        case .copy, .cut:
+        case .copy, .copySource, .cut:
             // The core owns the logical Visual selection even when none of
             // its geometry is materialized in the current viewport.
             EVMenuItemPresentation(isEnabled: isVisualMode)
@@ -814,6 +828,15 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private func copyOrCutSelection(cut: Bool) {
         guard isVisualMode, let session else { NSSound.beep(); return }
         performInput {
+            // Native Copy and Cut preserve the selected text exactly, including an
+            // absent final newline. The core's internal linewise register can
+            // still retain its Vim shape for subsequent register commands.
+            if viewPresentation.mode == UInt32(EVIM_MODE_VISUAL_LINE),
+               let range = selectedUTF8Range(), let snapshot = formattedSnapshot {
+                let json = try backend.clipboardFragmentJSON(in: range, snapshot: snapshot)
+                nativeCopyRepresentations = try EVClipboardFragment.decode(json).representations(json: json)
+            }
+            defer { nativeCopyRepresentations = nil }
             _ = try self.sendCommandCharacter("\"", session: session)
             _ = try self.sendCommandCharacter("+", session: session)
             let outcome = try self.sendCommandCharacter(cut ? "d" : "y", session: session)
@@ -823,6 +846,23 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                     status: outcome.command_status
                 )
             }
+        }
+    }
+
+    private func copySelectedSource() {
+        let ranges = selectedUTF8Ranges()
+        guard !ranges.isEmpty, let snapshot = formattedSnapshot else { NSSound.beep(); return }
+        performInput {
+            let fragments = try ranges.map {
+                let fragment = try backend.clipboardFragment(in: $0, snapshot: snapshot)
+                guard fragment.sourceExact || !fragment.sourceText.isEmpty || fragment.plainText.isEmpty else {
+                    throw EVCoreFrontendError.core(operation: "Selection has no exact source fragment", status: UInt32(EVIM_STATUS_AMBIGUOUS_PROJECTION))
+                }
+                return fragment.sourceText
+            }
+            let isBlock = visualSelection?.info.identity.kind == UInt32(EVIM_VISUAL_SELECTION_KIND_BLOCK)
+            let content = EVClipboardRepresentations(plainText: fragments.joined(separator: isBlock ? "\n" : ""))
+            guard pasteboard.evimWrite(content) else { throw EVCoreFrontendError.pasteboardWriteFailed }
         }
     }
 
@@ -1108,6 +1148,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 extension EVEditorSurfaceController: EVCommandTurnHost {
     func clipboardSnapshotsForCommandTurn() -> [EVClipboardTurnSnapshot] {
         let text = pasteboard.evimString()
+        let fragment = pasteMatchesStyle ? nil : pasteboard.evimData(forType: EVClipboardRepresentations.fragmentType)
         let generation = text == nil ? 0 : pasteboard.evimGeneration
         let writable = pasteboard.evimIsWritable
         return [
@@ -1115,13 +1156,15 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
                 target: UInt32(EVIM_CLIPBOARD_TARGET_CLIPBOARD),
                 generation: generation,
                 plainText: text,
-                isWritable: writable
+                isWritable: writable,
+                fragmentJSON: fragment
             ),
             EVClipboardTurnSnapshot(
                 target: UInt32(EVIM_CLIPBOARD_TARGET_PRIMARY),
                 generation: generation,
                 plainText: text,
-                isWritable: writable
+                isWritable: writable,
+                fragmentJSON: fragment
             ),
         ]
     }
@@ -1161,9 +1204,17 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
                     || write.target == UInt32(EVIM_CLIPBOARD_TARGET_PRIMARY)
             else { throw EVCoreFrontendError.invalidHostEffect }
         }
-        for write in batch.clipboardWrites {
-            pasteboard.evimClearContents()
-            guard pasteboard.evimSetString(write.plainText) else {
+        let representations = try batch.clipboardWrites.map { write in
+            if let nativeCopyRepresentations { return nativeCopyRepresentations }
+            if let json = write.fragmentJSON {
+                let fragment = try EVClipboardFragment.decode(json)
+                guard fragment.plainText == write.plainText else { throw EVCoreFrontendError.invalidHostEffect }
+                return try fragment.representations(json: json)
+            }
+            return EVClipboardRepresentations(plainText: write.plainText)
+        }
+        for content in representations {
+            guard pasteboard.evimWrite(content) else {
                 throw EVCoreFrontendError.pasteboardWriteFailed
             }
         }

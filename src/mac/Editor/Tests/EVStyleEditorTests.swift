@@ -94,7 +94,7 @@ final class EVStyleEditorTests: XCTestCase {
         _ = backend
         defer { withExtendedLifetime(surface) {} }
 
-        XCTAssertEqual(editor.inspection.styleCount, 14)
+        XCTAssertEqual(editor.inspection.styleCount, try backend.styleSheetSnapshot().definitions.count)
         XCTAssertEqual(editor.inspection.selectedKind, .paragraph)
         XCTAssertEqual(editor.inspection.characterPropertyCount, 14)
         XCTAssertEqual(editor.inspection.paragraphPropertyCount, 8)

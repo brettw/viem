@@ -1,0 +1,86 @@
+import AppKit
+import CEvimCore
+import EvimAppShell
+import XCTest
+@testable import EvimEditor
+
+@MainActor final class EVDocumentNavigationTests: XCTestCase {
+    private func makeSurface(_ text: String, width: CGFloat = 600) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession, NSWindow) {
+        let backend = EVCoreDocumentBackend()
+        try backend.read(source: Data(text.utf8), typeName: EVDocument.plainTextType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = surface
+        surface.loadViewIfNeeded()
+        surface.view.frame = NSRect(x: 0, y: 0, width: width, height: 400)
+        surface.viewDidLayout()
+        window.makeFirstResponder(surface.editorView)
+        return (backend, surface, try XCTUnwrap(surface.session), window)
+    }
+
+    private func key(_ code: UInt16, control: Bool) throws -> NSEvent {
+        let character = code == 115 ? "\u{F729}" : "\u{F72B}"
+        return try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: control ? [.control, .function] : [.function], timestamp: 0,
+            windowNumber: 0, context: nil, characters: character,
+            charactersIgnoringModifiers: character, isARepeat: false, keyCode: code))
+    }
+
+    func testControlHomeAndEndNavigateDocumentWhilePlainHomeAndEndStayOnLine() throws {
+        let source = "first line\nmiddle line\nlast line"
+        let (backend, surface, session, window) = try makeSurface(source)
+        surface.performInput { _ = try session.sendText("jll") }
+        surface.editorView.keyDown(with: try key(119, control: false))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64("first line\nmiddle lin".utf8.count))
+        surface.editorView.keyDown(with: try key(119, control: true))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(source.utf8.count - 1))
+        surface.editorView.keyDown(with: try key(115, control: false))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64("first line\nmiddle line\n".utf8.count))
+        surface.editorView.keyDown(with: try key(115, control: true))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 0)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), Data(source.utf8))
+        XCTAssertFalse(backend.persistenceState.isDirty)
+        XCTAssertEqual(surface.statusBarState.message, "")
+        withExtendedLifetime(window) {}
+    }
+
+    func testDocumentSelectorsPreserveInsertModeAndNavigatePromptWhenItIsActive() throws {
+        let source = "first\nlast"
+        let (backend, surface, session, window) = try makeSurface(source)
+        surface.performInput { _ = try session.sendText("li") }
+        surface.editorView.doCommand(by: #selector(NSResponder.moveToEndOfDocument(_:)))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(source.utf8.count))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_INSERT))
+        surface.editorView.doCommand(by: #selector(NSResponder.moveToBeginningOfDocument(_:)))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 0)
+        surface.performInput {
+            _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+            _ = try session.sendText(":edit name")
+        }
+        surface.editorView.keyDown(with: try key(115, control: true))
+        XCTAssertEqual(surface.commandLine?.info.cursor_utf8_offset, 0)
+        surface.editorView.doCommand(by: #selector(NSResponder.moveToEndOfDocument(_:)))
+        XCTAssertEqual(surface.commandLine?.info.cursor_utf8_offset, UInt64("edit name".utf8.count))
+        XCTAssertEqual(try backend.formattedText(), source)
+        XCTAssertFalse(backend.persistenceState.isDirty)
+        withExtendedLifetime(window) {}
+    }
+
+    func testShiftVExportsOnlyTheDisplayedRowInVisualLineMode() throws {
+        let source = "one two three four five six seven eight nine ten eleven twelve\nTail"
+        let (backend, surface, session, window) = try makeSurface(source, width: 240)
+        let row = try XCTUnwrap(surface.layoutSnapshot?.rows.first)
+        XCTAssertLessThan(row.text_end, UInt64(source.firstIndex(of: "\n")!.utf16Offset(in: source)))
+        surface.performInput { _ = try session.sendText("V") }
+        XCTAssertEqual(surface.visualSelection?.segments.first?.text_end, row.text_end)
+        surface.performInput {
+            _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+            try session.setLineMode(.physicalSource)
+            _ = try session.sendText("V")
+        }
+        XCTAssertEqual(surface.visualSelection?.segments.first?.text_end, UInt64(source.firstIndex(of: "\n")!.utf16Offset(in: source) + 1))
+        XCTAssertEqual(try backend.formattedText(), source)
+        XCTAssertFalse(backend.persistenceState.isDirty)
+        withExtendedLifetime(window) {}
+    }
+}

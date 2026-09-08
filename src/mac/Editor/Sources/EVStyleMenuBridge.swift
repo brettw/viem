@@ -4,12 +4,26 @@ import EvimAppShell
 
 @MainActor
 extension EVEditorSurfaceController: EVStyleMenuProviding {
+  func listIndentPresentation(unindent: Bool) -> EVMenuItemPresentation {
+    guard let session,
+      let selection = try? session.listSelection(),
+      let flags = try? session.listIndentCapabilities(expected: selection)
+    else { return .disabled }
+    let capability = UInt32(unindent ? EVIM_LIST_CAN_UNINDENT : EVIM_LIST_CAN_INDENT)
+    return EVMenuItemPresentation(isEnabled: flags & capability != 0)
+  }
+
   public func currentStyleMenuCatalogue() -> EVStyleMenuCatalogue? {
     guard let snapshot = try? backend.styleSheetSnapshot() else { return nil }
     let selection = try? session?.listSelection()
     let selectedStyles = try? session?.selectedNamedStyles()
 
-    let entries = snapshot.definitions.filter { !$0.flags.contains(.internalSyntax) }.sorted {
+    let entries = snapshot.definitions.filter {
+      !$0.flags.contains(.internalSyntax)
+        && (!$0.flags.contains(.internalList)
+          || (selectedStyles?.identity == snapshot.identity
+            && selectedStyles?.paragraph == $0.key.id))
+    }.sorted {
       $0.name.localizedStandardCompare($1.name) == .orderedAscending
     }.map { definition in
       EVStyleMenuEntry(
@@ -23,8 +37,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
               && definition.kind == .paragraph)
               || (definition.capabilities.contains(.assign)
                 && (definition.kind == .paragraph
-                  || (definition.kind == .character
-                    && selection!.text_start < selection!.text_end)))),
+                  || definition.kind == .character))),
           state: selectedStyles?.identity == snapshot.identity
             && ((definition.kind == .paragraph && selectedStyles?.paragraph == definition.key.id)
                 || (definition.kind == .character && selectedStyles?.character == definition.key.id))
@@ -52,12 +65,14 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
 
   func headingShortcutPresentation(level: UInt32) -> EVMenuItemPresentation {
     let id = level == 0 ? "Paragraph" : "Heading\(level)"
+    let snapshot = try? backend.styleSheetSnapshot()
+    let selectedStyles = try? session?.selectedNamedStyles()
     return EVMenuItemPresentation(
       isEnabled: level <= 6 && session != nil
         && standardHeadingLevel(for: id) != nil
-        && (try? backend.styleSheetSnapshot().definition(
-          namespace: .block,
-          id: EVStyleID(rawValue: id))) != nil
+        && snapshot?.definition(namespace: .block, id: EVStyleID(rawValue: id)) != nil,
+      state: selectedStyles?.identity == snapshot?.identity
+        && selectedStyles?.paragraph?.rawValue == id ? .on : .off
     )
   }
 

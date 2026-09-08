@@ -53,17 +53,38 @@ impl CommandInterpreter {
                 if !boundary(anchor) || !boundary(active) {
                     return Err(DocumentError::NotGraphemeBoundary(anchor.max(active)));
                 }
+                if anchor == active && self.recording.is_some() {
+                    // A later Tab depends on this native caret move even when
+                    // no native replacement occurs to record its position.
+                    self.record_event(&InputEvent::Key(Key::Home));
+                    for _ in input[..active].graphemes(true) {
+                        self.record_event(&InputEvent::Key(Key::Right));
+                    }
+                }
                 let buffer = &mut self
                     .command_line_state
                     .as_mut()
                     .expect("snapshot checked")
                     .buffer;
+                buffer.completion = None;
                 buffer.selection_anchor = (anchor != active).then_some(anchor);
                 buffer.cursor = active;
             }
             CommandLineEditAction::Replace { range, text } => {
                 if range.start > range.end || !boundary(range.start) || !boundary(range.end) {
                     return Err(DocumentError::NotGraphemeBoundary(range.end));
+                }
+                let accepted_separator = self
+                    .command_line_state
+                    .as_mut()
+                    .expect("snapshot checked")
+                    .buffer
+                    .accept_completion_input(range.clone(), &text);
+                if accepted_separator {
+                    // Replay must accept the directory too; synthesizing caret
+                    // movement first would consume completion before the slash.
+                    self.record_event(&InputEvent::Text(text));
+                    return Ok(CommandOutput::pending());
                 }
                 // Record portable editing keys, not a native range identity, so
                 // replay reproduces the same edited prompt without stale offsets.

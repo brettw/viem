@@ -11,6 +11,9 @@ pub(super) fn patches(
     if document.format() != Format::Markdown {
         return Ok(None);
     }
+    if let Some(patches) = super::markdown_quotes::empty_insertion_patches(document, range, replacement)? {
+        return Ok(Some(patches));
+    }
     if let Some(patches) = join_following_paragraph(document, range, replacement)? {
         return Ok(Some(patches));
     }
@@ -19,7 +22,9 @@ pub(super) fn patches(
         .blocks_for_region(range)
         .into_iter()
         .find(|block| block.range.start <= range.start && range.end <= block.range.end);
-    let code_block = block
+    let quoted_code = block.as_ref().map(|block| super::markdown_quotes::is_fenced_block(document, block))
+        .transpose()?.unwrap_or(false);
+    let code_block = quoted_code || block
         .as_ref()
         .is_some_and(|block| block.style.0 == "Code Block");
     if code_block && !replacement.contains(['`', '~']) {
@@ -44,7 +49,7 @@ pub(super) fn patches(
                     .ok_or(DocumentError::AmbiguousProjection)?
             };
             let mut separator = document.file_format().spelling().to_owned();
-            if replacement.contains('\n') && matches!(block.kind, super::BlockKind::ListItem { .. })
+            if replacement.contains('\n') && (quoted_code || matches!(block.kind, super::BlockKind::ListItem { .. }))
             {
                 let first = document
                     .projection()
@@ -62,7 +67,7 @@ pub(super) fn patches(
                     .bytes_in(line.start..first)
                     .ok_or(DocumentError::AmbiguousProjection)?;
                 let prefix = document.encoding().decode_region(&prefix, line.start)?.text;
-                if prefix.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
+                if quoted_code || prefix.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
                     separator.push_str(&prefix);
                 }
             }
@@ -111,6 +116,9 @@ pub(super) fn patches(
     };
     let decoded = document.encoding().decode(&document.source_bytes())?;
     let input = super::line_endings::normalize(&decoded, document.file_format());
+    let input = if quoted_code {
+        super::markdown_quotes::strip(&input, &super::markdown_quotes::classify(&input))
+    } else { input };
     let builder = super::rich_text::Builder::new(&input, Revision(0));
     let start = input
         .units
@@ -419,6 +427,20 @@ pub(super) fn delimiter_ranges(
     let close_start = right;
     while left > 0 && bytes[left - 1] == b'`' {
         left -= 1;
+    }
+    // A prose escape consumes the first backtick independently of the code
+    // opener that follows it (for example, \``body`). It is not part of the
+    // matched delimiter and must remain outside an assignment/removal patch.
+    if left < open_end
+        && bytes[..left]
+            .iter()
+            .rev()
+            .take_while(|byte| **byte == b'\\')
+            .count()
+            % 2
+            == 1
+    {
+        left += 1;
     }
     while bytes.get(right) == Some(&b'`') {
         right += 1;

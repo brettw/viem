@@ -41,6 +41,8 @@ use crate::layout::{
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod input_layout;
+
 static NEXT_STYLE_EDIT_GROUP_ID: AtomicU64 = AtomicU64::new(1);
 
 fn boolean_style_state(values: impl Iterator<Item = bool>) -> SemanticStyleState {
@@ -364,6 +366,10 @@ pub enum CoreEvent {
     SetListStyle {
         expected: LogicalSelectionIdentity,
         style: Option<crate::document::ListStyle>,
+    },
+    IndentList {
+        expected: LogicalSelectionIdentity,
+        unindent: bool,
     },
     SetParagraphStyle {
         expected: LogicalSelectionIdentity,
@@ -1013,7 +1019,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             DocumentLayoutStyles::semantic_character_at(self.document.projection(), at, upstream)
                 .map_err(LayoutError::from)?;
         if range.is_none() {
-            view.commands.apply_typing_presentation(&mut first);
+            view.commands
+                .apply_typing_presentation(&self.document, &mut first)?;
         }
         let mixed = if let Some(range) = range.filter(|range| !range.is_empty()) {
             let styles =
@@ -1307,10 +1314,17 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
     ) -> Result<crate::document::SelectedNamedStyles, CoreError> {
         let selection = self.list_selection_identity(view_id)?;
-        Ok(self
+        let mut selected = self
             .document
             .projection()
-            .selected_named_styles(selection.range(), selection.active_affinity()))
+            .selected_named_styles(selection.range(), selection.active_affinity());
+        if selection.kind() == LogicalSelectionKind::None {
+            if let Some(named) = self.views[&view_id].commands.typing_named_style() {
+                selected.character = Some(named.clone());
+                selected.character_mixed = false;
+            }
+        }
+        Ok(selected)
     }
 
     fn active_linear_selection_identity(
@@ -2053,7 +2067,21 @@ impl<P: TextMeasurementProvider> Core<P> {
         demand: &LayoutDemand,
         cancellation: LayoutCancellationToken,
     ) -> Result<crate::layout::LayoutJobRequest, CoreError> {
-        let (viewport_top, viewport_height, current_revision) = {
+        let (viewport_top, viewport_height) = self.validate_view_layout_demand(view_id, demand)?;
+        let region = LayoutJobRegion::Viewport(ViewportLayoutRegion::new(
+            demand.requested_hard_lines(),
+            viewport_top,
+            viewport_height,
+        )?);
+        self.prepare_view_layout_job(view_id, priority, region, cancellation)
+    }
+
+    fn validate_view_layout_demand(
+        &mut self,
+        view_id: ViewId,
+        demand: &LayoutDemand,
+    ) -> Result<(f32, f32), CoreError> {
+        let (viewport_top, viewport_height) = {
             let view = self
                 .views
                 .get_mut(&view_id)
@@ -2078,16 +2106,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             (
                 view.layout.viewport_top(),
                 view.layout.height().max(f32::EPSILON),
-                current_revision,
             )
         };
-        debug_assert_eq!(current_revision, Some(demand.layout_revision()));
-        let region = LayoutJobRegion::Viewport(ViewportLayoutRegion::new(
-            demand.requested_hard_lines(),
-            viewport_top,
-            viewport_height,
-        )?);
-        self.prepare_view_layout_job(view_id, priority, region, cancellation)
+        Ok((viewport_top, viewport_height))
     }
 
     /// Atomically validate and install a worker candidate into one view. A
@@ -4536,6 +4557,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                     },
                 );
             }
+            CoreEvent::IndentList { expected, unindent } => {
+                if self.list_selection_identity(view_id)? != expected { return Err(CoreError::StaleLogicalSelection); }
+                return self.apply_native_model_request(view_id, ModelRequest::IndentList {
+                    document: expected.document(), revision: expected.revision(), range: expected.range(), unindent,
+                });
+            }
             CoreEvent::SetListStyle { expected, style } => {
                 if self.list_selection_identity(view_id)? != expected {
                     return Err(CoreError::StaleLogicalSelection);
@@ -4570,7 +4597,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 namespace,
                 style,
             } => {
-                let actual = if namespace == StyleNamespace::Character {
+                let actual = if namespace == StyleNamespace::Character
+                    && expected.kind() != LogicalSelectionKind::None
+                {
                     self.active_linear_selection_identity(view_id)?
                         .ok_or(CoreError::StaleLogicalSelection)?
                 } else {
@@ -4584,6 +4613,15 @@ impl<P: TextMeasurementProvider> Core<P> {
                     expected.revision(),
                     style_sheet_revision,
                 )?;
+                if namespace == StyleNamespace::Character
+                    && expected.kind() == LogicalSelectionKind::None
+                {
+                    let commands =
+                        &mut self.views.get_mut(&view_id).expect("view checked").commands;
+                    let previous_cursor = commands.cursor();
+                    commands.set_typing_named_style(&self.document, style)?;
+                    return self.pending_typing_outcome(view_id, previous_cursor);
+                }
                 return self.apply_native_model_request(
                     view_id,
                     ModelRequest::AssignNamedStyle {
@@ -5523,6 +5561,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             | CoreEvent::SetFormat { .. }
             | CoreEvent::SetEncoding { .. }
             | CoreEvent::SetListStyle { .. }
+            | CoreEvent::IndentList { .. }
             | CoreEvent::SetParagraphStyle { .. }
             | CoreEvent::AssignNamedStyle { .. }
             | CoreEvent::EditNamedStyleDefinition { .. } => {
@@ -6018,21 +6057,10 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         demand: &LayoutDemand,
     ) -> Result<(), CoreError> {
-        let request = self.prepare_view_layout_demand(
-            view_id,
-            LayoutJobPriority::NewlyExposedRows,
-            demand,
-            LayoutCancellationToken::new(),
-        )?;
-        let candidate = {
-            let view = self
-                .views
-                .get_mut(&view_id)
-                .ok_or(CoreError::UnknownView(view_id))?;
-            compute_layout_job(&mut view.engine, &request, view.immediate_layout_context)?
+        let Some(requested) = self.input_layout_region(view_id, demand)? else {
+            return Err(LayoutMotionError::OutsideMaterializedCoverage(demand.clone()).into());
         };
-        self.install_view_layout_job(view_id, candidate)?;
-        Ok(())
+        self.satisfy_input_layout_demand(view_id, demand, requested)
     }
 
     fn cancel_composition_for_input(
@@ -6225,8 +6253,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             .expect("composition view remains attached")
             .commands;
         let typing_properties = invoking_commands.typing_properties().to_vec();
-        let request = session.prepare_commit_with_typing_properties(
+        let typing_named = invoking_commands.typing_named_style().cloned();
+        let request = session.prepare_commit_with_typing_style(
             &self.document,
+            typing_named.as_ref(),
             &typing_properties,
             invoking_commands.insertion_boundary_affinity(),
         )?;
@@ -6299,7 +6329,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 &inserted_text,
             )
             .expect("composition preparation validated the committed caret boundary");
-        target_commands.restore_typing_properties(typing_properties);
+        target_commands.restore_typing_style(typing_named, typing_properties);
         target_commands.update_line_undo_after_external_edit(
             &self.document,
             line_undo_candidate,

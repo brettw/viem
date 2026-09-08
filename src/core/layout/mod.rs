@@ -23,7 +23,7 @@ pub use engine::{
     CaretGeometry, CaretPoint, EdgeInsets, LayoutCancellationProbe, LayoutComputationError,
     LayoutCoverage, LayoutEngine, LayoutError, LayoutPoint, LayoutRect, LayoutRevision,
     LayoutSnapshot, LayoutWorkStatistics, LongLineLayoutCheckpoint, PositionedCaret,
-    PositionedCluster, PositionedDecoration, RegionalHardLineLayout, RegionalLayoutCacheLimits,
+    DecorationKind, PositionedCluster, PositionedDecoration, RegionalHardLineLayout, RegionalLayoutCacheLimits,
     RegionalLayoutCacheStatistics, RegionalLayoutSnapshot, SelectionRectangle,
     ViewConfigurationGeneration, ViewLayout, ViewLayoutState, VisualRow,
 };

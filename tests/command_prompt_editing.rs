@@ -189,3 +189,136 @@ fn recorded_macro_replays_prompt_replacement_after_pointer_selection() {
     assert!(!core.command_state(view).unwrap().wrap_option());
     assert_eq!(core.document().text(), "text");
 }
+
+#[test]
+fn recorded_macros_replay_backtab_native_directory_acceptance_and_caret_movement() {
+    struct Directory(std::path::PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+    let directory = Directory(std::env::temp_dir().join(format!(
+        "evim-completion-macro-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+    for name in ["Alpha", "Zebra"] {
+        std::fs::create_dir_all(directory.0.join(name)).unwrap();
+    }
+    std::fs::write(directory.0.join("Zebra/Child.txt"), b"").unwrap();
+    let prefix = format!("e {}/", directory.0.display());
+    let expected = format!("{prefix}Zebra/Child.txt");
+    let mut core = Core::new(Document::new("untouched"));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 300., 150.);
+    for value in "qa:".chars() {
+        key(&mut core, view, Key::Char(value));
+    }
+    core.handle(view, CoreEvent::Input(InputEvent::Text(prefix.clone())))
+        .unwrap();
+    key(&mut core, view, Key::BackTab);
+    let cursor = core
+        .command_state(view)
+        .unwrap()
+        .command_line_snapshot()
+        .unwrap()
+        .active;
+    edit(
+        &mut core,
+        view,
+        CommandLineEditAction::Replace {
+            range: cursor..cursor,
+            text: "/".into(),
+        },
+    );
+    key(&mut core, view, Key::Tab);
+    assert_eq!(
+        core.command_state(view)
+            .unwrap()
+            .command_line_snapshot()
+            .unwrap()
+            .text,
+        expected
+    );
+    key(&mut core, view, Key::Enter);
+    key(&mut core, view, Key::Char('q'));
+    assert!(core
+        .command_state(view)
+        .unwrap()
+        .register('a')
+        .unwrap()
+        .text
+        .contains("<S-Tab>/<Tab>"));
+
+    // Make replay observable even if it were to stop before executing Ex.
+    for value in ":pwd".chars() {
+        key(&mut core, view, Key::Char(value));
+    }
+    key(&mut core, view, Key::Enter);
+    key(&mut core, view, Key::Char('@'));
+    key(&mut core, view, Key::Char('a'));
+    key(&mut core, view, Key::Char(':'));
+    key(&mut core, view, Key::Up);
+    assert_eq!(
+        core.command_state(view)
+            .unwrap()
+            .command_line_snapshot()
+            .unwrap()
+            .text,
+        expected
+    );
+    assert_eq!(core.document().text(), "untouched");
+    assert!(!core.document().is_dirty());
+
+    key(&mut core, view, Key::Escape);
+    for value in "qb:".chars() {
+        key(&mut core, view, Key::Char(value));
+    }
+    core.handle(
+        view,
+        CoreEvent::Input(InputEvent::text(format!("{prefix}ze.keep"))),
+    )
+    .unwrap();
+    let cursor = prefix.len() + 2;
+    edit(
+        &mut core,
+        view,
+        CommandLineEditAction::Select {
+            anchor: cursor,
+            active: cursor,
+        },
+    );
+    key(&mut core, view, Key::Tab);
+    let expected = format!("{prefix}Zebra/.keep");
+    assert_eq!(
+        core.command_state(view)
+            .unwrap()
+            .command_line_snapshot()
+            .unwrap()
+            .text,
+        expected
+    );
+    key(&mut core, view, Key::Enter);
+    key(&mut core, view, Key::Char('q'));
+    for value in ":pwd".chars() {
+        key(&mut core, view, Key::Char(value));
+    }
+    key(&mut core, view, Key::Enter);
+    key(&mut core, view, Key::Char('@'));
+    key(&mut core, view, Key::Char('b'));
+    key(&mut core, view, Key::Char(':'));
+    key(&mut core, view, Key::Up);
+    assert_eq!(
+        core.command_state(view)
+            .unwrap()
+            .command_line_snapshot()
+            .unwrap()
+            .text,
+        expected
+    );
+    assert_eq!(core.document().text(), "untouched");
+    assert!(!core.document().is_dirty());
+}

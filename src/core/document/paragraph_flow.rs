@@ -18,6 +18,20 @@ pub(super) fn source_lines(input: &NormalizedText) -> Vec<Range<usize>> {
 }
 
 pub(super) fn markdown_soft_breaks(input: &NormalizedText) -> BTreeSet<usize> {
+    let quotes = super::markdown_quotes::classify(input);
+    if quotes.iter().all(|line| line.depth == 0) {
+        return markdown_soft_breaks_without_quotes(input);
+    }
+    let body = super::markdown_quotes::strip(input, &quotes);
+    let soft = markdown_soft_breaks_without_quotes(&body);
+    input.endings.iter().enumerate().filter_map(|(index, ending)| {
+        (quotes[index].depth == quotes[index + 1].depth
+            && soft.contains(&body.endings[index].normalized.start))
+            .then_some(ending.normalized.start)
+    }).collect()
+}
+
+fn markdown_soft_breaks_without_quotes(input: &NormalizedText) -> BTreeSet<usize> {
     let lines = source_lines(input);
     let lists = super::markdown_blocks::classify(input);
     let mut prose = Vec::with_capacity(lines.len());
@@ -96,15 +110,32 @@ fn markdown_projection(
     input: &NormalizedText,
     preserve_markers: bool,
 ) -> (NormalizedText, BTreeSet<usize>) {
-    let lines = source_lines(input);
     let soft = markdown_soft_breaks(input);
+    let quotes = super::markdown_quotes::classify(input);
+    if !preserve_markers && quotes.iter().any(|line| line.depth > 0) {
+        let body = super::markdown_quotes::strip(input, &quotes);
+        let body_soft = input.endings.iter().zip(&body.endings)
+            .filter_map(|(before, after)| soft.contains(&before.normalized.start)
+                .then_some(after.normalized.start)).collect();
+        return markdown_projection_with_soft_breaks(&body, false, body_soft);
+    }
+    markdown_projection_with_soft_breaks(input, preserve_markers, soft)
+}
+
+fn markdown_projection_with_soft_breaks(
+    input: &NormalizedText,
+    preserve_markers: bool,
+    soft: BTreeSet<usize>,
+) -> (NormalizedText, BTreeSet<usize>) {
+    let lines = source_lines(input);
     let lists = super::markdown_blocks::classify(input);
+    let quotes = super::markdown_quotes::classify(input);
     let mut replacements: Vec<(Range<usize>, &'static str, bool)> = Vec::new();
     let mut explicit = BTreeSet::new();
     let mut fence = None;
     let mut i = 0;
     while i < input.endings.len() {
-        let text = &input.text[lines[i].clone()];
+        let text = &input.text[quotes[i].content_start..lines[i].end];
         let was_fenced = fence.is_some();
         if let Some((delimiter, length)) = fence {
             let tail = text.trim();

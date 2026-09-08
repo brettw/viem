@@ -1,21 +1,52 @@
 //! Pending character declarations are view policy, never empty source syntax.
 use super::*;
-use crate::document::{ResolvedCharacterStyle, StyleProperty, StylePropertyValue};
+use crate::document::{ResolvedCharacterStyle, StyleId, StyleProperty, StylePropertyValue};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct TypingStyle {
+    pub named: Option<StyleId>,
     pub values: Vec<(StyleProperty, StylePropertyValue)>,
+}
+impl TypingStyle {
+    pub fn is_empty(&self) -> bool {
+        self.named.is_none() && self.values.is_empty()
+    }
 }
 // Values enter only after finite-value validation by Document.
 impl Eq for TypingStyle {}
 impl CommandInterpreter {
-    pub(crate) fn restore_typing_properties(
+    pub(crate) fn restore_typing_style(
         &mut self,
+        named: Option<StyleId>,
         values: Vec<(StyleProperty, StylePropertyValue)>,
     ) {
-        self.typing_style.values = values;
+        self.typing_style = TypingStyle { named, values };
+    }
+    pub(crate) fn typing_named_style(&self) -> Option<&StyleId> {
+        self.typing_style.named.as_ref()
     }
     pub(crate) fn typing_properties(&self) -> &[(StyleProperty, StylePropertyValue)] {
         &self.typing_style.values
+    }
+    pub fn set_typing_named_style(
+        &mut self,
+        document: &Document,
+        style: StyleId,
+    ) -> Result<(), DocumentError> {
+        if !matches!(self.mode, Mode::Normal | Mode::Insert | Mode::Replace) {
+            return Err(DocumentError::UnsupportedFormatting);
+        }
+        document.validate_typing_named_style(&style)?;
+        if self.typing_style.named.as_ref() != Some(&style) {
+            self.typing_style.named = Some(style);
+            if let Some(session) = self.insert_session.as_mut() {
+                if !session.replaying_program {
+                    if let Some(program) = session.repeat_program.as_mut() {
+                        program.push(EditSessionStep::TypingStyle(self.typing_style.clone()));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
     pub fn set_typing_properties(
         &mut self,
@@ -82,9 +113,30 @@ impl CommandInterpreter {
         }
     }
     pub fn clear_typing_properties(&mut self) {
-        self.typing_style = Default::default();
+        if self.typing_style.values.is_empty() {
+            return;
+        }
+        self.typing_style.values.clear();
+        if let Some(session) = self.insert_session.as_mut() {
+            if !session.replaying_program {
+                if let Some(program) = session.repeat_program.as_mut() {
+                    program.push(EditSessionStep::TypingStyle(self.typing_style.clone()));
+                }
+            }
+        }
     }
-    pub fn apply_typing_presentation(&self, style: &mut ResolvedCharacterStyle) {
+    pub fn apply_typing_presentation(
+        &self,
+        document: &Document,
+        style: &mut ResolvedCharacterStyle,
+    ) -> Result<(), DocumentError> {
+        if let Some(named) = &self.typing_style.named {
+            *style = document.typing_named_style_at(
+                self.cursor,
+                self.insertion_boundary_affinity(),
+                named,
+            )?;
+        }
         use StylePropertyValue as V;
         for (property, value) in &self.typing_style.values {
             match (property, value) {
@@ -126,5 +178,6 @@ impl CommandInterpreter {
                 _ => {}
             }
         }
+        Ok(())
     }
 }

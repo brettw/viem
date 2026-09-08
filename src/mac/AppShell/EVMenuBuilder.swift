@@ -243,6 +243,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(coreItem("Cut", command: .cut, key: "x"))
         menu.addItem(coreItem("Copy", command: .copy, key: "c"))
+        menu.addItem(coreItem("Copy Source", command: .copySource, key: "c", modifiers: [.command, .shift]))
         menu.addItem(coreItem("Paste", command: .paste, key: "v"))
         menu.addItem(coreItem(
             "Paste and Match Style",
@@ -362,8 +363,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         direction.addItem(coreItem("Left to Right", command: .directionLeftToRight))
         direction.addItem(coreItem("Right to Left", command: .directionRightToLeft))
         paragraph.addItem(submenuItem("Writing Direction", submenu: direction))
-        paragraph.addItem(coreItem("Increase Indent", command: .increaseIndent))
-        paragraph.addItem(coreItem("Decrease Indent", command: .decreaseIndent))
         paragraph.addItem(coreItem("Paragraph Spacing…", command: .paragraphSpacing))
 
         let lineSpacing = NSMenu(title: "Line Spacing")
@@ -373,11 +372,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         lineSpacing.addItem(coreItem("Double", command: .lineSpacingDouble))
         lineSpacing.addItem(coreItem("Custom…", command: .lineSpacingCustom))
         paragraph.addItem(submenuItem("Line Spacing", submenu: lineSpacing))
-        let lists = NSMenu(title: "List")
-        lists.addItem(coreItem("Bulleted List", command: .bulletedList))
-        lists.addItem(coreItem("Numbered List", command: .numberedList))
-        lists.addItem(coreItem("Remove List", command: .removeList))
-        paragraph.addItem(submenuItem("List", submenu: lists))
+        paragraph.addItem(coreItem("Remove List", command: .removeList))
         menu.addItem(submenuItem("Paragraph", submenu: paragraph))
 
         menu.addItem(.separator())
@@ -407,8 +402,8 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(coreItem("Flow Source Paragraphs", command: .flowParagraphs))
         menu.addItem(coreItem("Show Invisible Characters", command: .showInvisibleCharacters))
         menu.addItem(.separator())
-        menu.addItem(coreItem("Zoom In", command: .zoomIn, key: "=", modifiers: [.option]))
-        menu.addItem(coreItem("Zoom Out", command: .zoomOut, key: "-", modifiers: [.option]))
+        menu.addItem(coreItem("Zoom In", command: .zoomIn, key: "=", modifiers: [.command]))
+        menu.addItem(coreItem("Zoom Out", command: .zoomOut, key: "-", modifiers: [.command]))
         menu.addItem(coreItem("Actual Size", command: .actualSize))
         menu.addItem(.separator())
         menu.addItem(responderItem(
@@ -467,6 +462,8 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     ) -> NSMenuItem {
         let submenu = NSMenu(title: title)
         submenu.delegate = self
+        // Keep checked and unchecked style titles aligned in the native gutter.
+        submenu.showsStateColumn = true
         submenu.autoenablesItems = true
         styleMenuRoles[ObjectIdentifier(submenu)] = role
         populateUnavailableStyleMenu(
@@ -509,6 +506,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         }
 
         menu.removeAllItems()
+        if role == .paragraph { addParagraphListCommands(to: menu) }
         for entry in entries {
             menu.addItem(styleActionItem(
                 title: entry.displayName,
@@ -553,6 +551,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         let specification = styleMenuSpecification(for: role)
         styleMenuCatalogues.removeValue(forKey: ObjectIdentifier(menu))
         menu.removeAllItems()
+        if role == .paragraph { addParagraphListCommands(to: menu) }
         menu.addItem(styleActionItem(
             title: baseTitle,
             command: baseCommand,
@@ -585,6 +584,14 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             ),
             presentation: .disabled
         ))
+    }
+
+    private func addParagraphListCommands(to menu: NSMenu) {
+        menu.addItem(coreItem("Bulleted List", command: .bulletedList))
+        menu.addItem(coreItem("Numbered List", command: .numberedList))
+        menu.addItem(coreItem("Indent", command: .increaseIndent))
+        menu.addItem(coreItem("Unindent", command: .decreaseIndent))
+        menu.addItem(.separator())
     }
 
     private func styleActionItem(

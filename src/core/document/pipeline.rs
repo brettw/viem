@@ -563,7 +563,7 @@ impl TransformationPipelineSnapshot {
                 if matches!(
                     self.configuration.format,
                     Format::Markdown | Format::MarkdownSource
-                ) && (style.0 == "Paragraph"
+                ) && (matches!(style.0.as_str(), "Paragraph" | "Block quote")
                     || style
                         .0
                         .strip_prefix("Heading")
@@ -572,6 +572,9 @@ impl TransformationPipelineSnapshot {
             {
                 StageEditDisposition::Translated
             }
+            PipelineEditIntent::AssignCharacterStyle { style }
+                if matches!(self.configuration.format, Format::Markdown | Format::MarkdownSource)
+                    && matches!(style.0.as_str(), "Code" | "Character") => StageEditDisposition::Translated,
             PipelineEditIntent::AssignBlockStyle { .. }
             | PipelineEditIntent::AssignCharacterStyle { .. } => StageEditDisposition::Unsupported(
                 if self.configuration.format == Format::PlainText {

@@ -51,8 +51,13 @@ pub(super) fn native_style_selector(
         Some("body".into())
     } else if id == &sheet.base_paragraph {
         Some("p".into())
+    } else if id.0 == "Block quote" {
+        Some("blockquote".into())
     } else if let Some(level) = builtin_heading(id) {
         Some(format!("h{level}"))
+    } else if let Some((ordered, level)) = id.list_family_level() {
+        let ancestors = "li ".repeat(usize::from(level - 1));
+        Some(format!("{ancestors}{} > li", if ordered { "ol" } else { "ul" }))
     } else if let Some(level) =
         id.0.strip_prefix("List")
             .and_then(|s| s.parse::<u16>().ok())
@@ -86,11 +91,24 @@ fn native_definition(selector: &str) -> Option<(StyleSheet, StyleId, bool)> {
         "body" => sheet.base_document.clone(),
         "p" => sheet.base_paragraph.clone(),
         "pre" => StyleId::from("Code Block"),
+        "blockquote" => StyleId::from("Block quote"),
         "code" => StyleId::from("Code"),
         _ if selector.starts_with('h') && selector.len() == 2 => {
             let id = StyleId(format!("Heading{}", &selector[1..]));
             builtin_heading(&id)?;
             id
+        }
+        _ if selector.ends_with("ul > li") || selector.ends_with("ol > li") => {
+            let ordered = selector.ends_with("ol > li");
+            let prefix = &selector[..selector.len() - 7];
+            if !prefix.is_empty() && !prefix.split_terminator(' ').all(|s| s == "li") {
+                return None;
+            }
+            let level = prefix.split_whitespace().count();
+            if level > 3 {
+                return None;
+            }
+            sheet.list_style_id(ordered, level as u8)
         }
         _ => {
             let levels = selector.split(' ').collect::<Vec<_>>();
@@ -1067,10 +1085,7 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
         next = (!value.is_empty()).then_some(StyleId(value));
     }
     v2_css_properties(body, &mut c, &mut b);
-    if let Some(level) =
-        id.0.strip_prefix("List")
-            .and_then(|v| v.parse::<u16>().ok())
-    {
+    if let Some(level) = list_style_level(&id) {
         if html::declarations(body)
             .iter()
             .any(|(key, _)| *key == "margin-inline-start")
@@ -1149,17 +1164,27 @@ fn block_chain(sheet: &StyleSheet, id: &StyleId) -> Option<(CharacterProperties,
     Some((c, b))
 }
 
+fn list_style_level(id: &StyleId) -> Option<u16> {
+    id.list_family_level()
+        .map(|(_, level)| u16::from(level))
+        .or_else(|| id.legacy_list_level())
+}
+
 fn minimal_style_css(sheet: &StyleSheet, id: &StyleId, character: bool) -> Option<String> {
     let document = !character && id == &sheet.base_document;
     let list_level = (!character && is_native_style(sheet, id, false))
-        .then(|| {
-            id.0.strip_prefix("List")
-                .and_then(|v| v.parse::<u16>().ok())
-        })
+        .then(|| list_style_level(id))
         .flatten();
     let previous_list = list_level
         .filter(|level| *level > 1)
-        .and_then(|level| block_chain(sheet, &StyleId(format!("List{}", level - 1))));
+        .and_then(|level| {
+            let previous = if let Some((ordered, _)) = id.list_family_level() {
+                sheet.list_style_id(ordered, (level - 2) as u8)
+            } else {
+                StyleId(format!("List{}", level - 1))
+            };
+            block_chain(sheet, &previous)
+        });
     let (mut c, mut b) = if character {
         (character_chain(sheet, id), BlockProperties::default())
     } else {
@@ -1249,7 +1274,7 @@ fn minimal_style_css(sheet: &StyleSheet, id: &StyleId, character: bool) -> Optio
         padding_bottom,
         padding_left
     );
-    if id.0.starts_with("List") {
+    if list_style_level(id).is_some() {
         zero!(spacing_before, spacing_after);
     }
     if b.line_spacing == Some(LineSpacing::Normal)
@@ -1711,7 +1736,8 @@ mod tests {
 
     #[test]
     fn version_two_native_rules_have_simple_css_and_round_trip_exact_definitions() {
-        let sheet = StyleSheet::for_format(Format::Html);
+        let mut sheet = StyleSheet::for_format(Format::Html);
+        sheet.ensure_list_level(3);
         assert_eq!(
             write_rule_v2(&sheet, &sheet.base_document, false).unwrap(),
             "body {\n  font-family: 'SF Pro';\n  font-size: 14pt;\n}\n"
@@ -1753,6 +1779,7 @@ mod tests {
     #[test]
     fn version_two_css_is_authoritative_and_metadata_only_restores_sparse_residuals() {
         let mut sheet = StyleSheet::for_format(Format::Html);
+        sheet.ensure_list_level(3);
         let mut style = sheet.block_style(&"List1".into()).unwrap().clone();
         style.block.leading_indent = Some(48.0);
         style.character.letter_spacing = Some(1.25);
@@ -1805,6 +1832,7 @@ mod tests {
     #[test]
     fn deeper_list_css_resets_only_properties_changed_by_the_shallower_selector() {
         let mut sheet = StyleSheet::for_format(Format::Html);
+        sheet.ensure_list_level(3);
         let mut first = sheet.block_style(&"List1".into()).unwrap().clone();
         first.character.size = Some(18.0);
         first.block.leading_indent = Some(48.0);
@@ -2079,13 +2107,17 @@ pub(super) fn paragraph_assignment_patches(
     sheet: &StyleSheet,
     id: &StyleId,
 ) -> Result<Vec<(Range<usize>, String)>, DocumentError> {
+    if id.0 == "Block quote" {
+        return super::html_quotes::wrap_patches(input, ranges);
+    }
+    if id == &sheet.base_paragraph {
+        if let Some(patches) = super::html_quotes::remove_patches(input, ranges)? {
+            return Ok(patches);
+        }
+    }
     let tokens = html::tokenize(&input.text);
     let converter = super::rich_text::Builder::new(input, Revision(0));
-    if let Some(level) =
-        id.0.strip_prefix("List")
-            .and_then(|value| value.parse::<u16>().ok())
-            .filter(|level| (1..=256).contains(level) && id.0 == format!("List{level}"))
-    {
+    if let Some(level) = list_style_level(id) {
         return list_assignment_patches(input, ranges, sheet, level);
     }
     let element = if id == &sheet.base_paragraph {
@@ -2157,7 +2189,7 @@ pub(super) fn paragraph_assignment_patches(
             .map(|token| token.range.start)
             .unwrap_or(input.text.len());
         let open = super::html_paragraph::stack_at(&tokens, at);
-        let current = open.iter().rev().find(|token| matches!(&token.kind, TokenKind::Tag(tag) if matches!(tag.name.as_str(), "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "pre"))).copied();
+        let current = open.iter().rev().find(|token| matches!(&token.kind, TokenKind::Tag(tag) if matches!(tag.name.as_str(), "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "pre" | "blockquote"))).copied();
         let Some(token) = current else {
             // Anonymous paragraph text has no authoring element yet. Include
             // its enclosing phrasing wrappers, keeping structural containers,
@@ -2328,7 +2360,7 @@ pub(super) fn paragraph_assignment_patches(
                         }
                         if matches!(
                             next_tag.name.as_str(),
-                            "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "body" | "div"
+                            "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "body" | "div" | "blockquote"
                         ) {
                             boundary = Some(Some(next.range.start));
                             break;
@@ -2367,7 +2399,7 @@ pub(super) fn remove_assignment_patches(
     let converter = super::rich_text::Builder::new(input, Revision(0));
     let tokens = super::html5_tree::tokens(&input.text);
     let mut seen = BTreeSet::new();
-    let mut list_depth = 0usize;
+    let mut list_kinds = Vec::new();
     active_source_elements(&tokens)
         .into_iter()
         .filter_map(|token| {
@@ -2376,9 +2408,9 @@ pub(super) fn remove_assignment_patches(
             };
             if matches!(tag.name.as_str(), "ul" | "ol") {
                 if tag.end {
-                    list_depth = list_depth.saturating_sub(1);
+                    list_kinds.pop();
                 } else {
-                    list_depth += 1;
+                    list_kinds.push(tag.name == "ol");
                 }
             }
             if tag.end || token.range.is_empty() || !seen.insert(token.range.start) {
@@ -2396,7 +2428,11 @@ pub(super) fn remove_assignment_patches(
             let implicit_list = !character
                 && tag.name == "li"
                 && assigned.is_none()
-                && id.0 == format!("List{}", list_depth.max(1));
+                && (id.0 == format!("List{}", list_kinds.len().max(1))
+                    || id.list_family_level().is_some_and(|(ordered, level)| {
+                        list_kinds.last() == Some(&ordered)
+                            && usize::from(level) == list_kinds.len().max(1).min(4)
+                    }));
             if assigned.as_ref() != Some(id) && !implicit_heading && !implicit_list {
                 return None;
             }

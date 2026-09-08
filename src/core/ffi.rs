@@ -379,6 +379,9 @@ pub const EVIM_KEY_END: u32 = 12;
 pub const EVIM_KEY_PAGE_UP: u32 = 13;
 pub const EVIM_KEY_PAGE_DOWN: u32 = 14;
 pub const EVIM_KEY_CONTROL_CHARACTER: u32 = 15;
+pub const EVIM_KEY_BACK_TAB: u32 = 16;
+pub const EVIM_KEY_DOCUMENT_START: u32 = 17;
+pub const EVIM_KEY_DOCUMENT_END: u32 = 18;
 
 pub const EVIM_COMMAND_STATUS_NONE: u32 = 0;
 pub const EVIM_COMMAND_STATUS_COMPLETE: u32 = 1;
@@ -538,6 +541,29 @@ impl Default for EvimCommandTurnContextV1 {
         }
     }
 }
+
+/// V2 adds an optional validated eVim fragment JSON image. V1 remains unchanged.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct EvimClipboardTurnEntryV2 {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub target: u32,
+    pub reserved: u32,
+    pub generation: u64,
+    pub plain_text: EvimUtf8Slice,
+    pub fragment_json: EvimUtf8Slice,
+}
+pub const EVIM_CLIPBOARD_TURN_ENTRY_V2_SIZE: u32 = size_of::<EvimClipboardTurnEntryV2>() as u32;
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct EvimCommandTurnContextV2 {
+    pub struct_size: u32,
+    pub reserved: u32,
+    pub clipboards: *const EvimClipboardTurnEntryV2,
+    pub clipboard_count: u64,
+}
+pub const EVIM_COMMAND_TURN_CONTEXT_V2_SIZE: u32 = size_of::<EvimCommandTurnContextV2>() as u32;
 
 /// Offset and length inside an effect batch's copied byte arena. Unless a field
 /// explicitly documents otherwise, referenced bytes are valid UTF-8.
@@ -1121,6 +1147,7 @@ pub const EVIM_STYLE_DEFINITION_BASE_DOCUMENT: u32 = 1 << 2;
 pub const EVIM_STYLE_DEFINITION_BASE_PARAGRAPH: u32 = 1 << 3;
 pub const EVIM_STYLE_DEFINITION_BASE_CHARACTER: u32 = 1 << 4;
 pub const EVIM_STYLE_DEFINITION_INTERNAL: u32 = 1 << 5;
+pub const EVIM_STYLE_DEFINITION_INTERNAL_LIST: u32 = 1 << 6;
 
 pub const EVIM_STYLE_CAPABILITY_EDIT_DECLARATIONS: u32 = 1 << 0;
 pub const EVIM_STYLE_CAPABILITY_EDIT_PARENT: u32 = 1 << 1;
@@ -1632,6 +1659,7 @@ pub struct EvimLayoutDecorationV1 {
     pub paint: EvimTextPaintV1,
 }
 pub const EVIM_LAYOUT_DECORATION_V1_SIZE: u32 = size_of::<EvimLayoutDecorationV1>() as u32;
+pub const EVIM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER: u32 = 1 << 1;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EvimLayoutDecorationsInfoV1 {
@@ -2018,6 +2046,18 @@ pub struct EvimSetListStyleV1 {
     pub expected_selection: EvimLogicalSelectionIdentityV1,
 }
 pub const EVIM_SET_LIST_STYLE_V1_SIZE: u32 = size_of::<EvimSetListStyleV1>() as u32;
+
+pub const EVIM_LIST_CAN_INDENT: u32 = 1;
+pub const EVIM_LIST_CAN_UNINDENT: u32 = 2;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvimListIndentV1 {
+    pub struct_size: u32,
+    pub unindent: u32,
+    pub expected_selection: EvimLogicalSelectionIdentityV1,
+}
+pub const EVIM_LIST_INDENT_V1_SIZE: u32 = size_of::<EvimListIndentV1>() as u32;
+
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -4419,6 +4459,7 @@ fn parse_key(input: EvimKeyInputV1) -> Result<Key, EvimStatus> {
         EVIM_KEY_ESCAPE => special(Key::Escape),
         EVIM_KEY_ENTER => special(Key::Enter),
         EVIM_KEY_TAB => special(Key::Tab),
+        EVIM_KEY_BACK_TAB => special(Key::BackTab),
         EVIM_KEY_BACKSPACE => special(Key::Backspace),
         EVIM_KEY_DELETE => special(Key::Delete),
         EVIM_KEY_LEFT => special(Key::Left),
@@ -4427,6 +4468,8 @@ fn parse_key(input: EvimKeyInputV1) -> Result<Key, EvimStatus> {
         EVIM_KEY_DOWN => special(Key::Down),
         EVIM_KEY_HOME => special(Key::Home),
         EVIM_KEY_END => special(Key::End),
+        EVIM_KEY_DOCUMENT_START => special(Key::DocumentStart),
+        EVIM_KEY_DOCUMENT_END => special(Key::DocumentEnd),
         EVIM_KEY_PAGE_UP => special(Key::PageUp),
         EVIM_KEY_PAGE_DOWN => special(Key::PageDown),
         EVIM_KEY_CONTROL_CHARACTER => Ok(Key::Ctrl(scalar()?)),
@@ -5674,7 +5717,11 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, EvimStatu
 
         let is_base_document = style.id == sheet.base_document;
         let is_base_paragraph = style.id == sheet.base_paragraph;
-        let mut flags = 0;
+        let mut flags = if style.id.is_internal_list() || style.id.legacy_list_level().is_some() {
+            EVIM_STYLE_DEFINITION_INTERNAL_LIST
+        } else {
+            0
+        };
         let parent_id = if let Some(parent) = &style.based_on {
             flags |= EVIM_STYLE_DEFINITION_HAS_PARENT;
             push_style_string(&mut strings, &parent.0)?
@@ -5711,6 +5758,12 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, EvimStatu
                 && style.role == BlockRole::Paragraph
                 && (matches!(document.format(), Format::Html | Format::HtmlSource)
                     || (document.format() == Format::Rtf && style.id.0.starts_with("RtfP")))
+            {
+                EVIM_STYLE_CAPABILITY_ASSIGN
+            } else {
+                0
+            } | if matches!(document.format(), Format::Markdown | Format::MarkdownSource)
+                && style.id.0 == "Block quote"
             {
                 EVIM_STYLE_CAPABILITY_ASSIGN
             } else {
@@ -5789,9 +5842,7 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, EvimStatu
                         document.format(),
                         Format::Html | Format::HtmlSource | Format::Rtf
                     ),
-                ) | if sheet.has_user_default(&style.id, true)
-                    && (matches!(document.format(), Format::Html | Format::HtmlSource)
-                        || (document.format() == Format::Rtf && style.id.0.starts_with("RtfC")))
+                ) | if document.validate_typing_named_style(&style.id).is_ok()
                 {
                     EVIM_STYLE_CAPABILITY_ASSIGN
                 } else {
@@ -6102,7 +6153,7 @@ fn export_visual_selection(
                 EVIM_VISUAL_SELECTION_KIND_LINE
             };
             let range = state
-                .linear_visual_selection_range(document)
+                .line_selection_range(document, Some(snapshot))
                 .ok_or(EvimStatus::CoreFailure)?;
             let checked = checked_selection_range(document, range.start, range.end)?;
             segments.push(EvimVisualSelectionSegmentV1 {
@@ -7181,7 +7232,7 @@ fn dispatch_event(
     event: CoreEvent,
 ) -> Result<EvimCoreOutcomeV1, EvimStatus> {
     let view = ViewId(view);
-    let outcome = core.handle(view, event).map_err(core_status)?;
+    let outcome = core.handle_with_layout(view, event).map_err(core_status)?;
     summarize_core_outcome(core, view, Some(&outcome))
 }
 
@@ -7194,7 +7245,7 @@ fn dispatch_input_with_effects(
     let view_id = ViewId(view);
     let effect_clipboard = clipboard.clone();
     let outcome = core
-        .handle(view_id, CoreEvent::InputWithClipboard { input, clipboard })
+        .handle_with_layout(view_id, CoreEvent::InputWithClipboard { input, clipboard })
         .map_err(core_status)?;
     let mut summary = summarize_core_outcome(core, view_id, Some(&outcome))?;
     let effects = OwnedEffectBatch::from_command(
@@ -8156,11 +8207,13 @@ pub unsafe extern "C" fn evim_core_view_copy_layout_decorations(
                     for item in &row.decorations {
                         values.push(EvimLayoutDecorationV1 {
                             struct_size: EVIM_LAYOUT_DECORATION_V1_SIZE,
-                            flags: if item.render_run.is_some() {
+                            flags: (if item.render_run.is_some() {
                                 EVIM_POSITIONED_CLUSTER_HAS_RENDER_RUN
                             } else {
                                 0
-                            },
+                            }) | if item.kind == crate::layout::DecorationKind::BlockQuoteBorder {
+                                EVIM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER
+                            } else { 0 },
                             row_index: checked_export_count(row_index)?,
                             label_byte_start: checked_export_count(bytes.len())?,
                             label_byte_length: checked_export_count(item.text.len())?,
@@ -8890,6 +8943,118 @@ pub unsafe extern "C" fn evim_core_view_send_text_with_host_context(
         };
         let parsed_context =
             unsafe { read_command_turn_context(context, &[outcome_region, effect_region]) };
+        unsafe {
+            clear_outcome(out_outcome)?;
+            out_effect_batch.write(0);
+        }
+        let clipboard = parsed_context?;
+        let text = str::from_utf8(&text_bytes)
+            .map_err(|_| EvimStatus::InvalidUtf8)?
+            .to_owned();
+        let reservation = reserve_effect_batch()?;
+        let (outcome, effect_batch) =
+            publish_input_turn(handle, view, InputEvent::Text(text), clipboard, reservation)?;
+        unsafe {
+            out_outcome.write(outcome);
+            out_effect_batch.write(effect_batch);
+        }
+        Ok(())
+    })
+}
+
+/// Deliver one normalized key with immutable clipboard snapshots and writable
+/// capabilities captured by the host for this exact command turn.
+///
+/// On success `out_effect_batch` receives either zero (no host effects) or an
+/// owned immutable batch which the caller must release. The legacy outcome is
+/// still returned independently so existing presentation handling does not
+/// depend on the effect export format.
+///
+/// # Safety
+///
+/// `input` and `context` (including every nested UTF-8 slice) must remain
+/// readable for this call. The two aligned writable outputs must be distinct
+/// from all inputs and from each other.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_send_key_with_host_context_v2(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    input: *const EvimKeyInputV1,
+    context: *const EvimCommandTurnContextV2,
+    out_outcome: *mut EvimCoreOutcomeV1,
+    out_effect_batch: *mut EvimEffectBatchHandle,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let input_region = typed_pointer_region(input, 1)?;
+        let outcome_region = typed_pointer_region(out_outcome, 1)?;
+        let effect_region = typed_pointer_region(out_effect_batch, 1)?;
+        if regions_overlap(input_region, outcome_region)
+            || regions_overlap(input_region, effect_region)
+            || regions_overlap(outcome_region, effect_region)
+        {
+            return Err(EvimStatus::InvalidArgument);
+        }
+
+        // Copy every caller-owned input before clearing either output. This
+        // makes semantic validation failure deterministic without permitting
+        // an aliased nested clipboard string to be corrupted by output setup.
+        let raw_key = unsafe { input.read() };
+        let parsed_context =
+            unsafe { read_command_turn_context_v2(context, &[outcome_region, effect_region]) };
+        unsafe {
+            clear_outcome(out_outcome)?;
+            out_effect_batch.write(0);
+        }
+        let clipboard = parsed_context?;
+        let key = parse_key(raw_key)?;
+        let reservation = reserve_effect_batch()?;
+        let (outcome, effect_batch) =
+            publish_input_turn(handle, view, InputEvent::Key(key), clipboard, reservation)?;
+        unsafe {
+            out_outcome.write(outcome);
+            out_effect_batch.write(effect_batch);
+        }
+        Ok(())
+    })
+}
+
+/// Deliver one length-delimited UTF-8 text input event with host clipboard
+/// state captured for this exact command turn.
+///
+/// # Safety
+///
+/// Nonempty text and all `context` inputs must remain readable for this call.
+/// The two aligned writable outputs must be distinct from all inputs and from
+/// each other. A successful nonzero effect handle is caller-owned.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_send_text_with_host_context_v2(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    text: *const u8,
+    text_length: u64,
+    context: *const EvimCommandTurnContextV2,
+    out_outcome: *mut EvimCoreOutcomeV1,
+    out_effect_batch: *mut EvimEffectBatchHandle,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let text_region = typed_pointer_region(text, text_length)?;
+        let outcome_region = typed_pointer_region(out_outcome, 1)?;
+        let effect_region = typed_pointer_region(out_effect_batch, 1)?;
+        if regions_overlap(text_region, outcome_region)
+            || regions_overlap(text_region, effect_region)
+            || regions_overlap(outcome_region, effect_region)
+        {
+            return Err(EvimStatus::InvalidArgument);
+        }
+
+        let text_bytes = if text_length == 0 {
+            Vec::new()
+        } else {
+            let length = checked_length(text_length)?;
+            unsafe { slice::from_raw_parts(text, length) }.to_vec()
+        };
+        let parsed_context =
+            unsafe { read_command_turn_context_v2(context, &[outcome_region, effect_region]) };
         unsafe {
             clear_outcome(out_outcome)?;
             out_effect_batch.write(0);
@@ -9851,6 +10016,79 @@ pub unsafe extern "C" fn evim_core_view_list_selection(
     })
 }
 
+/// Query verified list nesting actions for the exact current selection.
+/// # Safety
+/// Both pointers must identify aligned values; the output must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_list_indent_capabilities(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    expected: *const EvimLogicalSelectionIdentityV1,
+    out_flags: *mut u32,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let input_region = typed_pointer_region(expected, 1)?;
+        let output_region = typed_pointer_region(out_flags, 1)?;
+        if regions_overlap(input_region, output_region) {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let expected = unsafe { expected.read() };
+        unsafe { out_flags.write(0) };
+        let flags = with_core(handle, |core| {
+            let current = core
+                .list_selection_identity(ViewId(view))
+                .map_err(core_status)?;
+            validate_logical_selection_identity(
+                expected,
+                logical_selection_identity_to_ffi(&current)?,
+            )?;
+            let (indent, unindent) = core.document().list_indent_capabilities(current.range());
+            Ok(u32::from(indent) * EVIM_LIST_CAN_INDENT
+                | u32::from(unindent) * EVIM_LIST_CAN_UNINDENT)
+        })?;
+        unsafe { out_flags.write(flags) };
+        Ok(())
+    })
+}
+
+/// Indent/unindent complete selected list items by exactly one level.
+/// # Safety
+/// Request and outcome must be distinct aligned readable/writable values.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_view_indent_list(
+    handle: EvimCoreHandle,
+    view: EvimViewId,
+    request: *const EvimListIndentV1,
+    out_outcome: *mut EvimCoreOutcomeV1,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let request = unsafe { read_core_request(request, out_outcome)? };
+        if request.struct_size < EVIM_LIST_INDENT_V1_SIZE || request.unindent > 1 {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            let expected = core
+                .list_selection_identity(ViewId(view))
+                .map_err(core_status)?;
+            validate_logical_selection_identity(
+                request.expected_selection,
+                logical_selection_identity_to_ffi(&expected)?,
+            )?;
+            dispatch_event(
+                core,
+                view,
+                CoreEvent::IndentList {
+                    expected,
+                    unindent: request.unindent != 0,
+                },
+            )
+        })?;
+        unsafe { out_outcome.write(outcome) };
+        Ok(())
+    })
+}
+
 /// Set/remove list markers on the selected paragraphs as one undo unit.
 ///
 /// # Safety
@@ -9927,8 +10165,8 @@ pub unsafe extern "C" fn evim_core_view_set_paragraph_style(
 }
 
 /// Assign an existing paragraph or character style at exact source, style-sheet,
-/// and logical-selection identities. Character assignment requires Visual mode;
-/// paragraph assignment also accepts the current paragraph target.
+/// and logical-selection identities. With no selection, character assignment
+/// updates the pending typing style; paragraph assignment targets the paragraph.
 ///
 /// # Safety
 /// Request, its UTF-8 slice, and outcome must be valid and not overlap output.
@@ -11503,8 +11741,8 @@ mod tests {
             unsafe { evim_core_style_sheet_info(handle, &mut info) },
             EvimStatus::Ok
         );
-        assert_eq!(info.definition_count, 14);
-        assert_eq!(info.property_count, 289);
+        assert_eq!(info.definition_count, 20);
+        assert_eq!(info.property_count, 421);
         assert_ne!(info.string_bytes, 0);
 
         let mut count_info = EvimStyleSheetInfoV1::default();
@@ -13950,4 +14188,102 @@ pub unsafe extern "C" fn evim_core_copy_hard_line_source_bytes(
         }
         Ok(())
     })
+}
+
+unsafe fn read_command_turn_context_v2(
+    pointer: *const EvimCommandTurnContextV2,
+    forbidden_outputs: &[(usize, usize)],
+) -> Result<ClipboardCommandContext, EvimStatus> {
+    let region = typed_pointer_region(pointer, 1)?;
+    if forbidden_outputs.iter().any(|output| regions_overlap(region, *output)) { return Err(EvimStatus::InvalidArgument); }
+    let context = unsafe { pointer.read() };
+    if context.struct_size < EVIM_COMMAND_TURN_CONTEXT_V2_SIZE || context.reserved != 0 || context.clipboard_count > 2 { return Err(EvimStatus::InvalidArgument); }
+    let entries_region = typed_pointer_region(context.clipboards, context.clipboard_count)?;
+    if forbidden_outputs.iter().any(|output| regions_overlap(entries_region, *output)) { return Err(EvimStatus::InvalidArgument); }
+    let entries = if context.clipboard_count == 0 { Vec::new() } else {
+        unsafe { slice::from_raw_parts(context.clipboards, checked_length(context.clipboard_count)?) }.to_vec()
+    };
+    let mut result = ClipboardCommandContext::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for entry in entries {
+        if entry.struct_size < EVIM_CLIPBOARD_TURN_ENTRY_V2_SIZE || entry.reserved != 0
+            || entry.flags & !(EVIM_CLIPBOARD_TURN_HAS_READ | EVIM_CLIPBOARD_TURN_WRITABLE) != 0 { return Err(EvimStatus::InvalidArgument); }
+        let target = parse_clipboard_target(entry.target)?;
+        if !seen.insert(target) { return Err(EvimStatus::InvalidArgument); }
+        for region in [typed_pointer_region(entry.plain_text.data, entry.plain_text.length)?,typed_pointer_region(entry.fragment_json.data, entry.fragment_json.length)?] {
+            if forbidden_outputs.iter().any(|output| regions_overlap(region,*output)) { return Err(EvimStatus::InvalidArgument); }
+        }
+        if entry.flags & EVIM_CLIPBOARD_TURN_HAS_READ != 0 {
+            let text = str::from_utf8(unsafe { input_bytes(entry.plain_text.data,entry.plain_text.length)? }).map_err(|_| EvimStatus::InvalidUtf8)?.to_owned();
+            let content = if entry.fragment_json.length == 0 { ClipboardContent::from_plain_text(text) } else {
+                let bytes = unsafe { input_bytes(entry.fragment_json.data,entry.fragment_json.length)? };
+                let register = str::from_utf8(bytes).ok()
+                    .and_then(|json| crate::document::ClipboardFragment::from_json(json,&text).ok())
+                    .and_then(|fragment| crate::command::RegisterValue::from_clipboard_fragment(fragment).ok());
+                ClipboardContent::try_new(text,register).map_err(|_| EvimStatus::InvalidArgument)?
+            };
+            result = result.with_read(ClipboardSnapshot::new(target,ClipboardGeneration(entry.generation),content));
+        } else if entry.generation != 0 || entry.plain_text.length != 0 || entry.fragment_json.length != 0 { return Err(EvimStatus::InvalidArgument); }
+        if entry.flags & EVIM_CLIPBOARD_TURN_WRITABLE != 0 { result = result.with_write(target); }
+    }
+    Ok(result)
+}
+
+/// Copy versioned source/style clipboard JSON for an exact formatted range.
+/// # Safety
+/// Inputs/outputs must be valid, aligned where typed, and non-overlapping.
+#[no_mangle]
+pub unsafe extern "C" fn evim_core_copy_clipboard_json(
+    handle: EvimCoreHandle,
+    request: *const EvimFormattedUtf8RangeV1,
+    output: *mut u8,
+    output_capacity: u64,
+    out_required: *mut u64,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let request_region = typed_pointer_region(request,1)?;
+        let output_region = typed_pointer_region(output,output_capacity)?;
+        let required_region = typed_pointer_region(out_required,1)?;
+        if regions_overlap(request_region,output_region) || regions_overlap(request_region,required_region) || regions_overlap(output_region,required_region) { return Err(EvimStatus::InvalidArgument); }
+        let request = unsafe { request.read() };
+        if request.struct_size < EVIM_FORMATTED_UTF8_RANGE_V1_SIZE || request.reserved != 0 { return Err(EvimStatus::InvalidArgument); }
+        unsafe { out_required.write(0); }
+        let fragment = with_core(handle,|core| {
+            validate_formatted_snapshot_identity(request.identity,core.document())?;
+            core.document().clipboard_fragment(checked_length(request.utf8_start)?..checked_length(request.utf8_end)?)
+                .map_err(|_| EvimStatus::InvalidArgument)
+        })?;
+        unsafe { copy_clipboard_json_bytes(fragment.json().as_bytes(),output,output_capacity,out_required) }
+    })
+}
+
+/// Copy the immutable fragment captured before an emitted clipboard write.
+/// A plain-only write has a zero-byte result.
+/// # Safety
+/// Output storage must be valid and the output regions may not overlap.
+#[no_mangle]
+pub unsafe extern "C" fn evim_effect_batch_copy_clipboard_json(
+    batch: EvimEffectBatchHandle,
+    clipboard_index: u64,
+    output: *mut u8,
+    output_capacity: u64,
+    out_required: *mut u64,
+) -> EvimStatus {
+    ffi_boundary(|| {
+        let output_region = typed_pointer_region(output,output_capacity)?;
+        let required_region = typed_pointer_region(out_required,1)?;
+        if regions_overlap(output_region,required_region) { return Err(EvimStatus::InvalidArgument); }
+        unsafe { out_required.write(0); }
+        let batch = owned_effect_batch(batch)?;
+        let write = batch.clipboard_writes.get(checked_length(clipboard_index)?).ok_or(EvimStatus::InvalidArgument)?;
+        let bytes = write.content().portable_register().and_then(|value| value.clipboard_fragment()).map_or(&[][..], |fragment| fragment.json().as_bytes());
+        unsafe { copy_clipboard_json_bytes(bytes,output,output_capacity,out_required) }
+    })
+}
+
+unsafe fn copy_clipboard_json_bytes(bytes: &[u8], output: *mut u8, capacity: u64, required: *mut u64) -> Result<(),EvimStatus> {
+    unsafe { required.write(checked_export_count(bytes.len())?); }
+    if checked_length(capacity)? < bytes.len() { return Err(EvimStatus::BufferTooSmall); }
+    if !bytes.is_empty() { unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(),output,bytes.len()); } }
+    Ok(())
 }

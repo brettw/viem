@@ -364,7 +364,12 @@ pub(super) fn project_with_configuration(
             paragraphs.extend_from_slice(&plain.blocks()[line..code.start]);
             let mut paragraph = plain.blocks()[code.start].clone();
             paragraph.range.end = plain.blocks()[code.end - 1].range.end;
-            let code_style = StyleId::from("Code Block");
+            let quoted = result
+                .style_spans_for_region(&paragraph.range)
+                .iter()
+                .any(|span| matches!(&span.application,
+                    StyleApplication::SourceParagraph { style, .. } if style.0 == "Block quote"));
+            let code_style = StyleId::from(if quoted { "Block quote" } else { "Code Block" });
             paragraph.style = if result.style_sheet().block_style(&code_style).is_some() {
                 code_style
             } else {
@@ -927,7 +932,7 @@ pub(super) fn inherited_literal_projection(
         .blocks_for_region(region)
         .into_iter()
         .find(|block| {
-            block.style.0 == "Code Block"
+            matches!(block.style.0.as_str(), "Code Block" | "Block quote")
                 && block.range.start <= region.start
                 && region.end <= block.range.end
         })

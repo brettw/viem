@@ -16,6 +16,7 @@ mod html;
 mod html5_tree;
 mod html_direct;
 mod html_paragraph;
+mod html_quotes;
 mod html_source;
 mod html_styles;
 mod html_typing;
@@ -23,6 +24,7 @@ mod html_whitespace;
 mod lists;
 mod markdown_blocks;
 mod markdown_code;
+mod markdown_quotes;
 mod markdown_source_edit;
 mod paragraph_flow;
 mod rich_text;
@@ -104,7 +106,7 @@ pub use style::{
 };
 pub(crate) use transaction::RecordedReplacement;
 pub use transaction::{
-    CommittedModelTransaction, FragmentEdit, HistoryNavigationRequest, ModelChangeKind,
+    ClipboardFragment, CommittedModelTransaction, FragmentEdit, HistoryNavigationRequest, ModelChangeKind,
     ModelChangeSummary, ModelRequest, ModelTransactionError, PersistedStyleIntent,
     PreparedModelTransaction, ProjectionWorkScope, ProjectionWorkStatistics, ReplacementFragment,
     SourcePatch, StyleBlockTarget, StyleChangeSummary, StyleModelIntent, StyleModelRequest,
@@ -1663,6 +1665,9 @@ impl Document {
     /// Continue the current list; a second Enter on an empty item ends it.
     pub(crate) fn list_enter_edit(&self, at: usize) -> Result<Option<TextEdit>, DocumentError> {
         self.validate_range(&(at..at))?;
+        if let Some(edit) = self.markdown_quote_enter_edit(at)? {
+            return Ok(Some(edit));
+        }
         let index = self
             .projection()
             .hard_line_at_offset(at)
@@ -1713,6 +1718,9 @@ impl Document {
             // Enter inserts only a logical item boundary into editable text.
             return Ok(Some(TextEdit::new(at..at, "\n")));
         }
+        if self.markdown_source_code_enter(at)? {
+            return Ok(None);
+        }
         if let Some(edit) = self.markdown_source_empty_enter_edit(at)? {
             return Ok(Some(edit));
         }
@@ -1721,7 +1729,8 @@ impl Document {
             ordered, ordinal, ..
         } = kind
         else {
-            return Ok(None);
+            return Ok((self.format() == Format::MarkdownSource)
+                .then(|| TextEdit::new(at..at, "\n")));
         };
         if at < line.start + prefix_len {
             return Ok(None);
@@ -3353,7 +3362,7 @@ mod tests {
                 );
                 assert_eq!(
                     document.projection().blocks()[0].style,
-                    StyleId::from("List1")
+                    StyleId::from("BulletedList1")
                 );
             }
             document

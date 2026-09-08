@@ -48,6 +48,8 @@ pub struct ParagraphLayoutStyle {
     pub list_marker_range: Option<Range<usize>>,
     /// Noneditable WYSIWYG label, measured separately from formatted text.
     pub list_marker_decoration: Option<String>,
+    /// Noneditable left border for the shared HTML/Markdown quote treatment.
+    pub quote_border: bool,
     pub marker_paint: ResolvedTextPaint,
     pub spacing_before: f32,
     pub spacing_after: f32,
@@ -144,6 +146,19 @@ impl From<FormattedTextError> for DocumentStyleError {
 }
 
 impl DocumentLayoutStyles {
+    pub(crate) fn apply_source_quote_policy(&mut self, format: crate::document::Format, flow: bool) {
+        if format == crate::document::Format::MarkdownSource && !flow {
+            for paragraph in &mut self.paragraphs {
+                if paragraph.quote_border {
+                    paragraph.quote_border = false;
+                    paragraph.leading_indent = 0.0;
+                    paragraph.trailing_indent = 0.0;
+                    paragraph.first_line_indent = 0.0;
+                }
+            }
+        }
+    }
+
     /// Resolve the content associated with one current logical boundary in
     /// logarithmic plus local style-run work; empty paragraphs need no shaping.
     pub fn character_at(
@@ -276,10 +291,47 @@ impl DocumentLayoutStyles {
         let mut shaping_runs = Vec::new();
         let mut paint_runs = Vec::new();
         let mut paragraphs = Vec::with_capacity(input.blocks.len());
+        let mut source_quotes: Vec<Range<usize>> = Vec::new();
+        for span in input.style_spans {
+            if matches!(&span.application, StyleApplication::SourceParagraph { style, .. }
+                if style.0 == "Block quote")
+            {
+                if let Some(previous) = source_quotes
+                    .last_mut()
+                    .filter(|previous| span.range.start <= previous.end)
+                {
+                    previous.end = previous.end.max(span.range.end);
+                } else {
+                    source_quotes.push(span.range.clone());
+                }
+            }
+        }
         for block in input.blocks {
+            let mut assigned = Some(&block.style);
+            let mut quote_border = false;
+            while let Some(id) = assigned {
+                if id.0 == "Block quote" {
+                    quote_border = true;
+                    break;
+                }
+                assigned = sheet
+                    .block_style(id)
+                    .and_then(|style| style.based_on.as_ref());
+            }
+            // HTML Source retains its physical text, including block tags.
+            // Its semantic context supplies the quote treatment for that line.
+            let source_quote = source_quotes
+                .get(source_quotes.partition_point(|range| range.end <= block.range.start))
+                .is_some_and(|range| range.start < block.range.end);
+            quote_border |= source_quote;
+            let quote_id = StyleId::from("Block quote");
             let paragraph = sheet.resolve_assigned_paragraph_style(
                 input.document_style,
-                &block.style,
+                if source_quote {
+                    &quote_id
+                } else {
+                    &block.style
+                },
                 &block.direct_paragraph,
                 &block.direct_default_character,
                 None,
@@ -288,9 +340,15 @@ impl DocumentLayoutStyles {
             // A heading or code paragraph inside an item keeps its own style
             // plus the containing list's inset. List-role paragraphs already
             // declare that inset themselves.
-            let list_inset = if let crate::document::BlockKind::ListItem { level, .. } = block.kind
+            let list_inset = if let crate::document::BlockKind::ListItem { ordered, level, .. } =
+                block.kind
             {
-                let id = StyleId(format!("List{}", u16::from(level) + 1));
+                let id = sheet.list_style_id(ordered, level);
+                let extra = if id.is_internal_list() {
+                    32.0 * f32::from(level.saturating_sub(3))
+                } else {
+                    0.0
+                };
                 let mut assigned = Some(&block.style);
                 let mut inherits_list = false;
                 while let Some(ancestor) = assigned {
@@ -303,7 +361,7 @@ impl DocumentLayoutStyles {
                         .and_then(|style| style.based_on.as_ref());
                 }
                 if inherits_list || sheet.block_style(&id).is_none() {
-                    0.0
+                    extra
                 } else {
                     sheet
                         .resolve_assigned_paragraph_style(
@@ -315,6 +373,7 @@ impl DocumentLayoutStyles {
                             &Default::default(),
                         )?
                         .leading_indent
+                        + extra
                 }
             } else {
                 0.0
@@ -340,6 +399,7 @@ impl DocumentLayoutStyles {
                 block_id: block.id,
                 text_range: block.range.clone(),
                 list_marker_range,
+                quote_border,
                 list_marker_decoration: match block.kind {
                     crate::document::BlockKind::ListItem {
                         ordered,

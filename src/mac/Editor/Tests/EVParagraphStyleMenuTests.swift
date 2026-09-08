@@ -1,0 +1,213 @@
+import AppKit
+import CEvimCore
+import EvimAppShell
+import XCTest
+@testable import EvimEditor
+
+@MainActor final class EVParagraphStyleMenuTests: XCTestCase {
+    private func surface(_ source: String, type: String) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
+        let backend = EVCoreDocumentBackend()
+        try backend.read(source: Data(source.utf8), typeName: type)
+        let view = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        view.loadViewIfNeeded()
+        view.view.frame = NSRect(x: 0, y: 0, width: 520, height: 240)
+        view.viewDidLayout()
+        return (backend, view, try XCTUnwrap(view.session))
+    }
+
+    private func choose(_ id: String, in view: EVEditorSurfaceController) throws {
+        let catalogue = try XCTUnwrap(view.currentStyleMenuCatalogue())
+        let entry = try XCTUnwrap(catalogue.entries.first { $0.role == .paragraph && $0.stableID == id })
+        XCTAssertTrue(entry.presentation.isEnabled)
+        let item = NSMenuItem(title: entry.displayName, action: #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:)), keyEquivalent: "")
+        item.representedObject = EVStyleMenuAction(kind: .assign, role: .paragraph, stableID: id,
+            documentID: catalogue.documentID, documentRevision: catalogue.documentRevision,
+            styleSheetRevision: catalogue.styleSheetRevision)
+        XCTAssertTrue(view.editorView.validateMenuItem(item))
+        view.editorView.performEditorStyleMenuAction(item)
+        XCTAssertNil(view.commandOutput)
+        XCTAssertEqual(view.currentStyleMenuCatalogue()?.entries.first { $0.stableID == id }?.presentation.state, .on)
+    }
+
+    private func currentListEntries(_ view: EVEditorSurfaceController) throws -> [EVStyleMenuEntry] {
+        try XCTUnwrap(view.currentStyleMenuCatalogue()).entries.filter {
+            $0.stableID.hasPrefix("BulletedList") || $0.stableID.hasPrefix("NumberedList")
+        }
+    }
+
+    private func modernRTFList(ordered: Bool) -> String {
+        let levels = (1...4).map { level in
+            let label = ordered
+                ? "{\\leveltext\\'02\\'\(String(format: "%02x", level - 1)).;}{\\levelnumbers\\'01;}"
+                : "{\\leveltext\\'01\\u8226?;}{\\levelnumbers;}"
+            return "{\\listlevel\\levelnfc\(ordered ? 0 : 23)\\levelstartat1\(label)\\li\(640 * level)\\fi-200}"
+        }.joined()
+        return "{\\rtf1{\\*\\listtable{\\list\(levels)\\listid42}}{\\*\\listoverridetable{\\listoverride\\listid42\\listoverridecount0\\ls1}}\\pard\\ls1\\ilvl0 Alpha\\par Beta{\\*\\unknown keep}}"
+    }
+
+    func testInternalListFamiliesRemainEditableAndOnlyCurrentStyleAppearsInMenu() throws {
+        for (type, source) in [
+            (EVDocument.markdownType, "- Parent\n  - Child\n\nOutside"),
+            (EVDocument.htmlType, "<ul><li>Parent<ul><li>Child</li></ul></li></ul><p>Outside</p>"),
+        ] {
+            let (backend, view, session) = try surface(source, type: type)
+            let sheet = try backend.styleSheetSnapshot()
+            let lists = sheet.definitions.filter { $0.flags.contains(.internalList) }
+            let expectedIDs = Set(["BulletedList", "NumberedList"].flatMap { family in (1...4).map { "\(family)\($0)" } })
+            XCTAssertEqual(Set(lists.map { $0.key.id.rawValue }), expectedIDs)
+            XCTAssertTrue(lists.allSatisfy { !$0.flags.contains(.internalSyntax) })
+            let editor = EVStyleEditorViewController()
+            for definition in lists {
+                editor.retarget(document: view, styleKey: definition.key)
+                XCTAssertEqual(editor.inspection.selectedStyleKey, definition.key)
+                XCTAssertEqual(editor.inspection.styleCount, sheet.definitions.count)
+                XCTAssertTrue(editor.inspection.mutationsEnabled)
+            }
+            view.editorView.setAccessibilitySelectedTextRange(NSRange(location: 7, length: 0))
+            XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "BulletedList2")
+            let entries = try currentListEntries(view)
+            XCTAssertEqual(entries.map(\.stableID), ["BulletedList2"])
+            XCTAssertEqual(entries.first?.presentation.state, .on)
+            view.editorView.setAccessibilitySelectedTextRange(NSRange(location: 13, length: 0))
+            XCTAssertTrue(try currentListEntries(view).isEmpty)
+            view.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 11))
+            XCTAssertNil(try session.selectedNamedStyles().paragraph)
+            XCTAssertTrue(try currentListEntries(view).isEmpty)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+        }
+    }
+
+    func testListIndentCommandsFollowCoreCapabilitiesAndRoundTripExactSource() throws {
+        for (type, source, family) in [
+            (EVDocument.markdownType, "- Alpha\n- Beta", "BulletedList"),
+            (EVDocument.htmlType, "<ul data-keep='yes'><li>Alpha</li><li>Beta</li></ul><!--keep-->", "BulletedList"),
+            (EVDocument.rtfType, modernRTFList(ordered: false), "BulletedList"),
+            (EVDocument.rtfType, modernRTFList(ordered: true), "NumberedList"),
+        ] {
+            let (backend, view, session) = try surface(source, type: type)
+            XCTAssertFalse(view.presentation(for: .increaseIndent).isEnabled)
+            XCTAssertFalse(view.presentation(for: .decreaseIndent).isEnabled)
+            view.perform(menuCommand: .increaseIndent, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+            view.editorView.setAccessibilitySelectedTextRange(NSRange(location: 6, length: 0))
+            XCTAssertTrue(view.presentation(for: .increaseIndent).isEnabled)
+            XCTAssertFalse(view.presentation(for: .decreaseIndent).isEnabled)
+            view.perform(menuCommand: .increaseIndent, sender: nil)
+            XCTAssertNil(view.commandOutput)
+            XCTAssertEqual(try backend.formattedText(), "Alpha\nBeta")
+            XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "\(family)2")
+            XCTAssertEqual(try currentListEntries(view).map(\.stableID), ["\(family)2"])
+            XCTAssertTrue(view.presentation(for: .decreaseIndent).isEnabled)
+            let indented = try backend.serializedSource(typeName: type)
+            let (_, reopened, reopenedSession) = try surface(String(decoding: indented, as: UTF8.self), type: type)
+            reopened.editorView.setAccessibilitySelectedTextRange(NSRange(location: 6, length: 0))
+            XCTAssertEqual(try reopenedSession.selectedNamedStyles().paragraph?.rawValue, "\(family)2")
+            view.perform(menuCommand: .undo, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+            view.perform(menuCommand: .redo, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), indented)
+            view.perform(menuCommand: .decreaseIndent, sender: nil)
+            XCTAssertNil(view.commandOutput)
+            XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "\(family)1")
+            XCTAssertFalse(view.presentation(for: .decreaseIndent).isEnabled)
+            let unindented = try backend.serializedSource(typeName: type)
+            view.perform(menuCommand: .undo, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), indented)
+            view.perform(menuCommand: .redo, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), unindented)
+        }
+        let (_, plain, _) = try surface("ordinary paragraph", type: "public.plain-text")
+        XCTAssertFalse(plain.presentation(for: .increaseIndent).isEnabled)
+        XCTAssertFalse(plain.presentation(for: .decreaseIndent).isEnabled)
+        let (legacyBackend, legacy, _) = try surface(#"{\rtf1{\*\pn\pnlvlblt}Alpha\par Beta}"#, type: EVDocument.rtfType)
+        legacy.editorView.setAccessibilitySelectedTextRange(NSRange(location: 6, length: 0))
+        let legacySource = try legacyBackend.serializedSource(typeName: EVDocument.rtfType)
+        XCTAssertFalse(legacy.presentation(for: .increaseIndent).isEnabled)
+        XCTAssertFalse(legacy.presentation(for: .decreaseIndent).isEnabled)
+        legacy.perform(menuCommand: .increaseIndent, sender: nil)
+        XCTAssertEqual(try legacyBackend.serializedSource(typeName: EVDocument.rtfType), legacySource)
+        let (_, deepest, _) = try surface("- A\n  - B\n    - C\n      - D\n      - Deep", type: EVDocument.markdownType)
+        deepest.editorView.setAccessibilitySelectedTextRange(NSRange(location: 8, length: 0))
+        XCTAssertEqual(try currentListEntries(deepest).map(\.stableID), ["BulletedList4"])
+        XCTAssertFalse(deepest.presentation(for: .increaseIndent).isEnabled)
+        XCTAssertTrue(deepest.presentation(for: .decreaseIndent).isEnabled)
+    }
+
+    func testBlockQuoteMenuAssignmentPersistsAndUndoRedoRestoreExactSource() throws {
+        for (type, source) in [
+            (EVDocument.markdownType, "Words\n\nOutside"),
+            (EVDocument.htmlType, "<p data-keep='yes'>Words</p><p>Outside</p><!--keep-->"),
+        ] {
+            let (backend, view, session) = try surface(source, type: type)
+            try choose("Block quote", in: view)
+            XCTAssertEqual(try backend.formattedText(), "Words\nOutside")
+            XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "Block quote")
+            let quoted = try backend.serializedSource(typeName: type)
+            XCTAssertNotEqual(quoted, Data(source.utf8))
+            let (_, reopened, reopenedSession) = try surface(String(decoding: quoted, as: UTF8.self), type: type)
+            XCTAssertEqual(try reopenedSession.selectedNamedStyles().paragraph?.rawValue, "Block quote")
+            XCTAssertEqual(reopened.currentStyleMenuCatalogue()?.entries.first { $0.stableID == "Block quote" }?.presentation.state, .on)
+            view.perform(menuCommand: .undo, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+            view.perform(menuCommand: .redo, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), quoted)
+        }
+        let (_, plain, _) = try surface("Words", type: "public.plain-text")
+        let quote = try XCTUnwrap(plain.currentStyleMenuCatalogue()?.entries.first { $0.stableID == "Block quote" })
+        XCTAssertFalse(quote.presentation.isEnabled)
+    }
+
+    func testBlockQuoteBorderIsNonTextFurnitureAndCullsOutsideDirtyRegion() throws {
+        let originalTheme = EVThemeStore.shared.theme
+        EVThemeStore.shared.update(.paper)
+        defer { EVThemeStore.shared.update(originalTheme) }
+        for (type, source) in [
+            (EVDocument.markdownType, "> Words\n\nOutside"),
+            (EVDocument.htmlType, "<blockquote><p>Words</p></blockquote><p>Outside</p>"),
+        ] {
+            let (backend, view, session) = try surface(source, type: type)
+            for scale: CGFloat in [1, 2] {
+                _ = try session.setScale(scale)
+                view.refreshPresentation()
+                let snapshot = try session.layoutExport()
+                let border = try XCTUnwrap(snapshot.decorations.first {
+                    $0.flags & UInt32(EVIM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0
+                })
+                XCTAssertEqual(border.label_byte_length, 0)
+                XCTAssertGreaterThan(border.ink_bounds.width, 0)
+                XCTAssertGreaterThan(border.ink_bounds.height, 0)
+                let rect = view.editorView.viewRect(border.ink_bounds)
+                XCTAssertFalse(view.editorView.listMarkersForDrawing(in: snapshot, dirtyRect: rect).isEmpty)
+                XCTAssertTrue(view.editorView.listMarkersForDrawing(in: snapshot,
+                    dirtyRect: NSRect(x: 490, y: 200, width: 20, height: 20)).isEmpty)
+                let caret = try session.caretGeometry(offset: 0, affinity: UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM), in: snapshot.info)
+                XCTAssertGreaterThan(caret.rect.x, border.ink_bounds.x + border.ink_bounds.width)
+                let editor = view.editorView
+                let context = try XCTUnwrap(CGContext(data: nil, width: Int(editor.bounds.width), height: Int(editor.bounds.height),
+                    bitsPerComponent: 8, bytesPerRow: Int(editor.bounds.width) * 4, space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+                editor.draw(editor.bounds)
+                NSGraphicsContext.restoreGraphicsState()
+                let image = NSBitmapImageRep(cgImage: try XCTUnwrap(context.makeImage()))
+                let x = Int(rect.midX), y = Int(rect.midY)
+                let pixels = [y, image.pixelsHigh - y - 1].compactMap {
+                    image.colorAt(x: x, y: $0)?.usingColorSpace(.sRGB)
+                }
+                let background = try XCTUnwrap(EVThemeStore.shared.theme.background.color.usingColorSpace(.sRGB))
+                let alpha = CGFloat(border.paint.foreground.alpha)
+                let expectedRed = CGFloat(border.paint.foreground.red) * alpha + background.redComponent * (1 - alpha)
+                let expectedGreen = CGFloat(border.paint.foreground.green) * alpha + background.greenComponent * (1 - alpha)
+                let expectedBlue = CGFloat(border.paint.foreground.blue) * alpha + background.blueComponent * (1 - alpha)
+                XCTAssertTrue(pixels.contains {
+                    abs($0.redComponent - expectedRed) < 0.08
+                        && abs($0.greenComponent - expectedGreen) < 0.08
+                        && abs($0.blueComponent - expectedBlue) < 0.08
+                }, "The exported quote border must be painted at its declared bounds")
+            }
+            XCTAssertEqual(try backend.formattedText(), "Words\nOutside")
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+        }
+    }
+}

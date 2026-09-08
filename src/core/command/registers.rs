@@ -23,6 +23,9 @@ pub struct RegisterValue {
     /// blockwise register, row-separator U+000A values are deliberately
     /// unmarked because they describe display rows, not document structure.
     hard_break_offsets: Vec<usize>,
+    /// Source/style image captured before a yank or deletion. Text-only
+    /// register transformations clear it rather than keep stale provenance.
+    pub(crate) clipboard_fragment: Option<crate::document::ClipboardFragment>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -205,11 +208,24 @@ impl RegisterValue {
             text,
             kind,
             hard_break_offsets,
+            clipboard_fragment: None,
         })
     }
 
     pub fn hard_break_offsets(&self) -> &[usize] {
         &self.hard_break_offsets
+    }
+
+    pub fn clipboard_fragment(&self) -> Option<&crate::document::ClipboardFragment> {
+        self.clipboard_fragment.as_ref()
+    }
+
+    pub(crate) fn from_clipboard_fragment(fragment: crate::document::ClipboardFragment) -> Result<Self, RegisterValueError> {
+        let (text, kind, breaks) = fragment.register_parts();
+        let kind = match kind { 2 => RegisterKind::Linewise, 3 => RegisterKind::Blockwise, _ => RegisterKind::Characterwise };
+        let mut result = Self::try_new(text, kind, breaks)?;
+        result.clipboard_fragment = Some(fragment);
+        Ok(result)
     }
 
     pub(crate) fn is_hard_break(&self, offset: usize) -> bool {
@@ -219,6 +235,7 @@ impl RegisterValue {
     /// Concatenates an actually inserted payload without applying named-
     /// register shape transitions. Used by Vim's characterwise `.` register.
     pub(crate) fn append_inserted_payload(&mut self, fragment: &Self) {
+        self.clipboard_fragment = None;
         let appended_at = self.text.len();
         self.text.push_str(&fragment.text);
         self.hard_break_offsets.extend(
@@ -233,6 +250,7 @@ impl RegisterValue {
     }
 
     pub(crate) fn truncate_inserted_payload(&mut self, new_length: usize) {
+        self.clipboard_fragment = None;
         debug_assert!(self.text.is_char_boundary(new_length));
         self.text.truncate(new_length);
         self.hard_break_offsets
@@ -652,7 +670,8 @@ fn macro_events_as_put_value(events: &[InputEvent]) -> Option<RegisterValue> {
                 text.push(ctrl_key_as_c0(*character)?);
             }
             InputEvent::Key(
-                Key::Backspace
+                Key::BackTab
+                | Key::Backspace
                 | Key::Delete
                 | Key::Left
                 | Key::Right
@@ -660,6 +679,8 @@ fn macro_events_as_put_value(events: &[InputEvent]) -> Option<RegisterValue> {
                 | Key::Down
                 | Key::Home
                 | Key::End
+                | Key::DocumentStart
+                | Key::DocumentEnd
                 | Key::PageUp
                 | Key::PageDown,
             ) => return None,
@@ -690,6 +711,7 @@ fn macro_events_as_register_value(events: &[InputEvent]) -> RegisterValue {
             InputEvent::Key(Key::Char(character)) => text.push(*character),
             InputEvent::Key(Key::Enter) => text.push_str("<Enter>"),
             InputEvent::Key(Key::Tab) => text.push_str("<Tab>"),
+            InputEvent::Key(Key::BackTab) => text.push_str("<S-Tab>"),
             InputEvent::Key(Key::Escape) => text.push_str("<Esc>"),
             InputEvent::Key(Key::Backspace) => text.push_str("<BS>"),
             InputEvent::Key(Key::Delete) => text.push_str("<Del>"),
@@ -699,6 +721,8 @@ fn macro_events_as_register_value(events: &[InputEvent]) -> RegisterValue {
             InputEvent::Key(Key::Down) => text.push_str("<Down>"),
             InputEvent::Key(Key::Home) => text.push_str("<Home>"),
             InputEvent::Key(Key::End) => text.push_str("<End>"),
+            InputEvent::Key(Key::DocumentStart) => text.push_str("<C-Home>"),
+            InputEvent::Key(Key::DocumentEnd) => text.push_str("<C-End>"),
             InputEvent::Key(Key::PageUp) => text.push_str("<PageUp>"),
             InputEvent::Key(Key::PageDown) => text.push_str("<PageDown>"),
             InputEvent::Key(Key::Ctrl(character)) => {

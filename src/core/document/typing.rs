@@ -7,6 +7,82 @@ use crate::document::{FontSlant, StylePropertyValue};
 use super::replacement::PatchComposition;
 
 impl Document {
+    pub fn validate_typing_named_style(&self, style: &StyleId) -> Result<(), DocumentError> {
+        let sheet = self.projection().style_sheet();
+        if style.is_internal()
+            || sheet.character_style(style).is_none()
+            || !match self.format() {
+                Format::Html | Format::HtmlSource => true,
+                Format::Rtf => style == &sheet.base_character || style.0.starts_with("RtfC"),
+                Format::Markdown | Format::MarkdownSource => {
+                    style.0 == "Code" || style == &sheet.base_character
+                }
+                _ => false,
+            }
+        {
+            return Err(DocumentError::UnsupportedFormatting);
+        }
+        Ok(())
+    }
+
+    pub fn typing_named_style_at(
+        &self,
+        at: usize,
+        affinity: BoundaryAffinity,
+        style: &StyleId,
+    ) -> Result<super::super::ResolvedCharacterStyle, DocumentError> {
+        self.text_point(at)?;
+        self.validate_typing_named_style(style)?;
+        let sample =
+            if at > 0 && (at == self.text().len() || affinity == BoundaryAffinity::Upstream) {
+                at - 1
+            } else {
+                at
+            };
+        let blocks = self.projection().blocks_for_region(&(sample..sample));
+        let block = blocks
+            .iter()
+            .find(|block| block.range.contains(&sample) || block.range.start == sample)
+            .or_else(|| blocks.last())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let mut paragraph_style = &block.style;
+        let mut defaults = &block.direct_default_character;
+        let spans = self
+            .projection()
+            .style_spans_for_region(&(sample..(sample + 1).min(self.text().len())));
+        let mut direct = CharacterProperties::default();
+        for span in &spans {
+            match &span.application {
+                StyleApplication::Direct(value) => {
+                    super::super::rich_text::overlay(&mut direct, value)
+                }
+                StyleApplication::Semantic(SemanticInlineStyle::Strong) => direct.bold = Some(true),
+                StyleApplication::Semantic(SemanticInlineStyle::Emphasis) => {
+                    direct.slant = Some(FontSlant::Italic)
+                }
+                StyleApplication::SourceParagraph {
+                    style,
+                    defaults: value,
+                } => {
+                    paragraph_style = style;
+                    defaults = value;
+                }
+                _ => {}
+            }
+        }
+        self.projection()
+            .style_sheet()
+            .resolve_assigned_paragraph_style(
+                self.projection().document_style(),
+                paragraph_style,
+                &block.direct_paragraph,
+                defaults,
+                Some(style),
+                &direct,
+            )
+            .map(|resolved| resolved.character)
+            .map_err(|_| DocumentError::UnsupportedFormatting)
+    }
     /// Source-visible emphasis ends can be crossed without editing their
     /// spelling. Only closing ranges certified by the current semantic spans
     /// participate; marker-like prose, escapes and code are never skipped.
@@ -375,10 +451,34 @@ impl Document {
         edit: FormattedPayloadEdit,
         values: &[(StyleProperty, StylePropertyValue)],
     ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        self.prepare_insertion_with_typing_style(edit, None, values)
+    }
+
+    pub fn insert_with_typing_style(
+        &mut self,
+        edit: FormattedPayloadEdit,
+        named: Option<&StyleId>,
+        values: &[(StyleProperty, StylePropertyValue)],
+    ) -> Result<usize, ModelTransactionError> {
+        let (prepared, caret) = self.prepare_insertion_with_typing_style(edit, named, values)?;
+        self.commit_model_transaction(prepared)?;
+        Ok(caret)
+    }
+
+    pub fn prepare_insertion_with_typing_style(
+        &self,
+        edit: FormattedPayloadEdit,
+        named: Option<&StyleId>,
+        values: &[(StyleProperty, StylePropertyValue)],
+    ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        if let Some(style) = named {
+            self.validate_typing_named_style(style)?;
+        }
         let edit = self.normalize_typing_payload(edit)?;
         let properties = self.validate_typing_properties(values)?;
         let mut at = edit.range.start;
-        if matches!(self.format(), Format::Markdown | Format::MarkdownSource)
+        if named.is_none()
+            && matches!(self.format(), Format::Markdown | Format::MarkdownSource)
             && edit.payload.text().trim().is_empty()
         {
             let caret = at + edit.payload.text().len();
@@ -386,16 +486,30 @@ impl Document {
         }
         let single_replacement = !edit.range.is_empty()
             && self.hard_line_snapshot().next_grapheme_boundary(at) == Some(edit.range.end);
-        let context_matches = self.typing_context_matches(
-            at,
-            if single_replacement {
-                BoundaryAffinity::Downstream
-            } else {
-                edit.boundary_affinity
-                    .unwrap_or(BoundaryAffinity::Downstream)
-            },
-            &properties,
-        );
+        let affinity = if single_replacement {
+            BoundaryAffinity::Downstream
+        } else {
+            edit.boundary_affinity
+                .unwrap_or(BoundaryAffinity::Downstream)
+        };
+        let named_matches = named.map_or(true, |style| {
+            self.projection()
+                .selected_named_styles(at..at, affinity)
+                .character
+                .as_ref()
+                == Some(style)
+        });
+        let context_matches = named_matches
+            && self.typing_context_matches(
+                at,
+                if single_replacement {
+                    BoundaryAffinity::Downstream
+                } else {
+                    edit.boundary_affinity
+                        .unwrap_or(BoundaryAffinity::Downstream)
+                },
+                &properties,
+            );
         let structural = if edit.range.is_empty() && !context_matches {
             super::super::html_typing::insertion(
                 self,
@@ -592,6 +706,26 @@ impl Document {
             *selection = new_start..*caret;
             publish(scratch, prepared, sources, formatted)
         };
+        if let Some(style) = named {
+            let range = TextRange::new(
+                scratch.text_point(selection.start)?,
+                scratch.text_point(selection.end)?,
+            )?;
+            let prepared = scratch.prepare_persisted_style_intent(
+                PersistedStyleIntent::AssignCharacterStyle {
+                    range,
+                    style: style.clone(),
+                },
+            )?;
+            apply(
+                &mut scratch,
+                prepared,
+                &mut selection,
+                &mut caret,
+                &mut sources,
+                &mut formatted,
+            )?;
+        }
         if matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
             for (style, enabled) in [
                 (

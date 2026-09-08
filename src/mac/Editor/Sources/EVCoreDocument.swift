@@ -704,7 +704,7 @@ final class EVCoreViewSession {
         let data = Data(text.utf8)
         let status = withCommandTurnContext { context in
             data.withUnsafeBytes { raw in
-                evim_core_view_send_text_with_host_context(
+                evim_core_view_send_text_with_host_context_v2(
                     document.core,
                     viewID,
                     raw.bindMemory(to: UInt8.self).baseAddress,
@@ -734,7 +734,7 @@ final class EVCoreViewSession {
         outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
         var effectBatch: EvimEffectBatchHandle = 0
         let status = withCommandTurnContext { context in
-            evim_core_view_send_key_with_host_context(
+            evim_core_view_send_key_with_host_context_v2(
                 document.core,
                 viewID,
                 &input,
@@ -1005,6 +1005,28 @@ final class EVCoreViewSession {
         selection.struct_size = UInt32(MemoryLayout<EvimLogicalSelectionIdentityV1>.size)
         try checked(evim_core_view_list_selection(document.core, viewID, &selection), operation: "Read list selection")
         return selection
+    }
+
+    func listIndentCapabilities(expected selection: EvimLogicalSelectionIdentityV1) throws -> UInt32 {
+        var selection = selection
+        var flags: UInt32 = 0
+        try checked(evim_core_view_list_indent_capabilities(document.core, viewID, &selection, &flags),
+                    operation: "Read list indentation capabilities")
+        return flags
+    }
+
+    @discardableResult
+    func indentList(unindent: Bool, expected selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
+        var request = EvimListIndentV1()
+        request.struct_size = UInt32(MemoryLayout<EvimListIndentV1>.size)
+        request.unindent = unindent ? 1 : 0
+        request.expected_selection = selection
+        var outcome = EvimCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        try checked(evim_core_view_indent_list(document.core, viewID, &request, &outcome),
+                    operation: unindent ? "Unindent list item" : "Indent list item")
+        finish(outcome, composition: .cancelIfChanged)
+        return outcome
     }
 
     @discardableResult

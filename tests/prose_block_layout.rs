@@ -128,9 +128,9 @@ fn list_body_indents_are_signed_and_derived_list_styles_do_not_double_the_inset(
     let document = open("<ul><li>Words</li></ul>", Format::Html);
     let projection = document.projection();
     let mut sheet = projection.style_sheet().clone();
-    let mut style = sheet.block_style(&"List1".into()).unwrap().clone();
+    let mut style = sheet.block_style(&"BulletedList1".into()).unwrap().clone();
     style.id = "CustomList".into();
-    style.based_on = Some("List1".into());
+    style.based_on = Some("BulletedList1".into());
     style.block = Default::default();
     sheet
         .insert_block_style(

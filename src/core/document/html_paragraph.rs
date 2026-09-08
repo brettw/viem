@@ -401,7 +401,9 @@ fn opening(
         "p".to_owned()
     };
     let mut value = format!("<{name}");
-    if style != &sheet.base_paragraph && name == "p" {
+    // Quote paragraphs inherit their native container when split. A class on
+    // the new child would duplicate that assignment without any source rule.
+    if style != &sheet.base_paragraph && style.0 != "Block quote" && name == "p" {
         value.push_str(&format!(
             " class=\"{}\"",
             super::html_styles::class_name(style, false)

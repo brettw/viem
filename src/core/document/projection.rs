@@ -1334,20 +1334,10 @@ impl FormattedDocument {
         styles: Vec<StyleSpan>,
         provenance: Vec<ProvenanceSpan>,
         decoding_diagnostics: Vec<DecodingDiagnostic>,
-        mut style_sheet: StyleSheet,
+        style_sheet: StyleSheet,
         source_content_start: usize,
         source_content_end: usize,
     ) -> Self {
-        if let Some(level) = blocks
-            .iter()
-            .filter_map(|block| match block.kind {
-                BlockKind::ListItem { level, .. } => Some(u16::from(level) + 1),
-                _ => None,
-            })
-            .max()
-        {
-            style_sheet.ensure_list_level(level);
-        }
         let document_style = DocumentStyleAssignment::new(style_sheet.base_document.clone());
         let flat_text: Arc<str> = flat_text.into();
         let text = FormattedTextTree::try_from_shared(flat_text.clone())
@@ -1939,19 +1929,6 @@ impl FormattedDocument {
             }
         }
         self.style_sheet = previous.style_sheet.clone();
-        if let Some(level) = blocks
-            .iter()
-            .filter_map(|block| match block.kind {
-                BlockKind::ListItem { level, .. } => Some(u16::from(level) + 1),
-                _ => None,
-            })
-            .max()
-        {
-            let required = StyleId(format!("List{level}"));
-            if self.style_sheet.block_style(&required).is_none() {
-                Arc::make_mut(&mut self.style_sheet).ensure_list_level(level);
-            }
-        }
         self.document_style = previous.document_style.clone();
         self.blocks = OrderedRangeStore::new(blocks);
         self.blocks.reuse_equal_chunks(&previous.blocks);
@@ -2084,19 +2061,6 @@ impl FormattedDocument {
         }
 
         self.style_sheet = previous.style_sheet.clone();
-        if let Some(level) = blocks
-            .iter()
-            .filter_map(|block| match block.kind {
-                BlockKind::ListItem { level, .. } => Some(u16::from(level) + 1),
-                _ => None,
-            })
-            .max()
-        {
-            let required = StyleId(format!("List{level}"));
-            if self.style_sheet.block_style(&required).is_none() {
-                Arc::make_mut(&mut self.style_sheet).ensure_list_level(level);
-            }
-        }
         self.document_style = previous.document_style.clone();
         for block in &mut blocks {
             if self.style_sheet.configuration_deleted(&block.style, true) {
@@ -3590,13 +3554,19 @@ pub(crate) fn splice_line_local_projection(
         .blocks
         .get_range(&old_block_indices)
         .ok_or(BlockIdentityError::InvalidProjection)?;
-    let partial_code_block = previous_region_blocks.len() == 1
-        && previous_region_blocks[0].style.0 == "Code Block"
+    // HTML Source retains a pre's multi-line paragraph when it is quoted too.
+    // A regional text edit must extend that same paragraph rather than demand
+    // that the captured physical line cover its entire source extent.
+    let partial_preserved_block = previous_region_blocks.len() == 1
+        && matches!(
+            previous_region_blocks[0].style.0.as_str(),
+            "Code Block" | "Block quote"
+        )
         && previous_region_blocks[0].range.start <= old_formatted.start
         && old_formatted.end <= previous_region_blocks[0].range.end
         && regional.blocks.len() == 1
-        && regional.blocks.as_slice()[0].style.0 == "Code Block";
-    if !partial_code_block
+        && regional.blocks.as_slice()[0].style == previous_region_blocks[0].style;
+    if !partial_preserved_block
         && !source_paragraphs
         && (previous_region_blocks
             .first()
@@ -3681,7 +3651,7 @@ pub(crate) fn splice_line_local_projection(
     } else {
         for (candidate, old) in regional_blocks.iter_mut().zip(&previous_region_blocks) {
             candidate.range = shift_region_range(&candidate.range, old_formatted.start)?;
-            if partial_code_block {
+            if partial_preserved_block {
                 candidate.range =
                     old.range.start..old.range.end - old_formatted.len() + regional.text().len();
             }
@@ -4284,7 +4254,10 @@ fn project_markdown(
     source_content_end: usize,
     preserve_markers: bool,
 ) -> FormattedDocument {
-    let list_context = super::markdown_blocks::source_context(normalized);
+    let quotes = super::markdown_quotes::classify(normalized);
+    let quote_body = super::markdown_quotes::strip(normalized, &quotes);
+    let quote_context = super::markdown_quotes::source_context(normalized);
+    let list_context = super::markdown_blocks::source_context(&quote_body);
     if preserve_markers {
         let (cooked, explicit) = super::paragraph_flow::markdown_source(normalized);
         let soft = super::paragraph_flow::markdown_soft_breaks(normalized);
@@ -4307,6 +4280,7 @@ fn project_markdown(
             source_content_end,
             true,
             &list_context,
+            &quote_context,
         );
         let flows = super::paragraph_flow::flow_ranges(&cooked, &cooked_soft);
         let mut paragraphs: Vec<Block> = Vec::new();
@@ -4316,7 +4290,7 @@ fn project_markdown(
                 flow_index += 1;
             }
             let join = paragraphs.last().is_some_and(|previous| {
-                previous.style.0 != "Code Block" && block.style.0 != "Code Block"
+                previous.style == block.style && previous.style.0 != "Code Block" && block.style.0 != "Code Block"
                     && (flows[flow_index].start <= previous.range.start && block.range.end <= flows[flow_index].end
                         || (previous.kind == BlockKind::Paragraph && block.kind == BlockKind::Paragraph
                             || matches!((&previous.kind, &block.kind),
@@ -4343,6 +4317,7 @@ fn project_markdown(
         source_content_end,
         false,
         &list_context,
+        &quote_context,
     );
     if let Some(ending) = normalized
         .endings
@@ -4367,6 +4342,7 @@ fn project_markdown(
                         if a == d && b == e && c == f))
                     && previous.style.0 != "Code Block"
                     && block.style.0 != "Code Block"
+                    && previous.style == block.style
                     && projected
                         .provenance_for_region(&(previous.range.end..block.range.start))
                         .iter()
@@ -4401,6 +4377,7 @@ fn project_markdown_lines(
     source_content_end: usize,
     preserve_markers: bool,
     list_context: &[(Range<usize>, super::markdown_blocks::ListLine)],
+    quote_context: &[super::markdown_quotes::QuoteLine],
 ) -> FormattedDocument {
     let mut builder = MarkdownBuilder::new(
         &normalized.text,
@@ -4416,8 +4393,16 @@ fn project_markdown_lines(
     while line_index < input_lines.len() {
         let line = &input_lines[line_index];
         let output_start = builder.output.len();
-        let source_at = builder.unit_at(line.start).map(|unit| unit.source.start);
-        let context = source_at.and_then(|at| {
+        let source_at = Some(builder.unit_at(line.start).map_or(source_content_end, |unit| unit.source.start));
+        let quote = source_at.and_then(|at| quote_context
+            .get(quote_context.partition_point(|line| line.range.start <= at).saturating_sub(1))
+            .filter(|line| line.range.start <= at && at <= line.range.end));
+        let quoted = quote.is_some_and(|line| line.depth > 0);
+        let semantic_start = quote.filter(|_| preserve_markers).map_or(line.start, |quote| {
+            builder.units.get(builder.units.partition_point(|unit| unit.source.start < quote.content_start))
+                .map_or(line.end, |unit| unit.normalized.start).min(line.end)
+        });
+        let context = source_at.map(|at| quote.map_or(at, |quote| at.max(quote.content_start))).and_then(|at| {
             list_context
                 .get(
                     list_context
@@ -4427,10 +4412,13 @@ fn project_markdown_lines(
                 .filter(|(range, _)| range.start <= at && at <= range.end)
                 .map(|(_, context)| context)
         });
-        if let Some((delimiter, length)) = markdown_fence(&normalized.text[line.clone()]) {
+        if let Some((delimiter, length)) = markdown_fence(&normalized.text[semantic_start..line.end]) {
             let mut closing = line_index + 1;
             while closing < input_lines.len() {
-                let body = normalized.text[input_lines[closing].clone()].trim();
+                let raw = &normalized.text[input_lines[closing].clone()];
+                let body = if preserve_markers && quoted {
+                    raw[super::markdown_quotes::prefix(raw)..].trim()
+                } else { raw.trim() };
                 if body.len() >= length && body.bytes().all(|c| c == delimiter) {
                     break;
                 }
@@ -4472,7 +4460,7 @@ fn project_markdown_lines(
                             context.map_or(BlockKind::Paragraph, |context| context.kind.clone()),
                             preserve_markers,
                         ),
-                        style: "Code Block".into(),
+                        style: if quoted { "Block quote" } else { "Code Block" }.into(),
                         direct_paragraph: BlockProperties::default(),
                         direct_default_character: CharacterProperties::default(),
                     });
@@ -4495,7 +4483,7 @@ fn project_markdown_lines(
                         context.map_or(BlockKind::Paragraph, |context| context.kind.clone()),
                         preserve_markers,
                     ),
-                    style: "Code Block".into(),
+                    style: if quoted { "Block quote" } else { "Code Block" }.into(),
                     direct_paragraph: BlockProperties::default(),
                     direct_default_character: CharacterProperties::default(),
                 });
@@ -4508,7 +4496,7 @@ fn project_markdown_lines(
             continue;
         }
         let (mut content_start, mut kind) =
-            markdown_block_prefix(&normalized.text, line.start, line.end);
+            markdown_block_prefix(&normalized.text, semantic_start, line.end);
         if let Some(context) = context {
             kind = context.kind.clone();
             content_start = builder
@@ -4522,7 +4510,7 @@ fn project_markdown_lines(
                 .min(line.end);
         } else if matches!(kind, BlockKind::ListItem { .. }) {
             kind = BlockKind::Paragraph;
-            content_start = line.start;
+            content_start = semantic_start;
         }
         if preserve_markers {
             builder.emit_range(line.start, content_start);
@@ -4530,22 +4518,22 @@ fn project_markdown_lines(
         kind = markdown_presented_kind(kind, preserve_markers);
         builder.parse_inline(content_start, line.end);
         let output_end = builder.output.len();
-        if output_start == output_end && matches!(kind, BlockKind::ListItem { .. }) {
+        if output_start == output_end && (matches!(kind, BlockKind::ListItem { .. }) || quoted) {
             // The source label belongs to list structure. An empty item still
             // exposes a text insertion boundary immediately after that label.
-            let at = context.map_or(source_content_end, |context| context.content_start);
+            let at = context.map_or_else(|| quote.map_or(source_content_end, |quote| quote.content_start), |context| context.content_start);
             builder.provenance.push(ProvenanceSpan {
                 formatted: output_start..output_start,
                 source: at..at,
             });
         }
-        let style = match kind {
+        let style = if quoted { "Block quote".into() } else { match kind {
             BlockKind::Heading(level) => format!("Heading{level}").as_str().into(),
             BlockKind::Paragraph => "Paragraph".into(),
-            BlockKind::ListItem { level, .. } => {
-                format!("List{}", u16::from(level) + 1).as_str().into()
+            BlockKind::ListItem { ordered, level, .. } => {
+                StyleId(format!("{}{}", if ordered { "NumberedList" } else { "BulletedList" }, u16::from(level).min(3) + 1))
             }
-        };
+        }};
         builder.blocks.push(Block {
             id: 0,
             range: output_start..output_end,
@@ -5016,7 +5004,7 @@ impl<'a> MarkdownBuilder<'a> {
 pub(crate) fn escape_markdown_insert(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for ch in text.chars() {
-        if matches!(ch, '\\' | '*' | '_' | '`' | '#') {
+        if matches!(ch, '\\' | '*' | '_' | '`' | '#' | '>') {
             escaped.push('\\');
         }
         escaped.push(ch);

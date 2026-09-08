@@ -17,6 +17,34 @@ impl From<&str> for StyleId {
 }
 
 impl StyleId {
+    /// Structural list families are editable definitions, distinct from source
+    /// syntax coloring styles. They are assigned through list commands.
+    pub fn is_internal_list(&self) -> bool {
+        self.list_family_level().is_some()
+    }
+
+    pub fn list_family_level(&self) -> Option<(bool, u8)> {
+        for (prefix, ordered) in [("BulletedList", false), ("NumberedList", true)] {
+            if let Some(level) = self
+                .0
+                .strip_prefix(prefix)
+                .and_then(|n| n.parse::<u8>().ok())
+            {
+                if (1..=4).contains(&level) && self.0 == format!("{prefix}{level}") {
+                    return Some((ordered, level));
+                }
+            }
+        }
+        None
+    }
+
+    pub(crate) fn legacy_list_level(&self) -> Option<u16> {
+        self.0
+            .strip_prefix("List")
+            .and_then(|n| n.parse::<u16>().ok())
+            .filter(|level| (1..=256).contains(level) && self.0 == format!("List{level}"))
+    }
+
     pub fn is_internal(&self) -> bool {
         matches!(
             self.0.as_str(),
@@ -505,24 +533,50 @@ impl Default for StyleSheet {
                 },
             );
         }
-        for level in 1..=3 {
-            let id: StyleId = format!("List{level}").as_str().into();
-            block_styles.insert(
-                id.clone(),
-                BlockStyle {
-                    id,
-                    based_on: Some(paragraph.clone()),
-                    next_paragraph_style: None,
-                    role: BlockRole::Paragraph,
-                    character: CharacterProperties::default(),
-                    block: BlockProperties {
-                        leading_indent: Some(20.0 * level as f32),
-                        first_line_indent: Some(-20.0),
-                        ..BlockProperties::default()
+        for ordered in [false, true] {
+            for level in 1..=4 {
+                let id = StyleId(format!(
+                    "{}{level}",
+                    if ordered {
+                        "NumberedList"
+                    } else {
+                        "BulletedList"
+                    }
+                ));
+                block_styles.insert(
+                    id.clone(),
+                    BlockStyle {
+                        id,
+                        based_on: Some(paragraph.clone()),
+                        next_paragraph_style: None,
+                        role: BlockRole::Paragraph,
+                        character: CharacterProperties::default(),
+                        block: BlockProperties {
+                            leading_indent: Some(32.0 * level as f32),
+                            first_line_indent: Some(0.0),
+                            spacing_before: Some(0.0),
+                            spacing_after: Some(0.0),
+                            ..Default::default()
+                        },
                     },
-                },
-            );
+                );
+            }
         }
+        block_styles.insert(
+            "Block quote".into(),
+            BlockStyle {
+                id: "Block quote".into(),
+                based_on: Some(paragraph.clone()),
+                next_paragraph_style: Some("Block quote".into()),
+                role: BlockRole::Paragraph,
+                character: CharacterProperties::default(),
+                block: BlockProperties {
+                    leading_indent: Some(32.0),
+                    trailing_indent: Some(32.0),
+                    ..Default::default()
+                },
+            },
+        );
         let mut character_styles = BTreeMap::new();
         character_styles.insert(
             character.clone(),
@@ -576,12 +630,19 @@ impl Default for StyleSheet {
                 StyleDefinitionMetadata::generated(format!("Heading {level}")),
             );
         }
-        for level in 1..=3 {
-            block_metadata.insert(
-                StyleId(format!("List{level}")),
-                StyleDefinitionMetadata::generated(format!("List Level {level}")),
-            );
+        for ordered in [false, true] {
+            for level in 1..=4 {
+                let family = if ordered { "Numbered" } else { "Bulleted" };
+                block_metadata.insert(
+                    StyleId(format!("{family}List{level}")),
+                    StyleDefinitionMetadata::generated(format!("{family} List {level}")),
+                );
+            }
         }
+        block_metadata.insert(
+            "Block quote".into(),
+            StyleDefinitionMetadata::generated("Block quote"),
+        );
         let mut character_metadata = BTreeMap::new();
         character_metadata.insert(
             character.clone(),
@@ -1176,18 +1237,6 @@ impl StyleSheet {
             let paragraph = sheet.block_styles.get_mut(&sheet.base_paragraph).unwrap();
             paragraph.block.spacing_before = Some(7.0);
             paragraph.block.spacing_after = Some(7.0);
-            for level in 1..=3 {
-                let list = sheet
-                    .block_styles
-                    .get_mut(&StyleId(format!("List{level}")))
-                    .unwrap();
-                list.block.leading_indent = Some(32.0 * level as f32);
-                // The label hangs outside the body box independently of the
-                // first-line body indent, which remains a signed user value.
-                list.block.first_line_indent = Some(0.0);
-                list.block.spacing_before = Some(0.0);
-                list.block.spacing_after = Some(0.0);
-            }
             if matches!(
                 format,
                 super::Format::Markdown | super::Format::MarkdownSource
@@ -1207,17 +1256,34 @@ impl StyleSheet {
         self.block_styles.len()
     }
 
-    /// Read immutable core-owned metadata for a block definition.
-    /// Materialize generated list defaults only when a document actually
-    /// needs that nesting level. Existing source/custom definitions win.
+    /// Select a structural family without manufacturing definitions for deep
+    /// nesting. Authored legacy list definitions retain their original role.
+    pub fn list_style_id(&self, ordered: bool, zero_based_level: u8) -> StyleId {
+        let legacy = StyleId(format!("List{}", u16::from(zero_based_level) + 1));
+        if self.source_defined_blocks.contains(&legacy) {
+            return legacy;
+        }
+        StyleId(format!(
+            "{}{}",
+            if ordered {
+                "NumberedList"
+            } else {
+                "BulletedList"
+            },
+            u16::from(zero_based_level).min(3) + 1
+        ))
+    }
+
+    /// Restore a legacy ListN baseline while reading a saved legacy rule.
     pub(crate) fn ensure_list_level(&mut self, level: u16) {
         let first = self
             .block_styles
             .get(&StyleId("List1".into()))
+            .or_else(|| self.block_styles.get(&StyleId::from("BulletedList1")))
             .map(|style| style.block.clone())
             .unwrap_or_default();
-        let step = first.leading_indent.unwrap_or(20.0);
-        for level in 4..=level {
+        let step = first.leading_indent.unwrap_or(32.0);
+        for level in 1..=level {
             let id = StyleId(format!("List{level}"));
             if self.block_styles.contains_key(&id)
                 || self.deleted_configuration_blocks.contains(&id)
@@ -1235,7 +1301,7 @@ impl StyleSheet {
                     character: CharacterProperties::default(),
                     block: BlockProperties {
                         leading_indent: Some(step * f32::from(level)),
-                        first_line_indent: Some(first.first_line_indent.unwrap_or(-20.0)),
+                        first_line_indent: Some(first.first_line_indent.unwrap_or(0.0)),
                         spacing_before: first.spacing_before,
                         spacing_after: first.spacing_after,
                         ..Default::default()
@@ -1659,14 +1725,16 @@ impl StyleSheet {
     }
 
     pub(crate) fn builtin_block(id: &StyleId) -> bool {
-        ["Heading", "List"].into_iter().any(|prefix| {
-            id.0.strip_prefix(prefix)
-                .and_then(|value| value.parse::<u16>().ok())
-                .is_some_and(|level| {
-                    (1..=if prefix == "Heading" { 6 } else { 256 }).contains(&level)
-                        && id.0 == format!("{prefix}{level}")
-                })
-        })
+        id.is_internal_list()
+            || id.0 == "Block quote"
+            || ["Heading", "List"].into_iter().any(|prefix| {
+                id.0.strip_prefix(prefix)
+                    .and_then(|value| value.parse::<u16>().ok())
+                    .is_some_and(|level| {
+                        (1..=if prefix == "Heading" { 6 } else { 256 }).contains(&level)
+                            && id.0 == format!("{prefix}{level}")
+                    })
+            })
     }
     pub(crate) fn deleted_source_blocks(&self) -> impl Iterator<Item = &StyleId> {
         self.deleted_source_blocks.iter()

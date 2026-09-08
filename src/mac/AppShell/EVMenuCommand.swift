@@ -40,6 +40,8 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case makeLowercase
     case toggleCase
 
+    case copySource = 250
+
     case showFonts = 300
     case bold
     case italic
@@ -116,6 +118,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
         case .redo: name = "redo:"
         case .cut: name = "cut:"
         case .copy: name = "copy:"
+        case .copySource: name = "copySource:"
         case .paste: name = "paste:"
         case .pasteAndMatchStyle: name = "pasteAsPlainText:"
         case .delete: name = "delete:"
@@ -127,7 +130,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
 
     public static func nativeEditCommand(for action: Selector?) -> EVMenuCommand? {
         guard let action else { return nil }
-        return [.undo, .redo, .cut, .copy, .paste, .pasteAndMatchStyle, .delete, .selectAll]
+        return [.undo, .redo, .cut, .copy, .copySource, .paste, .pasteAndMatchStyle, .delete, .selectAll]
             .first { $0.nativeEditAction == action }
     }
 }

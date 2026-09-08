@@ -2686,6 +2686,142 @@ fn command_line_export_is_exact_kind_cursor_and_utf8_state() {
 }
 
 #[test]
+fn visual_line_export_uses_wrapped_or_flowed_rows_and_the_physical_line_policy() {
+    for (source, flow) in [
+        ("abcdefgh ijklmnop qrstuvwxyz\nTail", false),
+        ("ab\ncdefgh ijklmnop qrstuvwxyz\n\nTail", true),
+    ] {
+        let core = create_core(
+            source.as_bytes(),
+            EvimDocumentOptions {
+                format: EVIM_FORMAT_MARKDOWN_SOURCE,
+                ..EvimDocumentOptions::default()
+            },
+        );
+        let mut context = Box::new(FakeProviderContext::new(core.handle));
+        let (view, mut outcome) = add_test_view(&core, &mut *context);
+        assert_eq!(
+            unsafe { evim_core_view_resize(core.handle, view, 90., 250., &mut outcome) },
+            EvimStatus::Ok
+        );
+        assert_eq!(
+            unsafe {
+                evim_core_view_set_paragraph_flow(core.handle, view, u32::from(flow), &mut outcome)
+            },
+            EvimStatus::Ok
+        );
+        let mut layout = EvimLayoutSnapshotInfoV1::default();
+        assert_eq!(
+            unsafe { evim_core_view_layout_snapshot_info(core.handle, view, &mut layout) },
+            EvimStatus::Ok
+        );
+        let mut rows = vec![EvimVisualRowV1::default(); layout.row_count as usize];
+        let mut clusters = vec![EvimPositionedClusterV1::default(); layout.cluster_count as usize];
+        let mut carets = vec![EvimPositionedCaretV1::default(); layout.caret_count as usize];
+        assert_eq!(
+            unsafe {
+                evim_core_view_copy_layout_snapshot(
+                    core.handle,
+                    view,
+                    &layout.identity,
+                    rows.as_mut_ptr(),
+                    rows.len() as u64,
+                    clusters.as_mut_ptr(),
+                    clusters.len() as u64,
+                    carets.as_mut_ptr(),
+                    carets.len() as u64,
+                    &mut EvimLayoutSnapshotInfoV1::default(),
+                )
+            },
+            EvimStatus::Ok
+        );
+        let visual_end = rows[0].text_end;
+        let physical_end = source.find('\n').unwrap() as u64 + 1;
+        assert_ne!(
+            visual_end, physical_end,
+            "fixture must distinguish row and source line"
+        );
+        for (mode, expected_end) in [(0, visual_end), (1, physical_end)] {
+            assert_eq!(
+                unsafe { evim_core_view_set_line_mode(core.handle, view, mode, &mut outcome) },
+                EvimStatus::Ok
+            );
+            assert_eq!(
+                unsafe {
+                    evim_core_view_send_key(
+                        core.handle,
+                        view,
+                        &key(EVIM_KEY_CHARACTER, 'V' as u32),
+                        &mut outcome,
+                    )
+                },
+                EvimStatus::Ok
+            );
+            let mut info = EvimVisualSelectionInfoV1::default();
+            assert_eq!(
+                unsafe { evim_core_view_visual_selection_info(core.handle, view, &mut info) },
+                EvimStatus::Ok
+            );
+            let mut segments =
+                vec![EvimVisualSelectionSegmentV1::default(); info.segment_count as usize];
+            let mut rectangles =
+                vec![EvimVisualSelectionRectangleV1::default(); info.rectangle_count as usize];
+            assert_eq!(
+                unsafe {
+                    evim_core_view_copy_visual_selection(
+                        core.handle,
+                        view,
+                        &info.identity,
+                        segments.as_mut_ptr(),
+                        segments.len() as u64,
+                        rectangles.as_mut_ptr(),
+                        rectangles.len() as u64,
+                        &mut EvimVisualSelectionInfoV1::default(),
+                    )
+                },
+                EvimStatus::Ok
+            );
+            assert_eq!(segments.len(), 1);
+            assert_eq!(segments[0].text_start, 0);
+            assert_eq!(
+                segments[0].text_end, expected_end,
+                "flow={flow}, mode={mode}"
+            );
+            assert_eq!(
+                unsafe {
+                    evim_core_view_send_key(
+                        core.handle,
+                        view,
+                        &key(EVIM_KEY_ESCAPE, 0),
+                        &mut outcome,
+                    )
+                },
+                EvimStatus::Ok
+            );
+        }
+        let mut presentation = EvimViewPresentationV1::default();
+        for (kind, expected) in [
+            (
+                EVIM_KEY_DOCUMENT_END,
+                source.len() as u64 - if flow { 2 } else { 1 },
+            ),
+            (EVIM_KEY_DOCUMENT_START, 0),
+        ] {
+            assert_eq!(
+                unsafe { evim_core_view_send_key(core.handle, view, &key(kind, 0), &mut outcome) },
+                EvimStatus::Ok
+            );
+            assert_eq!(
+                unsafe { evim_core_view_presentation(core.handle, view, &mut presentation) },
+                EvimStatus::Ok
+            );
+            assert_eq!(presentation.cursor_utf8_offset, expected);
+        }
+        assert_eq!(document_state(&core).document_revision, 0);
+    }
+}
+
+#[test]
 fn visual_selection_export_preserves_character_line_and_block_semantics() {
     let core = create_core(b"ab\ncd", EvimDocumentOptions::default());
     let mut context = Box::new(FakeProviderContext::new(core.handle));

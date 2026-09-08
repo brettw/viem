@@ -300,6 +300,46 @@ pub fn parse_ex(input: &str) -> Result<ExCommand, ExParseError> {
     Parser::new(input).parse()
 }
 
+pub(super) struct FilenameArgument {
+    pub range: std::ops::Range<usize>,
+    pub directories_only: bool,
+}
+
+/// Locate the literal filename prefix before a prompt caret. Command names,
+/// abbreviations, ranges, and bangs use the same grammar as execution.
+pub(super) fn filename_argument(input: &str, cursor: usize) -> Option<FilenameArgument> {
+    let prefix = input.get(..cursor)?;
+    let mut parser = Parser::new(prefix);
+    parser.skip_space();
+    if parser.peek() == Some(':') {
+        parser.bump();
+    }
+    parser.skip_space();
+    let range = parser.parse_range().ok()?;
+    parser.skip_space();
+    let (name, _) = parser.parse_command_head(range.is_some()).ok()?;
+    let directories_only = match name {
+        CommandName::ChangeDirectory => true,
+        CommandName::EditNewWindow
+        | CommandName::Split
+        | CommandName::Edit
+        | CommandName::Write
+        | CommandName::SaveAs
+        | CommandName::WriteQuit
+        | CommandName::Xit => false,
+        _ => return None,
+    };
+    // A bare command still names the command, rather than an empty filename.
+    if parser.at == prefix.len() {
+        return None;
+    }
+    parser.skip_space();
+    Some(FilenameArgument {
+        range: parser.at..cursor,
+        directories_only,
+    })
+}
+
 struct Parser<'a> {
     input: &'a str,
     at: usize,
@@ -334,6 +374,29 @@ impl<'a> Parser<'a> {
             };
         }
 
+        let (name, bang) = self.parse_command_head(range.is_some())?;
+
+        let args_offset = self.at;
+        let raw_args = &self.input[self.at..];
+        let args = match name {
+            // A trailing Space is a real Normal-mode command.  Only the
+            // whitespace separating `:normal[!]` from its payload is trivia.
+            CommandName::Normal => raw_args.trim_start(),
+            // For `:&` and `:~`, whitespace distinguishes a following line
+            // count from an immediately adjacent occurrence number.  Keep
+            // that leading separator for the substitute-tail parser.
+            CommandName::RepeatSubstitute | CommandName::RepeatWithSearch => raw_args.trim_end(),
+            _ => raw_args.trim(),
+        };
+        let action = self.parse_action(name, args, args_offset)?;
+        Ok(ExCommand {
+            range,
+            bang,
+            action,
+        })
+    }
+
+    fn parse_command_head(&mut self, has_range: bool) -> Result<(CommandName, bool), ExParseError> {
         let command_offset = self.at;
         let command = if matches!(self.peek(), Some('&' | '~')) {
             self.bump().unwrap().to_string()
@@ -374,31 +437,14 @@ impl<'a> Parser<'a> {
                 kind: ExParseErrorKind::UnexpectedBang(name.canonical().to_owned()),
             });
         }
-        if range.is_some() && !name.accepts_range() {
+        if has_range && !name.accepts_range() {
             return Err(ExParseError {
                 offset: command_offset,
                 kind: ExParseErrorKind::UnexpectedRange(name.canonical().to_owned()),
             });
         }
 
-        let args_offset = self.at;
-        let raw_args = &self.input[self.at..];
-        let args = match name {
-            // A trailing Space is a real Normal-mode command.  Only the
-            // whitespace separating `:normal[!]` from its payload is trivia.
-            CommandName::Normal => raw_args.trim_start(),
-            // For `:&` and `:~`, whitespace distinguishes a following line
-            // count from an immediately adjacent occurrence number.  Keep
-            // that leading separator for the substitute-tail parser.
-            CommandName::RepeatSubstitute | CommandName::RepeatWithSearch => raw_args.trim_end(),
-            _ => raw_args.trim(),
-        };
-        let action = self.parse_action(name, args, args_offset)?;
-        Ok(ExCommand {
-            range,
-            bang,
-            action,
-        })
+        Ok((name, bang))
     }
 
     fn parse_range(&mut self) -> Result<Option<ExRange>, ExParseError> {

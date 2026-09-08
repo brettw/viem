@@ -81,6 +81,17 @@ impl Document {
             );
         }
         if edit.range.is_empty() {
+            if edit.replacement == "\n" {
+                // Return creates a paragraph in source mode too. Literal
+                // source newlines from text input keep their separate path.
+                let source_at = self.projection().source_insertion_point(at, true)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                return self.prepare_text_edits_with_patches(
+                    vec![edit],
+                    Some(vec![SourcePatch::primary(source_at..source_at,
+                        self.encoding().encode_fragment(&self.file_format().spelling().repeat(2))?)]),
+                );
+            }
             return self.prepare_text_edits_with_patches(vec![edit], None);
         }
         let source = self

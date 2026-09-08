@@ -206,8 +206,8 @@ impl<'a> Builder<'a> {
             .clone()
             .unwrap_or_else(|| match &self.kind {
                 BlockKind::Heading(level) => format!("Heading{level}").as_str().into(),
-                BlockKind::ListItem { level, .. } => {
-                    format!("List{}", u16::from(*level) + 1).as_str().into()
+                BlockKind::ListItem { ordered, level, .. } => {
+                    self.style_sheet.list_style_id(*ordered, *level)
                 }
                 _ => "Paragraph".into(),
             });
@@ -241,8 +241,8 @@ impl<'a> Builder<'a> {
             .clone()
             .unwrap_or_else(|| match &self.kind {
                 BlockKind::Heading(level) => format!("Heading{level}").as_str().into(),
-                BlockKind::ListItem { level, .. } => {
-                    format!("List{}", u16::from(*level) + 1).as_str().into()
+                BlockKind::ListItem { ordered, level, .. } => {
+                    self.style_sheet.list_style_id(*ordered, *level)
                 }
                 _ => "Paragraph".into(),
             });

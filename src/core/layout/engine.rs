@@ -340,9 +340,16 @@ pub struct PositionedCluster {
     pub render_run: Option<RenderRunHandle>,
 }
 
-/// Drawable list furniture. It has no formatted text range or caret stops.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DecorationKind {
+    Text,
+    BlockQuoteBorder,
+}
+
+/// Drawable block furniture. It has no formatted text range or caret stops.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PositionedDecoration {
+    pub kind: DecorationKind,
     pub text: String,
     pub x: f32,
     pub advance: f32,
@@ -2590,6 +2597,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         view: &mut ViewLayout,
     ) -> Result<(), LayoutError> {
         let mut document_styles = DocumentLayoutStyles::resolve(document.projection())?;
+        document_styles.apply_source_quote_policy(document.format(), view.paragraph_flow());
         let hard_lines = if view.paragraph_flow() {
             (0..document.projection().presentation_line_count(true))
                 .filter_map(|index| document.projection().presentation_line_range(index, true))
@@ -3101,6 +3109,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         &control,
                     )?;
                 }
+                decorate_quote_row(rows.last_mut().unwrap(), &paragraph.style, view.scale);
                 y += rows.last().unwrap().height();
             } else {
                 for (relative_row, cluster_range) in row_cluster_ranges.iter().enumerate() {
@@ -3145,6 +3154,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                             &control,
                         )?;
                     }
+                    decorate_quote_row(&mut row, &paragraph.style, view.scale);
                     y += row.height();
                     work_statistics.positioned_cluster_count = work_statistics
                         .positioned_cluster_count
@@ -3593,6 +3603,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         control,
                     )?;
                 }
+                decorate_quote_row(rows.last_mut().unwrap(), &paragraph.style, view.scale);
                 y += rows.last().unwrap().height();
                 continue;
             }
@@ -3638,6 +3649,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         control,
                     )?;
                 }
+                decorate_quote_row(&mut row, &paragraph.style, view.scale);
                 y += row.height();
                 rows.push(row);
             }
@@ -3813,6 +3825,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             let cluster = &shaped.clusters[index];
             if cluster.text_range.start < marker.len() {
                 row.decorations.push(PositionedDecoration {
+                    kind: DecorationKind::Text,
                     text: text[cluster.text_range.clone()].into(),
                     x,
                     advance: cluster.advance,
@@ -4662,6 +4675,7 @@ fn resolve_line_paragraph(
             text_range: line.clone(),
             list_marker_range: None,
             list_marker_decoration: None,
+            quote_border: false,
             marker_paint: ResolvedTextPaint::default(),
             spacing_before: 0.0,
             spacing_after: 0.0,
@@ -4674,6 +4688,42 @@ fn resolve_line_paragraph(
             default_shaping_style: fallback_style.clone(),
         },
     }
+}
+
+/// Quote borders share the row's exact geometry and damage/caching lifecycle.
+/// They are furniture, so no marker text or caret stops are synthesized.
+fn decorate_quote_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle, scale: f32) {
+    if !paragraph.quote_border {
+        return;
+    }
+    let rect = LayoutRect {
+        x: row.paragraph_content_x - 16.0 * scale,
+        y: row.y,
+        width: 2.0 * scale,
+        height: row.height(),
+    };
+    let mut paint = paragraph.marker_paint.clone();
+    paint.background = None;
+    paint.underline = false;
+    paint.strikethrough = false;
+    paint.foreground = crate::document::Color {
+        red: 0.6,
+        green: 0.6,
+        blue: 0.6,
+        alpha: 1.0,
+    };
+    paint.foreground_is_default = false;
+    row.decorations.push(PositionedDecoration {
+        kind: DecorationKind::BlockQuoteBorder,
+        text: String::new(),
+        x: rect.x,
+        advance: rect.width,
+        typographic_bounds: rect,
+        ink_bounds: rect,
+        render_run: None,
+        paint,
+        font_size: 0.0,
+    });
 }
 
 fn starts_new_paragraph(current: &LineParagraphLayout, next: &LineParagraphLayout) -> bool {
@@ -5602,7 +5652,7 @@ mod tests {
         assert!((view.snapshot().unwrap().rows[0].ascent - 14.0 * 0.78).abs() < 0.001);
         assert_eq!(
             document.projection().blocks()[0].style,
-            crate::document::StyleId::from("List1")
+            crate::document::StyleId::from("BulletedList1")
         );
     }
 

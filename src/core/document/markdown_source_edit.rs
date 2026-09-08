@@ -2,6 +2,64 @@
 use super::{Document, DocumentError, TextEdit};
 
 impl Document {
+    pub(super) fn markdown_source_code_enter(&self, at: usize) -> Result<bool, DocumentError> {
+        if self.format() != super::Format::MarkdownSource {
+            return Ok(false);
+        }
+        let projection = self.projection();
+        let line_at = |offset| {
+            projection
+                .hard_line_at_offset(offset)
+                .and_then(|line| projection.hard_line_range(line))
+                .ok_or(DocumentError::VerificationFailed)
+        };
+        let line = line_at(at)?;
+        let text = projection
+            .text_tree()
+            .slice(line.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        for block in projection.blocks_for_region(&(at..at)) {
+            if block.style.0 != "Code Block" || at < block.range.start || at > block.range.end {
+                continue;
+            }
+            if at < block.range.end {
+                return Ok(true);
+            }
+            let opening = line_at(block.range.start)?;
+            let opener = projection
+                .text_tree()
+                .slice(opening.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            let closed = opening.start < line.start
+                && super::projection::markdown_fence(&opener).is_some_and(|(delimiter, length)| {
+                    let tail = text.trim();
+                    tail.len() >= length && tail.bytes().all(|byte| byte == delimiter)
+                });
+            return Ok(!closed);
+        }
+        let indented = |line: &std::ops::Range<usize>, text: &str| {
+            (text.starts_with("    ") || text.starts_with('\t'))
+                && !projection
+                    .blocks_for_region(line)
+                    .iter()
+                    .any(|block| matches!(block.kind, super::BlockKind::ListItem { .. }))
+        };
+        if indented(&line, &text) {
+            return Ok(true);
+        }
+        // A first empty row after indented code still owns a literal ending.
+        // Later empty prose rows retain the ordinary paragraph promotion rule.
+        if line.is_empty() && line.start > 0 {
+            let previous = line_at(line.start - 1)?;
+            let text = projection
+                .text_tree()
+                .slice(previous.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            return Ok(indented(&previous, &text));
+        }
+        Ok(false)
+    }
+
     pub(super) fn markdown_source_replacement(
         &self,
         edit: &TextEdit,
@@ -10,15 +68,16 @@ impl Document {
             return Ok(edit.replacement.clone());
         }
         // Within a code paragraph the source endings are literal content.
-        if self
-            .projection()
-            .blocks_for_region(&edit.range)
-            .iter()
-            .any(|block| {
-                block.style.0 == "Code Block"
-                    && block.range.start <= edit.range.start
-                    && edit.range.end < block.range.end
-            })
+        if edit.range.is_empty() && self.markdown_source_code_enter(edit.range.start)?
+            || self
+                .projection()
+                .blocks_for_region(&edit.range)
+                .iter()
+                .any(|block| {
+                    block.style.0 == "Code Block"
+                        && block.range.start <= edit.range.start
+                        && edit.range.end < block.range.end
+                })
         {
             return Ok(edit.replacement.clone());
         }

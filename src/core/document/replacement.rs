@@ -224,6 +224,7 @@ impl PatchComposition {
 }
 
 impl Document {
+    #[cfg(test)]
     pub(crate) fn prepare_recorded_replacement(
         &self,
         cursor: usize,
@@ -232,6 +233,14 @@ impl Document {
         values: &[(StyleProperty, StylePropertyValue)],
         affinity: BoundaryAffinity,
     ) -> Result<(PreparedModelTransaction, Vec<RecordedReplacement>), ModelTransactionError> {
+        self.prepare_recorded_replacement_with_typing_style(cursor, target, input, None, values, affinity)
+    }
+
+    pub(crate) fn prepare_recorded_replacement_with_typing_style(
+        &self, cursor: usize, target: usize, input: &str, named: Option<&StyleId>,
+        values: &[(StyleProperty, StylePropertyValue)], affinity: BoundaryAffinity,
+    ) -> Result<(PreparedModelTransaction, Vec<RecordedReplacement>), ModelTransactionError> {
+        if let Some(style) = named { self.validate_typing_named_style(style)?; }
         self.text_point(cursor)?;
         self.text_point(target)?;
         let mut scratch = Document {
@@ -283,12 +292,12 @@ impl Document {
             let edit = scratch.normalize_typing_payload(
                 FormattedPayloadEdit::new(target..end, payload).with_boundary_affinity(affinity),
             )?;
-            let (prepared, after_cursor) = if values.is_empty() {
+            let (prepared, after_cursor) = if values.is_empty() && named.is_none() {
                 let prepared = scratch.prepare_formatted_payload_edits(vec![edit])?;
                 let caret = map_after(&scratch, &prepared, target)?;
                 (prepared, caret)
             } else {
-                scratch.prepare_insertion_with_typing_properties(edit, values)?
+                scratch.prepare_insertion_with_typing_style(edit, named, values)?
             };
             // Source-visible formatting inserts closing delimiters beyond the
             // presentation caret. The next Replace consumes the next original

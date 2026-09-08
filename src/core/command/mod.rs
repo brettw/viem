@@ -14,7 +14,9 @@ pub mod regex_v1;
 pub mod text_object;
 pub mod visual_block;
 
+mod command_line_completion;
 mod command_line_edit;
+mod filename_candidates;
 mod input_assistance;
 mod line_mode;
 mod registers;
@@ -145,6 +147,7 @@ pub enum Key {
     Escape,
     Enter,
     Tab,
+    BackTab,
     Backspace,
     Delete,
     Left,
@@ -153,6 +156,8 @@ pub enum Key {
     Down,
     Home,
     End,
+    DocumentStart,
+    DocumentEnd,
     PageUp,
     PageDown,
     Ctrl(char),
@@ -703,6 +708,7 @@ struct CommandLineBuffer {
     cursor: usize,
     history_index: Option<usize>,
     draft: String,
+    completion: Option<command_line_completion::FilenameCompletion>,
 }
 
 impl CommandLineBuffer {
@@ -717,6 +723,9 @@ impl CommandLineBuffer {
         !range.is_empty()
     }
     fn insert(&mut self, text: &str) {
+        if self.accept_completion_input(self.cursor..self.cursor, text) {
+            return;
+        }
         self.delete_selection();
         self.input.insert_str(self.cursor, text);
         self.cursor += text.len();
@@ -724,6 +733,7 @@ impl CommandLineBuffer {
     }
 
     fn set(&mut self, text: String) {
+        self.completion = None;
         self.selection_anchor = None;
         self.input = text;
         self.cursor = self.input.len();
@@ -1145,6 +1155,7 @@ pub struct CommandInterpreter {
     count_overflowed: bool,
     register_pending: bool,
     requested_register: Option<char>,
+    clipboard_copy_as_seen: bool,
     pending: Pending,
     registers: Registers,
     command_line_state: Option<CommandLineState>,
@@ -1256,6 +1267,7 @@ impl CommandInterpreter {
             count_overflowed: false,
             register_pending: false,
             requested_register: None,
+            clipboard_copy_as_seen: false,
             pending: Pending::None,
             registers: Registers::default(),
             command_line_state: None,
@@ -2797,7 +2809,7 @@ impl CommandInterpreter {
         }
 
         if self.needs_input_assistance(context.document(), &event)
-            || !self.typing_style.values.is_empty()
+            || !self.typing_style.is_empty()
             || (self.mode == Mode::Replace
                 && context.document().format() == crate::document::Format::Html)
             || self
@@ -3032,12 +3044,13 @@ impl CommandInterpreter {
         }
 
         let value = register_value(
-            document.text(),
+            document,
             &lines,
             &MotionExtent {
                 range: range.clone(),
                 kind: MotionKind::Characterwise,
             },
+            register,
         );
         next.delete_register(register, value, DeletionClass::Small);
         next.cursor = range.start;
@@ -3591,7 +3604,13 @@ impl CommandInterpreter {
         }
     }
 
-    fn yank_register(&mut self, requested: Option<char>, value: RegisterValue) {
+    fn yank_register(&mut self, requested: Option<char>, mut value: RegisterValue) {
+        if self.clipboard_copy_as_seen && requested == Some('*') {
+            if let Some(fragment) = value.clipboard_fragment() {
+                value = RegisterValue::from_clipboard_fragment(fragment.as_seen()).expect("captured exact clipboard selection");
+            }
+        }
+        self.clipboard_copy_as_seen = false;
         let effect = self.registers.yank(requested, value);
         self.collect_register_write(effect);
     }
@@ -3983,11 +4002,34 @@ impl CommandInterpreter {
         ))
     }
 
+    fn resolved_clipboard_copy_key(&self, key: Key) -> Key {
+        let active = self.requested_register == Some('*') && self.pending == Pending::None
+            || matches!(self.pending, Pending::Operator(PendingOperator { operator: Operator::Yank, register: Some('*'), .. }));
+        if key == Key::Char('c') && active && !self.register_pending
+            && matches!(self.mode, Mode::Normal | Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock) {
+            Key::Char('y')
+        } else { key }
+    }
+
+    fn clipboard_copy_alias_key(&mut self, key: Key) -> Key {
+        let resolved = self.resolved_clipboard_copy_key(key);
+        if resolved != key { self.clipboard_copy_as_seen = true; }
+        resolved
+    }
+
     fn try_handle_controller_only_key(
         &mut self,
         document: &Document,
         key: Key,
     ) -> Option<CommandOutput> {
+        let key = self.clipboard_copy_alias_key(key);
+        if matches!(key, Key::DocumentStart | Key::DocumentEnd)
+            && matches!(self.mode, Mode::Normal | Mode::VisualCharacter | Mode::VisualLine)
+            && self.pending == Pending::None
+            && !self.register_pending
+        {
+            return Some(self.move_to_document_edge(document, key == Key::DocumentEnd));
+        }
         match self.mode {
             Mode::CommandLine => self.try_handle_controller_only_command_line_key(key),
             Mode::Normal => self.try_handle_controller_only_normal_key(document, key),
@@ -3999,6 +4041,9 @@ impl CommandInterpreter {
     }
 
     fn try_handle_controller_only_command_line_key(&mut self, key: Key) -> Option<CommandOutput> {
+        if let Some(output) = self.handle_filename_completion_key(key) {
+            return Some(output);
+        }
         if key == Key::Enter {
             return None;
         }
@@ -4044,14 +4089,14 @@ impl CommandInterpreter {
                 }
                 CommandOutput::pending()
             }
-            Key::Home | Key::Ctrl('b' | 'B') => {
+            Key::Home | Key::DocumentStart | Key::Ctrl('b' | 'B') => {
                 if let Some(state) = self.command_line_state.as_mut() {
                     state.buffer.selection_anchor = None;
                     state.buffer.cursor = 0;
                 }
                 CommandOutput::pending()
             }
-            Key::End | Key::Ctrl('e' | 'E') => {
+            Key::End | Key::DocumentEnd | Key::Ctrl('e' | 'E') => {
                 if let Some(state) = self.command_line_state.as_mut() {
                     state.buffer.selection_anchor = None;
                     state.buffer.cursor = state.buffer.input.len();
@@ -4695,7 +4740,6 @@ impl CommandInterpreter {
                     | 'G'
             ) | Key::Left
                 | Key::Right
-                | Key::Backspace
                 | Key::Up
                 | Key::Down
                 | Key::Home
@@ -4804,7 +4848,7 @@ impl CommandInterpreter {
                 self.pending = Pending::ReplaceVisual;
                 CommandOutput::pending()
             }
-            Key::Char('h') | Key::Left | Key::Backspace => {
+            Key::Char('h') | Key::Left => {
                 self.move_cursor(document, Motion::Horizontal(-1), count)
             }
             Key::Char('l') | Key::Right | Key::Char(' ') => {
@@ -4867,6 +4911,9 @@ impl CommandInterpreter {
     /// a syntactically valid multi-key command is pending, then discard it at
     /// the same completion boundary as the command itself.
     fn finish_explicit_register_prefix(&mut self, output: &CommandOutput) {
+        if output.status != CommandStatus::Pending && self.pending == Pending::None && !self.register_pending {
+            self.clipboard_copy_as_seen = false;
+        }
         if self.requested_register.is_some()
             && output.status != CommandStatus::Pending
             && self.pending == Pending::None
@@ -4921,6 +4968,7 @@ impl CommandInterpreter {
         key: Key,
         context: &mut LayoutCommandContext<'_>,
     ) -> Result<Option<CommandOutput>, DocumentError> {
+        let key = self.clipboard_copy_alias_key(key);
         if let Some(output) = self.try_mode_line_key(document, key)? {
             return Ok(Some(output));
         }
@@ -5483,6 +5531,7 @@ impl CommandInterpreter {
         key: Key,
         context: &mut LayoutCommandContext<'_>,
     ) -> Result<CommandOutput, DocumentError> {
+        let key = self.clipboard_copy_alias_key(key);
         if key == Key::Escape && self.visual_command_is_pending() {
             self.clear_pending();
             return Ok(CommandOutput {
@@ -5785,7 +5834,7 @@ impl CommandInterpreter {
                 self.pending = Pending::JumpMark { linewise: true };
                 Ok(CommandOutput::pending())
             }
-            Key::Char('h') | Key::Left | Key::Backspace => {
+            Key::Char('h') | Key::Left => {
                 Ok(self.move_visual_block_horizontal(document, context, count, false))
             }
             Key::Char('l') | Key::Right | Key::Char(' ') => {
@@ -5797,6 +5846,11 @@ impl CommandInterpreter {
                 document,
                 context,
                 |commands, document| commands.move_cursor(document, Motion::LineStart, 1),
+            )),
+            Key::DocumentStart | Key::DocumentEnd => Ok(self.apply_visual_block_logical_motion(
+                document,
+                context,
+                |commands, document| commands.move_to_document_edge(document, key == Key::DocumentEnd),
             )),
             Key::Char('^') => Ok(self.apply_visual_block_logical_motion(
                 document,
@@ -5980,7 +6034,7 @@ impl CommandInterpreter {
                 Ok(CommandOutput::pending())
             }
             Key::Char('y') => self.apply_visual_block_operator(document, context, Operator::Yank),
-            Key::Char('d' | 'x') => {
+            Key::Char('d' | 'x') | Key::Backspace | Key::Delete => {
                 self.apply_visual_block_operator(document, context, Operator::Delete)
             }
             Key::Char('~') => {
@@ -6482,7 +6536,7 @@ impl CommandInterpreter {
             }
         }
         let replaced = (kind == VisualBlockInsertKind::Change)
-            .then(|| block_register_value(document.text(), &resolved));
+            .then(|| block_register_value(document, &resolved, requested_register));
         let mut rows = Vec::with_capacity(resolved.rows.len());
         for row in &resolved.rows {
             let ranges = row
@@ -6576,7 +6630,7 @@ impl CommandInterpreter {
                 ..CommandOutput::complete()
             });
         }
-        let replaced = block_register_value(document.text(), &resolved);
+        let replaced = block_register_value(document, &resolved, None);
         let target = resolved.rows.first().map_or(self.cursor, |row| {
             row.ranges
                 .iter()
@@ -7197,7 +7251,7 @@ impl CommandInterpreter {
                 return Ok(output);
             }
         }
-        let selected = block_register_value(document.text(), &resolved);
+        let selected = block_register_value(document, &resolved, register);
         let edits = match operator {
             Operator::Delete => delete_text_edits(&resolved),
             Operator::ToggleCase | Operator::Lowercase | Operator::Uppercase => resolved
@@ -7902,6 +7956,7 @@ impl CommandInterpreter {
         } else {
             None
         };
+        self.typing_style = Default::default();
         self.boundary_affinity = position.affinity;
         self.visual_position = Some(position);
         self.cursor = next_cursor;
@@ -8055,6 +8110,7 @@ impl CommandInterpreter {
         document: &mut Document,
         key: Key,
     ) -> Result<CommandOutput, DocumentError> {
+        let key = self.clipboard_copy_alias_key(key);
         if let Some(output) = self.try_html_assistance_key(document, key)? {
             return Ok(output);
         }
@@ -8951,7 +9007,10 @@ impl CommandInterpreter {
         match operator {
             Operator::Yank => {
                 let old_cursor = self.cursor;
-                let value = register_value(document.text(), &lines, &extent);
+                let mut value = register_value(document, &lines, &extent, register);
+                if self.clipboard_copy_as_seen && value.clipboard_fragment().is_none() {
+                    value.clipboard_fragment = document.clipboard_fragment(extent.range.clone()).ok();
+                }
                 self.yank_register(register, value);
                 self.cursor =
                     yank_cursor_after_motion(document.text(), &lines, old_cursor, &extent);
@@ -8961,7 +9020,7 @@ impl CommandInterpreter {
                 })
             }
             Operator::Delete | Operator::Change => {
-                let value = register_value(document.text(), &lines, &extent);
+                let value = register_value(document, &lines, &extent, register);
                 let mut edit_range = extent.range.clone();
                 let mut replacement = "";
                 if extent.kind == MotionKind::Linewise && operator == Operator::Delete {
@@ -9465,7 +9524,9 @@ impl CommandInterpreter {
                 Ok(CommandOutput::pending())
             }
             Key::Char('y') => self.apply_visual_operator(document, Operator::Yank, count),
-            Key::Char('d' | 'x') => self.apply_visual_operator(document, Operator::Delete, count),
+            Key::Char('d' | 'x') | Key::Backspace | Key::Delete => {
+                self.apply_visual_operator(document, Operator::Delete, count)
+            }
             Key::Char('c' | 's') => self.apply_visual_operator(document, Operator::Change, count),
             Key::Char('>') => self.apply_visual_operator(document, Operator::Indent, count),
             Key::Char('<') => self.apply_visual_operator(document, Operator::Outdent, count),
@@ -9476,7 +9537,7 @@ impl CommandInterpreter {
             Key::Char('p') => self.visual_paste(document, false, count),
             Key::Char('P') => self.visual_paste(document, true, count),
             Key::Char('J') => self.visual_join(document, true),
-            Key::Char('h') | Key::Left | Key::Backspace => {
+            Key::Char('h') | Key::Left => {
                 Ok(self.move_cursor(document, Motion::Horizontal(-1), count))
             }
             Key::Char('l') | Key::Right | Key::Char(' ') => {
@@ -9939,7 +10000,7 @@ impl CommandInterpreter {
             Ok(register) => register,
             Err(error) => return Ok(error.into_command_output()),
         };
-        let replaced = register_value(document.text(), &lines, &extent);
+        let replaced = register_value(document, &lines, &extent, None);
         let deletion_class = ordinary_deletion_class(&lines, &extent);
         let selection_was_linewise = extent.kind == MotionKind::Linewise;
         let register_is_linewise = register.kind == RegisterKind::Linewise;
@@ -9983,16 +10044,17 @@ impl CommandInterpreter {
             .text()
             .len();
         let before_revision = document.revision();
-        let mapped_start = commit_planned_formatted_edits(
-            document,
-            &lines,
-            vec![PlannedFormattedEdit {
-                range: extent.range.clone(),
-                fragment,
-            }],
-            extent.range.start,
-            Association::BeforeInsertion,
-        )?;
+        let private = register.clipboard_fragment().map(|payload|
+            document.prepare_clipboard_fragment(extent.range.clone(), payload, &fragment.text)
+        ).transpose().map_err(command_document_error)?.flatten();
+        let mapped_start = if let Some(prepared) = private {
+            document.commit_model_transaction(prepared).map_err(command_document_error)?;
+            extent.range.start
+        } else { commit_planned_formatted_edits(
+            document, &lines,
+            vec![PlannedFormattedEdit { range: extent.range.clone(), fragment }],
+            extent.range.start, Association::BeforeInsertion,
+        )? };
         self.last_visual = remembered.map(|remembered| {
             Self::visual_memory_for_result_range(
                 document,
@@ -10160,9 +10222,13 @@ impl CommandInterpreter {
             // Reverse projection is fallible. Validate the complete paste
             // before closing the surrounding typed-text unit so rejection
             // cannot introduce an otherwise invisible undo boundary.
-            document
-                .prepare_formatted_payload_request(request)
-                .map_err(command_document_error)?;
+            let private = if self.mode == Mode::Insert {
+                value.clipboard_fragment().map(|fragment| document.prepare_clipboard_fragment(self.cursor..edit_end, fragment, &value.text))
+                    .transpose().map_err(command_document_error)?.flatten()
+            } else { None };
+            if private.is_none() {
+                document.prepare_formatted_payload_request(request).map_err(command_document_error)?;
+            }
             self.invalidate_replace_restoration();
             document.end_edit_group();
             document.begin_edit_group();
@@ -10287,7 +10353,8 @@ impl CommandInterpreter {
                     self.replace_text(document, &character.to_string())
                 }
             }
-            Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End => {
+            Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End
+            | Key::DocumentStart | Key::DocumentEnd => {
                 document.end_edit_group();
                 self.invalidate_replace_restoration();
                 self.publish_last_insert_fragment();
@@ -10302,7 +10369,10 @@ impl CommandInterpreter {
                     session.last_inserted = RegisterValue::characterwise("");
                     session.preserve_normal_repeat = false;
                 }
-                let motion = match key {
+                let mut output = if matches!(key, Key::DocumentStart | Key::DocumentEnd) {
+                    self.move_to_document_edge(document, key == Key::DocumentEnd)
+                } else {
+                    let motion = match key {
                     Key::Left => Motion::InsertionHorizontal(-1),
                     Key::Right => Motion::InsertionHorizontal(1),
                     Key::Up => Motion::Vertical(-1),
@@ -10310,8 +10380,9 @@ impl CommandInterpreter {
                     Key::Home => Motion::InsertionLineStart,
                     Key::End => Motion::InsertionLineEnd,
                     _ => unreachable!(),
+                    };
+                    self.move_cursor(document, motion, 1)
                 };
-                let mut output = self.move_cursor(document, motion, 1);
                 document.begin_edit_group();
                 if let Some(session) = self.insert_session.as_mut() {
                     session.unit_floor = self.cursor;
@@ -10403,7 +10474,8 @@ impl CommandInterpreter {
             Key::Enter => Ok(CommandOutput::unsupported(
                 "Visual Block insertion cannot contain a hard line break",
             )),
-            Key::Delete
+            Key::DocumentStart | Key::DocumentEnd | Key::BackTab
+            | Key::Delete
             | Key::Left
             | Key::Right
             | Key::Up
@@ -10649,10 +10721,16 @@ impl CommandInterpreter {
             FormattedPayloadEdit::new(self.cursor..self.cursor, payload)
                 .with_boundary_affinity(self.insertion_boundary_affinity()),
         )?;
-        if !self.typing_style.values.is_empty() {
+        if let Some(prepared) = value.clipboard_fragment().map(|fragment|
+            document.prepare_clipboard_fragment(self.cursor..self.cursor, fragment, input)
+        ).transpose().map_err(command_document_error)?.flatten() {
+            document.commit_model_transaction(prepared).map_err(command_document_error)?;
+            self.cursor += input.len();
+        } else if !self.typing_style.is_empty() {
             self.cursor = document
-                .insert_with_typing_properties(
+                .insert_with_typing_style(
                     edit,
+                    self.typing_style.named.as_ref(),
                     &self.typing_style.values,
                 )
                 .map_err(command_document_error)?;
@@ -10755,7 +10833,7 @@ impl CommandInterpreter {
                 .is_some_and(|session| session.placement == InsertPlacement::Replace);
         if journalable
             && (document.format() == crate::document::Format::Html
-                || !self.typing_style.values.is_empty()
+                || !self.typing_style.is_empty()
                 || self
                     .insert_session
                     .as_ref()
@@ -10775,10 +10853,11 @@ impl CommandInterpreter {
                 self.cursor
             };
             let (prepared, records) = document
-                .prepare_recorded_replacement(
+                .prepare_recorded_replacement_with_typing_style(
                     self.cursor,
                     target,
                     input,
+                    self.typing_style.named.as_ref(),
                     &self.typing_style.values,
                     self.insertion_boundary_affinity(),
                 )
@@ -10876,10 +10955,11 @@ impl CommandInterpreter {
             FormattedPayloadEdit::new(start..end, payload)
                 .with_boundary_affinity(self.insertion_boundary_affinity()),
         )?;
-        if !self.typing_style.values.is_empty() {
+        if !self.typing_style.is_empty() {
             self.cursor = document
-                .insert_with_typing_properties(
+                .insert_with_typing_style(
                     edit,
+                    self.typing_style.named.as_ref(),
                     &self.typing_style.values,
                 )
                 .map_err(command_document_error)?;
@@ -11039,7 +11119,11 @@ impl CommandInterpreter {
         if entry_count > isize::MAX as usize {
             return repetition_too_large(entry_count);
         }
-        self.typing_style = Default::default();
+        // A named menu choice in Normal mode targets the next typing session.
+        // Keep its sparse direct overrides separate from the named identity.
+        if self.typing_style.named.is_none() {
+            self.typing_style = Default::default();
+        }
         self.input_assistance.clear_tag();
         let text = document.text();
         let lines = document.hard_line_snapshot();
@@ -11063,9 +11147,13 @@ impl CommandInterpreter {
         } else {
             Mode::Insert
         };
+        let mut program = EditSessionProgram::default();
+        if !self.typing_style.is_empty() {
+            program.push(EditSessionStep::TypingStyle(self.typing_style.clone()));
+        }
         self.insert_session = Some(InsertSession {
             placement,
-            repeat_program: Some(EditSessionProgram::default()),
+            repeat_program: Some(program),
             last_inserted: RegisterValue::characterwise(""),
             entry_count,
             replaying_program: false,
@@ -11197,6 +11285,9 @@ impl CommandInterpreter {
                     let next = match step {
                         EditSessionStep::TypingStyle(value) => {
                             self.typing_style = Default::default();
+                            if let Some(named) = &value.named {
+                                self.set_typing_named_style(document, named.clone())?;
+                            }
                             self.set_typing_properties(document, value.values.clone())?;
                             CommandOutput::complete()
                         }
@@ -11384,12 +11475,13 @@ impl CommandInterpreter {
             return Ok(CommandOutput::complete());
         }
         let value = register_value(
-            document.text(),
+            document,
             &lines,
             &MotionExtent {
                 range: start..end,
                 kind: MotionKind::Characterwise,
             },
+            register,
         );
         let cursor = delete_with_cursor(document, start..end)?;
         self.delete_register(register, value, DeletionClass::Small);
@@ -11430,12 +11522,13 @@ impl CommandInterpreter {
             return Ok(CommandOutput::complete());
         }
         let value = register_value(
-            document.text(),
+            document,
             &lines,
             &MotionExtent {
                 range: start..self.cursor,
                 kind: MotionKind::Characterwise,
             },
+            register,
         );
         let cursor = delete_with_cursor(document, start..self.cursor)?;
         self.delete_register(register, value, DeletionClass::Small);
@@ -11606,7 +11699,13 @@ impl CommandInterpreter {
             payload,
         ))?;
         let insertion_end = edit.range().start + edit.payload().text().len();
-        document.apply_formatted_payload_edits(vec![edit])?;
+        if let Some(prepared) = repeated.clipboard_fragment().map(|fragment|
+            document.prepare_clipboard_fragment(position..position, fragment, &repeated.text)
+        ).transpose().map_err(command_document_error)?.flatten() {
+            document.commit_model_transaction(prepared).map_err(command_document_error)?;
+        } else {
+            document.apply_formatted_payload_edits(vec![edit])?;
+        }
         let target = if follow {
             insertion_end
         } else {
@@ -12550,14 +12649,14 @@ impl CommandInterpreter {
                 }
                 Ok(CommandOutput::pending())
             }
-            Key::Home | Key::Ctrl('b' | 'B') => {
+            Key::Home | Key::DocumentStart | Key::Ctrl('b' | 'B') => {
                 if let Some(state) = self.command_line_state.as_mut() {
                     state.buffer.selection_anchor = None;
                     state.buffer.cursor = 0;
                 }
                 Ok(CommandOutput::pending())
             }
-            Key::End | Key::Ctrl('e' | 'E') => {
+            Key::End | Key::DocumentEnd | Key::Ctrl('e' | 'E') => {
                 if let Some(state) = self.command_line_state.as_mut() {
                     state.buffer.selection_anchor = None;
                     state.buffer.cursor = state.buffer.input.len();
@@ -13617,6 +13716,7 @@ impl CommandInterpreter {
         output: CommandOutput,
     ) -> CommandOutput {
         if output.cursor_moved {
+            self.typing_style = Default::default();
             self.record_jump(document, origin, self.cursor);
         }
         output
@@ -13925,6 +14025,7 @@ impl CommandInterpreter {
     }
 
     fn move_cursor(&mut self, document: &Document, motion: Motion, count: usize) -> CommandOutput {
+        self.typing_style = Default::default();
         let text = document.text();
         let lines = document.hard_line_snapshot();
         let old = self.cursor;
@@ -14119,6 +14220,7 @@ impl CommandInterpreter {
     }
 
     fn clear_pending(&mut self) {
+        self.clipboard_copy_as_seen = false;
         self.count = None;
         self.count_overflowed = false;
         self.register_pending = false;
@@ -14299,7 +14401,8 @@ fn visual_block_error(error: VisualBlockError) -> CommandOutput {
     }
 }
 
-fn block_register_value(text: &str, resolved: &ResolvedBlockSelection) -> RegisterValue {
+fn block_register_value(document: &Document, resolved: &ResolvedBlockSelection, requested: Option<char>) -> RegisterValue {
+    let text = document.text();
     let mut result = String::new();
     for (index, row) in resolved.rows.iter().enumerate() {
         if index > 0 {
@@ -14309,7 +14412,12 @@ fn block_register_value(text: &str, resolved: &ResolvedBlockSelection) -> Regist
             result.push_str(&text[range.clone()]);
         }
     }
-    RegisterValue::blockwise(result)
+    let mut value = RegisterValue::blockwise(result);
+    if matches!(requested, Some('+' | '*')) && document.format() != crate::document::Format::PlainText {
+        let rows = resolved.rows.iter().map(|row| row.ranges.clone()).collect::<Vec<_>>();
+        value.clipboard_fragment = document.clipboard_fragment_rows(&rows).ok();
+    }
+    value
 }
 
 #[derive(Clone, Debug)]
@@ -15304,14 +15412,15 @@ fn external_text_register_value(document: &Document, text: &str) -> RegisterValu
     }
 }
 
-fn register_value(text: &str, lines: &HardLineSnapshot, extent: &MotionExtent) -> RegisterValue {
+fn register_value(document: &Document, lines: &HardLineSnapshot, extent: &MotionExtent, requested: Option<char>) -> RegisterValue {
+    let text = document.text();
     let captured = lines
         .capture(extent.range.clone())
         .expect("a resolved operator extent uses valid grapheme boundaries");
     debug_assert_eq!(captured.text(), &text[extent.range.clone()]);
     let mut contents = captured.text().to_owned();
     let mut hard_break_offsets = captured.break_offsets().to_vec();
-    if extent.kind == MotionKind::Linewise {
+    let mut result = if extent.kind == MotionKind::Linewise {
         let ends_with_hard_break = hard_break_offsets
             .last()
             .is_some_and(|offset| offset.saturating_add(1) == contents.len());
@@ -15324,7 +15433,13 @@ fn register_value(text: &str, lines: &HardLineSnapshot, extent: &MotionExtent) -
     } else {
         RegisterValue::try_new(contents, RegisterKind::Characterwise, hard_break_offsets)
             .expect("captured characterwise register breaks are valid")
+    };
+    if matches!(requested, Some('+' | '*')) && document.format() != crate::document::Format::PlainText {
+        result.clipboard_fragment = document.clipboard_fragment(extent.range.clone()).ok().map(|fragment| {
+            fragment.with_register(&result.text, match result.kind { RegisterKind::Characterwise => 1, RegisterKind::Linewise => 2, RegisterKind::Blockwise => 3 }, result.hard_break_offsets())
+        });
     }
+    result
 }
 
 fn yank_cursor_after_motion(
@@ -15573,6 +15688,7 @@ fn checked_register_repetition(
     input: &RegisterValue,
     count: usize,
 ) -> Result<RegisterValue, TextRepetitionError> {
+    if count == 1 { return Ok(input.clone()); }
     if input.text.is_empty() && input.hard_break_offsets().is_empty() {
         return Ok(input.clone());
     }

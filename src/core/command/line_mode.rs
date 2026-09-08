@@ -18,6 +18,43 @@ pub(super) struct PhysicalCursor {
     text: crate::document::TextPoint,
 }
 impl CommandInterpreter {
+    pub(super) fn move_to_document_edge(
+        &mut self,
+        document: &Document,
+        end: bool,
+    ) -> CommandOutput {
+        let origin = self.cursor;
+        let at = if end {
+            document.projection().text_tree().byte_len()
+        } else {
+            0
+        };
+        self.cursor = if matches!(self.mode, Mode::Insert | Mode::Replace) {
+            at
+        } else {
+            normalize_normal_cursor(document.text(), &document.hard_line_snapshot(), at)
+        };
+        self.clear_pending();
+        self.typing_style = Default::default();
+        self.input_assistance.clear_tag();
+        self.preferred_column = None;
+        self.desired_x = None;
+        self.visual_position = None;
+        self.visual_to_line_end = false;
+        self.physical_cursor = None;
+        if self.line_mode == LineMode::PhysicalSource {
+            self.remember_physical_cursor(
+                document,
+                if end { document.source_byte_len() } else { 0 },
+            );
+        }
+        let output = CommandOutput {
+            cursor_moved: origin != self.cursor,
+            ..CommandOutput::complete()
+        };
+        self.record_successful_jump(document, origin, output)
+    }
+
     fn physical_source_cursor(&self, document: &Document) -> Result<usize, DocumentError> {
         if let Some(cached) = self.physical_cursor.filter(|cached| {
             cached.source.document() == document.id()
@@ -81,6 +118,7 @@ struct LineExtent {
 }
 impl CommandInterpreter {
     pub(super) fn mode_line_key(&self, key: Key) -> bool {
+        let key = self.resolved_clipboard_copy_key(key);
         if self.register_pending
             || self.count_overflowed
             || !matches!(
@@ -480,6 +518,7 @@ impl CommandInterpreter {
         let point =
             document.visible_point_for_source(source, !matches!(key, Key::Char('$') | Key::End))?;
         let before = self.cursor;
+        self.typing_style = Default::default();
         self.cursor =
             normalize_normal_cursor(document.text(), &document.hard_line_snapshot(), point);
         self.boundary_affinity = if matches!(key, Key::Char('$') | Key::End) {
@@ -551,6 +590,19 @@ impl CommandInterpreter {
         ) && applications > 250_000
         {
             return Ok(repetition_too_large(applications));
+        }
+        if operator == Operator::Yank && register == Some('*') && self.clipboard_copy_as_seen {
+            let value = if let Some(source) = extent.source.as_ref().filter(|_| {
+                !matches!(document.format(), crate::document::Format::Markdown | crate::document::Format::Html | crate::document::Format::Rtf)
+            }) {
+                let bytes = document.source_bytes();
+                RegisterValue::characterwise(document.encoding().decode(&bytes[source.clone()])?.text)
+            } else {
+                RegisterValue::from_clipboard_fragment(document.clipboard_fragment(extent.text.clone())?.as_seen())
+                    .map_err(|_| DocumentError::UnsupportedFormatting)?
+            };
+            self.yank_register(register, value);
+            return Ok(CommandOutput::complete());
         }
         let before = document.revision();
         let mut output = if let Some(mut source) = extent.source {
@@ -634,7 +686,6 @@ impl CommandInterpreter {
         } else {
             // A wrapped row contains text, not an implicit paragraph separator.
             // Complete logical paragraphs retain the existing structural path.
-            let text = document.text()[extent.text.clone()].to_owned();
             let mut range = extent.text.clone();
             let lines = document.hard_line_snapshot();
             let whole_hard_lines = lines
@@ -648,15 +699,24 @@ impl CommandInterpreter {
                     });
             let value = if extent.whole && whole_hard_lines {
                 register_value(
-                    document.text(),
+                    document,
                     &lines,
                     &MotionExtent {
                         range: extent.text.clone(),
                         kind: MotionKind::Linewise,
                     },
+                    register,
                 )
             } else {
-                RegisterValue::characterwise(text)
+                register_value(
+                    document,
+                    &lines,
+                    &MotionExtent {
+                        range: extent.text.clone(),
+                        kind: MotionKind::Characterwise,
+                    },
+                    register,
+                )
             };
             if operator == Operator::Yank {
                 self.yank_register(register, value);

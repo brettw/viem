@@ -498,7 +498,10 @@ pub(super) fn character_assignment_patches(
     range: &Range<usize>,
     id: &StyleId,
 ) -> Result<Vec<(Range<usize>, String)>, DocumentError> {
-    let number = handle(&read(input), id, true).ok_or(DocumentError::UnsupportedFormatting)?;
+    let native = read(input);
+    let number = handle(&native, id, true)
+        .or_else(|| (id.0 == "Character" && native.id(0, true).is_none()).then_some(0))
+        .ok_or(DocumentError::UnsupportedFormatting)?;
     let mut runs: Vec<(Range<usize>, CharacterProperties)> = Vec::new();
     let mut at = range.start;
     for span in projection.provenance_for_region(range) {

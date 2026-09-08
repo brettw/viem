@@ -234,6 +234,9 @@ typedef struct EvimFormattedPointInfoV1 {
 #define EVIM_KEY_PAGE_UP 13u
 #define EVIM_KEY_PAGE_DOWN 14u
 #define EVIM_KEY_CONTROL_CHARACTER 15u
+#define EVIM_KEY_BACK_TAB 16u
+#define EVIM_KEY_DOCUMENT_START 17u
+#define EVIM_KEY_DOCUMENT_END 18u
 
 #define EVIM_COMMAND_STATUS_NONE 0u
 #define EVIM_COMMAND_STATUS_COMPLETE 1u
@@ -351,6 +354,25 @@ typedef struct EvimCommandTurnContextV1 {
 
 #define EVIM_COMMAND_TURN_CONTEXT_V1_SIZE \
   ((uint32_t)sizeof(EvimCommandTurnContextV1))
+
+/* Optional private UTF-8 JSON clipboard image. V1 records remain unchanged. */
+typedef struct EvimClipboardTurnEntryV2 {
+  uint32_t struct_size;
+  uint32_t flags;
+  uint32_t target;
+  uint32_t reserved;
+  uint64_t generation;
+  EvimUtf8Slice plain_text;
+  EvimUtf8Slice fragment_json;
+} EvimClipboardTurnEntryV2;
+#define EVIM_CLIPBOARD_TURN_ENTRY_V2_SIZE ((uint32_t)sizeof(EvimClipboardTurnEntryV2))
+typedef struct EvimCommandTurnContextV2 {
+  uint32_t struct_size;
+  uint32_t reserved;
+  const EvimClipboardTurnEntryV2 *clipboards;
+  uint64_t clipboard_count;
+} EvimCommandTurnContextV2;
+#define EVIM_COMMAND_TURN_CONTEXT_V2_SIZE ((uint32_t)sizeof(EvimCommandTurnContextV2))
 
 /* Offset and length in the UTF-8 string arena copied with an effect batch. */
 typedef struct EvimEffectBytesRefV1 {
@@ -827,6 +849,7 @@ typedef struct EvimRgbaV1 {
 #define EVIM_STYLE_DEFINITION_BASE_PARAGRAPH (1u << 3)
 #define EVIM_STYLE_DEFINITION_BASE_CHARACTER (1u << 4)
 #define EVIM_STYLE_DEFINITION_INTERNAL (1u << 5)
+#define EVIM_STYLE_DEFINITION_INTERNAL_LIST (1u << 6)
 
 #define EVIM_STYLE_CAPABILITY_EDIT_DECLARATIONS (1u << 0)
 #define EVIM_STYLE_CAPABILITY_EDIT_PARENT (1u << 1)
@@ -1195,7 +1218,8 @@ typedef struct EvimPositionedClusterV1 {
 #define EVIM_POSITIONED_CLUSTER_V1_SIZE \
   ((uint32_t)sizeof(EvimPositionedClusterV1))
 
-/* Noneditable list furniture; label offsets address only the separate label
+#define EVIM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER (1u << 1)
+/* Noneditable block furniture; label offsets address only the separate label
  * byte blob. No decoration creates formatted offsets, caret or selection stops. */
 typedef struct EvimLayoutDecorationV1 {
   uint32_t struct_size;
@@ -1551,6 +1575,15 @@ typedef struct EvimSetListStyleV1 {
   EvimLogicalSelectionIdentityV1 expected_selection;
 } EvimSetListStyleV1;
 #define EVIM_SET_LIST_STYLE_V1_SIZE ((uint32_t)sizeof(EvimSetListStyleV1))
+
+#define EVIM_LIST_CAN_INDENT 1u
+#define EVIM_LIST_CAN_UNINDENT 2u
+typedef struct EvimListIndentV1 {
+  uint32_t struct_size;
+  uint32_t unindent;
+  EvimLogicalSelectionIdentityV1 expected_selection;
+} EvimListIndentV1;
+#define EVIM_LIST_INDENT_V1_SIZE ((uint32_t)sizeof(EvimListIndentV1))
 
 typedef struct EvimSetParagraphStyleV1 {
   uint32_t struct_size;
@@ -2132,6 +2165,14 @@ EvimStatus evim_core_view_list_selection(
 EvimStatus evim_core_view_set_list_style(
     EvimCoreHandle core, EvimViewId view,
     const EvimSetListStyleV1 *request, EvimCoreOutcomeV1 *out_outcome);
+/* Exact current selection; capability bits reflect verified structural edits. */
+EvimStatus evim_core_view_list_indent_capabilities(
+    EvimCoreHandle core, EvimViewId view,
+    const EvimLogicalSelectionIdentityV1 *expected_selection, uint32_t *out_flags);
+/* unindent is 0 or 1. A top-level item cannot be unindented. */
+EvimStatus evim_core_view_indent_list(
+    EvimCoreHandle core, EvimViewId view,
+    const EvimListIndentV1 *request, EvimCoreOutcomeV1 *out_outcome);
 EvimStatus evim_core_view_set_paragraph_style(
     EvimCoreHandle core, EvimViewId view,
     const EvimSetParagraphStyleV1 *request, EvimCoreOutcomeV1 *out_outcome);
@@ -2261,6 +2302,25 @@ EvimStatus evim_core_view_edit_command_line(EvimCoreHandle core, EvimViewId view
 EvimStatus evim_core_view_set_format_with_effects(EvimCoreHandle core, EvimViewId view, const EvimSetFormatV1 *request, EvimCoreOutcomeV1 *out_outcome, EvimEffectBatchHandle *out_effects);
 EvimStatus evim_core_view_set_encoding_with_effects(EvimCoreHandle core, EvimViewId view, const EvimSetEncodingV1 *request, EvimCoreOutcomeV1 *out_outcome, EvimEffectBatchHandle *out_effects);
 EvimStatus evim_core_copy_hard_line_source_bytes(EvimCoreHandle core, uint64_t document, uint64_t revision, uint64_t first_line, uint64_t end_line, uint8_t *output, uint64_t capacity, uint64_t *out_required, uint32_t *out_complete);
+
+/* Versioned clipboard JSON exports use the ordinary two-call buffer contract.
+ * Ranges are exact formatted snapshots. Effects remain valid after mutations.
+ * source_text is the decoded authored source fragment; source_bytes retains its
+ * encoding. Only is_rich payloads should be published as private/rich types. */
+EvimStatus evim_core_copy_clipboard_json(
+    EvimCoreHandle handle, const EvimFormattedUtf8RangeV1 *request,
+    uint8_t *output, uint64_t output_capacity, uint64_t *out_required);
+EvimStatus evim_effect_batch_copy_clipboard_json(
+    EvimEffectBatchHandle batch, uint64_t clipboard_index,
+    uint8_t *output, uint64_t output_capacity, uint64_t *out_required);
+EvimStatus evim_core_view_send_key_with_host_context_v2(
+    EvimCoreHandle handle, EvimViewId view, const EvimKeyInputV1 *input,
+    const EvimCommandTurnContextV2 *context, EvimCoreOutcomeV1 *out_outcome,
+    EvimEffectBatchHandle *out_effect_batch);
+EvimStatus evim_core_view_send_text_with_host_context_v2(
+    EvimCoreHandle handle, EvimViewId view, const uint8_t *text, uint64_t text_length,
+    const EvimCommandTurnContextV2 *context, EvimCoreOutcomeV1 *out_outcome,
+    EvimEffectBatchHandle *out_effect_batch);
 
 #ifdef __cplusplus
 }

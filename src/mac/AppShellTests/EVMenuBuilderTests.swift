@@ -31,14 +31,14 @@ final class EVMenuBuilderTests: XCTestCase {
         func currentStyleMenuCatalogue() -> EVStyleMenuCatalogue? { catalogue }
     }
 
-    func testZoomShortcutsAreOptionEqualsAndOptionHyphen() throws {
+    func testZoomShortcutsAreCommandEqualsAndCommandHyphen() throws {
         let owner = Owner()
         let menu = EVMenuBuilder(owner: owner).buildMainMenu(for: NSApplication.shared)
         let view = try XCTUnwrap(menu.item(withTitle: "View")?.submenu)
         for (title, key, command) in [("Zoom In", "=", EVMenuCommand.zoomIn), ("Zoom Out", "-", EVMenuCommand.zoomOut)] {
             let item = try XCTUnwrap(view.item(withTitle: title))
             XCTAssertEqual(item.keyEquivalent, key)
-            XCTAssertEqual(item.keyEquivalentModifierMask, [.option])
+            XCTAssertEqual(item.keyEquivalentModifierMask, [.command])
             XCTAssertEqual(item.tag, command.rawValue)
             XCTAssertEqual(item.action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
         }
@@ -75,7 +75,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Line Endings", "Page Setup…", "Print…",
         ])
         XCTAssertEqual(try titles(in: submenu("Edit", of: menu)), [
-            "Undo", "Redo", "Cut", "Copy", "Paste", "Paste and Match Style", "Delete",
+            "Undo", "Redo", "Cut", "Copy", "Copy Source", "Paste", "Paste and Match Style", "Delete",
             "Select All", "Select", "Find", "Transformations", "Start Dictation…",
             "Emoji & Symbols",
         ])
@@ -115,7 +115,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Page Setup…", "Print…",
         ])
         XCTAssertEqual(tokens(in: try submenu("Edit", of: main)), [
-            "Undo", "Redo", "-", "Cut", "Copy", "Paste", "Paste and Match Style",
+            "Undo", "Redo", "-", "Cut", "Copy", "Copy Source", "Paste", "Paste and Match Style",
             "Delete", "-", "Select All", "Select", "-", "Find", "-",
             "Transformations", "-", "Start Dictation…", "Emoji & Symbols",
         ])
@@ -183,6 +183,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Base Character", "-", "Edit Styles…",
         ])
         XCTAssertEqual(tokens(in: try submenu("Paragraph", of: main)), [
+            "Bulleted List", "Numbered List", "Indent", "Unindent", "-",
             "Base Paragraph", "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6", "-", "Edit Styles…",
         ])
         XCTAssertEqual(tokens(in: try submenu("Style", of: format)), [
@@ -191,8 +192,7 @@ final class EVMenuBuilderTests: XCTestCase {
 
         let paragraph = try submenu("Paragraph", of: format)
         XCTAssertEqual(tokens(in: paragraph), [
-            "Alignment", "Writing Direction", "Increase Indent", "Decrease Indent",
-            "Paragraph Spacing…", "Line Spacing", "List",
+            "Alignment", "Writing Direction", "Paragraph Spacing…", "Line Spacing", "Remove List",
         ])
         XCTAssertEqual(tokens(in: try submenu("Alignment", of: paragraph)), [
             "Start", "Center", "End",
@@ -223,6 +223,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Edit/Redo": ("z", [.command, .shift]),
             "Edit/Cut": ("x", [.command]),
             "Edit/Copy": ("c", [.command]),
+            "Edit/Copy Source": ("c", [.command, .shift]),
             "Edit/Paste": ("v", [.command]),
             "Edit/Paste and Match Style": ("v", [.command, .option, .shift]),
             "Edit/Select All": ("a", [.command]),
@@ -243,8 +244,8 @@ final class EVMenuBuilderTests: XCTestCase {
             "Paragraph/Heading 4": ("4", [.command]),
             "Paragraph/Heading 5": ("5", [.command]),
             "Paragraph/Heading 6": ("6", [.command]),
-            "View/Zoom In": ("=", [.option]),
-            "View/Zoom Out": ("-", [.option]),
+            "View/Zoom In": ("=", [.command]),
+            "View/Zoom Out": ("-", [.command]),
             "View/Enter Full Screen": ("f", [.command, .control]),
             "Window/Minimize": ("m", [.command]),
         ]
@@ -514,6 +515,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Base Character", "Edit Styles…",
         ])
         XCTAssertEqual(try titles(in: submenu("Paragraph", of: menu)), [
+            "Bulleted List", "Numbered List", "Indent", "Unindent",
             "Base Paragraph", "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6", "Edit Styles…",
         ])
         XCTAssertEqual(try titles(in: submenu("Style", of: format)), [
@@ -522,8 +524,7 @@ final class EVMenuBuilderTests: XCTestCase {
 
         let paragraph = try submenu("Paragraph", of: format)
         XCTAssertEqual(titles(in: paragraph), [
-            "Alignment", "Writing Direction", "Increase Indent", "Decrease Indent",
-            "Paragraph Spacing…", "Line Spacing", "List",
+            "Alignment", "Writing Direction", "Paragraph Spacing…", "Line Spacing", "Remove List",
         ])
         XCTAssertEqual(try titles(in: submenu("Alignment", of: paragraph)), [
             "Start", "Center", "End",
@@ -572,6 +573,30 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertEqual(titles(in: endings), ["Unix (LF)", "Windows (CRLF)", "Classic Mac (CR)"])
     }
 
+    func testStyleMenusReserveOneNativeCheckmarkColumnForEveryRow() throws {
+        let owner = Owner()
+        let provider = StyleProvider(catalogue: styleCatalogue(documentRevision: 1, styleSheetRevision: 1, entries: [
+            styleEntry(.paragraph, id: "Paragraph", name: "Base Paragraph", isBase: true, state: .on),
+            styleEntry(.paragraph, id: "Heading1", name: "Heading 1"),
+            styleEntry(.character, id: "Character", name: "Base Character", isBase: true, state: .on),
+            styleEntry(.character, id: "Accent", name: "Accent"),
+        ]))
+        let builder = EVMenuBuilder(owner: owner, styleMenuProvider: { provider })
+        let main = builder.buildMainMenu(for: NSApplication.shared)
+        for title in ["Paragraph", "Character"] {
+            let menu = try submenu(title, of: main)
+            XCTAssertTrue(menu.showsStateColumn)
+            builder.menuNeedsUpdate(menu)
+            XCTAssertTrue(menu.showsStateColumn)
+            XCTAssertEqual(menu.items.filter { $0.state == .on }.count, 1)
+            for item in menu.items where !item.isSeparatorItem {
+                XCTAssertNil(item.view, "Native rows share the state column")
+                XCTAssertEqual(item.indentationLevel, 0)
+            }
+            XCTAssertEqual(menu.items.last?.state, .off)
+        }
+    }
+
     func testStyleMenusRefreshFromCurrentCatalogueWithBaseFirstAndStableIDs() throws {
         let owner = Owner()
         let provider = StyleProvider(catalogue: styleCatalogue(
@@ -592,10 +617,11 @@ final class EVMenuBuilderTests: XCTestCase {
         builder.menuNeedsUpdate(paragraph)
 
         XCTAssertEqual(tokens(in: paragraph), [
+            "Bulleted List", "Numbered List", "Indent", "Unindent", "-",
             "Base Paragraph", "Heading", "Heading", "-", "Edit Styles…",
         ])
         XCTAssertTrue(paragraph.autoenablesItems)
-        let styleItems = paragraph.items.filter { !$0.isSeparatorItem }.dropLast()
+        let styleItems = paragraph.items.filter { styleAction($0)?.kind == .assign }
         XCTAssertEqual(styleItems.compactMap(styleAction).map(\.stableID), [
             "Paragraph", "Heading2", "Heading1",
         ])
@@ -631,7 +657,7 @@ final class EVMenuBuilderTests: XCTestCase {
         let main = builder.buildMainMenu(for: NSApplication.shared)
         let paragraph = try submenu("Paragraph", of: main)
         builder.menuNeedsUpdate(paragraph)
-        XCTAssertEqual(titles(in: paragraph), ["Base Paragraph", "Old Name", "Edit Styles…"])
+        XCTAssertEqual(titles(in: paragraph), ["Bulleted List", "Numbered List", "Indent", "Unindent", "Base Paragraph", "Old Name", "Edit Styles…"])
 
         provider.catalogue = styleCatalogue(
             documentRevision: 2,
@@ -643,7 +669,7 @@ final class EVMenuBuilderTests: XCTestCase {
         )
         builder.menuNeedsUpdate(paragraph)
 
-        XCTAssertEqual(titles(in: paragraph), ["Renamed Base", "New Name", "Edit Styles…"])
+        XCTAssertEqual(titles(in: paragraph), ["Bulleted List", "Numbered List", "Indent", "Unindent", "Renamed Base", "New Name", "Edit Styles…"])
         let actions = paragraph.items.compactMap(styleAction)
         XCTAssertEqual(actions.map(\.stableID), ["Paragraph", "Heading7", "Paragraph"])
         XCTAssertTrue(actions.allSatisfy { $0.documentRevision == 2 })
@@ -665,7 +691,7 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertTrue(paragraph.items.first === original)
         builder.menuDidClose(paragraph)
         builder.menuNeedsUpdate(paragraph)
-        XCTAssertEqual(paragraph.items.first?.title, "Updated")
+        XCTAssertEqual(paragraph.items.first(where: { styleAction($0)?.kind == .assign })?.title, "Updated")
     }
 
     func testUnavailableStyleProviderLeavesHonestDisabledFallback() throws {

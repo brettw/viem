@@ -43,7 +43,7 @@ final class EVZoomIntegrationTests: XCTestCase {
         XCTAssertThrowsError(try session.setScale(5.01))
     }
 
-    func testOptionZoomKeysAndMenuResponderWorkInNormalAndInsertWithoutText() throws {
+    func testCommandZoomKeysAndMenuResponderWorkInNormalAndInsertWithoutText() throws {
         let backend = EVCoreDocumentBackend()
         let source = Data("Words".utf8)
         try backend.read(source: source, typeName: "public.plain-text")
@@ -58,9 +58,9 @@ final class EVZoomIntegrationTests: XCTestCase {
         for insert in [false,true] {
             if insert { _ = try session.sendText("i"); surface.refreshPresentation() }
             let mode = surface.viewPresentation.mode
-            for (characters, key, code, scale) in [("≠", "=", UInt16(24), Float(1.1)), ("–", "-", UInt16(27), Float(1))] {
+            for (characters, key, code, scale) in [("=", "=", UInt16(24), Float(1.1)), ("-", "-", UInt16(27), Float(1))] {
                 let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
-                    modifierFlags: [.option], timestamp: 0, windowNumber: window.windowNumber,
+                    modifierFlags: [.command], timestamp: 0, windowNumber: window.windowNumber,
                     context: nil, characters: characters, charactersIgnoringModifiers: key,
                     isARepeat: false, keyCode: code))
                 surface.editorView.keyDown(with: event)
@@ -70,7 +70,7 @@ final class EVZoomIntegrationTests: XCTestCase {
             }
             let item = NSMenuItem(title: "Zoom In", action: #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)), keyEquivalent: "=")
             item.tag = EVMenuCommand.zoomIn.rawValue
-            item.keyEquivalentModifierMask = [.option]
+            item.keyEquivalentModifierMask = [.command]
             XCTAssertTrue(surface.editorView.tryToPerform(try XCTUnwrap(item.action), with: item))
             XCTAssertEqual(surface.zoomScale, 1.1)
             surface.perform(menuCommand: .actualSize, sender: nil)

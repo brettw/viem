@@ -290,7 +290,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             if let paint { drawPaintBackgrounds(clusters, paint: paint) }
             drawSelection(snapshot, in: context)
             drawText(snapshot, clusters: clusters, paint: paint, in: context)
-            drawListMarkers(snapshot, dirtyRect: dirtyRect, in: context)
+            drawParagraphDecorations(snapshot, dirtyRect: dirtyRect, in: context)
             if let paint { drawTextDecorations(snapshot, clusters: clusters, paint: paint) }
             drawMarkedText(snapshot, clusters: clusters, in: context)
             drawCustomCaret(snapshot, in: context)
@@ -1209,6 +1209,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     @objc(redo:) func redoDocument(_ sender: Any?) { surface?.perform(menuCommand: .redo, sender: sender) }
     @objc(cut:) func cutDocumentSelection(_ sender: Any?) { if !performCommandLineMenu(.cut) { surface?.perform(menuCommand: .cut, sender: sender) } }
     @objc(copy:) func copyDocumentSelection(_ sender: Any?) { if !performCommandLineMenu(.copy) { surface?.perform(menuCommand: .copy, sender: sender) } }
+    @objc(copySource:) func copyDocumentSource(_ sender: Any?) { if !performCommandLineMenu(.copySource) { surface?.perform(menuCommand: .copySource, sender: sender) } }
     @objc(paste:) func pasteIntoDocument(_ sender: Any?) { if !performCommandLineMenu(.paste) { surface?.perform(menuCommand: .paste, sender: sender) } }
     @objc(pasteAsPlainText:) func pastePlainTextIntoDocument(_ sender: Any?) { if !performCommandLineMenu(.pasteAndMatchStyle) { surface?.perform(menuCommand: .pasteAndMatchStyle, sender: sender) } }
     @objc(delete:) func deleteDocumentSelection(_ sender: Any?) { if !performCommandLineMenu(.delete) { surface?.perform(menuCommand: .delete, sender: sender) } }
@@ -1218,6 +1219,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         guard let surface else { return }
         guard let session = surface.session else { return }
         customCaretBlinkController.restartAfterActivity()
+        let zoomModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if zoomModifiers == [.command], let key = event.charactersIgnoringModifiers,
+           key == "-" || key == "=" {
+            surface.perform(menuCommand: key == "=" ? .zoomIn : .zoomOut, sender: event)
+            return
+        }
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command) {
             super.keyDown(with: event)
             return
@@ -1225,11 +1232,6 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         if event.keyCode == 109, event.modifierFlags.contains(.shift) { showEditorContextMenu(event); return }
         if !compositionActive, moveCommandLineSelection(with: event) { return }
         let textModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
-        if textModifiers == [.option], let key = event.charactersIgnoringModifiers,
-           key == "-" || key == "=" {
-            surface.perform(menuCommand: key == "=" ? .zoomIn : .zoomOut, sender: event)
-            return
-        }
         if textModifiers == [.option], event.charactersIgnoringModifiers?.lowercased() == "i",
            !compositionActive,
            [UInt32(EVIM_MODE_INSERT), UInt32(EVIM_MODE_REPLACE)].contains(surface.viewPresentation.mode) {
@@ -1390,15 +1392,17 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         switch event.keyCode {
         case 53: UInt32(EVIM_KEY_ESCAPE)
         case 36, 76: UInt32(EVIM_KEY_ENTER)
-        case 48: UInt32(EVIM_KEY_TAB)
+        case 48:
+            UInt32(event.modifierFlags.contains(.shift) && surface?.commandLine?.prompt != nil
+                ? EVIM_KEY_BACK_TAB : EVIM_KEY_TAB)
         case 51: UInt32(EVIM_KEY_BACKSPACE)
         case 117: UInt32(EVIM_KEY_DELETE)
         case 123: UInt32(EVIM_KEY_LEFT)
         case 124: UInt32(EVIM_KEY_RIGHT)
         case 125: UInt32(EVIM_KEY_DOWN)
         case 126: UInt32(EVIM_KEY_UP)
-        case 115: UInt32(EVIM_KEY_HOME)
-        case 119: UInt32(EVIM_KEY_END)
+        case 115: UInt32(event.modifierFlags.contains(.control) ? EVIM_KEY_DOCUMENT_START : EVIM_KEY_HOME)
+        case 119: UInt32(event.modifierFlags.contains(.control) ? EVIM_KEY_DOCUMENT_END : EVIM_KEY_END)
         case 116: UInt32(EVIM_KEY_PAGE_UP)
         case 121: UInt32(EVIM_KEY_PAGE_DOWN)
         default: nil
@@ -1411,14 +1415,17 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         case #selector(moveRight(_:)), #selector(moveForward(_:)): UInt32(EVIM_KEY_RIGHT)
         case #selector(moveUp(_:)): UInt32(EVIM_KEY_UP)
         case #selector(moveDown(_:)): UInt32(EVIM_KEY_DOWN)
-        case #selector(moveToBeginningOfLine(_:)), #selector(moveToBeginningOfDocument(_:)): UInt32(EVIM_KEY_HOME)
-        case #selector(moveToEndOfLine(_:)), #selector(moveToEndOfDocument(_:)): UInt32(EVIM_KEY_END)
+        case #selector(moveToBeginningOfLine(_:)): UInt32(EVIM_KEY_HOME)
+        case #selector(moveToEndOfLine(_:)): UInt32(EVIM_KEY_END)
+        case #selector(moveToBeginningOfDocument(_:)): UInt32(EVIM_KEY_DOCUMENT_START)
+        case #selector(moveToEndOfDocument(_:)): UInt32(EVIM_KEY_DOCUMENT_END)
         case #selector(pageUp(_:)), #selector(scrollPageUp(_:)): UInt32(EVIM_KEY_PAGE_UP)
         case #selector(pageDown(_:)), #selector(scrollPageDown(_:)): UInt32(EVIM_KEY_PAGE_DOWN)
         case #selector(deleteBackward(_:)): UInt32(EVIM_KEY_BACKSPACE)
         case #selector(deleteForward(_:)): UInt32(EVIM_KEY_DELETE)
         case #selector(insertNewline(_:)), #selector(insertLineBreak(_:)): UInt32(EVIM_KEY_ENTER)
         case #selector(insertTab(_:)): UInt32(EVIM_KEY_TAB)
+        case #selector(insertBacktab(_:)) where surface?.commandLine?.prompt != nil: UInt32(EVIM_KEY_BACK_TAB)
         case #selector(cancelOperation(_:)): UInt32(EVIM_KEY_ESCAPE)
         default: nil
         }
@@ -1427,7 +1434,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     func commandLineMenuEnabled(_ command: EVMenuCommand) -> Bool? {
         guard let surface, let prompt = surface.commandLine, prompt.prompt != nil else { return nil }
         switch command {
-        case .copy, .cut, .delete: return !prompt.selectedUTF8Range.isEmpty
+        case .copy, .copySource, .cut, .delete: return !prompt.selectedUTF8Range.isEmpty
         case .paste, .pasteAndMatchStyle: return surface.pasteboard.evimCanReadString()
         case .selectAll: return !prompt.text.isEmpty
         case .undo, .redo: return false
@@ -1439,7 +1446,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         guard let surface, let session = surface.session, let prompt = surface.commandLine, prompt.prompt != nil else { return false }
         let range = prompt.selectedUTF8Range
         switch command {
-        case .copy, .cut:
+        case .copy, .copySource, .cut:
             guard !range.isEmpty, let lower = stringIndex(utf8Offset: range.lowerBound, in: prompt.text), let upper = stringIndex(utf8Offset: range.upperBound, in: prompt.text) else { return true }
             guard surface.pasteboard.evimIsWritable else { return true }
             _ = surface.pasteboard.evimClearContents()
@@ -2628,13 +2635,18 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    /// Marker furniture is drawn from its own exact-layout export. It never
+    /// Paragraph furniture is drawn from its own exact-layout export. It never
     /// participates in text slicing, caret, selection, search or accessibility text.
-    private func drawListMarkers(_ snapshot: EVLayoutExport, dirtyRect: NSRect, in context: CGContext) {
+    private func drawParagraphDecorations(_ snapshot: EVLayoutExport, dirtyRect: NSRect, in context: CGContext) {
         guard let session = surface?.session else { return }
         for item in listMarkersForDrawing(in: snapshot, dirtyRect: dirtyRect) {
             guard let row = row(for: item.row_index, in: snapshot.rows) else { continue }
             let foreground = nativeForeground(item.paint)
+            if item.flags & UInt32(EVIM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0 {
+                foreground.setFill()
+                viewRect(item.ink_bounds).fill()
+                continue
+            }
             if item.paint.flags & UInt32(EVIM_TEXT_PAINT_HAS_BACKGROUND) != 0 {
                 nativeColor(item.paint.background).setFill()
                 viewRect(item.typographic_bounds).fill()

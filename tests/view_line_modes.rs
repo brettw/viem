@@ -519,3 +519,103 @@ fn location_in_resumed_first_hard_line_has_exact_global_and_fragment_ordinals() 
     assert_eq!(location.fragment, first_fragment + 1);
     assert_eq!(location.column, 1);
 }
+
+#[test]
+fn document_edge_keys_ignore_line_policy_and_preserve_editing_modes() {
+    use evim_core::command::Mode;
+    let source = "αβ\nmiddle words\n👩‍💻z";
+    for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        for (entry, mode) in [
+            (None, Mode::Normal),
+            (Some(Key::Char('i')), Mode::Insert),
+            (Some(Key::Char('R')), Mode::Replace),
+            (Some(Key::Char('v')), Mode::VisualCharacter),
+            (Some(Key::Char('V')), Mode::VisualLine),
+            (Some(Key::Ctrl('v')), Mode::VisualBlock),
+        ] {
+            let (mut core, view) = editor(Document::new(source), 85.);
+            core.handle(view, CoreEvent::SetLineMode(line_mode))
+                .unwrap();
+            keys(&mut core, view, "l");
+            if let Some(entry) = entry {
+                key(&mut core, view, entry);
+            }
+            let revision = core.document().revision();
+            let history = core.document().history_status();
+            key(&mut core, view, Key::DocumentEnd);
+            assert_eq!(core.command_state(view).unwrap().mode(), mode);
+            let expected = if matches!(mode, Mode::Insert | Mode::Replace) {
+                source.len()
+            } else {
+                source.len() - 1
+            };
+            assert_eq!(
+                core.command_state(view).unwrap().cursor(),
+                expected,
+                "{line_mode:?} {mode:?}"
+            );
+            core.document().text_point(expected).unwrap();
+            key(&mut core, view, Key::DocumentStart);
+            assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+            assert_eq!(core.command_state(view).unwrap().mode(), mode);
+            assert_eq!(core.document().revision(), revision);
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            let after = core.document().history_status();
+            assert_eq!(
+                (
+                    after.current,
+                    after.parent,
+                    after.preferred_redo,
+                    after.node_count,
+                    after.redo_branch_count,
+                    after.is_dirty
+                ),
+                (
+                    history.current,
+                    history.parent,
+                    history.preferred_redo,
+                    history.node_count,
+                    history.redo_branch_count,
+                    history.is_dirty
+                )
+            );
+        }
+    }
+}
+
+#[test]
+fn document_edge_keys_use_prompt_boundaries_and_split_insert_undo_units() {
+    let (mut core, view) = editor(Document::new("abcd\ntail"), 85.);
+    keys(&mut core, view, "l:edit path");
+    let document_cursor = core.command_state(view).unwrap().cursor();
+    key(&mut core, view, Key::DocumentStart);
+    assert_eq!(
+        core.command_state(view)
+            .unwrap()
+            .command_line_snapshot()
+            .unwrap()
+            .active,
+        0
+    );
+    key(&mut core, view, Key::DocumentEnd);
+    assert_eq!(
+        core.command_state(view)
+            .unwrap()
+            .command_line_snapshot()
+            .unwrap()
+            .active,
+        "edit path".len()
+    );
+    assert_eq!(core.command_state(view).unwrap().cursor(), document_cursor);
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+        .unwrap();
+    keys(&mut core, view, "iX");
+    key(&mut core, view, Key::DocumentEnd);
+    keys(&mut core, view, "Y");
+    key(&mut core, view, Key::Escape);
+    assert_eq!(core.document().text(), "aXbcd\ntailY");
+    keys(&mut core, view, "u");
+    assert_eq!(core.document().text(), "aXbcd\ntail");
+    keys(&mut core, view, "u");
+    assert_eq!(core.document().text(), "abcd\ntail");
+}

@@ -1,44 +1,77 @@
 import AppKit
 import CEvimCore
-import EvimAppShell
+@testable import EvimAppShell
 import XCTest
 
 @testable import EvimEditor
 
 final class EVStyleMenuBridgeTests: XCTestCase {
   @MainActor
-  func testBlankHTMLParagraphListStyleMenuAllowsTypingWithNativeMarkup() throws {
-    for source in ["", "<p></p>"] {
-      let backend = EVCoreDocumentBackend()
-      try backend.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
-      let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-      surface.loadViewIfNeeded()
-      let session = try XCTUnwrap(surface.session)
-      try session.sendText("i")
-      let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
-      let item = try XCTUnwrap(catalogue.entries.first { $0.stableID == "List1" })
-      XCTAssertTrue(item.presentation.isEnabled)
-      surface.perform(styleMenuAction: EVStyleMenuAction(
-        kind: .assign, role: .paragraph, stableID: item.stableID,
-        documentID: catalogue.documentID, documentRevision: catalogue.documentRevision,
-        styleSheetRevision: catalogue.styleSheetRevision), sender: nil)
-      XCTAssertEqual(surface.statusBarState.message, "")
-      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data("<ul><li></li></ul>".utf8))
-      XCTAssertEqual(surface.currentStyleMenuCatalogue()?.entries.first { $0.stableID == "List1" }?.presentation.state, .on)
+  func testParagraphShortcutValidationRetainsCurrentStyleCheckmark() throws {
+    let backend = EVCoreDocumentBackend()
+    let source = Data("<h2>Title</h2><p>Body</p>".utf8)
+    try backend.read(source: source, typeName: EVDocument.htmlType)
+    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+    surface.loadViewIfNeeded()
+    let session = try XCTUnwrap(surface.session)
+    let content = EVDocumentContentViewController(editorSurface: surface)
+    func check(_ command: EVMenuCommand, state: NSControl.StateValue) {
+      let item = NSMenuItem(title: "Style", action: #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)), keyEquivalent: "")
+      item.tag = command.rawValue
+      XCTAssertTrue(content.validateMenuItem(item))
+      XCTAssertEqual(item.state, state)
+    }
+    check(.heading2, state: .on)
+    check(.heading0, state: .off)
+    check(.heading1, state: .off)
+    surface.performInput { _ = try session.sendText("G") }
+    check(.heading2, state: .off)
+    check(.heading0, state: .on)
 
-      surface.editorView.insertText("a", replacementRange: NSRange(location: NSNotFound, length: 0))
-      XCTAssertEqual(surface.statusBarState.message, "")
-      XCTAssertEqual(try backend.formattedText(), "a")
-      let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
-      XCTAssertEqual(saved, Data("<ul><li>a</li></ul>".utf8))
-      let reopened = EVCoreDocumentBackend()
-      try reopened.read(source: saved, typeName: EVDocument.htmlType)
-      XCTAssertEqual(try reopened.formattedText(), "a")
-      try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
-      surface.perform(menuCommand: .undo, sender: nil)
-      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data("<ul><li></li></ul>".utf8))
-      surface.perform(menuCommand: .redo, sender: nil)
-      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), saved)
+    let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
+    let item = NSMenuItem(title: "Base Character", action: #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:)), keyEquivalent: "")
+    item.representedObject = EVStyleMenuAction(kind: .assign, role: .character, stableID: "Character", documentID: catalogue.documentID, documentRevision: catalogue.documentRevision, styleSheetRevision: catalogue.styleSheetRevision)
+    _ = surface.editorView.validateMenuItem(item)
+    XCTAssertEqual(item.state, .on)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), source)
+  }
+
+  @MainActor
+  func testBlankHTMLParagraphListStyleMenuAllowsTypingWithNativeMarkup() throws {
+    for (command, styleID, tag) in [
+      (EVMenuCommand.bulletedList, "BulletedList1", "ul"),
+      (EVMenuCommand.numberedList, "NumberedList1", "ol"),
+    ] {
+      for source in ["", "<p></p>"] {
+        let backend = EVCoreDocumentBackend()
+        try backend.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        let session = try XCTUnwrap(surface.session)
+        try session.sendText("i")
+        XCTAssertFalse(try XCTUnwrap(surface.currentStyleMenuCatalogue()).entries.contains {
+          $0.stableID == styleID
+        })
+        XCTAssertTrue(surface.presentation(for: command).isEnabled)
+        surface.perform(menuCommand: command, sender: nil)
+        XCTAssertEqual(surface.statusBarState.message, "")
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data("<\(tag)><li></li></\(tag)>".utf8))
+        XCTAssertEqual(surface.currentStyleMenuCatalogue()?.entries.first { $0.stableID == styleID }?.presentation.state, .on)
+
+        surface.editorView.insertText("a", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(surface.statusBarState.message, "")
+        XCTAssertEqual(try backend.formattedText(), "a")
+        let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
+        XCTAssertEqual(saved, Data("<\(tag)><li>a</li></\(tag)>".utf8))
+        let reopened = EVCoreDocumentBackend()
+        try reopened.read(source: saved, typeName: EVDocument.htmlType)
+        XCTAssertEqual(try reopened.formattedText(), "a")
+        try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data("<\(tag)><li></li></\(tag)>".utf8))
+        surface.perform(menuCommand: .redo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), saved)
+      }
     }
   }
 
@@ -120,14 +153,11 @@ final class EVStyleMenuBridgeTests: XCTestCase {
       try backend.read(source: Data(source.utf8), typeName: type)
       let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
       surface.loadViewIfNeeded()
-      let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
-      XCTAssertTrue(
-        try XCTUnwrap(catalogue.entries.first { $0.stableID == "List2" }).presentation.isEnabled)
-      surface.perform(
-        styleMenuAction: EVStyleMenuAction(
-          kind: .assign, role: .paragraph, stableID: "List2",
-          documentID: catalogue.documentID, documentRevision: catalogue.documentRevision,
-          styleSheetRevision: catalogue.styleSheetRevision), sender: nil)
+      XCTAssertTrue(surface.presentation(for: .numberedList).isEnabled)
+      surface.perform(menuCommand: .numberedList, sender: nil)
+      XCTAssertEqual(surface.currentStyleMenuCatalogue()?.entries.first {
+        $0.stableID == "NumberedList1"
+      }?.presentation.state, .on)
       XCTAssertEqual(surface.statusBarState.message, "")
       XCTAssertNotEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
       surface.perform(menuCommand: .undo, sender: nil)
@@ -183,7 +213,7 @@ final class EVStyleMenuBridgeTests: XCTestCase {
     XCTAssertEqual(catalogue.documentID, coreSnapshot.identity.documentID)
     XCTAssertEqual(catalogue.documentRevision, coreSnapshot.identity.documentRevision)
     XCTAssertEqual(catalogue.styleSheetRevision, coreSnapshot.identity.styleSheetRevision)
-    XCTAssertEqual(catalogue.entries.count, coreSnapshot.definitions.count)
+    XCTAssertEqual(catalogue.entries.count, coreSnapshot.definitions.filter { !$0.flags.contains(.internalList) && !$0.flags.contains(.internalSyntax) }.count)
     XCTAssertEqual(
       catalogue.entries.filter { $0.role == .character }.map(\.stableID),
       [
@@ -193,8 +223,8 @@ final class EVStyleMenuBridgeTests: XCTestCase {
       Set(catalogue.entries.filter { $0.role == .paragraph }.map(\.stableID)),
       Set(
         [
-          "Paragraph", "Code Block", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6",
-        ] + (1...3).map { "List\($0)" }))
+          "Paragraph", "Block quote", "Code Block", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6",
+        ]))
     XCTAssertEqual(
       catalogue.entries.filter { $0.role == .document }.map(\.stableID),
       [
