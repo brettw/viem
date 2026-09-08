@@ -139,37 +139,22 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
     }
 
     @MainActor
-    func testWrapAndLinebreakUseCoreViewStateIncludingExChanges() throws {
+    func testWordWrapUsesCoreViewStateIncludingExChanges() throws {
         let (_, surface, session) = try makeSurface("alpha beta gamma")
-
         XCTAssertEqual(surface.presentation(for: .wordWrap).state, .on)
-        XCTAssertEqual(surface.presentation(for: .wrapAtWordBoundaries).state, .on)
-        XCTAssertTrue(surface.presentation(for: .wrapAtWordBoundaries).isEnabled)
-
         surface.perform(menuCommand: .wordWrap, sender: nil)
         XCTAssertEqual(surface.presentation(for: .wordWrap).state, .off)
-        XCTAssertFalse(surface.presentation(for: .wrapAtWordBoundaries).isEnabled)
-
         surface.perform(menuCommand: .wordWrap, sender: nil)
-        surface.perform(menuCommand: .wrapAtWordBoundaries, sender: nil)
         XCTAssertEqual(surface.presentation(for: .wordWrap).state, .on)
-        XCTAssertEqual(surface.presentation(for: .wrapAtWordBoundaries).state, .off)
 
-        try send(
-            [":", "s", "e", "t", " ", "l", "i", "n", "e", "b", "r", "e", "a", "k"],
-            through: session
-        )
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
-        surface.refreshPresentation()
-        XCTAssertEqual(surface.presentation(for: .wrapAtWordBoundaries).state, .on)
-
-        try send(
-            [":", "s", "e", "t", " ", "n", "o", "w", "r", "a", "p"],
-            through: session
-        )
+        try send(Array(":set nowrap"), through: session)
         _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
         surface.refreshPresentation()
         XCTAssertEqual(surface.presentation(for: .wordWrap).state, .off)
+        try send(Array(":set wrap"), through: session)
+        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+        surface.refreshPresentation()
+        XCTAssertEqual(surface.presentation(for: .wordWrap).state, .on)
     }
 
     @MainActor
@@ -179,7 +164,6 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         let first = try makeSurface(backend)
         let second = try makeSurface(backend)
 
-        XCTAssertEqual(first.surface.statusBarState.lineEnding, "CRLF")
         XCTAssertEqual(first.surface.presentation(for: .lineEndingWindows).state, .on)
         XCTAssertEqual(first.surface.presentation(for: .lineEndingUnix).state, .off)
 
@@ -188,8 +172,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         XCTAssertEqual(try backend.serializedSource(typeName: "public.plain-text"), Data("one\ntwo\n".utf8))
         XCTAssertEqual(first.surface.formattedText, "one\ntwo\n")
         XCTAssertEqual(second.surface.formattedText, "one\ntwo\n")
-        XCTAssertEqual(first.surface.statusBarState.lineEnding, "LF")
-        XCTAssertEqual(second.surface.statusBarState.lineEnding, "LF")
+        XCTAssertEqual(second.surface.presentation(for: .lineEndingUnix).state, .on)
         XCTAssertEqual(first.surface.presentation(for: .lineEndingUnix).state, .on)
         XCTAssertEqual(
             first.surface.presentation(for: .undo).title,
@@ -198,8 +181,68 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
 
         first.surface.perform(menuCommand: .undo, sender: nil)
         XCTAssertEqual(try backend.serializedSource(typeName: "public.plain-text"), Data("one\r\ntwo\r\n".utf8))
-        XCTAssertEqual(first.surface.statusBarState.lineEnding, "CRLF")
-        XCTAssertEqual(second.surface.statusBarState.lineEnding, "CRLF")
+        XCTAssertEqual(second.surface.presentation(for: .lineEndingWindows).state, .on)
+    }
+
+    @MainActor
+    func testEncodingMenuConversionsAreCheckedSharedAndExactlyUndoable() throws {
+        let source = "café\r\nnext"
+        let backend = EVCoreDocumentBackend()
+        try backend.read(source: Data(source.utf8), typeName: EVDocument.plainTextType)
+        let first = try makeSurface(backend)
+        let second = try makeSurface(backend)
+        let choices: [(EVMenuCommand, UInt32)] = [
+            (.encodingLatin1, UInt32(EVIM_ENCODING_LATIN1)),
+            (.encodingUTF16LE, UInt32(EVIM_ENCODING_UTF16_LE)),
+            (.encodingUTF16BE, UInt32(EVIM_ENCODING_UTF16_BE)),
+            (.encodingUTF8, UInt32(EVIM_ENCODING_UTF8)),
+        ]
+        XCTAssertEqual(first.surface.presentation(for: .encodingUTF8).state, .on)
+        for (command, encoding) in choices {
+            let previous = try backend.serializedSource(typeName: EVDocument.plainTextType)
+            let previousEncoding = backend.currentDocumentState.encoding
+            first.surface.perform(menuCommand: command, sender: nil)
+            XCTAssertEqual(backend.currentDocumentState.encoding, encoding)
+            XCTAssertEqual(first.surface.formattedText, "café\nnext")
+            XCTAssertEqual(second.surface.formattedText, "café\nnext")
+            XCTAssertEqual(first.surface.statusBarState.message, "")
+            for (choice, _) in choices {
+                for surface in [first.surface, second.surface] {
+                    let presentation = surface.presentation(for: choice)
+                    XCTAssertTrue(presentation.isEnabled)
+                    XCTAssertEqual(presentation.state, choice == command ? .on : .off)
+                }
+            }
+            let converted = try backend.serializedSource(typeName: EVDocument.plainTextType)
+            XCTAssertNotEqual(converted, previous)
+            let reopened = EVCoreDocumentBackend()
+            // Conversion preserves BOM absence, so reopen with the captured
+            // source interpretation instead of guessing BOM-less UTF-16.
+            try reopened.restoreRecovery(backend.recoverySnapshot())
+            XCTAssertEqual(try reopened.formattedText(), "café\nnext")
+            XCTAssertEqual(reopened.currentDocumentState.encoding, encoding)
+            XCTAssertEqual(reopened.currentDocumentState.file_format, UInt32(EVIM_FILE_FORMAT_DOS))
+            first.surface.perform(menuCommand: .undo, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), previous)
+            XCTAssertEqual(backend.currentDocumentState.encoding, previousEncoding)
+            first.surface.perform(menuCommand: .redo, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), converted)
+            XCTAssertEqual(second.surface.presentation(for: command).state, .on)
+        }
+    }
+
+    @MainActor
+    func testRTFDisablesGenericEncodingAndLineEndingMenuChoices() throws {
+        let backend = EVCoreDocumentBackend()
+        let source = Data("{\\rtf1 word}".utf8)
+        try backend.read(source: source, typeName: EVDocument.rtfType)
+        let pair = try makeSurface(backend)
+        for command in [EVMenuCommand.encodingUTF8, .encodingLatin1, .encodingUTF16LE, .encodingUTF16BE,
+                        .lineEndingUnix, .lineEndingWindows, .lineEndingClassicMac] {
+            XCTAssertFalse(pair.surface.presentation(for: command).isEnabled)
+        }
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), source)
+        XCTAssertFalse(pair.surface.canUndo)
     }
 
     @MainActor
@@ -814,7 +857,6 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             EVMenuCommand.showFonts,
             .showColors,
             .documentFormat,
-            .textEncoding,
             .bold,
             .italic,
             .printDocument,

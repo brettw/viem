@@ -10,12 +10,16 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case revertLastSaved
     case browseVersions
     case documentFormat
-    case textEncoding
-    case lineEndingUnix
+    case lineEndingUnix = 109
     case lineEndingWindows
     case lineEndingClassicMac
     case pageSetup
     case printDocument
+
+    case encodingUTF8 = 120
+    case encodingLatin1
+    case encodingUTF16LE
+    case encodingUTF16BE
 
     case undo = 200
     case redo
@@ -101,8 +105,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case heading6
 
     case wordWrap = 400
-    case wrapAtWordBoundaries
-    case showInvisibleCharacters
+    case showInvisibleCharacters = 402
     case zoomIn
     case zoomOut
     case actualSize

@@ -5948,9 +5948,21 @@ impl Document {
         }
         let revision = Revision(self.next_revision);
         let mut conversion_warnings = Vec::new();
+        let mut conversion_correspondence = None;
         let source_patches;
         let (source, decoded) = if super::conversion::crosses_markup_family(self.format(), target) {
             let conversion = super::conversion::convert(self, target)?;
+            conversion_correspondence = Some(encoded_conversion_correspondence(
+                &conversion.source,
+                &conversion.source_correspondence,
+                self.encoding(),
+                self.file_format(),
+                if self.state().has_bom {
+                    self.encoding().bom_bytes().len()
+                } else {
+                    0
+                },
+            ));
             conversion_warnings = conversion.warnings;
             let spelling = conversion
                 .source
@@ -6001,10 +6013,24 @@ impl Document {
             revision,
             Some(self.projection().style_sheet()),
         )?;
-        let edits = if source_patches.is_empty() {
-            source_backed_reprojection_edits(self.projection(), &candidate.projection)
+        let edits = if let Some(correspondence) = conversion_correspondence {
+            // Serialization supplies content correspondence even when it
+            // rewrites every source byte. Match that provenance rather than
+            // treating every cursor, mark and viewport anchor as deleted.
+            let mut edits = reprojection_edits_matching_sources(
+                self.projection(),
+                &candidate.projection,
+                |range| correspondence.get(&(range.start, range.end)).copied(),
+            );
+            // A serializer's synthetic separators can lack physical source
+            // correspondence. Equal gaps between its retained content are
+            // nevertheless unchanged logical text, not authored replacements.
+            // Replacing a newline with itself would move an AfterInsertion
+            // caret at paragraph end into the following paragraph.
+            edits.retain(|edit| self.text()[edit.range.clone()] != edit.replacement);
+            edits
         } else {
-            formatted_text_difference(self.text(), candidate.projection.text())
+            source_backed_reprojection_edits(self.projection(), &candidate.projection)
         };
         candidate
             .projection
@@ -8299,6 +8325,43 @@ fn source_backed_reprojection_edits(
     source_backed_reprojection_edits_with_patches(before, after, &[])
 }
 
+/// Translate the serializer's normalized UTF-8 extents into the exact physical
+/// bytes authored by `prepare_format`. Work is linear in this explicitly
+/// requested whole-artifact conversion, including UTF-16, BOM and CRLF spelling.
+fn encoded_conversion_correspondence(
+    source: &str,
+    correspondence: &[(Range<usize>, Range<usize>)],
+    encoding: super::Encoding,
+    file_format: FileFormat,
+    bom_len: usize,
+) -> std::collections::HashMap<(usize, usize), (usize, usize)> {
+    let mut cuts = std::collections::HashMap::new();
+    let mut physical = bom_len;
+    for (offset, character) in source.char_indices() {
+        cuts.insert(offset, physical);
+        let encoded_len = |ch: char| match encoding {
+            super::Encoding::Utf8 => ch.len_utf8(),
+            super::Encoding::Latin1 => 1,
+            super::Encoding::Utf16Le | super::Encoding::Utf16Be => ch.len_utf16() * 2,
+        };
+        physical += if character == '\n' {
+            file_format.spelling().chars().map(encoded_len).sum()
+        } else {
+            encoded_len(character)
+        };
+    }
+    cuts.insert(source.len(), physical);
+    correspondence
+        .iter()
+        .filter_map(|(old, new)| {
+            Some((
+                (old.start, old.end),
+                (*cuts.get(&new.start)?, *cuts.get(&new.end)?),
+            ))
+        })
+        .collect()
+}
+
 fn source_backed_reprojection_edits_with_patches(
     before: &FormattedDocument,
     after: &FormattedDocument,
@@ -8328,6 +8391,14 @@ fn source_backed_reprojection_edits_with_patches(
             (source.end as i128 + delta) as usize,
         ))
     };
+    reprojection_edits_matching_sources(before, after, rebase)
+}
+
+fn reprojection_edits_matching_sources(
+    before: &FormattedDocument,
+    after: &FormattedDocument,
+    rebase: impl Fn(Range<usize>) -> Option<(usize, usize)>,
+) -> Vec<TextEdit> {
     let mut edits = Vec::new();
     let mut old_start = 0;
     let mut new_start = 0;

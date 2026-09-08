@@ -167,3 +167,45 @@ fn background_request_capture_excludes_viewport_cache_and_height_state() {
     assert!(statistics.document_shaping_style_runs() <= 1);
     assert!(statistics.document_paint_style_runs() <= 1);
 }
+
+#[test]
+fn oversized_words_in_large_documents_preserve_regional_work_and_resize_invalidation() {
+    let line = "prefix extraordinarilylongunbreakableword suffix";
+    let document = Document::new(std::iter::repeat(line).take(20_000).collect::<Vec<_>>().join("\n"));
+    let source = document.source_bytes();
+    let revision = document.revision();
+    let mut view = ViewLayout::new(90.0, 64.0);
+    let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+    let limits = RegionalLayoutCacheLimits {
+        max_hard_lines: 12,
+        max_visual_rows: 36,
+        max_estimated_bytes: usize::MAX,
+    };
+    view.set_regional_cache_limits(limits);
+    for (job, first) in (0..20_000).step_by(211).enumerate() {
+        install_viewport(&document, &mut view, &mut engine, job as u64 + 1, first..first + 2);
+        let snapshot = view.snapshot().unwrap();
+        assert_eq!(snapshot.rows.len(), 6);
+        for rows in snapshot.rows.chunks_exact(3) {
+            assert_eq!(rows[1].text_range.len(), "extraordinarilylongunbreakableword ".len());
+            assert!(rows[1].width > snapshot.usable_width);
+        }
+        assert!(view.regional_cache_statistics().hard_line_count() <= limits.max_hard_lines);
+        assert!(view.regional_cache_statistics().visual_row_count() <= limits.max_visual_rows);
+    }
+    let coverage = view.snapshot().unwrap().coverage.hard_lines();
+    let calls = engine.provider().request_calls();
+    let generation = view.configuration_generation();
+    view.resize(1_000.0, 64.0);
+    assert_ne!(view.configuration_generation(), generation);
+    assert_eq!(view.regional_cache_statistics().hard_line_count(), 0);
+    install_viewport(&document, &mut view, &mut engine, 500, coverage.clone());
+    assert_eq!(view.snapshot().unwrap().rows.len(), 2);
+    assert_eq!(engine.provider().request_calls(), calls, "resize reuses shaping");
+    view.resize(90.0, 64.0);
+    install_viewport(&document, &mut view, &mut engine, 501, coverage);
+    assert_eq!(view.snapshot().unwrap().rows.len(), 6);
+    assert_eq!(engine.provider().request_calls(), calls);
+    assert_eq!(document.source_bytes(), source);
+    assert_eq!(document.revision(), revision);
+}

@@ -334,7 +334,6 @@ pub enum CoreEvent {
         enabled: bool,
     },
     SetWrap(bool),
-    SetLineBreak(bool),
     SetParagraphFlow(bool),
     /// Change the view-local domain used by unprefixed line commands.
     SetLineMode(crate::command::LineMode),
@@ -496,7 +495,6 @@ pub struct ViewportState {
     estimated_maximum_left: f32,
     scale: f32,
     wrap: bool,
-    linebreak: bool,
     top_is_exact: bool,
 }
 
@@ -547,10 +545,6 @@ impl ViewportState {
 
     pub fn wrap(self) -> bool {
         self.wrap
-    }
-
-    pub fn linebreak(self) -> bool {
-        self.linebreak
     }
 
     pub fn top_is_exact(self) -> bool {
@@ -872,7 +866,6 @@ struct InputViewCheckpoint {
     viewport_left: f32,
     viewport_top: f32,
     wrap: bool,
-    linebreak: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1755,7 +1748,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         commands.install_buffer_state(&self.buffer_commands);
         commands.note_document_revision(self.document.revision());
         let layout = ViewLayout::new(width, height);
-        commands.set_layout_options(layout.wrap(), layout.linebreak());
+        commands.set_layout_options(layout.wrap());
         let engine = LayoutEngine::new(provider);
         let observed_metrics_generation = inspect_layout_provider(&engine).metrics_generation;
         self.views.insert(
@@ -1942,7 +1935,6 @@ impl<P: TextMeasurementProvider> Core<P> {
             },
             scale: presentation_layout.scale(),
             wrap: presentation_layout.wrap(),
-            linebreak: presentation_layout.linebreak(),
             top_is_exact: layout_origin_has_exact_geometry(
                 current_snapshot,
                 presentation_layout.height(),
@@ -3766,9 +3758,12 @@ impl<P: TextMeasurementProvider> Core<P> {
             .views
             .iter()
             .map(|(id, view)| {
-                view.commands
-                    .capture_position_anchors(&self.document)
-                    .map(|anchors| (*id, anchors))
+                let anchors = if matches!(request, ModelRequest::SetFormat { .. }) {
+                    view.commands.capture_format_position_anchors(&self.document)
+                } else {
+                    view.commands.capture_position_anchors(&self.document)
+                };
+                anchors.map(|anchors| (*id, anchors))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut next_commands = self
@@ -4326,7 +4321,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                             viewport_left: view.layout.viewport_left(),
                             viewport_top: view.layout.viewport_top(),
                             wrap: view.layout.wrap(),
-                            linebreak: view.layout.linebreak(),
                         },
                     )
                 })
@@ -4365,7 +4359,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .expect("input does not detach views");
             view.viewport_anchor = saved.viewport_anchor;
             view.layout.set_wrap(saved.wrap);
-            view.layout.set_linebreak(saved.linebreak);
             view.layout
                 .set_viewport_top(saved.viewport_top)
                 .expect("captured finite viewport");
@@ -4994,7 +4987,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 let before = view.layout.configuration_generation();
                 view.layout.set_wrap(wrap);
                 view.commands
-                    .set_layout_options(view.layout.wrap(), view.layout.linebreak());
+                    .set_layout_options(view.layout.wrap());
                 if view.layout.configuration_generation() != before {
                     cancel_active_layout_work(view);
                 }
@@ -5008,45 +5001,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                     document_changed: false,
                     position_map: None,
                     layout_changed: true,
-                    composition_changes: Vec::new(),
-                })
-            }
-            CoreEvent::SetLineBreak(linebreak) => {
-                let changed = {
-                    let view = self
-                        .views
-                        .get_mut(&view_id)
-                        .expect("view existence checked above");
-                    let before = view.layout.configuration_generation();
-                    view.layout.set_linebreak(linebreak);
-                    view.commands
-                        .set_layout_options(view.layout.wrap(), view.layout.linebreak());
-                    let changed = view.layout.configuration_generation() != before;
-                    if changed {
-                        cancel_active_layout_work(view);
-                    }
-                    changed
-                };
-                if changed {
-                    if let Err(error) = self.materialize_immediate_viewport(
-                        view_id,
-                        ImmediateLayoutIntent::PreserveViewport,
-                    ) {
-                        // The view option is already published. Match source
-                        // transactions by retaining that state and recording a
-                        // presentation diagnostic instead of reporting a
-                        // misleading rollback through the ABI.
-                        self.record_presentation_error(view_id, error);
-                    }
-                    if let Err(error) = self.rematerialize_active_composition(view_id, true) {
-                        self.record_presentation_error(view_id, error);
-                    }
-                }
-                Ok(CoreOutcome {
-                    command: None,
-                    document_changed: false,
-                    position_map: None,
-                    layout_changed: changed,
                     composition_changes: Vec::new(),
                 })
             }
@@ -5216,14 +5170,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                                     cancel_active_layout_work(target_view);
                                 }
                                 target_view.layout.set_wrap(*value);
-                            }
-                            (ExOptionName::LineBreak, ExOptionValue::Boolean(value)) => {
-                                let changed = target_view.layout.linebreak() != *value;
-                                option_layout_changed |= changed;
-                                if changed {
-                                    cancel_active_layout_work(target_view);
-                                }
-                                target_view.layout.set_linebreak(*value);
                             }
                             _ => {}
                         }
@@ -7927,23 +7873,6 @@ mod tests {
     }
 
     #[test]
-    fn native_linebreak_is_view_local_and_does_not_change_the_document() {
-        let mut core = Core::new(Document::new("one two three four"));
-        let first = core.add_view(MockTextMeasurementProvider::new(), 80.0, 48.0);
-        let second = core.add_view(MockTextMeasurementProvider::new(), 80.0, 48.0);
-        let revision = core.document().revision();
-        assert!(core.viewport_state(first).unwrap().linebreak());
-        assert!(core.viewport_state(second).unwrap().linebreak());
-
-        let outcome = core.handle(first, CoreEvent::SetLineBreak(false)).unwrap();
-        assert!(!outcome.document_changed);
-        assert!(outcome.layout_changed);
-        assert_eq!(core.document().revision(), revision);
-        assert!(!core.viewport_state(first).unwrap().linebreak());
-        assert!(core.viewport_state(second).unwrap().linebreak());
-    }
-
-    #[test]
     fn native_file_format_is_shared_standalone_history_and_preserves_group_owner() {
         let document = Document::from_bytes_with_file_format(
             b"a\nb".to_vec(),
@@ -8270,7 +8199,7 @@ mod tests {
         core.handle(first, CoreEvent::SetWrap(true)).unwrap();
         let wrapped = core.viewport_state(first).unwrap();
         assert_eq!(wrapped.left(), 0.0);
-        assert_eq!(wrapped.maximum_left(), Some(0.0));
+        assert!(wrapped.maximum_left().unwrap() > 0.0);
         assert!(wrapped.wrap());
     }
 
@@ -9390,10 +9319,9 @@ mod tests {
         let mut core = Core::new(Document::new("one two three four"));
         let view = core.add_view(MockTextMeasurementProvider::new(), 55.0, 100.0);
         assert!(core.layout(view).unwrap().wrap());
-        assert!(core.layout(view).unwrap().linebreak());
         assert!(core.layout(view).unwrap().snapshot().unwrap().rows.len() > 1);
 
-        for character in ":set nowrap nolinebreak".chars() {
+        for character in ":set nowrap".chars() {
             core.handle(view, key(character)).unwrap();
         }
         let outcome = core
@@ -9401,7 +9329,6 @@ mod tests {
             .unwrap();
 
         assert!(!core.layout(view).unwrap().wrap());
-        assert!(!core.layout(view).unwrap().linebreak());
         assert_eq!(core.layout(view).unwrap().snapshot().unwrap().rows.len(), 1);
         assert!(outcome.layout_changed);
         assert_eq!(
@@ -9414,7 +9341,7 @@ mod tests {
                 .unwrap()
                 .option_effects
                 .len(),
-            2
+            1
         );
     }
 

@@ -949,18 +949,6 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func setLinebreak(_ enabled: Bool) throws -> EvimCoreOutcomeV1 {
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
-        try checked(
-            evim_core_view_set_linebreak(document.core, viewID, enabled ? 1 : 0, &outcome),
-            operation: "Change word-boundary wrapping"
-        )
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
-    }
-
-    @discardableResult
     func setFileFormat(
         _ fileFormat: UInt32,
         expected state: EvimDocumentStateV1

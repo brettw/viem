@@ -1706,14 +1706,12 @@ source, syntax, unrelated style assignments, or width-independent shaping.
 
 - Wrapping is a per-view option. Soft wraps are layout artifacts and MUST NOT
   insert, remove, or serialize newline characters.
-- `wrap` controls whether soft wrapping is active. `linebreak` controls whether
-  wrapping prefers Unicode word/line-break opportunities; it defaults on.
-- With `wrap` and `linebreak` on, text wraps at Unicode-appropriate word/line-
-  break opportunities to the view's current usable text width. With `wrap` on
-  and `linebreak` off, it wraps at legal shaping-cluster boundaries. A cluster
-  wider than the row may overflow rather than be split illegally.
-- If no legal word boundary fits, the layout MAY fall back to a legal grapheme
-  or shaping-cluster boundary so progress is always possible.
+- `wrap` controls whether soft wrapping is active. Wrapped text always uses
+  Unicode-appropriate word/line-break opportunities at the usable text width;
+  there is no separate `linebreak` option or character-wrapping mode.
+- If no legal word boundary fits, the complete unbreakable segment overflows
+  to the right through its next legal break or hard-line end. Neither grapheme
+  boundaries nor internal layout-cache boundaries may split that segment.
 - Changing the window size, side insets, gutter width, zoom, or any other value
   that changes usable text width MUST reflow the text for that view.
 - Resize reflow MUST update visible rows synchronously for the next frame. It
@@ -2494,8 +2492,7 @@ Required Ex commands and common unambiguous abbreviations are:
 - search/change: `:substitute` with ranges and repeat flags, `:&`, and `:~`;
 - navigation/info: numeric line addresses, `:goto`, `:marks`, `:registers`,
   `:jumps`, and `:pwd`; and
-- options: `:set`, `:setlocal`, `:set wrap`, `:set nowrap`, `:set linebreak`,
-  `:set nolinebreak`, `:set fileformat?`, and
+- options: `:set`, `:setlocal`, `:set wrap`, `:set nowrap`, `:set fileformat?`, and
   `:set fileformat=unix|dos|mac` (where one value is supplied), including the
   `ff` abbreviation and corresponding `:setlocal` forms. The global
   `fileformats` open-policy option supports query and ordered assignment even
@@ -2640,7 +2637,11 @@ The menu hierarchy is:
     - Browse All Versions…
   - separator
   - Document Format…
-  - Text Encoding…
+  - Text Encoding
+    - UTF-8
+    - Latin-1
+    - UTF-16 LE
+    - UTF-16 BE
   - Line Endings
     - Unix (LF)
     - Windows (CRLF)
@@ -2752,7 +2753,6 @@ The menu hierarchy is:
   - Show Status Bar
   - separator
   - Word Wrap
-  - Wrap at Word Boundaries
   - Flow Source Paragraphs
   - Show Invisible Characters
   - separator
@@ -2801,11 +2801,12 @@ style, or other native text field has focus, Cut, Copy, Paste, Select All, Undo,
 and Redo operate on that field. When the editor surface has focus, its responder
 adapts those selectors to the corresponding core commands and validation.
 
-`Word Wrap` reflects the view-local `wrap` option. `Wrap at Word Boundaries`
-reflects `linebreak` and is disabled when wrapping is off. Resizing a wrapped
-view reflows automatically and has no menu command. `Line Endings` is a radio
-group over the buffer's `fileformat` value and follows the verified conversion
-rules in "Changing `fileformat`".
+`Word Wrap` reflects the view-local `wrap` option. Resizing a wrapped view
+reflows automatically and has no menu command. `Line Endings` is a radio group
+in the File menu over the buffer's `fileformat` value and follows the verified
+conversion rules in "Changing `fileformat`". `Text Encoding` is a File submenu
+with the four supported encodings; the current encoding is checked and choosing
+another encoding performs the same verified, undoable conversion as the core API.
 
 `Flow Source Paragraphs` is a portable per-view option, initially off, available
 in Markdown Source and HTML Source. It suppresses nonstructural physical line
@@ -3950,10 +3951,10 @@ decision in this file or an architecture decision record first:
 
 ## Format controls, Markdown authoring, and lists
 
-The status bar exposes native popup controls for source format, encoding, and
-line endings. Each retains the minimal status-bar appearance, adds a small
-vertical triangle, and highlights on hover. A choice is a checked core
-transaction shared by the buffer's views and reversible with undo. Format
+The status bar exposes a native popup for source format, with a small vertical
+triangle and hover highlight. Encoding and line endings appear only in their
+File submenus, not in the status bar. A choice is a checked core transaction
+shared by the buffer's views and reversible with undo. Format
 selection within a format family or to plain text changes interpretation while
 preserving source bytes. An explicit HTML-to-Markdown or Markdown-to-HTML
 conversion instead translates the formatted text and representable styling to
@@ -3961,6 +3962,15 @@ new source syntax as one undoable transaction, including source-visible variants
 This explicitly requested conversion may replace the entire source and reports
 lost unsupported information through the command output bar. It is distinct
 from no-op saves and ordinary local edits, which remain lossless.
+Mode/format changes preserve each view's insertion cursor and visible text as
+closely as possible. Unchanged source provenance and explicit conversion
+correspondence carry text anchors into the new projection. Hidden or removed
+syntax recovers at the nearest surviving content according to the anchor's
+recovery policy. The viewport retains its top text anchor and fractional row
+offset rather than resetting to the document start or preserving stale pixels.
+For format changes, an upstream Insert/Replace caret follows preceding content
+and stays before newly exposed closing syntax; downstream follows subsequent
+content. This conversion policy does not change ordinary typing associations.
 Encoding selection transcodes source syntax and verifies the new projection.
 An explicit conversion to Latin-1 may replace unrepresentable scalars with `?`,
 reporting the count in the output bar; undo restores the exact original bytes.

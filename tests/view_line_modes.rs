@@ -25,7 +25,7 @@ fn keys(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, input: &str)
 }
 #[test]
 fn visual_row_end_delete_counts_repeat_and_exact_undo() {
-    let original = "abcdefghijklmno\nsecond paragraph";
+    let original = "abc def ghi jkl mno\nsecond paragraph";
     let (mut core, view) = editor(Document::new(original), 55.0);
     let row = core.layout(view).unwrap().snapshot().unwrap().rows[0]
         .text_range
@@ -110,7 +110,7 @@ fn mode_is_view_local_and_rtf_rejects_physical() {
 #[test]
 fn row_change_and_physical_change_have_one_undo_unit() {
     for mode in [LineMode::Visual, LineMode::PhysicalSource] {
-        let original = "abcdefghijklmno\nsecond";
+        let original = "abc def ghi jkl mno\nsecond";
         let (mut core, view) = editor(Document::new(original), 55.0);
         core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
         let end = if mode == LineMode::Visual {
@@ -147,7 +147,7 @@ fn physical_line_register_put_retains_html_source_syntax() {
 }
 #[test]
 fn macro_line_delete_relayouts_each_event_and_is_one_undo_unit() {
-    let original = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\nTail";
+    let original = "abc def ghi jkl mno pqr stu vwx yzA BCD EFG HIJ KLM NOP QRSTUVWXYZ\nTail";
     let (mut core, view) = editor(Document::new(original), 55.0);
     keys(&mut core, view, "qaddq");
     let recorded = core.document().text().to_owned();
@@ -240,7 +240,8 @@ fn physical_columns_indent_and_format_switch_policy() {
 }
 #[test]
 fn width_change_invalidates_visual_command_rows_but_not_source_lines() {
-    let (mut core, view) = editor(Document::new("abcdefghijklmnopqrstuvwxyz"), 100.0);
+    let original = "ab cd ef gh ij kl mn op qr st uv wx yz";
+    let (mut core, view) = editor(Document::new(original), 100.0);
     let old = core.layout(view).unwrap().snapshot().unwrap().rows[0]
         .text_range
         .end;
@@ -261,7 +262,7 @@ fn width_change_invalidates_visual_command_rows_but_not_source_lines() {
     core.handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource))
         .unwrap();
     keys(&mut core, view, "$");
-    assert_eq!(core.command_state(view).unwrap().cursor(), 25);
+    assert_eq!(core.command_state(view).unwrap().cursor(), original.len() - 1);
 }
 
 #[test]
@@ -312,7 +313,7 @@ fn visual_line_selection_and_insert_placements_follow_row_boundaries() {
 }
 #[test]
 fn narrow_list_row_contains_body_text_and_partial_deletion_retains_decoration() {
-    let source = "<ul><li>abcdefghijklmnopqrstuvwxyz</li></ul>";
+    let source = "<ul><li>abcdefgh ijklmnop qrstuvwxyz</li></ul>";
     let document =
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
     let (mut core, view) = editor(document, 80.0);
@@ -322,7 +323,7 @@ fn narrow_list_row_contains_body_text_and_partial_deletion_retains_decoration() 
     assert_eq!(row.decorations.len(), 1);
     assert_eq!(row.clusters[0].text_range.start, 0);
     keys(&mut core, view, "dd");
-    assert_eq!(core.document().text(), &"abcdefghijklmnopqrstuvwxyz"[end..]);
+    assert_eq!(core.document().text(), &"abcdefgh ijklmnop qrstuvwxyz"[end..]);
     assert_eq!(core.document().projection().list_structure().lists.len(), 1);
     assert_eq!(
         core.layout(view).unwrap().snapshot().unwrap().rows[0]

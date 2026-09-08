@@ -128,7 +128,7 @@ fn public_view_lifecycle_is_fallible_and_cancels_owned_work() {
 #[test]
 fn public_viewport_api_bounds_a_multi_megabyte_wrapped_hard_line() {
     const LONG_LINE_BYTES: usize = 2 * 1024 * 1024;
-    let document = Document::new("x".repeat(LONG_LINE_BYTES));
+    let document = Document::new("word ".repeat(LONG_LINE_BYTES / 5 + 1));
     let mut engine = evim_core::layout::LayoutEngine::new(MockTextMeasurementProvider::new());
     let requirements = inspect_layout_provider(&engine);
     let mut view = ViewLayout::new(96.0, 80.0);
@@ -170,4 +170,37 @@ fn public_viewport_api_bounds_a_multi_megabyte_wrapped_hard_line() {
     .unwrap();
     assert!(!view.snapshot().unwrap().total_height_is_exact);
     assert!(view.regional_cached_ranges().is_empty());
+}
+
+#[test]
+fn oversized_indivisible_words_extend_capture_without_creating_an_emergency_wrap() {
+    let token = "x".repeat(MAX_LONG_LINE_LAYOUT_SLICE_BYTES + 100);
+    for tail in [String::new(), format!(" {}", "tail ".repeat(20_000))] {
+        let document = Document::new(format!("{token}{tail}"));
+        let mut engine = evim_core::layout::LayoutEngine::new(MockTextMeasurementProvider::new());
+        let requirements = inspect_layout_provider(&engine);
+        let mut view = ViewLayout::new(96.0, 80.0);
+        let request = prepare_layout_job(
+            &document, &mut view, requirements, LayoutJobId(1),
+            LayoutJobPriority::ChangedVisibleRows,
+            LayoutJobRegion::Viewport(ViewportLayoutRegion::new(0..1, 0.0, 80.0).unwrap()),
+            LayoutCancellationToken::new(),
+        ).unwrap();
+        assert!(request.captured_text_len() < token.len() + 300);
+        let candidate = compute_layout_job(
+            &mut engine, &request, LayoutExecutionContext::WorkerPool,
+        ).unwrap();
+        let line = &candidate.regional_snapshot().lines()[0];
+        let rows = line.rows();
+        let row_end = token.len() + usize::from(!tail.is_empty());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].text_range, 0..row_end);
+        assert!(rows[0].width > 96.0);
+        if tail.is_empty() {
+            assert!(candidate.next_long_line_checkpoint().is_none());
+            assert!(line.height_is_exact());
+        } else {
+            assert_eq!(candidate.next_long_line_checkpoint().unwrap().next_text_offset(), row_end);
+        }
+    }
 }

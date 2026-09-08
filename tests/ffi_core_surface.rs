@@ -1877,9 +1877,20 @@ fn typed_view_options_are_local_or_shared_and_fail_atomically() {
         assert_eq!(first_state, scaled_state);
     }
 
+    let before_compatibility_call = first_state;
+    assert_eq!(
+        unsafe { evim_core_view_set_linebreak(core.handle, first, 1, &mut outcome) },
+        EvimStatus::Ok
+    );
+    assert_eq!(outcome.flags & EVIM_OUTCOME_LAYOUT_CHANGED, 0);
+    assert_eq!(
+        unsafe { evim_core_view_viewport_state(core.handle, first, &mut first_state) },
+        EvimStatus::Ok
+    );
+    assert_eq!(first_state, before_compatibility_call);
     assert_eq!(
         unsafe { evim_core_view_set_linebreak(core.handle, first, 0, &mut outcome) },
-        EvimStatus::Ok
+        EvimStatus::InvalidArgument
     );
     assert_eq!(
         unsafe { evim_core_view_viewport_state(core.handle, first, &mut first_state) },
@@ -1889,7 +1900,7 @@ fn typed_view_options_are_local_or_shared_and_fail_atomically() {
         unsafe { evim_core_view_viewport_state(core.handle, second, &mut second_state) },
         EvimStatus::Ok
     );
-    assert_eq!(first_state.flags & EVIM_VIEWPORT_STATE_LINEBREAK, 0);
+    assert_ne!(first_state.flags & EVIM_VIEWPORT_STATE_LINEBREAK, 0);
     assert_ne!(second_state.flags & EVIM_VIEWPORT_STATE_LINEBREAK, 0);
     assert_eq!(
         unsafe { evim_core_view_set_linebreak(core.handle, first, 2, &mut outcome) },
@@ -1899,7 +1910,7 @@ fn typed_view_options_are_local_or_shared_and_fail_atomically() {
         unsafe { evim_core_view_viewport_state(core.handle, first, &mut first_state) },
         EvimStatus::Ok
     );
-    assert_eq!(first_state.flags & EVIM_VIEWPORT_STATE_LINEBREAK, 0);
+    assert_ne!(first_state.flags & EVIM_VIEWPORT_STATE_LINEBREAK, 0);
 
     let before = document_state(&core);
     let invalid = EvimSetFileFormatV1 {
@@ -1973,7 +1984,7 @@ fn typed_view_options_are_local_or_shared_and_fail_atomically() {
     );
     assert_eq!(first_state.document_revision, shared.document_revision);
     assert_eq!(second_state.document_revision, shared.document_revision);
-    assert_eq!(first_state.flags & EVIM_VIEWPORT_STATE_LINEBREAK, 0);
+    assert_ne!(first_state.flags & EVIM_VIEWPORT_STATE_LINEBREAK, 0);
     assert_ne!(second_state.flags & EVIM_VIEWPORT_STATE_LINEBREAK, 0);
 
     assert_eq!(evim_core_view_remove(core.handle, first), EvimStatus::Ok);
@@ -3632,7 +3643,7 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
     assert_eq!(state.left, 0.0);
     assert_ne!(state.flags & EVIM_VIEWPORT_STATE_WRAP, 0);
     assert_ne!(state.flags & EVIM_VIEWPORT_STATE_MAXIMUM_LEFT_EXACT, 0);
-    assert_eq!(state.maximum_left, 0.0);
+    assert!(state.maximum_left > 0.0, "an unbreakable word overflows while wrapping");
 
     assert_eq!(
         unsafe { evim_core_view_viewport_state(core.handle, view, ptr::null_mut()) },

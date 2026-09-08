@@ -471,20 +471,6 @@ fn ex_command_surface_matrix() {
         ),
         CommandCase::new("Ex options", "wrap", PROSE, "", ":set wrap<Enter>"),
         CommandCase::new("Ex options", "nowrap", PROSE, "", ":set nowrap<Enter>"),
-        CommandCase::new(
-            "Ex options",
-            "linebreak",
-            PROSE,
-            "",
-            ":set linebreak<Enter>",
-        ),
-        CommandCase::new(
-            "Ex options",
-            "nolinebreak",
-            PROSE,
-            "",
-            ":set nolinebreak<Enter>",
-        ),
         CommandCase::new("Ex options", "query", PROSE, "", ":set wrap?<Enter>"),
     ]);
 }

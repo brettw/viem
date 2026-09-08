@@ -3508,7 +3508,6 @@ fn register_kind_to_ffi(kind: RegisterKind) -> u32 {
 fn ex_option_name_to_ffi(name: &ExOptionName) -> u32 {
     match name {
         ExOptionName::Wrap => EVIM_EX_OPTION_WRAP,
-        ExOptionName::LineBreak => EVIM_EX_OPTION_LINEBREAK,
         ExOptionName::FileFormat => EVIM_EX_OPTION_FILE_FORMAT,
         ExOptionName::FileFormats => EVIM_EX_OPTION_FILE_FORMATS,
         ExOptionName::IgnoreCase => EVIM_EX_OPTION_IGNORECASE,
@@ -4714,9 +4713,8 @@ fn summarize_viewport_state(
     if state.wrap() {
         flags |= EVIM_VIEWPORT_STATE_WRAP;
     }
-    if state.linebreak() {
-        flags |= EVIM_VIEWPORT_STATE_LINEBREAK;
-    }
+    // Reserved compatibility flag: wrapping always uses Unicode word boundaries.
+    flags |= EVIM_VIEWPORT_STATE_LINEBREAK;
     let maximum_left = if let Some(maximum_left) = state.maximum_left() {
         flags |= EVIM_VIEWPORT_STATE_MAXIMUM_LEFT_EXACT;
         maximum_left
@@ -9823,8 +9821,8 @@ pub unsafe extern "C" fn evim_core_view_set_wrap(
     })
 }
 
-/// Change one view's linebreak wrapping preference. The value is view-local;
-/// it does not change the source snapshot or other attached views.
+/// Deprecated compatibility entry point. Word-boundary wrapping is mandatory:
+/// true returns the current state unchanged; false is invalid.
 ///
 /// # Safety
 ///
@@ -9838,9 +9836,11 @@ pub unsafe extern "C" fn evim_core_view_set_linebreak(
 ) -> EvimStatus {
     ffi_boundary(|| {
         unsafe { clear_outcome(out_outcome)? };
-        let linebreak = parse_ffi_bool(linebreak)?;
-        let outcome = with_core_mut(handle, |core| {
-            dispatch_event(core, view, CoreEvent::SetLineBreak(linebreak))
+        if !parse_ffi_bool(linebreak)? {
+            return Err(EvimStatus::InvalidArgument);
+        }
+        let outcome = with_core(handle, |core| {
+            summarize_core_outcome(core, ViewId(view), None)
         })?;
         unsafe { out_outcome.write(outcome) };
         Ok(())
@@ -11003,7 +11003,7 @@ mod tests {
                     value: ExOptionValue::Boolean(true),
                 },
                 ExOptionDisplay {
-                    name: ExOptionName::LineBreak,
+                    name: ExOptionName::IgnoreCase,
                     value: ExOptionValue::Boolean(false),
                 },
                 ExOptionDisplay {
@@ -11325,7 +11325,7 @@ mod tests {
             options.iter().map(|option| option.name).collect::<Vec<_>>(),
             vec![
                 super::EVIM_EX_OPTION_WRAP,
-                super::EVIM_EX_OPTION_LINEBREAK,
+                super::EVIM_EX_OPTION_IGNORECASE,
                 super::EVIM_EX_OPTION_FILE_FORMAT,
                 super::EVIM_EX_OPTION_FILE_FORMATS,
             ]

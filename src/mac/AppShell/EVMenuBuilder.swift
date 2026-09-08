@@ -211,7 +211,15 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(coreItem("Document Format…", command: .documentFormat))
-        menu.addItem(coreItem("Text Encoding…", command: .textEncoding))
+        let encodings = NSMenu(title: "Text Encoding")
+        encodings.showsStateColumn = true
+        encodings.addItem(coreItem("UTF-8", command: .encodingUTF8))
+        encodings.addItem(coreItem("Latin-1", command: .encodingLatin1))
+        encodings.addItem(coreItem("UTF-16 LE", command: .encodingUTF16LE))
+        encodings.addItem(coreItem("UTF-16 BE", command: .encodingUTF16BE))
+        let encodingItem = NSMenuItem(title: "Text Encoding", action: nil, keyEquivalent: "")
+        encodingItem.submenu = encodings
+        menu.addItem(encodingItem)
 
         let endings = NSMenu(title: "Line Endings")
         endings.addItem(coreItem("Unix (LF)", command: .lineEndingUnix))
@@ -398,7 +406,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         ))
         menu.addItem(.separator())
         menu.addItem(coreItem("Word Wrap", command: .wordWrap))
-        menu.addItem(coreItem("Wrap at Word Boundaries", command: .wrapAtWordBoundaries))
         menu.addItem(coreItem("Flow Source Paragraphs", command: .flowParagraphs))
         menu.addItem(coreItem("Show Invisible Characters", command: .showInvisibleCharacters))
         menu.addItem(.separator())

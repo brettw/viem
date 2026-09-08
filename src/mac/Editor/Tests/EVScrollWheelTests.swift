@@ -58,7 +58,7 @@ final class EVScrollWheelTests: XCTestCase {
 
     func testHorizontalWheelUsesAppKitDirectionAndUnitsClampsAndHonorsWrap() throws {
         let source = (0..<20)
-            .map { _ in String(repeating: "W", count: 240) }
+            .map { _ in String(repeating: "word ", count: 48) }
             .joined(separator: "\n")
         let (_, surface) = try makeSurface(
             source: source,
@@ -113,8 +113,20 @@ final class EVScrollWheelTests: XCTestCase {
             surface.viewportState.left,
             0,
             accuracy: 0.01,
-            "wrapped views do not acquire a horizontal viewport offset"
+            "word-wrapped text that fits the viewport has no horizontal offset"
         )
+    }
+
+    func testWrappedUnbreakableWordKeepsHorizontalScrollingAvailable() throws {
+        let source = String(repeating: "W", count: 240)
+        let (backend, surface) = try makeSurface(source: source, size: NSSize(width: 240, height: 150))
+        XCTAssertNotEqual(surface.viewportState.flags & UInt32(EVIM_VIEWPORT_STATE_WRAP), 0)
+        XCTAssertEqual(surface.layoutSnapshot?.rows.count, 1)
+        XCTAssertGreaterThan(surface.viewportState.maximum_left, 80)
+        surface.editorView.scrollWheel(with: WheelEvent(deltaX: -80, precise: true))
+        XCTAssertEqual(surface.viewportState.left, 80, accuracy: 0.01)
+        XCTAssertEqual(try backend.serializedSource(typeName: "public.plain-text"), Data(source.utf8))
+        XCTAssertFalse(backend.persistenceState.isDirty)
     }
 
     private func makeSurface(

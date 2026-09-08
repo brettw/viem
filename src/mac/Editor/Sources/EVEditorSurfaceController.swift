@@ -341,8 +341,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             switch statusOption {
             case let .lineMode(mode): try session.setLineMode(mode)
             case let .format(format): _ = try session.setFormat(format, expected: expected)
-            case let .encoding(encoding): _ = try session.setEncoding(encoding, expected: expected)
-            case let .lineEnding(ending): _ = try session.setFileFormat(ending, expected: expected)
             }
         }
     }
@@ -415,8 +413,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             performInput { _ = try self.sendCommandCharacter("~", session: session) }
         case .wordWrap:
             performInput { _ = try session.setWrap(!self.wrapEnabled) }
-        case .wrapAtWordBoundaries:
-            performInput { _ = try session.setLinebreak(!self.linebreakEnabled) }
         case .flowParagraphs:
             performInput { try session.setParagraphFlow(!(try session.paragraphFlow())) }
         case .includeStyleDefinitionsInFile:
@@ -429,6 +425,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             setFileFormat(UInt32(EVIM_FILE_FORMAT_DOS), session: session)
         case .lineEndingClassicMac:
             setFileFormat(UInt32(EVIM_FILE_FORMAT_MAC), session: session)
+        case .encodingUTF8, .encodingLatin1, .encodingUTF16LE, .encodingUTF16BE:
+            let expected = documentState
+            performInput { _ = try session.setEncoding(self.encodingValue(menuCommand), expected: expected) }
         case .showInvisibleCharacters:
             showInvisibles.toggle()
             editorView.needsDisplay = true
@@ -553,8 +552,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             )
         case .wordWrap:
             EVMenuItemPresentation(isEnabled: true, state: wrapEnabled ? .on : .off)
-        case .wrapAtWordBoundaries:
-            EVMenuItemPresentation(isEnabled: wrapEnabled, state: linebreakEnabled ? .on : .off)
         case .flowParagraphs:
             EVMenuItemPresentation(isEnabled: [.markdownSource, .htmlSource].contains(backend.sourceFormat), state: (try? session?.paragraphFlow()) == true ? .on : .off)
         case .includeStyleDefinitionsInFile:
@@ -569,6 +566,11 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             fileFormatPresentation(UInt32(EVIM_FILE_FORMAT_DOS))
         case .lineEndingClassicMac:
             fileFormatPresentation(UInt32(EVIM_FILE_FORMAT_MAC))
+        case .encodingUTF8, .encodingLatin1, .encodingUTF16LE, .encodingUTF16BE:
+            EVMenuItemPresentation(
+                isEnabled: backend.sourceFormat != .rtf,
+                state: documentState.encoding == encodingValue(menuCommand) ? .on : .off
+            )
         case .showInvisibleCharacters:
             EVMenuItemPresentation(isEnabled: true, state: showInvisibles ? .on : .off)
         case .useSelectionForFind:
@@ -653,10 +655,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     var wrapEnabled: Bool {
         viewportState.flags & UInt32(EVIM_VIEWPORT_STATE_WRAP) != 0
-    }
-
-    var linebreakEnabled: Bool {
-        viewportState.flags & UInt32(EVIM_VIEWPORT_STATE_LINEBREAK) != 0
     }
 
     var zoomScale: Float {
@@ -1046,6 +1044,16 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         performInput { _ = try session.setFileFormat(target, expected: expected) }
     }
 
+    private func encodingValue(_ command: EVMenuCommand) -> UInt32 {
+        switch command {
+        case .encodingUTF8: UInt32(EVIM_ENCODING_UTF8)
+        case .encodingLatin1: UInt32(EVIM_ENCODING_LATIN1)
+        case .encodingUTF16LE: UInt32(EVIM_ENCODING_UTF16_LE)
+        case .encodingUTF16BE: UInt32(EVIM_ENCODING_UTF16_BE)
+        default: preconditionFailure("Expected an encoding menu command")
+        }
+    }
+
     private func fileFormatPresentation(_ target: UInt32) -> EVMenuItemPresentation {
         EVMenuItemPresentation(
             isEnabled: backend.sourceFormat != .rtf,
@@ -1078,8 +1086,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             mode: modeLabel(viewPresentation.mode),
             message: lastErrorMessage,
             location: "Ln \(line), Col \(column)",
-            encoding: backend.encodingLabel,
-            lineEnding: backend.lineEndingLabel,
             format: backend.formatLabel,
             lineMode: (try? session?.lineMode()) ?? .visual,
             locationIsFragment: point.map { $0.flags & UInt32(EVIM_LINE_LOCATION_GLOBAL_LINE_EXACT) == 0 } ?? false
@@ -1328,7 +1334,6 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         let name: String
         switch option.name {
         case UInt32(EVIM_EX_OPTION_WRAP): name = "wrap"
-        case UInt32(EVIM_EX_OPTION_LINEBREAK): name = "linebreak"
         case UInt32(EVIM_EX_OPTION_FILE_FORMAT): name = "fileformat"
         case UInt32(EVIM_EX_OPTION_FILE_FORMATS): name = "fileformats"
         case 5: name = "ignorecase"

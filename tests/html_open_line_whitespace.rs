@@ -138,7 +138,7 @@ fn open_above_a_wrapped_row_maps_past_the_protected_space() {
 fn open_below_a_wrapped_row_stays_after_its_own_break() {
     for (width, text, caret, source) in [
         (20., "A\u{a0}\nB", 4, "<p>A&nbsp;<br>B</p><!--keep-->"),
-        (12., "A\n\u{a0}B", 2, "<p>A<br>&nbsp;B</p><!--keep-->"),
+        (12., "A\u{a0}\nB", 4, "<p>A&nbsp;<br>B</p><!--keep-->"),
     ] {
         let original = "<p>A B</p><!--keep-->";
         let (mut core, view) = open(original, width, 0);
@@ -146,11 +146,9 @@ fn open_below_a_wrapped_row_stays_after_its_own_break() {
         assert_eq!(core.command_state(view).unwrap().cursor(), caret);
         assert_reopens(&core, text, source);
         input(&mut core, view, InputEvent::text("C"));
-        let (text, changed) = if width == 20. {
-            ("A\u{a0}\nCB", "<p>A&nbsp;<br>CB</p><!--keep-->")
-        } else {
-            ("A\nC B", "<p>A<br>C B</p><!--keep-->")
-        };
+        // Even at 12px, the space stays with its preceding word instead of
+        // introducing an emergency break before the whitespace.
+        let (text, changed) = ("A\u{a0}\nCB", "<p>A&nbsp;<br>CB</p><!--keep-->");
         assert_reopens(&core, text, changed);
         assert_eq!(core.command_state(view).unwrap().cursor(), caret + 1);
         input(&mut core, view, InputEvent::Key(Key::Escape));

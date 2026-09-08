@@ -9,8 +9,6 @@ public enum EVLineMode: UInt32, Equatable, Sendable {
 public enum EVStatusBarOption: Equatable, Sendable {
   case lineMode(EVLineMode)
   case format(EVSourceFormat)
-  case encoding(UInt32)
-  case lineEnding(UInt32)
 }
 
 /// Presentation-only values shown by the window's status bar.
@@ -18,8 +16,6 @@ public struct EVStatusBarState: Equatable, Sendable {
   public var mode: String
   public var message: String
   public var location: String
-  public var encoding: String
-  public var lineEnding: String
   public var format: String
   public var lineMode: EVLineMode
   public var locationIsFragment: Bool
@@ -28,8 +24,6 @@ public struct EVStatusBarState: Equatable, Sendable {
     mode: String = "NORMAL",
     message: String = "",
     location: String = "Ln 1, Col 1",
-    encoding: String = "UTF-8",
-    lineEnding: String = "LF",
     format: String = "Plain Text",
     lineMode: EVLineMode = .visual,
     locationIsFragment: Bool = false
@@ -37,8 +31,6 @@ public struct EVStatusBarState: Equatable, Sendable {
     self.mode = mode
     self.message = message
     self.location = location
-    self.encoding = encoding
-    self.lineEnding = lineEnding
     self.format = format
     self.lineMode = lineMode
     self.locationIsFragment = locationIsFragment

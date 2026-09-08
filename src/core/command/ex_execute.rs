@@ -56,7 +56,6 @@ pub struct ExExecutionContext {
     /// Zero-based current hard line.
     pub current_line: usize,
     pub wrap: bool,
-    pub linebreak: bool,
     pub fileformats: Vec<FileFormat>,
     pub search_options: super::regex_v1::SearchOptions,
     pub last_search_pattern: Option<String>,
@@ -67,7 +66,6 @@ impl Default for ExExecutionContext {
         Self {
             current_line: 0,
             wrap: false,
-            linebreak: true,
             fileformats: vec![FileFormat::Unix, FileFormat::Dos],
             search_options: super::regex_v1::SearchOptions::default(),
             last_search_pattern: None,
@@ -244,7 +242,6 @@ pub struct ExRegisterEffect {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExOptionName {
     Wrap,
-    LineBreak,
     FileFormat,
     FileFormats,
     IgnoreCase,
@@ -2264,7 +2261,6 @@ fn prepare_set(
 ) -> Result<(), ExExecuteError> {
     let mut values = PendingOptions {
         wrap: context.wrap,
-        linebreak: context.linebreak,
         file_format: document.file_format(),
         fileformats: context.fileformats.clone(),
         search_options: context.search_options,
@@ -2292,12 +2288,6 @@ fn prepare_set(
             }
             if values.wrap {
                 shown.push(display(ExOptionName::Wrap, ExOptionValue::Boolean(true)));
-            }
-            if !values.linebreak {
-                shown.push(display(
-                    ExOptionName::LineBreak,
-                    ExOptionValue::Boolean(false),
-                ));
             }
             if document.format() != crate::document::Format::Rtf
                 && values.file_format != FileFormat::Unix
@@ -2356,7 +2346,6 @@ fn prepare_set(
 #[derive(Clone, Debug)]
 struct PendingOptions {
     wrap: bool,
-    linebreak: bool,
     file_format: FileFormat,
     fileformats: Vec<FileFormat>,
     search_options: super::regex_v1::SearchOptions,
@@ -2377,10 +2366,6 @@ fn all_option_values(values: &PendingOptions) -> Vec<ExOptionDisplay> {
             ExOptionValue::Boolean(values.search_options.wrapscan),
         ),
         display(ExOptionName::Wrap, ExOptionValue::Boolean(values.wrap)),
-        display(
-            ExOptionName::LineBreak,
-            ExOptionValue::Boolean(values.linebreak),
-        ),
         display(
             ExOptionName::FileFormat,
             ExOptionValue::FileFormat(values.file_format),
@@ -2434,14 +2419,6 @@ fn apply_option_operation(
             false,
             &operation.action,
             &mut values.wrap,
-            plan,
-        ),
-        "linebreak" | "lbr" => apply_boolean_option(
-            scope,
-            ExOptionName::LineBreak,
-            true,
-            &operation.action,
-            &mut values.linebreak,
             plan,
         ),
         "fileformat" | "ff" => {
@@ -3544,13 +3521,34 @@ mod tests {
     }
 
     #[test]
+    fn removed_word_boundary_options_are_not_configurable_or_listed() {
+        let document = Document::new("one two");
+        let state = ExExecutionState::default();
+        for option in ["linebreak", "nolinebreak", "lbr", "nolbr", "linebreak?"] {
+            assert!(matches!(
+                prepare_ex(
+                    &document, &state, &context(0),
+                    &parse_ex(&format!(":set {option}")).unwrap(), &(),
+                ),
+                Err(ExExecuteError::UnsupportedOption(_))
+            ));
+        }
+        let plan = prepare_ex(
+            &document, &state, &context(0), &parse_ex(":set all").unwrap(), &(),
+        ).unwrap();
+        let ExFrontendRequest::Info(ExInfoRequest::Options(options)) =
+            &plan.outcome.frontend_requests[0] else { panic!("expected options") };
+        assert_eq!(options.len(), 6);
+    }
+
+    #[test]
     fn set_stages_view_options_and_commits_fileformat() {
         let mut document = Document::new("a\nb");
         let mut state = ExExecutionState::default();
-        let command = parse_ex(":set wrap nolinebreak ff=dos").unwrap();
+        let command = parse_ex(":set wrap ff=dos").unwrap();
         let plan = prepare_ex(&document, &state, &context(0), &command, &()).unwrap();
         assert_eq!(document.file_format(), FileFormat::Unix);
-        assert_eq!(plan.outcome.option_effects.len(), 3);
+        assert_eq!(plan.outcome.option_effects.len(), 2);
         let outcome = commit_ex(&mut document, &mut state, plan).unwrap();
         assert!(outcome.document_changed);
         assert_eq!(document.file_format(), FileFormat::Dos);

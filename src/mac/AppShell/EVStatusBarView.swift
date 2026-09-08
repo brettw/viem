@@ -14,8 +14,6 @@ public final class EVStatusBarView: NSView {
   private let messageLabel = NSTextField(labelWithString: "")
   private let locationLabel = NSButton(title: "", target: nil, action: nil)
   public var optionDidChange: ((EVStatusBarOption) -> Void)?
-  private let encodingSelect = EVStatusSelect()
-  private let lineEndingSelect = EVStatusSelect()
   private let formatSelect = EVStatusSelect()
 
   public override init(frame frameRect: NSRect) {
@@ -41,28 +39,15 @@ public final class EVStatusBarView: NSView {
     messageLabel.lineBreakMode = .byTruncatingTail
     messageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-    encodingSelect.configure(
-      label: "Encoding",
-      options: [
-        ("UTF-8", .encoding(1)), ("Latin-1", .encoding(2)),
-        ("UTF-16 LE", .encoding(3)), ("UTF-16 BE", .encoding(4)),
-      ])
-    lineEndingSelect.configure(
-      label: "Line endings",
-      options: [
-        ("LF", .lineEnding(1)), ("CRLF", .lineEnding(2)), ("CR", .lineEnding(3)),
-      ])
     formatSelect.configure(
       label: "Format",
       options: [EVSourceFormat.plainText, .markdownSource, .markdown, .htmlSource, .html, .rtf].map {
         ($0.displayName, .format($0))
       }
     )
-    for select in [encodingSelect, lineEndingSelect, formatSelect] {
-      select.didChoose = { [weak self] option in self?.optionDidChange?(option) }
-    }
+    formatSelect.didChoose = { [weak self] option in self?.optionDidChange?(option) }
     let trailing = NSStackView(views: [
-      locationLabel, encodingSelect, lineEndingSelect, formatSelect,
+      locationLabel, formatSelect,
     ])
     trailing.orientation = .horizontal
     trailing.spacing = 14
@@ -114,7 +99,7 @@ public final class EVStatusBarView: NSView {
     locationLabel.attributedTitle = NSAttributedString(
       string: currentState.location,
       attributes: [.font: theme.statusFont, .foregroundColor: theme.statusForeground.color])
-    for select in [encodingSelect, lineEndingSelect, formatSelect] { select.applyTheme(theme) }
+    formatSelect.applyTheme(theme)
     heightConstraint.constant = Self.preferredHeight
     needsDisplay = true
   }
@@ -144,20 +129,12 @@ public final class EVStatusBarView: NSView {
     if state.locationIsFragment {
       locationLabel.toolTip = "Position shows hard line · visual row. Click to change line mode."
     }
-    encodingSelect.selectItem(withTitle: state.encoding)
-    lineEndingSelect.selectItem(withTitle: state.lineEnding)
     formatSelect.selectItem(withTitle: state.format)
-    for select in [encodingSelect, lineEndingSelect, formatSelect] {
-      select.invalidateIntrinsicContentSize()
-    }
-    lineEndingSelect.isEnabled = state.format != EVSourceFormat.rtf.displayName
-    encodingSelect.isEnabled = state.format != EVSourceFormat.rtf.displayName
+    formatSelect.invalidateIntrinsicContentSize()
 
     modeLabel.setAccessibilityLabel("Mode: \(state.mode)")
     locationLabel.setAccessibilityLabel(
       "\(state.lineMode == .visual ? "Visual" : "Physical source") lines: \(state.location)")
-    encodingSelect.setAccessibilityLabel("Encoding: \(state.encoding)")
-    lineEndingSelect.setAccessibilityLabel("Line endings: \(state.lineEnding)")
     formatSelect.setAccessibilityLabel("Format: \(state.format)")
     applyTheme()
   }

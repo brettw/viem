@@ -27,7 +27,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 /// Maximum owned UTF-8 text in one resumable long-hard-line computation. A
 /// capture may additionally retain bounded context on both sides. One
-/// indivisible grapheme may exceed this limit and is necessarily kept whole.
+/// indivisible word or grapheme may exceed this limit and is kept whole.
 pub const MAX_LONG_LINE_LAYOUT_SLICE_BYTES: usize = 64 * 1024;
 const LONG_LINE_CAPTURE_CONTEXT_BYTES: usize = SHAPING_CONTEXT_BYTES * 4;
 
@@ -555,6 +555,47 @@ fn bounded_long_line_work_end(
     document: &Document,
     start: usize,
     hard_line_end: usize,
+    paragraph_flow: bool,
+    cancellation: &LayoutCancellationToken,
+) -> Result<usize, LayoutJobError> {
+    let bounded_end = grapheme_bounded_long_line_work_end(document, start, hard_line_end)?;
+    if bounded_end == hard_line_end {
+        return Ok(bounded_end);
+    }
+    let tree = document.projection().text_tree();
+    let mut probe_end = bounded_end;
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(LayoutJobError::Cancelled);
+        }
+        probe_end = bounded_context_end(document, probe_end, hard_line_end);
+        let mut probe = tree.slice(start..probe_end)?;
+        if paragraph_flow {
+            probe = flow_text(probe, start, &[start..hard_line_end]);
+        }
+        if let Some((offset, _)) = unicode_linebreak::linebreaks(&probe)
+            .find(|(offset, _)| *offset < probe.len())
+        {
+            // Ordinary text keeps its bounded work slice. An oversized word
+            // must reach its first actual break so one complete row can be
+            // published; treating the capture boundary as a break changes text.
+            return Ok(bounded_end.max(start + offset));
+        }
+        if probe_end == hard_line_end {
+            return Ok(hard_line_end);
+        }
+        let next = start.saturating_add((probe_end - start).saturating_mul(2));
+        probe_end = next.min(hard_line_end);
+        while !tree.is_char_boundary(probe_end)? {
+            probe_end -= 1;
+        }
+    }
+}
+
+fn grapheme_bounded_long_line_work_end(
+    document: &Document,
+    start: usize,
+    hard_line_end: usize,
 ) -> Result<usize, LayoutJobError> {
     let remaining = hard_line_end.saturating_sub(start);
     if remaining <= MAX_LONG_LINE_LAYOUT_SLICE_BYTES {
@@ -724,7 +765,9 @@ where
                 "the continuation is already at the hard-line end",
             ));
         }
-        let work_end = bounded_long_line_work_end(document, work_start, full_range.end)?;
+        let work_end = bounded_long_line_work_end(
+            document, work_start, full_range.end, view.paragraph_flow(), &cancellation,
+        )?;
         let context_start = bounded_context_start(document, work_start, full_range.start);
         let context_end = bounded_context_end(document, work_end, full_range.end);
         let capture_range = context_start..context_end;
@@ -2544,7 +2587,7 @@ mod tests {
 
     #[test]
     fn resize_invalidates_a_long_line_continuation_before_capture() {
-        let document = Document::new("x".repeat(MAX_LONG_LINE_LAYOUT_SLICE_BYTES * 2));
+        let document = Document::new("word ".repeat(MAX_LONG_LINE_LAYOUT_SLICE_BYTES / 2));
         let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
         let requirements = inspect_layout_provider(&engine);
         let mut view = ViewLayout::new(96.0, 64.0);

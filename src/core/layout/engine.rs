@@ -1285,7 +1285,6 @@ pub(crate) struct LayoutJobViewConfiguration {
     height: f32,
     insets: EdgeInsets,
     wrap: bool,
-    linebreak: bool,
     scale: f32,
     configuration_generation: ViewConfigurationGeneration,
     default_style: ResolvedTextStyle,
@@ -1314,7 +1313,6 @@ pub struct ViewLayout {
     viewport_top: f32,
     insets: EdgeInsets,
     wrap: bool,
-    linebreak: bool,
     scale: f32,
     configuration_generation: ViewConfigurationGeneration,
     default_style: ResolvedTextStyle,
@@ -1344,7 +1342,6 @@ impl ViewLayout {
             viewport_top: 0.0,
             insets: EdgeInsets::default(),
             wrap: true,
-            linebreak: true,
             scale: 1.0,
             configuration_generation: ViewConfigurationGeneration(1),
             default_style: ResolvedTextStyle::default(),
@@ -1403,13 +1400,6 @@ impl ViewLayout {
     pub fn set_paragraph_flow(&mut self, enabled: bool) {
         if self.paragraph_flow != enabled {
             self.paragraph_flow = enabled;
-            self.bump_configuration(true);
-        }
-    }
-
-    pub fn set_linebreak(&mut self, linebreak: bool) {
-        if self.linebreak != linebreak {
-            self.linebreak = linebreak;
             self.bump_configuration(true);
         }
     }
@@ -1570,10 +1560,6 @@ impl ViewLayout {
 
     pub fn wrap(&self) -> bool {
         self.wrap
-    }
-
-    pub fn linebreak(&self) -> bool {
-        self.linebreak
     }
 
     /// View-local magnification applied during shaping and layout. Document
@@ -1740,7 +1726,6 @@ impl ViewLayout {
             height: self.height,
             insets: self.insets,
             wrap: self.wrap,
-            linebreak: self.linebreak,
             scale: self.scale,
             configuration_generation: self.configuration_generation,
             default_style: self.default_style.clone(),
@@ -2996,7 +2981,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             } else {
                 continuation_box
             };
-            let breaks = if view.wrap && view.linebreak {
+            let breaks = if view.wrap {
                 unicode_line_break_opportunities_for_slice(
                     &region_text[local_context_ranges[line_offset].clone()],
                     line_slice.shaping_context_range.start,
@@ -3012,7 +2997,6 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 first_row_box.width,
                 continuation_box.width,
                 view.wrap,
-                view.linebreak,
                 &breaks,
                 &control,
             )?;
@@ -3023,7 +3007,14 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 .maximum_wrap_checkpoint_clusters
                 .max(clusters.len().min(CANCELLATION_CLUSTER_BATCH));
             if extends_past_work {
-                row_cluster_ranges.pop();
+                // Drop a trailing row only when its end is an artificial
+                // capture boundary. Oversized words may intentionally extend
+                // the work slice through their first real break.
+                if row_cluster_ranges.last().is_some_and(|range| {
+                    !breaks.contains(&clusters[range.end - 1].text_range.end)
+                }) {
+                    row_cluster_ranges.pop();
+                }
                 if row_cluster_ranges.is_empty() {
                     return Err(LayoutError::LongLineSliceNeedsMoreText {
                         text_offset: line_slice.work_range.start,
@@ -3521,7 +3512,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             } else {
                 continuation_box
             };
-            let breaks = if view.wrap && view.linebreak {
+            let breaks = if view.wrap {
                 unicode_line_break_opportunities(
                     &text[line_range.clone()],
                     line_range.start,
@@ -3535,7 +3526,6 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 first_row_box.width,
                 continuation_box.width,
                 view.wrap,
-                view.linebreak,
                 &breaks,
                 control,
             )?;
@@ -4841,7 +4831,6 @@ fn wrap_cluster_ranges(
     first_row_width: f32,
     continuation_width: f32,
     wrap: bool,
-    linebreak: bool,
     word_breaks: &BTreeSet<usize>,
     control: &LayoutRunControl<'_>,
 ) -> Result<Vec<Range<usize>>, LayoutComputationError> {
@@ -4870,24 +4859,23 @@ fn wrap_cluster_ranges(
                 control.checkpoint()?;
             }
             let candidate = width + clusters[next].advance;
-            if next > start && candidate > usable_width {
-                break;
+            if candidate > usable_width {
+                if let Some(word_break) = last_word_break {
+                    next = word_break;
+                    break;
+                }
             }
             width = candidate;
             next += 1;
-            if linebreak && word_breaks.contains(&clusters[next - 1].text_range.end) {
+            if word_breaks.contains(&clusters[next - 1].text_range.end) {
                 last_word_break = Some(next);
+                if width >= usable_width {
+                    break;
+                }
             }
-            if width > usable_width {
-                break;
-            }
-        }
-        if next == start {
-            next += 1;
-        } else if next < clusters.len() && linebreak {
-            if let Some(word_break) = last_word_break.filter(|break_at| *break_at > start) {
-                next = word_break;
-            }
+            // An indivisible word may exceed the row width. Continue through
+            // its first Unicode line-break opportunity instead of inventing a
+            // grapheme break; the positioned row exposes the horizontal overflow.
         }
         rows.push(start..next);
         start = next;
@@ -5516,7 +5504,7 @@ mod tests {
     }
 
     #[test]
-    fn wrap_normalizes_horizontal_scroll_and_invalid_values_are_atomic() {
+    fn wrapped_overflow_remains_horizontally_scrollable_and_invalid_values_are_atomic() {
         let document = Document::new("W".repeat(24));
         let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
         let mut view = ViewLayout::new(80.0, 100.0);
@@ -5536,12 +5524,12 @@ mod tests {
         assert_eq!(view.viewport_left(), 0.0);
         assert_eq!(view.maximum_viewport_left(), None);
         engine.relayout(&document, &mut view).unwrap();
-        assert_eq!(view.maximum_viewport_left(), Some(0.0));
+        assert!(view.maximum_viewport_left().unwrap() > 30.0);
         view.set_viewport_left(30.0).unwrap();
-        assert_eq!(view.viewport_left(), 0.0);
+        assert_eq!(view.viewport_left(), 30.0);
 
         view.set_wrap(false);
-        assert_eq!(view.viewport_left(), 0.0);
+        assert_eq!(view.viewport_left(), 30.0);
     }
 
     #[test]
@@ -5730,7 +5718,7 @@ mod tests {
 
     #[test]
     fn paragraph_indents_wrap_alignment_and_resize_reuse_shaping() {
-        let document = Document::new("abcdefghij");
+        let document = Document::new("ab cd ef gh ij");
         let mut sheet = StyleSheet::default();
         let paragraph_style = insert_paragraph_style(
             &mut sheet,
@@ -5755,7 +5743,6 @@ mod tests {
         let styles = resolve_fixture_styles(document.text(), &blocks, &sheet);
         let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
         let mut view = ViewLayout::new(120.0, 300.0);
-        view.set_linebreak(false);
         engine
             .relayout_styled_text(
                 document.id(),
@@ -6040,21 +6027,18 @@ mod tests {
     }
 
     #[test]
-    fn word_wrap_and_cluster_wrap_choose_different_boundaries() {
-        let document = Document::new("one two");
-        let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
-        let mut word_view = ViewLayout::new(55.0, 200.0);
-        engine.relayout(&document, &mut word_view).unwrap();
-        let word_rows = &word_view.snapshot().unwrap().rows;
-        assert_eq!(word_rows.len(), 2);
-        assert_eq!(word_rows[0].text_range, 0..4);
+    fn wrapping_uses_word_boundaries_and_overflows_an_indivisible_word() {
+        let (_document, _engine, view) = lay_out("one two", 55.0);
+        let rows = &view.snapshot().unwrap().rows;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].text_range, 0..4);
 
-        let mut cluster_view = ViewLayout::new(55.0, 200.0);
-        cluster_view.set_linebreak(false);
-        engine.relayout(&document, &mut cluster_view).unwrap();
-        let cluster_rows = &cluster_view.snapshot().unwrap().rows;
-        assert_eq!(cluster_rows.len(), 2);
-        assert_eq!(cluster_rows[0].text_range, 0..5);
+        let (document, _engine, view) = lay_out("indivisibleword next", 35.0);
+        let rows = &view.snapshot().unwrap().rows;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].text_range, 0.."indivisibleword ".len());
+        assert_eq!(rows[1].text_range.end, document.text().len());
+        assert!(rows[0].width > view.snapshot().unwrap().usable_width);
     }
 
     #[test]
@@ -6117,12 +6101,12 @@ mod tests {
     #[test]
     fn unicode_word_wrap_honors_glue_joiners_and_punctuation() {
         let (_document, _engine, nbsp_view) = lay_out("a\u{00a0}b c", 29.0);
-        assert_eq!(nbsp_view.snapshot().unwrap().rows[0].text_range, 0..4);
+        assert_eq!(nbsp_view.snapshot().unwrap().rows[0].text_range, 0..5);
 
         let (_document, _engine, word_joiner_view) = lay_out("a\u{2060}b c", 22.0);
         assert_eq!(
             word_joiner_view.snapshot().unwrap().rows[0].text_range,
-            0..5
+            0..6
         );
 
         let (_document, _engine, zero_width_space_view) = lay_out("ab\u{200b}cd", 32.0);
@@ -6141,27 +6125,16 @@ mod tests {
         assert_eq!(opening_view.snapshot().unwrap().rows[0].text_range, 0..3);
 
         let (_document, _engine, comma_view) = lay_out("word,word", 75.0);
-        assert_eq!(comma_view.snapshot().unwrap().rows[0].text_range, 0..7);
+        assert_eq!(comma_view.snapshot().unwrap().rows[0].text_range, 0..9);
     }
 
     #[test]
-    fn linebreak_off_ignores_uax14_opportunities() {
-        let document = Document::new("ab\u{200b}cd");
-        let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
-        let mut view = ViewLayout::new(32.0, 200.0);
-        view.set_linebreak(false);
-        engine.relayout(&document, &mut view).unwrap();
-
-        assert_eq!(view.snapshot().unwrap().rows[0].text_range, 0..6);
-    }
-
-    #[test]
-    fn cluster_fallback_never_splits_a_shaper_ligature() {
+    fn overflowing_word_never_splits_a_shaper_ligature() {
         let (_document, _engine, view) = lay_out("fix", 1.0);
         let first_row = &view.snapshot().unwrap().rows[0];
 
-        assert_eq!(first_row.text_range, 0..2);
-        assert_eq!(first_row.clusters.len(), 1);
+        assert_eq!(first_row.text_range, 0..3);
+        assert_eq!(first_row.clusters.len(), 2);
     }
 
     #[test]
@@ -6374,7 +6347,7 @@ mod tests {
 
     #[test]
     fn selection_geometry_spans_wrapped_rows_and_respects_mixed_metrics() {
-        let (document, _engine, view) = lay_out("abcdefgh", 20.0);
+        let (document, _engine, view) = lay_out("ab cd ef gh", 20.0);
         assert!(view.snapshot().unwrap().rows.len() > 1);
         let range = TextRange::new(
             document.text_point(1).unwrap(),

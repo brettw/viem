@@ -760,6 +760,7 @@ typedef struct EvimViewportOriginV1 {
 #define EVIM_VIEWPORT_STATE_MAXIMUM_LEFT_EXACT (1u << 1)
 #define EVIM_VIEWPORT_STATE_TOP_EXACT (1u << 2)
 #define EVIM_VIEWPORT_STATE_HAS_LAYOUT (1u << 3)
+/* Reserved compatibility flag, always set: wrapping uses word boundaries. */
 #define EVIM_VIEWPORT_STATE_LINEBREAK (1u << 4)
 
 /*
@@ -2142,6 +2143,7 @@ EvimStatus evim_core_view_set_smart_quotes(EvimCoreHandle core, EvimViewId view,
 EvimStatus evim_core_view_set_wrap(EvimCoreHandle core, EvimViewId view,
                                    uint32_t wrap,
                                    EvimCoreOutcomeV1 *out_outcome);
+/* Deprecated compatibility entry point: 1 is a no-op; 0 is invalid. */
 EvimStatus evim_core_view_set_linebreak(EvimCoreHandle core, EvimViewId view,
                                         uint32_t linebreak,
                                         EvimCoreOutcomeV1 *out_outcome);

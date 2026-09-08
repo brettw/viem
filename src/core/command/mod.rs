@@ -1163,7 +1163,6 @@ pub struct CommandInterpreter {
     ex_history: Vec<String>,
     ex_state: ExExecutionState,
     wrap: bool,
-    linebreak: bool,
     line_mode: LineMode,
     line_layout: Option<LayoutSnapshot>,
     physical_cursor: Option<line_mode::PhysicalCursor>,
@@ -1279,7 +1278,6 @@ impl CommandInterpreter {
             line_layout: None,
             physical_cursor: None,
             visual_source_anchor: None,
-            linebreak: true,
             fileformats: vec![FileFormat::Unix, FileFormat::Dos],
             search_options: regex_v1::SearchOptions::default(),
             last_search: None,
@@ -1521,6 +1519,30 @@ impl CommandInterpreter {
                 })
                 .transpose()?,
         })
+    }
+
+    /// Capture a format-change caret with the text on its chosen side. A
+    /// conversion exposes or hides wrappers; it does not type those wrappers
+    /// at the caret. An upstream insertion caret therefore stays before new
+    /// closing syntax. Ordinary editing keeps its AfterInsertion association.
+    pub(crate) fn capture_format_position_anchors(
+        &self,
+        document: &Document,
+    ) -> Result<CommandPositionAnchors, DocumentError> {
+        let mut anchors = self.capture_position_anchors(document)?;
+        if matches!(self.mode, Mode::Insert | Mode::Replace)
+            && self.boundary_affinity == BoundaryAffinity::Upstream
+        {
+            anchors.cursor = document
+                .text_anchor(
+                    document.text_point(self.cursor)?,
+                    Association::BeforeInsertion,
+                    BoundaryAffinity::Upstream,
+                    DeletionRecovery::PreferPrecedingThenFollowing,
+                )
+                .map_err(command_position_document_error)?;
+        }
+        Ok(anchors)
     }
 
     /// Install a prepared set of anchors through one checked revision map.
@@ -2099,9 +2121,8 @@ impl CommandInterpreter {
         }
     }
 
-    pub(crate) fn set_layout_options(&mut self, wrap: bool, linebreak: bool) {
+    pub(crate) fn set_layout_options(&mut self, wrap: bool) {
         self.wrap = wrap;
-        self.linebreak = linebreak;
     }
 
     pub(crate) fn capture_history_restoration(
@@ -2387,10 +2408,6 @@ impl CommandInterpreter {
 
     pub fn wrap_option(&self) -> bool {
         self.wrap
-    }
-
-    pub fn linebreak_option(&self) -> bool {
-        self.linebreak
     }
 
     pub fn fileformats_option(&self) -> &[FileFormat] {
@@ -12862,7 +12879,6 @@ impl CommandInterpreter {
                 .hard_line_at_offset(self.cursor.min(document.text().len()))
                 .expect("a command cursor resolves to one hard line"),
             wrap: self.wrap,
-            linebreak: self.linebreak,
             fileformats: self.fileformats.clone(),
             search_options: self.search_options,
             last_search_pattern: self
@@ -13276,9 +13292,6 @@ impl CommandInterpreter {
                     self.search_options.wrapscan = *value
                 }
                 (ExOptionName::Wrap, ExOptionValue::Boolean(value)) => self.wrap = *value,
-                (ExOptionName::LineBreak, ExOptionValue::Boolean(value)) => {
-                    self.linebreak = *value;
-                }
                 (ExOptionName::FileFormats, ExOptionValue::FileFormats(value)) => {
                     self.fileformats.clone_from(value);
                 }
@@ -16281,7 +16294,7 @@ mod tests {
     fn immutable_resolution_classifies_layout_and_compound_boundaries() {
         let document = Document::new("one\ntwo");
         let mut commands = CommandInterpreter::new();
-        commands.set_layout_options(true, true);
+        commands.set_layout_options(true);
         let context = CommandContext::new(&document);
         assert!(matches!(
             commands.resolve(&context, InputEvent::key('j')).unwrap(),
@@ -16292,7 +16305,7 @@ mod tests {
             CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated)
         ));
 
-        commands.set_layout_options(false, true);
+        commands.set_layout_options(false);
         let count = match commands.resolve(&context, InputEvent::key('2')).unwrap() {
             CommandResolution::Planned(plan) => plan,
             CommandResolution::Legacy(reason) => panic!("count used legacy path: {reason:?}"),
@@ -19022,17 +19035,16 @@ mod tests {
         keys(
             &mut commands,
             &mut document,
-            ":set wrap nolinebreak ff=dos ffs=mac,unix",
+            ":set wrap ff=dos ffs=mac,unix",
         );
         let options = key(&mut commands, &mut document, Key::Enter);
         assert!(commands.wrap_option());
-        assert!(!commands.linebreak_option());
         assert_eq!(
             commands.fileformats_option(),
             &[FileFormat::Mac, FileFormat::Unix]
         );
         assert_eq!(document.file_format(), FileFormat::Dos);
-        assert_eq!(options.ex_outcome.as_ref().unwrap().option_effects.len(), 4);
+        assert_eq!(options.ex_outcome.as_ref().unwrap().option_effects.len(), 3);
 
         keys(&mut commands, &mut document, ":2");
         let navigation = key(&mut commands, &mut document, Key::Enter);

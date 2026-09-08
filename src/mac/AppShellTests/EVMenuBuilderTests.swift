@@ -71,7 +71,7 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
         XCTAssertEqual(try titles(in: submenu("File", of: menu)), [
             "New", "Open…", "Open Recent", "Close", "Save", "Save As…", "Duplicate",
-            "Rename…", "Move To…", "Revert To", "Document Format…", "Text Encoding…",
+            "Rename…", "Move To…", "Revert To", "Document Format…", "Text Encoding",
             "Line Endings", "Page Setup…", "Print…",
         ])
         XCTAssertEqual(try titles(in: submenu("Edit", of: menu)), [
@@ -85,7 +85,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Clear Direct Paragraph Formatting", "Clear All Direct Formatting",
         ])
         XCTAssertEqual(try titles(in: submenu("View", of: menu)), [
-            "Show Status Bar", "Word Wrap", "Wrap at Word Boundaries",
+            "Show Status Bar", "Word Wrap",
             "Flow Source Paragraphs", "Show Invisible Characters", "Zoom In", "Zoom Out", "Actual Size",
             "Enter Full Screen",
         ])
@@ -111,7 +111,7 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertEqual(tokens(in: try submenu("File", of: main)), [
             "New", "Open…", "Open Recent", "-", "Close", "Save", "Save As…",
             "Duplicate", "Rename…", "Move To…", "Revert To", "-",
-            "Document Format…", "Text Encoding…", "Line Endings", "-",
+            "Document Format…", "Text Encoding", "Line Endings", "-",
             "Page Setup…", "Print…",
         ])
         XCTAssertEqual(tokens(in: try submenu("Edit", of: main)), [
@@ -126,7 +126,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Clear All Direct Formatting",
         ])
         XCTAssertEqual(tokens(in: try submenu("View", of: main)), [
-            "Show Status Bar", "-", "Word Wrap", "Wrap at Word Boundaries",
+            "Show Status Bar", "-", "Word Wrap",
             "Flow Source Paragraphs", "Show Invisible Characters", "-", "Zoom In", "Zoom Out", "Actual Size",
             "-", "Enter Full Screen",
         ])
@@ -571,6 +571,23 @@ final class EVMenuBuilderTests: XCTestCase {
         let endings = try XCTUnwrap(file.item(withTitle: "Line Endings")?.submenu)
 
         XCTAssertEqual(titles(in: endings), ["Unix (LF)", "Windows (CRLF)", "Classic Mac (CR)"])
+    }
+
+    func testTextEncodingSubmenuHasTheFourFormerStatusChoicesAndStableActions() throws {
+        let owner = Owner()
+        let builder = EVMenuBuilder(owner: owner)
+        let menu = builder.buildMainMenu(for: NSApplication.shared)
+        let file = try submenu("File", of: menu)
+        XCTAssertNil(file.item(withTitle: "Text Encoding…"))
+        let encodings = try submenu("Text Encoding", of: file)
+        XCTAssertTrue(encodings.showsStateColumn)
+        XCTAssertEqual(titles(in: encodings), ["UTF-8", "Latin-1", "UTF-16 LE", "UTF-16 BE"])
+        XCTAssertEqual(encodings.items.map(\.tag), [EVMenuCommand.encodingUTF8, .encodingLatin1, .encodingUTF16LE, .encodingUTF16BE].map(\.rawValue))
+        for item in encodings.items {
+            XCTAssertEqual(item.action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
+            XCTAssertNil(item.target)
+        }
+        XCTAssertNil(try submenu("View", of: menu).item(withTitle: "Wrap at Word Boundaries"))
     }
 
     func testStyleMenusReserveOneNativeCheckmarkColumnForEveryRow() throws {

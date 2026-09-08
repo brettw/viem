@@ -1673,7 +1673,7 @@ mod tests {
             })
         );
         assert_eq!(
-            parse(":setlocal wrap? nowrap invlinebreak ff=dos path+=foo").action,
+            parse(":setlocal wrap? nowrap invignorecase ff=dos path+=foo").action,
             ExAction::Set(SetCommand {
                 scope: SetScope::Local,
                 operation: SetOperation::Options(vec![
@@ -1686,7 +1686,7 @@ mod tests {
                         action: OptionAction::Disable,
                     },
                     OptionOperation {
-                        name: "linebreak".to_owned(),
+                        name: "ignorecase".to_owned(),
                         action: OptionAction::Toggle,
                     },
                     OptionOperation {

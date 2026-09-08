@@ -28,7 +28,12 @@ fn saved_html_open_above_case_commits_a_local_rewrite_with_a_valid_cursor() {
     document.text_point(294).unwrap();
     let revision = document.revision();
     let mut core = Core::new(document);
-    let view = core.add_view(MockTextMeasurementProvider::new(), 80., 700.);
+    // Keep the saved whitespace edit target at a real word-wrap boundary.
+    // Without emergency word splitting, a slightly narrower row is required.
+    let view = core.add_view(MockTextMeasurementProvider::new(), 70., 700.);
+    assert!(core.layout(view).unwrap().snapshot().unwrap().rows.iter().any(|row| {
+        row.text_range.start == 294
+    }));
     core.handle(
         view,
         CoreEvent::PlaceCursor {

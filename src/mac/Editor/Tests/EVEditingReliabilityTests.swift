@@ -241,7 +241,7 @@ final class EVEditingReliabilityTests: XCTestCase {
     }
 
     @MainActor
-    func testStatusOptionsPreserveSourceAndHistoryAcrossMarkdownViewsAndEncoding() throws {
+    func testFormatPickerAndEncodingMenuPreserveSourceAndHistory() throws {
         let source = "## Heading\n__bold__ café\n"
         let backend = EVCoreDocumentBackend()
         try backend.read(source: Data(source.utf8), typeName: EVDocument.plainTextType)
@@ -254,8 +254,8 @@ final class EVEditingReliabilityTests: XCTestCase {
         XCTAssertEqual(surface.statusBarState.format, "Markdown WYSIWYG")
         XCTAssertEqual(surface.formattedText, "Heading\nbold café")
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
-        surface.perform(statusOption: .encoding(UInt32(EVIM_ENCODING_UTF16_LE)))
-        XCTAssertEqual(surface.statusBarState.encoding, "UTF-16 LE")
+        surface.perform(menuCommand: .encodingUTF16LE, sender: nil)
+        XCTAssertEqual(surface.presentation(for: .encodingUTF16LE).state, .on)
         XCTAssertEqual(surface.formattedText, "Heading\nbold café")
         surface.perform(menuCommand: .undo, sender: nil)
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
@@ -263,6 +263,53 @@ final class EVEditingReliabilityTests: XCTestCase {
         XCTAssertEqual(surface.statusBarState.format, "Markdown Source")
         XCTAssertEqual(surface.formattedText, source)
         XCTAssertEqual(surface.statusBarState.message, "")
+    }
+
+    @MainActor
+    func testFormatPickerKeepsInteriorUnicodeCursorAtTheSameRepeatedOccurrence() throws {
+        let source = (0..<180).map { "## Heading \($0)\n\nText **café العربية** α\($0) end." }.joined(separator: "\n\n")
+        let backend = EVCoreDocumentBackend()
+        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        surface.view.frame = NSRect(x: 0, y: 0, width: 420, height: 180)
+        surface.viewDidLayout()
+        let session = try XCTUnwrap(surface.session)
+        surface.perform(statusOption: .format(.markdownSource))
+        surface.performInput {
+            _ = try session.sendText("/العربية")
+            _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+            _ = try session.sendText("75nli")
+        }
+        func occurrenceOffsets(_ text: String) -> [Int] {
+            var start = text.startIndex
+            var offsets: [Int] = []
+            while let range = text.range(of: "العربية", range: start..<text.endIndex) {
+                offsets.append(text[..<range.lowerBound].utf8.count)
+                start = range.upperBound
+            }
+            return offsets
+        }
+        func firstVisibleOccurrence() throws -> Int {
+            let text = try backend.formattedText()
+            let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+            let row = try XCTUnwrap(snapshot.rows.first { $0.y + $0.line_advance > surface.viewportState.top })
+            return occurrenceOffsets(text).filter { $0 < Int(row.text_start) }.count
+        }
+        let topOccurrence = try firstVisibleOccurrence()
+        XCTAssertGreaterThan(topOccurrence, 70)
+        for format: EVSourceFormat in [.markdown, .markdownSource, .markdown, .htmlSource, .html] {
+            surface.perform(statusOption: .format(format))
+            let text = try backend.formattedText()
+            let offsets = occurrenceOffsets(text)
+            XCTAssertEqual(offsets.count, 180)
+            XCTAssertEqual(surface.statusBarState.message, "", "\(format)")
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_INSERT))
+            let expectedCursor = try XCTUnwrap(offsets.dropFirst(75).first) + "ا".utf8.count
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(expectedCursor), "\(format)")
+            XCTAssertLessThanOrEqual(abs(try firstVisibleOccurrence() - topOccurrence), 2, "\(format)")
+            XCTAssertGreaterThan(surface.viewportState.top, 0)
+        }
     }
 
     @MainActor
