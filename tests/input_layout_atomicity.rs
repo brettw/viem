@@ -1,10 +1,10 @@
-use evim_core::command::clipboard::{ClipboardCommandContext, ClipboardTarget};
-use evim_core::command::{CommandStatus, InputEvent, Key};
-use evim_core::layout::{
+use viem_core::command::clipboard::{ClipboardCommandContext, ClipboardTarget};
+use viem_core::command::{CommandStatus, InputEvent, Key};
+use viem_core::layout::{
     MeasurementEnvironmentId, MeasurementError, MetricsGeneration, MockTextMeasurementProvider,
     RenderRunPolicy, ShapeRequest, ShapedFragment, TextMeasurementProvider,
 };
-use evim_core::{Core, CoreEvent, Document, ViewId};
+use viem_core::{Core, CoreEvent, Document, ViewId};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 

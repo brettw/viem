@@ -4,9 +4,9 @@
 //! coordinator boundary while the controller is incrementally moving toward
 //! fully prepared, revision-bound command plans.
 
-use evim_core::command::{CommandInterpreter, InputEvent, Key, Mode};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, Document, DocumentError, Encoding, Format, Revision};
+use viem_core::command::{CommandInterpreter, InputEvent, Key, Mode};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, Document, DocumentError, Encoding, Format, Revision};
 
 fn command_key(character: char) -> InputEvent {
     InputEvent::Key(Key::Char(character))

@@ -1,4 +1,4 @@
-//! Portable core for eVim.
+//! Portable core for Viem.
 //!
 //! The crate intentionally exposes a small facade. Document state, Vim command
 //! interpretation, and layout are separate modules with one-way dependencies.

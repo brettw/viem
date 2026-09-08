@@ -1,9 +1,9 @@
 use crate::support::{Recorder, Rng, RunStats};
-use evim_core::command::ex_execute::ExExecuteError;
-use evim_core::command::{CommandStatus, ExCommandError, InputEvent, Key};
-use evim_core::document::HistoryRetentionPolicy;
-use evim_core::layout::{BoundaryAffinity, MockTextMeasurementProvider};
-use evim_core::{Core, CoreError, CoreEvent, Document, DocumentError, Encoding, Format, ViewId};
+use viem_core::command::ex_execute::ExExecuteError;
+use viem_core::command::{CommandStatus, ExCommandError, InputEvent, Key};
+use viem_core::document::HistoryRetentionPolicy;
+use viem_core::layout::{BoundaryAffinity, MockTextMeasurementProvider};
+use viem_core::{Core, CoreError, CoreEvent, Document, DocumentError, Encoding, Format, ViewId};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::VecDeque;

@@ -97,7 +97,7 @@ private final class EVRunLoopCustomCaretScheduledAction: EVCustomCaretScheduledA
     }
 }
 
-/// Owns timing and presentation state only for eVim's custom Normal/Visual
+/// Owns timing and presentation state only for Viem's custom Normal/Visual
 /// block caret and Replace underline. It must never drive the native vertical
 /// `NSTextInsertionIndicator` used by Insert and command-line modes.
 ///

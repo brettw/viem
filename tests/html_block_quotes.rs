@@ -1,6 +1,6 @@
-use evim_core::document::{BoundaryAffinity, Encoding, Format, ModelRequest, StyleNamespace};
-use evim_core::layout::{DecorationKind, MockTextMeasurementProvider};
-use evim_core::{Core, CoreEvent, Document};
+use viem_core::document::{BoundaryAffinity, Encoding, Format, ModelRequest, StyleNamespace};
+use viem_core::layout::{DecorationKind, MockTextMeasurementProvider};
+use viem_core::{Core, CoreEvent, Document};
 
 fn open(source: &str, format: Format) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap()
@@ -186,7 +186,7 @@ fn quote_style_change_invalidates_local_layout_and_undo_restores_border() {
             .all(|decoration| decoration.kind != DecorationKind::BlockQuoteBorder)));
     core.handle(
         view,
-        CoreEvent::Input(evim_core::command::InputEvent::key('u')),
+        CoreEvent::Input(viem_core::command::InputEvent::key('u')),
     )
     .unwrap();
     assert_eq!(core.document().source_bytes(), source.as_bytes());
@@ -266,10 +266,10 @@ fn enter_and_typing_keep_native_quote_paragraphs_and_exact_history() {
     let mut core = Core::new(open(source, Format::Html));
     let view = core.add_view(MockTextMeasurementProvider::new(), 240., 200.);
     for event in [
-        evim_core::command::InputEvent::key('A'),
-        evim_core::command::InputEvent::Key(evim_core::command::Key::Enter),
-        evim_core::command::InputEvent::text("tail"),
-        evim_core::command::InputEvent::Key(evim_core::command::Key::Escape),
+        viem_core::command::InputEvent::key('A'),
+        viem_core::command::InputEvent::Key(viem_core::command::Key::Enter),
+        viem_core::command::InputEvent::text("tail"),
+        viem_core::command::InputEvent::Key(viem_core::command::Key::Escape),
     ] {
         core.handle(view, CoreEvent::Input(event)).unwrap();
     }
@@ -284,14 +284,14 @@ fn enter_and_typing_keep_native_quote_paragraphs_and_exact_history() {
         .all(|block| block.style.0 == "Block quote"));
     core.handle(
         view,
-        CoreEvent::Input(evim_core::command::InputEvent::key('u')),
+        CoreEvent::Input(viem_core::command::InputEvent::key('u')),
     )
     .unwrap();
     assert_eq!(core.document().source_bytes(), source.as_bytes());
     core.handle(
         view,
-        CoreEvent::Input(evim_core::command::InputEvent::Key(
-            evim_core::command::Key::Ctrl('r'),
+        CoreEvent::Input(viem_core::command::InputEvent::Key(
+            viem_core::command::Key::Ctrl('r'),
         )),
     )
     .unwrap();
@@ -358,7 +358,7 @@ fn quote_assignment_stops_at_the_next_implicit_paragraph_opener() {
 
 #[test]
 fn quote_container_survives_inner_named_paragraphs_and_list_headings() {
-    let source = "<blockquote><p class='evim-p-48656164696e6732'>one <b>bold</b></p><ul><li><h2>heading</h2></li></ul><pre>code</pre></blockquote>";
+    let source = "<blockquote><p class='viem-p-48656164696e6732'>one <b>bold</b></p><ul><li><h2>heading</h2></li></ul><pre>code</pre></blockquote>";
     for format in [Format::Html, Format::HtmlSource] {
         let document = open(source, format);
         assert!(
@@ -376,16 +376,16 @@ fn quote_container_survives_inner_named_paragraphs_and_list_headings() {
     let bold = document.text().find("bold").unwrap();
     let code = document.text().find("code").unwrap();
     assert!(
-        evim_core::layout::DocumentLayoutStyles::character_at(document.projection(), bold, false)
+        viem_core::layout::DocumentLayoutStyles::character_at(document.projection(), bold, false)
             .unwrap()
             .bold
     );
     let expected = open("<pre>code</pre>", Format::Html);
     assert_eq!(
-        evim_core::layout::DocumentLayoutStyles::character_at(document.projection(), code, false)
+        viem_core::layout::DocumentLayoutStyles::character_at(document.projection(), code, false)
             .unwrap()
             .font_families,
-        evim_core::layout::DocumentLayoutStyles::character_at(expected.projection(), 0, false)
+        viem_core::layout::DocumentLayoutStyles::character_at(expected.projection(), 0, false)
             .unwrap()
             .font_families
     );
@@ -401,10 +401,10 @@ fn enter_in_quoted_pre_keeps_one_code_paragraph_and_exact_history() {
         let view = core.add_view(MockTextMeasurementProvider::new(), 300., 250.);
         let before = core.document().text().to_owned();
         for event in [
-            evim_core::command::InputEvent::key('A'),
-            evim_core::command::InputEvent::Key(evim_core::command::Key::Enter),
-            evim_core::command::InputEvent::text("tail"),
-            evim_core::command::InputEvent::Key(evim_core::command::Key::Escape),
+            viem_core::command::InputEvent::key('A'),
+            viem_core::command::InputEvent::Key(viem_core::command::Key::Enter),
+            viem_core::command::InputEvent::text("tail"),
+            viem_core::command::InputEvent::Key(viem_core::command::Key::Escape),
         ] {
             let description = format!("{event:?}");
             core.handle(view, CoreEvent::Input(event))
@@ -427,14 +427,14 @@ fn enter_in_quoted_pre_keeps_one_code_paragraph_and_exact_history() {
         assert_eq!(reopened.projection().blocks().len(), 1);
         core.handle(
             view,
-            CoreEvent::Input(evim_core::command::InputEvent::key('u')),
+            CoreEvent::Input(viem_core::command::InputEvent::key('u')),
         )
         .unwrap();
         assert_eq!(core.document().source_bytes(), source.as_bytes());
         core.handle(
             view,
-            CoreEvent::Input(evim_core::command::InputEvent::Key(
-                evim_core::command::Key::Ctrl('r'),
+            CoreEvent::Input(viem_core::command::InputEvent::Key(
+                viem_core::command::Key::Ctrl('r'),
             )),
         )
         .unwrap();
@@ -449,7 +449,7 @@ fn source_edits_inside_quoted_code_keep_the_reopened_paragraph_partition() {
     let mut document = open(source, Format::HtmlSource);
     let at = document.text().find("middle").unwrap();
     document
-        .apply_edits(vec![evim_core::document::TextEdit::new(at..at, "new ")])
+        .apply_edits(vec![viem_core::document::TextEdit::new(at..at, "new ")])
         .unwrap();
     let saved = document.source_bytes();
     let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::HtmlSource).unwrap();

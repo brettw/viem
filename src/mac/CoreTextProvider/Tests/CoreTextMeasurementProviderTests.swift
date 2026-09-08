@@ -1,11 +1,11 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import CoreGraphics
 import CoreText
 import Foundation
 import Testing
 
-@testable import EvimCoreTextProvider
+@testable import ViemCoreTextProvider
 
 @Suite("Core Text measurement provider")
 struct CoreTextMeasurementProviderTests {
@@ -14,7 +14,7 @@ struct CoreTextMeasurementProviderTests {
     let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 81)
     let font = resolveFont(
       families: ["SF Pro"], size: 14, cssWeight: 400,
-      slant: UInt32(EVIM_FONT_SLANT_UPRIGHT), features: [])
+      slant: UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [])
     for text in [
       "Arabic word مرحبا in the middle", "مرحبا بالعالم", "English العربية 123 ثم English",
       "سَلامٌ e\u{301} 👩🏽‍💻 مرحبا",
@@ -37,16 +37,16 @@ struct CoreTextMeasurementProviderTests {
     for family in ["Helvetica", "Times New Roman", "SF Pro"] {
       let normal = resolveFont(
         families: [family], size: 14, cssWeight: 400,
-        slant: UInt32(EVIM_FONT_SLANT_UPRIGHT), features: [])
+        slant: UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [])
       let bold = resolveFont(
         families: [family], size: 14, cssWeight: 700,
-        slant: UInt32(EVIM_FONT_SLANT_UPRIGHT), features: [])
+        slant: UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [])
       let italic = resolveFont(
         families: [family], size: 14, cssWeight: 400,
-        slant: UInt32(EVIM_FONT_SLANT_ITALIC), features: [])
+        slant: UInt32(VIEM_FONT_SLANT_ITALIC), features: [])
       let both = resolveFont(
         families: [family], size: 14, cssWeight: 700,
-        slant: UInt32(EVIM_FONT_SLANT_ITALIC), features: [])
+        slant: UInt32(VIEM_FONT_SLANT_ITALIC), features: [])
       #expect(!CTFontGetSymbolicTraits(normal).contains(.traitBold))
       #expect(!CTFontGetSymbolicTraits(normal).contains(.traitItalic))
       #expect(CTFontGetSymbolicTraits(bold).contains(.traitBold))
@@ -69,7 +69,7 @@ struct CoreTextMeasurementProviderTests {
       provider: provider,
       text: "im",
       globalStart: 100,
-      purpose: UInt32(EVIM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA)
+      purpose: UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA)
     )
 
     #expect(result.response.text_start == 100)
@@ -124,7 +124,7 @@ struct CoreTextMeasurementProviderTests {
       provider: provider,
       text: "office",
       globalStart: 0,
-      purpose: UInt32(EVIM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
+      purpose: UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
       openTypeFeature: (tag: (0x6C, 0x69, 0x67, 0x61), value: 0)
     )
     let handle = try #require(result.clusters.first?.renderRun)
@@ -187,7 +187,7 @@ struct CoreTextMeasurementProviderTests {
       provider: provider,
       text: "metrics",
       globalStart: 0,
-      purpose: UInt32(EVIM_SHAPE_PURPOSE_METRICS_ONLY)
+      purpose: UInt32(VIEM_SHAPE_PURPOSE_METRICS_ONLY)
     )
     #expect(result.clusters.allSatisfy { $0.hasRenderRun == 0 })
   }
@@ -199,7 +199,7 @@ struct CoreTextMeasurementProviderTests {
       provider: provider,
       text: "x",
       globalStart: 0,
-      purpose: UInt32(EVIM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA)
+      purpose: UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA)
     )
     let handle = try #require(result.clusters.first?.renderRun)
     #expect(
@@ -370,21 +370,21 @@ struct CoreTextMeasurementProviderTests {
 }
 
 private struct OwnedCluster {
-  let value: EvimShapedClusterV1
-  let carets: [EvimClusterCaretStopV1]
+  let value: ViemShapedClusterV1
+  let carets: [ViemClusterCaretStopV1]
 
   var textStart: UInt64 { value.text_start }
   var textEnd: UInt64 { value.text_end }
   var advance: Float { value.advance }
-  var metrics: EvimTextMetricsV1 { value.metrics }
+  var metrics: ViemTextMetricsV1 { value.metrics }
   var bidiLevel: UInt32 { value.bidi_level }
   var caretStopCount: UInt64 { value.caret_stop_count }
   var hasRenderRun: UInt32 { value.has_render_run }
-  var renderRun: EvimRenderRunHandleV1 { value.render_run }
+  var renderRun: ViemRenderRunHandleV1 { value.render_run }
 }
 
 private struct ShapeResult {
-  let response: EvimShapeResponseV1
+  let response: ViemShapeResponseV1
   let clusters: [OwnedCluster]
   let visualOrder: [Int]
 }
@@ -395,7 +395,7 @@ private func shape(
   globalStart: UInt64,
   contextBefore: String = "",
   contextAfter: String = "",
-  purpose: UInt32 = UInt32(EVIM_SHAPE_PURPOSE_METRICS_ONLY),
+  purpose: UInt32 = UInt32(VIEM_SHAPE_PURPOSE_METRICS_ONLY),
   styleRun: (range: Range<UInt64>, size: Float)? = nil,
   openTypeFeature: (tag: (UInt8, UInt8, UInt8, UInt8), value: UInt32)? = nil,
   expectedStatus: UInt32? = 0
@@ -406,28 +406,28 @@ private func shape(
   let beforeBytes = Array(contextBefore.utf8)
   let afterBytes = Array(contextAfter.utf8)
   let familyBytes = Array("SF Pro".utf8)
-  var featureValues: [EvimOpenTypeFeatureV1] = []
+  var featureValues: [ViemOpenTypeFeatureV1] = []
   if let openTypeFeature {
-    var feature = EvimOpenTypeFeatureV1()
+    var feature = ViemOpenTypeFeatureV1()
     feature.tag = openTypeFeature.tag
     feature.value = openTypeFeature.value
     featureValues.append(feature)
   }
-  var response = EvimShapeResponseV1()
+  var response = ViemShapeResponseV1()
 
   let status: UInt32 = textBytes.withUnsafeBufferPointer { textBuffer in
     beforeBytes.withUnsafeBufferPointer { beforeBuffer in
       afterBytes.withUnsafeBufferPointer { afterBuffer in
         familyBytes.withUnsafeBufferPointer { familyBuffer in
           featureValues.withUnsafeBufferPointer { featureBuffer in
-            var family = EvimUtf8Slice()
+            var family = ViemUtf8Slice()
             family.data = familyBuffer.baseAddress
             family.length = UInt64(familyBuffer.count)
 
-            var style = EvimResolvedTextStyleV1()
-            style.struct_size = UInt32(MemoryLayout<EvimResolvedTextStyleV1>.size)
-            style.slant = UInt32(EVIM_FONT_SLANT_UPRIGHT)
-            style.direction = UInt32(EVIM_TEXT_DIRECTION_AUTO)
+            var style = ViemResolvedTextStyleV1()
+            style.struct_size = UInt32(MemoryLayout<ViemResolvedTextStyleV1>.size)
+            style.slant = UInt32(VIEM_FONT_SLANT_UPRIGHT)
+            style.direction = UInt32(VIEM_TEXT_DIRECTION_AUTO)
             style.size = 14
             style.weight = 400
             style.font_family_count = 1
@@ -435,8 +435,8 @@ private func shape(
             style.features = featureBuffer.baseAddress
             style.feature_count = UInt64(featureBuffer.count)
 
-            var request = EvimShapeRequestV1()
-            request.struct_size = UInt32(MemoryLayout<EvimShapeRequestV1>.size)
+            var request = ViemShapeRequestV1()
+            request.struct_size = UInt32(MemoryLayout<ViemShapeRequestV1>.size)
             request.purpose = purpose
             request.document_id = 7
             request.document_revision = 9
@@ -452,18 +452,18 @@ private func shape(
             request.context_after.length = UInt64(afterBuffer.count)
             request.default_style = style
             request.scale = 1
-            request.paragraph_base_direction = UInt32(EVIM_TEXT_DIRECTION_AUTO)
-            if purpose == UInt32(EVIM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA) {
+            request.paragraph_base_direction = UInt32(VIEM_TEXT_DIRECTION_AUTO)
+            if purpose == UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA) {
               request.has_render_run_policy = 1
               request.render_run_owner = provider.renderRunOwner
-              request.render_run_threading = UInt32(EVIM_RENDER_THREADING_FRONTEND_MAIN)
+              request.render_run_threading = UInt32(VIEM_RENDER_THREADING_FRONTEND_MAIN)
             }
 
             if let styleRun {
               var largeStyle = style
               largeStyle.size = styleRun.size
-              var run = EvimShapeStyleRunV1()
-              run.struct_size = UInt32(MemoryLayout<EvimShapeStyleRunV1>.size)
+              var run = ViemShapeStyleRunV1()
+              run.struct_size = UInt32(MemoryLayout<ViemShapeStyleRunV1>.size)
               run.text_start = styleRun.range.lowerBound
               run.text_end = styleRun.range.upperBound
               run.style = largeStyle
@@ -547,9 +547,9 @@ private enum ShapeTestError: Error {
   case status(UInt32)
 }
 
-private func decoded(_ slice: EvimUtf8Slice) throws -> String {
+private func decoded(_ slice: ViemUtf8Slice) throws -> String {
   guard slice.length <= UInt64(Int.max), let data = slice.data else {
-    throw ShapeTestError.status(UInt32(EVIM_STATUS_INVALID_ARGUMENT))
+    throw ShapeTestError.status(UInt32(VIEM_STATUS_INVALID_ARGUMENT))
   }
   return String(
     decoding: UnsafeBufferPointer(start: data, count: Int(slice.length)),

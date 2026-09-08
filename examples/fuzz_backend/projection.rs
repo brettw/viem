@@ -1,11 +1,11 @@
 //! Source-preserving projection oracle. Trace offsets belong to the snapshot
 //! produced by the preceding action; replay never generates a new random choice.
 use crate::support::{Recorder, Rng, RunStats};
-use evim_core::document::{
+use viem_core::document::{
     Document, DocumentError, Encoding, FileFormat, Format, ModelRequest, ModelTransactionError,
     SemanticInlineStyle, StyleApplication, StyleSpan, StyleTransactionError, TextEdit,
 };
-use evim_core::layout::DocumentLayoutStyles;
+use viem_core::layout::DocumentLayoutStyles;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use unicode_segmentation::UnicodeSegmentation;

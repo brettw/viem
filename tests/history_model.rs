@@ -1,4 +1,4 @@
-use evim_core::document::{Document, HistoryBoundary, HistoryChangeNumber, HistoryError};
+use viem_core::document::{Document, HistoryBoundary, HistoryChangeNumber, HistoryError};
 
 #[test]
 fn public_history_model_retains_branches_and_tracks_preferred_redo() {

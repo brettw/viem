@@ -1,10 +1,10 @@
-use evim_core::command::{InputEvent, Key};
-use evim_core::document::{
+use viem_core::command::{InputEvent, Key};
+use viem_core::document::{
     BlockKind, ModelRequest, SemanticInlineStyle, StyleApplication, StyleId,
 };
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent};
-use evim_core::{Document, Encoding, Format};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent};
+use viem_core::{Document, Encoding, Format};
 
 fn document(source: &str, format: Format) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap()
@@ -338,7 +338,7 @@ fn quoted_prose_after_a_closed_fence_still_enters_a_paragraph() {
             CoreEvent::PlaceCursor {
                 document_revision: core.document().revision(),
                 text_offset: at,
-                affinity: evim_core::document::BoundaryAffinity::Downstream,
+                affinity: viem_core::document::BoundaryAffinity::Downstream,
                 extend_selection: false,
             },
         )

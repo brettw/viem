@@ -1,10 +1,10 @@
-use evim_core::command::clipboard::{
+use viem_core::command::clipboard::{
     ClipboardCommandContext, ClipboardContent, ClipboardGeneration, ClipboardSnapshot,
     ClipboardTarget,
 };
-use evim_core::command::{CommandInterpreter, CommandOutput, CommandStatus, InputEvent, Key};
-use evim_core::document::{Document, Encoding, FontSlant, Format};
-use evim_core::layout::DocumentLayoutStyles;
+use viem_core::command::{CommandInterpreter, CommandOutput, CommandStatus, InputEvent, Key};
+use viem_core::document::{Document, Encoding, FontSlant, Format};
+use viem_core::layout::DocumentLayoutStyles;
 
 fn html(source: &[u8]) -> Document {
     Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Html).unwrap()

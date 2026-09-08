@@ -1099,7 +1099,7 @@ mod tests {
         let rule =
             super::super::super::html_styles::write_rule_v2(&sheet, &sheet.base_paragraph, false)
                 .unwrap();
-        let source = format!("<style id=\"evim-styles\" data-evim-version=\"2\">\n{rule}</style><p>before <b>Bold</b> after</p>");
+        let source = format!("<style id=\"viem-styles\" data-viem-version=\"2\">\n{rule}</style><p>before <b>Bold</b> after</p>");
         let original = open(source.as_bytes(), Format::Html);
         let (fragment, value) = export(&original, "Bold");
         assert!(value.source_text.starts_with("<style"));

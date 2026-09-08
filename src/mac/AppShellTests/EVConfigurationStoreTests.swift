@@ -1,12 +1,12 @@
 import Foundation
 import XCTest
-@testable import EvimAppShell
+@testable import ViemAppShell
 
 @MainActor
 final class EVConfigurationStoreTests: XCTestCase {
   private func fixture() throws -> (URL, UserDefaults) {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-json-\(UUID().uuidString)")
-    let name = "evim-json-legacy-\(UUID().uuidString)"
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-json-\(UUID().uuidString)")
+    let name = "viem-json-legacy-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
     addTeardownBlock { try? FileManager.default.removeItem(at: directory); defaults.removePersistentDomain(forName: name) }
     return (directory, defaults)

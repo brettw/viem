@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor final class EVDeleteSelectionTests: XCTestCase {
     private func surface(_ source: String, type: String) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController) {
@@ -25,7 +25,7 @@ import XCTest
     private func assertHistory(backend: EVCoreDocumentBackend, view: EVEditorSurfaceController,
                                source: String, type: String, expectedText: String) throws {
         XCTAssertEqual(try backend.formattedText(), expectedText)
-        XCTAssertEqual(view.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+        XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
         XCTAssertTrue(view.selectedUTF8Ranges().isEmpty)
         XCTAssertNotNil(view.formattedPointInfo(atUTF8Offset: Int(view.viewPresentation.cursor_utf8_offset)))
         XCTAssertNil(view.commandOutput)
@@ -35,7 +35,7 @@ import XCTest
         view.perform(menuCommand: .redo, sender: nil)
         XCTAssertEqual(try backend.serializedSource(typeName: type), deleted)
         XCTAssertEqual(try backend.formattedText(), expectedText)
-        XCTAssertEqual(view.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+        XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
         XCTAssertNil(view.commandOutput)
     }
 
@@ -48,7 +48,7 @@ import XCTest
         ] {
             for keyCode: UInt16 in [51, 117] {
                 let (backend, view) = try surface(source, type: type)
-                XCTAssertEqual(view.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+                XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
                 let range = (text as NSString).range(of: selected)
                 view.editorView.setAccessibilitySelectedTextRange(range)
                 XCTAssertEqual(view.editorView.accessibilitySelectedTextRange(), range)
@@ -71,10 +71,10 @@ import XCTest
         defer { window.close() }
         view.viewDidLayout()
         view.refreshPresentation()
-        XCTAssertEqual(view.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+        XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
         let session = try XCTUnwrap(view.session)
         let snapshot = try XCTUnwrap(view.layoutSnapshot)
-        let geometry = try session.caretGeometry(offset: 9, affinity: UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM), in: snapshot.info)
+        let geometry = try session.caretGeometry(offset: 9, affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM), in: snapshot.info)
         let local = view.editorView.viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(geometry.rect.x), y: CGFloat(geometry.rect.y + geometry.rect.height * 0.5)))
         let point = view.editorView.convert(local, to: nil)
         let click = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point,

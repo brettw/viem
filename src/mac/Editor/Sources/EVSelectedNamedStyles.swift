@@ -1,4 +1,4 @@
-import CEvimCore
+import CViemCore
 
 struct EVSelectedNamedStyles {
   let identity: EVStyleSheetIdentity
@@ -11,18 +11,18 @@ struct EVSelectedNamedStyles {
 extension EVCoreViewSession {
   func selectedNamedStyles() throws -> EVSelectedNamedStyles {
     let revision = try document.revision()
-    var info = EvimSelectedStylesInfoV1()
+    var info = ViemSelectedStylesInfoV1()
     func check(_ status: UInt32) throws {
-      guard status == UInt32(EVIM_STATUS_OK) else {
+      guard status == UInt32(VIEM_STATUS_OK) else {
         throw EVCoreFrontendError.core(operation: "Read selected styles", status: status)
       }
     }
-    let sizing = evim_core_view_selected_styles_export(
+    let sizing = viem_core_view_selected_styles_export(
       document.core, viewID, revision, &info, nil, 0)
-    if sizing != UInt32(EVIM_STATUS_BUFFER_TOO_SMALL) { try check(sizing) }
+    if sizing != UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) { try check(sizing) }
     var bytes = [UInt8](repeating: 0, count: Int(info.paragraph_id_bytes + info.character_id_bytes))
     let status = bytes.withUnsafeMutableBufferPointer {
-      evim_core_view_selected_styles_export(
+      viem_core_view_selected_styles_export(
         document.core, viewID, revision, &info, $0.baseAddress, UInt64($0.count))
     }
     try check(status)
@@ -35,7 +35,7 @@ extension EVCoreViewSession {
         ? nil : EVStyleID(rawValue: String(decoding: bytes[..<split], as: UTF8.self)),
       character: info.character_id_bytes == 0
         ? nil : EVStyleID(rawValue: String(decoding: bytes[split...], as: UTF8.self)),
-      paragraphMixed: info.flags & UInt32(EVIM_SELECTED_STYLE_PARAGRAPH_MIXED) != 0,
-      characterMixed: info.flags & UInt32(EVIM_SELECTED_STYLE_CHARACTER_MIXED) != 0)
+      paragraphMixed: info.flags & UInt32(VIEM_SELECTED_STYLE_PARAGRAPH_MIXED) != 0,
+      characterMixed: info.flags & UInt32(VIEM_SELECTED_STYLE_CHARACTER_MIXED) != 0)
   }
 }

@@ -5,9 +5,9 @@
 //! coordinator path that a frontend uses. A valid case may contain pending
 //! prefix states, but it must finish and no event may be reported unsupported.
 
-use evim_core::command::{CommandStatus, InputEvent, Key};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, Document, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, Document, ViewId};
 
 const PROSE: &str =
     "alpha beta (gamma). Next sentence!\n\nparagraph two delta epsilon\nthird target alpha beta\nfourth line";
@@ -672,7 +672,7 @@ fn visual_block_join_uses_touched_hard_lines_and_is_one_undo_unit() {
 
 #[test]
 fn visual_block_join_is_line_mode_independent_and_dot_replays_its_block_extent() {
-    use evim_core::command::LineMode;
+    use viem_core::command::LineMode;
     let original = "abcdefghij\nx\nthird";
     for mode in [LineMode::Visual, LineMode::PhysicalSource] {
         for (join, expected) in [("J", "abcdefghij x third"), ("gJ", "abcdefghijxthird")] {

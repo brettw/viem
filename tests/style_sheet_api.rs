@@ -1,4 +1,4 @@
-use evim_core::document::{
+use viem_core::document::{
     BlockProperties, BlockRole, BlockStyle, CharacterProperties, CharacterStyle,
     StyleDefinitionMetadata, StyleId, StyleSheet,
 };

@@ -1,13 +1,13 @@
 //! Minimized from seed1-followup.jsonl, action 1397 (`3<<`). Nine LF bytes
 //! suffice: scrolling away from cursor zero left the command's layout without
 //! its starting row, even though the shift itself should be a no-op.
-use evim_core::command::{CommandStatus, InputEvent, Key};
-use evim_core::document::{BoundaryAffinity, Document, Encoding, Format};
-use evim_core::layout::{
+use viem_core::command::{CommandStatus, InputEvent, Key};
+use viem_core::document::{BoundaryAffinity, Document, Encoding, Format};
+use viem_core::layout::{
     MeasurementEnvironmentId, MeasurementError, MetricsGeneration, MockTextMeasurementProvider,
     RenderRunPolicy, ShapeRequest, ShapedFragment, TextMeasurementProvider,
 };
-use evim_core::{Core, CoreEvent, CoreOutcome, ViewId};
+use viem_core::{Core, CoreEvent, CoreOutcome, ViewId};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 

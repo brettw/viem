@@ -1,10 +1,10 @@
-use evim_core::command::{CommandStatus, InputEvent, Key};
-use evim_core::document::{
+use viem_core::command::{CommandStatus, InputEvent, Key};
+use viem_core::document::{
     Association, BoundaryAffinity, DeletionRecovery, Document, DocumentError, Encoding, Format,
     ModelRequest, ModelTransactionError, ProjectionWorkScope, TextEdit,
 };
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent};
 
 #[test]
 fn physical_source_changes_with_identical_projection_have_an_identity_text_map() {

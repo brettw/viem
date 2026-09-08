@@ -1,10 +1,10 @@
-use evim_core::{Document, Encoding, Format};
+use viem_core::{Document, Encoding, Format};
 use std::time::Instant;
 
 #[test]
 #[ignore = "manual timing of the current repository specification"]
 fn time_repository_markdown_switches() {
-    let path = std::env::var("EVIM_PROFILE_MARKDOWN_PATH").unwrap_or_else(|_| "AGENTS.md".into());
+    let path = std::env::var("VIEM_PROFILE_MARKDOWN_PATH").unwrap_or_else(|_| "AGENTS.md".into());
     let source = std::fs::read(path).unwrap();
     let start = Instant::now();
     let mut document =
@@ -35,7 +35,7 @@ fn time_repository_markdown_switches() {
 
 #[test]
 fn large_switches_preserve_source_anchors_styles_and_refresh_after_edit() {
-    use evim_core::document::{
+    use viem_core::document::{
         Association, BoundaryAffinity, DeletionRecovery, MappingOutcome, ModelRequest,
     };
     let source = (0..1_500).map(|index| format!("## Section {index}\n\nA **strong** word and e\u{301} 👩🏽‍💻.\nContinuation {index}.\n\n")).collect::<String>();

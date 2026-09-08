@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVTextInputClientTests: XCTestCase {
     @MainActor
@@ -32,7 +32,7 @@ final class EVTextInputClientTests: XCTestCase {
 
             XCTAssertEqual(view.inputContextDiscardCount, 1, "route \(route)")
             XCTAssertTrue(view.inputContextHandledKeyCodes.isEmpty)
-            XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
             XCTAssertEqual(try backend.formattedText(), "obase")
             XCTAssertEqual(try backend.revision(), revision)
             _ = try session.undo()
@@ -102,10 +102,10 @@ final class EVTextInputClientTests: XCTestCase {
         XCTAssertEqual(view.inputContextDiscardCount, 1)
         XCTAssertEqual(surface.fullPresentedText(), "obase")
         XCTAssertEqual(try backend.revision(), revision)
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_INSERT))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
         // A second Escape now performs the ordinary mode transition.
         view.keyDown(with: keyEvent(keyCode: 53))
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
         _ = try session.undo()
         XCTAssertEqual(try backend.formattedText(), "base")
         _ = try session.redo()
@@ -345,7 +345,7 @@ final class EVTextInputClientTests: XCTestCase {
         )
         XCTAssertTrue(client.hasMarkedText())
 
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_RIGHT))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_RIGHT))
 
         XCTAssertFalse(client.hasMarkedText())
         XCTAssertEqual(client.markedRange().location, NSNotFound)
@@ -413,7 +413,7 @@ final class EVTextInputClientTests: XCTestCase {
         surface.editorView.keyDown(with: keyEvent(keyCode: 53))
         XCTAssertFalse(client.hasMarkedText())
         XCTAssertFalse(session.hasActiveComposition)
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_INSERT))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
         XCTAssertEqual(try backend.formattedText(), "かなbase")
     }
 
@@ -443,7 +443,7 @@ final class EVTextInputClientTests: XCTestCase {
         client.insertText("YZ", replacementRange: client.markedRange())
         XCTAssertFalse(client.hasMarkedText())
         XCTAssertFalse(session.hasActiveComposition)
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_REPLACE))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_REPLACE))
         XCTAssertEqual(try backend.formattedText(), "YZbcd")
 
         client.setMarkedText(
@@ -483,7 +483,7 @@ final class EVTextInputClientTests: XCTestCase {
         client.insertText("漢", replacementRange: NSRange(location: NSNotFound, length: 0))
         XCTAssertFalse(client.hasMarkedText())
         XCTAssertFalse(session.hasActiveComposition)
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
         XCTAssertEqual(try backend.formattedText(), "base")
 
         client.setMarkedText(
@@ -493,7 +493,7 @@ final class EVTextInputClientTests: XCTestCase {
         )
         surface.editorView.keyDown(with: keyEvent(keyCode: 53))
         XCTAssertFalse(client.hasMarkedText())
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
         XCTAssertEqual(try backend.formattedText(), "base")
 
         surface.performInput { _ = try session.sendText("v") }
@@ -509,7 +509,7 @@ final class EVTextInputClientTests: XCTestCase {
         surface.editorView.keyDown(with: keyEvent(keyCode: 53))
         XCTAssertFalse(client.hasMarkedText())
         XCTAssertFalse(session.hasActiveComposition)
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_VISUAL_CHARACTER))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
         XCTAssertEqual(try backend.formattedText(), "base")
     }
 
@@ -526,7 +526,7 @@ final class EVTextInputClientTests: XCTestCase {
         surface.performInput {
             _ = try session.sendText(":")
             _ = try session.sendText("abcd")
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_LEFT))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_LEFT))
         }
         XCTAssertEqual(client.selectedRange(), NSRange(location: 3, length: 0))
 
@@ -571,7 +571,7 @@ final class EVTextInputClientTests: XCTestCase {
         )
         surface.editorView.keyDown(with: keyEvent(keyCode: 53))
         XCTAssertFalse(client.hasMarkedText())
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_COMMAND_LINE))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_COMMAND_LINE))
         XCTAssertEqual(surface.commandLine?.text, "abcかなd")
         XCTAssertEqual(try backend.formattedText(), "document")
     }
@@ -618,8 +618,8 @@ final class EVTextInputClientTests: XCTestCase {
         )
         surface.editorView.keyDown(with: keyEvent(keyCode: 53))
         XCTAssertFalse(client.hasMarkedText())
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_COMMAND_LINE))
-        XCTAssertEqual(surface.commandLine?.info.identity.kind, UInt32(EVIM_COMMAND_LINE_KIND_SEARCH_FORWARD))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_COMMAND_LINE))
+        XCTAssertEqual(surface.commandLine?.info.identity.kind, UInt32(VIEM_COMMAND_LINE_KIND_SEARCH_FORWARD))
         XCTAssertEqual(surface.commandLine?.text, "A犬B")
         XCTAssertEqual(try backend.formattedText(), "café document")
     }
@@ -644,7 +644,7 @@ final class EVTextInputClientTests: XCTestCase {
 
         // Simulate a core-owned command-line change that arrives before the
         // surface has republished its cached presentation.
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_LEFT))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_LEFT))
         client.unmarkText()
 
         XCTAssertFalse(client.hasMarkedText())
@@ -677,7 +677,7 @@ final class EVTextInputClientTests: XCTestCase {
         let initialTop = surface.viewportState.top
         XCTAssertTrue(view.performDragAutoscrollStep())
         XCTAssertGreaterThan(surface.viewportState.top, initialTop)
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_VISUAL_CHARACTER))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
 
         view.mouseUp(with: mouseEvent(type: .leftMouseUp, location: NSPoint(x: 250, y: -30)))
         XCTAssertFalse(view.isDragAutoscrollActive)

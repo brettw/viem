@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVListDecorationIntegrationTests: XCTestCase {
@@ -24,12 +24,12 @@ final class EVListDecorationIntegrationTests: XCTestCase {
         XCTAssertEqual(try backend.formattedText(), "Alpha\n\nThird")
         var snapshot = try session.layoutExport()
         XCTAssertEqual(String(decoding: snapshot.decorationLabels, as: UTF8.self), "9.10.11.")
-        XCTAssertTrue(snapshot.decorations.allSatisfy { $0.flags & UInt32(EVIM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0 })
+        XCTAssertTrue(snapshot.decorations.allSatisfy { $0.flags & UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0 })
         let empty = try XCTUnwrap(snapshot.rows.first { $0.text_start == $0.text_end })
         XCTAssertEqual(empty.cluster_count, 0)
         XCTAssertGreaterThan(empty.caret_count, 0)
         let first = try XCTUnwrap(snapshot.decorations.first)
-        let caret = try session.caretGeometry(offset: 0, affinity: UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM), in: snapshot.info)
+        let caret = try session.caretGeometry(offset: 0, affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM), in: snapshot.info)
         XCTAssertGreaterThan(caret.rect.x, first.x + first.advance)
         let hit = try session.hitTest(CGPoint(x: CGFloat(first.x), y: CGFloat(snapshot.rows[0].y + 2)), in: snapshot.info)
         XCTAssertEqual(hit.text_offset, 0)
@@ -66,18 +66,18 @@ final class EVListDecorationIntegrationTests: XCTestCase {
         let session = try XCTUnwrap(surface.session)
         let snapshot = try session.layoutExport()
         var identity = snapshot.info.identity
-        var info = EvimLayoutDecorationsInfoV1()
-        XCTAssertEqual(evim_core_view_copy_layout_decorations(backend.core, session.viewID, &identity,
-                         nil, 0, nil, 0, &info), UInt32(EVIM_STATUS_BUFFER_TOO_SMALL))
+        var info = ViemLayoutDecorationsInfoV1()
+        XCTAssertEqual(viem_core_view_copy_layout_decorations(backend.core, session.viewID, &identity,
+                         nil, 0, nil, 0, &info), UInt32(VIEM_STATUS_BUFFER_TOO_SMALL))
         XCTAssertGreaterThan(info.decoration_count, 0)
-        var sentinel = EvimLayoutDecorationV1()
+        var sentinel = ViemLayoutDecorationV1()
         sentinel.x = -1234
-        XCTAssertEqual(evim_core_view_copy_layout_decorations(backend.core, session.viewID, &identity,
-                         &sentinel, 1, nil, 0, &info), UInt32(EVIM_STATUS_BUFFER_TOO_SMALL))
+        XCTAssertEqual(viem_core_view_copy_layout_decorations(backend.core, session.viewID, &identity,
+                         &sentinel, 1, nil, 0, &info), UInt32(VIEM_STATUS_BUFFER_TOO_SMALL))
         XCTAssertEqual(sentinel.x, -1234)
         _ = try session.resize(width: 300, height: 240)
-        XCTAssertNotEqual(evim_core_view_copy_layout_decorations(backend.core, session.viewID, &identity,
-                            nil, 0, nil, 0, &info), UInt32(EVIM_STATUS_OK))
+        XCTAssertNotEqual(viem_core_view_copy_layout_decorations(backend.core, session.viewID, &identity,
+                            nil, 0, nil, 0, &info), UInt32(VIEM_STATUS_OK))
         XCTAssertEqual(info.decoration_count, 0)
     }
 

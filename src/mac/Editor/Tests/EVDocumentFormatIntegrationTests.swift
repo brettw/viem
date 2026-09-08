@@ -1,8 +1,8 @@
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import Foundation
 import Testing
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 struct EVDocumentFormatIntegrationTests {
@@ -50,7 +50,7 @@ struct EVDocumentFormatIntegrationTests {
 
         #expect(backend.encodingLabel == "UTF-8")
         #expect(
-            backend.currentDocumentState.flags & UInt32(EVIM_DOCUMENT_STATE_HAS_BOM) != 0
+            backend.currentDocumentState.flags & UInt32(VIEM_DOCUMENT_STATE_HAS_BOM) != 0
         )
         #expect(try backend.formattedText() == "\u{FFFD}")
         #expect(try backend.serializedSource(typeName: "public.plain-text") == source)

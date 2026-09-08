@@ -1,5 +1,5 @@
 import AppKit
-import CEvimCore
+import CViemCore
 
 /// A revision-bound, regional query; obtaining this value never requests layout.
 struct EVSelectedTypography: Equatable {
@@ -19,22 +19,22 @@ struct EVSelectedTypography: Equatable {
 extension EVCoreViewSession {
   func selectedTypography() throws -> EVSelectedTypography {
     let revision = try document.revision()
-    var info = EvimTypographyInfoV1()
-    info.struct_size = UInt32(MemoryLayout<EvimTypographyInfoV1>.size)
+    var info = ViemTypographyInfoV1()
+    info.struct_size = UInt32(MemoryLayout<ViemTypographyInfoV1>.size)
     func check(_ status: UInt32) throws {
-      guard status == UInt32(EVIM_STATUS_OK) else {
+      guard status == UInt32(VIEM_STATUS_OK) else {
         throw EVCoreFrontendError.core(operation: "Read selection typography", status: status)
       }
     }
-    let sizing = evim_core_view_typography_export(
+    let sizing = viem_core_view_typography_export(
       document.core, viewID, revision,
       &info, nil, 0, nil, 0)
-    if sizing != UInt32(EVIM_STATUS_BUFFER_TOO_SMALL) { try check(sizing) }
+    if sizing != UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) { try check(sizing) }
     var family = [UInt8](repeating: 0, count: Int(info.font_family_bytes))
-    var features = [EvimOpenTypeFeatureV1](repeating: .init(), count: Int(info.feature_count))
+    var features = [ViemOpenTypeFeatureV1](repeating: .init(), count: Int(info.feature_count))
     let status = family.withUnsafeMutableBufferPointer { family in
       features.withUnsafeMutableBufferPointer { features in
-        evim_core_view_typography_export(
+        viem_core_view_typography_export(
           document.core, viewID, revision, &info,
           family.baseAddress, UInt64(family.count), features.baseAddress, UInt64(features.count))
       }

@@ -1,9 +1,9 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVCoreStateMenuIntegrationTests: XCTestCase {
     @MainActor
@@ -44,16 +44,16 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         var text: String?
         var generation: UInt64 = 1
 
-        var evimGeneration: UInt64 { generation }
-        var evimIsWritable: Bool { true }
-        func evimString() -> String? { text }
-        func evimCanReadString() -> Bool { text != nil }
-        func evimClearContents() -> Int {
+        var viemGeneration: UInt64 { generation }
+        var viemIsWritable: Bool { true }
+        func viemString() -> String? { text }
+        func viemCanReadString() -> Bool { text != nil }
+        func viemClearContents() -> Int {
             text = nil
             generation &+= 1
             return Int(generation)
         }
-        func evimSetString(_ string: String) -> Bool {
+        func viemSetString(_ string: String) -> Bool {
             text = string
             generation &+= 1
             return true
@@ -72,7 +72,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
 
         _ = try session.sendText("i")
         _ = try session.sendText("X")
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         surface.refreshPresentation()
 
         XCTAssertEqual(surface.formattedText, "Xbase")
@@ -104,7 +104,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
 
         _ = try session.sendText("i")
         _ = try session.sendText("X")
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         let snapshot = try backend.nativeSaveSnapshot(typeName: "public.plain-text")
 
         XCTAssertEqual(snapshot.data, Data("Xbase".utf8))
@@ -115,7 +115,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
 
         XCTAssertFalse(backend.persistenceState.isDirty)
         XCTAssertEqual(
-            surface.documentState.flags & UInt32(EVIM_DOCUMENT_STATE_IS_DIRTY),
+            surface.documentState.flags & UInt32(VIEM_DOCUMENT_STATE_IS_DIRTY),
             0,
             "save acknowledgement refreshes every surface's cached menu state"
         )
@@ -124,7 +124,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
 
         _ = try session.sendText("A")
         _ = try session.sendText("Y")
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         XCTAssertEqual(surface.formattedText, "XbaseY")
         XCTAssertTrue(backend.persistenceState.isDirty)
 
@@ -132,7 +132,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             guard case let EVCoreFrontendError.core(_, status) = error else {
                 return XCTFail("unexpected stale-save error: \(error)")
             }
-            XCTAssertEqual(status, UInt32(EVIM_STATUS_STALE_REVISION))
+            XCTAssertEqual(status, UInt32(VIEM_STATUS_STALE_REVISION))
         }
         XCTAssertTrue(backend.persistenceState.isDirty)
         XCTAssertEqual(try backend.serializedSource(typeName: "public.plain-text"), Data("XbaseY".utf8))
@@ -148,11 +148,11 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         XCTAssertEqual(surface.presentation(for: .wordWrap).state, .on)
 
         try send(Array(":set nowrap"), through: session)
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
         surface.refreshPresentation()
         XCTAssertEqual(surface.presentation(for: .wordWrap).state, .off)
         try send(Array(":set wrap"), through: session)
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
         surface.refreshPresentation()
         XCTAssertEqual(surface.presentation(for: .wordWrap).state, .on)
     }
@@ -192,10 +192,10 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         let first = try makeSurface(backend)
         let second = try makeSurface(backend)
         let choices: [(EVMenuCommand, UInt32)] = [
-            (.encodingLatin1, UInt32(EVIM_ENCODING_LATIN1)),
-            (.encodingUTF16LE, UInt32(EVIM_ENCODING_UTF16_LE)),
-            (.encodingUTF16BE, UInt32(EVIM_ENCODING_UTF16_BE)),
-            (.encodingUTF8, UInt32(EVIM_ENCODING_UTF8)),
+            (.encodingLatin1, UInt32(VIEM_ENCODING_LATIN1)),
+            (.encodingUTF16LE, UInt32(VIEM_ENCODING_UTF16_LE)),
+            (.encodingUTF16BE, UInt32(VIEM_ENCODING_UTF16_BE)),
+            (.encodingUTF8, UInt32(VIEM_ENCODING_UTF8)),
         ]
         XCTAssertEqual(first.surface.presentation(for: .encodingUTF8).state, .on)
         for (command, encoding) in choices {
@@ -221,7 +221,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             try reopened.restoreRecovery(backend.recoverySnapshot())
             XCTAssertEqual(try reopened.formattedText(), "café\nnext")
             XCTAssertEqual(reopened.currentDocumentState.encoding, encoding)
-            XCTAssertEqual(reopened.currentDocumentState.file_format, UInt32(EVIM_FILE_FORMAT_DOS))
+            XCTAssertEqual(reopened.currentDocumentState.file_format, UInt32(VIEM_FILE_FORMAT_DOS))
             first.surface.perform(menuCommand: .undo, sender: nil)
             XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), previous)
             XCTAssertEqual(backend.currentDocumentState.encoding, previousEncoding)
@@ -265,7 +265,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             guard case let EVCoreFrontendError.core(_, status) = error else {
                 return XCTFail("Unexpected stale-state error: \(error)")
             }
-            XCTAssertEqual(status, UInt32(EVIM_STATUS_STALE_REVISION))
+            XCTAssertEqual(status, UInt32(VIEM_STATUS_STALE_REVISION))
         }
         first.surface.perform(menuCommand: .undo, sender: nil)
         XCTAssertEqual(first.surface.presentation(for: .includeStyleDefinitionsInFile).state, .off)
@@ -305,7 +305,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         let bytes = try backend.serializedSource(typeName: "public.plain-text")
 
         XCTAssertThrowsError(
-            try session.setFileFormat(UInt32(EVIM_FILE_FORMAT_MAC), expected: before)
+            try session.setFileFormat(UInt32(VIEM_FILE_FORMAT_MAC), expected: before)
         )
         surface.refreshPresentation()
         let after = try backend.documentState()
@@ -326,7 +326,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         XCTAssertEqual(surface.commandLine?.prompt, "/")
         XCTAssertEqual(surface.commandLine?.text, "")
         _ = try session.sendText("one")
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
         surface.refreshPresentation()
         let firstMatch = surface.viewPresentation.cursor_utf8_offset
 
@@ -362,9 +362,9 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
 
         XCTAssertEqual(findPasteboard.text, "a.c")
         XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, cursor)
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_VISUAL_CHARACTER))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
 
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         _ = try session.sendText("0")
         surface.refreshPresentation()
         surface.perform(menuCommand: .findNext, sender: nil)
@@ -399,7 +399,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
 
         XCTAssertGreaterThan(surface.viewportState.top, 1_000)
         XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, selectionCursor)
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_VISUAL_CHARACTER))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
         XCTAssertNotNil(surface.visualSelection)
     }
 
@@ -459,7 +459,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             surface.refreshPresentation()
             surface.perform(menuCommand: .delete, sender: nil)
             XCTAssertEqual(surface.formattedText, "bc")
-            XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_INSERT))
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
         }
 
         do {
@@ -468,13 +468,13 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             surface.refreshPresentation()
             surface.perform(menuCommand: .delete, sender: nil)
             XCTAssertEqual(surface.formattedText, "bc")
-            XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_REPLACE))
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_REPLACE))
         }
 
         do {
             let (_, surface, session) = try makeSurface("abc")
             _ = try session.sendText(":abc")
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_HOME))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_HOME))
             surface.refreshPresentation()
             surface.perform(menuCommand: .delete, sender: nil)
             XCTAssertEqual(surface.commandLine?.text, "bc")
@@ -545,13 +545,13 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         surface.perform(menuCommand: .selectVisualRow, sender: nil)
         XCTAssertEqual(surface.selectionText(), "one two")
 
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         surface.refreshPresentation()
         surface.perform(menuCommand: .selectAll, sender: nil)
         XCTAssertEqual(surface.selectionText(), "one two\nthree\n")
         XCTAssertEqual(
             surface.visualSelection?.info.identity.kind,
-            UInt32(EVIM_VISUAL_SELECTION_KIND_LINE)
+            UInt32(VIEM_VISUAL_SELECTION_KIND_LINE)
         )
     }
 
@@ -566,11 +566,11 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         XCTAssertGreaterThan(layout.rows.count, 2)
         let target = layout.rows[1]
 
-        var point = EvimLayoutCaretPointV1()
-        point.struct_size = UInt32(MemoryLayout<EvimLayoutCaretPointV1>.size)
+        var point = ViemLayoutCaretPointV1()
+        point.struct_size = UInt32(MemoryLayout<ViemLayoutCaretPointV1>.size)
         point.document_revision = surface.viewPresentation.document_revision
         point.text_offset = target.text_start
-        point.affinity = UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM)
+        point.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
         _ = try session.placeCursor(point, extendSelection: false)
         surface.refreshPresentation()
 
@@ -602,7 +602,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             XCTAssertEqual(surface.formattedText, "aabbc")
         }
 
-        _ = pasteboard.evimClearContents()
+        _ = pasteboard.viemClearContents()
         do {
             let (_, surface, session) = try makeSurface("abc")
             surface.pasteboard = pasteboard
@@ -618,7 +618,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             XCTAssertEqual(surface.formattedText, "cab")
         }
 
-        _ = pasteboard.evimClearContents()
+        _ = pasteboard.viemClearContents()
         do {
             let (_, surface, session) = try makeSurface("ab\ncd")
             surface.pasteboard = pasteboard
@@ -651,7 +651,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         )
         surface.refreshPresentation()
         XCTAssertNil(surface.visualSelection)
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_VISUAL_CHARACTER))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
 
         XCTAssertTrue(
             surface.presentation(for: .copy).isEnabled,
@@ -672,12 +672,12 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         try enterVisualBlock(through: session, extendRight: false)
         surface.refreshPresentation()
 
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_VISUAL_BLOCK))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_BLOCK))
         XCTAssertTrue(surface.presentation(for: .paste).isEnabled)
         surface.perform(menuCommand: .paste, sender: nil)
 
         XCTAssertEqual(surface.formattedText, "Xb\nXd")
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
     }
 
     @MainActor
@@ -705,7 +705,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         XCTAssertEqual(surface.presentation(for: .bold).state, .on)
         XCTAssertEqual(surface.presentation(for: .italic).state, .off)
         XCTAssertEqual(surface.presentation(for: .undo).title, "Undo Style Change")
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_VISUAL_CHARACTER))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
 
         surface.perform(menuCommand: .undo, sender: nil)
 
@@ -713,7 +713,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             try backend.serializedSource(typeName: EVDocument.markdownType),
             Data("alpha beta".utf8)
         )
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
         XCTAssertFalse(surface.presentation(for: .bold).isEnabled)
         XCTAssertEqual(surface.presentation(for: .redo).title, "Redo Style Change")
 
@@ -723,7 +723,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             try backend.serializedSource(typeName: EVDocument.markdownType),
             Data("**alpha** beta".utf8)
         )
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
         XCTAssertFalse(surface.presentation(for: .bold).isEnabled)
 
         try send(Array("0v4l"), through: session)
@@ -781,7 +781,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             try enterVisualBlock(through: session, extendRight: true)
             surface.refreshPresentation()
 
-            XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_VISUAL_BLOCK))
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_BLOCK))
             XCTAssertFalse(surface.presentation(for: .bold).isEnabled)
             XCTAssertFalse(surface.presentation(for: .italic).isEnabled)
         }
@@ -793,7 +793,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         try send(Array("v4l"), through: session)
         surface.refreshPresentation()
         let stale = try session.semanticStylePresentation(
-            UInt32(EVIM_SEMANTIC_STYLE_STRONG)
+            UInt32(VIEM_SEMANTIC_STYLE_STRONG)
         ).selection
 
         _ = try session.sendText("l")
@@ -801,7 +801,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
 
         XCTAssertThrowsError(
             try session.setSemanticStyle(
-                UInt32(EVIM_SEMANTIC_STYLE_STRONG),
+                UInt32(VIEM_SEMANTIC_STYLE_STRONG),
                 enabled: true,
                 expected: stale
             )
@@ -809,7 +809,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             guard case let EVCoreFrontendError.core(_, status) = error else {
                 return XCTFail("unexpected stale-selection error: \(error)")
             }
-            XCTAssertEqual(status, UInt32(EVIM_STATUS_STALE_REVISION))
+            XCTAssertEqual(status, UInt32(VIEM_STATUS_STALE_REVISION))
         }
         XCTAssertEqual(
             try backend.serializedSource(typeName: EVDocument.markdownType),
@@ -835,7 +835,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         surface.refreshPresentation()
 
         XCTAssertNil(surface.visualSelection)
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_VISUAL_CHARACTER))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
         XCTAssertEqual(surface.presentation(for: .bold).state, .off)
         XCTAssertTrue(surface.presentation(for: .bold).isEnabled)
 
@@ -909,17 +909,17 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         extendRight: Bool
     ) throws {
         _ = try session.sendKey(
-            kind: UInt32(EVIM_KEY_CONTROL_CHARACTER),
+            kind: UInt32(VIEM_KEY_CONTROL_CHARACTER),
             codepoint: UInt32(Character("v").asciiValue!)
         )
         if extendRight {
             _ = try session.sendKey(
-                kind: UInt32(EVIM_KEY_CHARACTER),
+                kind: UInt32(VIEM_KEY_CHARACTER),
                 codepoint: UInt32(Character("l").asciiValue!)
             )
         }
         _ = try session.sendKey(
-            kind: UInt32(EVIM_KEY_CHARACTER),
+            kind: UInt32(VIEM_KEY_CHARACTER),
             codepoint: UInt32(Character("j").asciiValue!)
         )
     }

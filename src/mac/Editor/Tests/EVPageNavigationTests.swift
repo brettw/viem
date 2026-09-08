@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor final class EVPageNavigationTests: XCTestCase {
     private let source = (0..<80).map { index in
@@ -25,7 +25,7 @@ import XCTest
             let nextCursor = view.viewPresentation.cursor_utf8_offset
             let nextTop = try session.viewportState().top
             let snapshot = try XCTUnwrap(view.layoutSnapshot)
-            guard session.lastOutcome.command_status == UInt32(EVIM_COMMAND_STATUS_COMPLETE) else {
+            guard session.lastOutcome.command_status == UInt32(VIEM_COMMAND_STATUS_COMPLETE) else {
                 XCTFail("\(label) down=\(down) step=\(step) status=\(session.lastOutcome.command_status) cursor=\(cursor)→\(nextCursor) top=\(top)→\(nextTop) coverage=\(snapshot.info.coverage_hard_line_start)..<\(snapshot.info.coverage_hard_line_end)/\(snapshot.info.document_hard_line_count)")
                 return
             }

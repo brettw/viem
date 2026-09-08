@@ -1,4 +1,4 @@
-use evim_core::document::*;
+use viem_core::document::*;
 use std::ops::Range;
 
 fn open(source: &[u8], format: Format) -> Document {
@@ -259,7 +259,7 @@ fn named_typing_preserves_space_only_markdown_and_rejects_internal_styles() {
 
 #[test]
 fn html_named_assignment_preserves_existing_direct_properties() {
-    use evim_core::layout::DocumentLayoutStyles;
+    use viem_core::layout::DocumentLayoutStyles;
     let mut document = open(
         b"<p><span style='font-size:30pt;font-weight:450'><b>word</b></span></p>",
         Format::Html,

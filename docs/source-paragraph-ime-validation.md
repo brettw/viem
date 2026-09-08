@@ -30,7 +30,7 @@ WYSIWYG. Saving a disposable result confirmed the required blank source line.
 The source fixture with normal paragraphs, a continuation line, a list, and
 fenced code showed styled paragraph gaps and retained the code's internal blank
 row. Toggling Flow Source Paragraphs joined only the ordinary continuation.
-Disposable UTF-8 fixtures live under `/private/tmp/evim-source-ime-validation`.
+Disposable UTF-8 fixtures live under `/private/tmp/viem-source-ime-validation`.
 
 The original IME code failed three new native regressions. Direct
 `cancelOperation` raised an unrecognized-selector exception, and Escape without
@@ -55,7 +55,7 @@ Relevant tests include `markdown_source_paragraphs`, `markdown_source_navigation
 UTF-8/Latin-1/UTF-16, list exit, source and display navigation, copy/move/sort,
 undo, paragraph spacing, cache invalidation, and bounded large-document work.
 
-Final logs are `/private/tmp/evim-source-ime-final-core.log`,
-`/private/tmp/evim-source-ime-final-native.log`, and
-`/private/tmp/evim-source-ime-final-build.log`. The targeted IME red/green logs
-are under `/private/tmp/evim-ime-escape-*`.
+Final logs are `/private/tmp/viem-source-ime-final-core.log`,
+`/private/tmp/viem-source-ime-final-native.log`, and
+`/private/tmp/viem-source-ime-final-build.log`. The targeted IME red/green logs
+are under `/private/tmp/viem-ime-escape-*`.

@@ -19,7 +19,7 @@ public struct EVRecoverySnapshot: Codable, Equatable, Sendable {
 }
 
 struct EVRecoveryRecord: Codable, Equatable, Sendable {
-    static let magic = Data("EVIM-RECOVERY\n".utf8)
+    static let magic = Data("VIEM-RECOVERY\n".utf8)
     let version: Int
     let owner: UUID
     let processID: Int32
@@ -39,7 +39,7 @@ struct EVRecoveryRecord: Codable, Equatable, Sendable {
 public struct EVRecoveryCandidate: Sendable {
     public let url: URL
     public let snapshot: EVRecoverySnapshot?
-    public let isEVimRecovery: Bool
+    public let isViemRecovery: Bool
     public let ownerMayBeRunning: Bool
     public let updated: Date?
 }
@@ -52,7 +52,7 @@ enum EVRecoveryError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .ownershipLost: "The recovery file now belongs to another editing session. It was left unchanged."
-        case .noAvailableSlot: "eVim could not create a recovery file for this document."
+        case .noAvailableSlot: "Viem could not create a recovery file for this document."
         case .readOnly: "This document was opened read-only. Use :w! or confirm Save Anyway to write it."
         case .backendUnavailable: "This document backend does not support recovery or read-only editing."
         }
@@ -65,7 +65,7 @@ final class EVRecoveryStore: @unchecked Sendable {
     let url: URL
     let owner: UUID
     private var record: EVRecoveryRecord
-    private let queue = DispatchQueue(label: "com.evim.recovery", qos: .utility)
+    private let queue = DispatchQueue(label: "com.viem.recovery", qos: .utility)
     private let lock = NSLock()
     private var generation: UInt64 = 0
     private var closed = false
@@ -83,7 +83,7 @@ final class EVRecoveryStore: @unchecked Sendable {
             let value = (try? Data(contentsOf: url)).flatMap(EVRecoveryRecord.decode)
             let matching = value.flatMap { $0.targetPath == target.path ? $0 : nil }
             let live = matching.map { $0.host != ProcessInfo.processInfo.hostName || kill($0.processID, 0) == 0 || errno == EPERM } ?? true
-            return EVRecoveryCandidate(url: url, snapshot: matching?.snapshot, isEVimRecovery: matching != nil, ownerMayBeRunning: live, updated: matching?.updated)
+            return EVRecoveryCandidate(url: url, snapshot: matching?.snapshot, isViemRecovery: matching != nil, ownerMayBeRunning: live, updated: matching?.updated)
         }.sorted { ($0.updated ?? .distantPast) > ($1.updated ?? .distantPast) }
     }
 
@@ -106,11 +106,11 @@ final class EVRecoveryStore: @unchecked Sendable {
     }
 
     private static func slotURLs(for target: URL) -> [URL] {
-        let name = ".\(target.lastPathComponent).evim"
+        let name = ".\(target.lastPathComponent).viem"
         let local = (0..<100).map { index in target.deletingLastPathComponent().appendingPathComponent(index == 0 ? "\(name).swp" : "\(name).\(index).swp") }
         let hash = SHA256.hash(data: Data(target.path.utf8)).map { String(format: "%02x", $0) }.joined()
         let fallback = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("eVim/Recovery", isDirectory: true)
+            .appendingPathComponent("Viem/Recovery", isDirectory: true)
         return local + (0..<100).map { fallback.appendingPathComponent("\(hash).\($0).swp") }
     }
 
@@ -124,7 +124,7 @@ final class EVRecoveryStore: @unchecked Sendable {
                 var candidate = record
                 candidate.updated = Date(); candidate.snapshot = snapshot
                 let bytes = try candidate.encoded()
-                let temporary = url.deletingLastPathComponent().appendingPathComponent(".evim-recovery-\(owner.uuidString)-\(requested).tmp")
+                let temporary = url.deletingLastPathComponent().appendingPathComponent(".viem-recovery-\(owner.uuidString)-\(requested).tmp")
                 let temporaryIdentity = try Self.writeExclusive(bytes, to: temporary)
                 defer { Self.remove(temporary, ifIdentityMatches: temporaryIdentity) }
                 let committed = try lock.withLock {

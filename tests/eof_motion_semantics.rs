@@ -1,6 +1,6 @@
-use evim_core::command::{CommandStatus, InputEvent, Key};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, Document, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, Document, ViewId};
 
 fn editor(text: &str) -> (Core<MockTextMeasurementProvider>, ViewId) {
     let mut core = Core::new(Document::new(text));

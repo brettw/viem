@@ -1,4 +1,4 @@
-use evim_core::document::{
+use viem_core::document::{
     Association, BoundaryAffinity, DeletionRecovery, Document, Encoding, Format,
     FormattedPayloadEdit, FormattedPayloadEditRequest, FormattedTextPayload, ModelRequest,
     TextEdit,

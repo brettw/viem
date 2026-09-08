@@ -1,9 +1,9 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVHostEffectsIntegrationTests: XCTestCase {
@@ -14,16 +14,16 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
         var acceptsWrites = true
         var writes: [String] = []
 
-        var evimGeneration: UInt64 { generation }
-        var evimIsWritable: Bool { isWritable }
-        func evimString() -> String? { text }
-        func evimCanReadString() -> Bool { text != nil }
-        func evimClearContents() -> Int {
+        var viemGeneration: UInt64 { generation }
+        var viemIsWritable: Bool { isWritable }
+        func viemString() -> String? { text }
+        func viemCanReadString() -> Bool { text != nil }
+        func viemClearContents() -> Int {
             text = nil
             generation &+= 1
             return Int(generation)
         }
-        func evimSetString(_ string: String) -> Bool {
+        func viemSetString(_ string: String) -> Bool {
             guard acceptsWrites else { return false }
             text = string
             writes.append(string)
@@ -64,8 +64,8 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
 
         XCTAssertEqual(snapshots.count, 2)
         XCTAssertEqual(snapshots.map(\.target), [
-            UInt32(EVIM_CLIPBOARD_TARGET_CLIPBOARD),
-            UInt32(EVIM_CLIPBOARD_TARGET_PRIMARY),
+            UInt32(VIEM_CLIPBOARD_TARGET_CLIPBOARD),
+            UInt32(VIEM_CLIPBOARD_TARGET_PRIMARY),
         ])
         XCTAssertEqual(snapshots.map(\.plainText), ["shared", "shared"])
         XCTAssertEqual(snapshots.map(\.generation), [73, 73])
@@ -123,13 +123,13 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
         let host = CommandTurnHost()
         host.snapshots = [
             EVClipboardTurnSnapshot(
-                target: UInt32(EVIM_CLIPBOARD_TARGET_CLIPBOARD),
+                target: UInt32(VIEM_CLIPBOARD_TARGET_CLIPBOARD),
                 generation: 0,
                 plainText: nil,
                 isWritable: true
             ),
             EVClipboardTurnSnapshot(
-                target: UInt32(EVIM_CLIPBOARD_TARGET_PRIMARY),
+                target: UInt32(VIEM_CLIPBOARD_TARGET_PRIMARY),
                 generation: 0,
                 plainText: nil,
                 isWritable: true
@@ -141,8 +141,8 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
 
         let batch = try XCTUnwrap(host.batches.last)
         let write = try XCTUnwrap(batch.clipboardWrites.first)
-        XCTAssertEqual(write.target, UInt32(EVIM_CLIPBOARD_TARGET_PRIMARY))
-        XCTAssertEqual(write.registerKind, UInt32(EVIM_REGISTER_KIND_CHARACTER))
+        XCTAssertEqual(write.target, UInt32(VIEM_CLIPBOARD_TARGET_PRIMARY))
+        XCTAssertEqual(write.registerKind, UInt32(VIEM_REGISTER_KIND_CHARACTER))
         XCTAssertEqual(write.plainText, "ab")
         XCTAssertEqual(write.documentID, surface.documentState.document_id)
         XCTAssertEqual(write.documentRevision, surface.documentState.document_revision)
@@ -171,7 +171,7 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
             surface.perform(menuCommand: .paste, sender: nil)
 
             XCTAssertEqual(surface.formattedText, "ZZabc")
-            XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_INSERT))
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
         }
     }
 
@@ -190,11 +190,11 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
         XCTAssertEqual(counters.copyCalls, 1)
         XCTAssertEqual(counters.releaseCalls, 1)
         XCTAssertNotEqual(counters.lastReleasedHandle, 0)
-        var info = EvimEffectBatchInfoV1()
-        info.struct_size = UInt32(MemoryLayout<EvimEffectBatchInfoV1>.size)
+        var info = ViemEffectBatchInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemEffectBatchInfoV1>.size)
         XCTAssertEqual(
-            evim_effect_batch_info(counters.lastReleasedHandle, &info),
-            UInt32(EVIM_STATUS_INVALID_HANDLE)
+            viem_effect_batch_info(counters.lastReleasedHandle, &info),
+            UInt32(VIEM_STATUS_INVALID_HANDLE)
         )
     }
 
@@ -301,7 +301,7 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
             clipboardWrites: [
                 EVClipboardWriteEffect(
                     target: 999,
-                    registerKind: UInt32(EVIM_REGISTER_KIND_CHARACTER),
+                    registerKind: UInt32(VIEM_REGISTER_KIND_CHARACTER),
                     documentID: state.document_id,
                     documentRevision: state.document_revision,
                     plainText: "bad",
@@ -347,7 +347,7 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
     private func sendEx(_ command: String, through session: EVCoreViewSession) throws {
         try sendKey(":", through: session)
         _ = try session.sendText(command)
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
     }
 
     private func sendKeys(_ keys: String, through session: EVCoreViewSession) throws {
@@ -356,6 +356,6 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
 
     private func sendKey(_ key: Character, through session: EVCoreViewSession) throws {
         let scalar = try XCTUnwrap(key.unicodeScalars.first)
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_CHARACTER), codepoint: scalar.value)
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: scalar.value)
     }
 }

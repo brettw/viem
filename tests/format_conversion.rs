@@ -1,4 +1,4 @@
-use evim_core::document::{
+use viem_core::document::{
     ConversionWarning, Document, Encoding, Format, ModelRequest, ProjectionWorkScope,
     StyleApplication, TextEdit,
 };
@@ -181,7 +181,7 @@ fn nested_lists_and_code_delimiters_survive_supported_conversion() {
 }
 #[test]
 fn simple_direct_emphasis_writes_tags_without_private_css_flags() {
-    use evim_core::document::{
+    use viem_core::document::{
         CharacterProperties, FontSlant, PersistedStyleIntent, StyleModelIntent, StyleModelRequest,
         TextRange,
     };
@@ -207,15 +207,15 @@ fn simple_direct_emphasis_writes_tags_without_private_css_flags() {
         .unwrap();
     let source = String::from_utf8(document.source_bytes()).unwrap();
     assert!(source.contains("<b><i>word</i></b>"), "{source}");
-    assert!(!source.contains("--evim"));
+    assert!(!source.contains("--viem"));
     let resolved =
-        evim_core::layout::DocumentLayoutStyles::character_at(document.projection(), 0, false)
+        viem_core::layout::DocumentLayoutStyles::character_at(document.projection(), 0, false)
             .unwrap();
     assert_eq!((resolved.base_weight, resolved.weight), (200, 500));
 }
 #[test]
 fn named_code_edits_invalidate_only_code_and_keep_raw_source() {
-    use evim_core::document::{
+    use viem_core::document::{
         ConfigurationStyleIntent, StyleDefinitionEdit, StyleInvalidationEffect, StyleModelIntent,
         StyleModelRequest,
     };
@@ -243,16 +243,16 @@ fn named_code_edits_invalidate_only_code_and_keep_raw_source() {
     assert_eq!(style.affected_ranges(), &[6..10]);
     assert_eq!(document.source_bytes(), source);
     let resolved =
-        evim_core::layout::DocumentLayoutStyles::character_at(document.projection(), 7, false)
+        viem_core::layout::DocumentLayoutStyles::character_at(document.projection(), 7, false)
             .unwrap();
     assert_eq!(resolved.font_families, ["Menlo"]);
     assert_eq!(resolved.foreground.green, 100.0 / 255.0);
 }
 #[test]
 fn native_conversions_deliver_loss_warning_as_readonly_output_message() {
-    use evim_core::command::ex_execute::{ExFrontendRequest, ExInfoRequest};
-    use evim_core::layout::MockTextMeasurementProvider;
-    use evim_core::{Core, CoreEvent};
+    use viem_core::command::ex_execute::{ExFrontendRequest, ExInfoRequest};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
     let mut core = Core::new(open("<p>Text</p><!--lost-->", Format::Html));
     let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 100.0);
     let outcome = core
@@ -347,7 +347,7 @@ fn grown_inline_code_delimiters_can_be_cleared_with_exact_visible_text() {
     let mut document = open("Use `` a`b `` now", Format::Markdown);
     assert_eq!(document.text(), "Use a`b now");
     document
-        .set_semantic_style(4..7, evim_core::document::SemanticInlineStyle::Code, false)
+        .set_semantic_style(4..7, viem_core::document::SemanticInlineStyle::Code, false)
         .unwrap();
     assert_eq!(document.text(), "Use a`b now");
     assert_eq!(document.source_bytes(), b"Use a`b now");

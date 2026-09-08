@@ -1,7 +1,7 @@
-use evim_core::command::InputEvent;
-use evim_core::document::*;
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent};
+use viem_core::command::InputEvent;
+use viem_core::document::*;
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent};
 
 fn html(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap()
@@ -276,7 +276,7 @@ fn deeper_list_assignment_uses_native_ancestor_items_without_phantom_paragraphs(
 #[test]
 fn generated_native_code_style_edits_recompute_relative_source_formatting_without_dirtying_source()
 {
-    use evim_core::layout::DocumentLayoutStyles;
+    use viem_core::layout::DocumentLayoutStyles;
     for (source, character) in [
         (
             "<p><code><span style='vertical-align:super'>x</span></code></p>",
@@ -350,7 +350,7 @@ fn generated_native_code_style_edits_recompute_relative_source_formatting_withou
 
 #[test]
 fn native_source_style_intent_with_export_off_keeps_source_clean() {
-    use evim_core::layout::DocumentLayoutStyles;
+    use viem_core::layout::DocumentLayoutStyles;
     let source = "<p><span style='vertical-align:super'>x</span></p>";
     let mut document = html(source);
     assert!(!document.is_dirty());

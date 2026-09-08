@@ -1,10 +1,10 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
-import EvimCoreTextProvider
+import CViemCore
+import ViemAppShell
+import ViemCoreTextProvider
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVTypographySessionTests: XCTestCase {
   @MainActor

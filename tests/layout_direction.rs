@@ -1,5 +1,5 @@
-use evim_core::document::{Document, Encoding, Format};
-use evim_core::layout::{
+use viem_core::document::{Document, Encoding, Format};
+use viem_core::layout::{
     compute_layout_job, inspect_layout_provider, prepare_layout_job, DocumentLayoutStyles,
     LayoutCancellationToken, LayoutEngine, LayoutExecutionContext, LayoutJobId, LayoutJobPriority,
     LayoutJobRegion, MockTextMeasurementProvider, ViewLayout, ViewportLayoutRegion,

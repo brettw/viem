@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVCaretAppearanceResolverTests: XCTestCase {
@@ -13,7 +13,7 @@ final class EVCaretAppearanceResolverTests: XCTestCase {
         )
         var publications = 0
         let observer = center.addObserver(
-            forName: .evimCaretAppearanceDidChange,
+            forName: .viemCaretAppearanceDidChange,
             object: resolver,
             queue: nil
         ) { _ in publications += 1 }

@@ -770,7 +770,7 @@ fn visit_document_state_memory(
     state.source.visit_retained_memory(visitor);
     state.projection.visit_retained_memory(visitor);
     state.source_hard_lines.visit_retained_memory(visitor);
-    if std::env::var_os("EVIM_HISTORY_MEMORY_FRESH").is_some() {
+    if std::env::var_os("VIEM_HISTORY_MEMORY_FRESH").is_some() {
         let measure = |visit: &mut dyn FnMut(&mut history_memory::MemoryVisitor<'_>)| {
             let mut memory = history_memory::RetainedMemory::default();
             let roots = memory.capture(|visitor| visit(visitor));

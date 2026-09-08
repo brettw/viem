@@ -1,6 +1,6 @@
-use evim_core::command::{InputEvent, Key};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, Document, Encoding, Format};
+use viem_core::command::{InputEvent, Key};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, Document, Encoding, Format};
 use serde_json::{json, Value};
 
 fn main() {
@@ -18,7 +18,7 @@ fn main() {
     let mut core = Core::new(document);
     let view = core.add_view(MockTextMeasurementProvider::new(), value["width"].as_f64().unwrap_or(180.) as f32, 80.);
     if let Some(at) = value["cursor"].as_u64() {
-        core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(), text_offset:at as usize, affinity:evim_core::document::BoundaryAffinity::Downstream, extend_selection:false }).unwrap();
+        core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(), text_offset:at as usize, affinity:viem_core::document::BoundaryAffinity::Downstream, extend_selection:false }).unwrap();
     }
     println!("{}",json!({"phase":"before","text":core.document().text(),"blocks":format!("{:?}",core.document().projection().blocks()),"provenance":format!("{:?}",core.document().projection().provenance())}));
     for action in value["actions"].as_array().unwrap_or(&Vec::new()) {

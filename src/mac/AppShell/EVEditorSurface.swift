@@ -318,7 +318,7 @@ private final class EVUnavailableEditorSurface: EVEditorSurface {
   var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
 
   init() {
-    let label = NSTextField(wrappingLabelWithString: "The eVim editor surface was not installed.")
+    let label = NSTextField(wrappingLabelWithString: "The Viem editor surface was not installed.")
     label.alignment = .center
     label.textColor = .secondaryLabelColor
 

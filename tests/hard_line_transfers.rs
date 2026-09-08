@@ -1,4 +1,4 @@
-use evim_core::document::{
+use viem_core::document::{
     Document, DocumentError, Encoding, FileFormat, Format, HardLineTransfer, ModelChangeKind,
     ModelRequest, ModelTransactionError, Revision,
 };
@@ -56,7 +56,7 @@ fn request(
 
 fn apply_patches(
     before: &[u8],
-    prepared: &evim_core::document::PreparedModelTransaction,
+    prepared: &viem_core::document::PreparedModelTransaction,
 ) -> Vec<u8> {
     let mut result = before.to_vec();
     for patch in prepared.summary().source_patches().iter().rev() {

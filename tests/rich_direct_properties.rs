@@ -1,4 +1,4 @@
-use evim_core::document::*;
+use viem_core::document::*;
 use std::collections::BTreeSet;
 fn open(source: &str, format: Format) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap()
@@ -282,7 +282,7 @@ fn rtf_clearing_direct_properties_splits_control_lifetimes_and_preserves_unknown
 }
 #[test]
 fn rich_paragraph_layout_indents_first_hard_line_and_invalidates_spacing_only() {
-    use evim_core::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
+    use viem_core::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
     for (format, source) in [
         (
             Format::Html,

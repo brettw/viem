@@ -1,9 +1,9 @@
-use evim_core::command::ex::{parse_ex, ExAction};
-use evim_core::command::ex_execute::{
+use viem_core::command::ex::{parse_ex, ExAction};
+use viem_core::command::ex_execute::{
     execute_ex, ExExecutionContext, ExExecutionState, ExFileRequest, ExFrontendRequest,
     ExRegisterReader, ExRegisterValue,
 };
-use evim_core::document::Document;
+use viem_core::document::Document;
 struct Empty;
 impl ExRegisterReader for Empty {
     fn read(&self, _: Option<char>) -> Option<ExRegisterValue> {

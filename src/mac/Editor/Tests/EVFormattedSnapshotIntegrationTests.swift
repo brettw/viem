@@ -1,6 +1,6 @@
 import AppKit
-import CEvimCore
-@testable import EvimEditor
+import CViemCore
+@testable import ViemEditor
 import XCTest
 
 @MainActor
@@ -72,7 +72,7 @@ final class EVFormattedSnapshotIntegrationTests: XCTestCase {
         )
 
         let session = try EVCoreViewSession(document: backend, width: 400, height: 200)
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_CHARACTER), codepoint: 0x69) // i
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 0x69) // i
         _ = try session.sendText("Z")
         XCTAssertThrowsError(
             try backend.formattedText(in: 0 ..< 1, snapshot: snapshot)
@@ -111,7 +111,7 @@ final class EVFormattedSnapshotIntegrationTests: XCTestCase {
             XCTFail("Expected an attached core view")
             return
         }
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_CHARACTER), codepoint: 0x69) // i
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 0x69) // i
         backend.resetFormattedAccessCounters()
         surface.performInput { _ = try session.sendText("Z") }
         assertOnlyBoundedPresentationReads(backend.formattedAccessCounters)

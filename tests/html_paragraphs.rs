@@ -1,5 +1,5 @@
-use evim_core::command::{CommandInterpreter, InputEvent, Key};
-use evim_core::document::*;
+use viem_core::command::{CommandInterpreter, InputEvent, Key};
+use viem_core::document::*;
 
 fn html(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap()
@@ -203,7 +203,7 @@ fn source_named_next_style_survives_split_reopen_and_redo() {
 
 #[test]
 fn large_document_split_preserves_unaffected_identities_and_cached_shaping() {
-    use evim_core::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
+    use viem_core::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
     let source = (0..10_000)
         .map(|index| format!("<p>Paragraph {index:05}</p>\n"))
         .collect::<String>();

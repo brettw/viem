@@ -1,5 +1,5 @@
-use evim_core::document::*;
-use evim_core::{Document, Encoding, Format};
+use viem_core::document::*;
+use viem_core::{Document, Encoding, Format};
 
 fn open() -> Document {
     Document::from_bytes(br"{\rtf1\ansi{\fonttbl{\f0\fnil Arial;}}{\stylesheet{\s0\fs24 Normal;}{\s5\sbasedon0\snext0\b\fs32\unknown44 Heading 1;}{\*\cs2\i Accent;}}\s5 Title\par \s0 Body {\cs2 accent}}".to_vec(), Encoding::Utf8, Format::Rtf).unwrap()
@@ -169,7 +169,7 @@ fn deleting_in_use_character_style_uses_default_not_parent_and_retains_direct_pr
         StyleDefinitionEdit::DeleteCharacter("RtfC3".into()),
     );
     let resolved =
-        evim_core::layout::DocumentLayoutStyles::character_at(document.projection(), 0, false)
+        viem_core::layout::DocumentLayoutStyles::character_at(document.projection(), 0, false)
             .unwrap();
     assert_eq!(resolved.slant, FontSlant::Upright);
     assert!(!resolved.bold);
@@ -180,7 +180,7 @@ fn deleting_in_use_character_style_uses_default_not_parent_and_retains_direct_pr
     let reopened =
         Document::from_bytes(saved.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
     assert_eq!(
-        evim_core::layout::DocumentLayoutStyles::character_at(reopened.projection(), 0, false)
+        viem_core::layout::DocumentLayoutStyles::character_at(reopened.projection(), 0, false)
             .unwrap(),
         resolved
     );
@@ -204,7 +204,7 @@ fn named_rtf_optional_font_features_round_trip_without_rewriting_opaque_style_co
     ]));
     edit(&mut document, StyleDefinitionEdit::UpdateCharacter(style));
     let selected =
-        evim_core::layout::DocumentLayoutStyles::character_at(document.projection(), 12, false)
+        viem_core::layout::DocumentLayoutStyles::character_at(document.projection(), 12, false)
             .unwrap();
     assert_eq!(selected.open_type_features.get("liga"), Some(&0));
     assert_eq!(selected.open_type_features.get("ss01"), Some(&1));
@@ -214,7 +214,7 @@ fn named_rtf_optional_font_features_round_trip_without_rewriting_opaque_style_co
         .contains("\\unknown44"));
     let reopened = Document::from_bytes(saved, Encoding::Utf8, Format::Rtf).unwrap();
     assert_eq!(
-        evim_core::layout::DocumentLayoutStyles::character_at(reopened.projection(), 12, false)
+        viem_core::layout::DocumentLayoutStyles::character_at(reopened.projection(), 12, false)
             .unwrap(),
         selected
     );
@@ -316,7 +316,7 @@ fn plain_resets_named_character_overrides_default_font_and_baseline() {
 
 #[test]
 fn enter_uses_following_paragraph_style_and_repeats_as_an_undoable_intention() {
-    use evim_core::command::{CommandInterpreter, InputEvent, Key};
+    use viem_core::command::{CommandInterpreter, InputEvent, Key};
     let source = br"{\rtf1{\stylesheet{\s0 Normal;}{\s5\sbasedon0\snext0\b Heading 1;}}\s5 Title}";
     let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
     let mut commands = CommandInterpreter::new();
@@ -388,7 +388,7 @@ fn heading_alias_reuses_native_handle_and_new_heading_allocates_once() {
 
 #[test]
 fn mid_paragraph_enter_retains_current_style_and_copies_sparse_direct_defaults() {
-    use evim_core::command::{CommandInterpreter, InputEvent, Key};
+    use viem_core::command::{CommandInterpreter, InputEvent, Key};
     let source=br"{\rtf1{\stylesheet{\s0 Normal;}{\s5\sbasedon0\snext0\b Heading 1;}}\s5\i\sa120 Title rest}";
     let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
     let mut commands = CommandInterpreter::new();
@@ -421,7 +421,7 @@ fn mid_paragraph_enter_retains_current_style_and_copies_sparse_direct_defaults()
 
 #[test]
 fn freshly_authored_heading_enters_implicit_normal_style_without_s0_definition() {
-    use evim_core::command::{CommandInterpreter, InputEvent, Key};
+    use viem_core::command::{CommandInterpreter, InputEvent, Key};
     let mut document =
         Document::from_bytes(br"{\rtf1 Title}".to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
     document

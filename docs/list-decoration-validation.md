@@ -32,13 +32,13 @@ direction, and marker shaping evicting the body shaping cache.
 - Command checks include bullet/decimal fixtures, counts, registers, operators,
   dot repeat, Unicode graphemes, empty items, partial rows, and exact source undo.
 
-Final logs are in `/private/tmp/evim-list-final-core-tests.log`,
-`/private/tmp/evim-list-native-complete-final.log`, and
-`/private/tmp/evim-list-native-editing-final.log`.
+Final logs are in `/private/tmp/viem-list-final-core-tests.log`,
+`/private/tmp/viem-list-native-complete-final.log`, and
+`/private/tmp/viem-list-native-editing-final.log`.
 
 ## Computer use
 
-Used the separately signed `com.evim.todo-validation` app with disposable Markdown
+Used the separately signed `com.viem.todo-validation` app with disposable Markdown
 and HTML fixtures and an isolated configuration directory. The user's running
 editor and configuration were left alone. Screenshots were inspected in-session.
 

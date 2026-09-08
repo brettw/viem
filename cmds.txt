@@ -3,4 +3,4 @@ Build backend fuzzer:
 
 Run fuzzer:
   python3 scripts/fuzz-backend.py --suite core --seed 1 --cases 1 --steps 1000
-  cargo run --release --example fuzz_backend -- --suite core --seed 1 --steps 1000 --trace /tmp/evim-fuzz.jsonl
+  cargo run --release --example fuzz_backend -- --suite core --seed 1 --steps 1000 --trace /tmp/viem-fuzz.jsonl

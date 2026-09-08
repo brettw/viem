@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor final class EVParagraphStyleMenuTests: XCTestCase {
     private func surface(_ source: String, type: String) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
@@ -171,7 +171,7 @@ import XCTest
                 view.refreshPresentation()
                 let snapshot = try session.layoutExport()
                 let border = try XCTUnwrap(snapshot.decorations.first {
-                    $0.flags & UInt32(EVIM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0
+                    $0.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0
                 })
                 XCTAssertEqual(border.label_byte_length, 0)
                 XCTAssertGreaterThan(border.ink_bounds.width, 0)
@@ -180,7 +180,7 @@ import XCTest
                 XCTAssertFalse(view.editorView.listMarkersForDrawing(in: snapshot, dirtyRect: rect).isEmpty)
                 XCTAssertTrue(view.editorView.listMarkersForDrawing(in: snapshot,
                     dirtyRect: NSRect(x: 490, y: 200, width: 20, height: 20)).isEmpty)
-                let caret = try session.caretGeometry(offset: 0, affinity: UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM), in: snapshot.info)
+                let caret = try session.caretGeometry(offset: 0, affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM), in: snapshot.info)
                 XCTAssertGreaterThan(caret.rect.x, border.ink_bounds.x + border.ink_bounds.width)
                 let editor = view.editorView
                 let context = try XCTUnwrap(CGContext(data: nil, width: Int(editor.bounds.width), height: Int(editor.bounds.height),

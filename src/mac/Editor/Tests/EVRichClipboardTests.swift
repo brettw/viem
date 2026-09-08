@@ -1,11 +1,11 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor final class EVRichClipboardTests: XCTestCase {
-    private let fragmentType = NSPasteboard.PasteboardType("com.evim.clipboard.fragment.v1")
+    private let fragmentType = NSPasteboard.PasteboardType("com.viem.clipboard.fragment.v1")
 
     private func surface(_ source: String, type: String, pasteboard: NSPasteboard) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
         let backend = EVCoreDocumentBackend()
@@ -21,13 +21,13 @@ import XCTest
     private func keys(_ text: String, session: EVCoreViewSession, surface: EVEditorSurfaceController) throws {
         for character in text {
             let scalar = try XCTUnwrap(character.unicodeScalars.first)
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_CHARACTER), codepoint: scalar.value)
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: scalar.value)
         }
         surface.refreshPresentation()
     }
 
     private func selectAll(session: EVCoreViewSession, surface: EVEditorSurfaceController) throws {
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         // Characterwise selection retains an absent final document newline.
         try keys("ggvG$", session: session, surface: surface)
     }
@@ -88,7 +88,7 @@ import XCTest
             try assertFontTrait(.italic, in: attributed, at: "café")
             XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
             XCTAssertFalse(backend.persistenceState.isDirty)
-            XCTAssertEqual(view.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+            XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
             XCTAssertNil(view.commandOutput)
         }
     }
@@ -259,7 +259,7 @@ import XCTest
         defer { pasteboard.releaseGlobally() }
         let source = "<p><b>ab</b> outside-marker-one<br><b>ab</b> outside-marker-two</p><!--outside-marker-whole-->"
         let (backend, view, session) = try surface(source, type: EVDocument.htmlType, pasteboard: pasteboard)
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_CONTROL_CHARACTER), codepoint: UInt32(Character("v").asciiValue!))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: UInt32(Character("v").asciiValue!))
         try keys("lj", session: session, surface: view)
         let secondRow = "ab outside-marker-one\n".utf8.count
         XCTAssertEqual(view.selectedUTF8Ranges(), [0..<2, secondRow..<(secondRow + 2)])

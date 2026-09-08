@@ -1,9 +1,9 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVProseQualityTests: XCTestCase {
@@ -18,7 +18,7 @@ final class EVProseQualityTests: XCTestCase {
         let session = try XCTUnwrap(surface.session)
         if type == EVDocument.htmlSourceType {
           try session.sendText("/Bold")
-          try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+          try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
           try session.sendText("ea")
         } else {
           try session.sendText("A")
@@ -34,7 +34,7 @@ final class EVProseQualityTests: XCTestCase {
           surface.viewPresentation.cursor_utf8_offset,
           before + (type == EVDocument.htmlSourceType ? 4 : 0))
         try session.sendText(" plain")
-        try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         let edited = String(decoding: try backend.serializedSource(typeName: type), as: UTF8.self)
         XCTAssertTrue(edited.contains("<b>Bold</b>"), edited)
         XCTAssertTrue(edited.contains("plain"), edited)
@@ -73,7 +73,7 @@ final class EVProseQualityTests: XCTestCase {
           try session.sendText(command)
           if ["gg0ciw", "G0o"].contains(command) {
             try session.sendText("Changed é👩🏽‍💻")
-            try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+            try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
           }
           for width in [1, 120, 800, 240] {
             try session.resize(width: CGFloat(width), height: 160)
@@ -125,7 +125,7 @@ final class EVProseQualityTests: XCTestCase {
         for iteration in 0..<12 {
           phase = "iteration \(iteration), search"
           try session.sendText("gg/word")
-          try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+          try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
           try session.sendText("i")
           surface.refreshPresentation()
           surface.perform(menuCommand: .italic, sender: nil)
@@ -135,7 +135,7 @@ final class EVProseQualityTests: XCTestCase {
           surface.perform(menuCommand: .italic, sender: nil)
           phase = "iteration \(iteration), plain input"
           try session.sendText("plain ")
-          try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+          try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
           phase = "iteration \(iteration), reflow"
           try session.setWrap(iteration % 2 == 0)
           try session.setScale([0.75, 1, 2.5][iteration % 3])
@@ -177,7 +177,7 @@ final class EVProseQualityTests: XCTestCase {
       let original = try backend.formattedText()
       try session.sendText("GA")
       for index in 0..<8 {
-        try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+        try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
         try session.resize(width: CGFloat(index % 2 == 0 ? 160 : 640), height: 180)
         surface.refreshPresentation()
         XCTAssertNil(surface.commandOutput, "Return \(index): \(source)")
@@ -185,12 +185,12 @@ final class EVProseQualityTests: XCTestCase {
           try backend.formattedText(), original + String(repeating: "\n", count: index + 1))
       }
       for index in 0..<4 {
-        try session.sendKey(kind: UInt32(EVIM_KEY_BACKSPACE))
+        try session.sendKey(kind: UInt32(VIEM_KEY_BACKSPACE))
         surface.refreshPresentation()
         XCTAssertNil(surface.commandOutput, "Backspace \(index): \(source)")
       }
       try session.sendText("Tail")
-      try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+      try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
       XCTAssertEqual(try backend.formattedText(), original + "\n\n\n\nTail")
       try session.undo()
       XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
@@ -206,13 +206,13 @@ final class EVProseQualityTests: XCTestCase {
         let original = try backend.formattedText()
         try session.sendText("GA")
         for count in 1...4 {
-          try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+          try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
           XCTAssertEqual(
             try backend.formattedText(), original + String(repeating: "\n", count: count))
         }
         try session.sendText("Tail")
         XCTAssertEqual(try backend.formattedText(), original + "\n\n\n\nTail")
-        try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         try session.undo()
         XCTAssertEqual(
           try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))

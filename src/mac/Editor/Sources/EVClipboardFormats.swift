@@ -1,10 +1,10 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import CoreText
-import EvimCoreTextProvider
-import EvimAppShell
+import ViemCoreTextProvider
+import ViemAppShell
 
-/// The portable fragment is authoritative for eVim paste. RTF is a native
+/// The portable fragment is authoritative for Viem paste. RTF is a native
 /// interchange representation generated from the core's resolved styles.
 struct EVClipboardFragment: Decodable {
     let schemaVersion: UInt32
@@ -122,8 +122,8 @@ struct EVClipboardFragment: Decodable {
         }
         for run in characterRuns {
             guard run.size.isFinite, run.size > 0, run.weight.isFinite else { throw EVCoreFrontendError.invalidHostEffect }
-            let slant: UInt32 = run.slant == "Italic" ? UInt32(EVIM_FONT_SLANT_ITALIC)
-                : run.slant == "Oblique" ? UInt32(EVIM_FONT_SLANT_OBLIQUE) : UInt32(EVIM_FONT_SLANT_UPRIGHT)
+            let slant: UInt32 = run.slant == "Italic" ? UInt32(VIEM_FONT_SLANT_ITALIC)
+                : run.slant == "Oblique" ? UInt32(VIEM_FONT_SLANT_OBLIQUE) : UInt32(VIEM_FONT_SLANT_UPRIGHT)
             let font = resolveFont(families: run.fontFamilies, size: run.size, cssWeight: run.weight,
                 slant: slant, features: run.openTypeFeatures.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }, relativeBold: run.bold)
             var attributes: [NSAttributedString.Key: Any] = [
@@ -161,7 +161,7 @@ func readClipboardJSON(
 ) throws -> Data? {
     var required: UInt64 = 0
     let measured = read(nil, 0, &required)
-    guard measured == UInt32(EVIM_STATUS_OK) || measured == UInt32(EVIM_STATUS_BUFFER_TOO_SMALL) else {
+    guard measured == UInt32(VIEM_STATUS_OK) || measured == UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) else {
         throw EVCoreFrontendError.core(operation: operation, status: measured)
     }
     guard required <= UInt64(Int.max) else { throw EVCoreFrontendError.invalidHostEffect }
@@ -171,7 +171,7 @@ func readClipboardJSON(
     let status = data.withUnsafeMutableBytes { bytes in
         read(bytes.bindMemory(to: UInt8.self).baseAddress, UInt64(bytes.count), &written)
     }
-    guard status == UInt32(EVIM_STATUS_OK) else {
+    guard status == UInt32(VIEM_STATUS_OK) else {
         throw EVCoreFrontendError.core(operation: operation, status: status)
     }
     guard written == required else { throw EVCoreFrontendError.invalidHostEffect }
@@ -187,13 +187,13 @@ extension EVCoreDocumentBackend {
         guard range.lowerBound >= 0, range.upperBound >= range.lowerBound else {
             throw EVCoreFrontendError.invalidHostEffect
         }
-        var request = EvimFormattedUtf8RangeV1()
-        request.struct_size = UInt32(MemoryLayout<EvimFormattedUtf8RangeV1>.size)
+        var request = ViemFormattedUtf8RangeV1()
+        request.struct_size = UInt32(MemoryLayout<ViemFormattedUtf8RangeV1>.size)
         request.identity = snapshot.info.identity
         request.utf8_start = UInt64(range.lowerBound)
         request.utf8_end = UInt64(range.upperBound)
         guard let json = try readClipboardJSON(operation: "Copy selection source", { bytes, capacity, required in
-            evim_core_copy_clipboard_json(core, &request, bytes, capacity, required)
+            viem_core_copy_clipboard_json(core, &request, bytes, capacity, required)
         }) else { throw EVCoreFrontendError.invalidHostEffect }
         return json
     }

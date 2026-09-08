@@ -84,9 +84,9 @@ The Rust executable can also be used directly, without the watchdog:
 
 ```sh
 cargo run --release --example fuzz_backend -- \
-  --suite core --seed 1 --steps 1000 --trace /tmp/evim-fuzz.jsonl
+  --suite core --seed 1 --steps 1000 --trace /tmp/viem-fuzz.jsonl
 cargo run --release --example fuzz_backend -- \
-  --replay /tmp/evim-fuzz.jsonl --trace /tmp/evim-fuzz-replay.jsonl
+  --replay /tmp/viem-fuzz.jsonl --trace /tmp/viem-fuzz-replay.jsonl
 ```
 
 ## Memory and repeated sessions

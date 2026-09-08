@@ -1,6 +1,6 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import Foundation
 
 @MainActor
@@ -21,9 +21,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var commandLine: EVCommandLineExport?
     private(set) var commandOutput: String?
     private(set) var visualSelection: EVVisualSelectionExport?
-    private(set) var viewPresentation = EvimViewPresentationV1()
-    private(set) var viewportState = EvimViewportStateV1()
-    private(set) var documentState = EvimDocumentStateV1()
+    private(set) var viewPresentation = ViemViewPresentationV1()
+    private(set) var viewportState = ViemViewportStateV1()
+    private(set) var documentState = ViemDocumentStateV1()
     private(set) var presentationRefreshCount: UInt64 = 0
     private var themeObserver: NSObjectProtocol?
     private var appliedPadding: EVThemePadding?
@@ -74,7 +74,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     init(backend: EVCoreDocumentBackend) {
         self.backend = backend
         super.init(nibName: nil, bundle: nil)
-        themeObserver = NotificationCenter.default.addObserver(forName: .evimThemeDidChange, object: EVThemeStore.shared, queue: .main) { [weak self] _ in
+        themeObserver = NotificationCenter.default.addObserver(forName: .viemThemeDidChange, object: EVThemeStore.shared, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyTheme() }
         }
         do {
@@ -148,8 +148,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         layoutPaint = nil
         commandLine = nil
         visualSelection = nil
-        viewportState = EvimViewportStateV1()
-        documentState = EvimDocumentStateV1()
+        viewportState = ViemViewportStateV1()
+        documentState = ViemDocumentStateV1()
     }
 
     func refreshPresentation() {
@@ -170,7 +170,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             else {
                 throw EVCoreFrontendError.core(
                     operation: "Match formatted snapshot",
-                    status: UInt32(EVIM_STATUS_STALE_REVISION)
+                    status: UInt32(VIEM_STATUS_STALE_REVISION)
                 )
             }
             if let nextCompositionOverlay {
@@ -183,7 +183,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 else {
                     throw EVCoreFrontendError.core(
                         operation: "Match composition projection",
-                        status: UInt32(EVIM_STATUS_STALE_REVISION)
+                        status: UInt32(VIEM_STATUS_STALE_REVISION)
                     )
                 }
             }
@@ -205,14 +205,14 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 else {
                     throw EVCoreFrontendError.core(
                         operation: "Match formatted layout",
-                        status: UInt32(EVIM_STATUS_STALE_REVISION)
+                        status: UInt32(VIEM_STATUS_STALE_REVISION)
                     )
                 }
                 let paint = try session.layoutPaintExport()
                 guard paint.info.identity.isSameLayout(as: nextLayoutSnapshot.info.identity) else {
                     throw EVCoreFrontendError.core(
                         operation: "Match layout paint",
-                        status: UInt32(EVIM_STATUS_STALE_REVISION)
+                        status: UInt32(VIEM_STATUS_STALE_REVISION)
                     )
                 }
                 nextLayoutPaint = paint
@@ -246,15 +246,15 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             else {
                 throw EVCoreFrontendError.core(
                     operation: "Match command line",
-                    status: UInt32(EVIM_STATUS_STALE_REVISION)
+                    status: UInt32(VIEM_STATUS_STALE_REVISION)
                 )
             }
             let nextVisualSelection: EVVisualSelectionExport?
             do {
                 nextVisualSelection = try session.visualSelectionExport()
             } catch EVCoreFrontendError.core(_, let status)
-                where status == UInt32(EVIM_STATUS_OUTSIDE_LAYOUT_COVERAGE)
-                    || status == UInt32(EVIM_STATUS_LAYOUT_UNAVAILABLE)
+                where status == UInt32(VIEM_STATUS_OUTSIDE_LAYOUT_COVERAGE)
+                    || status == UInt32(VIEM_STATUS_LAYOUT_UNAVAILABLE)
             {
                 // Exact selection geometry cannot be approximated safely. It
                 // will become available when core materializes its coverage.
@@ -266,7 +266,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 ) else {
                     throw EVCoreFrontendError.core(
                         operation: "Match Visual selection",
-                        status: UInt32(EVIM_STATUS_STALE_REVISION)
+                        status: UInt32(VIEM_STATUS_STALE_REVISION)
                     )
                 }
             }
@@ -312,7 +312,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         publishHostMessage(error.localizedDescription)
     }
 
-    func sharedDocumentDidChange(originatingViewIDs: Set<EvimViewId>) {
+    func sharedDocumentDidChange(originatingViewIDs: Set<ViemViewId>) {
         if originatingViewIDs.count != 1 || !originatingViewIDs.contains(session?.viewID ?? 0) {
             session?.noteExternalDocumentChange()
         }
@@ -368,10 +368,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             performInput {
                 if self.isVisualMode {
                     _ = try self.sendCommandCharacter("d", session: session)
-                } else if self.viewPresentation.mode == UInt32(EVIM_MODE_NORMAL) {
+                } else if self.viewPresentation.mode == UInt32(VIEM_MODE_NORMAL) {
                     _ = try self.sendCommandCharacter("x", session: session)
                 } else {
-                    _ = try session.sendKey(kind: UInt32(EVIM_KEY_DELETE))
+                    _ = try session.sendKey(kind: UInt32(VIEM_KEY_DELETE))
                 }
             }
         case .selectAll:
@@ -406,7 +406,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             guard isVisualMode else { NSSound.beep(); return }
             performInput { _ = try self.sendCommandCharacter("u", session: session) }
         case .toggleCase:
-            guard isVisualMode || viewPresentation.mode == UInt32(EVIM_MODE_NORMAL) else {
+            guard isVisualMode || viewPresentation.mode == UInt32(VIEM_MODE_NORMAL) else {
                 NSSound.beep()
                 return
             }
@@ -417,14 +417,14 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             performInput { try session.setParagraphFlow(!(try session.paragraphFlow())) }
         case .includeStyleDefinitionsInFile:
             let expected = documentState
-            let enabled = expected.flags & UInt32(EVIM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS) == 0
+            let enabled = expected.flags & UInt32(VIEM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS) == 0
             performInput { _ = try session.setIncludeStyleDefinitionsInFile(enabled, expected: expected) }
         case .lineEndingUnix:
-            setFileFormat(UInt32(EVIM_FILE_FORMAT_UNIX), session: session)
+            setFileFormat(UInt32(VIEM_FILE_FORMAT_UNIX), session: session)
         case .lineEndingWindows:
-            setFileFormat(UInt32(EVIM_FILE_FORMAT_DOS), session: session)
+            setFileFormat(UInt32(VIEM_FILE_FORMAT_DOS), session: session)
         case .lineEndingClassicMac:
-            setFileFormat(UInt32(EVIM_FILE_FORMAT_MAC), session: session)
+            setFileFormat(UInt32(VIEM_FILE_FORMAT_MAC), session: session)
         case .encodingUTF8, .encodingLatin1, .encodingUTF16LE, .encodingUTF16BE:
             let expected = documentState
             performInput { _ = try session.setEncoding(self.encodingValue(menuCommand), expected: expected) }
@@ -440,8 +440,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .bulletedList, .numberedList, .removeList:
             performInput {
                 let selection = try session.listSelection()
-                let style: UInt32 = menuCommand == .bulletedList ? UInt32(EVIM_LIST_STYLE_BULLET)
-                    : menuCommand == .numberedList ? UInt32(EVIM_LIST_STYLE_NUMBERED) : UInt32(EVIM_LIST_STYLE_NONE)
+                let style: UInt32 = menuCommand == .bulletedList ? UInt32(VIEM_LIST_STYLE_BULLET)
+                    : menuCommand == .numberedList ? UInt32(VIEM_LIST_STYLE_NUMBERED) : UInt32(VIEM_LIST_STYLE_NONE)
                 _ = try session.setListStyle(style, expected: selection)
             }
         case .increaseIndent, .decreaseIndent:
@@ -451,7 +451,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                                           expected: session.listSelection())
             }
         case .bold:
-            toggleSemanticStyle(UInt32(EVIM_SEMANTIC_STYLE_STRONG), session: session)
+            toggleSemanticStyle(UInt32(VIEM_SEMANTIC_STYLE_STRONG), session: session)
         case .showFonts:
             EVTypographyPanels.shared.showFonts(for: self)
         case .showColors, .textColor, .highlightColor:
@@ -459,13 +459,13 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .bigger, .smaller:
             changeFontSize(increasing: menuCommand == .bigger)
         case .italic:
-            toggleSemanticStyle(UInt32(EVIM_SEMANTIC_STYLE_EMPHASIS), session: session)
+            toggleSemanticStyle(UInt32(VIEM_SEMANTIC_STYLE_EMPHASIS), session: session)
         case .underline, .strikethrough:
             let property: EVStyleProperty = menuCommand == .underline ? .characterUnderline : .characterStrikethrough
             performInput {
                 let state = try session.decorationState(property)
                 _ = try session.editDirectProperty(property,
-                    value: .boolean(state != UInt32(EVIM_SEMANTIC_STYLE_STATE_ON)),
+                    value: .boolean(state != UInt32(VIEM_SEMANTIC_STYLE_STATE_ON)),
                     expected: session.listSelection())
             }
         case .alignStart, .alignCenter, .alignEnd,
@@ -541,14 +541,14 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             // its geometry is materialized in the current viewport.
             EVMenuItemPresentation(isEnabled: isVisualMode)
         case .paste, .pasteAndMatchStyle:
-            EVMenuItemPresentation(isEnabled: pasteboard.evimCanReadString())
+            EVMenuItemPresentation(isEnabled: pasteboard.viemCanReadString())
         case .delete:
             .enabled
         case .makeUppercase, .makeLowercase:
             EVMenuItemPresentation(isEnabled: isVisualMode)
         case .toggleCase:
             EVMenuItemPresentation(
-                isEnabled: isVisualMode || viewPresentation.mode == UInt32(EVIM_MODE_NORMAL)
+                isEnabled: isVisualMode || viewPresentation.mode == UInt32(VIEM_MODE_NORMAL)
             )
         case .wordWrap:
             EVMenuItemPresentation(isEnabled: true, state: wrapEnabled ? .on : .off)
@@ -557,15 +557,15 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .includeStyleDefinitionsInFile:
             EVMenuItemPresentation(
                 isEnabled: [.html, .htmlSource].contains(backend.sourceFormat)
-                    && documentState.flags & UInt32(EVIM_DOCUMENT_STATE_READ_ONLY) == 0,
-                state: documentState.flags & UInt32(EVIM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS) != 0 ? .on : .off
+                    && documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0,
+                state: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS) != 0 ? .on : .off
             )
         case .lineEndingUnix:
-            fileFormatPresentation(UInt32(EVIM_FILE_FORMAT_UNIX))
+            fileFormatPresentation(UInt32(VIEM_FILE_FORMAT_UNIX))
         case .lineEndingWindows:
-            fileFormatPresentation(UInt32(EVIM_FILE_FORMAT_DOS))
+            fileFormatPresentation(UInt32(VIEM_FILE_FORMAT_DOS))
         case .lineEndingClassicMac:
-            fileFormatPresentation(UInt32(EVIM_FILE_FORMAT_MAC))
+            fileFormatPresentation(UInt32(VIEM_FILE_FORMAT_MAC))
         case .encodingUTF8, .encodingLatin1, .encodingUTF16LE, .encodingUTF16BE:
             EVMenuItemPresentation(
                 isEnabled: backend.sourceFormat != .rtf,
@@ -591,22 +591,22 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             .enabled
         case .bold:
             semanticStyleMenuPresentation(
-                UInt32(EVIM_SEMANTIC_STYLE_STRONG),
+                UInt32(VIEM_SEMANTIC_STYLE_STRONG),
                 session: session
             )
         case .showFonts, .showColors, .textColor, .highlightColor, .bigger, .smaller, .openTypeFeatures:
             EVMenuItemPresentation(isEnabled: canEditTypography)
         case .italic:
             semanticStyleMenuPresentation(
-                UInt32(EVIM_SEMANTIC_STYLE_EMPHASIS),
+                UInt32(VIEM_SEMANTIC_STYLE_EMPHASIS),
                 session: session
             )
         case .underline, .strikethrough:
             if [.html, .htmlSource, .rtf].contains(backend.sourceFormat), let session,
                let state = try? session.decorationState(menuCommand == .underline ? .characterUnderline : .characterStrikethrough) {
                 EVMenuItemPresentation(isEnabled: true,
-                    state: state == UInt32(EVIM_SEMANTIC_STYLE_STATE_ON) ? .on
-                        : state == UInt32(EVIM_SEMANTIC_STYLE_STATE_MIXED) ? .mixed : .off)
+                    state: state == UInt32(VIEM_SEMANTIC_STYLE_STATE_ON) ? .on
+                        : state == UInt32(VIEM_SEMANTIC_STYLE_STATE_MIXED) ? .mixed : .off)
             } else { .disabled }
         case .alignStart, .alignCenter, .alignEnd,
              .directionAutomatic, .directionLeftToRight, .directionRightToLeft,
@@ -626,7 +626,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     var isVisualMode: Bool {
         switch viewPresentation.mode {
-        case UInt32(EVIM_MODE_VISUAL_CHARACTER), UInt32(EVIM_MODE_VISUAL_LINE), UInt32(EVIM_MODE_VISUAL_BLOCK):
+        case UInt32(VIEM_MODE_VISUAL_CHARACTER), UInt32(VIEM_MODE_VISUAL_LINE), UInt32(VIEM_MODE_VISUAL_BLOCK):
             true
         default:
             false
@@ -635,26 +635,26 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     private func directParagraphEdit(for command: EVMenuCommand) -> (EVStyleProperty, EVStyleValue)? {
         switch command {
-        case .alignStart: (.paragraphAlignment, .paragraphAlignment(UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_START)))
-        case .alignCenter: (.paragraphAlignment, .paragraphAlignment(UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_CENTER)))
-        case .alignEnd: (.paragraphAlignment, .paragraphAlignment(UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_END)))
+        case .alignStart: (.paragraphAlignment, .paragraphAlignment(UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_START)))
+        case .alignCenter: (.paragraphAlignment, .paragraphAlignment(UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER)))
+        case .alignEnd: (.paragraphAlignment, .paragraphAlignment(UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_END)))
         case .directionAutomatic: (.paragraphBaseDirection, .writingDirection(0))
         case .directionLeftToRight: (.paragraphBaseDirection, .writingDirection(1))
         case .directionRightToLeft: (.paragraphBaseDirection, .writingDirection(2))
-        case .lineSpacingNormal: (.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(EVIM_STYLE_LINE_SPACING_NORMAL), value: 0)))
+        case .lineSpacingNormal: (.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_NORMAL), value: 0)))
         case .lineSpacingSingle, .lineSpacingOneAndHalf, .lineSpacingDouble:
-            (.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(EVIM_STYLE_LINE_SPACING_MULTIPLIER),
+            (.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER),
                 value: command == .lineSpacingSingle ? 1 : command == .lineSpacingOneAndHalf ? 1.5 : 2)))
         default: nil
         }
     }
 
     var isVisualBlockMode: Bool {
-        viewPresentation.mode == UInt32(EVIM_MODE_VISUAL_BLOCK)
+        viewPresentation.mode == UInt32(VIEM_MODE_VISUAL_BLOCK)
     }
 
     var wrapEnabled: Bool {
-        viewportState.flags & UInt32(EVIM_VIEWPORT_STATE_WRAP) != 0
+        viewportState.flags & UInt32(VIEM_VIEWPORT_STATE_WRAP) != 0
     }
 
     var zoomScale: Float {
@@ -664,11 +664,11 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     var canUndo: Bool {
-        documentState.flags & UInt32(EVIM_DOCUMENT_STATE_CAN_UNDO) != 0
+        documentState.flags & UInt32(VIEM_DOCUMENT_STATE_CAN_UNDO) != 0
     }
 
     var canRedo: Bool {
-        documentState.flags & UInt32(EVIM_DOCUMENT_STATE_CAN_REDO) != 0
+        documentState.flags & UInt32(VIEM_DOCUMENT_STATE_CAN_REDO) != 0
     }
 
     var showInvisibleCharactersEnabled: Bool { showInvisibles }
@@ -768,7 +768,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         return result.count == mapped.count ? result : nil
     }
 
-    func formattedPointInfo(atUTF8Offset offset: Int) -> EvimFormattedPointInfoV1? {
+    func formattedPointInfo(atUTF8Offset offset: Int) -> ViemFormattedPointInfoV1? {
         guard let snapshot = formattedSnapshot,
               offset >= 0,
               offset <= formattedUTF8Length,
@@ -780,7 +780,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     func selectedUTF8Ranges() -> [Range<Int>] {
         guard isVisualMode,
               let visualSelection,
-              visualSelection.info.identity.kind != UInt32(EVIM_VISUAL_SELECTION_KIND_NONE)
+              visualSelection.info.identity.kind != UInt32(VIEM_VISUAL_SELECTION_KIND_NONE)
         else { return [] }
 
         let byteCount = formattedUTF8Length
@@ -817,7 +817,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         guard !ranges.isEmpty else { return nil }
         let pieces = ranges.compactMap(formattedText(in:))
         guard pieces.count == ranges.count else { return nil }
-        if visualSelection?.info.identity.kind == UInt32(EVIM_VISUAL_SELECTION_KIND_BLOCK) {
+        if visualSelection?.info.identity.kind == UInt32(VIEM_VISUAL_SELECTION_KIND_BLOCK) {
             return pieces.joined(separator: "\n")
         }
         return pieces.joined()
@@ -829,7 +829,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             // Native Copy and Cut preserve the selected text exactly, including an
             // absent final newline. The core's internal linewise register can
             // still retain its Vim shape for subsequent register commands.
-            if viewPresentation.mode == UInt32(EVIM_MODE_VISUAL_LINE),
+            if viewPresentation.mode == UInt32(VIEM_MODE_VISUAL_LINE),
                let range = selectedUTF8Range(), let snapshot = formattedSnapshot {
                 let json = try backend.clipboardFragmentJSON(in: range, snapshot: snapshot)
                 nativeCopyRepresentations = try EVClipboardFragment.decode(json).representations(json: json)
@@ -838,7 +838,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             _ = try self.sendCommandCharacter("\"", session: session)
             _ = try self.sendCommandCharacter("+", session: session)
             let outcome = try self.sendCommandCharacter(cut ? "d" : "y", session: session)
-            guard outcome.command_status == UInt32(EVIM_COMMAND_STATUS_COMPLETE) else {
+            guard outcome.command_status == UInt32(VIEM_COMMAND_STATUS_COMPLETE) else {
                 throw EVCoreFrontendError.command(
                     operation: cut ? "Cut" : "Copy",
                     status: outcome.command_status
@@ -854,19 +854,19 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             let fragments = try ranges.map {
                 let fragment = try backend.clipboardFragment(in: $0, snapshot: snapshot)
                 guard fragment.sourceExact || !fragment.sourceText.isEmpty || fragment.plainText.isEmpty else {
-                    throw EVCoreFrontendError.core(operation: "Selection has no exact source fragment", status: UInt32(EVIM_STATUS_AMBIGUOUS_PROJECTION))
+                    throw EVCoreFrontendError.core(operation: "Selection has no exact source fragment", status: UInt32(VIEM_STATUS_AMBIGUOUS_PROJECTION))
                 }
                 return fragment.sourceText
             }
-            let isBlock = visualSelection?.info.identity.kind == UInt32(EVIM_VISUAL_SELECTION_KIND_BLOCK)
+            let isBlock = visualSelection?.info.identity.kind == UInt32(VIEM_VISUAL_SELECTION_KIND_BLOCK)
             let content = EVClipboardRepresentations(plainText: fragments.joined(separator: isBlock ? "\n" : ""))
-            guard pasteboard.evimWrite(content) else { throw EVCoreFrontendError.pasteboardWriteFailed }
+            guard pasteboard.viemWrite(content) else { throw EVCoreFrontendError.pasteboardWriteFailed }
         }
     }
 
     private func useCurrentSelectionForFind(session: EVCoreViewSession) {
         guard let selection = visualSelection,
-              selection.info.identity.kind != UInt32(EVIM_VISUAL_SELECTION_KIND_NONE),
+              selection.info.identity.kind != UInt32(VIEM_VISUAL_SELECTION_KIND_NONE),
               let text = selectionText(),
               !text.isEmpty
         else {
@@ -875,8 +875,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
         performInput {
             _ = try session.useSelectionForFind(selection.info.identity)
-            self.findPasteboard.evimClearContents()
-            guard self.findPasteboard.evimSetString(text) else {
+            self.findPasteboard.viemClearContents()
+            guard self.findPasteboard.viemSetString(text) else {
                 throw EVCoreFrontendError.pasteboardWriteFailed
             }
         }
@@ -904,27 +904,27 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     ) -> EVMenuItemPresentation {
         guard let session,
               let value = try? session.semanticStylePresentation(style),
-              value.struct_size >= UInt32(MemoryLayout<EvimSemanticStylePresentationV1>.size),
+              value.struct_size >= UInt32(MemoryLayout<ViemSemanticStylePresentationV1>.size),
               value.style == style,
-              value.flags & UInt32(EVIM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE | EVIM_SEMANTIC_STYLE_TYPING_CONTEXT) != 0,
+              value.flags & UInt32(VIEM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE | VIEM_SEMANTIC_STYLE_TYPING_CONTEXT) != 0,
               value.selection.struct_size
-                >= UInt32(MemoryLayout<EvimLogicalSelectionIdentityV1>.size)
+                >= UInt32(MemoryLayout<ViemLogicalSelectionIdentityV1>.size)
         else { return .disabled }
 
         switch value.state {
-        case UInt32(EVIM_SEMANTIC_STYLE_STATE_OFF):
+        case UInt32(VIEM_SEMANTIC_STYLE_STATE_OFF):
             return EVMenuItemPresentation(
-                isEnabled: value.flags & UInt32(EVIM_SEMANTIC_STYLE_CAN_SET) != 0,
+                isEnabled: value.flags & UInt32(VIEM_SEMANTIC_STYLE_CAN_SET) != 0,
                 state: .off
             )
-        case UInt32(EVIM_SEMANTIC_STYLE_STATE_ON):
+        case UInt32(VIEM_SEMANTIC_STYLE_STATE_ON):
             return EVMenuItemPresentation(
-                isEnabled: value.flags & UInt32(EVIM_SEMANTIC_STYLE_CAN_CLEAR) != 0,
+                isEnabled: value.flags & UInt32(VIEM_SEMANTIC_STYLE_CAN_CLEAR) != 0,
                 state: .on
             )
-        case UInt32(EVIM_SEMANTIC_STYLE_STATE_MIXED):
+        case UInt32(VIEM_SEMANTIC_STYLE_STATE_MIXED):
             return EVMenuItemPresentation(
-                isEnabled: value.flags & UInt32(EVIM_SEMANTIC_STYLE_CAN_SET) != 0,
+                isEnabled: value.flags & UInt32(VIEM_SEMANTIC_STYLE_CAN_SET) != 0,
                 state: .mixed
             )
         default:
@@ -939,11 +939,11 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             // of viewport/layout coverage.
             let value = try session.semanticStylePresentation(style)
             guard value.struct_size
-                    >= UInt32(MemoryLayout<EvimSemanticStylePresentationV1>.size),
+                    >= UInt32(MemoryLayout<ViemSemanticStylePresentationV1>.size),
                   value.style == style,
-                  value.flags & UInt32(EVIM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE | EVIM_SEMANTIC_STYLE_TYPING_CONTEXT) != 0,
+                  value.flags & UInt32(VIEM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE | VIEM_SEMANTIC_STYLE_TYPING_CONTEXT) != 0,
                   value.selection.struct_size
-                    >= UInt32(MemoryLayout<EvimLogicalSelectionIdentityV1>.size)
+                    >= UInt32(MemoryLayout<ViemLogicalSelectionIdentityV1>.size)
             else {
                 NSSound.beep()
                 return
@@ -952,15 +952,15 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             let enabled: Bool
             let requiredCapability: UInt32
             switch value.state {
-            case UInt32(EVIM_SEMANTIC_STYLE_STATE_OFF):
+            case UInt32(VIEM_SEMANTIC_STYLE_STATE_OFF):
                 enabled = true
-                requiredCapability = UInt32(EVIM_SEMANTIC_STYLE_CAN_SET)
-            case UInt32(EVIM_SEMANTIC_STYLE_STATE_ON):
+                requiredCapability = UInt32(VIEM_SEMANTIC_STYLE_CAN_SET)
+            case UInt32(VIEM_SEMANTIC_STYLE_STATE_ON):
                 enabled = false
-                requiredCapability = UInt32(EVIM_SEMANTIC_STYLE_CAN_CLEAR)
-            case UInt32(EVIM_SEMANTIC_STYLE_STATE_MIXED):
+                requiredCapability = UInt32(VIEM_SEMANTIC_STYLE_CAN_CLEAR)
+            case UInt32(VIEM_SEMANTIC_STYLE_STATE_MIXED):
                 enabled = true
-                requiredCapability = UInt32(EVIM_SEMANTIC_STYLE_CAN_SET)
+                requiredCapability = UInt32(VIEM_SEMANTIC_STYLE_CAN_SET)
             default:
                 NSSound.beep()
                 return
@@ -991,7 +991,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     private func pastePlainText() {
-        guard pasteboard.evimString() != nil,
+        guard pasteboard.viemString() != nil,
               let session
         else {
             NSSound.beep()
@@ -999,11 +999,11 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
         performInput {
             switch self.viewPresentation.mode {
-            case UInt32(EVIM_MODE_INSERT),
-                 UInt32(EVIM_MODE_REPLACE),
-                 UInt32(EVIM_MODE_COMMAND_LINE):
+            case UInt32(VIEM_MODE_INSERT),
+                 UInt32(VIEM_MODE_REPLACE),
+                 UInt32(VIEM_MODE_COMMAND_LINE):
                 _ = try session.sendKey(
-                    kind: UInt32(EVIM_KEY_CONTROL_CHARACTER),
+                    kind: UInt32(VIEM_KEY_CONTROL_CHARACTER),
                     codepoint: UInt32(Character("r").asciiValue!)
                 )
                 _ = try self.sendCommandCharacter("+", session: session)
@@ -1016,8 +1016,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     private func sendNormalSequence(_ characters: [Character], session: EVCoreViewSession) throws {
-        if viewPresentation.mode != UInt32(EVIM_MODE_NORMAL) {
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        if viewPresentation.mode != UInt32(VIEM_MODE_NORMAL) {
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         }
         for character in characters {
             _ = try sendCommandCharacter(character, session: session)
@@ -1027,14 +1027,14 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private func sendCommandCharacter(
         _ character: Character,
         session: EVCoreViewSession
-    ) throws -> EvimCoreOutcomeV1 {
+    ) throws -> ViemCoreOutcomeV1 {
         guard character.unicodeScalars.count == 1,
               let scalar = character.unicodeScalars.first
         else {
             return try session.sendText(String(character))
         }
         return try session.sendKey(
-            kind: UInt32(EVIM_KEY_CHARACTER),
+            kind: UInt32(VIEM_KEY_CHARACTER),
             codepoint: scalar.value
         )
     }
@@ -1046,10 +1046,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     private func encodingValue(_ command: EVMenuCommand) -> UInt32 {
         switch command {
-        case .encodingUTF8: UInt32(EVIM_ENCODING_UTF8)
-        case .encodingLatin1: UInt32(EVIM_ENCODING_LATIN1)
-        case .encodingUTF16LE: UInt32(EVIM_ENCODING_UTF16_LE)
-        case .encodingUTF16BE: UInt32(EVIM_ENCODING_UTF16_BE)
+        case .encodingUTF8: UInt32(VIEM_ENCODING_UTF8)
+        case .encodingLatin1: UInt32(VIEM_ENCODING_LATIN1)
+        case .encodingUTF16LE: UInt32(VIEM_ENCODING_UTF16_LE)
+        case .encodingUTF16BE: UInt32(VIEM_ENCODING_UTF16_BE)
         default: preconditionFailure("Expected an encoding menu command")
         }
     }
@@ -1063,13 +1063,13 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     private func historyTitle(prefix: String, category: UInt32) -> String {
         let action = switch category {
-        case UInt32(EVIM_HISTORY_ACTION_CATEGORY_TEXT): "Text Change"
-        case UInt32(EVIM_HISTORY_ACTION_CATEGORY_STYLE): "Style Change"
-        case UInt32(EVIM_HISTORY_ACTION_CATEGORY_FILE_FORMAT): "Line Endings"
-        case UInt32(EVIM_HISTORY_ACTION_CATEGORY_HARD_LINE_TRANSFER): "Move Lines"
-        case UInt32(EVIM_HISTORY_ACTION_CATEGORY_HARD_LINE_SOURCE_RESTORATION): "Restore Lines"
-        case UInt32(EVIM_HISTORY_ACTION_CATEGORY_SOURCE_METADATA): "Source Metadata"
-        case UInt32(EVIM_HISTORY_ACTION_CATEGORY_MIXED): "Changes"
+        case UInt32(VIEM_HISTORY_ACTION_CATEGORY_TEXT): "Text Change"
+        case UInt32(VIEM_HISTORY_ACTION_CATEGORY_STYLE): "Style Change"
+        case UInt32(VIEM_HISTORY_ACTION_CATEGORY_FILE_FORMAT): "Line Endings"
+        case UInt32(VIEM_HISTORY_ACTION_CATEGORY_HARD_LINE_TRANSFER): "Move Lines"
+        case UInt32(VIEM_HISTORY_ACTION_CATEGORY_HARD_LINE_SOURCE_RESTORATION): "Restore Lines"
+        case UInt32(VIEM_HISTORY_ACTION_CATEGORY_SOURCE_METADATA): "Source Metadata"
+        case UInt32(VIEM_HISTORY_ACTION_CATEGORY_MIXED): "Changes"
         default: ""
         }
         return action.isEmpty ? prefix : "\(prefix) \(action)"
@@ -1078,7 +1078,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private func updateStatusBar() {
         let point = try? session?.lineLocation()
         let line = point.map { location in
-            location.flags & UInt32(EVIM_LINE_LOCATION_GLOBAL_LINE_EXACT) != 0
+            location.flags & UInt32(VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT) != 0
                 ? String(location.line) : "\(location.hard_line)·\(location.fragment)"
         } ?? "1"
         let column = point?.column ?? 1
@@ -1088,7 +1088,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             location: "Ln \(line), Col \(column)",
             format: backend.formatLabel,
             lineMode: (try? session?.lineMode()) ?? .visual,
-            locationIsFragment: point.map { $0.flags & UInt32(EVIM_LINE_LOCATION_GLOBAL_LINE_EXACT) == 0 } ?? false
+            locationIsFragment: point.map { $0.flags & UInt32(VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT) == 0 } ?? false
         )
         statusBarStateDidChange?(statusBarState)
     }
@@ -1107,7 +1107,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             intervals.append(cluster.text_start ..< cluster.text_end)
         }
         for row in snapshot.rows
-            where row.flags & UInt32(EVIM_VISUAL_ROW_WRAPS_TO_NEXT) == 0
+            where row.flags & UInt32(VIEM_VISUAL_ROW_WRAPS_TO_NEXT) == 0
                 && row.hard_line_end < formattedLength
         {
             intervals.append(row.hard_line_end ..< row.hard_line_end + 1)
@@ -1139,12 +1139,12 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     private func modeLabel(_ mode: UInt32) -> String {
         switch mode {
-        case UInt32(EVIM_MODE_INSERT): "INSERT"
-        case UInt32(EVIM_MODE_REPLACE): "REPLACE"
-        case UInt32(EVIM_MODE_VISUAL_CHARACTER): "VISUAL"
-        case UInt32(EVIM_MODE_VISUAL_LINE): "VISUAL LINE"
-        case UInt32(EVIM_MODE_VISUAL_BLOCK): "VISUAL BLOCK"
-        case UInt32(EVIM_MODE_COMMAND_LINE): "COMMAND"
+        case UInt32(VIEM_MODE_INSERT): "INSERT"
+        case UInt32(VIEM_MODE_REPLACE): "REPLACE"
+        case UInt32(VIEM_MODE_VISUAL_CHARACTER): "VISUAL"
+        case UInt32(VIEM_MODE_VISUAL_LINE): "VISUAL LINE"
+        case UInt32(VIEM_MODE_VISUAL_BLOCK): "VISUAL BLOCK"
+        case UInt32(VIEM_MODE_COMMAND_LINE): "COMMAND"
         default: "NORMAL"
         }
     }
@@ -1153,20 +1153,20 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 @MainActor
 extension EVEditorSurfaceController: EVCommandTurnHost {
     func clipboardSnapshotsForCommandTurn() -> [EVClipboardTurnSnapshot] {
-        let text = pasteboard.evimString()
-        let fragment = pasteMatchesStyle ? nil : pasteboard.evimData(forType: EVClipboardRepresentations.fragmentType)
-        let generation = text == nil ? 0 : pasteboard.evimGeneration
-        let writable = pasteboard.evimIsWritable
+        let text = pasteboard.viemString()
+        let fragment = pasteMatchesStyle ? nil : pasteboard.viemData(forType: EVClipboardRepresentations.fragmentType)
+        let generation = text == nil ? 0 : pasteboard.viemGeneration
+        let writable = pasteboard.viemIsWritable
         return [
             EVClipboardTurnSnapshot(
-                target: UInt32(EVIM_CLIPBOARD_TARGET_CLIPBOARD),
+                target: UInt32(VIEM_CLIPBOARD_TARGET_CLIPBOARD),
                 generation: generation,
                 plainText: text,
                 isWritable: writable,
                 fragmentJSON: fragment
             ),
             EVClipboardTurnSnapshot(
-                target: UInt32(EVIM_CLIPBOARD_TARGET_PRIMARY),
+                target: UInt32(VIEM_CLIPBOARD_TARGET_PRIMARY),
                 generation: generation,
                 plainText: text,
                 isWritable: writable,
@@ -1206,8 +1206,8 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         for write in batch.clipboardWrites {
             guard write.documentID == batch.documentID,
                   write.documentRevision == batch.documentRevision,
-                  write.target == UInt32(EVIM_CLIPBOARD_TARGET_CLIPBOARD)
-                    || write.target == UInt32(EVIM_CLIPBOARD_TARGET_PRIMARY)
+                  write.target == UInt32(VIEM_CLIPBOARD_TARGET_CLIPBOARD)
+                    || write.target == UInt32(VIEM_CLIPBOARD_TARGET_PRIMARY)
             else { throw EVCoreFrontendError.invalidHostEffect }
         }
         let representations = try batch.clipboardWrites.map { write in
@@ -1220,7 +1220,7 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             return EVClipboardRepresentations(plainText: write.plainText)
         }
         for content in representations {
-            guard pasteboard.evimWrite(content) else {
+            guard pasteboard.viemWrite(content) else {
                 throw EVCoreFrontendError.pasteboardWriteFailed
             }
         }
@@ -1249,34 +1249,34 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
     private func documentHostRequest(
         from effect: EVExHostEffect
     ) throws -> EVDocumentHostRequest? {
-        let force = effect.flags & UInt32(EVIM_EX_FRONTEND_FORCE) != 0
-        let path = effect.flags & UInt32(EVIM_EX_FRONTEND_HAS_PATH) != 0
+        let force = effect.flags & UInt32(VIEM_EX_FRONTEND_FORCE) != 0
+        let path = effect.flags & UInt32(VIEM_EX_FRONTEND_HAS_PATH) != 0
             ? effect.text
             : nil
         let kind: EVDocumentHostRequest.Kind
         switch effect.kind {
-        case UInt32(EVIM_EX_FRONTEND_SPLIT): kind = .split
-        case UInt32(EVIM_EX_FRONTEND_EDIT): kind = .edit
-        case UInt32(EVIM_EX_FRONTEND_EDIT_NEW_WINDOW): kind = .editNewWindow
-        case UInt32(EVIM_EX_FRONTEND_PWD): kind = .printWorkingDirectory
-        case UInt32(EVIM_EX_FRONTEND_CHECKTIME): kind = .checkTime
-        case UInt32(EVIM_EX_FRONTEND_CD): kind = .changeDirectory
-        case UInt32(EVIM_EX_FRONTEND_NEW): kind = .new
-        case UInt32(EVIM_EX_FRONTEND_WRITE): kind = .write
-        case UInt32(EVIM_EX_FRONTEND_SAVE_AS): kind = .saveAs
-        case UInt32(EVIM_EX_FRONTEND_QUIT): kind = .quit
-        case UInt32(EVIM_EX_FRONTEND_QUIT_ALL): kind = .quitAll
-        case UInt32(EVIM_EX_FRONTEND_WRITE_QUIT): kind = .writeQuit
-        case UInt32(EVIM_EX_FRONTEND_XIT): kind = .xit
-        case UInt32(EVIM_EX_FRONTEND_WRITE_ALL): kind = .writeAll
-        case UInt32(EVIM_EX_FRONTEND_MESSAGE),
-             UInt32(EVIM_EX_FRONTEND_MARKS),
-             UInt32(EVIM_EX_FRONTEND_REGISTERS),
-             UInt32(EVIM_EX_FRONTEND_JUMPS),
-             UInt32(EVIM_EX_FRONTEND_OPTIONS),
-             UInt32(EVIM_EX_FRONTEND_PRINT_LINES):
+        case UInt32(VIEM_EX_FRONTEND_SPLIT): kind = .split
+        case UInt32(VIEM_EX_FRONTEND_EDIT): kind = .edit
+        case UInt32(VIEM_EX_FRONTEND_EDIT_NEW_WINDOW): kind = .editNewWindow
+        case UInt32(VIEM_EX_FRONTEND_PWD): kind = .printWorkingDirectory
+        case UInt32(VIEM_EX_FRONTEND_CHECKTIME): kind = .checkTime
+        case UInt32(VIEM_EX_FRONTEND_CD): kind = .changeDirectory
+        case UInt32(VIEM_EX_FRONTEND_NEW): kind = .new
+        case UInt32(VIEM_EX_FRONTEND_WRITE): kind = .write
+        case UInt32(VIEM_EX_FRONTEND_SAVE_AS): kind = .saveAs
+        case UInt32(VIEM_EX_FRONTEND_QUIT): kind = .quit
+        case UInt32(VIEM_EX_FRONTEND_QUIT_ALL): kind = .quitAll
+        case UInt32(VIEM_EX_FRONTEND_WRITE_QUIT): kind = .writeQuit
+        case UInt32(VIEM_EX_FRONTEND_XIT): kind = .xit
+        case UInt32(VIEM_EX_FRONTEND_WRITE_ALL): kind = .writeAll
+        case UInt32(VIEM_EX_FRONTEND_MESSAGE),
+             UInt32(VIEM_EX_FRONTEND_MARKS),
+             UInt32(VIEM_EX_FRONTEND_REGISTERS),
+             UInt32(VIEM_EX_FRONTEND_JUMPS),
+             UInt32(VIEM_EX_FRONTEND_OPTIONS),
+             UInt32(VIEM_EX_FRONTEND_PRINT_LINES):
             return nil
-        case UInt32(EVIM_EX_FRONTEND_NORMAL):
+        case UInt32(VIEM_EX_FRONTEND_NORMAL):
             // :normal is executed by the core before publication. Seeing its
             // raw request here would otherwise tempt AppKit to become another
             // command interpreter.
@@ -1296,28 +1296,28 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
 
     private func displayMessage(for effect: EVExHostEffect) throws -> String? {
         switch effect.kind {
-        case UInt32(EVIM_EX_FRONTEND_MESSAGE): return effect.text
-        case UInt32(EVIM_EX_FRONTEND_OPTIONS):
+        case UInt32(VIEM_EX_FRONTEND_MESSAGE): return effect.text
+        case UInt32(VIEM_EX_FRONTEND_OPTIONS):
             return effect.options.map(formatOption).joined(separator: "  ")
-        case UInt32(EVIM_EX_FRONTEND_MARKS):
+        case UInt32(VIEM_EX_FRONTEND_MARKS):
             let rows = effect.marks.map {
                 "\($0.name)  \($0.hardLineIndex + 1)  \($0.graphemeColumn)  \($0.lineText)"
             }
             return (["mark  line  col  text"] + rows).joined(separator: "\n")
-        case UInt32(EVIM_EX_FRONTEND_REGISTERS):
+        case UInt32(VIEM_EX_FRONTEND_REGISTERS):
             let rows = effect.registers.map {
                 "\"\($0.name)   \(visibleRegisterText($0.text))"
             }
             return (["--- Registers ---"] + rows).joined(separator: "\n")
-        case UInt32(EVIM_EX_FRONTEND_JUMPS):
+        case UInt32(VIEM_EX_FRONTEND_JUMPS):
             let rows = effect.jumps.map {
                 let current = $0.isCurrent ? ">" : " "
                 return "\(current) \($0.listIndex)  \($0.hardLineIndex + 1)  \($0.graphemeColumn)  \($0.lineText)"
             }
             return ([" jump  line  col  text"] + rows).joined(separator: "\n")
-        case UInt32(EVIM_EX_FRONTEND_PRINT_LINES):
-            let numbered = effect.flags & UInt32(EVIM_EX_FRONTEND_NUMBER) != 0
-            let listed = effect.flags & UInt32(EVIM_EX_FRONTEND_LIST) != 0
+        case UInt32(VIEM_EX_FRONTEND_PRINT_LINES):
+            let numbered = effect.flags & UInt32(VIEM_EX_FRONTEND_NUMBER) != 0
+            let listed = effect.flags & UInt32(VIEM_EX_FRONTEND_LIST) != 0
             return effect.textLines.map { line in
                 var text = listed
                     ? line.text.replacingOccurrences(of: "\t", with: "^I") + "$"
@@ -1333,9 +1333,9 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
     private func formatOption(_ option: EVExOptionEffect) -> String {
         let name: String
         switch option.name {
-        case UInt32(EVIM_EX_OPTION_WRAP): name = "wrap"
-        case UInt32(EVIM_EX_OPTION_FILE_FORMAT): name = "fileformat"
-        case UInt32(EVIM_EX_OPTION_FILE_FORMATS): name = "fileformats"
+        case UInt32(VIEM_EX_OPTION_WRAP): name = "wrap"
+        case UInt32(VIEM_EX_OPTION_FILE_FORMAT): name = "fileformat"
+        case UInt32(VIEM_EX_OPTION_FILE_FORMATS): name = "fileformats"
         case 5: name = "ignorecase"
         case 6: name = "smartcase"
         case 7: name = "wrapscan"
@@ -1353,8 +1353,8 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
 
     private func fileFormatName(_ value: UInt32) -> String {
         switch value {
-        case UInt32(EVIM_FILE_FORMAT_DOS): "dos"
-        case UInt32(EVIM_FILE_FORMAT_MAC): "mac"
+        case UInt32(VIEM_FILE_FORMAT_DOS): "dos"
+        case UInt32(VIEM_FILE_FORMAT_MAC): "mac"
         default: "unix"
         }
     }

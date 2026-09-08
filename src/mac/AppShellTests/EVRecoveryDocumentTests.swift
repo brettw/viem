@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import EvimAppShell
+@testable import ViemAppShell
 
 @MainActor
 final class EVRecoveryDocumentTests: XCTestCase {
@@ -42,7 +42,7 @@ final class EVRecoveryDocumentTests: XCTestCase {
         func edit(_ text: String) { data = Data(text.utf8); persistenceState.isDirty = true; persistenceState.documentRevision += 1; sourceDidChange?(); persistenceStateDidChange?(persistenceState) }
     }
     private func fixture() throws -> URL {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-recovery-document-\(UUID().uuidString)")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-recovery-document-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let target = directory.appendingPathComponent("writing.txt")
         try Data("original".utf8).write(to: target)
@@ -127,7 +127,7 @@ final class EVRecoveryDocumentTests: XCTestCase {
 
         document.recoveryStoreFactory = { target in
             let candidate = try EVRecoveryStore.claim(for: target)
-            let collision = candidate.url.deletingLastPathComponent().appendingPathComponent(".evim-recovery-\(candidate.owner.uuidString)-1.tmp")
+            let collision = candidate.url.deletingLastPathComponent().appendingPathComponent(".viem-recovery-\(candidate.owner.uuidString)-1.tmp")
             try Data().write(to: collision)
             return candidate
         }
@@ -231,7 +231,7 @@ final class EVRecoveryDocumentTests: XCTestCase {
         try bytes.write(to: foreign)
         let backend = Backend(), document = EVDocument(editorBackend: Backend())
         document.recoveryDecisionHandler = { candidates in
-            XCTAssertTrue(candidates.contains { $0.url == foreign && $0.snapshot == nil && !$0.isEVimRecovery })
+            XCTAssertTrue(candidates.contains { $0.url == foreign && $0.snapshot == nil && !$0.isViemRecovery })
             return .readOnly
         }
         try document.read(from: target, ofType: EVDocument.plainTextType)

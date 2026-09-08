@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVPresentationExportIntegrationTests: XCTestCase {
     @MainActor
@@ -21,7 +21,7 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
         XCTAssertFalse(surface.editorView.isCommandLineInsertionIndicatorVisible)
 
         surface.performInput {
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             _ = try session.sendText("R")
         }
         XCTAssertEqual(surface.editorView.customCaretPresentationForTesting, .active)
@@ -46,7 +46,7 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
         }
 
         let command = try XCTUnwrap(surface.commandLine)
-        XCTAssertEqual(command.info.identity.kind, UInt32(EVIM_COMMAND_LINE_KIND_EX))
+        XCTAssertEqual(command.info.identity.kind, UInt32(VIEM_COMMAND_LINE_KIND_EX))
         XCTAssertEqual(command.prompt, ":")
         XCTAssertEqual(command.text, "café")
         XCTAssertEqual(command.info.utf8_length, UInt64("café".utf8.count))
@@ -68,7 +68,7 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
         XCTAssertTrue(surface.editorView.isCommandLineInsertionIndicatorVisible)
         XCTAssertFalse(surface.editorView.isInactiveCommandLineCaretOutlineVisible)
 
-        surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_LEFT)) }
+        surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_LEFT)) }
 
         let moved = try XCTUnwrap(surface.commandLine)
         XCTAssertEqual(moved.text, "café")
@@ -76,18 +76,18 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
         let beforeFinalGrapheme = try XCTUnwrap(surface.editorView.commandLineRenderState())
         XCTAssertLessThan(beforeFinalGrapheme.caretRect.minX, atEnd.caretRect.minX)
 
-        surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+        surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
         XCTAssertNil(surface.editorView.commandLineRenderState())
         XCTAssertFalse(surface.editorView.isCommandLineInsertionIndicatorVisible)
 
         for (input, prompt, kind): (String, String, UInt32) in [
-            ("/", "/", UInt32(EVIM_COMMAND_LINE_KIND_SEARCH_FORWARD)),
-            ("?", "?", UInt32(EVIM_COMMAND_LINE_KIND_SEARCH_BACKWARD)),
+            ("/", "/", UInt32(VIEM_COMMAND_LINE_KIND_SEARCH_FORWARD)),
+            ("?", "?", UInt32(VIEM_COMMAND_LINE_KIND_SEARCH_BACKWARD)),
         ] {
             surface.performInput { _ = try session.sendText(input) }
             XCTAssertEqual(surface.commandLine?.info.identity.kind, kind)
             XCTAssertEqual(surface.editorView.commandLineRenderState()?.prompt, prompt)
-            surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+            surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
         }
 
         surface.performInput { _ = try session.sendText("i") }
@@ -106,19 +106,19 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
         }
         try assertSelection(
             surface,
-            kind: UInt32(EVIM_VISUAL_SELECTION_KIND_CHARACTER),
+            kind: UInt32(VIEM_VISUAL_SELECTION_KIND_CHARACTER),
             ranges: [0 ..< 2],
             text: "ab"
         )
         XCTAssertEqual((surface.editorView as NSTextInputClient).selectedRange(), NSRange(location: 0, length: 2))
 
         surface.performInput {
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             _ = try session.sendText("V")
         }
         try assertSelection(
             surface,
-            kind: UInt32(EVIM_VISUAL_SELECTION_KIND_LINE),
+            kind: UInt32(VIEM_VISUAL_SELECTION_KIND_LINE),
             ranges: [0 ..< 3],
             text: "ab\n"
         )
@@ -132,26 +132,26 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
 
         surface.performInput {
             _ = try session.sendKey(
-                kind: UInt32(EVIM_KEY_CONTROL_CHARACTER),
+                kind: UInt32(VIEM_KEY_CONTROL_CHARACTER),
                 codepoint: UInt32(Character("v").asciiValue!)
             )
         }
         surface.performInput {
             _ = try session.sendKey(
-                kind: UInt32(EVIM_KEY_CHARACTER),
+                kind: UInt32(VIEM_KEY_CHARACTER),
                 codepoint: UInt32(Character("l").asciiValue!)
             )
         }
         surface.performInput {
             _ = try session.sendKey(
-                kind: UInt32(EVIM_KEY_CHARACTER),
+                kind: UInt32(VIEM_KEY_CHARACTER),
                 codepoint: UInt32(Character("j").asciiValue!)
             )
         }
 
         try assertSelection(
             surface,
-            kind: UInt32(EVIM_VISUAL_SELECTION_KIND_BLOCK),
+            kind: UInt32(VIEM_VISUAL_SELECTION_KIND_BLOCK),
             ranges: [0 ..< 2, 3 ..< 5],
             text: "ab\ncd"
         )
@@ -161,9 +161,9 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
 
         let selection = try XCTUnwrap(surface.visualSelection)
         XCTAssertTrue(selection.segments.allSatisfy {
-            $0.flags & UInt32(EVIM_VISUAL_SELECTION_SEGMENT_HAS_VISUAL_ROW) != 0
-                && $0.flags & UInt32(EVIM_VISUAL_SELECTION_SEGMENT_HAS_HARD_LINE) != 0
-                && $0.flags & UInt32(EVIM_VISUAL_SELECTION_SEGMENT_HAS_EDGE_AFFINITIES) != 0
+            $0.flags & UInt32(VIEM_VISUAL_SELECTION_SEGMENT_HAS_VISUAL_ROW) != 0
+                && $0.flags & UInt32(VIEM_VISUAL_SELECTION_SEGMENT_HAS_HARD_LINE) != 0
+                && $0.flags & UInt32(VIEM_VISUAL_SELECTION_SEGMENT_HAS_EDGE_AFFINITIES) != 0
         })
         XCTAssertEqual(Set(selection.rectangles.map(\.row_index)), Set([0, 1]))
         withExtendedLifetime(window) {}
@@ -173,14 +173,14 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
     func testBidiSelectionPaintsEveryExactExportedRectangle() throws {
         let (surface, session, window) = try makeSurface(text: "abc אבג def")
         let revision = surface.viewPresentation.document_revision
-        var start = EvimLayoutCaretPointV1()
-        start.struct_size = UInt32(MemoryLayout<EvimLayoutCaretPointV1>.size)
+        var start = ViemLayoutCaretPointV1()
+        start.struct_size = UInt32(MemoryLayout<ViemLayoutCaretPointV1>.size)
         start.document_revision = revision
         start.text_offset = 2
-        start.affinity = UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM)
+        start.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
         var end = start
         end.text_offset = UInt64("abc אב".utf8.count)
-        end.affinity = UInt32(EVIM_BOUNDARY_AFFINITY_UPSTREAM)
+        end.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
 
         surface.performInput {
             _ = try session.placeCursor(start, extendSelection: false)
@@ -189,7 +189,7 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
 
         let snapshot = try XCTUnwrap(surface.layoutSnapshot)
         let exported = try XCTUnwrap(surface.visualSelection)
-        XCTAssertEqual(exported.info.identity.kind, UInt32(EVIM_VISUAL_SELECTION_KIND_CHARACTER))
+        XCTAssertEqual(exported.info.identity.kind, UInt32(VIEM_VISUAL_SELECTION_KIND_CHARACTER))
         XCTAssertFalse(exported.rectangles.isEmpty)
         XCTAssertEqual(
             surface.editorView.selectionRectsForDrawing(in: snapshot),

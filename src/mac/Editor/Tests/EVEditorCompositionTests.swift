@@ -1,5 +1,5 @@
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVEditorCompositionTests: XCTestCase {
     @MainActor

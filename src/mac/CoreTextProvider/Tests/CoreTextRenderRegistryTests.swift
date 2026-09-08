@@ -3,7 +3,7 @@ import CoreGraphics
 import CoreText
 import Testing
 
-@testable import EvimCoreTextProvider
+@testable import ViemCoreTextProvider
 
 @Suite("Core Text render registry")
 struct CoreTextRenderRegistryTests {

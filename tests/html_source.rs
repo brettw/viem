@@ -1,5 +1,5 @@
-use evim_core::document::*;
-use evim_core::layout::DocumentLayoutStyles;
+use viem_core::document::*;
+use viem_core::layout::DocumentLayoutStyles;
 fn source(text: &str) -> Document {
     Document::from_bytes(text.as_bytes().to_vec(), Encoding::Utf8, Format::HtmlSource).unwrap()
 }
@@ -201,7 +201,7 @@ fn internal_palette_edits_are_sparse_undoable_configuration_and_identity_is_prot
 }
 #[test]
 fn source_internal_palette_invalidation_separates_paint_and_metrics_in_large_document() {
-    use evim_core::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
+    use viem_core::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
     let mut doc = source(&"<p><b>Words</b> plain</p>\n".repeat(200));
     let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
     let mut view = ViewLayout::new(600., 100.);
@@ -421,9 +421,9 @@ fn assert_spans_equal(left: &Document, right: &Document) {
 }
 #[test]
 fn raw_cross_line_style_edit_invalidates_already_visible_following_rows() {
-    use evim_core::command::{InputEvent, Key};
-    use evim_core::layout::MockTextMeasurementProvider;
-    use evim_core::{Core, CoreEvent};
+    use viem_core::command::{InputEvent, Key};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
     let mut core = Core::new(source(
         "<span style='font-size:14pt'>\nWords\nTail\n</span>",
     ));
@@ -469,7 +469,7 @@ fn raw_cross_line_style_edit_invalidates_already_visible_following_rows() {
 
 #[test]
 fn multiline_tokens_do_not_invent_prose_boundaries() {
-    use evim_core::command::{CommandInterpreter, InputEvent};
+    use viem_core::command::{CommandInterpreter, InputEvent};
     for text in [
         "<!--\nhere-->",
         "<p title=\n\"here\">text</p>",

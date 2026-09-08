@@ -6,9 +6,9 @@
 //! side effects, and undo grouping. They deliberately enter through `Core`
 //! rather than constructing the command interpreter directly.
 
-use evim_core::command::{CommandStatus, InputEvent, Key, Mode, RegisterKind};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, Document, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key, Mode, RegisterKind};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, Document, ViewId};
 
 type TestCore = Core<MockTextMeasurementProvider>;
 

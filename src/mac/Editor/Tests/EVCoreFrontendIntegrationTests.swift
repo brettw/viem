@@ -1,9 +1,9 @@
 import AppKit
-import CEvimCore
-import EvimCoreTextProvider
+import CViemCore
+import ViemCoreTextProvider
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVCoreFrontendIntegrationTests: XCTestCase {
     @MainActor
@@ -18,7 +18,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
         _ = try session.sendText("Hello ")
         surface.refreshPresentation()
         XCTAssertEqual(surface.formattedText, "Hello world")
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_INSERT))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
 
         let layout = try session.layoutExport()
         XCTAssertFalse(layout.rows.isEmpty)
@@ -26,7 +26,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
         XCTAssertFalse(layout.carets.isEmpty)
         XCTAssertEqual(layout.info.identity.document_revision, try backend.revision())
         XCTAssertTrue(layout.clusters.allSatisfy { cluster in
-            guard cluster.flags & UInt32(EVIM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0 else {
+            guard cluster.flags & UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0 else {
                 return false
             }
             return session.provider.renderRegistry.contains(
@@ -38,12 +38,12 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
         _ = try session.undo()
         surface.refreshPresentation()
         XCTAssertEqual(surface.formattedText, "world")
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
 
         _ = try session.redo()
         surface.refreshPresentation()
         XCTAssertEqual(surface.formattedText, "Hello world")
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_NORMAL))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
     }
 
     @MainActor
@@ -62,9 +62,9 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
         _ = try session.placeCursor(last, extendSelection: true)
         surface.refreshPresentation()
 
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_VISUAL_CHARACTER))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
         XCTAssertNotEqual(
-            surface.viewPresentation.flags & UInt32(EVIM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR),
+            surface.viewPresentation.flags & UInt32(VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR),
             0
         )
         XCTAssertNotNil(surface.selectedUTF8Range())

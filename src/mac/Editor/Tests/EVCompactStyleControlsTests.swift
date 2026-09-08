@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVCompactStyleControlsTests: XCTestCase {
@@ -20,9 +20,9 @@ final class EVCompactStyleControlsTests: XCTestCase {
         try backend.read(source: Data((html ? "<p>Text</p>" : "Text").utf8), typeName: html ? EVDocument.htmlType : EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
-        let suite = "evim-style-theme-\(UUID().uuidString)"
+        let suite = "viem-style-theme-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-config-test-\(UUID().uuidString)")
+        let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-config-test-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
         let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
@@ -49,7 +49,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertEqual(alignment.selectedSegment, 0, "Start is core enum1 and UI segment0")
         XCTAssertEqual(lineKind.titleOfSelectedItem, "Normal")
         XCTAssertFalse(lineValue.isEnabled)
-        for (segment, expected) in [(1, EVIM_STYLE_PARAGRAPH_ALIGNMENT_CENTER), (2, EVIM_STYLE_PARAGRAPH_ALIGNMENT_END), (0, EVIM_STYLE_PARAGRAPH_ALIGNMENT_START)] {
+        for (segment, expected) in [(1, VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER), (2, VIEM_STYLE_PARAGRAPH_ALIGNMENT_END), (0, VIEM_STYLE_PARAGRAPH_ALIGNMENT_START)] {
             alignment.selectedSegment = segment
             XCTAssertTrue(alignment.sendAction(try XCTUnwrap(alignment.action), to: alignment.target))
             let value = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.paragraphAlignment]?.declared
@@ -57,7 +57,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
             XCTAssertEqual(alignment.selectedSegment, segment)
             XCTAssertEqual(editor.inspection.diagnostic, "")
         }
-        for (title, kind) in [("Multiple", EVIM_STYLE_LINE_SPACING_MULTIPLIER), ("At least", EVIM_STYLE_LINE_SPACING_AT_LEAST), ("Exactly", EVIM_STYLE_LINE_SPACING_EXACT), ("Normal", EVIM_STYLE_LINE_SPACING_NORMAL)] {
+        for (title, kind) in [("Multiple", VIEM_STYLE_LINE_SPACING_MULTIPLIER), ("At least", VIEM_STYLE_LINE_SPACING_AT_LEAST), ("Exactly", VIEM_STYLE_LINE_SPACING_EXACT), ("Normal", VIEM_STYLE_LINE_SPACING_NORMAL)] {
             lineKind.selectItem(withTitle: title)
             XCTAssertTrue(lineKind.sendAction(try XCTUnwrap(lineKind.action), to: lineKind.target))
             let value = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.paragraphLineSpacing]?.declared
@@ -306,7 +306,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertTrue(line.sendAction(try XCTUnwrap(line.action), to: line.target))
         XCTAssertEqual(editor.inspection.diagnostic, "")
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.paragraphLineSpacing]?.declared,
-                       .lineSpacing(EVLineSpacing(kind: UInt32(EVIM_STYLE_LINE_SPACING_AT_LEAST), value: 0)))
+                       .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_AT_LEAST), value: 0)))
     }
 
 }

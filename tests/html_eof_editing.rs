@@ -1,5 +1,5 @@
-use evim_core::command::{CommandInterpreter, CommandStatus, InputEvent, Key};
-use evim_core::document::{
+use viem_core::command::{CommandInterpreter, CommandStatus, InputEvent, Key};
+use viem_core::document::{
     Document, Encoding, Format, ModelRequest, ProjectionWorkScope, TextEdit,
 };
 
@@ -104,7 +104,7 @@ fn paragraph_splits_preserve_visible_whitespace_at_both_edges() {
             for at in [offset, offset + c.len_utf8()] {
                 let mut document = html(source);
                 document
-                    .apply_model_request(evim_core::document::ModelRequest::ContinueList {
+                    .apply_model_request(viem_core::document::ModelRequest::ContinueList {
                         document: document.id(),
                         revision: document.revision(),
                         at,
@@ -187,7 +187,7 @@ fn trailing_empty_source_keeps_its_bytes_and_does_not_steal_typing_context() {
 
 #[test]
 fn eof_typing_keeps_large_document_projection_and_layout_local() {
-    use evim_core::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
+    use viem_core::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
     let source = "<p>Unchanged paragraph.</p>\n".repeat(10_000)
         + "<p>Tail</p><div><span></span></div><!--keep-->";
     let mut document = html(&source);

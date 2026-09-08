@@ -1,5 +1,5 @@
-use evim_core::command::{CommandInterpreter, CommandStatus, InputEvent, Key};
-use evim_core::document::{Document, Encoding, FileFormat, Format};
+use viem_core::command::{CommandInterpreter, CommandStatus, InputEvent, Key};
+use viem_core::document::{Document, Encoding, FileFormat, Format};
 fn command(c: &mut CommandInterpreter, d: &mut Document, text: &str) -> CommandStatus {
     for ch in text.chars() {
         c.handle(d, InputEvent::Key(Key::Char(ch))).unwrap();

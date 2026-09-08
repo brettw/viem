@@ -1,6 +1,6 @@
-use evim_core::command::{InputEvent, Key};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreError, CoreEvent, Document, DocumentError, Encoding, Format};
+use viem_core::command::{InputEvent, Key};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreError, CoreEvent, Document, DocumentError, Encoding, Format};
 
 #[test]
 fn html_nul_typing_returns_an_explicit_policy_without_mutating_source() {
@@ -42,7 +42,7 @@ fn html_join_reuses_collapsible_source_whitespace_exposed_by_break_removal() {
         let mut document =
             Document::from_bytes(original.clone(), Encoding::Utf8, Format::Html).unwrap();
         assert_eq!(document.text(), "prose\n-next");
-        let mut commands = evim_core::command::CommandInterpreter::new();
+        let mut commands = viem_core::command::CommandInterpreter::new();
         assert!(commands.set_cursor(&document, 0));
         commands
             .handle(&mut document, InputEvent::key('J'))

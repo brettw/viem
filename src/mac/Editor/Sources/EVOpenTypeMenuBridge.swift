@@ -1,7 +1,7 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
-import EvimCoreTextProvider
+import CViemCore
+import ViemAppShell
+import ViemCoreTextProvider
 
 extension EVEditorSurfaceController: EVOpenTypeMenuProviding {
   public func populateOpenTypeFeatureMenu(_ menu: NSMenu) {
@@ -50,12 +50,12 @@ extension EVEditorSurfaceController: EVOpenTypeMenuProviding {
 @MainActor
 private final class EVOpenTypeMenuAction: NSObject {
   weak var surface: EVEditorSurfaceController?
-  let selection: EvimLogicalSelectionIdentityV1
+  let selection: ViemLogicalSelectionIdentityV1
   let current: [EVOpenTypeFeature]
   let tag: String?
   let enabled: Bool
   init(
-    surface: EVEditorSurfaceController, selection: EvimLogicalSelectionIdentityV1,
+    surface: EVEditorSurfaceController, selection: ViemLogicalSelectionIdentityV1,
     current: [EVOpenTypeFeature], tag: String?, enabled: Bool
   ) {
     self.surface = surface

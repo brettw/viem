@@ -1,9 +1,9 @@
 //! Enter at an implicitly closed paragraph inside a list must use the
 //! recovered HTML structure, including the following authored paragraph.
-use evim_core::command::{CommandStatus, InputEvent, Key, Mode};
-use evim_core::document::{BoundaryAffinity, Document, Encoding, Format, SourceArtifactDigest};
-use evim_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
-use evim_core::{Core, CoreEvent, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key, Mode};
+use viem_core::document::{BoundaryAffinity, Document, Encoding, Format, SourceArtifactDigest};
+use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
+use viem_core::{Core, CoreEvent, ViewId};
 
 fn open(source: &str, initial_format: Format) -> (Core<MockTextMeasurementProvider>, ViewId) {
     let document =
@@ -227,7 +227,7 @@ fn enter_before_first_explicit_list_paragraph_preserves_its_boundary() {
     // starts with <P>, so its authored paragraph separator must not disappear.
     for source in [
         "<ul data-keep='x'><li>P><P>&AMP;العربية</P></li></ul><!--keep-->",
-        "<ul data-keep='x'><li class='evim-p-506172616772617068' data-keep='item'>P><P>&AMP;العربية</P></li></ul><!--keep-->",
+        "<ul data-keep='x'><li class='viem-p-506172616772617068' data-keep='item'>P><P>&AMP;العربية</P></li></ul><!--keep-->",
     ] {
         for initial_format in [Format::HtmlSource, Format::Html] {
             exercise(source, initial_format);

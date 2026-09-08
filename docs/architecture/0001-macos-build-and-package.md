@@ -5,7 +5,7 @@
 
 ## Context
 
-The eVim specification requires an AppKit frontend under `src/mac`, a narrow C
+The Viem specification requires an AppKit frontend under `src/mac`, a narrow C
 ABI to the Rust core, and a recorded numeric deployment target. It had left the
 concrete build and package layout open.
 
@@ -14,16 +14,16 @@ concrete build and package layout open.
 The macOS frontend uses one root Swift Package with small dependency-directed
 targets:
 
-- `CEvimCore` exposes the normative `include/evim_core.h` header to Swift and
+- `CViemCore` exposes the normative `include/viem_core.h` header to Swift and
   links the Cargo-produced Rust static library;
-- `EvimCoreTextProvider` owns Core Text measurement and render resources;
-- `EvimAppShell` owns document/window lifecycle, menus, and application chrome;
-- `EvimEditor` composes the core, provider, and custom editor surface; and
-- `eVim` is the executable composition root.
+- `ViemCoreTextProvider` owns Core Text measurement and render resources;
+- `ViemAppShell` owns document/window lifecycle, menus, and application chrome;
+- `ViemEditor` composes the core, provider, and custom editor surface; and
+- `Viem` is the executable composition root.
 
-Cargo remains responsible for building `evim-core`. `scripts/build-mac-app.sh`
+Cargo remains responsible for building `viem-core`. `scripts/build-mac-app.sh`
 builds both language halves and packages the executable and `Info.plist` as
-`.build/eVim.app`. Linking the Rust static library avoids a relocatable dynamic
+`.build/Viem.app`. Linking the Rust static library avoids a relocatable dynamic
 library dependency in the development bundle. The package and bundle declare a
 macOS 26.0 deployment target, matching the latest major SDK available when this
 frontend was introduced (macOS SDK 26.5).

@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import CoreText
-import EvimAppShell
-import EvimCoreTextProvider
+import ViemAppShell
+import ViemCoreTextProvider
 
 /// Native panels retain the exact selection that opened them. An intervening
 /// cursor move or document edit cannot redirect a panel gesture to other text.
@@ -11,8 +11,8 @@ final class EVTypographyPanels: NSObject {
   static let shared = EVTypographyPanels()
   private weak var fontSurface: EVEditorSurfaceController?
   private weak var colorSurface: EVEditorSurfaceController?
-  private var fontSelection: EvimLogicalSelectionIdentityV1?
-  private var colorSelection: EvimLogicalSelectionIdentityV1?
+  private var fontSelection: ViemLogicalSelectionIdentityV1?
+  private var colorSelection: ViemLogicalSelectionIdentityV1?
   private var baseFont: NSFont?
   private var colorProperty: EVStyleProperty = .characterForeground
   private var isConfiguringColorPanel = false
@@ -116,7 +116,7 @@ extension EVStyleColor {
 extension EVEditorSurfaceController {
   var canEditTypography: Bool {
     [.html, .htmlSource, .rtf].contains(backend.sourceFormat)
-      && (try? session?.listSelection()).map { $0.text_start < $0.text_end || viewPresentation.mode == UInt32(EVIM_MODE_INSERT) || viewPresentation.mode == UInt32(EVIM_MODE_REPLACE) } == true
+      && (try? session?.listSelection()).map { $0.text_start < $0.text_end || viewPresentation.mode == UInt32(VIEM_MODE_INSERT) || viewPresentation.mode == UInt32(VIEM_MODE_REPLACE) } == true
   }
 
   func changeFontSize(increasing: Bool) {

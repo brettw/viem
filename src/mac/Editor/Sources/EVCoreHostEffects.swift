@@ -1,31 +1,31 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import Foundation
 
 @MainActor
 protocol EVPasteboardAccess: AnyObject {
-    var evimGeneration: UInt64 { get }
-    var evimIsWritable: Bool { get }
-    func evimString() -> String?
-    func evimCanReadString() -> Bool
-    @discardableResult func evimClearContents() -> Int
-    @discardableResult func evimSetString(_ string: String) -> Bool
-    func evimData(forType type: NSPasteboard.PasteboardType) -> Data?
-    @discardableResult func evimWrite(_ content: EVClipboardRepresentations) -> Bool
+    var viemGeneration: UInt64 { get }
+    var viemIsWritable: Bool { get }
+    func viemString() -> String?
+    func viemCanReadString() -> Bool
+    @discardableResult func viemClearContents() -> Int
+    @discardableResult func viemSetString(_ string: String) -> Bool
+    func viemData(forType type: NSPasteboard.PasteboardType) -> Data?
+    @discardableResult func viemWrite(_ content: EVClipboardRepresentations) -> Bool
 }
 
 extension EVPasteboardAccess {
-    func evimData(forType type: NSPasteboard.PasteboardType) -> Data? { nil }
-    @discardableResult func evimWrite(_ content: EVClipboardRepresentations) -> Bool {
-        guard evimIsWritable else { return false }
-        evimClearContents()
-        return evimSetString(content.plainText)
+    func viemData(forType type: NSPasteboard.PasteboardType) -> Data? { nil }
+    @discardableResult func viemWrite(_ content: EVClipboardRepresentations) -> Bool {
+        guard viemIsWritable else { return false }
+        viemClearContents()
+        return viemSetString(content.plainText)
     }
 }
 
 struct EVClipboardRepresentations {
-    static let fragmentType = NSPasteboard.PasteboardType("com.evim.clipboard.fragment.v1")
+    static let fragmentType = NSPasteboard.PasteboardType("com.viem.clipboard.fragment.v1")
     let plainText: String
     var richText: Data? = nil
     var fragment: Data? = nil
@@ -51,20 +51,20 @@ final class EVAppKitPasteboardAccess: EVPasteboardAccess {
         explicitPasteboard ?? NSPasteboard.general
     }
 
-    var evimGeneration: UInt64 { UInt64(max(nativePasteboard.changeCount, 0)) }
-    var evimIsWritable: Bool { true }
-    func evimString() -> String? { nativePasteboard.string(forType: .string) }
-    func evimCanReadString() -> Bool {
+    var viemGeneration: UInt64 { UInt64(max(nativePasteboard.changeCount, 0)) }
+    var viemIsWritable: Bool { true }
+    func viemString() -> String? { nativePasteboard.string(forType: .string) }
+    func viemCanReadString() -> Bool {
         nativePasteboard.canReadObject(forClasses: [NSString.self])
     }
-    func evimClearContents() -> Int { nativePasteboard.clearContents() }
-    func evimSetString(_ string: String) -> Bool {
+    func viemClearContents() -> Int { nativePasteboard.clearContents() }
+    func viemSetString(_ string: String) -> Bool {
         nativePasteboard.setString(string, forType: .string)
     }
-    func evimData(forType type: NSPasteboard.PasteboardType) -> Data? {
+    func viemData(forType type: NSPasteboard.PasteboardType) -> Data? {
         nativePasteboard.data(forType: type)
     }
-    @discardableResult func evimWrite(_ content: EVClipboardRepresentations) -> Bool {
+    @discardableResult func viemWrite(_ content: EVClipboardRepresentations) -> Bool {
         let item = NSPasteboardItem()
         guard item.setString(content.plainText, forType: .string) else { return false }
         if let data = content.richText, !item.setData(data, forType: .rtf) { return false }
@@ -87,7 +87,7 @@ struct EVHostEffectAccessCounters: Equatable {
     var infoCalls: UInt64 = 0
     var copyCalls: UInt64 = 0
     var releaseCalls: UInt64 = 0
-    var lastReleasedHandle: EvimEffectBatchHandle = 0
+    var lastReleasedHandle: ViemEffectBatchHandle = 0
 }
 
 struct EVClipboardWriteEffect: Equatable {
@@ -175,14 +175,14 @@ protocol EVCommandTurnHost: AnyObject {
 }
 
 private struct EVRawEffectBatch {
-    var info: EvimEffectBatchInfoV1
-    var clipboardWrites: [EvimClipboardWriteV1]
-    var exRequests: [EvimExFrontendRequestV1]
-    var exOptions: [EvimExOptionDisplayV1]
-    var exMarks: [EvimExMarkV1]
-    var exRegisters: [EvimExRegisterV1]
-    var exJumps: [EvimExJumpV1]
-    var exTextLines: [EvimExTextLineV1]
+    var info: ViemEffectBatchInfoV1
+    var clipboardWrites: [ViemClipboardWriteV1]
+    var exRequests: [ViemExFrontendRequestV1]
+    var exOptions: [ViemExOptionDisplayV1]
+    var exMarks: [ViemExMarkV1]
+    var exRegisters: [ViemExRegisterV1]
+    var exJumps: [ViemExJumpV1]
+    var exTextLines: [ViemExTextLineV1]
     var fileFormats: [UInt32]
     var hardBreaks: [UInt64]
     var strings: [UInt8]
@@ -190,7 +190,7 @@ private struct EVRawEffectBatch {
 
 extension EVCoreViewSession {
     func withCommandTurnContext<Result>(
-        _ body: (UnsafePointer<EvimCommandTurnContextV2>) -> Result
+        _ body: (UnsafePointer<ViemCommandTurnContextV2>) -> Result
     ) -> Result {
         let snapshots = commandTurnHost?.clipboardSnapshotsForCommandTurn() ?? []
         var arena = Data()
@@ -214,12 +214,12 @@ extension EVCoreViewSession {
 
         return arena.withUnsafeBytes { bytes in
             let entries = snapshots.enumerated().map { index, snapshot in
-                var entry = EvimClipboardTurnEntryV2()
-                entry.struct_size = UInt32(MemoryLayout<EvimClipboardTurnEntryV2>.size)
+                var entry = ViemClipboardTurnEntryV2()
+                entry.struct_size = UInt32(MemoryLayout<ViemClipboardTurnEntryV2>.size)
                 entry.target = snapshot.target
                 entry.generation = snapshot.generation
                 if snapshot.plainText != nil {
-                    entry.flags |= UInt32(EVIM_CLIPBOARD_TURN_HAS_READ)
+                    entry.flags |= UInt32(VIEM_CLIPBOARD_TURN_HAS_READ)
                     if let range = ranges[index] {
                         entry.plain_text.data = bytes.bindMemory(to: UInt8.self).baseAddress?
                             .advanced(by: range.lowerBound)
@@ -227,7 +227,7 @@ extension EVCoreViewSession {
                     }
                 }
                 if snapshot.isWritable {
-                    entry.flags |= UInt32(EVIM_CLIPBOARD_TURN_WRITABLE)
+                    entry.flags |= UInt32(VIEM_CLIPBOARD_TURN_WRITABLE)
                 }
                 if let range = fragmentRanges[index] {
                     entry.fragment_json.data = bytes.bindMemory(to: UInt8.self).baseAddress?
@@ -237,8 +237,8 @@ extension EVCoreViewSession {
                 return entry
             }
             return entries.withUnsafeBufferPointer { entryBuffer in
-                var context = EvimCommandTurnContextV2()
-                context.struct_size = UInt32(MemoryLayout<EvimCommandTurnContextV2>.size)
+                var context = ViemCommandTurnContextV2()
+                context.struct_size = UInt32(MemoryLayout<ViemCommandTurnContextV2>.size)
                 context.clipboards = entryBuffer.baseAddress
                 context.clipboard_count = UInt64(entryBuffer.count)
                 return withUnsafePointer(to: &context, body)
@@ -247,7 +247,7 @@ extension EVCoreViewSession {
     }
 
     func copyAndReleaseHostEffectBatch(
-        _ handle: EvimEffectBatchHandle
+        _ handle: ViemEffectBatchHandle
     ) throws -> EVHostEffectBatch {
         var copied: EVHostEffectBatch?
         var copyError: Error?
@@ -257,7 +257,7 @@ extension EVCoreViewSession {
             copyError = error
         }
 
-        let releaseStatus = evim_effect_batch_release(handle)
+        let releaseStatus = viem_effect_batch_release(handle)
         hostEffectAccessCounters.releaseCalls &+= 1
         hostEffectAccessCounters.lastReleasedHandle = handle
         if let copyError { throw copyError }
@@ -268,20 +268,20 @@ extension EVCoreViewSession {
         return copied
     }
 
-    private func copyHostEffectBatch(_ handle: EvimEffectBatchHandle) throws -> EVHostEffectBatch {
+    private func copyHostEffectBatch(_ handle: ViemEffectBatchHandle) throws -> EVHostEffectBatch {
         hostEffectAccessCounters.infoCalls &+= 1
-        var info = EvimEffectBatchInfoV1()
-        info.struct_size = UInt32(MemoryLayout<EvimEffectBatchInfoV1>.size)
+        var info = ViemEffectBatchInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemEffectBatchInfoV1>.size)
         try hostEffectChecked(
-            evim_effect_batch_info(handle, &info),
+            viem_effect_batch_info(handle, &info),
             operation: "Read host effects"
         )
         guard info.batch_handle == handle else { throw EVCoreFrontendError.invalidHostEffect }
 
         var raw = try EVRawEffectBatch(info: info)
         hostEffectAccessCounters.copyCalls &+= 1
-        var copiedInfo = EvimEffectBatchInfoV1()
-        copiedInfo.struct_size = UInt32(MemoryLayout<EvimEffectBatchInfoV1>.size)
+        var copiedInfo = ViemEffectBatchInfoV1()
+        copiedInfo.struct_size = UInt32(MemoryLayout<ViemEffectBatchInfoV1>.size)
         let status = raw.clipboardWrites.withUnsafeMutableBufferPointer { clipboardBuffer in
             raw.exRequests.withUnsafeMutableBufferPointer { requestBuffer in
                 raw.exOptions.withUnsafeMutableBufferPointer { optionBuffer in
@@ -292,7 +292,7 @@ extension EVCoreViewSession {
                                     raw.fileFormats.withUnsafeMutableBufferPointer { formatBuffer in
                                         raw.hardBreaks.withUnsafeMutableBufferPointer { breakBuffer in
                                             raw.strings.withUnsafeMutableBufferPointer { stringBuffer in
-                                                evim_effect_batch_copy(
+                                                viem_effect_batch_copy(
                                                     handle,
                                                     clipboardBuffer.baseAddress,
                                                     UInt64(clipboardBuffer.count),
@@ -344,7 +344,7 @@ extension EVCoreViewSession {
         var exported = try raw.exported()
         for index in exported.clipboardWrites.indices {
             exported.clipboardWrites[index].fragmentJSON = try readClipboardJSON(operation: "Read clipboard formats") { bytes, capacity, required in
-                evim_effect_batch_copy_clipboard_json(handle, UInt64(index), bytes, capacity, required)
+                viem_effect_batch_copy_clipboard_json(handle, UInt64(index), bytes, capacity, required)
             }
         }
         return exported
@@ -352,15 +352,15 @@ extension EVCoreViewSession {
 }
 
 private extension EVRawEffectBatch {
-    init(info: EvimEffectBatchInfoV1) throws {
+    init(info: ViemEffectBatchInfoV1) throws {
         self.info = info
-        clipboardWrites = Array(repeating: EvimClipboardWriteV1(), count: try hostEffectCount(info.clipboard_write_count))
-        exRequests = Array(repeating: EvimExFrontendRequestV1(), count: try hostEffectCount(info.ex_request_count))
-        exOptions = Array(repeating: EvimExOptionDisplayV1(), count: try hostEffectCount(info.ex_option_count))
-        exMarks = Array(repeating: EvimExMarkV1(), count: try hostEffectCount(info.ex_mark_count))
-        exRegisters = Array(repeating: EvimExRegisterV1(), count: try hostEffectCount(info.ex_register_count))
-        exJumps = Array(repeating: EvimExJumpV1(), count: try hostEffectCount(info.ex_jump_count))
-        exTextLines = Array(repeating: EvimExTextLineV1(), count: try hostEffectCount(info.ex_text_line_count))
+        clipboardWrites = Array(repeating: ViemClipboardWriteV1(), count: try hostEffectCount(info.clipboard_write_count))
+        exRequests = Array(repeating: ViemExFrontendRequestV1(), count: try hostEffectCount(info.ex_request_count))
+        exOptions = Array(repeating: ViemExOptionDisplayV1(), count: try hostEffectCount(info.ex_option_count))
+        exMarks = Array(repeating: ViemExMarkV1(), count: try hostEffectCount(info.ex_mark_count))
+        exRegisters = Array(repeating: ViemExRegisterV1(), count: try hostEffectCount(info.ex_register_count))
+        exJumps = Array(repeating: ViemExJumpV1(), count: try hostEffectCount(info.ex_jump_count))
+        exTextLines = Array(repeating: ViemExTextLineV1(), count: try hostEffectCount(info.ex_text_line_count))
         fileFormats = Array(repeating: 0, count: try hostEffectCount(info.file_format_count))
         hardBreaks = Array(repeating: 0, count: try hostEffectCount(info.hard_break_count))
         strings = Array(repeating: 0, count: try hostEffectCount(info.string_bytes))
@@ -368,11 +368,11 @@ private extension EVRawEffectBatch {
 
     func exported() throws -> EVHostEffectBatch {
         let writes = try clipboardWrites.map { value -> EVClipboardWriteEffect in
-            guard value.struct_size >= UInt32(MemoryLayout<EvimClipboardWriteV1>.size),
+            guard value.struct_size >= UInt32(MemoryLayout<ViemClipboardWriteV1>.size),
                   value.document_id == info.document_id,
                   value.document_revision == info.document_revision,
-                  value.target == UInt32(EVIM_CLIPBOARD_TARGET_CLIPBOARD)
-                    || value.target == UInt32(EVIM_CLIPBOARD_TARGET_PRIMARY)
+                  value.target == UInt32(VIEM_CLIPBOARD_TARGET_CLIPBOARD)
+                    || value.target == UInt32(VIEM_CLIPBOARD_TARGET_PRIMARY)
             else { throw EVCoreFrontendError.invalidHostEffect }
             let breaks = try slice(hardBreaks, first: value.first_hard_break, count: value.hard_break_count)
             return EVClipboardWriteEffect(
@@ -386,11 +386,11 @@ private extension EVRawEffectBatch {
         }
 
         let requests = try exRequests.map { request -> EVExHostEffect in
-            guard request.struct_size >= UInt32(MemoryLayout<EvimExFrontendRequestV1>.size),
+            guard request.struct_size >= UInt32(MemoryLayout<ViemExFrontendRequestV1>.size),
                   request.document_id == info.document_id,
                   request.document_revision == info.document_revision
             else { throw EVCoreFrontendError.invalidHostEffect }
-            let range: ClosedRange<UInt64>? = request.flags & UInt32(EVIM_EX_FRONTEND_HAS_RANGE) != 0
+            let range: ClosedRange<UInt64>? = request.flags & UInt32(VIEM_EX_FRONTEND_HAS_RANGE) != 0
                 ? request.hard_line_start ... request.hard_line_end
                 : nil
             guard range == nil || request.hard_line_start <= request.hard_line_end else {
@@ -411,39 +411,39 @@ private extension EVRawEffectBatch {
             )
         }
 
-        let hasNavigation = info.flags & UInt32(EVIM_EFFECT_BATCH_EX_HAS_NAVIGATION) != 0
+        let hasNavigation = info.flags & UInt32(VIEM_EFFECT_BATCH_EX_HAS_NAVIGATION) != 0
         return EVHostEffectBatch(
             documentID: info.document_id,
             documentRevision: info.document_revision,
             flags: info.flags,
             navigationUTF8Offset: hasNavigation ? info.navigation_utf8_offset : nil,
-            navigationRestoresHistory: info.flags & UInt32(EVIM_EFFECT_BATCH_EX_NAVIGATION_HISTORY) != 0,
+            navigationRestoresHistory: info.flags & UInt32(VIEM_EFFECT_BATCH_EX_NAVIGATION_HISTORY) != 0,
             substitutionCount: info.substitution_count,
             clipboardWrites: writes,
             exEffects: requests
         )
     }
 
-    func options(for request: EvimExFrontendRequestV1) throws -> [EVExOptionEffect] {
-        guard request.kind == UInt32(EVIM_EX_FRONTEND_OPTIONS) else {
+    func options(for request: ViemExFrontendRequestV1) throws -> [EVExOptionEffect] {
+        guard request.kind == UInt32(VIEM_EX_FRONTEND_OPTIONS) else {
             guard request.option_count == 0 else { throw EVCoreFrontendError.invalidHostEffect }
             return []
         }
         return try slice(exOptions, first: request.first_option, count: request.option_count).map { option in
-            guard option.struct_size >= UInt32(MemoryLayout<EvimExOptionDisplayV1>.size) else {
+            guard option.struct_size >= UInt32(MemoryLayout<ViemExOptionDisplayV1>.size) else {
                 throw EVCoreFrontendError.invalidHostEffect
             }
             let value: EVExOptionValue
             switch option.value_kind {
-            case UInt32(EVIM_EX_OPTION_VALUE_BOOLEAN):
+            case UInt32(VIEM_EX_OPTION_VALUE_BOOLEAN):
                 guard option.scalar_value <= 1, option.file_format_count == 0 else {
                     throw EVCoreFrontendError.invalidHostEffect
                 }
                 value = .boolean(option.scalar_value != 0)
-            case UInt32(EVIM_EX_OPTION_VALUE_FILE_FORMAT):
+            case UInt32(VIEM_EX_OPTION_VALUE_FILE_FORMAT):
                 guard option.file_format_count == 0 else { throw EVCoreFrontendError.invalidHostEffect }
                 value = .fileFormat(option.scalar_value)
-            case UInt32(EVIM_EX_OPTION_VALUE_FILE_FORMATS):
+            case UInt32(VIEM_EX_OPTION_VALUE_FILE_FORMATS):
                 value = .fileFormats(Array(try slice(
                     fileFormats,
                     first: option.first_file_format,
@@ -456,10 +456,10 @@ private extension EVRawEffectBatch {
         }
     }
 
-    func marks(for request: EvimExFrontendRequestV1) throws -> [EVExMarkEffect] {
-        guard request.kind == UInt32(EVIM_EX_FRONTEND_MARKS) else { return [] }
+    func marks(for request: ViemExFrontendRequestV1) throws -> [EVExMarkEffect] {
+        guard request.kind == UInt32(VIEM_EX_FRONTEND_MARKS) else { return [] }
         return try slice(exMarks, first: request.first_payload, count: request.payload_count).map { mark in
-            guard mark.struct_size >= UInt32(MemoryLayout<EvimExMarkV1>.size),
+            guard mark.struct_size >= UInt32(MemoryLayout<ViemExMarkV1>.size),
                   mark.hard_line_start <= mark.hard_line_end,
                   let name = UnicodeScalar(mark.name)
             else { throw EVCoreFrontendError.invalidHostEffect }
@@ -474,10 +474,10 @@ private extension EVRawEffectBatch {
         }
     }
 
-    func registers(for request: EvimExFrontendRequestV1) throws -> [EVExRegisterEffect] {
-        guard request.kind == UInt32(EVIM_EX_FRONTEND_REGISTERS) else { return [] }
+    func registers(for request: ViemExFrontendRequestV1) throws -> [EVExRegisterEffect] {
+        guard request.kind == UInt32(VIEM_EX_FRONTEND_REGISTERS) else { return [] }
         return try slice(exRegisters, first: request.first_payload, count: request.payload_count).map { value in
-            guard value.struct_size >= UInt32(MemoryLayout<EvimExRegisterV1>.size),
+            guard value.struct_size >= UInt32(MemoryLayout<ViemExRegisterV1>.size),
                   let name = UnicodeScalar(value.name)
             else { throw EVCoreFrontendError.invalidHostEffect }
             return EVExRegisterEffect(
@@ -493,14 +493,14 @@ private extension EVRawEffectBatch {
         }
     }
 
-    func jumps(for request: EvimExFrontendRequestV1) throws -> [EVExJumpEffect] {
-        guard request.kind == UInt32(EVIM_EX_FRONTEND_JUMPS) else { return [] }
+    func jumps(for request: ViemExFrontendRequestV1) throws -> [EVExJumpEffect] {
+        guard request.kind == UInt32(VIEM_EX_FRONTEND_JUMPS) else { return [] }
         return try slice(exJumps, first: request.first_payload, count: request.payload_count).map { jump in
-            guard jump.struct_size >= UInt32(MemoryLayout<EvimExJumpV1>.size),
+            guard jump.struct_size >= UInt32(MemoryLayout<ViemExJumpV1>.size),
                   jump.hard_line_start <= jump.hard_line_end
             else { throw EVCoreFrontendError.invalidHostEffect }
             return EVExJumpEffect(
-                isCurrent: jump.flags & UInt32(EVIM_EX_JUMP_CURRENT) != 0,
+                isCurrent: jump.flags & UInt32(VIEM_EX_JUMP_CURRENT) != 0,
                 listIndex: jump.list_index,
                 utf8Offset: jump.utf8_offset,
                 hardLineIndex: jump.hard_line_index,
@@ -511,10 +511,10 @@ private extension EVRawEffectBatch {
         }
     }
 
-    func textLines(for request: EvimExFrontendRequestV1) throws -> [EVExTextLineEffect] {
-        guard request.kind == UInt32(EVIM_EX_FRONTEND_PRINT_LINES) else { return [] }
+    func textLines(for request: ViemExFrontendRequestV1) throws -> [EVExTextLineEffect] {
+        guard request.kind == UInt32(VIEM_EX_FRONTEND_PRINT_LINES) else { return [] }
         return try slice(exTextLines, first: request.first_payload, count: request.payload_count).map { line in
-            guard line.struct_size >= UInt32(MemoryLayout<EvimExTextLineV1>.size),
+            guard line.struct_size >= UInt32(MemoryLayout<ViemExTextLineV1>.size),
                   line.utf8_start <= line.utf8_end
             else { throw EVCoreFrontendError.invalidHostEffect }
             return EVExTextLineEffect(
@@ -525,7 +525,7 @@ private extension EVRawEffectBatch {
         }
     }
 
-    func string(_ reference: EvimEffectBytesRefV1) throws -> String {
+    func string(_ reference: ViemEffectBytesRefV1) throws -> String {
         let bytes = try slice(strings, first: reference.offset, count: reference.length)
         guard let result = String(bytes: bytes, encoding: .utf8) else {
             throw EVCoreFrontendError.invalidHostEffect
@@ -552,7 +552,7 @@ private func hostEffectCount(_ value: UInt64) throws -> Int {
 }
 
 private func hostEffectChecked(_ status: UInt32, operation: String) throws {
-    guard status == UInt32(EVIM_STATUS_OK) else {
+    guard status == UInt32(VIEM_STATUS_OK) else {
         throw EVCoreFrontendError.core(operation: operation, status: status)
     }
 }

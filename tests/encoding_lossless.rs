@@ -1,4 +1,4 @@
-use evim_core::document::{
+use viem_core::document::{
     DecodingDiagnosticKind, Document, DocumentError, Encoding, FileFormat, Format,
 };
 

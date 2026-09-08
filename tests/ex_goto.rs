@@ -1,12 +1,12 @@
-use evim_core::command::{CommandInterpreter, CommandStatus, InputEvent, Key};
-use evim_core::document::SourceToTextError;
-use evim_core::{Document, Encoding, Format};
+use viem_core::command::{CommandInterpreter, CommandStatus, InputEvent, Key};
+use viem_core::document::SourceToTextError;
+use viem_core::{Document, Encoding, Format};
 
 fn enter_ex(
     commands: &mut CommandInterpreter,
     document: &mut Document,
     command: &str,
-) -> evim_core::command::CommandOutput {
+) -> viem_core::command::CommandOutput {
     commands
         .handle(document, InputEvent::Key(Key::Char(':')))
         .unwrap();
@@ -52,8 +52,8 @@ fn goto_surfaces_hidden_source_interiors_as_typed_command_errors() {
     let output = enter_ex(&mut commands, &mut document, "goto 2");
     assert!(matches!(
         output.status,
-        CommandStatus::ExError(evim_core::command::ExCommandError::Execute(
-            evim_core::command::ex_execute::ExExecuteError::SourceMapping(
+        CommandStatus::ExError(viem_core::command::ExCommandError::Execute(
+            viem_core::command::ex_execute::ExExecuteError::SourceMapping(
                 SourceToTextError::InteriorHiddenSyntax { .. }
             )
         ))

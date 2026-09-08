@@ -33,12 +33,12 @@ fi
 # SwiftPM sees the Rust archive only as an unsafe linker argument, so archive
 # mtime changes are not part of its dependency graph. Recompile the tiny C shim
 # to force a relink against the just-built core on every bundled-app build.
-touch "$project_dir/src/mac/CEvimCore/shim.c"
+touch "$project_dir/src/mac/CViemCore/shim.c"
 
-EVIM_RUST_PROFILE="$configuration" swift build --disable-sandbox -c "$configuration"
-swift_bin_dir=$(EVIM_RUST_PROFILE="$configuration" swift build --disable-sandbox -c "$configuration" --show-bin-path)
+VIEM_RUST_PROFILE="$configuration" swift build --disable-sandbox -c "$configuration"
+swift_bin_dir=$(VIEM_RUST_PROFILE="$configuration" swift build --disable-sandbox -c "$configuration" --show-bin-path)
 
-app_bundle="$project_dir/.build/eVim.app"
+app_bundle="$project_dir/.build/Viem.app"
 contents_dir="$app_bundle/Contents"
 macos_dir="$contents_dir/MacOS"
 resources_dir="$contents_dir/Resources"
@@ -46,8 +46,8 @@ resources_dir="$contents_dir/Resources"
 mkdir -p "$macos_dir" "$resources_dir"
 # A previous development build may still be running. Replace its executable
 # inode atomically instead of truncating bytes mapped by that process.
-cp "$swift_bin_dir/eVim" "$macos_dir/eVim.new"
-mv -f "$macos_dir/eVim.new" "$macos_dir/eVim"
+cp "$swift_bin_dir/Viem" "$macos_dir/Viem.new"
+mv -f "$macos_dir/Viem.new" "$macos_dir/Viem"
 cp "$project_dir/src/mac/App/Resources/Info.plist" "$contents_dir/Info.plist"
 
 codesign --force --sign - "$app_bundle"

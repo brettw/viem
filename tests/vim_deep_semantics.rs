@@ -1,9 +1,9 @@
 //! Deep black-box coverage for command families whose declarative matrix only
 //! proves that their key grammar is accepted.
 
-use evim_core::command::{CommandStatus, InputEvent, Key, Mode, RegisterKind};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, Document, Encoding, Format, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key, Mode, RegisterKind};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, Document, Encoding, Format, ViewId};
 
 fn core_for(document: Document) -> (Core<MockTextMeasurementProvider>, ViewId) {
     let mut core = Core::new(document);

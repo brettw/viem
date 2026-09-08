@@ -1,4 +1,4 @@
-use evim_core::document::*;
+use viem_core::document::*;
 
 #[test]
 fn assigning_code_joins_adjacent_spans_without_rewriting_their_bodies() {

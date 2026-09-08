@@ -1,9 +1,9 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import XCTest
 
-@testable import EvimEditor
-@testable import EvimAppShell
+@testable import ViemEditor
+@testable import ViemAppShell
 
 final class EVMultilineRenderingTests: XCTestCase {
     @MainActor
@@ -140,9 +140,9 @@ final class EVMultilineRenderingTests: XCTestCase {
         for operation in [
             { _ = try session.sendText("i") },
             { _ = try session.sendText("FIRST ROW") },
-            { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER)) },
+            { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER)) },
             { _ = try session.sendText("SECOND ROW") },
-            { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER)) },
+            { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER)) },
             { _ = try session.sendText("THIRD ROW") },
         ] {
             surface.performInput(operation)
@@ -169,19 +169,19 @@ final class EVMultilineRenderingTests: XCTestCase {
         let session = try XCTUnwrap(surface.session)
 
         _ = try session.sendText("i")
-        _ = try session.sendText("Hello, eVim — SF Pro 14")
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+        _ = try session.sendText("Hello, Viem — SF Pro 14")
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
         _ = try session.sendText("Unicode: café 漢字 👩🏽‍💻")
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         surface.refreshPresentation()
 
-        XCTAssertEqual(surface.formattedText, "Hello, eVim — SF Pro 14\nUnicode: café 漢字 👩🏽‍💻")
+        XCTAssertEqual(surface.formattedText, "Hello, Viem — SF Pro 14\nUnicode: café 漢字 👩🏽‍💻")
         let layout = try session.layoutExport()
         XCTAssertGreaterThanOrEqual(layout.rows.count, 2)
         XCTAssertGreaterThan(layout.rows[1].y, layout.rows[0].y)
         XCTAssertLessThan(layout.rows[1].y, 100)
 
-        let secondLineStart = UInt64("Hello, eVim — SF Pro 14\n".utf8.count)
+        let secondLineStart = UInt64("Hello, Viem — SF Pro 14\n".utf8.count)
         let secondLineClusters = layout.clusters.filter { $0.text_start >= secondLineStart }
         XCTAssertFalse(secondLineClusters.isEmpty)
         XCTAssertTrue(secondLineClusters.allSatisfy { $0.row_index == 1 })
@@ -201,15 +201,15 @@ final class EVMultilineRenderingTests: XCTestCase {
 
         _ = try session.sendText("i")
         _ = try session.sendText("FIRST ROW")
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
         _ = try session.sendText("SECOND ROW")
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         _ = try session.sendKey(
-            kind: UInt32(EVIM_KEY_CHARACTER),
+            kind: UInt32(VIEM_KEY_CHARACTER),
             codepoint: UInt32(Character("g").asciiValue!)
         )
         _ = try session.sendKey(
-            kind: UInt32(EVIM_KEY_CHARACTER),
+            kind: UInt32(VIEM_KEY_CHARACTER),
             codepoint: UInt32(Character("g").asciiValue!)
         )
         surface.refreshPresentation()
@@ -250,7 +250,7 @@ final class EVMultilineRenderingTests: XCTestCase {
 
     @MainActor
     private func inkBounds(
-        for clusters: [EvimPositionedClusterV1],
+        for clusters: [ViemPositionedClusterV1],
         in view: EVEditorView
     ) -> NSRect? {
         clusters.reduce(nil as NSRect?) { result, cluster in

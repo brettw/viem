@@ -117,10 +117,10 @@ final class EVApplicationDelegate: NSObject,
     }
 
     @objc func showHelpItem(_ sender: Any?) {
-        let topic = (sender as? NSMenuItem)?.representedObject as? String ?? "eVim Help"
+        let topic = (sender as? NSMenuItem)?.representedObject as? String ?? "Viem Help"
         let alert = NSAlert()
         alert.messageText = topic
-        alert.informativeText = "This help topic will be supplied with the eVim documentation bundle."
+        alert.informativeText = "This help topic will be supplied with the Viem documentation bundle."
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.runModal()

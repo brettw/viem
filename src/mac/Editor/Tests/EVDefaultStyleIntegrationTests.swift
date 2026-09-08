@@ -1,14 +1,14 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVDefaultStyleIntegrationTests: XCTestCase {
   private func configuration() throws -> EVConfigurationStore {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-style-defaults-\(UUID().uuidString)")
-    let suite = "evim-style-defaults-\(UUID().uuidString)"
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-style-defaults-\(UUID().uuidString)")
+    let suite = "viem-style-defaults-\(UUID().uuidString)"
     let legacy = try XCTUnwrap(UserDefaults(suiteName: suite))
     addTeardownBlock { try? FileManager.default.removeItem(at: directory); legacy.removePersistentDomain(forName: suite) }
     return EVConfigurationStore(directory: directory, legacyDefaults: legacy)
@@ -64,9 +64,9 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
     let bytes = Data(#"{"version":1}"#.utf8)
     let revision = try backend.documentState().document_revision
     let status = bytes.withUnsafeBytes { raw in
-      evim_core_initialize_style_defaults(backend.core, revision, raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count))
+      viem_core_initialize_style_defaults(backend.core, revision, raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count))
     }
-    XCTAssertEqual(status, UInt32(EVIM_STATUS_INVALID_ARGUMENT))
+    XCTAssertEqual(status, UInt32(VIEM_STATUS_INVALID_ARGUMENT))
     XCTAssertEqual(try backend.documentState().document_revision, revision)
     XCTAssertEqual(try backend.formattedText(), "Text")
     withExtendedLifetime(surface) {}
@@ -75,15 +75,15 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
     let backend = EVCoreDocumentBackend(configuration: try configuration())
     let revision = try backend.documentState().document_revision
     var required: UInt64 = 0
-    XCTAssertEqual(evim_core_export_style_defaults(backend.core, revision, nil, 0, &required), UInt32(EVIM_STATUS_BUFFER_TOO_SMALL))
+    XCTAssertEqual(viem_core_export_style_defaults(backend.core, revision, nil, 0, &required), UInt32(VIEM_STATUS_BUFFER_TOO_SMALL))
     XCTAssertGreaterThan(required, 0)
     var bytes = [UInt8](repeating: 0xCC, count: Int(required))
     let status = bytes.withUnsafeMutableBufferPointer {
-      evim_core_export_style_defaults(backend.core, revision, $0.baseAddress, required - 1, &required)
+      viem_core_export_style_defaults(backend.core, revision, $0.baseAddress, required - 1, &required)
     }
-    XCTAssertEqual(status, UInt32(EVIM_STATUS_BUFFER_TOO_SMALL))
+    XCTAssertEqual(status, UInt32(VIEM_STATUS_BUFFER_TOO_SMALL))
     XCTAssertTrue(bytes.allSatisfy { $0 == 0xCC })
-    XCTAssertEqual(evim_core_export_style_defaults(backend.core, revision + 1, nil, 0, &required), UInt32(EVIM_STATUS_STALE_REVISION))
+    XCTAssertEqual(viem_core_export_style_defaults(backend.core, revision + 1, nil, 0, &required), UInt32(VIEM_STATUS_STALE_REVISION))
     XCTAssertEqual(required, 0)
   }
 

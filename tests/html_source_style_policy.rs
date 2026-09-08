@@ -1,5 +1,5 @@
-use evim_core::document::*;
-use evim_core::layout::DocumentLayoutStyles;
+use viem_core::document::*;
+use viem_core::layout::DocumentLayoutStyles;
 
 fn open(source: &str) -> Document {
     Document::from_bytes(

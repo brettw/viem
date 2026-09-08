@@ -1,4 +1,4 @@
-use evim_core::document::{Document, Encoding, Format, ModelRequest, TextEdit};
+use viem_core::document::{Document, Encoding, Format, ModelRequest, TextEdit};
 
 #[test]
 fn replacing_collapsed_space_patches_each_contributor_and_preserves_opaque_gaps() {

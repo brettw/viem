@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVArabicTypographyTests: XCTestCase {
   @MainActor

@@ -471,7 +471,7 @@ pub(super) fn default_font_name(tables: &Tables) -> Option<&str> {
 /// Eight a..p letters encode the four tag bytes; a signed parameter carries
 /// the exact u32 setting bits. Other RTF readers safely ignore these controls.
 pub(super) fn feature_control_tag(name: &str) -> Option<String> {
-    let encoded = name.strip_prefix("evimfeature")?.as_bytes();
+    let encoded = name.strip_prefix("viemfeature")?.as_bytes();
     if encoded.len() != 8 || !encoded.iter().all(|byte| (b'a'..=b'p').contains(byte)) {
         return None;
     }
@@ -543,7 +543,7 @@ pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, 
             }
         }
         "b" => state.character.bold = Some(enabled),
-        "evimweight" => {
+        "viemweight" => {
             if let Some(weight) = number
                 .and_then(|n| u16::try_from(n).ok())
                 .filter(|n| (1..=1000).contains(n))
@@ -615,7 +615,7 @@ pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, 
             state.character.baseline_shift = Some(-state.character.size.unwrap_or(12.0) * 0.20)
         }
         "nosupersub" => state.character.baseline_shift = Some(0.0),
-        "evimfeatures" if number == Some(0) => {
+        "viemfeatures" if number == Some(0) => {
             state.character.open_type_features = Some(BTreeMap::new())
         }
         _ if feature_control_tag(name).is_some() => {
@@ -1416,7 +1416,7 @@ pub(super) fn character_patches(
     }
     if let Some(weight) = properties.weight {
         control.push_str(&format!(
-            "\\b{}\\evimweight{weight}",
+            "\\b{}\\viemweight{weight}",
             if weight >= 600 { "" } else { "0" }
         ));
     }
@@ -1500,12 +1500,12 @@ pub(super) fn character_patches(
         });
     }
     if let Some(features) = &properties.open_type_features {
-        control.push_str("\\evimfeatures0");
+        control.push_str("\\viemfeatures0");
         for (tag, value) in features {
             if tag.len() != 4 || !tag.bytes().all(|byte| (0x20..=0x7e).contains(&byte)) {
                 return Err(UnsupportedFormatting);
             }
-            control.push_str("\\evimfeature");
+            control.push_str("\\viemfeature");
             for byte in tag.bytes() {
                 control.push(char::from(b'a' + (byte >> 4)));
                 control.push(char::from(b'a' + (byte & 15)));

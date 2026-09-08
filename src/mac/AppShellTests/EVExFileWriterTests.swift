@@ -1,10 +1,10 @@
 import Foundation
 import XCTest
-@testable import EvimAppShell
+@testable import ViemAppShell
 
 final class EVExFileWriterTests: XCTestCase {
   func testExclusiveWriteAndLateExternalChangeKeepPriorBytes() throws {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-writer-\(UUID())")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-writer-\(UUID())")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let destination = directory.appendingPathComponent("file.txt")

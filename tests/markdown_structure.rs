@@ -1,4 +1,4 @@
-use evim_core::document::{
+use viem_core::document::{
     BlockKind, Document, Encoding, Format, ModelRequest, ProjectionWorkScope, TextEdit,
 };
 
@@ -220,9 +220,9 @@ fn list_body_edits_preserve_normalized_ordinals_and_continuation_identity() {
 
 #[test]
 fn ordered_list_enter_renumbers_siblings_and_undo_restores_literal_markers() {
-    use evim_core::command::{InputEvent, Key};
-    use evim_core::layout::MockTextMeasurementProvider;
-    use evim_core::{Core, CoreEvent};
+    use viem_core::command::{InputEvent, Key};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
     for source in ["3. first\n1. second", "- parent\n  3) first\n  1) second"] {
         let mut core = Core::new(open(source));
         let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 180.0);
@@ -232,7 +232,7 @@ fn ordered_list_enter_renumbers_siblings_and_undo_restores_literal_markers() {
             CoreEvent::PlaceCursor {
                 document_revision: core.document().revision(),
                 text_offset: at,
-                affinity: evim_core::document::BoundaryAffinity::Upstream,
+                affinity: viem_core::document::BoundaryAffinity::Upstream,
                 extend_selection: false,
             },
         )
@@ -274,9 +274,9 @@ fn ordered_list_enter_renumbers_siblings_and_undo_restores_literal_markers() {
 
 #[test]
 fn code_enter_at_body_end_preserves_one_paragraph_and_exact_undo() {
-    use evim_core::command::{InputEvent, Key};
-    use evim_core::layout::MockTextMeasurementProvider;
-    use evim_core::{Core, CoreEvent};
+    use viem_core::command::{InputEvent, Key};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
     for source in [
         "```\ncode\n```",
         "- item\n\n  ```\n  code\n  ```\n\n  after",
@@ -289,7 +289,7 @@ fn code_enter_at_body_end_preserves_one_paragraph_and_exact_undo() {
             CoreEvent::PlaceCursor {
                 document_revision: core.document().revision(),
                 text_offset: at,
-                affinity: evim_core::document::BoundaryAffinity::Upstream,
+                affinity: viem_core::document::BoundaryAffinity::Upstream,
                 extend_selection: false,
             },
         )
@@ -339,7 +339,7 @@ fn assigning_paragraph_style_removes_canonical_bullet_without_source_regeneratio
     let mut document = open(source);
     let end = document.text().find("\nTail").unwrap();
     document
-        .set_paragraph_style(0..end, evim_core::document::StyleId::from("Heading2"))
+        .set_paragraph_style(0..end, viem_core::document::StyleId::from("Heading2"))
         .unwrap();
     assert_eq!(document.text(), "First\nsecond\nTail");
     assert_eq!(document.source_bytes(), b"## First\n## second\n\nTail");
@@ -469,7 +469,7 @@ fn decorated_labels_are_absent_from_text_and_empty_item_boundaries_keep_source()
 
 #[test]
 fn list_type_changes_are_source_only_and_do_not_remove_literal_body_prefixes() {
-    use evim_core::document::ListStyle;
+    use viem_core::document::ListStyle;
     let source = "+ \\- literal\n+ Second";
     let mut document = open(source);
     let before = document.text().to_owned();
@@ -521,9 +521,9 @@ fn late_decorated_item_edit_is_regional_and_retains_label_metadata() {
 
 #[test]
 fn decorated_markdown_list_delete_and_put_keep_body_registers_and_source_ownership() {
-    use evim_core::command::InputEvent;
-    use evim_core::layout::MockTextMeasurementProvider;
-    use evim_core::{Core, CoreEvent};
+    use viem_core::command::InputEvent;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
     for (keys, expected, expected_source) in [
         ("dd", "Second\nThird", "01) Second\n01) Third"),
         ("2dd", "Third", "01) Third"),
@@ -557,9 +557,9 @@ fn decorated_markdown_list_delete_and_put_keep_body_registers_and_source_ownersh
 
 #[test]
 fn empty_decorated_markdown_item_enter_exits_without_inserting_text() {
-    use evim_core::command::{InputEvent, Key};
-    use evim_core::layout::MockTextMeasurementProvider;
-    use evim_core::{Core, CoreEvent};
+    use viem_core::command::{InputEvent, Key};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
     for source in ["- ", "-", "1.", "- First\n- "] {
         let mut core = Core::new(open(source));
         let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 180.0);
@@ -585,9 +585,9 @@ fn empty_decorated_markdown_item_enter_exits_without_inserting_text() {
 
 #[test]
 fn linewise_delete_owns_hidden_label_but_character_delete_preserves_empty_item() {
-    use evim_core::command::InputEvent;
-    use evim_core::layout::MockTextMeasurementProvider;
-    use evim_core::{Core, CoreEvent};
+    use viem_core::command::InputEvent;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
     for (source, keys, expected_source, list_remains) in [
         ("+ x", "x", "+ ", true),
         ("+ x", "dd", "", false),
@@ -634,9 +634,9 @@ fn empty_labels_without_source_spacing_accept_text_and_undo_exactly() {
 
 #[test]
 fn repeated_line_delete_and_end_change_keep_distinct_list_intentions() {
-    use evim_core::command::{InputEvent, Key};
-    use evim_core::layout::MockTextMeasurementProvider;
-    use evim_core::{Core, CoreEvent};
+    use viem_core::command::{InputEvent, Key};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
     let source = "3. First\n1. Second\n1. Third";
     let mut core = Core::new(open(source));
     let view = core.add_view(MockTextMeasurementProvider::new(), 200.0, 160.0);

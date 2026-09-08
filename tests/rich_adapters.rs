@@ -1,8 +1,8 @@
-use evim_core::document::{
+use viem_core::document::{
     BlockKind, CharacterProperties, FileFormat, FontSlant, StyleApplication,
     TransformationStageRole,
 };
-use evim_core::{Document, Encoding, Format};
+use viem_core::{Document, Encoding, Format};
 
 fn open(source: &[u8], format: Format) -> Document {
     Document::from_bytes(source.to_vec(), Encoding::Utf8, format).unwrap()
@@ -198,7 +198,7 @@ fn deterministic_local_edits_reopen_identically_and_restore_exact_source() {
 
 #[test]
 fn canonical_bold_and_italic_changes_preserve_other_source() {
-    use evim_core::document::SemanticInlineStyle;
+    use viem_core::document::SemanticInlineStyle;
     let mut html = open(
         b"<p><b foo='bar'>word</b><span data-untouched='yes'> tail</span></p>",
         Format::Html,
@@ -212,7 +212,7 @@ fn canonical_bold_and_italic_changes_preserve_other_source() {
     assert!(html.undo());
     html.set_semantic_style(1..3, SemanticInlineStyle::Strong, false)
         .unwrap();
-    assert_eq!(html.source_bytes(), b"<p><b foo='bar'>w<span style=\"font-weight: 400; --evim-base-weight: 400; --evim-bold: false\">or</span>d</b><span data-untouched='yes'> tail</span></p>");
+    assert_eq!(html.source_bytes(), b"<p><b foo='bar'>w<span style=\"font-weight: 400; --viem-base-weight: 400; --viem-bold: false\">or</span>d</b><span data-untouched='yes'> tail</span></p>");
     let mut rtf = open(br"{\rtf1\ansi{\b\unknown4 word} tail}", Format::Rtf);
     rtf.set_semantic_style(1..3, SemanticInlineStyle::Strong, false)
         .unwrap();
@@ -227,7 +227,7 @@ fn canonical_bold_and_italic_changes_preserve_other_source() {
 
 #[test]
 fn rich_direct_formatting_appends_rtf_tables_without_renumbering() {
-    use evim_core::document::{
+    use viem_core::document::{
         Color, PersistedStyleIntent, StyleModelIntent, StyleModelRequest, TextRange,
     };
     for format in [Format::Html, Format::Rtf] {
@@ -268,7 +268,7 @@ fn rich_direct_formatting_appends_rtf_tables_without_renumbering() {
         document.commit_model_transaction(prepared).unwrap();
         assert_eq!(properties_at(&document, 0), properties);
         if format == Format::Rtf {
-            assert_eq!(document.source_bytes(), br"{\rtf1{\fonttbl{\f7\fnil Old Font;}{\f8\fnil Georgia;}}{\colortbl;\red0\green0\blue255;\red255\green0\blue0;}{\f8\fs36\b\evimweight700\cf2 word}}");
+            assert_eq!(document.source_bytes(), br"{\rtf1{\fonttbl{\f7\fnil Old Font;}{\f8\fnil Georgia;}}{\colortbl;\red0\green0\blue255;\red255\green0\blue0;}{\f8\fs36\b\viemweight700\cf2 word}}");
         } else {
             assert_eq!(document.source_bytes(), b"<p><span style=\"font-family: 'Georgia'; font-size: 18pt; font-weight: 700; color: #ff0000ff\">word</span></p>");
         }
@@ -539,7 +539,7 @@ fn rich_body_replacement_uses_discontiguous_patches_preserving_all_intervening_s
 
 #[test]
 fn visual_change_of_whole_middle_inline_run_retains_original_bold_context() {
-    use evim_core::command::{CommandInterpreter, InputEvent, Key};
+    use viem_core::command::{CommandInterpreter, InputEvent, Key};
     let source="<!doctype html><p>Bold <b foo='keep'>words</b> and &#x26; text.</p><script>preserved()</script>";
     let mut document = open(source.as_bytes(), Format::Html);
     let mut commands = CommandInterpreter::new();
@@ -574,7 +574,7 @@ fn visual_change_of_whole_middle_inline_run_retains_original_bold_context() {
 
 #[test]
 fn rich_counted_insert_and_dot_use_exact_format_escapes_in_legacy_encoding() {
-    use evim_core::command::{CommandInterpreter, InputEvent, Key};
+    use viem_core::command::{CommandInterpreter, InputEvent, Key};
     for (format, source) in [
         (Format::Html, "<p>x</p><!--keep-->"),
         (Format::Rtf, r"{\rtf1\ansi x{\*\unknown keep}}"),

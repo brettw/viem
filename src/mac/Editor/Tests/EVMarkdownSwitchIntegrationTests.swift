@@ -1,7 +1,7 @@
 import AppKit
-import EvimAppShell
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVMarkdownSwitchIntegrationTests: XCTestCase {
@@ -28,7 +28,7 @@ final class EVMarkdownSwitchIntegrationTests: XCTestCase {
         // An optional real document makes the same end-to-end path useful for
         // profiling without making the regression depend on repository prose.
         let source: Data
-        if let path = ProcessInfo.processInfo.environment["EVIM_PROFILE_MARKDOWN_PATH"] {
+        if let path = ProcessInfo.processInfo.environment["VIEM_PROFILE_MARKDOWN_PATH"] {
             source = try Data(contentsOf: URL(fileURLWithPath: path))
         } else {
             source = Data(fixture.utf8)

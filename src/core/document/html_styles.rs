@@ -1,4 +1,4 @@
-//! Passive eVim-owned HTML CSS. The frozen v1 grammar remains readable;
+//! Passive Viem-owned HTML CSS. The frozen v1 grammar remains readable;
 //! v2 uses native element selectors and ordinary declarations, with metadata
 //! only for identities, inheritance, and semantics CSS cannot preserve.
 use super::html::{self, TokenKind};
@@ -6,8 +6,8 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-const OPEN: &str = "<style id=\"evim-styles\" data-evim-version=\"1\">";
-const OPEN_V2: &str = "<style id=\"evim-styles\" data-evim-version=\"2\">";
+const OPEN: &str = "<style id=\"viem-styles\" data-viem-version=\"1\">";
+const OPEN_V2: &str = "<style id=\"viem-styles\" data-viem-version=\"2\">";
 
 #[derive(Clone)]
 pub(super) struct Rule {
@@ -128,7 +128,7 @@ pub(super) fn class_name(id: &StyleId, character: bool) -> String {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-    format!("evim-{}-{encoded}", if character { "c" } else { "p" })
+    format!("viem-{}-{encoded}", if character { "c" } else { "p" })
 }
 
 fn selector(sheet: &StyleSheet, id: &StyleId, character: bool) -> String {
@@ -486,14 +486,14 @@ fn parse_rule(text: &str) -> Option<StyleDefinitionEdit> {
     let body = body.strip_suffix("}\n")?;
     let mut values = BTreeMap::new();
     for (key, value) in html::declarations(body) {
-        if key.starts_with("--evim-") {
+        if key.starts_with("--viem-") {
             if values.insert(key, unquote(value)?).is_some() {
                 return None;
             }
         }
     }
-    let id = StyleId(values.remove("--evim-style-id")?);
-    if let Some(deleted) = values.remove("--evim-style-deleted") {
+    let id = StyleId(values.remove("--viem-style-id")?);
+    if let Some(deleted) = values.remove("--viem-style-deleted") {
         if deleted != "true"
             || !values.is_empty()
             || !StyleSheet::builtin_block(&id)
@@ -504,17 +504,17 @@ fn parse_rule(text: &str) -> Option<StyleDefinitionEdit> {
         return Some(StyleDefinitionEdit::DeleteBlock(id));
     }
     let metadata = StyleDefinitionMetadata {
-        display_name: values.remove("--evim-style-name")?,
+        display_name: values.remove("--viem-style-name")?,
         origin: StyleDefinitionOrigin::SourceBacked,
     };
-    let role = values.remove("--evim-style-role")?;
-    let parent = values.remove("--evim-based-on").map(StyleId);
-    let next = values.remove("--evim-next-style").map(StyleId);
+    let role = values.remove("--viem-style-role")?;
+    let parent = values.remove("--viem-based-on").map(StyleId);
+    let next = values.remove("--viem-next-style").map(StyleId);
     let mut character = CharacterProperties::default();
     let mut block = BlockProperties::default();
     for (key, value) in values {
         parse_property(
-            key.strip_prefix("--evim-prop-")?,
+            key.strip_prefix("--viem-prop-")?,
             &value,
             &mut character,
             &mut block,
@@ -897,10 +897,10 @@ pub(super) fn write_rule(sheet: &StyleSheet, id: &StyleId, character: bool) -> O
         // paragraph in passive readers as well as in the editable projection.
         let paragraph = write_rule(sheet, &sheet.base_paragraph, false)?;
         let (_, body) = paragraph.split_once(" {\n")?;
-        let mut out = format!("{} {{\n  --evim-style-id: {};\n  --evim-style-deleted: \"true\";\n  font: inherit;\n  margin: 0;\n",
+        let mut out = format!("{} {{\n  --viem-style-id: {};\n  --viem-style-deleted: \"true\";\n  font: inherit;\n  margin: 0;\n",
             selector(sheet, id, false), quote(&id.0));
         for (key, value) in html::declarations(body.strip_suffix("}\n")?) {
-            if !key.starts_with("--evim-") {
+            if !key.starts_with("--viem-") {
                 out.push_str(&format!("  {key}: {value};\n"));
             }
         }
@@ -941,16 +941,16 @@ pub(super) fn write_rule(sheet: &StyleSheet, id: &StyleId, character: bool) -> O
         ("style-name", metadata.display_name.as_str()),
         ("style-role", role),
     ] {
-        out.push_str(&format!("  --evim-{key}: {};\n", quote(value)));
+        out.push_str(&format!("  --viem-{key}: {};\n", quote(value)));
     }
     if let Some(parent) = parent {
-        out.push_str(&format!("  --evim-based-on: {};\n", quote(&parent.0)));
+        out.push_str(&format!("  --viem-based-on: {};\n", quote(&parent.0)));
     }
     if let Some(next) = next {
-        out.push_str(&format!("  --evim-next-style: {};\n", quote(&next.0)));
+        out.push_str(&format!("  --viem-next-style: {};\n", quote(&next.0)));
     }
     for (key, value) in properties(&own_character, &own_block) {
-        out.push_str(&format!("  --evim-prop-{key}: {};\n", quote(&value)));
+        out.push_str(&format!("  --viem-prop-{key}: {};\n", quote(&value)));
     }
     let (effective_character, mut effective_block) = if character {
         (character_chain(sheet, id), BlockProperties::default())
@@ -986,7 +986,7 @@ pub(super) fn write_rule(sheet: &StyleSheet, id: &StyleId, character: bool) -> O
         // Owned metadata already records sparse base weight and relative
         // emphasis. Inline-only helper declarations are neither canonical
         // metadata nor standard fallback CSS.
-        if !key.starts_with("--evim-") {
+        if !key.starts_with("--viem-") {
             out.push_str(&format!("  {key}: {value};\n"));
         }
     }
@@ -1018,7 +1018,7 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
     let body = body.strip_suffix("}\n")?;
     let mut values = BTreeMap::new();
     for (key, value) in html::declarations(body) {
-        if key.starts_with("--evim-") && values.insert(key, unquote(value)?).is_some() {
+        if key.starts_with("--viem-") && values.insert(key, unquote(value)?).is_some() {
             return None;
         }
     }
@@ -1049,8 +1049,8 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
                 )
             }
         } else {
-            let id = StyleId(values.remove("--evim-style-id")?);
-            let character = match values.remove("--evim-style-role")?.as_str() {
+            let id = StyleId(values.remove("--viem-style-id")?);
+            let character = match values.remove("--viem-style-role")?.as_str() {
                 "paragraph" => false,
                 "character" => true,
                 _ => return None,
@@ -1068,20 +1068,20 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
                 BlockProperties::default(),
             )
         };
-    if let Some(deleted) = values.remove("--evim-style-deleted") {
+    if let Some(deleted) = values.remove("--viem-style-deleted") {
         return (deleted == "true"
             && values.is_empty()
             && !character
             && StyleSheet::builtin_block(&id))
         .then_some(StyleDefinitionEdit::DeleteBlock(id));
     }
-    if let Some(value) = values.remove("--evim-style-name") {
+    if let Some(value) = values.remove("--viem-style-name") {
         name = value;
     }
-    if let Some(value) = values.remove("--evim-based-on") {
+    if let Some(value) = values.remove("--viem-based-on") {
         parent = (!value.is_empty()).then_some(StyleId(value));
     }
-    if let Some(value) = values.remove("--evim-next-style") {
+    if let Some(value) = values.remove("--viem-next-style") {
         next = (!value.is_empty()).then_some(StyleId(value));
     }
     v2_css_properties(body, &mut c, &mut b);
@@ -1096,7 +1096,7 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
         }
     }
     let mut props = properties(&c, &b).into_iter().collect::<BTreeMap<_, _>>();
-    if let Some(clear) = values.remove("--evim-inherit") {
+    if let Some(clear) = values.remove("--viem-inherit") {
         for key in clear.split(' ') {
             // Validate even a clear key, so future schemas stay opaque.
             if !props.contains_key(key) {
@@ -1111,7 +1111,7 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
         parse_property(key, &value, &mut c, &mut b)?;
     }
     for (key, value) in values {
-        parse_property(key.strip_prefix("--evim-prop-")?, &value, &mut c, &mut b)?;
+        parse_property(key.strip_prefix("--viem-prop-")?, &value, &mut c, &mut b)?;
     }
     let metadata = StyleDefinitionMetadata {
         display_name: name,
@@ -1299,7 +1299,7 @@ fn minimal_style_css(sheet: &StyleSheet, id: &StyleId, character: bool) -> Optio
     let css = format!("{}; {}", html::character_css(&c), block_css(&b));
     let mut result = String::new();
     for (key, value) in html::declarations(&css) {
-        if !key.starts_with("--evim-") {
+        if !key.starts_with("--viem-") {
             let value = if key == "font-family"
                 && matches!(
                     value,
@@ -1318,7 +1318,7 @@ fn minimal_style_css(sheet: &StyleSheet, id: &StyleId, character: bool) -> Optio
 pub(super) fn write_rule_v2(sheet: &StyleSheet, id: &StyleId, character: bool) -> Option<String> {
     let selector = selector_v2(sheet, id, character);
     if !character && StyleSheet::builtin_block(id) && sheet.block_style(id).is_none() {
-        return Some(format!("{selector} {{\n  --evim-style-deleted: \"true\";\n  font: inherit;\n  margin: 0;\n}}\n"));
+        return Some(format!("{selector} {{\n  --viem-style-deleted: \"true\";\n  font: inherit;\n  margin: 0;\n}}\n"));
     }
     let (name, parent, next, c, b) = if character {
         let style = sheet.character_style(id)?;
@@ -1373,7 +1373,7 @@ pub(super) fn write_rule_v2(sheet: &StyleSheet, id: &StyleId, character: bool) -
             ),
         ] {
             if changed {
-                metadata.push_str(&format!("  --evim-{key}: {};\n", quote(value)));
+                metadata.push_str(&format!("  --viem-{key}: {};\n", quote(value)));
             }
         }
     } else {
@@ -1385,13 +1385,13 @@ pub(super) fn write_rule_v2(sheet: &StyleSheet, id: &StyleId, character: bool) -
                 if character { "character" } else { "paragraph" },
             ),
         ] {
-            metadata.push_str(&format!("  --evim-{key}: {};\n", quote(value)));
+            metadata.push_str(&format!("  --viem-{key}: {};\n", quote(value)));
         }
         if let Some(parent) = &parent {
-            metadata.push_str(&format!("  --evim-based-on: {};\n", quote(&parent.0)));
+            metadata.push_str(&format!("  --viem-based-on: {};\n", quote(&parent.0)));
         }
         if let Some(next) = &next {
-            metadata.push_str(&format!("  --evim-next-style: {};\n", quote(&next.0)));
+            metadata.push_str(&format!("  --viem-next-style: {};\n", quote(&next.0)));
         }
     }
     let css = minimal_style_css(sheet, id, character)?;
@@ -1416,11 +1416,11 @@ pub(super) fn write_rule_v2(sheet: &StyleSheet, id: &StyleId, character: bool) -
         .copied()
         .collect::<Vec<_>>();
     if !clear.is_empty() {
-        metadata.push_str(&format!("  --evim-inherit: {};\n", quote(&clear.join(" "))));
+        metadata.push_str(&format!("  --viem-inherit: {};\n", quote(&clear.join(" "))));
     }
     for (key, value) in properties(&c, &b) {
         if parsed_props.get(key) != Some(&value) {
-            metadata.push_str(&format!("  --evim-prop-{key}: {};\n", quote(&value)));
+            metadata.push_str(&format!("  --viem-prop-{key}: {};\n", quote(&value)));
         }
     }
     Some(format!("{selector} {{\n{metadata}{css}}}\n"))
@@ -1731,7 +1731,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(write_rule(&sheet,&StyleId::from("A"),true).unwrap(),
-            ".evim-c-41 {\n  --evim-style-id: \"A\";\n  --evim-style-name: \"A \\22 name\\22 \";\n  --evim-style-role: \"character\";\n  --evim-based-on: \"Character\";\n  --evim-prop-character-weight: \"400\";\n  --evim-prop-character-underline: \"false\";\n  --evim-prop-character-letter-spacing: \"0\";\n  font-weight: 400;\n  text-decoration-line: none;\n  letter-spacing: 0pt;\n}\n");
+            ".viem-c-41 {\n  --viem-style-id: \"A\";\n  --viem-style-name: \"A \\22 name\\22 \";\n  --viem-style-role: \"character\";\n  --viem-based-on: \"Character\";\n  --viem-prop-character-weight: \"400\";\n  --viem-prop-character-underline: \"false\";\n  --viem-prop-character-letter-spacing: \"0\";\n  font-weight: 400;\n  text-decoration-line: none;\n  letter-spacing: 0pt;\n}\n");
     }
 
     #[test]
@@ -1758,7 +1758,7 @@ mod tests {
         assert!(!rules.contains("text-indent:"), "{rules}");
         assert!(!rules.contains("letter-spacing:"), "{rules}");
         assert!(!rules.contains("vertical-align:"), "{rules}");
-        assert!(!rules.contains("--evim-prop-"), "{rules}");
+        assert!(!rules.contains("--viem-prop-"), "{rules}");
         let parsed = read(&format!("{OPEN_V2}\n{rules}</style>"));
         for style in sheet.block_styles() {
             assert_eq!(parsed.sheet.block_style(&style.id), Some(style), "{rules}");
@@ -1797,7 +1797,7 @@ mod tests {
         assert!(rule.contains("margin-inline-start: 16pt;"), "{rule}");
         assert!(rule.contains("font-size: 18pt;"), "{rule}");
         assert!(rule.contains("letter-spacing: 1.25pt;"), "{rule}");
-        assert!(!rule.contains("--evim-prop-"), "{rule}");
+        assert!(!rule.contains("--viem-prop-"), "{rule}");
         let parsed = read(&format!("{OPEN_V2}\n{rule}</style>"));
         assert_eq!(parsed.sheet.block_style(&style.id), Some(&style));
 
@@ -1821,12 +1821,12 @@ mod tests {
             Some(&paragraph),
             "{rule}"
         );
-        assert!(rule.contains("--evim-inherit:"), "{rule}");
+        assert!(rule.contains("--viem-inherit:"), "{rule}");
         assert!(
-            rule.contains("--evim-prop-paragraph-line-spacing:"),
+            rule.contains("--viem-prop-paragraph-line-spacing:"),
             "{rule}"
         );
-        assert!(!rule.contains("--evim-prop-character-weight:"), "{rule}");
+        assert!(!rule.contains("--viem-prop-character-weight:"), "{rule}");
     }
 
     #[test]
@@ -1902,7 +1902,7 @@ mod tests {
         assert!(source.ends_with(original), "{source}");
         assert!(!source.contains("body {"), "{source}");
         assert!(!source.contains("p {"), "{source}");
-        assert!(source.contains(".evim-p-43616c6c6f7574 {"), "{source}");
+        assert!(source.contains(".viem-p-43616c6c6f7574 {"), "{source}");
         let enabled = patched(
             &source,
             definition_patches_with_policy(&source, &sheet, &sheet, true).unwrap(),
@@ -1927,7 +1927,7 @@ mod tests {
             &legacy,
             definition_patches_with_policy(&legacy, &sheet, &sheet, false).unwrap(),
         );
-        assert!(!removed.contains("data-evim-version=\"1\""), "{removed}");
+        assert!(!removed.contains("data-viem-version=\"1\""), "{removed}");
         assert!(removed.ends_with(original));
     }
 }

@@ -5,9 +5,9 @@ public enum EVExternalFileChange: Equatable, Sendable {
   case modified, replaced, deleted, unreadable(String)
   public var message: String {
     switch self {
-    case .modified: "The file changed outside eVim. Your buffer is unchanged. Reload with :e! or use :w! to overwrite."
-    case .replaced: "The file was replaced outside eVim. Your buffer is unchanged. Reload with :e! or use :w! to overwrite."
-    case .deleted: "The file was deleted outside eVim. Your buffer is unchanged. Use :w! to recreate it."
+    case .modified: "The file changed outside Viem. Your buffer is unchanged. Reload with :e! or use :w! to overwrite."
+    case .replaced: "The file was replaced outside Viem. Your buffer is unchanged. Reload with :e! or use :w! to overwrite."
+    case .deleted: "The file was deleted outside Viem. Your buffer is unchanged. Use :w! to recreate it."
     case let .unreadable(reason): "The file could not be checked: \(reason). Your buffer is unchanged."
     }
   }
@@ -92,7 +92,7 @@ extension EVDocument {
   func confirmExternalOverwrite(_ change: EVExternalFileChange) -> Bool {
     if let handler = externalSaveDecisionHandler { return handler(change) }
     let alert = NSAlert()
-    alert.messageText = "The file changed outside eVim."
+    alert.messageText = "The file changed outside Viem."
     alert.informativeText = "Saving will replace the current file with this buffer’s contents."
     alert.addButton(withTitle: "Overwrite")
     alert.addButton(withTitle: "Cancel")

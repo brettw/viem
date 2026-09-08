@@ -10,8 +10,8 @@ fn character_property(name: &str, number: Option<i32>) -> Option<StyleProperty> 
     use StyleProperty::*;
     Some(match name {
         "b" => CharacterBold,
-        "evimweight" if number.is_some_and(|value| (1..=1000).contains(&value)) => CharacterWeight,
-        "evimfeatures" if number == Some(0) => CharacterOpenTypeFeatures,
+        "viemweight" if number.is_some_and(|value| (1..=1000).contains(&value)) => CharacterWeight,
+        "viemfeatures" if number == Some(0) => CharacterOpenTypeFeatures,
         _ if number.is_some() && rtf::feature_control_tag(name).is_some() => {
             CharacterOpenTypeFeatures
         }
@@ -155,7 +155,7 @@ pub(super) fn clear_character_patches(
                 for index in chain {
                     let token = &tokens[*index];
                     if matches!(&token.kind, Kind::Control(name, _) if name == "plain") {
-                        controls.push_str("\\evimfeatures0");
+                        controls.push_str("\\viemfeatures0");
                     } else {
                         controls.push_str(input.text[token.range.clone()].trim_end());
                     }

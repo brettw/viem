@@ -1,7 +1,7 @@
-use evim_core::command::{CommandStatus, InputEvent, Key};
-use evim_core::document::{BoundaryAffinity, Encoding, Format};
-use evim_core::layout::{DocumentLayoutStyles, DocumentStyleInput, MockTextMeasurementProvider};
-use evim_core::{Core, CoreEvent, Document, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key};
+use viem_core::document::{BoundaryAffinity, Encoding, Format};
+use viem_core::layout::{DocumentLayoutStyles, DocumentStyleInput, MockTextMeasurementProvider};
+use viem_core::{Core, CoreEvent, Document, ViewId};
 
 fn open(source: &str, format: Format) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap()
@@ -135,7 +135,7 @@ fn list_body_indents_are_signed_and_derived_list_styles_do_not_double_the_inset(
     sheet
         .insert_block_style(
             style,
-            evim_core::document::StyleDefinitionMetadata::generated("Custom List"),
+            viem_core::document::StyleDefinitionMetadata::generated("Custom List"),
         )
         .unwrap();
     let mut blocks = projection.blocks().to_vec();

@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVHTMLSourceLayoutIntegrationTests: XCTestCase {
@@ -27,13 +27,13 @@ final class EVHTMLSourceLayoutIntegrationTests: XCTestCase {
         _ = try session.resize(width: 1100, height: 680)
         _ = try session.setScale(1.75)
         for ch in "/first_code".unicodeScalars {
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_CHARACTER), codepoint: ch.value)
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: ch.value)
         }
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_CHARACTER), codepoint: 65)
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 65)
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
         for ch in "    added_line()" { _ = try session.sendText(String(ch)) }
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         let edited = try backend.serializedSource(typeName: EVDocument.htmlType)
         XCTAssertNotEqual(edited, Data(source.utf8))
         XCTAssertTrue(String(decoding: edited, as: UTF8.self).contains("<br>    added_line()"))

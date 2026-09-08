@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVAccessibilityIntegrationTests: XCTestCase {
     @MainActor
@@ -78,24 +78,24 @@ final class EVAccessibilityIntegrationTests: XCTestCase {
         XCTAssertEqual(surface.selectedUTF8Ranges(), [0 ..< 3])
         XCTAssertEqual(
             surface.viewPresentation.mode,
-            UInt32(EVIM_MODE_VISUAL_LINE),
+            UInt32(VIEM_MODE_VISUAL_LINE),
             "an unrepresentable hard-break endpoint must not replace an exact core selection"
         )
 
         surface.performInput {
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             _ = try session.sendKey(
-                kind: UInt32(EVIM_KEY_CONTROL_CHARACTER),
+                kind: UInt32(VIEM_KEY_CONTROL_CHARACTER),
                 codepoint: UInt32(Character("v").asciiValue!)
             )
         }
         surface.performInput {
             _ = try session.sendKey(
-                kind: UInt32(EVIM_KEY_CHARACTER),
+                kind: UInt32(VIEM_KEY_CHARACTER),
                 codepoint: UInt32(Character("l").asciiValue!)
             )
             _ = try session.sendKey(
-                kind: UInt32(EVIM_KEY_CHARACTER),
+                kind: UInt32(VIEM_KEY_CHARACTER),
                 codepoint: UInt32(Character("j").asciiValue!)
             )
         }
@@ -161,7 +161,7 @@ final class EVAccessibilityIntegrationTests: XCTestCase {
         let view = surface.editorView
 
         view.setAccessibilitySelectedTextRange(NSRange(location: 1, length: 2))
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_VISUAL_CHARACTER))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
         XCTAssertEqual(surface.selectedUTF8Ranges(), [1 ..< 5])
         XCTAssertEqual(view.accessibilitySelectedText(), "😀")
         XCTAssertFalse(view.hasMarkedText())

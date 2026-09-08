@@ -1,4 +1,4 @@
-use evim_core::document::{
+use viem_core::document::{
     BomPolicy, Document, Encoding, FileFormat, Format, HistorySemanticChangeKind,
     SourceArtifactDigest,
 };

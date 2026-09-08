@@ -1,9 +1,9 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVFileDropTests: XCTestCase {
@@ -117,7 +117,7 @@ final class EVFileDropTests: XCTestCase {
     func testMarkedInputIsCommittedBeforeTheHostChecksWhetherReplacementIsSafe() throws {
         let (backend, surface, host) = try makeSurface("")
         let session = try XCTUnwrap(surface.session)
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_CHARACTER), codepoint: 105)
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 105)
         surface.refreshPresentation()
         surface.editorView.setMarkedText("draft", selectedRange: NSRange(location: 5, length: 0),
                                          replacementRange: NSRange(location: NSNotFound, length: 0))

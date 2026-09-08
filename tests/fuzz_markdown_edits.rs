@@ -1,5 +1,5 @@
-use evim_core::document::{Document, Encoding, FileFormat, Format, ModelRequest, TextEdit};
-use evim_core::layout::DocumentLayoutStyles;
+use viem_core::document::{Document, Encoding, FileFormat, Format, ModelRequest, TextEdit};
+use viem_core::layout::DocumentLayoutStyles;
 
 fn markdown(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap()

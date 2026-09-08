@@ -1,5 +1,5 @@
-use evim_core::document::{BlockKind, StyleId};
-use evim_core::{Document, Encoding, Format};
+use viem_core::document::{BlockKind, StyleId};
+use viem_core::{Document, Encoding, Format};
 
 #[test]
 fn paragraph_menu_assignments_update_source_markers_and_undo() {
@@ -67,7 +67,7 @@ fn paragraph_menu_assignments_update_source_markers_and_undo() {
 
 #[test]
 fn flowed_paragraph_styles_flatten_only_soft_source_breaks() {
-    use evim_core::document::ListStyle;
+    use viem_core::document::ListStyle;
     for newline in ["\n", "\r\n"] {
         let original = format!(
             "Before{newline}{newline}__First__{newline}soft continuation{newline}{newline}Tail"
@@ -117,7 +117,7 @@ fn flowed_paragraph_styles_flatten_only_soft_source_breaks() {
 
 #[test]
 fn removing_structural_markers_keeps_neighboring_paragraphs_separate() {
-    use evim_core::document::ListStyle;
+    use viem_core::document::ListStyle;
     for (source, expected) in [
         ("Before\n# Heading\nTail", "Before\n\nHeading\n\nTail"),
         ("# First\n## Second\nTail", "First\n\nSecond\n\nTail"),

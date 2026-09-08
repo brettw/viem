@@ -1,8 +1,8 @@
 import Foundation
 
 extension Notification.Name {
-  public static let evimEditingPreferencesDidChange = Notification.Name(
-    "com.evim.editing-preferences.did-change")
+  public static let viemEditingPreferencesDidChange = Notification.Name(
+    "com.viem.editing-preferences.did-change")
 }
 
 /// Application preferences configure portable input assistance. They never
@@ -26,6 +26,6 @@ public final class EVEditingPreferences {
     guard enabled != smartQuotes else { return }
     do { try configuration.setSmartQuotes(enabled) } catch { return }
     smartQuotes = enabled
-    center.post(name: .evimEditingPreferencesDidChange, object: self)
+    center.post(name: .viemEditingPreferencesDidChange, object: self)
   }
 }

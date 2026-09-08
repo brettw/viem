@@ -1,7 +1,7 @@
 # macOS frontend development
 
 The native frontend is an AppKit application backed by the Rust core through
-`include/evim_core.h`. Swift Package Manager builds the frontend modules and
+`include/viem_core.h`. Swift Package Manager builds the frontend modules and
 their tests; the helper script assembles the executable and resources into a
 locally signed application bundle.
 
@@ -23,7 +23,7 @@ Build the bundle without launching it:
 ./scripts/build-mac-app.sh debug
 ```
 
-The resulting application is `.build/eVim.app`. Use `release` in place of
+The resulting application is `.build/Viem.app`. Use `release` in place of
 `debug` for an optimized local build.
 
 Run the portable and native test suites independently:
@@ -35,11 +35,11 @@ swift test --disable-sandbox
 
 The Swift package is divided into the same ownership boundaries as the source:
 
-- `CEvimCore` exposes the C ABI;
-- `EvimCoreTextProvider` implements shaping and owns native render handles;
-- `EvimEditor` adapts core document/view state to the custom AppKit surface;
-- `EvimAppShell` owns documents, windows, menus, and application lifecycle; and
-- `eVim` is the small composition root.
+- `CViemCore` exposes the C ABI;
+- `ViemCoreTextProvider` implements shaping and owns native render handles;
+- `ViemEditor` adapts core document/view state to the custom AppKit surface;
+- `ViemAppShell` owns documents, windows, menus, and application lifecycle; and
+- `Viem` is the small composition root.
 
 The AppKit view is a renderer and input adapter. It must not become a second
 text store, selection model, or undo authority.

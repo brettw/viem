@@ -1,7 +1,7 @@
-use evim_core::command::{CommandStatus, InputEvent, Key, LineMode};
-use evim_core::document::{Encoding, Format};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, Document, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key, LineMode};
+use viem_core::document::{Encoding, Format};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, Document, ViewId};
 
 fn keys(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, text: &str) {
     for c in text.chars() {

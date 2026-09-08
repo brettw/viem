@@ -1,9 +1,9 @@
-use evim_core::command::{InputEvent, Key};
-use evim_core::document::{
+use viem_core::command::{InputEvent, Key};
+use viem_core::document::{
     BoundaryAffinity, Document, Encoding, Format, HistoryNavigationRequest, SemanticInlineStyle,
 };
-use evim_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
-use evim_core::{Core, CoreEvent, ViewId};
+use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
+use viem_core::{Core, CoreEvent, ViewId};
 
 fn key(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, key: Key) {
     let output = core
@@ -17,7 +17,7 @@ fn key(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, key: Key) {
         });
     assert!(matches!(
         output.command.unwrap().status,
-        evim_core::command::CommandStatus::Complete | evim_core::command::CommandStatus::Pending
+        viem_core::command::CommandStatus::Complete | viem_core::command::CommandStatus::Pending
     ));
 }
 fn style(
@@ -255,7 +255,7 @@ fn inherited_styled_replace_restoration_keeps_large_document_layout_local() {
         DocumentLayoutStyles::character_at(core.document().projection(), at, false)
             .unwrap()
             .slant
-            != evim_core::document::FontSlant::Upright
+            != viem_core::document::FontSlant::Upright
     );
     key(&mut core, view, Key::Backspace);
     assert_eq!(core.document().source_bytes(), source.as_bytes());

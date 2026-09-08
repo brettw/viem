@@ -1,12 +1,12 @@
-use evim_core::document::{
+use viem_core::document::{
     execute_prepared_artifact_write, load_artifact, ArtifactOverwrite, ArtifactPath,
     ArtifactStorageProvider, ArtifactWriteCompletion, ArtifactWriteCompletionStatus,
     ArtifactWriteIntent, ArtifactWritePurpose, ArtifactWriteReceipt, ArtifactWriteScope,
     ArtifactWriteToken, Document, Encoding, FileFormat, Format, InMemoryArtifactStorage,
     InMemoryStorageError, LineEndingOpenPolicy, PersistenceError,
 };
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{command::InputEvent, command::Key, Core, CoreEvent};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{command::InputEvent, command::Key, Core, CoreEvent};
 
 fn save_as(path: &str) -> ArtifactWriteIntent {
     ArtifactWriteIntent::SaveAs {
@@ -283,7 +283,7 @@ fn completion_tokens_reject_wrong_unknown_duplicate_and_superseded_results() {
 
     let wrong_receipt = ArtifactWriteReceipt::new(
         ArtifactPath::from("early"),
-        evim_core::document::ArtifactIdentity::new(vec![7]),
+        viem_core::document::ArtifactIdentity::new(vec![7]),
     );
     assert!(matches!(
         first.complete_artifact_write(ArtifactWriteCompletion::succeeded(
@@ -469,7 +469,7 @@ fn one_destination_has_at_most_one_in_flight_write_and_malformed_receipts_are_re
 
     let malformed = ArtifactWriteReceipt::new(
         ArtifactPath::from("different"),
-        evim_core::document::ArtifactIdentity::new(vec![1]),
+        viem_core::document::ArtifactIdentity::new(vec![1]),
     );
     assert_eq!(
         document.complete_artifact_write(prepared.succeeded(malformed)),
@@ -506,7 +506,7 @@ fn one_destination_has_at_most_one_in_flight_write_and_malformed_receipts_are_re
         .unwrap();
     let wrong_identity = ArtifactWriteReceipt::new(
         current.clone(),
-        evim_core::document::ArtifactIdentity::new(vec![0xff]),
+        viem_core::document::ArtifactIdentity::new(vec![0xff]),
     );
     assert_eq!(
         bound.complete_artifact_write(save.succeeded(wrong_identity)),

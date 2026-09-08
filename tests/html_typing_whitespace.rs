@@ -1,11 +1,11 @@
-use evim_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
-use evim_core::command::{CommandInterpreter, CommandStatus, InputEvent, Key};
-use evim_core::document::{
+use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
+use viem_core::command::{CommandInterpreter, CommandStatus, InputEvent, Key};
+use viem_core::document::{
     BoundaryAffinity, Document, Encoding, Format, ModelRequest, ProjectionWorkScope,
     SemanticInlineStyle, StyleApplication, TextEdit,
 };
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, ViewId};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, ViewId};
 
 fn html(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap()

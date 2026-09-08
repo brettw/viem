@@ -1,18 +1,18 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor final class EVCommandPromptEditingTests: XCTestCase {
     private final class Pasteboard: EVPasteboardAccess {
         var text: String?
-        var evimGeneration: UInt64 = 1
-        var evimIsWritable: Bool { true }
-        func evimString() -> String? { text }
-        func evimCanReadString() -> Bool { text != nil }
-        func evimClearContents() -> Int { text = nil; evimGeneration += 1; return 1 }
-        func evimSetString(_ string: String) -> Bool { text = string; evimGeneration += 1; return true }
+        var viemGeneration: UInt64 = 1
+        var viemIsWritable: Bool { true }
+        func viemString() -> String? { text }
+        func viemCanReadString() -> Bool { text != nil }
+        func viemClearContents() -> Int { text = nil; viemGeneration += 1; return 1 }
+        func viemSetString(_ string: String) -> Bool { text = string; viemGeneration += 1; return true }
     }
     private func makeSurface() throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession, NSWindow) {
         let backend = EVCoreDocumentBackend()
@@ -35,7 +35,7 @@ import XCTest
         surface.editorView.keyDown(with: try key(123, shift: true))
         XCTAssertEqual(surface.editorView.selectedRange(), NSRange(location: 3, length: 1))
         surface.editorView.copyDocumentSelection(nil)
-        XCTAssertEqual(pasteboard.evimString(), "é")
+        XCTAssertEqual(pasteboard.viemString(), "é")
         surface.editorView.cutDocumentSelection(nil)
         XCTAssertEqual(surface.commandLine?.text, "caf")
         surface.editorView.selectAll(nil)
@@ -75,7 +75,7 @@ import XCTest
         surface.performInput { _ = try session.sendText(":") }
         XCTAssertNil(surface.commandOutput)
         XCTAssertTrue(surface.editorView.commandOutputBar.isHidden)
-        surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+        surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
         surface.publishHostMessage("new")
         surface.dismissCommandOutput()
         XCTAssertNil(surface.commandOutput)
@@ -83,11 +83,11 @@ import XCTest
     }
     func testNativeOptionWarningsAndExErrorsReachPersistentOutput() throws {
         let (_, surface, session, window) = try makeSurface()
-        surface.performInput { _ = try session.sendText(":s bar.txt"); _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER)) }
+        surface.performInput { _ = try session.sendText(":s bar.txt"); _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
         XCTAssertTrue(surface.commandOutput?.contains(":saveas <file>") == true)
-        surface.performInput { _ = try session.sendText("i🙂"); _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+        surface.performInput { _ = try session.sendText("i🙂"); _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
         let state = try surface.backend.documentState()
-        surface.performInput { _ = try session.setEncoding(UInt32(EVIM_ENCODING_LATIN1), expected: state) }
+        surface.performInput { _ = try session.setEncoding(UInt32(VIEM_ENCODING_LATIN1), expected: state) }
         XCTAssertNotNil(surface.commandOutput)
         XCTAssertTrue(surface.commandOutput?.lowercased().contains("replac") == true)
         XCTAssertFalse(surface.editorView.commandOutputBar.isHidden)

@@ -1,11 +1,11 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import CoreFoundation
 import CoreGraphics
 import CoreText
 import Foundation
 
-/// Core Text implementation of eVim's batched measurement ABI.
+/// Core Text implementation of Viem's batched measurement ABI.
 ///
 /// Core Text font and shaping operations are safe off the main thread, so the
 /// provider advertises worker execution. Opaque draw resources remain confined
@@ -47,7 +47,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   ) {
     self.measurementEnvironmentID = measurementEnvironmentID
     let proposedOwner = measurementEnvironmentID ^ 0x4354_5255_4E53_4554
-    renderRunOwner = proposedOwner == 0 ? 0x4556_494D : proposedOwner
+    renderRunOwner = proposedOwner == 0 ? 0x5649_454D : proposedOwner
     generation = max(initialMetricsGeneration, 1)
     renderRegistry = CoreTextRenderRegistry(generation: max(initialMetricsGeneration, 1))
     self.shapingDidBegin = shapingDidBegin
@@ -126,28 +126,28 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   }
 
   /// Produces the trivially-copyable table consumed by
-  /// `evim_core_view_add`. The caller retains this provider until the view is
+  /// `viem_core_view_add`. The caller retains this provider until the view is
   /// removed or the owning core is successfully destroyed.
-  public func makeProviderTable() -> EvimTextMeasurementProviderV1 {
-    var table = EvimTextMeasurementProviderV1()
-    table.struct_size = UInt32(MemoryLayout<EvimTextMeasurementProviderV1>.size)
-    table.abi_version = UInt32(EVIM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2)
+  public func makeProviderTable() -> ViemTextMeasurementProviderV1 {
+    var table = ViemTextMeasurementProviderV1()
+    table.struct_size = UInt32(MemoryLayout<ViemTextMeasurementProviderV1>.size)
+    table.abi_version = UInt32(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2)
     table.context = Unmanaged.passUnretained(self).toOpaque()
     table.measurement_environment_id = measurementEnvironmentID
-    table.threading = UInt32(EVIM_PROVIDER_THREADING_ANY_WORKER)
+    table.threading = UInt32(VIEM_PROVIDER_THREADING_ANY_WORKER)
     table.has_render_run_policy = 1
     table.render_run_owner = renderRunOwner
-    table.render_run_threading = UInt32(EVIM_RENDER_THREADING_FRONTEND_MAIN)
+    table.render_run_threading = UInt32(VIEM_RENDER_THREADING_FRONTEND_MAIN)
     table.reserved = 0
-    table.metrics_generation = evimCoreTextMetricsGeneration
-    table.shape_batch = evimCoreTextShapeBatch
+    table.metrics_generation = viemCoreTextMetricsGeneration
+    table.shape_batch = viemCoreTextShapeBatch
     return table
   }
 
   fileprivate func shapeBatch(
-    requests: UnsafePointer<EvimShapeRequestV1>?,
+    requests: UnsafePointer<ViemShapeRequestV1>?,
     requestCount: UInt64,
-    responses: UnsafeMutablePointer<EvimShapeResponseV1>?,
+    responses: UnsafeMutablePointer<ViemShapeResponseV1>?,
     responseCapacity: UInt64
   ) -> UInt32 {
     guard requestCount <= responseCapacity,
@@ -172,7 +172,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     shapingDidBegin?()
 
     let arena = ResponseArena()
-    var shaped: [EvimShapeResponseV1] = []
+    var shaped: [ViemShapeResponseV1] = []
     shaped.reserveCapacity(Int(requestCount))
 
     for index in 0..<Int(requestCount) {
@@ -204,11 +204,11 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   }
 
   private func shapeOne(
-    _ request: EvimShapeRequestV1,
+    _ request: ViemShapeRequestV1,
     arena: ResponseArena,
     callbackGeneration: UInt64
-  ) throws -> EvimShapeResponseV1 {
-    guard request.struct_size >= UInt32(MemoryLayout<EvimShapeRequestV1>.size),
+  ) throws -> ViemShapeResponseV1 {
+    guard request.struct_size >= UInt32(MemoryLayout<ViemShapeRequestV1>.size),
       request.measurement_environment_id == measurementEnvironmentID,
       request.metrics_generation == callbackGeneration,
       request.text_start <= request.text_end,
@@ -296,9 +296,9 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       }
     }
 
-    let ffiClusters = try clusters.map { result -> EvimShapedClusterV1 in
-      var cluster = EvimShapedClusterV1()
-      cluster.struct_size = UInt32(MemoryLayout<EvimShapedClusterV1>.size)
+    let ffiClusters = try clusters.map { result -> ViemShapedClusterV1 in
+      var cluster = ViemShapedClusterV1()
+      cluster.struct_size = UInt32(MemoryLayout<ViemShapedClusterV1>.size)
       cluster.reserved = 0
       cluster.text_start = result.start
       cluster.text_end = result.end
@@ -311,7 +311,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       cluster.caret_stops = arena.storeCarets(result.carets)
       cluster.caret_stop_count = UInt64(result.carets.count)
 
-      if request.purpose == UInt32(EVIM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
+      if request.purpose == UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
         request.has_render_run_policy == 1
       {
         guard
@@ -329,24 +329,24 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
         cluster.render_run.reserved = 0
       } else {
         cluster.has_render_run = 0
-        cluster.render_run = EvimRenderRunHandleV1()
+        cluster.render_run = ViemRenderRunHandleV1()
       }
       return cluster
     }
 
     guard
-      request.purpose == UInt32(EVIM_SHAPE_PURPOSE_METRICS_ONLY)
-        || request.purpose == UInt32(EVIM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
-      request.purpose != UInt32(EVIM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA)
+      request.purpose == UInt32(VIEM_SHAPE_PURPOSE_METRICS_ONLY)
+        || request.purpose == UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
+      request.purpose != UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA)
         || (request.has_render_run_policy == 1
           && request.render_run_owner == renderRunOwner
-          && request.render_run_threading == UInt32(EVIM_RENDER_THREADING_FRONTEND_MAIN))
+          && request.render_run_threading == UInt32(VIEM_RENDER_THREADING_FRONTEND_MAIN))
     else { throw ProviderError(Status.invalidArgument) }
 
     let order = visualOrder(for: clusters.map(\.bidiLevel))
-    let ffiDiagnostics = diagnostics.map { diagnostic -> EvimShapingDiagnosticV1 in
-      var value = EvimShapingDiagnosticV1()
-      value.struct_size = UInt32(MemoryLayout<EvimShapingDiagnosticV1>.size)
+    let ffiDiagnostics = diagnostics.map { diagnostic -> ViemShapingDiagnosticV1 in
+      var value = ViemShapingDiagnosticV1()
+      value.struct_size = UInt32(MemoryLayout<ViemShapingDiagnosticV1>.size)
       value.reserved = 0
       value.text_start = diagnostic.start
       value.text_end = diagnostic.end
@@ -354,8 +354,8 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       return value
     }
 
-    var response = EvimShapeResponseV1()
-    response.struct_size = UInt32(MemoryLayout<EvimShapeResponseV1>.size)
+    var response = ViemShapeResponseV1()
+    response.struct_size = UInt32(MemoryLayout<ViemShapeResponseV1>.size)
     response.reserved = 0
     response.document_id = request.document_id
     response.document_revision = request.document_revision
@@ -375,17 +375,17 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   }
 }
 
-private func evimCoreTextMetricsGeneration(_ context: UnsafeMutableRawPointer?) -> UInt64 {
+private func viemCoreTextMetricsGeneration(_ context: UnsafeMutableRawPointer?) -> UInt64 {
   guard let context else { return 0 }
   return Unmanaged<CoreTextMeasurementProvider>.fromOpaque(context)
     .takeUnretainedValue().metricsGeneration
 }
 
-private func evimCoreTextShapeBatch(
+private func viemCoreTextShapeBatch(
   _ context: UnsafeMutableRawPointer?,
-  _ requests: UnsafePointer<EvimShapeRequestV1>?,
+  _ requests: UnsafePointer<ViemShapeRequestV1>?,
   _ requestCount: UInt64,
-  _ responses: UnsafeMutablePointer<EvimShapeResponseV1>?,
+  _ responses: UnsafeMutablePointer<ViemShapeResponseV1>?,
   _ responseCapacity: UInt64
 ) -> UInt32 {
   guard let context else { return Status.invalidArgument }
@@ -414,7 +414,7 @@ private struct ProviderError: Error {
   }
 }
 
-private func decode(_ slice: EvimUtf8Slice) throws -> String {
+private func decode(_ slice: ViemUtf8Slice) throws -> String {
   guard slice.length <= UInt64(Int.max) else { throw ProviderError(Status.invalidArgument) }
   if slice.length == 0 { return "" }
   guard let data = slice.data else { throw ProviderError(Status.invalidArgument) }
@@ -444,8 +444,8 @@ private struct ResolvedStyle {
   let features: [(String, UInt32)]
   let syntheticBold: Bool
 
-  init(_ source: EvimResolvedTextStyleV1, scale: CGFloat) throws {
-    guard source.struct_size >= UInt32(MemoryLayout<EvimResolvedTextStyleV1>.size),
+  init(_ source: ViemResolvedTextStyleV1, scale: CGFloat) throws {
+    guard source.struct_size >= UInt32(MemoryLayout<ViemResolvedTextStyleV1>.size),
       source.reserved <= 1,
       source.size.isFinite, source.size > 0,
       source.weight.isFinite,
@@ -453,12 +453,12 @@ private struct ResolvedStyle {
       source.baseline_shift.isFinite,
       source.has_language <= 1,
       source.has_script <= 1,
-      source.slant == UInt32(EVIM_FONT_SLANT_UPRIGHT)
-        || source.slant == UInt32(EVIM_FONT_SLANT_ITALIC)
-        || source.slant == UInt32(EVIM_FONT_SLANT_OBLIQUE),
-      source.direction == UInt32(EVIM_TEXT_DIRECTION_AUTO)
-        || source.direction == UInt32(EVIM_TEXT_DIRECTION_LEFT_TO_RIGHT)
-        || source.direction == UInt32(EVIM_TEXT_DIRECTION_RIGHT_TO_LEFT)
+      source.slant == UInt32(VIEM_FONT_SLANT_UPRIGHT)
+        || source.slant == UInt32(VIEM_FONT_SLANT_ITALIC)
+        || source.slant == UInt32(VIEM_FONT_SLANT_OBLIQUE),
+      source.direction == UInt32(VIEM_TEXT_DIRECTION_AUTO)
+        || source.direction == UInt32(VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT)
+        || source.direction == UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT)
     else { throw ProviderError(Status.invalidArgument) }
 
     var families: [String] = []
@@ -530,11 +530,11 @@ private struct ResolvedStyle {
     if let language, !language.isEmpty {
       result[NSAttributedString.Key(kCTLanguageAttributeName as String)] = language
     }
-    if direction == UInt32(EVIM_TEXT_DIRECTION_LEFT_TO_RIGHT)
-      || direction == UInt32(EVIM_TEXT_DIRECTION_RIGHT_TO_LEFT)
+    if direction == UInt32(VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT)
+      || direction == UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT)
     {
       let writingDirection =
-        direction == UInt32(EVIM_TEXT_DIRECTION_RIGHT_TO_LEFT)
+        direction == UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT)
         ? NSWritingDirection.rightToLeft.rawValue
         : NSWritingDirection.leftToRight.rawValue
       result[NSAttributedString.Key(kCTWritingDirectionAttributeName as String)] = [
@@ -551,7 +551,7 @@ private struct StyleRun {
   let style: ResolvedStyle
 }
 
-private func readStyleRuns(_ request: EvimShapeRequestV1, scale: CGFloat) throws -> [StyleRun] {
+private func readStyleRuns(_ request: ViemShapeRequestV1, scale: CGFloat) throws -> [StyleRun] {
   guard request.style_run_count <= UInt64(Int.max) else {
     throw ProviderError(Status.invalidArgument)
   }
@@ -562,7 +562,7 @@ private func readStyleRuns(_ request: EvimShapeRequestV1, scale: CGFloat) throws
   var previousEnd: UInt64?
   for index in 0..<Int(request.style_run_count) {
     let run = base[index]
-    guard run.struct_size >= UInt32(MemoryLayout<EvimShapeStyleRunV1>.size),
+    guard run.struct_size >= UInt32(MemoryLayout<ViemShapeStyleRunV1>.size),
       run.reserved == 0,
       run.text_start <= run.text_end,
       previousEnd.map({ $0 <= run.text_start }) ?? true
@@ -610,9 +610,9 @@ private func makeAttributedString(
 
   let paragraph = NSMutableParagraphStyle()
   switch paragraphDirection {
-  case UInt32(EVIM_TEXT_DIRECTION_LEFT_TO_RIGHT):
+  case UInt32(VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT):
     paragraph.baseWritingDirection = .leftToRight
-  case UInt32(EVIM_TEXT_DIRECTION_RIGHT_TO_LEFT):
+  case UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT):
     paragraph.baseWritingDirection = .rightToLeft
   default:
     paragraph.baseWritingDirection = .natural
@@ -637,7 +637,7 @@ public func resolveFont(
     relativeBold && exactFace != nil
     ? EVFontCatalog.boldWeight(baseWeight: exactFace!.weight, faces: faces)
     : UInt16(max(1, min(1000, cssWeight.rounded())))
-  let wantsItalic = slant != UInt32(EVIM_FONT_SLANT_UPRIGHT)
+  let wantsItalic = slant != UInt32(VIEM_FONT_SLANT_UPRIGHT)
   let matchingSlant = faces.filter { $0.italic == wantsItalic }
   let available = matchingSlant.isEmpty ? faces : matchingSlant
   let preferred: EVFontFace?
@@ -835,8 +835,8 @@ private struct Metrics {
   let descent: CGFloat
   let leading: CGFloat
 
-  var ffi: EvimTextMetricsV1 {
-    var result = EvimTextMetricsV1()
+  var ffi: ViemTextMetricsV1 {
+    var result = ViemTextMetricsV1()
     result.ascent = Float(ascent)
     result.descent = Float(descent)
     result.leading = Float(leading)
@@ -858,8 +858,8 @@ private struct Bounds {
   let width: CGFloat
   let height: CGFloat
 
-  var ffi: EvimShapedBoundsV1 {
-    var result = EvimShapedBoundsV1()
+  var ffi: ViemShapedBoundsV1 {
+    var result = ViemShapedBoundsV1()
     result.x = Float(x)
     result.y = Float(y)
     result.width = Float(max(width, 0))
@@ -877,7 +877,7 @@ private struct ClusterResult {
   let inkBounds: Bounds
   let bidiLevel: UInt8
   let fallbackFont: String
-  let carets: [EvimClusterCaretStopV1]
+  let carets: [ViemClusterCaretStopV1]
   let renderResource: CoreTextRenderRegistry.Resource
   let renderIdentifier: UInt64
 }
@@ -897,7 +897,7 @@ private func makeCluster(
   records: [GlyphRecord],
   style: ResolvedStyle,
   bidiLevel: UInt8,
-  request: EvimShapeRequestV1
+  request: ViemShapeRequestV1
 ) -> ClusterResult {
   var secondaryStart: CGFloat = 0
   var secondaryEnd: CGFloat = 0
@@ -957,14 +957,14 @@ private func makeCluster(
   let rtl = bidiLevel % 2 == 1
   let startInline = rtl ? advance : 0
   let endInline = rtl ? 0 : advance
-  var startCaret = EvimClusterCaretStopV1()
+  var startCaret = ViemClusterCaretStopV1()
   startCaret.text_offset = globalStart
   startCaret.inline_offset = Float(startInline)
-  startCaret.affinity = UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM)
-  var endCaret = EvimClusterCaretStopV1()
+  startCaret.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
+  var endCaret = ViemClusterCaretStopV1()
   endCaret.text_offset = globalEnd
   endCaret.inline_offset = Float(endInline)
-  endCaret.affinity = UInt32(EVIM_BOUNDARY_AFFINITY_UPSTREAM)
+  endCaret.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
 
   let grouped = Dictionary(grouping: records, by: \.run).keys.sorted().map {
     run -> CoreTextRenderRegistry.GlyphBatch in
@@ -1058,9 +1058,9 @@ private func resolvedBidiLevels(
   // writing-direction attributes supplied by style runs.
   let baseDirection: Int8
   switch paragraphDirection {
-  case UInt32(EVIM_TEXT_DIRECTION_LEFT_TO_RIGHT):
+  case UInt32(VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT):
     baseDirection = Int8(NSWritingDirection.leftToRight.rawValue)
-  case UInt32(EVIM_TEXT_DIRECTION_RIGHT_TO_LEFT):
+  case UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT):
     baseDirection = Int8(NSWritingDirection.rightToLeft.rawValue)
   default:
     baseDirection = Int8(NSWritingDirection.natural.rawValue)
@@ -1126,10 +1126,10 @@ private func stableHash(_ bytes: [UInt8]) -> UInt64 {
 
 private final class ResponseArena {
   private var bytes: [(UnsafeMutablePointer<UInt8>, Int)] = []
-  private var carets: [(UnsafeMutablePointer<EvimClusterCaretStopV1>, Int)] = []
-  private var clusters: [(UnsafeMutablePointer<EvimShapedClusterV1>, Int)] = []
+  private var carets: [(UnsafeMutablePointer<ViemClusterCaretStopV1>, Int)] = []
+  private var clusters: [(UnsafeMutablePointer<ViemShapedClusterV1>, Int)] = []
   private var visualOrders: [(UnsafeMutablePointer<UInt64>, Int)] = []
-  private var diagnostics: [(UnsafeMutablePointer<EvimShapingDiagnosticV1>, Int)] = []
+  private var diagnostics: [(UnsafeMutablePointer<ViemShapingDiagnosticV1>, Int)] = []
 
   deinit {
     for (pointer, count) in bytes {
@@ -1154,23 +1154,23 @@ private final class ResponseArena {
     }
   }
 
-  func storeUTF8(_ value: String) -> EvimUtf8Slice {
+  func storeUTF8(_ value: String) -> ViemUtf8Slice {
     let values = Array(value.utf8)
-    guard !values.isEmpty else { return EvimUtf8Slice() }
+    guard !values.isEmpty else { return ViemUtf8Slice() }
     let pointer = UnsafeMutablePointer<UInt8>.allocate(capacity: values.count)
     pointer.initialize(from: values, count: values.count)
     bytes.append((pointer, values.count))
-    var slice = EvimUtf8Slice()
+    var slice = ViemUtf8Slice()
     slice.data = UnsafePointer(pointer)
     slice.length = UInt64(values.count)
     return slice
   }
 
-  func storeCarets(_ values: [EvimClusterCaretStopV1]) -> UnsafePointer<EvimClusterCaretStopV1>? {
+  func storeCarets(_ values: [ViemClusterCaretStopV1]) -> UnsafePointer<ViemClusterCaretStopV1>? {
     store(values, in: &carets)
   }
 
-  func storeClusters(_ values: [EvimShapedClusterV1]) -> UnsafePointer<EvimShapedClusterV1>? {
+  func storeClusters(_ values: [ViemShapedClusterV1]) -> UnsafePointer<ViemShapedClusterV1>? {
     store(values, in: &clusters)
   }
 
@@ -1178,8 +1178,8 @@ private final class ResponseArena {
     store(values, in: &visualOrders)
   }
 
-  func storeDiagnostics(_ values: [EvimShapingDiagnosticV1]) -> UnsafePointer<
-    EvimShapingDiagnosticV1
+  func storeDiagnostics(_ values: [ViemShapingDiagnosticV1]) -> UnsafePointer<
+    ViemShapingDiagnosticV1
   >? {
     store(values, in: &diagnostics)
   }

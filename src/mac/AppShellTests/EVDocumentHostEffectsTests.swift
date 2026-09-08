@@ -1,7 +1,7 @@
 import AppKit
 import XCTest
 
-@testable import EvimAppShell
+@testable import ViemAppShell
 
 @MainActor
 final class EVDocumentHostEffectsTests: XCTestCase {
@@ -118,7 +118,7 @@ final class EVDocumentHostEffectsTests: XCTestCase {
 
     func testFailedWriteDoesNotAcknowledgeOrCloseWriteQuitWindow() throws {
         let missingDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("evim-host-missing-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("viem-host-missing-\(UUID().uuidString)", isDirectory: true)
         let url = missingDirectory.appendingPathComponent("document.txt")
         let backend = Backend(data: Data("unsaved".utf8))
         let (_, controller) = makeController(backend: backend, fileURL: url)
@@ -450,7 +450,7 @@ final class EVDocumentHostEffectsTests: XCTestCase {
 
     private func temporaryDirectory() -> URL {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("evim-host-effects-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("viem-host-effects-\(UUID().uuidString)", isDirectory: true)
         try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
     }

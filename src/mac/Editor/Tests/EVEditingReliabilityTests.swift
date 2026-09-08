@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVEditingReliabilityTests: XCTestCase {
     @MainActor
@@ -18,7 +18,7 @@ final class EVEditingReliabilityTests: XCTestCase {
             client.insertText(String(character), replacementRange: implicit)
             XCTAssertEqual(surface.statusBarState.message, "", "Typing \(character)")
         }
-        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
         XCTAssertEqual(surface.formattedText, "Bold ORDS and & text.")
         let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
         XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("<b foo='keep'>ORDS</b>"))
@@ -37,12 +37,12 @@ final class EVEditingReliabilityTests: XCTestCase {
         let client: NSTextInputClient = surface.editorView
         let implicit = NSRange(location: NSNotFound, length: 0)
         client.insertText("A", replacementRange: implicit)
-        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(EVIM_KEY_ENTER)) }
+        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
         for character in "Body" {
             client.insertText(String(character), replacementRange: implicit)
             XCTAssertEqual(surface.statusBarState.message, "", "Typing \(character)")
         }
-        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
         XCTAssertEqual(surface.formattedText, "Heading\nBody\nTail")
         XCTAssertEqual(surface.statusBarState.message, "")
         let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
@@ -61,12 +61,12 @@ final class EVEditingReliabilityTests: XCTestCase {
         let client: NSTextInputClient = surface.editorView
         let implicit = NSRange(location: NSNotFound, length: 0)
         client.insertText("A", replacementRange: implicit)
-        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(EVIM_KEY_ENTER)) }
+        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
         for character in "Added" {
             client.insertText(String(character), replacementRange: implicit)
             XCTAssertEqual(surface.statusBarState.message, "", "Typing \(character)")
         }
-        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
         XCTAssertEqual(surface.formattedText, "First\nAdded\nSecond\nTail")
         let layout = try XCTUnwrap(surface.layoutSnapshot)
         XCTAssertEqual(String(decoding: layout.decorationLabels, as: UTF8.self), "3.4.5.")
@@ -91,7 +91,7 @@ final class EVEditingReliabilityTests: XCTestCase {
             XCTAssertEqual(surface.presentation(for: .bold).state, .off, type)
             surface.perform(menuCommand: .undo, sender: nil)
             XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
-            XCTAssertEqual(try backend.documentState().flags & UInt32(EVIM_DOCUMENT_STATE_IS_DIRTY), 0)
+            XCTAssertEqual(try backend.documentState().flags & UInt32(VIEM_DOCUMENT_STATE_IS_DIRTY), 0)
             for command in [EVMenuCommand.underline, .strikethrough] {
                 surface.perform(menuCommand: .selectAll, sender: nil)
                 XCTAssertTrue(surface.presentation(for: command).isEnabled)
@@ -108,7 +108,7 @@ final class EVEditingReliabilityTests: XCTestCase {
             XCTAssertNotEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
             surface.perform(menuCommand: .undo, sender: nil)
             XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
-            XCTAssertEqual(try backend.documentState().flags & UInt32(EVIM_DOCUMENT_STATE_IS_DIRTY), 0)
+            XCTAssertEqual(try backend.documentState().flags & UInt32(VIEM_DOCUMENT_STATE_IS_DIRTY), 0)
         }
     }
 
@@ -135,7 +135,7 @@ final class EVEditingReliabilityTests: XCTestCase {
                 _ = session.provider.invalidateMetrics()
                 surface.refreshPresentation()
                 _ = try session.resize(width: CGFloat(150 + iteration * 7), height: 240)
-                surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+                surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
                 XCTAssertEqual(surface.statusBarState.message, "", "\(type), iteration \(iteration)")
                 XCTAssertTrue(surface.formattedText.contains("مَرْحَبًا 👩🏽‍💻 café "), type)
                 surface.perform(menuCommand: .undo, sender: nil)
@@ -160,9 +160,9 @@ final class EVEditingReliabilityTests: XCTestCase {
             let implicit = NSRange(location: NSNotFound, length: 0)
             surface.perform(menuCommand: .numberedList, sender: nil)
             client.insertText("A", replacementRange: implicit)
-            surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER)) }
+            surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
             client.insertText("Second", replacementRange: implicit)
-            surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+            surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
             XCTAssertEqual(surface.formattedText, "First\nSecond\nFollowing text", type)
             let layout = try XCTUnwrap(surface.layoutSnapshot)
             XCTAssertEqual(String(decoding: layout.decorationLabels, as: UTF8.self), "1.2.", type)
@@ -192,7 +192,7 @@ final class EVEditingReliabilityTests: XCTestCase {
             _ = try session.placeCursor(point, extendSelection: false)
             _ = try session.sendText("i")
             _ = try session.sendText("é")
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             _ = try session.resize(width: CGFloat(120 + iteration * 3), height: 180)
             _ = try session.undo()
             surface.refreshPresentation()
@@ -278,7 +278,7 @@ final class EVEditingReliabilityTests: XCTestCase {
         surface.perform(statusOption: .format(.markdownSource))
         surface.performInput {
             _ = try session.sendText("/العربية")
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
             _ = try session.sendText("75nli")
         }
         func occurrenceOffsets(_ text: String) -> [Int] {
@@ -304,7 +304,7 @@ final class EVEditingReliabilityTests: XCTestCase {
             let offsets = occurrenceOffsets(text)
             XCTAssertEqual(offsets.count, 180)
             XCTAssertEqual(surface.statusBarState.message, "", "\(format)")
-            XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_INSERT))
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
             let expectedCursor = try XCTUnwrap(offsets.dropFirst(75).first) + "ا".utf8.count
             XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(expectedCursor), "\(format)")
             XCTAssertLessThanOrEqual(abs(try firstVisibleOccurrence() - topOccurrence), 2, "\(format)")
@@ -321,12 +321,12 @@ final class EVEditingReliabilityTests: XCTestCase {
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
         surface.performInput {
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_CONTROL_CHARACTER), codepoint: 113)
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: 113)
         }
         let client: NSTextInputClient = surface.editorView
         let implicit = NSRange(location: NSNotFound, length: 0)
         client.insertText("lljj", replacementRange: implicit)
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_VISUAL_BLOCK))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_BLOCK))
         let selection = try XCTUnwrap(surface.visualSelection)
         XCTAssertEqual(selection.segments.count, 3)
         XCTAssertGreaterThan(surface.viewPresentation.cursor_utf8_offset, 20)

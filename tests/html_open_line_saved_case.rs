@@ -1,10 +1,10 @@
 //! Exact source saved by fuzz campaign 20260907T193459Z-15419, seed 1,
 //! immediately before action 1100. JSON retains its NUL bytes without making
 //! the fixture a binary file. The failing view had width 80 and cursor 294.
-use evim_core::command::{CommandStatus, InputEvent, Key, Mode};
-use evim_core::document::{BoundaryAffinity, Document, Encoding, Format, SourceArtifactDigest};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key, Mode};
+use viem_core::document::{BoundaryAffinity, Document, Encoding, Format, SourceArtifactDigest};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, ViewId};
 
 fn input(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, input: InputEvent) {
     let outcome = core.handle(view, CoreEvent::Input(input)).unwrap();

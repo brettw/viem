@@ -1,7 +1,7 @@
-use evim_core::command::{CommandStatus, InputEvent, Key, Mode};
-use evim_core::document::{Document, Encoding, Format};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key, Mode};
+use viem_core::document::{Document, Encoding, Format};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, ViewId};
 
 type TestCore = Core<MockTextMeasurementProvider>;
 

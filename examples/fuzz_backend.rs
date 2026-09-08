@@ -200,7 +200,7 @@ fn execute() -> Result<(), String> {
             }
             Err(error) => {
                 recorder.event(json!({"type":"failure","session":index,"error":error,"memory":support::memory()}))?;
-                return Err(format!("suite={} seed={seed} session={index}: {error}\nReplay: cargo run --release --example fuzz_backend -- --replay '{}' --trace /tmp/evim-fuzz-replay.jsonl",options.suite,options.trace.display()));
+                return Err(format!("suite={} seed={seed} session={index}: {error}\nReplay: cargo run --release --example fuzz_backend -- --replay '{}' --trace /tmp/viem-fuzz-replay.jsonl",options.suite,options.trace.display()));
             }
         }
     }

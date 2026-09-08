@@ -1,5 +1,5 @@
 [package]
-name = "evim-core"
+name = "viem-core"
 version = "0.1.0"
 edition = "2021"
 

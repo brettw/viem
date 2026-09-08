@@ -1,4 +1,4 @@
-# eVim product and engineering specification
+# Viem product and engineering specification
 
 This file is the normative product and architecture specification for this
 repository. It also gives implementation guidance to coding agents. In this
@@ -7,7 +7,7 @@ meanings.
 
 ## Product intent
 
-eVim is a modal, keyboard-first text editor for human-language writing. It
+Viem is a modal, keyboard-first text editor for human-language writing. It
 keeps the composable command model and editing feel of gVim while providing a
 word-processor-quality text surface:
 
@@ -66,7 +66,7 @@ The native macOS frontend and its unit tests use the repository-root Swift
 Package Manager manifest. Its targets mirror the `src/mac` ownership boundaries
 for the C bridge, Core Text provider, editor, AppKit shell, and executable.
 `scripts/build-mac-app.sh` first builds the Rust static library, then the Swift
-targets, and finally assembles and ad-hoc signs `.build/eVim.app` for local
+targets, and finally assembles and ad-hoc signs `.build/Viem.app` for local
 development and end-to-end testing. A future distribution/archive workflow MAY
 add an Xcode project without changing those source ownership boundaries.
 
@@ -687,7 +687,7 @@ Format adapters project their native styling systems into this model and retain
 the original syntax and provenance needed for lossless reverse edits.
 Source-language cascade rules remain adapter responsibilities to the extent an
 adapter claims them. The initial HTML adapter deliberately supports only the
-element mappings, eVim-owned class rules, and inline declarations specified in
+element mappings, Viem-owned class rules, and inline declarations specified in
 "HTML and RTF import and round-trip adapters"; it does not claim general CSS
 selector or cascade support. The generic style resolver does not reinterpret
 source CSS or RTF control state.
@@ -1075,7 +1075,7 @@ Both adapters maintain two related structures:
    delimiter, escape, spelling choice, comment, unknown construct, error, and
    opaque payload; and
 2. a semantic interpretation containing only the visible text, blocks, styles,
-   objects, and dependencies that eVim understands.
+   objects, and dependencies that Viem understands.
 
 The semantic interpretation may use repaired, implied, or inherited structure,
 but provenance always returns to the concrete source nodes that produced it.
@@ -1123,7 +1123,7 @@ parse errors, and bytes outside the document element.
 
 `script` and `style` are raw-text elements. Script contents and all event-handler
 attributes are preserved but never executed. `head` metadata, comments,
-`template` content, scripts, non-eVim style elements, linked stylesheets, and
+`template` content, scripts, non-Viem style elements, linked stylesheets, and
 other nonprinting nodes produce no editable body text. Unsupported visible
 elements retain their source structure; their unambiguous visible descendant
 text may still be projected using supported inline semantics. Unsupported
@@ -1134,9 +1134,9 @@ The adapter does not apply external stylesheets, arbitrary selectors, layout
 scripts, or browser default CSS. It interprets only:
 
 - the element-to-structure and element-to-format mappings in this section;
-- the first applicable eVim-owned class named on an element;
+- the first applicable Viem-owned class named on an element;
 - supported declarations in an element's inline `style` attribute; and
-- the canonical eVim-owned inline stylesheet described below.
+- the canonical Viem-owned inline stylesheet described below.
 
 All other CSS, including unknown properties, unsupported values, `@` rules,
 selectors outside the canonical subset, and additional style elements, is
@@ -1149,10 +1149,10 @@ The initial structural mapping is:
 
 - `body` supplies the formatted document's body content;
 - `p` creates a paragraph assigned Base Paragraph unless an applicable
-  eVim-owned paragraph class overrides that assignment;
+  Viem-owned paragraph class overrides that assignment;
 - `h1` through `h6` create paragraphs assigned the adapter-provided Heading 1
   through Heading 6 paragraph styles respectively, again subject to an
-  applicable eVim-owned paragraph class;
+  applicable Viem-owned paragraph class;
 - `br` creates a formatted hard-line boundary inside the current paragraph;
 - visible phrasing content outside an explicit supported paragraph is grouped
   into the minimum anonymous Base Paragraph blocks necessary to represent it;
@@ -1161,10 +1161,10 @@ The initial structural mapping is:
   descendant text and boundaries can be projected without ambiguity.
 
 Heading 1 through Heading 6 have stable adapter-defined style identities,
-derive from Base Paragraph, and exist even when no eVim stylesheet is present.
+derive from Base Paragraph, and exist even when no Viem stylesheet is present.
 Changing a paragraph's block kind between Base Paragraph and a heading rewrites
 the corresponding `p`/`h1`…`h6` tags. Editing a heading style definition writes
-or updates its canonical rule in the eVim-owned stylesheet; it does not replace
+or updates its canonical rule in the Viem-owned stylesheet; it does not replace
 heading elements with generic paragraphs.
 
 In normal HTML text contexts, source whitespace that HTML treats as
@@ -1235,7 +1235,7 @@ and lowercase property names in schema order. It does not claim to preserve the
 semantics of arbitrary CSS shorthand, variables, `calc()`, viewport units,
 media queries, or selector cascades.
 
-For `vertical-align`, eVim normalizes `super` to an upward baseline shift of
+For `vertical-align`, Viem normalizes `super` to an upward baseline shift of
 one third of the element's effective font size and `sub` to a downward shift of
 one fifth of that size. `baseline` is an explicit zero shift. The effective
 font size includes the document, paragraph, named character, inherited inline,
@@ -1249,7 +1249,7 @@ Element semantics and style sources resolve in this order, with later sources
 winning for supported properties:
 
 1. adapter defaults and the `p`/heading/inline-element mapping;
-2. the selected eVim-owned paragraph or character style; and
+2. the selected Viem-owned paragraph or character style; and
 3. supported inline `style` and `lang`/`dir` declarations.
 
 If duplicate attributes or otherwise malformed syntax reports more than one
@@ -1361,7 +1361,7 @@ Turning the option off removes only recognized owned native definitions;
 custom definitions, direct formatting, and unrelated or unsupported CSS remain
 intact. Merely opening or saving never rewrites source CSS.
 
-When the option is on, eVim writes the necessary CSS for its style sheet using
+When the option is on, Viem writes the necessary CSS for its style sheet using
 native selectors. Default HTML behavior MUST NOT produce redundant declarations:
 zero text indent, normal letter spacing, normal baseline alignment, and other
 browser-default values are omitted unless an override is needed. List styling
@@ -1369,10 +1369,10 @@ belongs to `li`, with descendant `li` selectors for deeper levels, while `ul`
 and `ol` retain their ordinary container and marker semantics. Native defaults
 do not require per-paragraph or per-character metadata classes.
 
-#### Canonical eVim style sheet and classes
+#### Canonical Viem style sheet and classes
 
 New owned definitions use the exact marker
-`<style id="evim-styles" data-evim-version="2">`. A style element without a
+`<style id="viem-styles" data-viem-version="2">`. A style element without a
 recognized marker, or content outside the supported grammar inside a marked
 element, is never silently adopted or rewritten. Version 1 remains readable;
 untouched version-one rules remain byte-exact, while explicitly changed owned
@@ -1386,8 +1386,8 @@ HTML fragment, it inserts the element at the fragment's beginning. No element
 is inserted for a native style assignment while inclusion is off.
 
 Canonical version-two selectors are `body`, `p`, `h1` through `h6`, `li` and
-its repeated descendant forms, `pre`, `code`, `.evim-p-<stable-id>` for custom
-Paragraph styles, and `.evim-c-<stable-id>` for custom Character styles. Stable
+its repeated descendant forms, `pre`, `code`, `.viem-p-<stable-id>` for custom
+Paragraph styles, and `.viem-c-<stable-id>` for custom Character styles. Stable
 class-ID suffixes are lowercase hexadecimal UTF-8, independent of display names.
 Native selectors supply their built-in identity, role, and default links;
 ordinary sparse CSS carries browser-representable properties. Empty native
@@ -1395,17 +1395,17 @@ rules are omitted. Custom class rules additionally carry required stable ID,
 name, role, and optional parent and next-style links as namespaced metadata.
 
 Only normalized distinctions that CSS cannot recover exactly need residual
-`--evim-prop-<schema-key>` declarations. These include relative bold and
-at-least line spacing. `--evim-inherit` records sparse inherited properties
+`--viem-prop-<schema-key>` declarations. These include relative bold and
+at-least line spacing. `--viem-inherit` records sparse inherited properties
 where browser interoperability requires a derived declaration. Direct
 formatting is never flattened into a named-style rule. CSS declaration order,
 whitespace, quoting, and escaping are fixed by the version-two golden fixtures;
 unsupported versions and noncanonical rules remain opaque.
 
 Version 1 retains its original authoritative namespaced-property grammar:
-`--evim-style-id`, `--evim-style-name`, `--evim-style-role`, optional
-`--evim-based-on` and `--evim-next-style`, and
-`--evim-prop-<schema-key>` for explicit normalized properties. Values are CSS
+`--viem-style-id`, `--viem-style-name`, `--viem-style-role`, optional
+`--viem-based-on` and `--viem-next-style`, and
+`--viem-prop-<schema-key>` for explicit normalized properties. Values are CSS
 double-quoted strings; control characters, quote, backslash, and `<`, `>`, `{`,
 `}` use lowercase hexadecimal CSS escapes followed by a space. Standard CSS
 in these legacy rules is derived interoperability output. The legacy reader
@@ -1453,7 +1453,7 @@ and other unsupported destinations are never executed, updated, fetched, or
 instantiated. An unsupported item that is visibly positioned in body content
 may project as a read-only atomic opaque object.
 
-For fields, eVim may display an unambiguous stored result destination, but it
+For fields, Viem may display an unambiguous stored result destination, but it
 never evaluates or refreshes the instruction. A visible edit that would make
 the preserved instruction and result inconsistent is rejected unless a future
 field-edit policy explicitly owns both.
@@ -1533,10 +1533,10 @@ only when the canonical representation materializes a changed dependent value.
 Applying, removing, or changing a named style patches the smallest applicable
 `\sN` or `\csN` body control region.
 
-RTF's canonical eVim extension preserves semantic base weight with
-`\evimweightN` and OpenType features with scoped private control words. These
+RTF's canonical Viem extension preserves semantic base weight with
+`\viemweightN` and OpenType features with scoped private control words. These
 controls are ignored by conventional RTF readers; ordinary `\b` and other
-standard controls provide the interoperable appearance fallback. eVim must retain
+standard controls provide the interoperable appearance fallback. Viem must retain
 feature state through partial clearing, named styles, `\plain`, and reopening.
 HTML owned version-1 style metadata accepts additive `character-bold` and
 explicit generated-style deletion declarations; inline base-weight/bold helpers
@@ -1559,10 +1559,10 @@ Each adapter has corpus, property, and targeted golden tests. At minimum:
   canonicalization boundary and produces the canonical expected markup.
 - Supported inline CSS properties project to the correct normalized direct
   declarations; unsupported properties remain unchanged and have no layout
-  effect. Multiple applicable eVim class tokens select the first, while
+  effect. Multiple applicable Viem class tokens select the first, while
   unrelated class tokens survive assignment changes.
 - Creating, renaming, rebasing, editing, applying, and deleting canonical
-  eVim HTML class styles update only the owned style rules, affected
+  Viem HTML class styles update only the owned style rules, affected
   assignments, and materialized dependent rules. Reopening reconstructs the
   same stable identities, sparse declarations, parent/next links, and effective
   values.
@@ -1606,7 +1606,7 @@ Each adapter has corpus, property, and targeted golden tests. At minimum:
 - Internal register operations SHOULD preserve formatted structure and rich
   styles together with enough portable semantics for the destination adapter
   to translate a paste. WYSIWYG system Copy publishes plain text, macOS rich
-  text (RTF), and a versioned private eVim fragment containing selected source
+  text (RTF), and a versioned private Viem fragment containing selected source
   bytes, pipeline metadata, and resolved styling. Compatible contiguous private
   pastes reconstruct the selected source through verified local transactions.
   Rectangular copies retain the exact source fragments for their selected
@@ -1639,11 +1639,11 @@ explicit document-style padding and invalidates only affected view geometry.
 Padding changes preserve viewport anchors and keep large-document layout local.
 
 Application preferences have one versioned JSON authority at
-`~/.evim/config.json`. Theme, Smart Quotes, and status-bar visibility use this
+`~/.viem/config.json`. Theme, Smart Quotes, and status-bar visibility use this
 store; Settings controls write the same values. Valid legacy preferences migrate
 once. Reads validate the complete configuration, writes are atomic, and unknown
 keys survive updates. Invalid or unsupported versions are reported without
-overwriting the user's file. `EVIM_CONFIG_DIR` may override the directory for
+overwriting the user's file. `VIEM_CONFIG_DIR` may override the directory for
 isolated development and testing.
 
 Format defaults live beside it in `text_style.json`, `html_style.json`,
@@ -1904,12 +1904,12 @@ Required search commands are `/pattern`, `?pattern`, `n`, `N`, `*`, `#`,
 `g*`, and `g#`. Search operates on logical UTF-8 text in the formatted
 projection and is independent of wrapping. Matches may cross style boundaries.
 Search/replace changes are reverse-projected like other edits. The first
-implementation uses the eVim Regex v1 dialect below rather than Vim's full
+implementation uses the Viem Regex v1 dialect below rather than Vim's full
 regular-expression language. Search history belongs in core state.
 
-#### eVim Regex v1
+#### Viem Regex v1
 
-eVim Regex v1 is the sole pattern language for `/`, `?`, operator-pending
+Viem Regex v1 is the sole pattern language for `/`, `?`, operator-pending
 searches, `:substitute`, and any later command documented as accepting a search
 pattern. It is a stable product interface, not an alias for whatever syntax a
 particular regex library version happens to accept. The implementation may use
@@ -1963,7 +1963,7 @@ The following Vim pattern families are deliberately unsupported:
 - lookaround and atomic postfixes `\@=`, `\@!`, `\@<=`, `\@<!`, bounded
   lookbehind forms such as `\@123<=`, and `\@>`;
 - match-boundary controls `\zs` and `\ze`;
-- Vim keyword boundaries `\<` and `\>`; eVim's `\b` and `\B` use the
+- Vim keyword boundaries `\<` and `\>`; Viem's `\b` and `\B` use the
   Unicode regex word definition and are independent of word-motion tailoring;
 - end-of-line-inclusive `\_x` forms, including `\_.`, `\_^`, `\_$`,
   `\_[...]`, and `\_`-prefixed character classes;
@@ -1975,12 +1975,12 @@ The following Vim pattern families are deliberately unsupported:
 - the Vim class meanings of `\i`, `\I`, `\k`, `\K`, `\f`, `\F`, `\p`,
   `\P`, `\x`, `\X`, `\o`, `\O`, `\h`, `\H`, `\a`, `\A`, `\l`, `\L`,
   `\u`, and `\U`, plus Vim-only bracket classes such as `[:ident:]`,
-  `[:keyword:]`, and `[:fname:]`; eVim accepts only the separately specified
+  `[:keyword:]`, and `[:fname:]`; Viem accepts only the separately specified
   `\A`, `\p{...}`, `\P{...}`, `\xNN`, and `\u{...}` forms and meanings;
 - `\Z` combining-character-insensitive matching, Vim equivalence classes,
   Vim collation elements, and Vim's automatic composing-character inclusion;
   and
-- `~` as the previous substitute string. In eVim Regex v1, `~` is literal.
+- `~` as the previous substitute string. In Viem Regex v1, `~` is literal.
 
 Some accepted spellings intentionally differ from Vim and therefore require
 specific compatibility tests and documentation:
@@ -2058,7 +2058,7 @@ legal logical boundary and must always make progress.
 
 #### Substitute replacement language
 
-The pattern and replacement are different languages. eVim Regex v1 defines
+The pattern and replacement are different languages. Viem Regex v1 defines
 this replacement syntax for `:substitute`:
 
 - ordinary Unicode text inserts itself;
@@ -2559,11 +2559,11 @@ same backend and history; it must not create divergent buffers for aliases.
 ### Editing-session locks and recovery
 
 Named documents claim an exclusive recovery slot when opened or first named.
-The preferred spelling is `.filename.evim.swp`, with numbered alternate slots
+The preferred spelling is `.filename.viem.swp`, with numbered alternate slots
 when occupied. A nonwritable source directory may use an application recovery
-directory keyed by canonical target identity. Existing eVim slots and Vim
+directory keyed by canonical target identity. Existing Viem slots and Vim
 `.filename.swp` files trigger Open Read-Only, Edit Anyway, and Cancel choices;
-Recover is available when a valid eVim snapshot is present. Foreign swap bytes
+Recover is available when a valid Viem snapshot is present. Foreign swap bytes
 are never guessed or rewritten. A session only replaces/removes its own slot.
 
 Read-only is a portable buffer policy: it allows editing, registers, and history,
@@ -2599,7 +2599,7 @@ closures.
 
 ### macOS main menu
 
-The initial main-menu order is `eVim`, `File`, `Edit`, `Format`, `Paragraph`,
+The initial main-menu order is `Viem`, `File`, `Edit`, `Format`, `Paragraph`,
 `Character`, `View`, `Window`, and `Help`. There are no `Navigate` or `Command` top-level menus.
 Vim motions, mode changes, command-line entry, registers, marks, and macros
 remain available through the Vim command grammar and any separately specified
@@ -2607,17 +2607,17 @@ UI; they are not duplicated into speculative menu hierarchies.
 
 The menu hierarchy is:
 
-- **eVim**
-  - About eVim
+- **Viem**
+  - About Viem
   - Settings… (`Command-,`)
   - separator
   - Services (system supplied)
   - separator
-  - Hide eVim (`Command-H`)
+  - Hide Viem (`Command-H`)
   - Hide Others (`Option-Command-H`)
   - Show All
   - separator
-  - Quit eVim (`Command-Q`)
+  - Quit Viem (`Command-Q`)
 - **File**
   - New (`Command-N`)
   - Open… (`Command-O`)
@@ -2774,7 +2774,7 @@ The menu hierarchy is:
 - **Help**
   - system-supplied menu search
   - separator
-  - eVim Help
+  - Viem Help
   - Vim Command Reference
   - Keyboard Shortcuts
   - Supported Vim Commands
@@ -3749,7 +3749,7 @@ assumption through the C ABI or into `src/core`.
   for `SystemCaretColor`.
 
 Normal and Visual block carets, the Replace underline, color-glyph fallback,
-empty/end-of-line geometry, and inactive outline are drawn by eVim according to
+empty/end-of-line geometry, and inactive outline are drawn by Viem according to
 the portable requirements in "Modes and caret". A future Windows frontend uses
 the same portable appearance and centralized color preference but chooses its
 own native or custom implementation for the thin vertical caret.
@@ -3877,24 +3877,24 @@ structurally; avoid brittle wall-clock-only tests.
 Vim is a guide, not a code template. Preserve these useful separations:
 
 - Vim's `normal.c` parses Normal/Visual commands and collaborates with operator
-  code; eVim likewise separates grammar, motion resolution, semantic edit
+  code; Viem likewise separates grammar, motion resolution, semantic edit
   intentions, and verified source mutation.
-- Vim's buffer/window distinction maps naturally to eVim's shared buffer and
+- Vim's buffer/window distinction maps naturally to Viem's shared buffer and
   per-view layout state.
-- Vim's `memline.c` stores line data in a block tree; eVim also needs balanced,
+- Vim's `memline.c` stores line data in a block tree; Viem also needs balanced,
   aggregate storage for authoritative source and derived formatted text,
   adapted for provenance, rich spans, and Unicode positions.
 - Vim remembers screen state and uses validity/invalidation levels to minimize
-  redraw; eVim extends the idea into segmentation, shaping, wrapping, height,
+  redraw; Viem extends the idea into segmentation, shaping, wrapping, height,
   and viewport cache layers.
 - Vim treats folding as a presentation transform between buffer lines and
-  displayed lines; eVim treats soft wrapping the same way and never writes
+  displayed lines; Viem treats soft wrapping the same way and never writes
   visual rows back into document text.
-- Vim keeps alternate undo branches; eVim's transaction history does too.
+- Vim keeps alternate undo branches; Viem's transaction history does too.
 
 Do not copy Vim's terminal-cell assumptions. Pixel advances, variable row
 heights, shaping clusters, bidi affinity, and resize-driven reflow are
-fundamental eVim concepts rather than frontend patches.
+fundamental Viem concepts rather than frontend patches.
 
 Primary references:
 
@@ -4103,7 +4103,7 @@ default source view does not invent additional visible line breaks.
 ### Authored-input assistance
 
 In HTML Source prose, typing a single `<` inserts `<>` and leaves the caret
-between them. As the opening name is authored, eVim maintains a generated end
+between them. As the opening name is authored, Viem maintains a generated end
 tag: `<b|></b>` becomes `<br|>` when `r` is typed because `br` is a void element.
 All standard HTML void elements and explicit self-closing tags omit the end
 tag. Attributes retain literal quote syntax. Typing `>` at the generated

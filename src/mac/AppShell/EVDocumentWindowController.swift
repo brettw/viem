@@ -54,7 +54,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
     window.contentMinSize = Self.minimumContentSize
     window.setContentSize(Self.initialContentSize)
     // Automatic tabbing can replace a just-created window's requested
-    // frame with the geometry of an unrelated existing tab group. eVim's
+    // frame with the geometry of an unrelated existing tab group. Viem's
     // initial UI has document windows, not a tab model, so opt out here.
     window.tabbingMode = .disallowed
     // State restoration needs a restoration class and stable document

@@ -1,4 +1,4 @@
-use evim_core::document::*;
+use viem_core::document::*;
 
 fn open(source: &str, format: Format) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap()
@@ -91,7 +91,7 @@ fn deleting_html_list_defaults_does_not_regenerate_them_on_reopen_or_edit() {
         let saved = String::from_utf8(document.source_bytes()).unwrap();
         assert!(saved.ends_with("<!--keep-->"));
         assert!(
-            saved.contains("<li class=\"evim-p-506172616772617068\">Words"),
+            saved.contains("<li class=\"viem-p-506172616772617068\">Words"),
             "{saved}"
         );
         let reopened = open(&saved, Format::Html);

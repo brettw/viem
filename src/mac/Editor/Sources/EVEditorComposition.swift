@@ -1,4 +1,4 @@
-import EvimAppShell
+import ViemAppShell
 
 @MainActor
 public enum EVEditorComposition {

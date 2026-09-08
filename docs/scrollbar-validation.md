@@ -38,8 +38,8 @@ document in a dark system appearance.
 Regression coverage includes visible-row boundaries, distant widest lines,
 edit/undo/resize cache invalidation, large-document bounded layout, real native
 thumb/page actions, system style notifications, fade timing, and timer cleanup.
-Native tests use `EVIM_CONFIG_DIR=/private/tmp/evim-quality-config`. Disposable
-computer-use fixtures are under `/private/tmp/evim-scrollbars-validation`.
+Native tests use `VIEM_CONFIG_DIR=/private/tmp/viem-quality-config`. Disposable
+computer-use fixtures are under `/private/tmp/viem-scrollbars-validation`.
 
 The 250-line computer-use fixture contains a medium-width line at line 61 and
 a much wider line at line 221. With the system's Always setting, native dragging
@@ -58,6 +58,6 @@ vertical value of 1 at the true document end, with the editing caret unchanged.
 
 Final validation: **1,474 Rust tests passed (1 ignored)** and **337 native tests
 passed**, with no failures. The release app was rebuilt and signed at
-`.build/eVim.app`. Logs are `/private/tmp/evim-scrollbars-core-complete.log`,
-`/private/tmp/evim-scrollbars-native-complete.log`, and
-`/private/tmp/evim-scrollbars-complete-build.log`.
+`.build/Viem.app`. Logs are `/private/tmp/viem-scrollbars-core-complete.log`,
+`/private/tmp/viem-scrollbars-native-complete.log`, and
+`/private/tmp/viem-scrollbars-complete-build.log`.

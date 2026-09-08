@@ -1,6 +1,6 @@
-use evim_core::command::{CommandInterpreter, InputEvent, Key};
-use evim_core::document::{BlockKind, ListStyle};
-use evim_core::{Document, Encoding, Format};
+use viem_core::command::{CommandInterpreter, InputEvent, Key};
+use viem_core::document::{BlockKind, ListStyle};
+use viem_core::{Document, Encoding, Format};
 
 fn source() -> String {
     concat!(
@@ -121,7 +121,7 @@ fn enter_continues_imported_decimal_list_as_one_undo_unit() {
 
 #[test]
 fn large_imported_lists_keep_text_edits_regional_and_distant_identities_stable() {
-    use evim_core::document::{ModelRequest, ProjectionWorkScope, TextEdit};
+    use viem_core::document::{ModelRequest, ProjectionWorkScope, TextEdit};
     let original = source();
     let header = &original[..original.find(r"\pard").unwrap()];
     let mut large = header.to_owned();

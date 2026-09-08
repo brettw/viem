@@ -1,8 +1,8 @@
-import CEvimCore
+import CViemCore
 import Foundation
 
 struct EVFormattedSnapshot {
-    var info: EvimFormattedSnapshotInfoV1
+    var info: ViemFormattedSnapshotInfoV1
 
     var utf8Length: Int? { Int(exactly: info.utf8_length) }
     var utf16Length: Int? { Int(exactly: info.utf16_length) }
@@ -12,7 +12,7 @@ struct EVFormattedSnapshot {
 /// Its byte offsets remain document-global so layout clusters can address it
 /// without copying or rebasing the surrounding document.
 struct EVFormattedTextSlice {
-    let identity: EvimFormattedSnapshotIdentityV1
+    let identity: ViemFormattedSnapshotIdentityV1
     let utf8Range: Range<UInt64>
     let bytes: [UInt8]
 
@@ -39,7 +39,7 @@ struct EVFormattedTextSlice {
 }
 
 struct EVCompositionOverlayExport {
-    var info: EvimCompositionOverlayInfoV1
+    var info: ViemCompositionOverlayInfoV1
 
     var utf8Length: Int? { Int(exactly: info.utf8_length) }
     var markedUTF8Range: Range<Int>? {
@@ -57,7 +57,7 @@ struct EVCompositionOverlayExport {
 }
 
 struct EVCompositionTextSlice {
-    let identity: EvimCompositionOverlayIdentityV1
+    let identity: ViemCompositionOverlayIdentityV1
     let utf8Range: Range<UInt64>
     let bytes: [UInt8]
 
@@ -102,12 +102,12 @@ struct EVFormattedAccessCounters: Equatable {
 }
 
 struct EVLayoutPaintExport {
-    var info: EvimLayoutPaintInfoV1
-    var runs: [EvimPaintStyleRunV1]
+    var info: ViemLayoutPaintInfoV1
+    var runs: [ViemPaintStyleRunV1]
 }
 
 struct EVCommandLineExport {
-    var info: EvimCommandLineInfoV1
+    var info: ViemCommandLineInfoV1
     var text: String
     var selectionAnchorUTF8Offset: UInt64 = 0
 
@@ -119,33 +119,33 @@ struct EVCommandLineExport {
 
     var prompt: Character? {
         switch info.identity.kind {
-        case UInt32(EVIM_COMMAND_LINE_KIND_EX): ":"
-        case UInt32(EVIM_COMMAND_LINE_KIND_SEARCH_FORWARD): "/"
-        case UInt32(EVIM_COMMAND_LINE_KIND_SEARCH_BACKWARD): "?"
+        case UInt32(VIEM_COMMAND_LINE_KIND_EX): ":"
+        case UInt32(VIEM_COMMAND_LINE_KIND_SEARCH_FORWARD): "/"
+        case UInt32(VIEM_COMMAND_LINE_KIND_SEARCH_BACKWARD): "?"
         default: nil
         }
     }
 }
 
 struct EVVisualSelectionExport {
-    var info: EvimVisualSelectionInfoV1
-    var segments: [EvimVisualSelectionSegmentV1]
-    var rectangles: [EvimVisualSelectionRectangleV1]
+    var info: ViemVisualSelectionInfoV1
+    var segments: [ViemVisualSelectionSegmentV1]
+    var rectangles: [ViemVisualSelectionRectangleV1]
 }
 
 extension EVCoreViewSession {
     func compositionOverlayExport() throws -> EVCompositionOverlayExport? {
-        var info = EvimCompositionOverlayInfoV1()
-        info.struct_size = UInt32(MemoryLayout<EvimCompositionOverlayInfoV1>.size)
+        var info = ViemCompositionOverlayInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemCompositionOverlayInfoV1>.size)
         try checkedPresentationExport(
-            evim_core_view_composition_overlay_info(document.core, viewID, &info),
+            viem_core_view_composition_overlay_info(document.core, viewID, &info),
             operation: "Read composition overlay"
         )
-        guard info.flags & UInt32(EVIM_COMPOSITION_OVERLAY_ACTIVE) != 0 else {
+        guard info.flags & UInt32(VIEM_COMPOSITION_OVERLAY_ACTIVE) != 0 else {
             return nil
         }
         guard info.identity.struct_size
-                >= UInt32(MemoryLayout<EvimCompositionOverlayIdentityV1>.size),
+                >= UInt32(MemoryLayout<ViemCompositionOverlayIdentityV1>.size),
               info.identity.view_id == viewID,
               info.replacement_start <= info.replacement_end,
               info.marked_start <= info.marked_end,
@@ -155,7 +155,7 @@ extension EVCoreViewSession {
         else {
             throw EVCoreFrontendError.core(
                 operation: "Validate composition overlay",
-                status: UInt32(EVIM_STATUS_CORE_FAILURE)
+                status: UInt32(VIEM_STATUS_CORE_FAILURE)
             )
         }
         return EVCompositionOverlayExport(info: info)
@@ -165,13 +165,13 @@ extension EVCoreViewSession {
         in range: Range<UInt64>,
         overlay: EVCompositionOverlayExport
     ) throws -> EVCompositionTextSlice {
-        var request = EvimCompositionOverlayUtf8RangeV1()
-        request.struct_size = UInt32(MemoryLayout<EvimCompositionOverlayUtf8RangeV1>.size)
+        var request = ViemCompositionOverlayUtf8RangeV1()
+        request.struct_size = UInt32(MemoryLayout<ViemCompositionOverlayUtf8RangeV1>.size)
         request.identity = overlay.info.identity
         request.start = range.lowerBound
         request.end = range.upperBound
         var required: UInt64 = 0
-        let query = evim_core_view_copy_composition_utf8_range(
+        let query = viem_core_view_copy_composition_utf8_range(
             document.core,
             viewID,
             &request,
@@ -181,18 +181,18 @@ extension EVCoreViewSession {
         )
         if range.isEmpty {
             try checkedPresentationExport(query, operation: "Read composition text")
-        } else if query != UInt32(EVIM_STATUS_BUFFER_TOO_SMALL) {
+        } else if query != UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) {
             try checkedPresentationExport(query, operation: "Size composition text")
         }
         guard required <= UInt64(Int.max) else {
             throw EVCoreFrontendError.core(
                 operation: "Read composition text",
-                status: UInt32(EVIM_STATUS_LENGTH_OVERFLOW)
+                status: UInt32(VIEM_STATUS_LENGTH_OVERFLOW)
             )
         }
         var bytes = Array(repeating: UInt8(0), count: Int(required))
         let status = bytes.withUnsafeMutableBufferPointer { buffer in
-            evim_core_view_copy_composition_utf8_range(
+            viem_core_view_copy_composition_utf8_range(
                 document.core,
                 viewID,
                 &request,
@@ -212,69 +212,69 @@ extension EVCoreViewSession {
         )
     }
 
-    func layoutDecorationsExport(identity: EvimLayoutSnapshotIdentityV1) throws
-        -> ([EvimLayoutDecorationV1], [UInt8]) {
+    func layoutDecorationsExport(identity: ViemLayoutSnapshotIdentityV1) throws
+        -> ([ViemLayoutDecorationV1], [UInt8]) {
         var expected = identity
-        var info = EvimLayoutDecorationsInfoV1()
-        let query = evim_core_view_copy_layout_decorations(document.core, viewID, &expected,
+        var info = ViemLayoutDecorationsInfoV1()
+        let query = viem_core_view_copy_layout_decorations(document.core, viewID, &expected,
                                                           nil, 0, nil, 0, &info)
-        if query != UInt32(EVIM_STATUS_BUFFER_TOO_SMALL) {
+        if query != UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) {
             try checkedPresentationExport(query, operation: "Read list marker layout")
         }
         guard info.decoration_count <= UInt64(Int.max), info.label_bytes <= UInt64(Int.max) else {
-            throw EVCoreFrontendError.core(operation: "Read list marker layout", status: UInt32(EVIM_STATUS_LENGTH_OVERFLOW))
+            throw EVCoreFrontendError.core(operation: "Read list marker layout", status: UInt32(VIEM_STATUS_LENGTH_OVERFLOW))
         }
         if info.decoration_count == 0 { return ([], []) }
-        var decorations = Array(repeating: EvimLayoutDecorationV1(), count: Int(info.decoration_count))
+        var decorations = Array(repeating: ViemLayoutDecorationV1(), count: Int(info.decoration_count))
         var labels = Array(repeating: UInt8(0), count: Int(info.label_bytes))
         let copied = decorations.withUnsafeMutableBufferPointer { items in
             labels.withUnsafeMutableBufferPointer { bytes in
-                evim_core_view_copy_layout_decorations(document.core, viewID, &expected,
+                viem_core_view_copy_layout_decorations(document.core, viewID, &expected,
                     items.baseAddress, UInt64(items.count), bytes.baseAddress, UInt64(bytes.count), &info)
             }
         }
         try checkedPresentationExport(copied, operation: "Copy list marker layout")
         guard decorations.allSatisfy({ item in
-            item.struct_size >= UInt32(MemoryLayout<EvimLayoutDecorationV1>.size)
+            item.struct_size >= UInt32(MemoryLayout<ViemLayoutDecorationV1>.size)
                 && item.label_byte_start <= UInt64(labels.count)
                 && item.label_byte_length <= UInt64(labels.count) - item.label_byte_start
-                && item.paint.struct_size >= UInt32(MemoryLayout<EvimTextPaintV1>.size)
+                && item.paint.struct_size >= UInt32(MemoryLayout<ViemTextPaintV1>.size)
         }), String(bytes: labels, encoding: .utf8) != nil else {
-            throw EVCoreFrontendError.core(operation: "Copy list marker layout", status: UInt32(EVIM_STATUS_CORE_FAILURE))
+            throw EVCoreFrontendError.core(operation: "Copy list marker layout", status: UInt32(VIEM_STATUS_CORE_FAILURE))
         }
         return (decorations, labels)
     }
 
     func layoutPaintExport() throws -> EVLayoutPaintExport {
-        var info = EvimLayoutPaintInfoV1()
-        info.struct_size = UInt32(MemoryLayout<EvimLayoutPaintInfoV1>.size)
+        var info = ViemLayoutPaintInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemLayoutPaintInfoV1>.size)
         try checkedPresentationExport(
-            evim_core_view_layout_paint_info(document.core, viewID, &info),
+            viem_core_view_layout_paint_info(document.core, viewID, &info),
             operation: "Read layout paint"
         )
         guard info.paint_run_count <= UInt64(Int.max) else {
             throw EVCoreFrontendError.core(
                 operation: "Read layout paint",
-                status: UInt32(EVIM_STATUS_LENGTH_OVERFLOW)
+                status: UInt32(VIEM_STATUS_LENGTH_OVERFLOW)
             )
         }
-        guard info.default_paint.struct_size >= UInt32(MemoryLayout<EvimTextPaintV1>.size)
+        guard info.default_paint.struct_size >= UInt32(MemoryLayout<ViemTextPaintV1>.size)
         else {
             throw EVCoreFrontendError.core(
                 operation: "Read layout paint",
-                status: UInt32(EVIM_STATUS_CORE_FAILURE)
+                status: UInt32(VIEM_STATUS_CORE_FAILURE)
             )
         }
 
         var runs = Array(
-            repeating: EvimPaintStyleRunV1(),
+            repeating: ViemPaintStyleRunV1(),
             count: Int(info.paint_run_count)
         )
-        var copiedInfo = EvimLayoutPaintInfoV1()
-        copiedInfo.struct_size = UInt32(MemoryLayout<EvimLayoutPaintInfoV1>.size)
+        var copiedInfo = ViemLayoutPaintInfoV1()
+        copiedInfo.struct_size = UInt32(MemoryLayout<ViemLayoutPaintInfoV1>.size)
         var identity = info.identity
         let status = runs.withUnsafeMutableBufferPointer { buffer in
-            evim_core_view_copy_layout_paint(
+            viem_core_view_copy_layout_paint(
                 document.core,
                 viewID,
                 &identity,
@@ -285,10 +285,10 @@ extension EVCoreViewSession {
         }
         try checkedPresentationExport(status, operation: "Copy layout paint")
         guard copiedInfo.paint_run_count == UInt64(runs.count),
-              copiedInfo.default_paint.struct_size >= UInt32(MemoryLayout<EvimTextPaintV1>.size),
+              copiedInfo.default_paint.struct_size >= UInt32(MemoryLayout<ViemTextPaintV1>.size),
               runs.allSatisfy({
-                      $0.struct_size >= UInt32(MemoryLayout<EvimPaintStyleRunV1>.size)
-                      && $0.paint.struct_size >= UInt32(MemoryLayout<EvimTextPaintV1>.size)
+                      $0.struct_size >= UInt32(MemoryLayout<ViemPaintStyleRunV1>.size)
+                      && $0.paint.struct_size >= UInt32(MemoryLayout<ViemTextPaintV1>.size)
                       && $0.text_start < $0.text_end
               }),
               runs.indices.dropFirst().allSatisfy({
@@ -297,32 +297,32 @@ extension EVCoreViewSession {
         else {
             throw EVCoreFrontendError.core(
                 operation: "Copy layout paint",
-                status: UInt32(EVIM_STATUS_CORE_FAILURE)
+                status: UInt32(VIEM_STATUS_CORE_FAILURE)
             )
         }
         return EVLayoutPaintExport(info: copiedInfo, runs: runs)
     }
 
     func commandLineExport() throws -> EVCommandLineExport {
-        var info = EvimCommandLineInfoV1()
-        info.struct_size = UInt32(MemoryLayout<EvimCommandLineInfoV1>.size)
+        var info = ViemCommandLineInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemCommandLineInfoV1>.size)
         try checkedPresentationExport(
-            evim_core_view_command_line_info(document.core, viewID, &info),
+            viem_core_view_command_line_info(document.core, viewID, &info),
             operation: "Read command line"
         )
         guard info.utf8_length <= UInt64(Int.max) else {
             throw EVCoreFrontendError.core(
                 operation: "Read command line",
-                status: UInt32(EVIM_STATUS_LENGTH_OVERFLOW)
+                status: UInt32(VIEM_STATUS_LENGTH_OVERFLOW)
             )
         }
 
         var bytes = Array(repeating: UInt8(0), count: Int(info.utf8_length))
-        var copiedInfo = EvimCommandLineInfoV1()
-        copiedInfo.struct_size = UInt32(MemoryLayout<EvimCommandLineInfoV1>.size)
+        var copiedInfo = ViemCommandLineInfoV1()
+        copiedInfo.struct_size = UInt32(MemoryLayout<ViemCommandLineInfoV1>.size)
         var identity = info.identity
         let status = bytes.withUnsafeMutableBufferPointer { buffer in
-            evim_core_view_copy_command_line(
+            viem_core_view_copy_command_line(
                 document.core,
                 viewID,
                 &identity,
@@ -338,17 +338,17 @@ extension EVCoreViewSession {
         else {
             throw EVCoreFrontendError.invalidUTF8
         }
-        var selection = EvimCommandLineSelectionV1()
-        selection.struct_size = UInt32(MemoryLayout<EvimCommandLineSelectionV1>.size)
-        try checkedPresentationExport(evim_core_view_command_line_selection(document.core, viewID, &identity, &selection), operation: "Read command selection")
+        var selection = ViemCommandLineSelectionV1()
+        selection.struct_size = UInt32(MemoryLayout<ViemCommandLineSelectionV1>.size)
+        try checkedPresentationExport(viem_core_view_command_line_selection(document.core, viewID, &identity, &selection), operation: "Read command selection")
         return EVCommandLineExport(info: copiedInfo, text: text, selectionAnchorUTF8Offset: selection.anchor_utf8_offset)
     }
 
     func visualSelectionExport() throws -> EVVisualSelectionExport {
-        var info = EvimVisualSelectionInfoV1()
-        info.struct_size = UInt32(MemoryLayout<EvimVisualSelectionInfoV1>.size)
+        var info = ViemVisualSelectionInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemVisualSelectionInfoV1>.size)
         try checkedPresentationExport(
-            evim_core_view_visual_selection_info(document.core, viewID, &info),
+            viem_core_view_visual_selection_info(document.core, viewID, &info),
             operation: "Read Visual selection"
         )
         guard info.segment_count <= UInt64(Int.max),
@@ -356,24 +356,24 @@ extension EVCoreViewSession {
         else {
             throw EVCoreFrontendError.core(
                 operation: "Read Visual selection",
-                status: UInt32(EVIM_STATUS_LENGTH_OVERFLOW)
+                status: UInt32(VIEM_STATUS_LENGTH_OVERFLOW)
             )
         }
 
         var segments = Array(
-            repeating: EvimVisualSelectionSegmentV1(),
+            repeating: ViemVisualSelectionSegmentV1(),
             count: Int(info.segment_count)
         )
         var rectangles = Array(
-            repeating: EvimVisualSelectionRectangleV1(),
+            repeating: ViemVisualSelectionRectangleV1(),
             count: Int(info.rectangle_count)
         )
-        var copiedInfo = EvimVisualSelectionInfoV1()
-        copiedInfo.struct_size = UInt32(MemoryLayout<EvimVisualSelectionInfoV1>.size)
+        var copiedInfo = ViemVisualSelectionInfoV1()
+        copiedInfo.struct_size = UInt32(MemoryLayout<ViemVisualSelectionInfoV1>.size)
         var identity = info.identity
         let status = segments.withUnsafeMutableBufferPointer { segmentBuffer in
             rectangles.withUnsafeMutableBufferPointer { rectangleBuffer in
-                evim_core_view_copy_visual_selection(
+                viem_core_view_copy_visual_selection(
                     document.core,
                     viewID,
                     &identity,
@@ -391,7 +391,7 @@ extension EVCoreViewSession {
         else {
             throw EVCoreFrontendError.core(
                 operation: "Copy Visual selection",
-                status: UInt32(EVIM_STATUS_CORE_FAILURE)
+                status: UInt32(VIEM_STATUS_CORE_FAILURE)
             )
         }
         return EVVisualSelectionExport(
@@ -402,8 +402,8 @@ extension EVCoreViewSession {
     }
 }
 
-extension EvimLayoutSnapshotIdentityV1 {
-    func isSameLayout(as other: EvimLayoutSnapshotIdentityV1) -> Bool {
+extension ViemLayoutSnapshotIdentityV1 {
+    func isSameLayout(as other: ViemLayoutSnapshotIdentityV1) -> Bool {
         view_id == other.view_id
             && document_id == other.document_id
             && document_revision == other.document_revision
@@ -414,15 +414,15 @@ extension EvimLayoutSnapshotIdentityV1 {
     }
 }
 
-extension EvimFormattedSnapshotIdentityV1 {
-    func isSameSnapshot(as other: EvimFormattedSnapshotIdentityV1) -> Bool {
+extension ViemFormattedSnapshotIdentityV1 {
+    func isSameSnapshot(as other: ViemFormattedSnapshotIdentityV1) -> Bool {
         document_id == other.document_id
             && document_revision == other.document_revision
     }
 }
 
 private func checkedPresentationExport(_ status: UInt32, operation: String) throws {
-    guard status == UInt32(EVIM_STATUS_OK) else {
+    guard status == UInt32(VIEM_STATUS_OK) else {
         throw EVCoreFrontendError.core(operation: operation, status: status)
     }
 }

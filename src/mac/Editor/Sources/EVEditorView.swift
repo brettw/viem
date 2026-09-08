@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import CoreGraphics
-import EvimCoreTextProvider
-import EvimAppShell
+import ViemCoreTextProvider
+import ViemAppShell
 import Foundation
 
 struct EVCommandLineRenderState {
@@ -37,8 +37,8 @@ struct EVTextDecoration {
 
 private struct EVAccessibilityLayoutContext {
     let snapshot: EVLayoutExport
-    let viewport: EvimViewportStateV1
-    let presentation: EvimViewPresentationV1
+    let viewport: ViemViewportStateV1
+    let presentation: ViemViewPresentationV1
 }
 
 private struct EVDocumentMarkedTarget {
@@ -165,7 +165,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         registerForDraggedTypes([.fileURL])
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
-        setAccessibilityLabel("eVim editor")
+        setAccessibilityLabel("Viem editor")
         setAccessibilityHelp("A modal, keyboard-first document editor")
 
         insertionIndicator.displayMode = .hidden
@@ -187,14 +187,14 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
         addSubview(documentScrollbars, positioned: .above, relativeTo: nil)
         caretAppearanceObserver = NotificationCenter.default.addObserver(
-            forName: .evimCaretAppearanceDidChange,
+            forName: .viemCaretAppearanceDidChange,
             object: EVCaretAppearanceResolver.shared,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyPresentation() }
         }
         editingPreferencesObserver = NotificationCenter.default.addObserver(
-            forName: .evimEditingPreferencesDidChange, object: nil, queue: .main
+            forName: .viemEditingPreferencesDidChange, object: nil, queue: .main
         ) { [weak self] notification in
             MainActor.assumeIsolated {
                 guard let self, notification.object as AnyObject? === self.editingPreferences else { return }
@@ -308,10 +308,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             guard let self, let surface = self.surface, let session = surface.session else { return }
             self.window?.makeFirstResponder(self)
             surface.performInput {
-                if [UInt32(EVIM_MODE_INSERT), UInt32(EVIM_MODE_REPLACE)].contains(surface.viewPresentation.mode) {
-                    _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+                if [UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE)].contains(surface.viewPresentation.mode) {
+                    _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
                 }
-                _ = try session.sendKey(kind: UInt32(EVIM_KEY_CHARACTER), codepoint: 58)
+                _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 58)
             }
         }
         addSubview(bar)
@@ -384,11 +384,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func isCustomCaretMode(_ mode: UInt32) -> Bool {
-        mode == UInt32(EVIM_MODE_NORMAL)
-            || mode == UInt32(EVIM_MODE_VISUAL_CHARACTER)
-            || mode == UInt32(EVIM_MODE_VISUAL_LINE)
-            || mode == UInt32(EVIM_MODE_VISUAL_BLOCK)
-            || mode == UInt32(EVIM_MODE_REPLACE)
+        mode == UInt32(VIEM_MODE_NORMAL)
+            || mode == UInt32(VIEM_MODE_VISUAL_CHARACTER)
+            || mode == UInt32(VIEM_MODE_VISUAL_LINE)
+            || mode == UInt32(VIEM_MODE_VISUAL_BLOCK)
+            || mode == UInt32(VIEM_MODE_REPLACE)
     }
 
     private func notifyTextInputStateChanged() {
@@ -549,7 +549,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
               let start = Int(exactly: first.text_start),
               var end = Int(exactly: last.text_end)
         else { return notFoundRange }
-        if last.flags & UInt32(EVIM_VISUAL_ROW_WRAPS_TO_NEXT) == 0,
+        if last.flags & UInt32(VIEM_VISUAL_ROW_WRAPS_TO_NEXT) == 0,
            isLineBreak(atUTF8Offset: end)
         {
             end += 1
@@ -611,14 +611,14 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             var attributes: [NSAttributedString.Key: Any] = [
                 .accessibilityForegroundColor: foreground.cgColor,
             ]
-            if run.paint.flags & UInt32(EVIM_TEXT_PAINT_HAS_BACKGROUND) != 0 {
+            if run.paint.flags & UInt32(VIEM_TEXT_PAINT_HAS_BACKGROUND) != 0 {
                 attributes[.accessibilityBackgroundColor] = nativeColor(run.paint.background).cgColor
             }
-            if run.paint.flags & UInt32(EVIM_TEXT_PAINT_UNDERLINE) != 0 {
+            if run.paint.flags & UInt32(VIEM_TEXT_PAINT_UNDERLINE) != 0 {
                 attributes[.accessibilityUnderline] = NSUnderlineStyle.single.rawValue
                 attributes[.accessibilityUnderlineColor] = foreground.cgColor
             }
-            if run.paint.flags & UInt32(EVIM_TEXT_PAINT_STRIKETHROUGH) != 0 {
+            if run.paint.flags & UInt32(VIEM_TEXT_PAINT_STRIKETHROUGH) != 0 {
                 attributes[.accessibilityStrikethrough] = true
                 attributes[.accessibilityStrikethroughColor] = foreground.cgColor
             }
@@ -683,7 +683,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             else { return nil }
             return start ..< end
         }
-        for row in snapshot.rows where row.flags & UInt32(EVIM_VISUAL_ROW_WRAPS_TO_NEXT) == 0 {
+        for row in snapshot.rows where row.flags & UInt32(VIEM_VISUAL_ROW_WRAPS_TO_NEXT) == 0 {
             guard let end = Int(exactly: row.hard_line_end),
                   end < presentedUTF8Length,
                   isLineBreak(atUTF8Offset: end)
@@ -787,7 +787,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         guard let surface else { return nil }
         guard isVisualMode(context.presentation.mode),
               let selection = try? surface.session?.visualSelectionExport(),
-              selection.info.identity.kind != UInt32(EVIM_VISUAL_SELECTION_KIND_NONE),
+              selection.info.identity.kind != UInt32(VIEM_VISUAL_SELECTION_KIND_NONE),
               selection.info.identity.layout.isSameLayout(as: context.snapshot.info.identity)
         else { return nil }
         return selection
@@ -822,16 +822,16 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         guard let surface else { return nil }
         let pieces = ranges.compactMap(surface.formattedText(in:))
         guard pieces.count == ranges.count else { return nil }
-        if selectionKind == UInt32(EVIM_VISUAL_SELECTION_KIND_BLOCK) {
+        if selectionKind == UInt32(VIEM_VISUAL_SELECTION_KIND_BLOCK) {
             return pieces.joined(separator: "\n")
         }
         return pieces.joined()
     }
 
     private func isVisualMode(_ mode: UInt32) -> Bool {
-        mode == UInt32(EVIM_MODE_VISUAL_CHARACTER)
-            || mode == UInt32(EVIM_MODE_VISUAL_LINE)
-            || mode == UInt32(EVIM_MODE_VISUAL_BLOCK)
+        mode == UInt32(VIEM_MODE_VISUAL_CHARACTER)
+            || mode == UInt32(VIEM_MODE_VISUAL_LINE)
+            || mode == UInt32(VIEM_MODE_VISUAL_BLOCK)
     }
 
     private func accessibilityReplacementTarget() -> Range<Int>? {
@@ -867,17 +867,17 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         do {
             let start = try session.caretGeometry(
                 offset: UInt64(range.lowerBound),
-                affinity: UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM),
+                affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM),
                 in: context.snapshot.info
             ).point
-            let end: EvimLayoutCaretPointV1?
+            let end: ViemLayoutCaretPointV1?
             if range.isEmpty {
                 end = nil
             } else {
                 guard let activeOffset = finalGraphemeStart(in: range) else { return false }
                 end = try session.caretGeometry(
                     offset: UInt64(activeOffset),
-                    affinity: UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM),
+                    affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM),
                     in: context.snapshot.info
                 ).point
             }
@@ -920,13 +920,13 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         do {
             _ = try session.caretGeometry(
                 offset: UInt64(range.lowerBound),
-                affinity: UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM),
+                affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM),
                 in: context.snapshot.info
             )
             if !range.isEmpty {
                 _ = try session.caretGeometry(
                     offset: UInt64(range.upperBound),
-                    affinity: UInt32(EVIM_BOUNDARY_AFFINITY_UPSTREAM),
+                    affinity: UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM),
                     in: context.snapshot.info
                 )
             }
@@ -970,11 +970,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             guard let session = surface.session else { return nil }
             let geometry = (try? session.caretGeometry(
                 offset: UInt64(range.lowerBound),
-                affinity: UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM),
+                affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM),
                 in: context.snapshot.info
             )) ?? (try? session.caretGeometry(
                 offset: UInt64(range.lowerBound),
-                affinity: UInt32(EVIM_BOUNDARY_AFFINITY_UPSTREAM),
+                affinity: UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM),
                 in: context.snapshot.info
             ))
             return geometry.map { accessibilityViewRect($0.rect, viewport: context.viewport) }
@@ -1007,14 +1007,14 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             })
             if let session = surface.session {
                 for row in context.snapshot.rows
-                    where row.flags & UInt32(EVIM_VISUAL_ROW_WRAPS_TO_NEXT) == 0
+                    where row.flags & UInt32(VIEM_VISUAL_ROW_WRAPS_TO_NEXT) == 0
                 {
                     guard let breakOffset = Int(exactly: row.hard_line_end),
                           range.contains(breakOffset),
                           isLineBreak(atUTF8Offset: breakOffset),
                           let geometry = try? session.caretGeometry(
                               offset: UInt64(breakOffset),
-                              affinity: UInt32(EVIM_BOUNDARY_AFFINITY_UPSTREAM),
+                              affinity: UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM),
                               in: context.snapshot.info
                           )
                     else { continue }
@@ -1030,13 +1030,13 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    private func composedUTF8Range(for point: EvimLayoutCaretPointV1) -> Range<Int>? {
+    private func composedUTF8Range(for point: ViemLayoutCaretPointV1) -> Range<Int>? {
         guard let surface else { return nil }
         guard let offset = Int(exactly: point.text_offset),
               let snapshot = surface.layoutSnapshot
         else { return nil }
-        let cluster: EvimPositionedClusterV1?
-        if point.affinity == UInt32(EVIM_BOUNDARY_AFFINITY_UPSTREAM) {
+        let cluster: ViemPositionedClusterV1?
+        if point.affinity == UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM) {
             cluster = snapshot.clusters.last {
                 $0.text_start < point.text_offset && point.text_offset <= $0.text_end
             }
@@ -1052,7 +1052,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
               let local = stringIndex(utf8Offset: offset - start, in: text)
         else { return offset ..< offset }
         let characterStart: String.Index
-        if point.affinity == UInt32(EVIM_BOUNDARY_AFFINITY_UPSTREAM) {
+        if point.affinity == UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM) {
             guard local > text.startIndex else { return offset ..< offset }
             characterStart = text.index(before: local)
         } else {
@@ -1076,7 +1076,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             return context.snapshot.carets.contains { $0.text_offset == UInt64(range.lowerBound) }
                 || (try? surface.session?.caretGeometry(
                     offset: UInt64(range.lowerBound),
-                    affinity: UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM),
+                    affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM),
                     in: context.snapshot.info
                 )) != nil
         }
@@ -1087,7 +1087,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                   let end = Int(exactly: row.text_end)
             else { return false }
             if start < end { intervals.append(start ..< end) }
-            if row.flags & UInt32(EVIM_VISUAL_ROW_WRAPS_TO_NEXT) == 0,
+            if row.flags & UInt32(VIEM_VISUAL_ROW_WRAPS_TO_NEXT) == 0,
                isLineBreak(atUTF8Offset: end)
             {
                 intervals.append(end ..< end + 1)
@@ -1105,8 +1105,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func accessibilityViewRect(
-        _ rect: EvimLayoutRectV1,
-        viewport: EvimViewportStateV1
+        _ rect: ViemLayoutRectV1,
+        viewport: ViemViewportStateV1
     ) -> NSRect {
         NSRect(
             x: CGFloat(rect.x) + Self.canvasInsets.left - CGFloat(viewport.left),
@@ -1118,7 +1118,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private func layoutPoint(
         fromViewPoint point: CGPoint,
-        viewport: EvimViewportStateV1
+        viewport: ViemViewportStateV1
     ) -> CGPoint {
         CGPoint(
             x: point.x - Self.canvasInsets.left + CGFloat(viewport.left),
@@ -1234,7 +1234,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         let textModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         if textModifiers == [.option], event.charactersIgnoringModifiers?.lowercased() == "i",
            !compositionActive,
-           [UInt32(EVIM_MODE_INSERT), UInt32(EVIM_MODE_REPLACE)].contains(surface.viewPresentation.mode) {
+           [UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE)].contains(surface.viewPresentation.mode) {
             surface.perform(menuCommand: .italic, sender: event)
             return
         }
@@ -1258,7 +1258,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         {
             surface.performInput {
                 _ = try session.sendKey(
-                    kind: UInt32(EVIM_KEY_CONTROL_CHARACTER),
+                    kind: UInt32(VIEM_KEY_CONTROL_CHARACTER),
                     codepoint: scalar.value
                 )
             }
@@ -1298,7 +1298,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         if window?.firstResponder === self {
             inputContext?.discardMarkedText()
         }
-        surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+        surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
     }
 
     private func isControlEscape(_ event: NSEvent) -> Bool {
@@ -1324,7 +1324,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
         let mode = surface.viewPresentation.mode
         switch mode {
-        case UInt32(EVIM_MODE_INSERT), UInt32(EVIM_MODE_REPLACE):
+        case UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE):
             let explicitReplacement: Range<Int>?
             if replacementRange.location == NSNotFound {
                 explicitReplacement = nil
@@ -1342,7 +1342,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 surface.performInput { _ = try session.sendText(value) }
             }
 
-        case UInt32(EVIM_MODE_COMMAND_LINE):
+        case UInt32(VIEM_MODE_COMMAND_LINE):
             guard let commandLine = surface.commandLine else { return }
             let range: Range<Int>
             if replacementRange.location == NSNotFound { range = commandLine.selectedUTF8Range }
@@ -1352,10 +1352,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             }
             surface.performInput { _ = try session.editCommandLine(commandLine, selecting: range, replacement: value) }
 
-        case UInt32(EVIM_MODE_NORMAL),
-             UInt32(EVIM_MODE_VISUAL_CHARACTER),
-             UInt32(EVIM_MODE_VISUAL_LINE),
-             UInt32(EVIM_MODE_VISUAL_BLOCK):
+        case UInt32(VIEM_MODE_NORMAL),
+             UInt32(VIEM_MODE_VISUAL_CHARACTER),
+             UInt32(VIEM_MODE_VISUAL_LINE),
+             UInt32(VIEM_MODE_VISUAL_BLOCK):
             if replacementRange.location != NSNotFound,
                utf8Range(
                    forUTF16: replacementRange,
@@ -1373,11 +1373,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 for character in value {
                     let scalars = character.unicodeScalars
                     if scalars.count == 1, let scalar = scalars.first,
-                       session.lastOutcome.mode != UInt32(EVIM_MODE_INSERT),
-                       session.lastOutcome.mode != UInt32(EVIM_MODE_REPLACE),
-                       session.lastOutcome.mode != UInt32(EVIM_MODE_COMMAND_LINE)
+                       session.lastOutcome.mode != UInt32(VIEM_MODE_INSERT),
+                       session.lastOutcome.mode != UInt32(VIEM_MODE_REPLACE),
+                       session.lastOutcome.mode != UInt32(VIEM_MODE_COMMAND_LINE)
                     {
-                        _ = try session.sendKey(kind: UInt32(EVIM_KEY_CHARACTER), codepoint: scalar.value)
+                        _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: scalar.value)
                     } else {
                         _ = try session.sendText(String(character))
                     }
@@ -1390,43 +1390,43 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private func specialKeyKind(for event: NSEvent) -> UInt32? {
         switch event.keyCode {
-        case 53: UInt32(EVIM_KEY_ESCAPE)
-        case 36, 76: UInt32(EVIM_KEY_ENTER)
+        case 53: UInt32(VIEM_KEY_ESCAPE)
+        case 36, 76: UInt32(VIEM_KEY_ENTER)
         case 48:
             UInt32(event.modifierFlags.contains(.shift) && surface?.commandLine?.prompt != nil
-                ? EVIM_KEY_BACK_TAB : EVIM_KEY_TAB)
-        case 51: UInt32(EVIM_KEY_BACKSPACE)
-        case 117: UInt32(EVIM_KEY_DELETE)
-        case 123: UInt32(EVIM_KEY_LEFT)
-        case 124: UInt32(EVIM_KEY_RIGHT)
-        case 125: UInt32(EVIM_KEY_DOWN)
-        case 126: UInt32(EVIM_KEY_UP)
-        case 115: UInt32(event.modifierFlags.contains(.control) ? EVIM_KEY_DOCUMENT_START : EVIM_KEY_HOME)
-        case 119: UInt32(event.modifierFlags.contains(.control) ? EVIM_KEY_DOCUMENT_END : EVIM_KEY_END)
-        case 116: UInt32(EVIM_KEY_PAGE_UP)
-        case 121: UInt32(EVIM_KEY_PAGE_DOWN)
+                ? VIEM_KEY_BACK_TAB : VIEM_KEY_TAB)
+        case 51: UInt32(VIEM_KEY_BACKSPACE)
+        case 117: UInt32(VIEM_KEY_DELETE)
+        case 123: UInt32(VIEM_KEY_LEFT)
+        case 124: UInt32(VIEM_KEY_RIGHT)
+        case 125: UInt32(VIEM_KEY_DOWN)
+        case 126: UInt32(VIEM_KEY_UP)
+        case 115: UInt32(event.modifierFlags.contains(.control) ? VIEM_KEY_DOCUMENT_START : VIEM_KEY_HOME)
+        case 119: UInt32(event.modifierFlags.contains(.control) ? VIEM_KEY_DOCUMENT_END : VIEM_KEY_END)
+        case 116: UInt32(VIEM_KEY_PAGE_UP)
+        case 121: UInt32(VIEM_KEY_PAGE_DOWN)
         default: nil
         }
     }
 
     private func keyKind(for selector: Selector) -> UInt32? {
         switch selector {
-        case #selector(moveLeft(_:)), #selector(moveBackward(_:)): UInt32(EVIM_KEY_LEFT)
-        case #selector(moveRight(_:)), #selector(moveForward(_:)): UInt32(EVIM_KEY_RIGHT)
-        case #selector(moveUp(_:)): UInt32(EVIM_KEY_UP)
-        case #selector(moveDown(_:)): UInt32(EVIM_KEY_DOWN)
-        case #selector(moveToBeginningOfLine(_:)): UInt32(EVIM_KEY_HOME)
-        case #selector(moveToEndOfLine(_:)): UInt32(EVIM_KEY_END)
-        case #selector(moveToBeginningOfDocument(_:)): UInt32(EVIM_KEY_DOCUMENT_START)
-        case #selector(moveToEndOfDocument(_:)): UInt32(EVIM_KEY_DOCUMENT_END)
-        case #selector(pageUp(_:)), #selector(scrollPageUp(_:)): UInt32(EVIM_KEY_PAGE_UP)
-        case #selector(pageDown(_:)), #selector(scrollPageDown(_:)): UInt32(EVIM_KEY_PAGE_DOWN)
-        case #selector(deleteBackward(_:)): UInt32(EVIM_KEY_BACKSPACE)
-        case #selector(deleteForward(_:)): UInt32(EVIM_KEY_DELETE)
-        case #selector(insertNewline(_:)), #selector(insertLineBreak(_:)): UInt32(EVIM_KEY_ENTER)
-        case #selector(insertTab(_:)): UInt32(EVIM_KEY_TAB)
-        case #selector(insertBacktab(_:)) where surface?.commandLine?.prompt != nil: UInt32(EVIM_KEY_BACK_TAB)
-        case #selector(cancelOperation(_:)): UInt32(EVIM_KEY_ESCAPE)
+        case #selector(moveLeft(_:)), #selector(moveBackward(_:)): UInt32(VIEM_KEY_LEFT)
+        case #selector(moveRight(_:)), #selector(moveForward(_:)): UInt32(VIEM_KEY_RIGHT)
+        case #selector(moveUp(_:)): UInt32(VIEM_KEY_UP)
+        case #selector(moveDown(_:)): UInt32(VIEM_KEY_DOWN)
+        case #selector(moveToBeginningOfLine(_:)): UInt32(VIEM_KEY_HOME)
+        case #selector(moveToEndOfLine(_:)): UInt32(VIEM_KEY_END)
+        case #selector(moveToBeginningOfDocument(_:)): UInt32(VIEM_KEY_DOCUMENT_START)
+        case #selector(moveToEndOfDocument(_:)): UInt32(VIEM_KEY_DOCUMENT_END)
+        case #selector(pageUp(_:)), #selector(scrollPageUp(_:)): UInt32(VIEM_KEY_PAGE_UP)
+        case #selector(pageDown(_:)), #selector(scrollPageDown(_:)): UInt32(VIEM_KEY_PAGE_DOWN)
+        case #selector(deleteBackward(_:)): UInt32(VIEM_KEY_BACKSPACE)
+        case #selector(deleteForward(_:)): UInt32(VIEM_KEY_DELETE)
+        case #selector(insertNewline(_:)), #selector(insertLineBreak(_:)): UInt32(VIEM_KEY_ENTER)
+        case #selector(insertTab(_:)): UInt32(VIEM_KEY_TAB)
+        case #selector(insertBacktab(_:)) where surface?.commandLine?.prompt != nil: UInt32(VIEM_KEY_BACK_TAB)
+        case #selector(cancelOperation(_:)): UInt32(VIEM_KEY_ESCAPE)
         default: nil
         }
     }
@@ -1435,7 +1435,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         guard let surface, let prompt = surface.commandLine, prompt.prompt != nil else { return nil }
         switch command {
         case .copy, .copySource, .cut, .delete: return !prompt.selectedUTF8Range.isEmpty
-        case .paste, .pasteAndMatchStyle: return surface.pasteboard.evimCanReadString()
+        case .paste, .pasteAndMatchStyle: return surface.pasteboard.viemCanReadString()
         case .selectAll: return !prompt.text.isEmpty
         case .undo, .redo: return false
         default: return nil
@@ -1448,12 +1448,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         switch command {
         case .copy, .copySource, .cut:
             guard !range.isEmpty, let lower = stringIndex(utf8Offset: range.lowerBound, in: prompt.text), let upper = stringIndex(utf8Offset: range.upperBound, in: prompt.text) else { return true }
-            guard surface.pasteboard.evimIsWritable else { return true }
-            _ = surface.pasteboard.evimClearContents()
-            guard surface.pasteboard.evimSetString(String(prompt.text[lower..<upper])) else { return true }
+            guard surface.pasteboard.viemIsWritable else { return true }
+            _ = surface.pasteboard.viemClearContents()
+            guard surface.pasteboard.viemSetString(String(prompt.text[lower..<upper])) else { return true }
             if command == .cut { surface.performInput { _ = try session.editCommandLine(prompt, selecting: range, replacement: "") } }
         case .paste, .pasteAndMatchStyle:
-            if let value = surface.pasteboard.evimString() { surface.performInput { _ = try session.editCommandLine(prompt, selecting: range, replacement: value) } }
+            if let value = surface.pasteboard.viemString() { surface.performInput { _ = try session.editCommandLine(prompt, selecting: range, replacement: value) } }
         case .delete:
             if !range.isEmpty { surface.performInput { _ = try session.editCommandLine(prompt, selecting: range, replacement: "") } }
         case .selectAll:
@@ -1674,7 +1674,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 || markedRangeValue().map { $0 == replacementRange } == true)
         let mode = surface.viewPresentation.mode
         switch mode {
-        case UInt32(EVIM_MODE_INSERT), UInt32(EVIM_MODE_REPLACE):
+        case UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE):
             let target: Range<Int>
             if keepsCurrentTarget,
                case let .document(documentTarget)? = markedTextTarget
@@ -1700,7 +1700,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 using: session
             )
 
-        case UInt32(EVIM_MODE_COMMAND_LINE):
+        case UInt32(VIEM_MODE_COMMAND_LINE):
             guard let commandLine = surface.commandLine else { return }
             let target: EVCommandLineMarkedTarget
             if keepsCurrentTarget,
@@ -1732,10 +1732,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 using: session
             )
 
-        case UInt32(EVIM_MODE_NORMAL),
-             UInt32(EVIM_MODE_VISUAL_CHARACTER),
-             UInt32(EVIM_MODE_VISUAL_LINE),
-             UInt32(EVIM_MODE_VISUAL_BLOCK):
+        case UInt32(VIEM_MODE_NORMAL),
+             UInt32(VIEM_MODE_VISUAL_CHARACTER),
+             UInt32(VIEM_MODE_VISUAL_LINE),
+             UInt32(VIEM_MODE_VISUAL_BLOCK):
             let target: EVCommandInputMarkedTarget
             if keepsCurrentTarget,
                case let .commandInput(existing)? = markedTextTarget
@@ -1820,7 +1820,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         {
             return selection
         }
-        if surface.viewPresentation.mode == UInt32(EVIM_MODE_COMMAND_LINE),
+        if surface.viewPresentation.mode == UInt32(VIEM_MODE_COMMAND_LINE),
            let commandLine = surface.commandLine,
            let range = utf16Range(forUTF8: commandLine.selectedUTF8Range, in: commandLine.text)
         {
@@ -1908,7 +1908,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         actualRange: NSRangePointer?
     ) -> NSRect {
         guard let surface else { return .zero }
-        if surface.viewPresentation.mode == UInt32(EVIM_MODE_COMMAND_LINE),
+        if surface.viewPresentation.mode == UInt32(VIEM_MODE_COMMAND_LINE),
            let state = commandLineRenderState(),
            let utf8 = utf8Range(forUTF16: range, in: state.text),
            let actual = utf16Range(forUTF8: utf8.lowerBound ..< utf8.lowerBound, in: state.text)
@@ -1924,12 +1924,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         do {
             let geometry = try? session.caretGeometry(
                 offset: UInt64(utf8Offset),
-                affinity: UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM),
+                affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM),
                 in: snapshot.info
             )
             let resolved = try geometry ?? session.caretGeometry(
                 offset: UInt64(utf8Offset),
-                affinity: UInt32(EVIM_BOUNDARY_AFFINITY_UPSTREAM),
+                affinity: UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM),
                 in: snapshot.info
             )
             guard let actual = makeRange(location: range.location, length: 0) else { return .zero }
@@ -2069,8 +2069,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 let presentation = try session.presentation()
                 guard session.hasActiveComposition,
                       presentation.mode == documentTarget.mode,
-                      documentTarget.mode == UInt32(EVIM_MODE_INSERT)
-                        || documentTarget.mode == UInt32(EVIM_MODE_REPLACE)
+                      documentTarget.mode == UInt32(VIEM_MODE_INSERT)
+                        || documentTarget.mode == UInt32(VIEM_MODE_REPLACE)
                 else { return }
                 try self.withoutInputContextDiscard {
                     _ = try session.commitComposition(value)
@@ -2184,7 +2184,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             && target.coreText == commandLine.text
     }
 
-    private func commandLineStateIdentityBytes(_ identity: EvimCommandLineIdentityV1) -> [UInt8] {
+    private func commandLineStateIdentityBytes(_ identity: ViemCommandLineIdentityV1) -> [UInt8] {
         withUnsafeBytes(of: identity.state_identity) { Array($0) }
     }
 
@@ -2213,7 +2213,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private func commandInputTarget(
         _ target: EVCommandInputMarkedTarget,
-        matches presentation: EvimViewPresentationV1,
+        matches presentation: ViemViewPresentationV1,
         viewID: UInt64
     ) -> Bool {
         return target.viewID == viewID
@@ -2226,7 +2226,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private func textInputSubstring(forUTF16 range: NSRange) -> (String, NSRange)? {
         guard let surface else { return nil }
-        if surface.viewPresentation.mode == UInt32(EVIM_MODE_COMMAND_LINE)
+        if surface.viewPresentation.mode == UInt32(VIEM_MODE_COMMAND_LINE)
             || {
                 if case .commandLine? = markedTextTarget { return true }
                 return false
@@ -2447,11 +2447,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         case let .document(documentTarget):
             remainsValid = surface.session?.hasActiveComposition == true
                 && surface.viewPresentation.mode == documentTarget.mode
-                && (documentTarget.mode == UInt32(EVIM_MODE_INSERT)
-                    || documentTarget.mode == UInt32(EVIM_MODE_REPLACE))
+                && (documentTarget.mode == UInt32(VIEM_MODE_INSERT)
+                    || documentTarget.mode == UInt32(VIEM_MODE_REPLACE))
         case let .commandLine(commandLineTarget):
             remainsValid = surface.session?.hasActiveComposition != true
-                && surface.viewPresentation.mode == UInt32(EVIM_MODE_COMMAND_LINE)
+                && surface.viewPresentation.mode == UInt32(VIEM_MODE_COMMAND_LINE)
                 && surface.commandLine.map {
                     self.commandLineTarget(commandLineTarget, matches: $0)
                 } == true
@@ -2575,7 +2575,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     /// Long-line layout slices deliberately include offscreen shaping context.
     /// Only ink, backgrounds, and decorations intersecting this paint damage
     /// reach AppKit/Core Text; geometry and editing coverage remain intact.
-    func drawingClusters(in dirtyRect: NSRect, snapshot: EVLayoutExport) -> [EvimPositionedClusterV1] {
+    func drawingClusters(in dirtyRect: NSRect, snapshot: EVLayoutExport) -> [ViemPositionedClusterV1] {
         let origin = viewPoint(fromLayoutPoint: .zero)
         let fringe = 1 / max(window?.backingScaleFactor ?? 1, 1)
         let damage = dirtyRect.intersection(bounds)
@@ -2597,7 +2597,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private func drawText(
         _ snapshot: EVLayoutExport,
-        clusters: [EvimPositionedClusterV1],
+        clusters: [ViemPositionedClusterV1],
         paint: EVLayoutPaintExport?,
         in context: CGContext
     ) {
@@ -2618,7 +2618,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             let baseline = viewPoint(
                 fromLayoutPoint: CGPoint(x: CGFloat(cluster.x), y: CGFloat(row.baseline))
             )
-            let drewNative = cluster.flags & UInt32(EVIM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0
+            let drewNative = cluster.flags & UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0
                 && surface.session?.provider.renderRegistry.draw(
                    identifier: cluster.render_run.identifier,
                    metricsGeneration: cluster.render_run.metrics_generation,
@@ -2642,17 +2642,17 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         for item in listMarkersForDrawing(in: snapshot, dirtyRect: dirtyRect) {
             guard let row = row(for: item.row_index, in: snapshot.rows) else { continue }
             let foreground = nativeForeground(item.paint)
-            if item.flags & UInt32(EVIM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0 {
+            if item.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0 {
                 foreground.setFill()
                 viewRect(item.ink_bounds).fill()
                 continue
             }
-            if item.paint.flags & UInt32(EVIM_TEXT_PAINT_HAS_BACKGROUND) != 0 {
+            if item.paint.flags & UInt32(VIEM_TEXT_PAINT_HAS_BACKGROUND) != 0 {
                 nativeColor(item.paint.background).setFill()
                 viewRect(item.typographic_bounds).fill()
             }
             let baseline = viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(item.x), y: CGFloat(row.baseline)))
-            let native = item.flags & UInt32(EVIM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0
+            let native = item.flags & UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0
                 && session.provider.renderRegistry.draw(identifier: item.render_run.identifier,
                     metricsGeneration: item.render_run.metrics_generation, atBaseline: baseline,
                     color: foreground.cgColor, in: context)
@@ -2664,25 +2664,25 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 }
             }
             foreground.setFill()
-            if item.paint.flags & UInt32(EVIM_TEXT_PAINT_UNDERLINE) != 0 {
+            if item.paint.flags & UInt32(VIEM_TEXT_PAINT_UNDERLINE) != 0 {
                 viewRect(x: CGFloat(item.x), y: floor(CGFloat(row.baseline) + max(1, CGFloat(row.descent) * 0.35)),
                          width: CGFloat(item.advance), height: 1).fill()
             }
-            if item.paint.flags & UInt32(EVIM_TEXT_PAINT_STRIKETHROUGH) != 0 {
+            if item.paint.flags & UInt32(VIEM_TEXT_PAINT_STRIKETHROUGH) != 0 {
                 viewRect(x: CGFloat(item.x), y: floor(CGFloat(row.baseline) - CGFloat(row.ascent) * 0.32),
                          width: CGFloat(item.advance), height: 1).fill()
             }
         }
     }
 
-    func listMarkersForDrawing(in snapshot: EVLayoutExport, dirtyRect: NSRect) -> [EvimLayoutDecorationV1] {
+    func listMarkersForDrawing(in snapshot: EVLayoutExport, dirtyRect: NSRect) -> [ViemLayoutDecorationV1] {
         snapshot.decorations.filter { item in
             row(for: item.row_index, in: snapshot.rows) != nil
                 && viewRect(item.ink_bounds).union(viewRect(item.typographic_bounds)).intersects(dirtyRect)
         }
     }
 
-    private func drawPaintBackgrounds(_ clusters: [EvimPositionedClusterV1], paint: EVLayoutPaintExport) {
+    private func drawPaintBackgrounds(_ clusters: [ViemPositionedClusterV1], paint: EVLayoutPaintExport) {
         for cluster in clusters {
             guard let background = resolvedTextPaint(for: cluster, paint: paint).background else {
                 continue
@@ -2692,7 +2692,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    private func drawTextDecorations(_ snapshot: EVLayoutExport, clusters: [EvimPositionedClusterV1], paint: EVLayoutPaintExport) {
+    private func drawTextDecorations(_ snapshot: EVLayoutExport, clusters: [ViemPositionedClusterV1], paint: EVLayoutPaintExport) {
         for decoration in textDecorationsForDrawing(in: snapshot, paint: paint, clusters: clusters) {
             decoration.color.setFill()
             decoration.rect.fill()
@@ -2702,7 +2702,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     func textDecorationsForDrawing(
         in snapshot: EVLayoutExport,
         paint: EVLayoutPaintExport? = nil,
-        clusters: [EvimPositionedClusterV1]? = nil
+        clusters: [ViemPositionedClusterV1]? = nil
     ) -> [EVTextDecoration] {
         guard let paint = paint ?? exactLayoutPaint(for: snapshot) else { return [] }
         var result: [EVTextDecoration] = []
@@ -2737,7 +2737,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func resolvedTextPaint(
-        for cluster: EvimPositionedClusterV1,
+        for cluster: ViemPositionedClusterV1,
         paint: EVLayoutPaintExport
     ) -> EVResolvedTextPaint {
         let value = paintRun(containing: cluster.text_start, in: paint)?.paint
@@ -2745,18 +2745,18 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         let flags = value.flags
         return EVResolvedTextPaint(
             foreground: nativeForeground(value),
-            background: flags & UInt32(EVIM_TEXT_PAINT_HAS_BACKGROUND) != 0
+            background: flags & UInt32(VIEM_TEXT_PAINT_HAS_BACKGROUND) != 0
                 ? nativeColor(value.background)
                 : nil,
-            underline: flags & UInt32(EVIM_TEXT_PAINT_UNDERLINE) != 0,
-            strikethrough: flags & UInt32(EVIM_TEXT_PAINT_STRIKETHROUGH) != 0
+            underline: flags & UInt32(VIEM_TEXT_PAINT_UNDERLINE) != 0,
+            strikethrough: flags & UInt32(VIEM_TEXT_PAINT_STRIKETHROUGH) != 0
         )
     }
 
     private func paintRun(
         containing offset: UInt64,
         in paint: EVLayoutPaintExport
-    ) -> EvimPaintStyleRunV1? {
+    ) -> ViemPaintStyleRunV1? {
         var lower = 0
         var upper = paint.runs.count
         while lower < upper {
@@ -2780,17 +2780,17 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         return paint
     }
 
-    private func nativeForeground(_ paint: EvimTextPaintV1) -> NSColor {
-        paint.flags & UInt32(EVIM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0
+    private func nativeForeground(_ paint: ViemTextPaintV1) -> NSColor {
+        paint.flags & UInt32(VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0
             ? EVThemeStore.shared.theme.foreground.color : nativeColor(paint.foreground)
     }
 
-    private func nativeCanvas(_ paint: EvimLayoutPaintInfoV1) -> NSColor {
-        paint.flags & UInt32(EVIM_LAYOUT_PAINT_DEFAULT_CANVAS) != 0
+    private func nativeCanvas(_ paint: ViemLayoutPaintInfoV1) -> NSColor {
+        paint.flags & UInt32(VIEM_LAYOUT_PAINT_DEFAULT_CANVAS) != 0
             ? EVThemeStore.shared.theme.background.color : nativeColor(paint.canvas_background)
     }
 
-    private func nativeColor(_ color: EvimRgbaV1) -> NSColor {
+    private func nativeColor(_ color: ViemRgbaV1) -> NSColor {
         NSColor(
             srgbRed: CGFloat(color.red),
             green: CGFloat(color.green),
@@ -2816,8 +2816,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func sameLayoutIdentity(
-        _ left: EvimLayoutSnapshotIdentityV1,
-        _ right: EvimLayoutSnapshotIdentityV1
+        _ left: ViemLayoutSnapshotIdentityV1,
+        _ right: ViemLayoutSnapshotIdentityV1
     ) -> Bool {
         left.view_id == right.view_id
             && left.document_id == right.document_id
@@ -2828,7 +2828,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             && left.metrics_generation == right.metrics_generation
     }
 
-    private func drawMarkedText(_ snapshot: EVLayoutExport, clusters: [EvimPositionedClusterV1], in _: CGContext) {
+    private func drawMarkedText(_ snapshot: EVLayoutExport, clusters: [ViemPositionedClusterV1], in _: CGContext) {
         guard let surface else { return }
         guard case .document? = markedTextTarget,
               let overlay = surface.compositionOverlay,
@@ -2868,8 +2868,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         guard let surface else { return }
         let mode = surface.viewPresentation.mode
         let active = isActiveTextSurface
-        if mode == UInt32(EVIM_MODE_COMMAND_LINE) { return }
-        if active && mode == UInt32(EVIM_MODE_INSERT) { return }
+        if mode == UInt32(VIEM_MODE_COMMAND_LINE) { return }
+        if active && mode == UInt32(VIEM_MODE_INSERT) { return }
 
         let customPresentation: EVCustomCaretPresentation
         if active {
@@ -2893,20 +2893,20 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             return
         }
 
-        if mode == UInt32(EVIM_MODE_REPLACE) {
+        if mode == UInt32(VIEM_MODE_REPLACE) {
             color.setFill()
             NSRect(x: rect.minX, y: rect.maxY - 2, width: rect.width, height: 2).fill()
             return
         }
 
-        guard mode == UInt32(EVIM_MODE_NORMAL)
-                || mode == UInt32(EVIM_MODE_VISUAL_CHARACTER)
-                || mode == UInt32(EVIM_MODE_VISUAL_LINE)
-                || mode == UInt32(EVIM_MODE_VISUAL_BLOCK)
+        guard mode == UInt32(VIEM_MODE_NORMAL)
+                || mode == UInt32(VIEM_MODE_VISUAL_CHARACTER)
+                || mode == UInt32(VIEM_MODE_VISUAL_LINE)
+                || mode == UInt32(VIEM_MODE_VISUAL_BLOCK)
         else { return }
 
         if let cluster = geometry.cluster,
-           cluster.flags & UInt32(EVIM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0,
+           cluster.flags & UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0,
            surface.session?.provider.renderRegistry.isColorGlyph(
                identifier: cluster.render_run.identifier,
                metricsGeneration: cluster.render_run.metrics_generation
@@ -2943,21 +2943,21 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    func caretRedrawClusters(in rect: NSRect, snapshot: EVLayoutExport) -> [EvimPositionedClusterV1] {
+    func caretRedrawClusters(in rect: NSRect, snapshot: EVLayoutExport) -> [ViemPositionedClusterV1] {
         let fringe = 1 / max(window?.backingScaleFactor ?? 1, 1)
         return snapshot.clusters.filter {
-            $0.flags & UInt32(EVIM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0
+            $0.flags & UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0
                 && viewRect($0.ink_bounds).insetBy(dx: -fringe, dy: -fringe).intersects(rect)
         }
     }
 
     private func associatedItemGeometry(_ snapshot: EVLayoutExport) -> (
-        rect: NSRect?, cluster: EvimPositionedClusterV1?
+        rect: NSRect?, cluster: ViemPositionedClusterV1?
     ) {
         let cursor = presentationCaretUTF8Offset
         let affinity = presentationCaretAffinity
         let cluster = snapshot.clusters.first { cluster in
-            if affinity == UInt32(EVIM_BOUNDARY_AFFINITY_UPSTREAM) {
+            if affinity == UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM) {
                 cluster.text_end == cursor
             } else {
                 cluster.text_start == cursor
@@ -2976,10 +2976,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private var presentationCaretAffinity: UInt32 {
-        guard let surface else { return UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM) }
+        guard let surface else { return UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM) }
         return surface.compositionOverlay == nil
             ? surface.viewPresentation.cursor_affinity
-            : UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM)
+            : UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
     }
 
     private func caretRect(
@@ -2990,9 +2990,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         guard let surface else { return nil }
         guard let session = surface.session else { return nil }
         let requested = affinity ?? surface.viewPresentation.cursor_affinity
-        let alternate = requested == UInt32(EVIM_BOUNDARY_AFFINITY_UPSTREAM)
-            ? UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM)
-            : UInt32(EVIM_BOUNDARY_AFFINITY_UPSTREAM)
+        let alternate = requested == UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
+            ? UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
+            : UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
         do {
             let geometry = try? session.caretGeometry(
                 offset: offset,
@@ -3023,7 +3023,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
         let mode = surface.viewPresentation.mode
         let active = isActiveTextSurface
-        guard mode == UInt32(EVIM_MODE_INSERT), active,
+        guard mode == UInt32(VIEM_MODE_INSERT), active,
               var rect = caretRect(
                   offset: presentationCaretUTF8Offset,
                   affinity: presentationCaretAffinity,
@@ -3045,7 +3045,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         guard let surface else { return nil }
         guard let commandLine = surface.commandLine,
               let prompt = commandLine.prompt,
-              commandLine.info.identity.kind != UInt32(EVIM_COMMAND_LINE_KIND_NONE),
+              commandLine.info.identity.kind != UInt32(VIEM_COMMAND_LINE_KIND_NONE),
               let coreCursor = Int(exactly: commandLine.info.cursor_utf8_offset),
               coreCursor >= 0,
               coreCursor <= commandLine.text.utf8.count
@@ -3201,7 +3201,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         commandLineInsertionIndicator.displayMode = .automatic
     }
 
-    private func clusterRect(_ cluster: EvimPositionedClusterV1) -> NSRect {
+    private func clusterRect(_ cluster: ViemPositionedClusterV1) -> NSRect {
         let bounds = cluster.typographic_bounds
         return viewRect(
             x: CGFloat(bounds.x),
@@ -3230,7 +3230,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         )
     }
 
-    func viewRect(_ rect: EvimLayoutRectV1) -> NSRect {
+    func viewRect(_ rect: ViemLayoutRectV1) -> NSRect {
         viewRect(
             x: CGFloat(rect.x),
             y: CGFloat(rect.y),
@@ -3249,12 +3249,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         )
     }
 
-    private func row(for index: UInt64, in rows: [EvimVisualRowV1]) -> EvimVisualRowV1? {
+    private func row(for index: UInt64, in rows: [ViemVisualRowV1]) -> ViemVisualRowV1? {
         guard index < UInt64(rows.count) else { return nil }
         return rows[Int(index)]
     }
 
-    private func drawFallback(_ cluster: EvimPositionedClusterV1, row: EvimVisualRowV1, color: NSColor) {
+    private func drawFallback(_ cluster: ViemPositionedClusterV1, row: ViemVisualRowV1, color: NSColor) {
         guard let surface else { return }
         guard let start = Int(exactly: cluster.text_start),
               let end = Int(exactly: cluster.text_end),
@@ -3280,7 +3280,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             .font: NSFont.systemFont(ofSize: 10),
             .foregroundColor: NSColor.tertiaryLabelColor,
         ]
-        for row in snapshot.rows where row.flags & UInt32(EVIM_VISUAL_ROW_WRAPS_TO_NEXT) == 0 {
+        for row in snapshot.rows where row.flags & UInt32(VIEM_VISUAL_ROW_WRAPS_TO_NEXT) == 0 {
             let point = viewPoint(fromLayoutPoint: NSPoint(
                 x: CGFloat(row.paragraph_content_x + row.width) + 4,
                 y: CGFloat(row.baseline - row.ascent)))
@@ -3290,7 +3290,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func minimumCaretWidth(
-        near associatedCluster: EvimPositionedClusterV1?,
+        near associatedCluster: ViemPositionedClusterV1?,
         in snapshot: EVLayoutExport
     ) -> CGFloat {
         guard let surface else {
@@ -3316,7 +3316,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 return leftDistance < rightDistance
             }
         if let cluster = nearbyCluster,
-           cluster.flags & UInt32(EVIM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0,
+           cluster.flags & UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0,
            let width = surface.session?.provider.renderRegistry.enAdvance(
                identifier: cluster.render_run.identifier,
                metricsGeneration: cluster.render_run.metrics_generation

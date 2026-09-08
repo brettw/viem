@@ -7,31 +7,31 @@ let packageRoot = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
     .path
 
-let rustProfile = ProcessInfo.processInfo.environment["EVIM_RUST_PROFILE"] ?? "debug"
-let rustArchive = "\(packageRoot)/target/\(rustProfile)/libevim_core.a"
+let rustProfile = ProcessInfo.processInfo.environment["VIEM_RUST_PROFILE"] ?? "debug"
+let rustArchive = "\(packageRoot)/target/\(rustProfile)/libviem_core.a"
 
 let package = Package(
-    name: "eVim",
+    name: "Viem",
     platforms: [
         .macOS("26.0"),
     ],
     products: [
-        .executable(name: "eVim", targets: ["eVim"]),
-        .library(name: "EvimAppShell", targets: ["EvimAppShell"]),
-        .library(name: "EvimCoreTextProvider", targets: ["EvimCoreTextProvider"]),
+        .executable(name: "Viem", targets: ["Viem"]),
+        .library(name: "ViemAppShell", targets: ["ViemAppShell"]),
+        .library(name: "ViemCoreTextProvider", targets: ["ViemCoreTextProvider"]),
     ],
     targets: [
         .target(
-            name: "CEvimCore",
-            path: "src/mac/CEvimCore",
+            name: "CViemCore",
+            path: "src/mac/CViemCore",
             publicHeadersPath: "include",
             linkerSettings: [
                 .unsafeFlags([rustArchive]),
             ]
         ),
         .target(
-            name: "EvimCoreTextProvider",
-            dependencies: ["CEvimCore"],
+            name: "ViemCoreTextProvider",
+            dependencies: ["CViemCore"],
             path: "src/mac/CoreTextProvider/Sources",
             linkerSettings: [
                 .linkedFramework("AppKit"),
@@ -40,43 +40,43 @@ let package = Package(
             ]
         ),
         .target(
-            name: "EvimAppShell",
+            name: "ViemAppShell",
             path: "src/mac/AppShell",
             linkerSettings: [
                 .linkedFramework("AppKit"),
             ]
         ),
         .target(
-            name: "EvimEditor",
-            dependencies: ["CEvimCore", "EvimCoreTextProvider", "EvimAppShell"],
+            name: "ViemEditor",
+            dependencies: ["CViemCore", "ViemCoreTextProvider", "ViemAppShell"],
             path: "src/mac/Editor/Sources",
             linkerSettings: [
                 .linkedFramework("AppKit"),
             ]
         ),
         .executableTarget(
-            name: "eVim",
+            name: "Viem",
             dependencies: [
-                "EvimAppShell",
-                "EvimCoreTextProvider",
-                "EvimEditor",
+                "ViemAppShell",
+                "ViemCoreTextProvider",
+                "ViemEditor",
             ],
             path: "src/mac/App",
             exclude: ["Resources"]
         ),
         .testTarget(
-            name: "EvimAppShellTests",
-            dependencies: ["EvimAppShell"],
+            name: "ViemAppShellTests",
+            dependencies: ["ViemAppShell"],
             path: "src/mac/AppShellTests"
         ),
         .testTarget(
-            name: "EvimCoreTextProviderTests",
-            dependencies: ["EvimCoreTextProvider", "CEvimCore"],
+            name: "ViemCoreTextProviderTests",
+            dependencies: ["ViemCoreTextProvider", "CViemCore"],
             path: "src/mac/CoreTextProvider/Tests"
         ),
         .testTarget(
-            name: "EvimEditorTests",
-            dependencies: ["EvimEditor", "CEvimCore", "EvimCoreTextProvider"],
+            name: "ViemEditorTests",
+            dependencies: ["ViemEditor", "CViemCore", "ViemCoreTextProvider"],
             path: "src/mac/Editor/Tests"
         ),
     ],

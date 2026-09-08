@@ -75,7 +75,7 @@ public final class EVStatusBarView: NSView {
     ])
 
     themeObserver = NotificationCenter.default.addObserver(
-      forName: .evimThemeDidChange, object: EVThemeStore.shared, queue: .main
+      forName: .viemThemeDidChange, object: EVThemeStore.shared, queue: .main
     ) { [weak self] _ in
       MainActor.assumeIsolated {
         self?.applyTheme()

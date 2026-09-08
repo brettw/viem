@@ -1,8 +1,8 @@
-use evim_core::document::{
+use viem_core::document::{
     Document, Encoding, FontSlant, Format, FormattedTextPayload, FragmentEdit, ModelRequest,
     ReplacementFragment,
 };
-use evim_core::layout::DocumentLayoutStyles;
+use viem_core::layout::DocumentLayoutStyles;
 fn open(source: &str, format: Format) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap()
 }
@@ -67,7 +67,7 @@ fn captures_can_read_scalar_boundaries_inside_graphemes() {
 }
 #[test]
 fn captures_keep_literal_and_semantic_newlines_distinct() {
-    use evim_core::document::FileFormat;
+    use viem_core::document::FileFormat;
     let mut document = Document::from_bytes_with_file_format(
         b"a\nb\rc".to_vec(),
         Encoding::Utf8,
@@ -165,9 +165,9 @@ fn captured_plain_text_can_clear_only_part_of_a_surviving_code_span() {
     assert_eq!(document.text(), "abplef plain");
     let spans = document.projection().style_spans();
     assert!(spans.iter().any(|span| span.range == (0..2)
-        && span.application == evim_core::document::StyleApplication::Named("Code".into())));
+        && span.application == viem_core::document::StyleApplication::Named("Code".into())));
     assert!(spans.iter().any(|span| span.range == (4..6)
-        && span.application == evim_core::document::StyleApplication::Named("Code".into())));
+        && span.application == viem_core::document::StyleApplication::Named("Code".into())));
     assert!(!spans.iter().any(|span| span.range.contains(&2)));
     assert!(document.undo());
     assert_eq!(document.source_bytes(), b"`abcdef` plain");

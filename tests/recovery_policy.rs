@@ -1,12 +1,12 @@
-use evim_core::command::ex_execute::{ExFileRequest, PreparedExFileRequest};
-use evim_core::command::{CommandStatus, InputEvent, Key};
-use evim_core::document::{
+use viem_core::command::ex_execute::{ExFileRequest, PreparedExFileRequest};
+use viem_core::command::{CommandStatus, InputEvent, Key};
+use viem_core::document::{
     execute_prepared_artifact_write, ArtifactOverwrite, ArtifactPath, ArtifactStorageProvider,
     ArtifactWriteIntent, ArtifactWriteScope, Encoding, Format, InMemoryArtifactStorage,
     LineEndingOpenPolicy, PersistenceError,
 };
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreError, CoreEvent, Document};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreError, CoreEvent, Document};
 
 fn loaded() -> (Document, InMemoryArtifactStorage) {
     let mut storage = InMemoryArtifactStorage::new();
@@ -184,7 +184,7 @@ fn ex_readonly_gate_suppresses_host_write_effect_until_bang() {
         .command
         .unwrap();
     assert!(
-        matches!(output.status,CommandStatus::ExError(evim_core::command::ExCommandError::Execute(ref error))if error.to_string().contains("E45")),
+        matches!(output.status,CommandStatus::ExError(viem_core::command::ExCommandError::Execute(ref error))if error.to_string().contains("E45")),
         "{:?}",
         output.status
     );

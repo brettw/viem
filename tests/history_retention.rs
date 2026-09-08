@@ -1,4 +1,4 @@
-use evim_core::document::{
+use viem_core::document::{
     execute_prepared_artifact_write, ArtifactOverwrite, ArtifactPath, ArtifactWriteIntent,
     Document, Encoding, Format, HistoryError, HistoryRetentionPolicy, InMemoryArtifactStorage, SourceArtifactDigest,
 };
@@ -160,7 +160,7 @@ fn local_edit_in_large_document_shares_retained_projection_allocations() {
 
 #[test]
 fn async_save_completion_stays_clean_after_pruned_configuration_only_edits() {
-    use evim_core::document::*;
+    use viem_core::document::*;
     let source = b"<p>Words</p>";
     let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Html).unwrap();
     let saved = document.history_status().current;

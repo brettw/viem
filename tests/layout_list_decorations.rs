@@ -1,14 +1,14 @@
-use evim_core::document::{Encoding, Format, TextRange, WritingDirection};
-use evim_core::layout::{
+use viem_core::document::{Encoding, Format, TextRange, WritingDirection};
+use viem_core::layout::{
     BoundaryAffinity, DocumentLayoutStyles, LayoutEngine, LayoutPoint, MetricsGeneration,
     MockTextMeasurementProvider, ViewLayout,
 };
-use evim_core::{Core, CoreEvent, Document};
+use viem_core::{Core, CoreEvent, Document};
 
 fn html(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap()
 }
-fn label(row: &evim_core::layout::VisualRow) -> String {
+fn label(row: &viem_core::layout::VisualRow) -> String {
     row.decorations
         .iter()
         .map(|item| item.text.as_str())

@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor final class EVCharacterStyleMenuTests: XCTestCase {
     private func surface(_ source: String, type: String) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
@@ -17,7 +17,7 @@ import XCTest
 
     private func keys(_ text: String, view: EVEditorSurfaceController, session: EVCoreViewSession) throws {
         for character in text {
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_CHARACTER), codepoint: UInt32(try XCTUnwrap(character.asciiValue)))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: UInt32(try XCTUnwrap(character.asciiValue)))
         }
         view.refreshPresentation()
     }
@@ -75,14 +75,14 @@ import XCTest
                 XCTAssertFalse(backend.persistenceState.isDirty)
                 try keys(after, view: view, session: session)
                 view.editorView.insertText("XY", replacementRange: NSRange(location: NSNotFound, length: 0))
-                _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+                _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
                 view.refreshPresentation()
                 XCTAssertEqual(try backend.formattedText(), insertion == 0 ? "XYbase" : "bXYase")
                 let range = NSRange(location: insertion, length: 2)
                 XCTAssertEqual(try selectedStyle(range, view: view, session: session)?.rawValue, "Code")
                 let saved = try backend.serializedSource(typeName: type)
                 try assertReopenedStyle(saved, type: type, range: range, id: "Code")
-                _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+                _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
                 view.perform(menuCommand: .undo, sender: nil)
                 XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
                 view.perform(menuCommand: .redo, sender: nil)
@@ -103,7 +103,7 @@ import XCTest
         XCTAssertEqual(try backend.serializedSource(typeName: type), before)
         XCTAssertEqual(try backend.revision(), revision)
         view.editorView.insertText("é", replacementRange: NSRange(location: NSNotFound, length: 0))
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         view.refreshPresentation()
         XCTAssertEqual(try backend.formattedText(), "baseé")
         let range = NSRange(location: 4, length: 1)
@@ -113,7 +113,7 @@ import XCTest
         let reopened = EVCoreDocumentBackend()
         try reopened.read(source: saved, typeName: type)
         XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: key)?.properties[.characterSize]?.declared, .float(22))
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         view.perform(menuCommand: .undo, sender: nil)
         XCTAssertEqual(try backend.serializedSource(typeName: type), before)
         view.perform(menuCommand: .redo, sender: nil)
@@ -132,7 +132,7 @@ import XCTest
             XCTAssertEqual(try backend.serializedSource(typeName: type), beforeBaseChoice)
             XCTAssertEqual(try backend.revision(), revision)
             view.editorView.insertText("Y", replacementRange: NSRange(location: NSNotFound, length: 0))
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             view.refreshPresentation()
             XCTAssertEqual(try backend.formattedText(), "XY")
             XCTAssertEqual(try selectedStyle(NSRange(location: 0, length: 1), view: view, session: session)?.rawValue, "Code")
@@ -155,7 +155,7 @@ import XCTest
             let saved = try backend.serializedSource(typeName: type)
             try assertReopenedStyle(saved, type: type, range: range, id: "Code")
             XCTAssertEqual(try selectedStyle(NSRange(location: 4, length: 3), view: view, session: session)?.rawValue, "Character")
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             view.perform(menuCommand: .undo, sender: nil)
             XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
             view.perform(menuCommand: .redo, sender: nil)
@@ -187,7 +187,7 @@ import XCTest
                 XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("<!--between-->"))
                 XCTAssertTrue(String(decoding: saved, as: UTF8.self).hasSuffix("<!--keep-->"))
             }
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             view.perform(menuCommand: .undo, sender: nil)
             XCTAssertEqual(try backend.serializedSource(typeName: type), before)
             view.perform(menuCommand: .redo, sender: nil)

@@ -42,18 +42,18 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     let window = EVSettingsWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 690),
       styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-    window.title = "eVim Settings"
+    window.title = "Viem Settings"
     window.contentMinSize = NSSize(width: 760, height: 640)
     window.isReleasedWhenClosed = false
     super.init(window: window)
     build()
     observer = NotificationCenter.default.addObserver(
-      forName: .evimThemeDidChange, object: store, queue: .main
+      forName: .viemThemeDidChange, object: store, queue: .main
     ) { [weak self] _ in
       MainActor.assumeIsolated { self?.refresh() }
     }
     editingObserver = NotificationCenter.default.addObserver(
-      forName: .evimEditingPreferencesDidChange, object: nil, queue: .main
+      forName: .viemEditingPreferencesDidChange, object: nil, queue: .main
     ) { [weak self] notification in
       MainActor.assumeIsolated {
         guard let self, notification.object as AnyObject? === self.editingPreferences else { return }
@@ -189,9 +189,9 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     stack.addArrangedSubview(title)
     let subtitle = NSTextField(
       wrappingLabelWithString: [
-        "Default styles and app settings are saved in ~/.evim. Documents can override their format’s defaults.",
+        "Default styles and app settings are saved in ~/.viem. Documents can override their format’s defaults.",
         "Make a comfortable space for writing. Changes apply to every window.",
-        "Choose how eVim helps while you type. These preferences apply to every document.",
+        "Choose how Viem helps while you type. These preferences apply to every document.",
       ][selectedCategory])
     subtitle.textColor = .secondaryLabelColor
     stack.addArrangedSubview(subtitle)

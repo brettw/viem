@@ -1,13 +1,13 @@
-use evim_core::command::{InputEvent, Key};
-use evim_core::document::{
+use viem_core::command::{InputEvent, Key};
+use viem_core::document::{
     BoundaryAffinity, Document, Encoding, Format, HistoryNavigationRequest, SemanticInlineStyle,
 };
-use evim_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
-use evim_core::{Core, CoreEvent};
+use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
+use viem_core::{Core, CoreEvent};
 fn key(key: Key) -> CoreEvent {
     CoreEvent::Input(InputEvent::Key(key))
 }
-fn fixture(format: Format, source: &str) -> (Core<MockTextMeasurementProvider>, evim_core::ViewId) {
+fn fixture(format: Format, source: &str) -> (Core<MockTextMeasurementProvider>, viem_core::ViewId) {
     let mut core = Core::new(
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap(),
     );
@@ -66,7 +66,7 @@ fn wys_italic_cycle_before_existing_strong_word_in_flowed_paragraph() {
 }
 fn toggle(
     core: &mut Core<MockTextMeasurementProvider>,
-    view: evim_core::ViewId,
+    view: viem_core::ViewId,
     style: SemanticInlineStyle,
     enabled: bool,
 ) {
@@ -108,7 +108,7 @@ fn pending_italic_is_clean_until_text_and_undo_restores_exact_source() {
         assert_eq!(core.document().source_bytes(), source.as_bytes());
         assert!(
             core.selected_typography(view).unwrap().0.slant
-                != evim_core::document::FontSlant::Upright
+                != viem_core::document::FontSlant::Upright
         );
         let out = core
             .handle(view, CoreEvent::Input(InputEvent::Text("Hi".into())))
@@ -119,7 +119,7 @@ fn pending_italic_is_clean_until_text_and_undo_restores_exact_source() {
             DocumentLayoutStyles::character_at(core.document().projection(), caret, true)
                 .unwrap()
                 .slant
-                != evim_core::document::FontSlant::Upright,
+                != viem_core::document::FontSlant::Upright,
             "{format:?}: {:?}",
             core.document().text()
         );
@@ -239,7 +239,7 @@ fn combined_bold_italic_repeats_and_is_one_insert_undo() {
         let style =
             DocumentLayoutStyles::character_at(core.document().projection(), caret, true).unwrap();
         assert!(
-            style.bold && style.slant != evim_core::document::FontSlant::Upright,
+            style.bold && style.slant != viem_core::document::FontSlant::Upright,
             "{format:?} {:?}",
             core.document().text()
         );
@@ -263,7 +263,7 @@ fn combined_bold_italic_repeats_and_is_one_insert_undo() {
 }
 #[test]
 fn unsupported_pending_properties_and_stale_targets_leave_state_unchanged() {
-    use evim_core::document::{StyleProperty, StylePropertyValue};
+    use viem_core::document::{StyleProperty, StylePropertyValue};
     let (mut core, view) = fixture(Format::Markdown, "word");
     core.handle(view, key(Key::Char('i'))).unwrap();
     let stale = core.list_selection_identity(view).unwrap();
@@ -326,14 +326,14 @@ fn pending_state_is_view_local_and_external_reprojection_cancels_it() {
     toggle(&mut core, view, SemanticInlineStyle::Emphasis, true);
     assert_eq!(
         core.selected_typography(other).unwrap().0.slant,
-        evim_core::document::FontSlant::Upright
+        viem_core::document::FontSlant::Upright
     );
     core.handle(other, key(Key::Char('i'))).unwrap();
     core.handle(other, CoreEvent::Input(InputEvent::Text("a".into())))
         .unwrap();
     assert_eq!(
         core.selected_typography(view).unwrap().0.slant,
-        evim_core::document::FontSlant::Upright
+        viem_core::document::FontSlant::Upright
     );
 }
 #[test]
@@ -365,7 +365,7 @@ fn whitespace_does_not_create_empty_markdown_spans_and_counts_replay_style() {
 }
 #[test]
 fn continuing_style_uses_local_projection_and_one_literal_source_patch_in_large_document() {
-    use evim_core::document::{
+    use viem_core::document::{
         FontSlant, FormattedPayloadEdit, FormattedTextPayload, StyleProperty, StylePropertyValue,
     };
     let mut source = "<p>line</p>".repeat(10_000);
@@ -394,7 +394,7 @@ fn continuing_style_uses_local_projection_and_one_literal_source_patch_in_large_
 }
 #[test]
 fn direct_typing_properties_are_atomic_and_visible_in_pending_presentation() {
-    use evim_core::document::{Color, StyleProperty as P, StylePropertyValue as V};
+    use viem_core::document::{Color, StyleProperty as P, StylePropertyValue as V};
     for (format, source) in [
         (Format::Html, "<p>word</p>"),
         (Format::HtmlSource, "word"),
@@ -493,7 +493,7 @@ fn markdown_typing_uses_canonical_asterisks_and_keeps_nested_intraword_styles() 
             let active =
                 DocumentLayoutStyles::character_at(core.document().projection(), caret, true)
                     .unwrap();
-            assert!(active.slant != evim_core::document::FontSlant::Upright);
+            assert!(active.slant != viem_core::document::FontSlant::Upright);
             assert_eq!(
                 active.bold,
                 style,
@@ -528,7 +528,7 @@ fn rtf_scalar_typing_keeps_group_depth_bounded_and_undo_exact() {
         let caret = core.command_state(view).unwrap().cursor();
         let active =
             DocumentLayoutStyles::character_at(core.document().projection(), caret, true).unwrap();
-        assert_ne!(active.slant, evim_core::document::FontSlant::Upright);
+        assert_ne!(active.slant, viem_core::document::FontSlant::Upright);
         let serialized = String::from_utf8(core.document().source_bytes()).unwrap();
         let mut depth = 0;
         let mut max = 0;

@@ -1,12 +1,12 @@
-use evim_core::command::{InputEvent, Key};
-use evim_core::document::{BoundaryAffinity, Encoding, Format};
-use evim_core::layout::{
+use viem_core::command::{InputEvent, Key};
+use viem_core::document::{BoundaryAffinity, Encoding, Format};
+use viem_core::layout::{
     compute_layout_job, inspect_layout_provider, prepare_layout_job, HardLineLayoutRegion,
     LayoutCancellationToken, LayoutEngine, LayoutExecutionContext, LayoutJobId, LayoutJobPriority,
     LayoutJobRegion, MockTextMeasurementProvider, ViewLayout, ViewportLayoutRegion,
     MAX_LONG_LINE_LAYOUT_SLICE_BYTES,
 };
-use evim_core::{Core, CoreEvent, Document};
+use viem_core::{Core, CoreEvent, Document};
 
 fn source_document(source: &str) -> Document {
     Document::from_bytes(

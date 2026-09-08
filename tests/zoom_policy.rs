@@ -1,8 +1,8 @@
-use evim_core::ffi::{evim_core_adjacent_zoom_scale, EvimStatus};
-use evim_core::layout::{
+use viem_core::ffi::{viem_core_adjacent_zoom_scale, ViemStatus};
+use viem_core::layout::{
     adjacent_zoom_scale, LayoutError, MockTextMeasurementProvider, ZOOM_STOPS,
 };
-use evim_core::{Core, CoreEvent, Document};
+use viem_core::{Core, CoreEvent, Document};
 
 #[test]
 fn exact_zoom_stops_saturate_and_accept_intermediate_checked_scales() {
@@ -32,24 +32,24 @@ fn exact_zoom_stops_saturate_and_accept_intermediate_checked_scales() {
         );
         let mut output = 99.;
         assert_eq!(
-            unsafe { evim_core_adjacent_zoom_scale(invalid, 1, &mut output) },
-            EvimStatus::InvalidArgument
+            unsafe { viem_core_adjacent_zoom_scale(invalid, 1, &mut output) },
+            ViemStatus::InvalidArgument
         );
         assert_eq!(output, 0.);
     }
     let mut output = 99.;
     assert_eq!(
-        unsafe { evim_core_adjacent_zoom_scale(1., 2, &mut output) },
-        EvimStatus::InvalidArgument
+        unsafe { viem_core_adjacent_zoom_scale(1., 2, &mut output) },
+        ViemStatus::InvalidArgument
     );
     assert_eq!(output, 0.);
     assert_eq!(
-        unsafe { evim_core_adjacent_zoom_scale(1., 1, std::ptr::null_mut()) },
-        EvimStatus::InvalidArgument
+        unsafe { viem_core_adjacent_zoom_scale(1., 1, std::ptr::null_mut()) },
+        ViemStatus::InvalidArgument
     );
     assert_eq!(
-        unsafe { evim_core_adjacent_zoom_scale(4., 1, &mut output) },
-        EvimStatus::Ok
+        unsafe { viem_core_adjacent_zoom_scale(4., 1, &mut output) },
+        ViemStatus::Ok
     );
     assert_eq!(output, 5.);
 }

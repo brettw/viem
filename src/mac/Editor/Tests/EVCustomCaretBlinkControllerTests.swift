@@ -1,7 +1,7 @@
 import AppKit
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVCustomCaretBlinkControllerTests: XCTestCase {
     @MainActor

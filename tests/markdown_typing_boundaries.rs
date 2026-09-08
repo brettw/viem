@@ -1,11 +1,11 @@
-use evim_core::command::{InputEvent, Key};
-use evim_core::document::{
+use viem_core::command::{InputEvent, Key};
+use viem_core::document::{
     BoundaryAffinity, FontSlant, HistoryNavigationRequest, SemanticInlineStyle,
 };
-use evim_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
-use evim_core::{Core, CoreEvent, Document, Encoding, Format};
+use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
+use viem_core::{Core, CoreEvent, Document, Encoding, Format};
 
-fn input(core: &mut Core<MockTextMeasurementProvider>, view: evim_core::ViewId, event: InputEvent) {
+fn input(core: &mut Core<MockTextMeasurementProvider>, view: viem_core::ViewId, event: InputEvent) {
     core.handle(view, CoreEvent::Input(event)).unwrap();
 }
 
@@ -362,10 +362,10 @@ fn source_exit_is_recorded_by_counted_insert_and_dot_as_one_undo_unit() {
 
 #[test]
 fn nested_markdown_split_keeps_large_document_projection_and_layout_local() {
-    use evim_core::document::{
+    use viem_core::document::{
         FormattedPayloadEdit, FormattedTextPayload, StyleProperty, StylePropertyValue,
     };
-    use evim_core::layout::{LayoutEngine, ViewLayout};
+    use viem_core::layout::{LayoutEngine, ViewLayout};
     let source = "Unchanged paragraph\n\n".repeat(10_000) + "**_word_**";
     let mut document =
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();

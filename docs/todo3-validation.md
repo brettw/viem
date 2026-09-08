@@ -1,7 +1,7 @@
 # TODO3 and GAPS validation
 
-Validation used the isolated `com.evim.todo-validation` application bundle,
-`EVIM_CONFIG_DIR=/private/tmp/evim-todo3-config`, and temporary source fixtures.
+Validation used the isolated `com.viem.todo-validation` application bundle,
+`VIEM_CONFIG_DIR=/private/tmp/viem-todo3-config`, and temporary source fixtures.
 The user's running editor and personal configuration were left intact.
 
 ## Automated checks

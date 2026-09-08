@@ -1,7 +1,7 @@
-use evim_core::command::{CommandStatus, InputEvent, Key};
-use evim_core::document::{BoundaryAffinity, Document, Encoding, Format, SourceArtifactDigest};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key};
+use viem_core::document::{BoundaryAffinity, Document, Encoding, Format, SourceArtifactDigest};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, ViewId};
 
 fn html(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap()

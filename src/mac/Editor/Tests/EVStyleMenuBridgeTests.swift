@@ -1,9 +1,9 @@
 import AppKit
-import CEvimCore
-@testable import EvimAppShell
+import CViemCore
+@testable import ViemAppShell
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVStyleMenuBridgeTests: XCTestCase {
   @MainActor
@@ -66,7 +66,7 @@ final class EVStyleMenuBridgeTests: XCTestCase {
         let reopened = EVCoreDocumentBackend()
         try reopened.read(source: saved, typeName: EVDocument.htmlType)
         XCTAssertEqual(try reopened.formattedText(), "a")
-        try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         surface.perform(menuCommand: .undo, sender: nil)
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data("<\(tag)><li></li></\(tag)>".utf8))
         surface.perform(menuCommand: .redo, sender: nil)
@@ -104,7 +104,7 @@ final class EVStyleMenuBridgeTests: XCTestCase {
     surface.editorView.insertText(" ", replacementRange: NSRange(location: NSNotFound, length: 0))
     XCTAssertNotEqual(try backend.serializedSource(typeName: EVDocument.htmlType), saved)
     XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: definition.key)?.properties[.characterForeground]?.declared, .color(color))
-    surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+    surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
     surface.perform(menuCommand: .undo, sender: nil)
     XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), saved)
     XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: definition.key)?.properties[.characterForeground]?.declared, .color(color))
@@ -134,7 +134,7 @@ final class EVStyleMenuBridgeTests: XCTestCase {
     XCTAssertFalse(surface.headingShortcutPresentation(level: 1).isEnabled)
     XCTAssertNil(try backend.styleSheetSnapshot().definition(for: heading.key))
     let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
-    XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("--evim-style-deleted"))
+    XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("--viem-style-deleted"))
     let reopened = EVCoreDocumentBackend()
     try reopened.read(source: saved, typeName: EVDocument.htmlType)
     XCTAssertNil(try reopened.styleSheetSnapshot().definition(for: heading.key))

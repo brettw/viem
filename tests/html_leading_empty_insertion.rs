@@ -1,9 +1,9 @@
-use evim_core::command::{
+use viem_core::command::{
     CommandContext, CommandModelRequest, CommandResolution, InputEvent, Key, Mode,
 };
-use evim_core::document::{BoundaryAffinity, Document, Encoding, Format, HistoryNavigationRequest};
-use evim_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
-use evim_core::{Core, CoreEvent, ViewId};
+use viem_core::document::{BoundaryAffinity, Document, Encoding, Format, HistoryNavigationRequest};
+use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
+use viem_core::{Core, CoreEvent, ViewId};
 
 fn input(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, event: InputEvent) {
     core.handle(view, CoreEvent::Input(event.clone()))

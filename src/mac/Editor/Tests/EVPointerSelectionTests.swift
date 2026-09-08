@@ -1,9 +1,9 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVPointerSelectionTests: XCTestCase {
@@ -65,7 +65,7 @@ final class EVPointerSelectionTests: XCTestCase {
     let session = try XCTUnwrap(surface.session)
     let snapshot = try XCTUnwrap(surface.layoutSnapshot)
     let geometry = try session.caretGeometry(
-      offset: offset, affinity: UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM), in: snapshot.info)
+      offset: offset, affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM), in: snapshot.info)
     let rect = geometry.rect
     let local = surface.editorView.viewPoint(
       fromLayoutPoint: CGPoint(x: CGFloat(rect.x), y: CGFloat(rect.y + rect.height * 0.5)))

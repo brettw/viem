@@ -1,17 +1,17 @@
-use evim_core::command::clipboard::{
+use viem_core::command::clipboard::{
     ClipboardCommandContext, ClipboardContent, ClipboardGeneration, ClipboardSnapshot,
     ClipboardTarget,
 };
-use evim_core::command::{
+use viem_core::command::{
     CommandInterpreter, CommandOutput, CommandStatus, InputEvent, Key, RegisterKind,
     RegisterReadError, RegisterWriteError,
 };
-use evim_core::document::{
+use viem_core::document::{
     ArtifactBinding, ArtifactIdentity, ArtifactPath, Document, Encoding, FileFormat, Format,
     LineEndingOpenPolicy, LoadedArtifact,
 };
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent};
 
 fn key(character: char) -> InputEvent {
     InputEvent::Key(Key::Char(character))

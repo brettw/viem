@@ -1,9 +1,9 @@
 import AppKit
-import EvimAppShell
+import ViemAppShell
 
 extension Notification.Name {
-  static let evimCaretAppearanceDidChange = Notification.Name(
-    "org.evim.editor.caret-appearance-did-change"
+  static let viemCaretAppearanceDidChange = Notification.Name(
+    "org.viem.editor.caret-appearance-did-change"
   )
 }
 
@@ -37,7 +37,7 @@ final class EVCaretAppearanceResolver {
       })
     observers.append(
       notificationCenter.addObserver(
-        forName: .evimThemeDidChange, object: nil, queue: .main
+        forName: .viemThemeDidChange, object: nil, queue: .main
       ) { [weak self] _ in
         MainActor.assumeIsolated { self?.invalidate() }
       })
@@ -109,7 +109,7 @@ final class EVCaretAppearanceResolver {
   private func invalidate() {
     generation &+= 1
     if generation == 0 { generation = 1 }
-    notificationCenter.post(name: .evimCaretAppearanceDidChange, object: self)
+    notificationCenter.post(name: .viemCaretAppearanceDidChange, object: self)
   }
 
   private static func linearizedSRGBComponent(_ component: CGFloat) -> CGFloat {

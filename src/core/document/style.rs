@@ -1223,7 +1223,7 @@ impl StyleSheet {
     }
 
     /// Prose defaults approximate the common one-em collapsed HTML
-    /// paragraph gap using two half-em sides in eVim's additive spacing model.
+    /// paragraph gap using two half-em sides in Viem's additive spacing model.
     /// Plain text and RTF retain their adapter-specific defaults.
     pub(crate) fn for_format(format: super::Format) -> Self {
         let mut sheet = Self::default();

@@ -1,9 +1,9 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVParagraphFlowIntegrationTests: XCTestCase {
     @MainActor
@@ -25,14 +25,14 @@ final class EVParagraphFlowIntegrationTests: XCTestCase {
 
             let range = try XCTUnwrap(source.range(of: "beta"))
             let start = source[..<range.lowerBound].utf8.count
-            var point = EvimLayoutCaretPointV1()
-            point.struct_size = UInt32(MemoryLayout<EvimLayoutCaretPointV1>.size)
+            var point = ViemLayoutCaretPointV1()
+            point.struct_size = UInt32(MemoryLayout<ViemLayoutCaretPointV1>.size)
             point.document_revision = first.viewPresentation.document_revision
             point.text_offset = UInt64(start)
-            point.affinity = UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM)
+            point.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
             _ = try firstSession.placeCursor(point, extendSelection: false)
             point.text_offset += 4
-            point.affinity = UInt32(EVIM_BOUNDARY_AFFINITY_UPSTREAM)
+            point.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
             _ = try firstSession.placeCursor(point, extendSelection: true)
             first.refreshPresentation()
             let selection = try firstSession.listSelection()
@@ -67,15 +67,15 @@ final class EVParagraphFlowIntegrationTests: XCTestCase {
         let surface = try makeSurface(backend)
         let session = try XCTUnwrap(surface.session)
         try session.setParagraphFlow(true)
-        var point = EvimLayoutCaretPointV1()
-        point.struct_size = UInt32(MemoryLayout<EvimLayoutCaretPointV1>.size)
+        var point = ViemLayoutCaretPointV1()
+        point.struct_size = UInt32(MemoryLayout<ViemLayoutCaretPointV1>.size)
         point.document_revision = session.lastOutcome.document_revision
         point.text_offset = 2
-        point.affinity = UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM)
+        point.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
         _ = try session.placeCursor(point, extendSelection: false)
         _ = try session.sendText("i")
         _ = try session.sendText("Z")
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data("**Zalpha**\nbeta\n\ngamma".utf8))
         _ = try session.sendText("u")
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
@@ -98,12 +98,12 @@ final class EVParagraphFlowIntegrationTests: XCTestCase {
             XCTAssertEqual(surface.presentation(for: .flowParagraphs).state, expectedFlow ? .on : .off)
             let before = try session.refreshState()
             XCTAssertThrowsError(try session.setParagraphFlow(!expectedFlow))
-            var outcome = EvimCoreOutcomeV1()
-            outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
-            XCTAssertEqual(evim_core_view_set_paragraph_flow(backend.core, session.viewID, 2, &outcome), UInt32(EVIM_STATUS_INVALID_ARGUMENT))
-            XCTAssertEqual(evim_core_view_paragraph_flow(backend.core, session.viewID, nil), UInt32(EVIM_STATUS_INVALID_ARGUMENT))
+            var outcome = ViemCoreOutcomeV1()
+            outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+            XCTAssertEqual(viem_core_view_set_paragraph_flow(backend.core, session.viewID, 2, &outcome), UInt32(VIEM_STATUS_INVALID_ARGUMENT))
+            XCTAssertEqual(viem_core_view_paragraph_flow(backend.core, session.viewID, nil), UInt32(VIEM_STATUS_INVALID_ARGUMENT))
             var value: UInt32 = 7
-            XCTAssertNotEqual(evim_core_view_paragraph_flow(backend.core, UInt64.max, &value), UInt32(EVIM_STATUS_OK))
+            XCTAssertNotEqual(viem_core_view_paragraph_flow(backend.core, UInt64.max, &value), UInt32(VIEM_STATUS_OK))
             XCTAssertEqual(try session.refreshState().document_revision, before.document_revision)
             XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
         }

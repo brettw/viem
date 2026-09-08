@@ -1,13 +1,13 @@
 # Paragraph, list, style-control, and zoom validation
 
-Validated on macOS 26 with the isolated `com.evim.todo-validation` app and
+Validated on macOS 26 with the isolated `com.viem.todo-validation` app and
 temporary fixtures/configuration. The user's normal editor and settings were
 not used for test edits.
 
 ## Implemented behavior
 
 - Markdown and HTML paragraphs use 7pt before and 7pt after spacing. Under
-  eVim's additive spacing rule, adjacent paragraphs have a 14pt gap at the
+  Viem's additive spacing rule, adjacent paragraphs have a 14pt gap at the
   default 14pt font size. This approximates the common one-em paragraph gap in
   [HTML rendering defaults](https://html.spec.whatwg.org/multipage/rendering.html#flow-content-3).
 - Fenced Markdown and HTML preformatted code share one paragraph per block,
@@ -68,10 +68,10 @@ not used for test edits.
 - `cargo test --offline --no-fail-fast`: 1,406 passed, zero failures.
 - `scripts/test-mac.sh` with the required AppKit/file-coordination access:
   274 XCTest and 26 Swift Testing tests passed, zero failures.
-- The rebuilt and signed `.build/eVim.app` passed the final computer-use
+- The rebuilt and signed `.build/Viem.app` passed the final computer-use
   reproduction: code indentation serialized as `<br>    added_line()`, HTML
   Source rendered its blank code row without a reflow error, and two undos
   restored the original source and WYSIWYG presentation.
 
-Logs: `/private/tmp/evim-paragraphs-rust-complete.log` and
-`/private/tmp/evim-final-native-whitespace-approved.log`.
+Logs: `/private/tmp/viem-paragraphs-rust-complete.log` and
+`/private/tmp/viem-final-native-whitespace-approved.log`.

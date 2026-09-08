@@ -1,14 +1,14 @@
 import AppKit
 import XCTest
 
-@testable import EvimAppShell
+@testable import ViemAppShell
 
 @MainActor
 final class EVEditingPreferencesTests: XCTestCase {
   func testSmartQuotesDefaultsOffPersistsAndNotifiesOnlyOnChanges() throws {
-    let suite = "evim-editing-test-\(UUID().uuidString)"
+    let suite = "viem-editing-test-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-config-test-\(UUID().uuidString)")
+    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-config-test-\(UUID().uuidString)")
     addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
     let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
     defer { defaults.removePersistentDomain(forName: suite) }
@@ -16,7 +16,7 @@ final class EVEditingPreferencesTests: XCTestCase {
     let preferences = EVEditingPreferences(configuration: configuration, center: center)
     var changes = 0
     let observer = center.addObserver(
-      forName: .evimEditingPreferencesDidChange, object: nil, queue: .main
+      forName: .viemEditingPreferencesDidChange, object: nil, queue: .main
     ) { _ in changes += 1 }
     defer { center.removeObserver(observer) }
     XCTAssertFalse(preferences.smartQuotes)
@@ -31,9 +31,9 @@ final class EVEditingPreferencesTests: XCTestCase {
   }
 
   func testEditingCategoryCheckboxUpdatesPreferenceWithoutChangingTheme() throws {
-    let suite = "evim-editing-settings-\(UUID().uuidString)"
+    let suite = "viem-editing-settings-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-config-test-\(UUID().uuidString)")
+    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-config-test-\(UUID().uuidString)")
     addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
     let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
     defer { defaults.removePersistentDomain(forName: suite) }

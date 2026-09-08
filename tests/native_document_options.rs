@@ -1,17 +1,17 @@
-use evim_core::command::{InputEvent, Key};
-use evim_core::document::{
+use viem_core::command::{InputEvent, Key};
+use viem_core::document::{
     Association, BoundaryAffinity, DeletionRecovery, Document, Encoding, FileFormat, Format,
     HistoryNavigationRequest, ListStyle, MappingOutcome, ModelRequest, ModelTransactionError,
 };
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreError, CoreEvent};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreError, CoreEvent};
 
 #[test]
 fn switching_into_html_installs_source_styles_and_switching_back_uses_plain_styles() {
     let mut document = Document::new("<p style='font-size: 30pt'>Large</p>");
     document.set_format(Format::Html).unwrap();
     assert_eq!(document.text(), "Large");
-    assert!(document.projection().style_spans().iter().any(|span|matches!(&span.application,evim_core::document::StyleApplication::Direct(properties)if properties.size==Some(30.0))));
+    assert!(document.projection().style_spans().iter().any(|span|matches!(&span.application,viem_core::document::StyleApplication::Direct(properties)if properties.size==Some(30.0))));
     assert_eq!(
         document
             .projection()
@@ -19,7 +19,7 @@ fn switching_into_html_installs_source_styles_and_switching_back_uses_plain_styl
             .block_style_metadata(&"Document".into())
             .unwrap()
             .origin,
-        evim_core::document::StyleDefinitionOrigin::SourceBacked
+        viem_core::document::StyleDefinitionOrigin::SourceBacked
     );
     document.set_format(Format::PlainText).unwrap();
     assert_eq!(document.text(), "<p style='font-size: 30pt'>Large</p>");
@@ -30,7 +30,7 @@ fn switching_into_html_installs_source_styles_and_switching_back_uses_plain_styl
             .block_style_metadata(&"Document".into())
             .unwrap()
             .origin,
-        evim_core::document::StyleDefinitionOrigin::GeneratedConfiguration
+        viem_core::document::StyleDefinitionOrigin::GeneratedConfiguration
     );
     assert!(document.undo());
     assert_eq!(document.format(), Format::Html);

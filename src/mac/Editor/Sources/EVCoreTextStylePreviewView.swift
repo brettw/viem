@@ -1,7 +1,7 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import CoreText
-import EvimCoreTextProvider
+import ViemCoreTextProvider
 
 struct EVCoreTextStylePreviewLine: Equatable {
     let origin: CGPoint
@@ -225,9 +225,9 @@ final class EVCoreTextStylePreviewView: NSView {
             attributes[NSAttributedString.Key(kCTLanguageAttributeName as String)] = value
         }
         if case let .writingDirection(value)? = values[.characterDirection],
-           value != UInt32(EVIM_TEXT_DIRECTION_AUTO)
+           value != UInt32(VIEM_TEXT_DIRECTION_AUTO)
         {
-            let direction = value == UInt32(EVIM_TEXT_DIRECTION_RIGHT_TO_LEFT)
+            let direction = value == UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT)
                 ? NSWritingDirection.rightToLeft : .leftToRight
             attributes[.writingDirection] = [
                 NSNumber(value: direction.rawValue | NSWritingDirectionFormatType.override.rawValue),
@@ -269,7 +269,7 @@ final class EVCoreTextStylePreviewView: NSView {
         if case let .boolean(value)? = values[.characterBold] { bold = value } else { bold = false }
         let slant: UInt32
         if case let .fontSlant(value)? = values[.characterSlant] { slant = value }
-        else { slant = UInt32(EVIM_FONT_SLANT_UPRIGHT) }
+        else { slant = UInt32(VIEM_FONT_SLANT_UPRIGHT) }
         let features: [(String, UInt32)]
         if case let .openTypeFeatures(value)? = values[.characterOpenTypeFeatures] {
             features = value.map { ($0.tag, $0.setting) }
@@ -320,8 +320,8 @@ final class EVCoreTextStylePreviewView: NSView {
         let direction: NSWritingDirection
         if case let .writingDirection(value)? = values[.paragraphBaseDirection] {
             switch value {
-            case UInt32(EVIM_TEXT_DIRECTION_LEFT_TO_RIGHT): direction = .leftToRight
-            case UInt32(EVIM_TEXT_DIRECTION_RIGHT_TO_LEFT): direction = .rightToLeft
+            case UInt32(VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT): direction = .leftToRight
+            case UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT): direction = .rightToLeft
             default: direction = .natural
             }
         } else {
@@ -331,9 +331,9 @@ final class EVCoreTextStylePreviewView: NSView {
 
         if case let .paragraphAlignment(value)? = values[.paragraphAlignment] {
             switch value {
-            case UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_CENTER):
+            case UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER):
                 paragraph.alignment = .center
-            case UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_END):
+            case UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_END):
                 paragraph.alignment = direction == .rightToLeft ? .left : .right
             default:
                 paragraph.alignment = direction == .rightToLeft ? .right : .left
@@ -341,11 +341,11 @@ final class EVCoreTextStylePreviewView: NSView {
         }
         if case let .lineSpacing(value)? = values[.paragraphLineSpacing] {
             switch value.kind {
-            case UInt32(EVIM_STYLE_LINE_SPACING_MULTIPLIER):
+            case UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER):
                 paragraph.lineHeightMultiple = CGFloat(value.value)
-            case UInt32(EVIM_STYLE_LINE_SPACING_AT_LEAST):
+            case UInt32(VIEM_STYLE_LINE_SPACING_AT_LEAST):
                 paragraph.minimumLineHeight = CGFloat(value.value)
-            case UInt32(EVIM_STYLE_LINE_SPACING_EXACT):
+            case UInt32(VIEM_STYLE_LINE_SPACING_EXACT):
                 paragraph.minimumLineHeight = CGFloat(value.value)
                 paragraph.maximumLineHeight = CGFloat(value.value)
             default:

@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import EvimAppShell
+@testable import ViemAppShell
 
 @MainActor
 final class EVMenuBuilderTests: XCTestCase {
@@ -50,13 +50,13 @@ final class EVMenuBuilderTests: XCTestCase {
         let menu = builder.buildMainMenu(for: NSApplication.shared)
 
         XCTAssertEqual(menu.items.map(\.title), [
-            "eVim", "File", "Edit", "Format", "Paragraph", "Character", "View", "Window", "Help",
+            "Viem", "File", "Edit", "Format", "Paragraph", "Character", "View", "Window", "Help",
         ])
         XCTAssertTrue(NSApplication.shared.windowsMenu === menu.item(withTitle: "Window")?.submenu)
         XCTAssertTrue(NSApplication.shared.helpMenu === menu.item(withTitle: "Help")?.submenu)
         XCTAssertTrue(
             NSApplication.shared.servicesMenu
-                === menu.item(withTitle: "eVim")?.submenu?.item(withTitle: "Services")?.submenu
+                === menu.item(withTitle: "Viem")?.submenu?.item(withTitle: "Services")?.submenu
         )
     }
 
@@ -65,9 +65,9 @@ final class EVMenuBuilderTests: XCTestCase {
         let builder = EVMenuBuilder(owner: owner)
         let menu = builder.buildMainMenu(for: NSApplication.shared)
 
-        XCTAssertEqual(try titles(in: submenu("eVim", of: menu)), [
-            "About eVim", "Settings…", "Services", "Hide eVim", "Hide Others",
-            "Show All", "Quit eVim",
+        XCTAssertEqual(try titles(in: submenu("Viem", of: menu)), [
+            "About Viem", "Settings…", "Services", "Hide Viem", "Hide Others",
+            "Show All", "Quit Viem",
         ])
         XCTAssertEqual(try titles(in: submenu("File", of: menu)), [
             "New", "Open…", "Open Recent", "Close", "Save", "Save As…", "Duplicate",
@@ -93,7 +93,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Minimize", "Zoom", "New Window for Document", "Bring All to Front",
         ])
         XCTAssertEqual(try titles(in: submenu("Help", of: menu)), [
-            "eVim Help", "Vim Command Reference", "Keyboard Shortcuts",
+            "Viem Help", "Vim Command Reference", "Keyboard Shortcuts",
             "Supported Vim Commands", "Document Format Compatibility",
             "Round-Trip and Source Preservation", "Release Notes", "Report a Problem…",
         ])
@@ -104,9 +104,9 @@ final class EVMenuBuilderTests: XCTestCase {
         let builder = EVMenuBuilder(owner: owner, recentDocumentURLs: { [] })
         let main = builder.buildMainMenu(for: NSApplication.shared)
 
-        XCTAssertEqual(tokens(in: try submenu("eVim", of: main)), [
-            "About eVim", "Settings…", "-", "Services", "-", "Hide eVim",
-            "Hide Others", "Show All", "-", "Quit eVim",
+        XCTAssertEqual(tokens(in: try submenu("Viem", of: main)), [
+            "About Viem", "Settings…", "-", "Services", "-", "Hide Viem",
+            "Hide Others", "Show All", "-", "Quit Viem",
         ])
         XCTAssertEqual(tokens(in: try submenu("File", of: main)), [
             "New", "Open…", "Open Recent", "-", "Close", "Save", "Save As…",
@@ -135,7 +135,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Bring All to Front", "-",
         ])
         XCTAssertEqual(tokens(in: try submenu("Help", of: main)), [
-            "-", "eVim Help", "Vim Command Reference", "Keyboard Shortcuts",
+            "-", "Viem Help", "Vim Command Reference", "Keyboard Shortcuts",
             "Supported Vim Commands", "Document Format Compatibility",
             "Round-Trip and Source Preservation", "-", "Release Notes",
             "Report a Problem…",
@@ -209,10 +209,10 @@ final class EVMenuBuilderTests: XCTestCase {
         let owner = Owner()
         let main = EVMenuBuilder(owner: owner).buildMainMenu(for: NSApplication.shared)
         let expected: [String: (String, NSEvent.ModifierFlags)] = [
-            "eVim/Settings…": (",", [.command]),
-            "eVim/Hide eVim": ("h", [.command]),
-            "eVim/Hide Others": ("h", [.command, .option]),
-            "eVim/Quit eVim": ("q", [.command]),
+            "Viem/Settings…": (",", [.command]),
+            "Viem/Hide Viem": ("h", [.command]),
+            "Viem/Hide Others": ("h", [.command, .option]),
+            "Viem/Quit Viem": ("q", [.command]),
             "File/New": ("n", [.command]),
             "File/Open…": ("o", [.command]),
             "File/Close": ("w", [.command]),
@@ -384,7 +384,7 @@ final class EVMenuBuilderTests: XCTestCase {
         let owner = Owner()
         let main = EVMenuBuilder(owner: owner).buildMainMenu(for: NSApplication.shared)
         let applicationRoutes: [String: Selector] = [
-            "eVim/Settings…": #selector(EVApplicationCommandRouting.showSettings(_:)),
+            "Viem/Settings…": #selector(EVApplicationCommandRouting.showSettings(_:)),
             "File/New": #selector(EVApplicationCommandRouting.newDocument(_:)),
             "File/Open…": #selector(EVApplicationCommandRouting.openDocument(_:)),
         ]
@@ -395,11 +395,11 @@ final class EVMenuBuilderTests: XCTestCase {
         }
 
         let responderRoutes: [String: Selector] = [
-            "eVim/About eVim": #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
-            "eVim/Hide eVim": #selector(NSApplication.hide(_:)),
-            "eVim/Hide Others": #selector(NSApplication.hideOtherApplications(_:)),
-            "eVim/Show All": #selector(NSApplication.unhideAllApplications(_:)),
-            "eVim/Quit eVim": #selector(NSApplication.terminate(_:)),
+            "Viem/About Viem": #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            "Viem/Hide Viem": #selector(NSApplication.hide(_:)),
+            "Viem/Hide Others": #selector(NSApplication.hideOtherApplications(_:)),
+            "Viem/Show All": #selector(NSApplication.unhideAllApplications(_:)),
+            "Viem/Quit Viem": #selector(NSApplication.terminate(_:)),
             "File/Close": #selector(NSWindow.performClose(_:)),
             "Edit/Start Dictation…": Selector(("startDictation:")),
             "Edit/Emoji & Symbols": #selector(NSApplication.orderFrontCharacterPalette(_:)),
@@ -415,7 +415,7 @@ final class EVMenuBuilderTests: XCTestCase {
         }
 
         for title in [
-            "eVim Help", "Vim Command Reference", "Keyboard Shortcuts",
+            "Viem Help", "Vim Command Reference", "Keyboard Shortcuts",
             "Supported Vim Commands", "Document Format Compatibility",
             "Round-Trip and Source Preservation", "Release Notes", "Report a Problem…",
         ] {
@@ -549,7 +549,7 @@ final class EVMenuBuilderTests: XCTestCase {
         }
     }
 
-    func testNoBareVimKeyIsRegisteredAsAGlobalShortcut() {
+    func testNoBarViemKeyIsRegisteredAsAGlobalShortcut() {
         let owner = Owner()
         let builder = EVMenuBuilder(owner: owner)
         let menu = builder.buildMainMenu(for: NSApplication.shared)

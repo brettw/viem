@@ -1,7 +1,7 @@
-use evim_core::layout::{
+use viem_core::layout::{
     EdgeInsets, MockTextMeasurementProvider, MAX_LONG_LINE_LAYOUT_SLICE_BYTES,
 };
-use evim_core::{Core, CoreEvent, Document, ViewId};
+use viem_core::{Core, CoreEvent, Document, ViewId};
 
 fn request_end(core: &mut Core<MockTextMeasurementProvider>, view: ViewId) {
     core.handle(
@@ -127,8 +127,8 @@ fn trailing_empty_and_short_lines_share_only_the_visible_long_paragraph_tail() {
     let source = format!("<p><b>{long}</b></p><h2>Tail</h2><p></p>");
     let document = Document::from_bytes(
         source.as_bytes().to_vec(),
-        evim_core::document::Encoding::Utf8,
-        evim_core::document::Format::Html,
+        viem_core::document::Encoding::Utf8,
+        viem_core::document::Format::Html,
     )
     .unwrap();
     let mut core = Core::new(document);

@@ -1,4 +1,4 @@
-use evim_core::document::*;
+use viem_core::document::*;
 fn open(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf).unwrap()
 }

@@ -1,6 +1,6 @@
-use evim_core::document::{Encoding, Format};
-use evim_core::layout::{EdgeInsets, MockTextMeasurementProvider};
-use evim_core::{Core, Document};
+use viem_core::document::{Encoding, Format};
+use viem_core::layout::{EdgeInsets, MockTextMeasurementProvider};
+use viem_core::{Core, Document};
 
 #[test]
 fn unspecified_colors_remain_theme_defaults_without_rewriting_any_format() {

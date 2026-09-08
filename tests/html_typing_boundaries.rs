@@ -1,18 +1,18 @@
-use evim_core::command::{InputEvent, Key};
-use evim_core::document::{
+use viem_core::command::{InputEvent, Key};
+use viem_core::document::{
     BoundaryAffinity, Document, Encoding, Format, HistoryNavigationRequest, SemanticInlineStyle,
 };
-use evim_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
-use evim_core::{Core, CoreEvent};
+use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
+use viem_core::{Core, CoreEvent};
 
-fn fixture(source: &str, format: Format) -> (Core<MockTextMeasurementProvider>, evim_core::ViewId) {
+fn fixture(source: &str, format: Format) -> (Core<MockTextMeasurementProvider>, viem_core::ViewId) {
     let mut core = Core::new(
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap(),
     );
     let view = core.add_view(MockTextMeasurementProvider::new(), 300., 100.);
     (core, view)
 }
-fn input(core: &mut Core<MockTextMeasurementProvider>, view: evim_core::ViewId, event: InputEvent) {
+fn input(core: &mut Core<MockTextMeasurementProvider>, view: viem_core::ViewId, event: InputEvent) {
     let description = format!(
         "{event:?} at {} in {}",
         core.command_state(view).unwrap().cursor(),
@@ -191,7 +191,7 @@ fn toggle_off_crosses_closing_tags_and_preserves_other_inline_properties() {
             .unwrap();
             assert_eq!(style.bold, bold);
             assert_eq!(
-                style.slant != evim_core::document::FontSlant::Upright,
+                style.slant != viem_core::document::FontSlant::Upright,
                 italic
             );
             input(&mut core, view, InputEvent::text("Y"));
@@ -256,14 +256,14 @@ fn toggle_off_in_middle_splits_only_inline_scope_and_keeps_suffix_styled() {
                 DocumentLayoutStyles::semantic_character_at(reopened.projection(), at, false)
                     .unwrap();
             assert_eq!(style.bold, bold);
-            assert_ne!(style.slant, evim_core::document::FontSlant::Upright);
+            assert_ne!(style.slant, viem_core::document::FontSlant::Upright);
         }
     }
 }
 
 #[test]
 fn direct_decoration_exit_and_unclosed_emphasis_keep_other_properties() {
-    use evim_core::document::{StyleProperty as P, StylePropertyValue as V};
+    use viem_core::document::{StyleProperty as P, StylePropertyValue as V};
     for (source, property) in [
         ("<p><u><s>word</s></u></p>", P::CharacterUnderline),
         ("<p><s><u>word</u></s></p>", P::CharacterStrikethrough),
@@ -317,7 +317,7 @@ fn direct_decoration_exit_and_unclosed_emphasis_keep_other_properties() {
                 assert_eq!(style.language.as_deref(), Some("fr"));
             }
             assert!(
-                !String::from_utf8_lossy(&core.document().source_bytes()).contains("--evim-bold")
+                !String::from_utf8_lossy(&core.document().source_bytes()).contains("--viem-bold")
             );
         }
     }
@@ -325,10 +325,10 @@ fn direct_decoration_exit_and_unclosed_emphasis_keep_other_properties() {
 
 #[test]
 fn local_toggle_split_keeps_distant_block_identity_and_cached_layout() {
-    use evim_core::document::{
+    use viem_core::document::{
         FormattedPayloadEdit, FormattedTextPayload, StyleProperty as P, StylePropertyValue as V,
     };
-    use evim_core::layout::{LayoutEngine, ViewLayout};
+    use viem_core::layout::{LayoutEngine, ViewLayout};
     let source = "<p>Unchanged paragraph</p>".repeat(10_000) + "<p><b>word</b></p><!--tail-->";
     let mut document =
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
@@ -370,13 +370,13 @@ fn append_menu_toggle_uses_current_style_and_exits_before_whitespace() {
     let presentation = core
         .selection_semantic_style_presentation(view, SemanticInlineStyle::Strong)
         .unwrap();
-    assert_eq!(presentation.state(), evim_core::SemanticStyleState::On);
+    assert_eq!(presentation.state(), viem_core::SemanticStyleState::On);
     core.handle(
         view,
         CoreEvent::SetSelectionSemanticStyle {
             expected: presentation.selection().unwrap().clone(),
             style: SemanticInlineStyle::Strong,
-            enabled: presentation.state() != evim_core::SemanticStyleState::On,
+            enabled: presentation.state() != viem_core::SemanticStyleState::On,
         },
     )
     .unwrap();
@@ -388,5 +388,5 @@ fn append_menu_toggle_uses_current_style_and_exits_before_whitespace() {
     let style =
         DocumentLayoutStyles::semantic_character_at(reopened.projection(), 5, false).unwrap();
     assert!(!style.bold);
-    assert_eq!(style.slant, evim_core::document::FontSlant::Italic);
+    assert_eq!(style.slant, viem_core::document::FontSlant::Italic);
 }

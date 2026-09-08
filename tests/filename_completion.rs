@@ -1,10 +1,10 @@
-use evim_core::command::ex_execute::{ExFileRequest, ExFrontendRequest};
-use evim_core::command::{
+use viem_core::command::ex_execute::{ExFileRequest, ExFrontendRequest};
+use viem_core::command::{
     CommandLineEditAction, CommandLineEditRequest, CommandLineSnapshot, InputEvent, Key,
 };
-use evim_core::document::{Document, HistoryStatus, Revision};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreError, CoreEvent, CoreOutcome, ViewId};
+use viem_core::document::{Document, HistoryStatus, Revision};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreError, CoreEvent, CoreOutcome, ViewId};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,7 +16,7 @@ struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "evim-filename-completion-{}-{}-{}",
+            "viem-filename-completion-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

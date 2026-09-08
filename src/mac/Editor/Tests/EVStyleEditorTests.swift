@@ -1,9 +1,9 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVStyleEditorTests: XCTestCase {
     @MainActor
@@ -588,7 +588,7 @@ final class EVStyleEditorTests: XCTestCase {
         XCTAssertTrue(editor.setPropertyForTesting(
             .paragraphLineSpacing,
             value: .lineSpacing(EVLineSpacing(
-                kind: UInt32(EVIM_STYLE_LINE_SPACING_EXACT),
+                kind: UInt32(VIEM_STYLE_LINE_SPACING_EXACT),
                 value: 34
             ))
         ))
@@ -610,7 +610,7 @@ final class EVStyleEditorTests: XCTestCase {
 
         XCTAssertTrue(editor.setPropertyForTesting(
             .paragraphAlignment,
-            value: .paragraphAlignment(UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_CENTER))
+            value: .paragraphAlignment(UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER))
         ))
         let centered = editor.previewInspectionForTesting(layoutSize: layoutSize)
         XCTAssertNotEqual(
@@ -630,9 +630,9 @@ final class EVStyleEditorTests: XCTestCase {
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let editor = EVStyleEditorViewController()
-        let themeSuite = "evim-style-editor-\(UUID().uuidString)"
+        let themeSuite = "viem-style-editor-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: themeSuite))
-        let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-config-test-\(UUID().uuidString)")
+        let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-config-test-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
         let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
         addTeardownBlock { defaults.removePersistentDomain(forName: themeSuite) }

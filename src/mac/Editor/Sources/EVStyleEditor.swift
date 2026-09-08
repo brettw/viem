@@ -1,6 +1,6 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 
 enum EVStyleEditorTab: Int {
     case character
@@ -87,7 +87,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             panel.collectionBehavior.insert(.fullScreenAuxiliary)
             panel.contentViewController = content
             panel.delegate = self
-            panel.setFrameAutosaveName("eVim Style Editor")
+            panel.setFrameAutosaveName("Viem Style Editor")
             panel.setAccessibilityLabel("Styles")
             controller = NSWindowController(window: panel)
             contentController = content
@@ -254,7 +254,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     }
 
     override func loadView() {
-        themeObserver = NotificationCenter.default.addObserver(forName: .evimThemeDidChange, object: nil, queue: .main) { [weak self] notification in
+        themeObserver = NotificationCenter.default.addObserver(forName: .viemThemeDidChange, object: nil, queue: .main) { [weak self] notification in
             MainActor.assumeIsolated {
                 guard let self, notification.object as AnyObject? === self.themeStore else { return }
                 self.compactControls.refreshThemeColors(self.themeStore.theme)
@@ -422,7 +422,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         self.document = document
         selectedStyleKey = styleKey
         documentObserver = NotificationCenter.default.addObserver(
-            forName: .evimCoreDocumentDidChange,
+            forName: .viemCoreDocumentDidChange,
             object: document.backend,
             queue: .main
         ) { [weak self] _ in
@@ -806,7 +806,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             let name = snapshot?.definition(for: contributor)?.name ?? contributor.id.rawValue
             return "Inherited · \(name)"
         }
-        if property.contributorKind == UInt32(EVIM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY) {
+        if property.contributorKind == UInt32(VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY) {
             return "Default · engine"
         }
         return "Inherited"
@@ -1303,9 +1303,9 @@ private final class EVStylePropertyRow: NSObject, NSTextFieldDelegate {
     private var canEdit = false
     private(set) var hasInvalidDraft = false
     private var lastLineValues: [UInt32: Float] = [
-        UInt32(EVIM_STYLE_LINE_SPACING_MULTIPLIER): 1,
-        UInt32(EVIM_STYLE_LINE_SPACING_AT_LEAST): 0,
-        UInt32(EVIM_STYLE_LINE_SPACING_EXACT): 14,
+        UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER): 1,
+        UInt32(VIEM_STYLE_LINE_SPACING_AT_LEAST): 0,
+        UInt32(VIEM_STYLE_LINE_SPACING_EXACT): 14,
     ]
 
     init(property: EVStyleProperty) {
@@ -1370,11 +1370,11 @@ private final class EVStylePropertyRow: NSObject, NSTextFieldDelegate {
         case .paragraphLineSpacing:
             let spacing: EVLineSpacing
             if case let .lineSpacing(value)? = shownValue { spacing = value }
-            else { spacing = EVLineSpacing(kind: UInt32(EVIM_STYLE_LINE_SPACING_NORMAL), value: 0) }
+            else { spacing = EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_NORMAL), value: 0) }
             lineKindPopup.selectItem(withTag: Int(spacing.kind))
-            if spacing.kind != UInt32(EVIM_STYLE_LINE_SPACING_NORMAL) { lastLineValues[spacing.kind] = spacing.value }
+            if spacing.kind != UInt32(VIEM_STYLE_LINE_SPACING_NORMAL) { lastLineValues[spacing.kind] = spacing.value }
             lineValueField.stringValue = formatNumber(spacing.value)
-            lineValueField.isEnabled = canEdit && spacing.kind != UInt32(EVIM_STYLE_LINE_SPACING_NORMAL)
+            lineValueField.isEnabled = canEdit && spacing.kind != UInt32(VIEM_STYLE_LINE_SPACING_NORMAL)
         default:
             textField.stringValue = editableText(shownValue)
             textField.placeholderString = shownValue == nil ? "None" : nil
@@ -1397,9 +1397,9 @@ private final class EVStylePropertyRow: NSObject, NSTextFieldDelegate {
         switch property {
         case .characterSlant:
             addPopupItems([
-                ("Upright", UInt32(EVIM_FONT_SLANT_UPRIGHT)),
-                ("Italic", UInt32(EVIM_FONT_SLANT_ITALIC)),
-                ("Oblique", UInt32(EVIM_FONT_SLANT_OBLIQUE)),
+                ("Upright", UInt32(VIEM_FONT_SLANT_UPRIGHT)),
+                ("Italic", UInt32(VIEM_FONT_SLANT_ITALIC)),
+                ("Oblique", UInt32(VIEM_FONT_SLANT_OBLIQUE)),
             ])
             editorStack.addArrangedSubview(popup)
             editorStack.addArrangedSubview(convenienceButton("Italic", action: #selector(makeItalic(_:))))
@@ -1408,24 +1408,24 @@ private final class EVStylePropertyRow: NSObject, NSTextFieldDelegate {
             editorStack.addArrangedSubview(popup)
         case .characterDirection, .paragraphBaseDirection:
             addPopupItems([
-                ("Natural", UInt32(EVIM_TEXT_DIRECTION_AUTO)),
-                ("Left to right", UInt32(EVIM_TEXT_DIRECTION_LEFT_TO_RIGHT)),
-                ("Right to left", UInt32(EVIM_TEXT_DIRECTION_RIGHT_TO_LEFT)),
+                ("Natural", UInt32(VIEM_TEXT_DIRECTION_AUTO)),
+                ("Left to right", UInt32(VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT)),
+                ("Right to left", UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT)),
             ])
             editorStack.addArrangedSubview(popup)
         case .paragraphAlignment:
             addPopupItems([
-                ("Start", UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_START)),
-                ("Center", UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_CENTER)),
-                ("End", UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_END)),
+                ("Start", UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_START)),
+                ("Center", UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER)),
+                ("End", UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_END)),
             ])
             editorStack.addArrangedSubview(popup)
         case .paragraphLineSpacing:
             for item in [
-                ("Normal", UInt32(EVIM_STYLE_LINE_SPACING_NORMAL)),
-                ("Multiplier", UInt32(EVIM_STYLE_LINE_SPACING_MULTIPLIER)),
-                ("At least", UInt32(EVIM_STYLE_LINE_SPACING_AT_LEAST)),
-                ("Exact", UInt32(EVIM_STYLE_LINE_SPACING_EXACT)),
+                ("Normal", UInt32(VIEM_STYLE_LINE_SPACING_NORMAL)),
+                ("Multiplier", UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER)),
+                ("At least", UInt32(VIEM_STYLE_LINE_SPACING_AT_LEAST)),
+                ("Exact", UInt32(VIEM_STYLE_LINE_SPACING_EXACT)),
             ] {
                 lineKindPopup.addItem(withTitle: item.0)
                 lineKindPopup.lastItem?.tag = Int(item.1)
@@ -1493,11 +1493,11 @@ private final class EVStylePropertyRow: NSObject, NSTextFieldDelegate {
 
     private func validateLineSpacing() {
         let kind = UInt32(lineKindPopup.selectedTag())
-        guard kind != UInt32(EVIM_STYLE_LINE_SPACING_NORMAL) else { return }
+        guard kind != UInt32(VIEM_STYLE_LINE_SPACING_NORMAL) else { return }
         guard let number = Float(lineValueField.stringValue), number.isFinite,
-              (kind == UInt32(EVIM_STYLE_LINE_SPACING_MULTIPLIER) ? number > 0 : number >= 0)
+              (kind == UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER) ? number > 0 : number >= 0)
         else {
-            showValidation(kind == UInt32(EVIM_STYLE_LINE_SPACING_MULTIPLIER)
+            showValidation(kind == UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER)
                 ? "Enter a multiplier greater than zero."
                 : "Enter a nonnegative finite line height.")
             return
@@ -1631,8 +1631,8 @@ private final class EVStylePropertyRow: NSObject, NSTextFieldDelegate {
     @objc private func lineKindChanged(_ sender: NSPopUpButton) {
         guard !isConfiguring, canEdit else { return }
         let kind = UInt32(sender.selectedTag())
-        lineValueField.isEnabled = kind != UInt32(EVIM_STYLE_LINE_SPACING_NORMAL)
-        if kind == UInt32(EVIM_STYLE_LINE_SPACING_NORMAL) {
+        lineValueField.isEnabled = kind != UInt32(VIEM_STYLE_LINE_SPACING_NORMAL)
+        if kind == UInt32(VIEM_STYLE_LINE_SPACING_NORMAL) {
             let value = EVStyleValue.lineSpacing(EVLineSpacing(kind: kind, value: 0))
             if value != resolved?.declared { onSet?(property, value) }
         } else {
@@ -1648,7 +1648,7 @@ private final class EVStylePropertyRow: NSObject, NSTextFieldDelegate {
     }
     @objc private func makeBold(_ sender: NSButton) { if canEdit { onSet?(property, .unsigned(700)) } }
     @objc private func makeItalic(_ sender: NSButton) {
-        if canEdit { onSet?(property, .fontSlant(UInt32(EVIM_FONT_SLANT_ITALIC))) }
+        if canEdit { onSet?(property, .fontSlant(UInt32(VIEM_FONT_SLANT_ITALIC))) }
     }
 }
 
@@ -1668,22 +1668,22 @@ private func format(_ value: EVStyleValue?) -> String {
     case let .string(value): value
     case let .stringList(values): values.isEmpty ? "None" : values.joined(separator: " → ")
     case let .fontSlant(value):
-        value == UInt32(EVIM_FONT_SLANT_ITALIC) ? "Italic" : (value == UInt32(EVIM_FONT_SLANT_OBLIQUE) ? "Oblique" : "Upright")
+        value == UInt32(VIEM_FONT_SLANT_ITALIC) ? "Italic" : (value == UInt32(VIEM_FONT_SLANT_OBLIQUE) ? "Oblique" : "Upright")
     case let .writingDirection(value):
-        value == UInt32(EVIM_TEXT_DIRECTION_LEFT_TO_RIGHT) ? "Left to right"
-            : (value == UInt32(EVIM_TEXT_DIRECTION_RIGHT_TO_LEFT) ? "Right to left" : "Natural")
+        value == UInt32(VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT) ? "Left to right"
+            : (value == UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT) ? "Right to left" : "Natural")
     case let .openTypeFeatures(values):
         values.isEmpty ? "Default feature set" : values.map { "\($0.tag)=\($0.setting)" }.joined(separator: ", ")
     case let .lineSpacing(spacing):
         switch spacing.kind {
-        case UInt32(EVIM_STYLE_LINE_SPACING_MULTIPLIER): "\(formatNumber(spacing.value))×"
-        case UInt32(EVIM_STYLE_LINE_SPACING_AT_LEAST): "At least \(formatNumber(spacing.value)) pt"
-        case UInt32(EVIM_STYLE_LINE_SPACING_EXACT): "Exactly \(formatNumber(spacing.value)) pt"
+        case UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER): "\(formatNumber(spacing.value))×"
+        case UInt32(VIEM_STYLE_LINE_SPACING_AT_LEAST): "At least \(formatNumber(spacing.value)) pt"
+        case UInt32(VIEM_STYLE_LINE_SPACING_EXACT): "Exactly \(formatNumber(spacing.value)) pt"
         default: "Normal"
         }
     case let .paragraphAlignment(value):
-        value == UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_CENTER) ? "Center"
-            : (value == UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_END) ? "End" : "Start")
+        value == UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER) ? "Center"
+            : (value == UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_END) ? "End" : "Start")
     case nil: "None"
     }
 }

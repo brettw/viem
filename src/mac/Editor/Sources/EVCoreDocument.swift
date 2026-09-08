@@ -1,7 +1,7 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
-import EvimCoreTextProvider
+import CViemCore
+import ViemAppShell
+import ViemCoreTextProvider
 import Foundation
 
 public enum EVCoreFrontendError: LocalizedError, Equatable {
@@ -18,23 +18,23 @@ public enum EVCoreFrontendError: LocalizedError, Equatable {
         switch self {
         case let .core(operation, status):
             switch status {
-            case UInt32(EVIM_STATUS_VERIFICATION_FAILED):
+            case UInt32(VIEM_STATUS_VERIFICATION_FAILED):
                 "This edit cannot preserve the format's text and structure."
-            case UInt32(EVIM_STATUS_AMBIGUOUS_PROJECTION):
+            case UInt32(VIEM_STATUS_AMBIGUOUS_PROJECTION):
                 "This selection has no unambiguous editable source range."
-            case UInt32(EVIM_STATUS_UNREPRESENTABLE_CHARACTER):
+            case UInt32(VIEM_STATUS_UNREPRESENTABLE_CHARACTER):
                 "This character cannot be represented in the document's encoding."
-            case UInt32(EVIM_STATUS_UNSUPPORTED_OPERATION):
+            case UInt32(VIEM_STATUS_UNSUPPORTED_OPERATION):
                 "This operation is not supported for the current format or selection."
-            case UInt32(EVIM_STATUS_POLICY_REQUIRED):
+            case UInt32(VIEM_STATUS_POLICY_REQUIRED):
                 "This change needs a format or encoding policy before it can be applied."
             default:
-                "\(operation) failed (eVim core status \(status))."
+                "\(operation) failed (Viem core status \(status))."
             }
         case let .command(operation, status):
-            status == UInt32(EVIM_COMMAND_STATUS_READ_ONLY)
+            status == UInt32(VIEM_COMMAND_STATUS_READ_ONLY)
                 ? "E45: readonly option is set (use ! to override)"
-                : "\(operation) was rejected (eVim command status \(status))."
+                : "\(operation) was rejected (Viem command status \(status))."
         case .invalidUTF8:
             "The formatted projection was not valid UTF-8."
         case .unavailableLayout:
@@ -52,11 +52,11 @@ public enum EVCoreFrontendError: LocalizedError, Equatable {
 }
 
 struct EVLayoutExport {
-    var info: EvimLayoutSnapshotInfoV1
-    var rows: [EvimVisualRowV1]
-    var clusters: [EvimPositionedClusterV1]
-    var carets: [EvimPositionedCaretV1]
-    var decorations: [EvimLayoutDecorationV1] = []
+    var info: ViemLayoutSnapshotInfoV1
+    var rows: [ViemVisualRowV1]
+    var clusters: [ViemPositionedClusterV1]
+    var carets: [ViemPositionedCaretV1]
+    var decorations: [ViemLayoutDecorationV1] = []
     var decorationLabels: [UInt8] = []
 }
 
@@ -73,15 +73,15 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         Self.sourceFormat(from: currentDocumentState)
     }
 
-    private(set) var core: EvimCoreHandle = 0
+    private(set) var core: ViemCoreHandle = 0
     private var source = Data()
     private var typeName = "public.plain-text"
     private var recoveryInterpretation: EVRecoverySnapshot?
-    private(set) var currentDocumentState = EvimDocumentStateV1()
+    private(set) var currentDocumentState = ViemDocumentStateV1()
     private(set) var formattedAccessCounters = EVFormattedAccessCounters()
     private var surfaces: [WeakSurface] = []
     private var isRefreshingSurfaces = false
-    private var pendingSourceChangeOrigins: [EvimViewId] = []
+    private var pendingSourceChangeOrigins: [ViemViewId] = []
 
     let configuration: EVConfigurationStore
     public private(set) var configurationWarning: String?
@@ -92,13 +92,13 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         do {
             try createCore()
         } catch {
-            assertionFailure("Unable to create the initial eVim core: \(error)")
+            assertionFailure("Unable to create the initial Viem core: \(error)")
         }
     }
 
     deinit {
         if core != 0 {
-            _ = evim_core_destroy(core)
+            _ = viem_core_destroy(core)
         }
     }
 
@@ -121,7 +121,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             surface.detachFromCore()
         }
         if core != 0 {
-            let status = evim_core_destroy(core)
+            let status = viem_core_destroy(core)
             guard status == Status.ok else {
                 throw EVCoreFrontendError.core(operation: "Close document", status: status)
             }
@@ -145,14 +145,14 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         defer { recoveryInterpretation = nil }
         try read(source: snapshot.source, typeName: snapshot.format == .markdownSource ? EVDocument.markdownSourceType : (snapshot.format == .htmlSource ? EVDocument.htmlSourceType : EVDocument.typeName(for: snapshot.format)))
         let state = try documentState()
-        try checked(evim_core_mark_recovered(core, state.document_id, state.document_revision), operation: "Restore unsaved recovery state")
+        try checked(viem_core_mark_recovered(core, state.document_id, state.document_revision), operation: "Restore unsaved recovery state")
         _ = try documentState()
         for surface in surfaces.compactMap(\.value) { surface.refreshPresentation() }
     }
 
     public func setReadOnly(_ readOnly: Bool) throws {
         let state = try documentState()
-        try checked(evim_core_set_read_only(core, state.document_id, state.document_revision, readOnly ? 1 : 0), operation: "Set read-only policy")
+        try checked(viem_core_set_read_only(core, state.document_id, state.document_revision, readOnly ? 1 : 0), operation: "Set read-only policy")
         _ = try documentState()
         for surface in surfaces.compactMap(\.value) { surface.refreshPresentation() }
     }
@@ -179,15 +179,15 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         guard hardLineRange.upperBound < UInt64.max else { throw EVCoreFrontendError.invalidHostEffect }
         var count: UInt64 = 0
         var complete: UInt32 = 0
-        let status = evim_core_copy_hard_line_source_bytes(core, state.document_id, state.document_revision,
+        let status = viem_core_copy_hard_line_source_bytes(core, state.document_id, state.document_revision,
             hardLineRange.lowerBound, hardLineRange.upperBound + 1, nil, 0, &count, &complete)
-        if status == EVIM_STATUS_POLICY_REQUIRED { throw EVDocumentHostError.preparedWriteUnavailable }
-        guard status == EVIM_STATUS_OK || status == EVIM_STATUS_BUFFER_TOO_SMALL, count <= UInt64(Int.max) else {
+        if status == VIEM_STATUS_POLICY_REQUIRED { throw EVDocumentHostError.preparedWriteUnavailable }
+        guard status == VIEM_STATUS_OK || status == VIEM_STATUS_BUFFER_TOO_SMALL, count <= UInt64(Int.max) else {
             throw EVCoreFrontendError.core(operation: "Prepare ranged source write", status: status)
         }
         var data = Data(count: Int(count))
         let copied = data.withUnsafeMutableBytes { buffer in
-            evim_core_copy_hard_line_source_bytes(core, state.document_id, state.document_revision,
+            viem_core_copy_hard_line_source_bytes(core, state.document_id, state.document_revision,
                 hardLineRange.lowerBound, hardLineRange.upperBound + 1, buffer.bindMemory(to: UInt8.self).baseAddress, count, &count, &complete)
         }
         try checked(copied, operation: "Copy ranged source write")
@@ -196,11 +196,11 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     public func acknowledgeNativeSave(_ snapshot: EVDocumentSaveSnapshot) throws {
         guard snapshot.isCompleteSource else { throw EVDocumentHostError.preparedWriteUnavailable }
-        var request = EvimMarkSavedV1()
-        request.struct_size = UInt32(MemoryLayout<EvimMarkSavedV1>.size)
+        var request = ViemMarkSavedV1()
+        request.struct_size = UInt32(MemoryLayout<ViemMarkSavedV1>.size)
         request.document_id = snapshot.documentID
         request.document_revision = snapshot.documentRevision
-        try checked(evim_core_mark_saved(core, &request), operation: "Acknowledge saved document")
+        try checked(viem_core_mark_saved(core, &request), operation: "Acknowledge saved document")
         _ = try documentState()
         surfaces.removeAll { $0.value == nil }
         for surface in surfaces.compactMap(\.value) {
@@ -218,13 +218,13 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     func formattedSnapshot() throws -> EVFormattedSnapshot {
         formattedAccessCounters.snapshotInfoCalls &+= 1
-        var info = EvimFormattedSnapshotInfoV1()
-        info.struct_size = UInt32(MemoryLayout<EvimFormattedSnapshotInfoV1>.size)
+        var info = ViemFormattedSnapshotInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemFormattedSnapshotInfoV1>.size)
         try checked(
-            evim_core_formatted_snapshot_info(core, &info),
+            viem_core_formatted_snapshot_info(core, &info),
             operation: "Read formatted snapshot"
         )
-        guard info.identity.struct_size >= UInt32(MemoryLayout<EvimFormattedSnapshotIdentityV1>.size),
+        guard info.identity.struct_size >= UInt32(MemoryLayout<ViemFormattedSnapshotIdentityV1>.size),
               info.utf8_length <= UInt64(Int.max),
               info.utf16_length <= UInt64(Int.max),
               info.hard_line_count <= UInt64(Int.max)
@@ -286,13 +286,13 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     func formattedPointInfo(
         atUTF8Offset offset: UInt64,
         snapshot: EVFormattedSnapshot
-    ) throws -> EvimFormattedPointInfoV1 {
+    ) throws -> ViemFormattedPointInfoV1 {
         formattedAccessCounters.pointInfoCalls &+= 1
         var identity = snapshot.info.identity
-        var info = EvimFormattedPointInfoV1()
-        info.struct_size = UInt32(MemoryLayout<EvimFormattedPointInfoV1>.size)
+        var info = ViemFormattedPointInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemFormattedPointInfoV1>.size)
         try checked(
-            evim_core_formatted_point_info(core, &identity, offset, &info),
+            viem_core_formatted_point_info(core, &identity, offset, &info),
             operation: "Read formatted point"
         )
         guard info.identity.isSameSnapshot(as: snapshot.info.identity),
@@ -300,7 +300,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         else {
             throw EVCoreFrontendError.core(
                 operation: "Read formatted point",
-                status: UInt32(EVIM_STATUS_STALE_REVISION)
+                status: UInt32(VIEM_STATUS_STALE_REVISION)
             )
         }
         return info
@@ -312,24 +312,24 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     func revision() throws -> UInt64 {
         var value: UInt64 = 0
-        try checked(evim_core_revision(core, &value), operation: "Read revision")
+        try checked(viem_core_revision(core, &value), operation: "Read revision")
         return value
     }
 
     @discardableResult
-    func documentState() throws -> EvimDocumentStateV1 {
-        var state = EvimDocumentStateV1()
-        state.struct_size = UInt32(MemoryLayout<EvimDocumentStateV1>.size)
-        try checked(evim_core_document_state(core, &state), operation: "Read document state")
+    func documentState() throws -> ViemDocumentStateV1 {
+        var state = ViemDocumentStateV1()
+        state.struct_size = UInt32(MemoryLayout<ViemDocumentStateV1>.size)
+        try checked(viem_core_document_state(core, &state), operation: "Read document state")
         installDocumentState(state)
         return state
     }
 
     var encodingLabel: String {
         switch currentDocumentState.encoding {
-        case UInt32(EVIM_ENCODING_LATIN1): "Latin-1"
-        case UInt32(EVIM_ENCODING_UTF16_LE): "UTF-16 LE"
-        case UInt32(EVIM_ENCODING_UTF16_BE): "UTF-16 BE"
+        case UInt32(VIEM_ENCODING_LATIN1): "Latin-1"
+        case UInt32(VIEM_ENCODING_UTF16_LE): "UTF-16 LE"
+        case UInt32(VIEM_ENCODING_UTF16_BE): "UTF-16 BE"
         default: "UTF-8"
         }
     }
@@ -340,13 +340,13 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     var lineEndingLabel: String {
         switch currentDocumentState.file_format {
-        case UInt32(EVIM_FILE_FORMAT_DOS): "CRLF"
-        case UInt32(EVIM_FILE_FORMAT_MAC): "CR"
+        case UInt32(VIEM_FILE_FORMAT_DOS): "CRLF"
+        case UInt32(VIEM_FILE_FORMAT_MAC): "CR"
         default: "LF"
         }
     }
 
-    func noteSourceChange(originatingViewID: EvimViewId) {
+    func noteSourceChange(originatingViewID: ViemViewId) {
         pendingSourceChangeOrigins.append(originatingViewID)
         guard !isRefreshingSurfaces else { return }
 
@@ -368,23 +368,23 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             for surface in surfaces.compactMap(\.value) {
                 surface.sharedDocumentDidChange(originatingViewIDs: origins)
             }
-            NotificationCenter.default.post(name: .evimCoreDocumentDidChange, object: self)
+            NotificationCenter.default.post(name: .viemCoreDocumentDidChange, object: self)
         }
     }
 
     private func createCore() throws {
-        var options = EvimDocumentOptions()
-        options.struct_size = UInt32(MemoryLayout<EvimDocumentOptions>.size)
+        var options = ViemDocumentOptions()
+        options.struct_size = UInt32(MemoryLayout<ViemDocumentOptions>.size)
         // Opening policy belongs to the portable encoding projection. The
         // frontend identifies the format container but never decodes or scans
         // authoritative source bytes itself.
-        options.encoding = recoveryInterpretation?.encoding ?? UInt32(EVIM_ENCODING_DETECT)
+        options.encoding = recoveryInterpretation?.encoding ?? UInt32(VIEM_ENCODING_DETECT)
         options.format = Self.formatOption(typeName: recoveryInterpretation.map { $0.format == .markdownSource ? EVDocument.markdownSourceType : ($0.format == .htmlSource ? EVDocument.htmlSourceType : EVDocument.typeName(for: $0.format)) } ?? typeName)
-        options.file_format = recoveryInterpretation?.fileFormat ?? UInt32(EVIM_FILE_FORMAT_DETECT)
-        var handle: EvimCoreHandle = 0
+        options.file_format = recoveryInterpretation?.fileFormat ?? UInt32(VIEM_FILE_FORMAT_DETECT)
+        var handle: ViemCoreHandle = 0
         var revision: UInt64 = 0
         let status = source.withUnsafeBytes { raw in
-            evim_core_create(
+            viem_core_create(
                 raw.bindMemory(to: UInt8.self).baseAddress,
                 UInt64(raw.count),
                 &options,
@@ -400,7 +400,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         do {
             if let defaults = try configuration.styleDefaults(named: sourceFormat.defaultStyleName) {
                 let result = defaults.withUnsafeBytes { raw in
-                    evim_core_initialize_style_defaults(core, currentDocumentState.document_revision,
+                    viem_core_initialize_style_defaults(core, currentDocumentState.document_revision,
                         raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count))
                 }
                 try checked(result, operation: "Load default style")
@@ -411,13 +411,13 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     func saveDefaultStyle() throws -> URL {
         let state = try documentState()
         var required: UInt64 = 0
-        let first = evim_core_export_style_defaults(core, state.document_revision, nil, 0, &required)
+        let first = viem_core_export_style_defaults(core, state.document_revision, nil, 0, &required)
         guard first == Status.ok || first == Status.bufferTooSmall, required <= UInt64(Int.max) else {
             throw EVCoreFrontendError.core(operation: "Read default style", status: first)
         }
         var data = Data(count: Int(required))
         let copied = data.withUnsafeMutableBytes { raw in
-            evim_core_export_style_defaults(core, state.document_revision,
+            viem_core_export_style_defaults(core, state.document_revision,
                 raw.bindMemory(to: UInt8.self).baseAddress, required, &required)
         }
         try checked(copied, operation: "Read default style")
@@ -427,7 +427,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     private func copySourceBytes(expectedRevision: UInt64) throws -> Data {
         var required: UInt64 = 0
-        let query = evim_core_copy_source_bytes(core, expectedRevision, nil, 0, &required)
+        let query = viem_core_copy_source_bytes(core, expectedRevision, nil, 0, &required)
         guard query == Status.ok || query == Status.bufferTooSmall else {
             throw EVCoreFrontendError.core(operation: "Measure document bytes", status: query)
         }
@@ -439,13 +439,13 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         var secondRequired: UInt64 = 0
         let copied = data.withUnsafeMutableBytes { raw in
             let output = raw.bindMemory(to: UInt8.self).baseAddress
-            return evim_core_copy_source_bytes(core, expectedRevision, output, required, &secondRequired)
+            return viem_core_copy_source_bytes(core, expectedRevision, output, required, &secondRequired)
         }
         try checked(copied, operation: "Copy document bytes")
         guard secondRequired == required else {
             throw EVCoreFrontendError.core(
                 operation: "Copy document bytes",
-                status: UInt32(EVIM_STATUS_CORE_FAILURE)
+                status: UInt32(VIEM_STATUS_CORE_FAILURE)
             )
         }
         return data
@@ -460,7 +460,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         else {
             throw EVCoreFrontendError.core(
                 operation: "Read formatted range",
-                status: UInt32(EVIM_STATUS_INVALID_RANGE)
+                status: UInt32(VIEM_STATUS_INVALID_RANGE)
             )
         }
 
@@ -478,13 +478,13 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             formattedAccessCounters.fullRangeReadCalls &+= 1
         }
 
-        var request = EvimFormattedUtf8RangeV1()
-        request.struct_size = UInt32(MemoryLayout<EvimFormattedUtf8RangeV1>.size)
+        var request = ViemFormattedUtf8RangeV1()
+        request.struct_size = UInt32(MemoryLayout<ViemFormattedUtf8RangeV1>.size)
         request.identity = snapshot.info.identity
         request.utf8_start = utf8Range.lowerBound
         request.utf8_end = utf8Range.upperBound
         var required: UInt64 = 0
-        let query = evim_core_copy_formatted_utf8_range(core, &request, nil, 0, &required)
+        let query = viem_core_copy_formatted_utf8_range(core, &request, nil, 0, &required)
         guard query == Status.ok || query == Status.bufferTooSmall else {
             throw EVCoreFrontendError.core(operation: "Measure formatted range", status: query)
         }
@@ -499,7 +499,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         var bytes = Array(repeating: UInt8(0), count: Int(required))
         var copiedRequired: UInt64 = 0
         let copied = bytes.withUnsafeMutableBufferPointer { buffer in
-            evim_core_copy_formatted_utf8_range(
+            viem_core_copy_formatted_utf8_range(
                 core,
                 &request,
                 buffer.baseAddress,
@@ -511,7 +511,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         guard copiedRequired == required else {
             throw EVCoreFrontendError.core(
                 operation: "Copy formatted range",
-                status: UInt32(EVIM_STATUS_CORE_FAILURE)
+                status: UInt32(VIEM_STATUS_CORE_FAILURE)
             )
         }
         return bytes
@@ -537,7 +537,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             output.withUnsafeMutableBufferPointer { outputBuffer in
                 switch direction {
                 case .utf8ToUTF16:
-                    evim_core_map_formatted_utf8_to_utf16(
+                    viem_core_map_formatted_utf8_to_utf16(
                         core,
                         &identity,
                         inputBuffer.baseAddress,
@@ -547,7 +547,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
                         &required
                     )
                 case .utf16ToUTF8:
-                    evim_core_map_formatted_utf16_to_utf8(
+                    viem_core_map_formatted_utf16_to_utf8(
                         core,
                         &identity,
                         inputBuffer.baseAddress,
@@ -563,13 +563,13 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         guard required == UInt64(offsets.count) else {
             throw EVCoreFrontendError.core(
                 operation: operation,
-                status: UInt32(EVIM_STATUS_CORE_FAILURE)
+                status: UInt32(VIEM_STATUS_CORE_FAILURE)
             )
         }
         return output
     }
 
-    private func installDocumentState(_ state: EvimDocumentStateV1) {
+    private func installDocumentState(_ state: ViemDocumentStateV1) {
         let oldPersistence = Self.persistenceState(from: currentDocumentState)
         currentDocumentState = state
         let newPersistence = Self.persistenceState(from: state)
@@ -578,11 +578,11 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         }
     }
 
-    private static func persistenceState(from state: EvimDocumentStateV1) -> EVDocumentPersistenceState {
+    private static func persistenceState(from state: ViemDocumentStateV1) -> EVDocumentPersistenceState {
         EVDocumentPersistenceState(
-            isDirty: state.flags & UInt32(EVIM_DOCUMENT_STATE_IS_DIRTY) != 0,
-            isReadOnly: state.flags & UInt32(EVIM_DOCUMENT_STATE_READ_ONLY) != 0,
-            isRecovered: state.flags & UInt32(EVIM_DOCUMENT_STATE_RECOVERED) != 0,
+            isDirty: state.flags & UInt32(VIEM_DOCUMENT_STATE_IS_DIRTY) != 0,
+            isReadOnly: state.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) != 0,
+            isRecovered: state.flags & UInt32(VIEM_DOCUMENT_STATE_RECOVERED) != 0,
             documentID: state.document_id,
             documentRevision: state.document_revision
         )
@@ -603,13 +603,13 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         }
     }
 
-    private static func sourceFormat(from state: EvimDocumentStateV1) -> EVSourceFormat {
+    private static func sourceFormat(from state: ViemDocumentStateV1) -> EVSourceFormat {
         switch state.format {
-        case UInt32(EVIM_FORMAT_MARKDOWN): .markdown
-        case UInt32(EVIM_FORMAT_MARKDOWN_SOURCE): .markdownSource
-        case UInt32(EVIM_FORMAT_HTML): .html
-        case UInt32(EVIM_FORMAT_HTML_SOURCE): .htmlSource
-        case UInt32(EVIM_FORMAT_RTF): .rtf
+        case UInt32(VIEM_FORMAT_MARKDOWN): .markdown
+        case UInt32(VIEM_FORMAT_MARKDOWN_SOURCE): .markdownSource
+        case UInt32(VIEM_FORMAT_HTML): .html
+        case UInt32(VIEM_FORMAT_HTML_SOURCE): .htmlSource
+        case UInt32(VIEM_FORMAT_RTF): .rtf
         default: .plainText
         }
     }
@@ -617,17 +617,17 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     private static func formatOption(typeName: String) -> UInt32 {
         switch EVDocument.sourceFormat(forTypeName: typeName) {
         case .markdown:
-            UInt32(EVIM_FORMAT_MARKDOWN)
+            UInt32(VIEM_FORMAT_MARKDOWN)
         case .markdownSource:
-            UInt32(EVIM_FORMAT_MARKDOWN_SOURCE)
+            UInt32(VIEM_FORMAT_MARKDOWN_SOURCE)
         case .html:
-            UInt32(EVIM_FORMAT_HTML)
+            UInt32(VIEM_FORMAT_HTML)
         case .htmlSource:
-            UInt32(EVIM_FORMAT_HTML_SOURCE)
+            UInt32(VIEM_FORMAT_HTML_SOURCE)
         case .rtf:
-            UInt32(EVIM_FORMAT_RTF)
+            UInt32(VIEM_FORMAT_RTF)
         case .plainText, nil:
-            UInt32(EVIM_FORMAT_PLAIN_TEXT)
+            UInt32(VIEM_FORMAT_PLAIN_TEXT)
         }
     }
 }
@@ -636,9 +636,9 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 final class EVCoreViewSession {
     unowned let document: EVCoreDocumentBackend
     let provider: CoreTextMeasurementProvider
-    private nonisolated let coreHandle: EvimCoreHandle
-    private(set) var viewID: EvimViewId = 0
-    private(set) var lastOutcome = EvimCoreOutcomeV1()
+    private nonisolated let coreHandle: ViemCoreHandle
+    private(set) var viewID: ViemViewId = 0
+    private(set) var lastOutcome = ViemCoreOutcomeV1()
     private var viewportSize = CGSize(width: 1, height: 1)
     private(set) var hasActiveComposition = false
     weak var commandTurnHost: (any EVCommandTurnHost)?
@@ -654,14 +654,14 @@ final class EVCoreViewSession {
 
     deinit {
         if viewID != 0 {
-            _ = evim_core_view_remove(coreHandle, viewID)
+            _ = viem_core_view_remove(coreHandle, viewID)
         }
         provider.retireResources()
     }
 
     func detach() {
         if viewID != 0 {
-            _ = evim_core_view_remove(document.core, viewID)
+            _ = viem_core_view_remove(document.core, viewID)
             viewID = 0
         }
         publishCompositionState(false)
@@ -670,17 +670,17 @@ final class EVCoreViewSession {
 
     func attach(width: CGFloat, height: CGFloat) throws {
         guard viewID == 0 else { return }
-        var options = EvimViewOptionsV1()
-        options.struct_size = UInt32(MemoryLayout<EvimViewOptionsV1>.size)
-        options.execution_context = UInt32(EVIM_LAYOUT_EXECUTION_FRONTEND_MAIN)
+        var options = ViemViewOptionsV1()
+        options.struct_size = UInt32(MemoryLayout<ViemViewOptionsV1>.size)
+        options.execution_context = UInt32(VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN)
         options.width = Float(max(width, 1))
         options.height = Float(max(height, 1))
         var table = provider.makeProviderTable()
-        var newView: EvimViewId = 0
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        var newView: ViemViewId = 0
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(
-            evim_core_view_add(document.core, &options, &table, &newView, &outcome),
+            viem_core_view_add(document.core, &options, &table, &newView, &outcome),
             operation: "Attach editor view"
         )
         viewID = newView
@@ -688,23 +688,23 @@ final class EVCoreViewSession {
         lastOutcome = outcome
     }
 
-    func refreshState() throws -> EvimCoreOutcomeV1 {
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
-        try checked(evim_core_view_state(document.core, viewID, &outcome), operation: "Read view state")
+    func refreshState() throws -> ViemCoreOutcomeV1 {
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        try checked(viem_core_view_state(document.core, viewID, &outcome), operation: "Read view state")
         lastOutcome = outcome
         return outcome
     }
 
     @discardableResult
-    func sendText(_ text: String) throws -> EvimCoreOutcomeV1 {
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
-        var effectBatch: EvimEffectBatchHandle = 0
+    func sendText(_ text: String) throws -> ViemCoreOutcomeV1 {
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        var effectBatch: ViemEffectBatchHandle = 0
         let data = Data(text.utf8)
         let status = withCommandTurnContext { context in
             data.withUnsafeBytes { raw in
-                evim_core_view_send_text_with_host_context_v2(
+                viem_core_view_send_text_with_host_context_v2(
                     document.core,
                     viewID,
                     raw.bindMemory(to: UInt8.self).baseAddress,
@@ -725,16 +725,16 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func sendKey(kind: UInt32, codepoint: UInt32 = 0) throws -> EvimCoreOutcomeV1 {
-        var input = EvimKeyInputV1()
-        input.struct_size = UInt32(MemoryLayout<EvimKeyInputV1>.size)
+    func sendKey(kind: UInt32, codepoint: UInt32 = 0) throws -> ViemCoreOutcomeV1 {
+        var input = ViemKeyInputV1()
+        input.struct_size = UInt32(MemoryLayout<ViemKeyInputV1>.size)
         input.kind = kind
         input.codepoint = codepoint
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
-        var effectBatch: EvimEffectBatchHandle = 0
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        var effectBatch: ViemEffectBatchHandle = 0
         let status = withCommandTurnContext { context in
-            evim_core_view_send_key_with_host_context_v2(
+            viem_core_view_send_key_with_host_context_v2(
                 document.core,
                 viewID,
                 &input,
@@ -754,8 +754,8 @@ final class EVCoreViewSession {
 
     private func finishHostContextTurn(
         status: UInt32,
-        outcome: EvimCoreOutcomeV1,
-        effectBatch: EvimEffectBatchHandle,
+        outcome: ViemCoreOutcomeV1,
+        effectBatch: ViemEffectBatchHandle,
         operation: String
     ) throws {
         var copiedBatch: EVHostEffectBatch?
@@ -776,64 +776,64 @@ final class EVCoreViewSession {
         if let copiedBatch {
             try commandTurnHost?.applyHostEffectBatch(copiedBatch)
         }
-        if outcome.command_status == UInt32(EVIM_COMMAND_STATUS_READ_ONLY) {
+        if outcome.command_status == UInt32(VIEM_COMMAND_STATUS_READ_ONLY) {
             throw EVCoreFrontendError.command(operation: operation, status: outcome.command_status)
         }
     }
 
-    func lineLocation() throws -> EvimViewLineLocationV1 {
-        var value = EvimViewLineLocationV1(); value.struct_size = UInt32(MemoryLayout<EvimViewLineLocationV1>.size)
-        try checked(evim_core_view_line_location(document.core, viewID, &value), operation: "Read line position")
+    func lineLocation() throws -> ViemViewLineLocationV1 {
+        var value = ViemViewLineLocationV1(); value.struct_size = UInt32(MemoryLayout<ViemViewLineLocationV1>.size)
+        try checked(viem_core_view_line_location(document.core, viewID, &value), operation: "Read line position")
         return value
     }
 
     func paragraphFlow() throws -> Bool {
         var value: UInt32 = 0
-        try checked(evim_core_view_paragraph_flow(document.core, viewID, &value), operation: "Read paragraph flow")
+        try checked(viem_core_view_paragraph_flow(document.core, viewID, &value), operation: "Read paragraph flow")
         return value != 0
     }
 
     func setParagraphFlow(_ enabled: Bool) throws {
-        var outcome = EvimCoreOutcomeV1(); outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
-        try checked(evim_core_view_set_paragraph_flow(document.core, viewID, enabled ? 1 : 0, &outcome), operation: "Change paragraph flow")
+        var outcome = ViemCoreOutcomeV1(); outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        try checked(viem_core_view_set_paragraph_flow(document.core, viewID, enabled ? 1 : 0, &outcome), operation: "Change paragraph flow")
         finish(outcome, composition: .cancelIfChanged)
     }
 
     func lineMode() throws -> EVLineMode {
         var value: UInt32 = 0
-        try checked(evim_core_view_line_mode(document.core, viewID, &value), operation: "Read line mode")
+        try checked(viem_core_view_line_mode(document.core, viewID, &value), operation: "Read line mode")
         return EVLineMode(rawValue: value) ?? .visual
     }
 
     func setLineMode(_ mode: EVLineMode) throws {
-        var outcome = EvimCoreOutcomeV1(); outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
-        try checked(evim_core_view_set_line_mode(document.core, viewID, mode.rawValue, &outcome), operation: "Change line mode")
+        var outcome = ViemCoreOutcomeV1(); outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        try checked(viem_core_view_set_line_mode(document.core, viewID, mode.rawValue, &outcome), operation: "Change line mode")
         finish(outcome, composition: .cancelIfChanged)
     }
 
     func setThemePadding(_ padding: EVThemePadding) throws {
-        try checked(evim_core_view_set_padding(document.core, viewID, Float(padding.top), Float(padding.left), Float(padding.bottom), Float(padding.right)), operation: "Update document padding")
+        try checked(viem_core_view_set_padding(document.core, viewID, Float(padding.top), Float(padding.left), Float(padding.bottom), Float(padding.right)), operation: "Update document padding")
     }
 
     func setSmartQuotes(_ enabled: Bool) throws {
-        try checked(evim_core_view_set_smart_quotes(document.core, viewID, enabled ? 1 : 0), operation: "Update smart quotes")
+        try checked(viem_core_view_set_smart_quotes(document.core, viewID, enabled ? 1 : 0), operation: "Update smart quotes")
     }
 
     func currentFontEnWidth() throws -> CGFloat {
-        var info = EvimTypographyInfoV1()
-        info.struct_size = UInt32(MemoryLayout<EvimTypographyInfoV1>.size)
-        let status = evim_core_view_typography_export(document.core, viewID,
+        var info = ViemTypographyInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemTypographyInfoV1>.size)
+        let status = viem_core_view_typography_export(document.core, viewID,
             try document.revision(), &info, nil, 0, nil, 0)
-        if status != UInt32(EVIM_STATUS_BUFFER_TOO_SMALL) { try checked(status, operation: "Resolve caret font") }
+        if status != UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) { try checked(status, operation: "Resolve caret font") }
         return CGFloat(info.size) / 2
     }
 
     @discardableResult
-    func resize(width: CGFloat, height: CGFloat) throws -> EvimCoreOutcomeV1 {
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+    func resize(width: CGFloat, height: CGFloat) throws -> ViemCoreOutcomeV1 {
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(
-            evim_core_view_resize(document.core, viewID, Float(max(width, 1)), Float(max(height, 1)), &outcome),
+            viem_core_view_resize(document.core, viewID, Float(max(width, 1)), Float(max(height, 1)), &outcome),
             operation: "Resize editor view"
         )
         viewportSize = CGSize(width: max(width, 1), height: max(height, 1))
@@ -843,17 +843,17 @@ final class EVCoreViewSession {
 
     func adjacentZoomScale(from scale: Float, increasing: Bool) throws -> Float {
         var result: Float = 0
-        try checked(evim_core_adjacent_zoom_scale(scale, increasing ? 1 : 0, &result),
+        try checked(viem_core_adjacent_zoom_scale(scale, increasing ? 1 : 0, &result),
                     operation: "Choose adjacent zoom")
         return result
     }
 
     @discardableResult
-    func setScale(_ scale: CGFloat) throws -> EvimCoreOutcomeV1 {
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+    func setScale(_ scale: CGFloat) throws -> ViemCoreOutcomeV1 {
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(
-            evim_core_view_set_scale(document.core, viewID, Float(scale), &outcome),
+            viem_core_view_set_scale(document.core, viewID, Float(scale), &outcome),
             operation: "Change editor zoom"
         )
         finish(outcome, composition: .cancelIfChanged)
@@ -862,11 +862,11 @@ final class EVCoreViewSession {
 
     func semanticStylePresentation(
         _ style: UInt32
-    ) throws -> EvimSemanticStylePresentationV1 {
-        var value = EvimSemanticStylePresentationV1()
-        value.struct_size = UInt32(MemoryLayout<EvimSemanticStylePresentationV1>.size)
+    ) throws -> ViemSemanticStylePresentationV1 {
+        var value = ViemSemanticStylePresentationV1()
+        value.struct_size = UInt32(MemoryLayout<ViemSemanticStylePresentationV1>.size)
         try checked(
-            evim_core_view_semantic_style_presentation(
+            viem_core_view_semantic_style_presentation(
                 document.core,
                 viewID,
                 style,
@@ -881,18 +881,18 @@ final class EVCoreViewSession {
     func setSemanticStyle(
         _ style: UInt32,
         enabled: Bool,
-        expected selection: EvimLogicalSelectionIdentityV1
-    ) throws -> EvimCoreOutcomeV1 {
-        var request = EvimSetSemanticStyleV1()
-        request.struct_size = UInt32(MemoryLayout<EvimSetSemanticStyleV1>.size)
+        expected selection: ViemLogicalSelectionIdentityV1
+    ) throws -> ViemCoreOutcomeV1 {
+        var request = ViemSetSemanticStyleV1()
+        request.struct_size = UInt32(MemoryLayout<ViemSetSemanticStyleV1>.size)
         request.style = style
         request.enabled = enabled ? 1 : 0
         request.reserved = 0
         request.expected_selection = selection
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(
-            evim_core_view_set_semantic_style(
+            viem_core_view_set_semantic_style(
                 document.core,
                 viewID,
                 &request,
@@ -906,13 +906,13 @@ final class EVCoreViewSession {
 
     @discardableResult
     func useSelectionForFind(
-        _ selection: EvimVisualSelectionIdentityV1
-    ) throws -> EvimCoreOutcomeV1 {
+        _ selection: ViemVisualSelectionIdentityV1
+    ) throws -> ViemCoreOutcomeV1 {
         var expected = selection
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(
-            evim_core_view_use_selection_for_find(
+            viem_core_view_use_selection_for_find(
                 document.core,
                 viewID,
                 &expected,
@@ -925,11 +925,11 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func revealSelection() throws -> EvimCoreOutcomeV1 {
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+    func revealSelection() throws -> ViemCoreOutcomeV1 {
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(
-            evim_core_view_reveal_selection(document.core, viewID, &outcome),
+            viem_core_view_reveal_selection(document.core, viewID, &outcome),
             operation: "Jump to selection"
         )
         finish(outcome, composition: .cancelIfChanged)
@@ -937,11 +937,11 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func setWrap(_ enabled: Bool) throws -> EvimCoreOutcomeV1 {
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+    func setWrap(_ enabled: Bool) throws -> ViemCoreOutcomeV1 {
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(
-            evim_core_view_set_wrap(document.core, viewID, enabled ? 1 : 0, &outcome),
+            viem_core_view_set_wrap(document.core, viewID, enabled ? 1 : 0, &outcome),
             operation: "Change wrapping"
         )
         finish(outcome, composition: .cancelIfChanged)
@@ -951,17 +951,17 @@ final class EVCoreViewSession {
     @discardableResult
     func setFileFormat(
         _ fileFormat: UInt32,
-        expected state: EvimDocumentStateV1
-    ) throws -> EvimCoreOutcomeV1 {
-        var request = EvimSetFileFormatV1()
-        request.struct_size = UInt32(MemoryLayout<EvimSetFileFormatV1>.size)
+        expected state: ViemDocumentStateV1
+    ) throws -> ViemCoreOutcomeV1 {
+        var request = ViemSetFileFormatV1()
+        request.struct_size = UInt32(MemoryLayout<ViemSetFileFormatV1>.size)
         request.file_format = fileFormat
         request.document_id = state.document_id
         request.document_revision = state.document_revision
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(
-            evim_core_view_set_file_format(document.core, viewID, &request, &outcome),
+            viem_core_view_set_file_format(document.core, viewID, &request, &outcome),
             operation: "Change line endings"
         )
         finish(outcome, composition: .cancelIfChanged)
@@ -971,73 +971,73 @@ final class EVCoreViewSession {
     @discardableResult
     func setIncludeStyleDefinitionsInFile(
         _ enabled: Bool,
-        expected state: EvimDocumentStateV1
-    ) throws -> EvimCoreOutcomeV1 {
-        var request = EvimSetIncludeStyleDefinitionsV1()
-        request.struct_size = UInt32(MemoryLayout<EvimSetIncludeStyleDefinitionsV1>.size)
+        expected state: ViemDocumentStateV1
+    ) throws -> ViemCoreOutcomeV1 {
+        var request = ViemSetIncludeStyleDefinitionsV1()
+        request.struct_size = UInt32(MemoryLayout<ViemSetIncludeStyleDefinitionsV1>.size)
         request.enabled = enabled ? 1 : 0
         request.document_id = state.document_id
         request.document_revision = state.document_revision
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(
-            evim_core_view_set_include_style_definitions(document.core, viewID, &request, &outcome),
+            viem_core_view_set_include_style_definitions(document.core, viewID, &request, &outcome),
             operation: "Change inclusion of style definitions"
         )
         finish(outcome, composition: .cancelIfChanged)
         return outcome
     }
 
-    func listSelection() throws -> EvimLogicalSelectionIdentityV1 {
-        var selection = EvimLogicalSelectionIdentityV1()
-        selection.struct_size = UInt32(MemoryLayout<EvimLogicalSelectionIdentityV1>.size)
-        try checked(evim_core_view_list_selection(document.core, viewID, &selection), operation: "Read list selection")
+    func listSelection() throws -> ViemLogicalSelectionIdentityV1 {
+        var selection = ViemLogicalSelectionIdentityV1()
+        selection.struct_size = UInt32(MemoryLayout<ViemLogicalSelectionIdentityV1>.size)
+        try checked(viem_core_view_list_selection(document.core, viewID, &selection), operation: "Read list selection")
         return selection
     }
 
-    func listIndentCapabilities(expected selection: EvimLogicalSelectionIdentityV1) throws -> UInt32 {
+    func listIndentCapabilities(expected selection: ViemLogicalSelectionIdentityV1) throws -> UInt32 {
         var selection = selection
         var flags: UInt32 = 0
-        try checked(evim_core_view_list_indent_capabilities(document.core, viewID, &selection, &flags),
+        try checked(viem_core_view_list_indent_capabilities(document.core, viewID, &selection, &flags),
                     operation: "Read list indentation capabilities")
         return flags
     }
 
     @discardableResult
-    func indentList(unindent: Bool, expected selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
-        var request = EvimListIndentV1()
-        request.struct_size = UInt32(MemoryLayout<EvimListIndentV1>.size)
+    func indentList(unindent: Bool, expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
+        var request = ViemListIndentV1()
+        request.struct_size = UInt32(MemoryLayout<ViemListIndentV1>.size)
         request.unindent = unindent ? 1 : 0
         request.expected_selection = selection
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
-        try checked(evim_core_view_indent_list(document.core, viewID, &request, &outcome),
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        try checked(viem_core_view_indent_list(document.core, viewID, &request, &outcome),
                     operation: unindent ? "Unindent list item" : "Indent list item")
         finish(outcome, composition: .cancelIfChanged)
         return outcome
     }
 
     @discardableResult
-    func setListStyle(_ style: UInt32, expected selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
-        var request = EvimSetListStyleV1()
-        request.struct_size = UInt32(MemoryLayout<EvimSetListStyleV1>.size)
+    func setListStyle(_ style: UInt32, expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
+        var request = ViemSetListStyleV1()
+        request.struct_size = UInt32(MemoryLayout<ViemSetListStyleV1>.size)
         request.style = style
         request.expected_selection = selection
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
-        try checked(evim_core_view_set_list_style(document.core, viewID, &request, &outcome), operation: "Change paragraph list")
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        try checked(viem_core_view_set_list_style(document.core, viewID, &request, &outcome), operation: "Change paragraph list")
         finish(outcome, composition: .cancelIfChanged)
         return outcome
     }
 
     @discardableResult
-    func createStyle(_ key: EVStyleKey, name: String, identity: EVStyleSheetIdentity) throws -> EvimCoreOutcomeV1 {
-        var request = EvimCreateStyleV1()
-        request.struct_size = UInt32(MemoryLayout<EvimCreateStyleV1>.size)
+    func createStyle(_ key: EVStyleKey, name: String, identity: EVStyleSheetIdentity) throws -> ViemCoreOutcomeV1 {
+        var request = ViemCreateStyleV1()
+        request.struct_size = UInt32(MemoryLayout<ViemCreateStyleV1>.size)
         request.namespace = key.namespace.rawValue
         request.identity = identity.abiValue
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         let idBytes = Array(key.id.rawValue.utf8)
         let nameBytes = Array(name.utf8)
         let status = idBytes.withUnsafeBufferPointer { id in
@@ -1046,7 +1046,7 @@ final class EVCoreViewSession {
                 request.style_id.length = UInt64(id.count)
                 request.display_name.data = name.baseAddress
                 request.display_name.length = UInt64(name.count)
-                return evim_core_view_create_style(document.core, viewID, &request, &outcome)
+                return viem_core_view_create_style(document.core, viewID, &request, &outcome)
             }
         }
         try checked(status, operation: "Create named style")
@@ -1055,18 +1055,18 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func deleteStyle(_ key: EVStyleKey, identity: EVStyleSheetIdentity) throws -> EvimCoreOutcomeV1 {
-        var request = EvimDeleteStyleV1()
-        request.struct_size = UInt32(MemoryLayout<EvimDeleteStyleV1>.size)
+    func deleteStyle(_ key: EVStyleKey, identity: EVStyleSheetIdentity) throws -> ViemCoreOutcomeV1 {
+        var request = ViemDeleteStyleV1()
+        request.struct_size = UInt32(MemoryLayout<ViemDeleteStyleV1>.size)
         request.namespace = key.namespace.rawValue
         request.identity = identity.abiValue
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         let bytes = Array(key.id.rawValue.utf8)
         let status = bytes.withUnsafeBufferPointer { buffer in
             request.style_id.data = buffer.baseAddress
             request.style_id.length = UInt64(buffer.count)
-            return evim_core_view_delete_style(document.core, viewID, &request, &outcome)
+            return viem_core_view_delete_style(document.core, viewID, &request, &outcome)
         }
         try checked(status, operation: "Delete named style")
         finish(outcome, composition: .cancelIfChanged)
@@ -1075,19 +1075,19 @@ final class EVCoreViewSession {
 
     @discardableResult
     func assignStyle(_ key: EVStyleKey, identity: EVStyleSheetIdentity,
-                     expected selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
-        var request = EvimAssignStyleV1()
-        request.struct_size = UInt32(MemoryLayout<EvimAssignStyleV1>.size)
+                     expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
+        var request = ViemAssignStyleV1()
+        request.struct_size = UInt32(MemoryLayout<ViemAssignStyleV1>.size)
         request.namespace = key.namespace.rawValue
         request.identity = identity.abiValue
         request.expected_selection = selection
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         let bytes = Array(key.id.rawValue.utf8)
         let status = bytes.withUnsafeBufferPointer { buffer in
             request.style_id.data = buffer.baseAddress
             request.style_id.length = UInt64(buffer.count)
-            return evim_core_view_assign_style(document.core, viewID, &request, &outcome)
+            return viem_core_view_assign_style(document.core, viewID, &request, &outcome)
         }
         try checked(status, operation: "Assign named style")
         finish(outcome, composition: .cancelIfChanged)
@@ -1095,61 +1095,61 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func setParagraphStyle(level: UInt32, expected selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
-        var request = EvimSetParagraphStyleV1()
-        request.struct_size = UInt32(MemoryLayout<EvimSetParagraphStyleV1>.size)
+    func setParagraphStyle(level: UInt32, expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
+        var request = ViemSetParagraphStyleV1()
+        request.struct_size = UInt32(MemoryLayout<ViemSetParagraphStyleV1>.size)
         request.level = level
         request.expected_selection = selection
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
-        try checked(evim_core_view_set_paragraph_style(document.core, viewID, &request, &outcome), operation: "Change paragraph style")
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        try checked(viem_core_view_set_paragraph_style(document.core, viewID, &request, &outcome), operation: "Change paragraph style")
         finish(outcome, composition: .cancelIfChanged)
         return outcome
     }
 
     @discardableResult
-    func setFormat(_ format: EVSourceFormat, expected state: EvimDocumentStateV1) throws -> EvimCoreOutcomeV1 {
-        var request = EvimSetFormatV1()
-        request.struct_size = UInt32(MemoryLayout<EvimSetFormatV1>.size)
+    func setFormat(_ format: EVSourceFormat, expected state: ViemDocumentStateV1) throws -> ViemCoreOutcomeV1 {
+        var request = ViemSetFormatV1()
+        request.struct_size = UInt32(MemoryLayout<ViemSetFormatV1>.size)
         request.format = switch format {
-        case .plainText: UInt32(EVIM_FORMAT_PLAIN_TEXT)
-        case .markdown: UInt32(EVIM_FORMAT_MARKDOWN)
-        case .markdownSource: UInt32(EVIM_FORMAT_MARKDOWN_SOURCE)
-        case .html: UInt32(EVIM_FORMAT_HTML)
-        case .htmlSource: UInt32(EVIM_FORMAT_HTML_SOURCE)
-        case .rtf: UInt32(EVIM_FORMAT_RTF)
+        case .plainText: UInt32(VIEM_FORMAT_PLAIN_TEXT)
+        case .markdown: UInt32(VIEM_FORMAT_MARKDOWN)
+        case .markdownSource: UInt32(VIEM_FORMAT_MARKDOWN_SOURCE)
+        case .html: UInt32(VIEM_FORMAT_HTML)
+        case .htmlSource: UInt32(VIEM_FORMAT_HTML_SOURCE)
+        case .rtf: UInt32(VIEM_FORMAT_RTF)
         }
         request.document_id = state.document_id
         request.document_revision = state.document_revision
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
-        var effects: EvimEffectBatchHandle = 0
-        let status = evim_core_view_set_format_with_effects(document.core, viewID, &request, &outcome, &effects)
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        var effects: ViemEffectBatchHandle = 0
+        let status = viem_core_view_set_format_with_effects(document.core, viewID, &request, &outcome, &effects)
         try finishHostContextTurn(status: status, outcome: outcome, effectBatch: effects, operation: "Change document format")
         return outcome
     }
 
     @discardableResult
-    func setEncoding(_ encoding: UInt32, expected state: EvimDocumentStateV1) throws -> EvimCoreOutcomeV1 {
-        var request = EvimSetEncodingV1()
-        request.struct_size = UInt32(MemoryLayout<EvimSetEncodingV1>.size)
+    func setEncoding(_ encoding: UInt32, expected state: ViemDocumentStateV1) throws -> ViemCoreOutcomeV1 {
+        var request = ViemSetEncodingV1()
+        request.struct_size = UInt32(MemoryLayout<ViemSetEncodingV1>.size)
         request.encoding = encoding
         request.document_id = state.document_id
         request.document_revision = state.document_revision
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
-        var effects: EvimEffectBatchHandle = 0
-        let status = evim_core_view_set_encoding_with_effects(document.core, viewID, &request, &outcome, &effects)
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        var effects: ViemEffectBatchHandle = 0
+        let status = viem_core_view_set_encoding_with_effects(document.core, viewID, &request, &outcome, &effects)
         try finishHostContextTurn(status: status, outcome: outcome, effectBatch: effects, operation: "Change document encoding")
         return outcome
     }
 
     @discardableResult
-    func undo() throws -> EvimCoreOutcomeV1 {
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+    func undo() throws -> ViemCoreOutcomeV1 {
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(
-            evim_core_view_undo(document.core, viewID, &outcome),
+            viem_core_view_undo(document.core, viewID, &outcome),
             operation: "Undo"
         )
         finish(outcome, composition: .cancelIfChanged)
@@ -1157,11 +1157,11 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func redo() throws -> EvimCoreOutcomeV1 {
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+    func redo() throws -> ViemCoreOutcomeV1 {
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(
-            evim_core_view_redo(document.core, viewID, &outcome),
+            viem_core_view_redo(document.core, viewID, &outcome),
             operation: "Redo"
         )
         finish(outcome, composition: .cancelIfChanged)
@@ -1172,11 +1172,11 @@ final class EVCoreViewSession {
     func setViewportOrigin(
         left: CGFloat,
         top: CGFloat? = nil,
-        expected state: EvimViewportStateV1? = nil
-    ) throws -> EvimCoreOutcomeV1 {
-        var request = EvimViewportOriginV1()
-        request.struct_size = UInt32(MemoryLayout<EvimViewportOriginV1>.size)
-        request.flags = top == nil ? 0 : UInt32(EVIM_VIEWPORT_ORIGIN_HAS_TOP)
+        expected state: ViemViewportStateV1? = nil
+    ) throws -> ViemCoreOutcomeV1 {
+        var request = ViemViewportOriginV1()
+        request.struct_size = UInt32(MemoryLayout<ViemViewportOriginV1>.size)
+        request.flags = top == nil ? 0 : UInt32(VIEM_VIEWPORT_ORIGIN_HAS_TOP)
         request.left = Float(max(left, 0))
         request.top = Float(max(top ?? 0, 0))
         if let state {
@@ -1188,40 +1188,40 @@ final class EVCoreViewSession {
             request.expected_metrics_generation = state.metrics_generation
         }
 
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(
-            evim_core_view_set_viewport_origin(document.core, viewID, &request, &outcome),
+            viem_core_view_set_viewport_origin(document.core, viewID, &request, &outcome),
             operation: top == nil ? "Scroll editor horizontally" : "Scroll editor vertically"
         )
         finish(outcome, composition: .cancelIfChanged)
         return outcome
     }
 
-    func viewportState() throws -> EvimViewportStateV1 {
-        var state = EvimViewportStateV1()
-        state.struct_size = UInt32(MemoryLayout<EvimViewportStateV1>.size)
+    func viewportState() throws -> ViemViewportStateV1 {
+        var state = ViemViewportStateV1()
+        state.struct_size = UInt32(MemoryLayout<ViemViewportStateV1>.size)
         try checked(
-            evim_core_view_viewport_state(document.core, viewID, &state),
+            viem_core_view_viewport_state(document.core, viewID, &state),
             operation: "Read viewport state"
         )
         return state
     }
 
-    func presentation() throws -> EvimViewPresentationV1 {
-        var value = EvimViewPresentationV1()
-        value.struct_size = UInt32(MemoryLayout<EvimViewPresentationV1>.size)
+    func presentation() throws -> ViemViewPresentationV1 {
+        var value = ViemViewPresentationV1()
+        value.struct_size = UInt32(MemoryLayout<ViemViewPresentationV1>.size)
         try checked(
-            evim_core_view_presentation(document.core, viewID, &value),
+            viem_core_view_presentation(document.core, viewID, &value),
             operation: "Read view presentation"
         )
         return value
     }
 
     func layoutExport() throws -> EVLayoutExport {
-        var info = EvimLayoutSnapshotInfoV1()
-        info.struct_size = UInt32(MemoryLayout<EvimLayoutSnapshotInfoV1>.size)
-        let status = evim_core_view_layout_snapshot_info(document.core, viewID, &info)
+        var info = ViemLayoutSnapshotInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotInfoV1>.size)
+        let status = viem_core_view_layout_snapshot_info(document.core, viewID, &info)
         if status == Status.layoutUnavailable { throw EVCoreFrontendError.unavailableLayout }
         try checked(status, operation: "Read layout snapshot")
         guard info.row_count <= UInt64(Int.max),
@@ -1231,16 +1231,16 @@ final class EVCoreViewSession {
             throw EVCoreFrontendError.core(operation: "Read layout snapshot", status: Status.lengthOverflow)
         }
 
-        var rows = Array(repeating: EvimVisualRowV1(), count: Int(info.row_count))
-        var clusters = Array(repeating: EvimPositionedClusterV1(), count: Int(info.cluster_count))
-        var carets = Array(repeating: EvimPositionedCaretV1(), count: Int(info.caret_count))
-        var copiedInfo = EvimLayoutSnapshotInfoV1()
-        copiedInfo.struct_size = UInt32(MemoryLayout<EvimLayoutSnapshotInfoV1>.size)
+        var rows = Array(repeating: ViemVisualRowV1(), count: Int(info.row_count))
+        var clusters = Array(repeating: ViemPositionedClusterV1(), count: Int(info.cluster_count))
+        var carets = Array(repeating: ViemPositionedCaretV1(), count: Int(info.caret_count))
+        var copiedInfo = ViemLayoutSnapshotInfoV1()
+        copiedInfo.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotInfoV1>.size)
         var identity = info.identity
         let copied = rows.withUnsafeMutableBufferPointer { rowBuffer in
             clusters.withUnsafeMutableBufferPointer { clusterBuffer in
                 carets.withUnsafeMutableBufferPointer { caretBuffer in
-                    evim_core_view_copy_layout_snapshot(
+                    viem_core_view_copy_layout_snapshot(
                         document.core,
                         viewID,
                         &identity,
@@ -1265,9 +1265,9 @@ final class EVCoreViewSession {
     /// Refresh through an explicit core presentation event before requesting
     /// a new identity; never reuse an old hit-test identity or replay an edit.
     func refreshLayoutIfNeeded() throws {
-        var info = EvimLayoutSnapshotInfoV1()
-        info.struct_size = UInt32(MemoryLayout<EvimLayoutSnapshotInfoV1>.size)
-        let status = evim_core_view_layout_snapshot_info(document.core, viewID, &info)
+        var info = ViemLayoutSnapshotInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotInfoV1>.size)
+        let status = viem_core_view_layout_snapshot_info(document.core, viewID, &info)
         guard status == Status.layoutUnavailable else {
             try checked(status, operation: "Validate editor layout")
             return
@@ -1275,33 +1275,33 @@ final class EVCoreViewSession {
         _ = try resize(width: viewportSize.width, height: viewportSize.height)
     }
 
-    func hitTest(_ point: CGPoint, in snapshot: EvimLayoutSnapshotInfoV1) throws -> EvimLayoutCaretPointV1 {
-        var request = EvimLayoutHitTestRequestV1()
-        request.struct_size = UInt32(MemoryLayout<EvimLayoutHitTestRequestV1>.size)
+    func hitTest(_ point: CGPoint, in snapshot: ViemLayoutSnapshotInfoV1) throws -> ViemLayoutCaretPointV1 {
+        var request = ViemLayoutHitTestRequestV1()
+        request.struct_size = UInt32(MemoryLayout<ViemLayoutHitTestRequestV1>.size)
         request.identity = snapshot.identity
         request.x = Float(point.x)
         request.y = Float(point.y)
-        var result = EvimLayoutCaretPointV1()
-        result.struct_size = UInt32(MemoryLayout<EvimLayoutCaretPointV1>.size)
+        var result = ViemLayoutCaretPointV1()
+        result.struct_size = UInt32(MemoryLayout<ViemLayoutCaretPointV1>.size)
         try checked(
-            evim_core_view_layout_hit_test(document.core, viewID, &request, &result),
+            viem_core_view_layout_hit_test(document.core, viewID, &request, &result),
             operation: "Hit-test editor"
         )
         return result
     }
 
     @discardableResult
-    func placeCursor(_ point: EvimLayoutCaretPointV1, extendSelection: Bool) throws -> EvimCoreOutcomeV1 {
-        var request = EvimPlaceCursorV1()
-        request.struct_size = UInt32(MemoryLayout<EvimPlaceCursorV1>.size)
-        request.flags = extendSelection ? UInt32(EVIM_PLACE_CURSOR_EXTEND_SELECTION) : 0
+    func placeCursor(_ point: ViemLayoutCaretPointV1, extendSelection: Bool) throws -> ViemCoreOutcomeV1 {
+        var request = ViemPlaceCursorV1()
+        request.struct_size = UInt32(MemoryLayout<ViemPlaceCursorV1>.size)
+        request.flags = extendSelection ? UInt32(VIEM_PLACE_CURSOR_EXTEND_SELECTION) : 0
         request.document_revision = point.document_revision
         request.text_offset = point.text_offset
         request.affinity = point.affinity
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(
-            evim_core_view_place_cursor(document.core, viewID, &request, &outcome),
+            viem_core_view_place_cursor(document.core, viewID, &request, &outcome),
             operation: "Place editor cursor"
         )
         finish(outcome, composition: .cancelIfChanged)
@@ -1311,38 +1311,38 @@ final class EVCoreViewSession {
     func caretGeometry(
         offset: UInt64,
         affinity: UInt32,
-        in snapshot: EvimLayoutSnapshotInfoV1
-    ) throws -> EvimLayoutCaretGeometryV1 {
-        var request = EvimLayoutCaretRequestV1()
-        request.struct_size = UInt32(MemoryLayout<EvimLayoutCaretRequestV1>.size)
+        in snapshot: ViemLayoutSnapshotInfoV1
+    ) throws -> ViemLayoutCaretGeometryV1 {
+        var request = ViemLayoutCaretRequestV1()
+        request.struct_size = UInt32(MemoryLayout<ViemLayoutCaretRequestV1>.size)
         request.affinity = affinity
         request.identity = snapshot.identity
         request.text_offset = offset
-        var geometry = EvimLayoutCaretGeometryV1()
-        geometry.struct_size = UInt32(MemoryLayout<EvimLayoutCaretGeometryV1>.size)
+        var geometry = ViemLayoutCaretGeometryV1()
+        geometry.struct_size = UInt32(MemoryLayout<ViemLayoutCaretGeometryV1>.size)
         try checked(
-            evim_core_view_caret_geometry(document.core, viewID, &request, &geometry),
+            viem_core_view_caret_geometry(document.core, viewID, &request, &geometry),
             operation: "Read caret geometry"
         )
         return geometry
     }
 
     @discardableResult
-    func beginComposition(replacing range: Range<UInt64>) throws -> EvimCoreOutcomeV1 {
-        var request = EvimCompositionBeginV1()
-        request.struct_size = UInt32(MemoryLayout<EvimCompositionBeginV1>.size)
+    func beginComposition(replacing range: Range<UInt64>) throws -> ViemCoreOutcomeV1 {
+        var request = ViemCompositionBeginV1()
+        request.struct_size = UInt32(MemoryLayout<ViemCompositionBeginV1>.size)
         request.document_revision = try document.revision()
         request.replacement_start = range.lowerBound
         request.replacement_end = range.upperBound
         return try compositionCall("Begin marked text", transition: .activate) { outcome in
-            evim_core_view_composition_begin(document.core, viewID, &request, outcome)
+            viem_core_view_composition_begin(document.core, viewID, &request, outcome)
         }
     }
 
     @discardableResult
-    func updateComposition(_ text: String, selected: Range<UInt64>) throws -> EvimCoreOutcomeV1 {
-        var request = EvimCompositionUpdateV1()
-        request.struct_size = UInt32(MemoryLayout<EvimCompositionUpdateV1>.size)
+    func updateComposition(_ text: String, selected: Range<UInt64>) throws -> ViemCoreOutcomeV1 {
+        var request = ViemCompositionUpdateV1()
+        request.struct_size = UInt32(MemoryLayout<ViemCompositionUpdateV1>.size)
         request.document_revision = try document.revision()
         request.selected_start = selected.lowerBound
         request.selected_end = selected.upperBound
@@ -1351,43 +1351,43 @@ final class EVCoreViewSession {
             request.marked_text.data = raw.bindMemory(to: UInt8.self).baseAddress
             request.marked_text.length = UInt64(raw.count)
             return try compositionCall("Update marked text", transition: .activate) { outcome in
-                evim_core_view_composition_update(document.core, viewID, &request, outcome)
+                viem_core_view_composition_update(document.core, viewID, &request, outcome)
             }
         }
     }
 
     @discardableResult
-    func commitComposition(_ text: String) throws -> EvimCoreOutcomeV1 {
-        var request = EvimCompositionCommitV1()
-        request.struct_size = UInt32(MemoryLayout<EvimCompositionCommitV1>.size)
+    func commitComposition(_ text: String) throws -> ViemCoreOutcomeV1 {
+        var request = ViemCompositionCommitV1()
+        request.struct_size = UInt32(MemoryLayout<ViemCompositionCommitV1>.size)
         request.document_revision = try document.revision()
         let data = Data(text.utf8)
         return try data.withUnsafeBytes { raw in
             request.committed_text.data = raw.bindMemory(to: UInt8.self).baseAddress
             request.committed_text.length = UInt64(raw.count)
             return try compositionCall("Commit marked text", transition: .deactivate) { outcome in
-                evim_core_view_composition_commit(document.core, viewID, &request, outcome)
+                viem_core_view_composition_commit(document.core, viewID, &request, outcome)
             }
         }
     }
 
     @discardableResult
-    func cancelComposition() throws -> EvimCoreOutcomeV1 {
-        var request = EvimCompositionCancelV1()
-        request.struct_size = UInt32(MemoryLayout<EvimCompositionCancelV1>.size)
+    func cancelComposition() throws -> ViemCoreOutcomeV1 {
+        var request = ViemCompositionCancelV1()
+        request.struct_size = UInt32(MemoryLayout<ViemCompositionCancelV1>.size)
         request.document_revision = try document.revision()
         return try compositionCall("Cancel marked text", transition: .deactivate) { outcome in
-            evim_core_view_composition_cancel(document.core, viewID, &request, outcome)
+            viem_core_view_composition_cancel(document.core, viewID, &request, outcome)
         }
     }
 
     private func compositionCall(
         _ operation: String,
         transition: CompositionTransition,
-        _ body: (UnsafeMutablePointer<EvimCoreOutcomeV1>) -> UInt32
-    ) throws -> EvimCoreOutcomeV1 {
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        _ body: (UnsafeMutablePointer<ViemCoreOutcomeV1>) -> UInt32
+    ) throws -> ViemCoreOutcomeV1 {
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(body(&outcome), operation: operation)
         finish(outcome, composition: transition)
         return outcome
@@ -1397,12 +1397,12 @@ final class EVCoreViewSession {
         publishCompositionState(false)
     }
 
-    func finishStyleEdit(_ outcome: EvimCoreOutcomeV1) {
+    func finishStyleEdit(_ outcome: ViemCoreOutcomeV1) {
         finish(outcome)
     }
 
     private func finish(
-        _ outcome: EvimCoreOutcomeV1,
+        _ outcome: ViemCoreOutcomeV1,
         composition transition: CompositionTransition = .cancelIfChanged
     ) {
         lastOutcome = outcome
@@ -1412,11 +1412,11 @@ final class EVCoreViewSession {
         case .deactivate:
             publishCompositionState(false)
         case .cancelIfChanged:
-            if outcome.flags & UInt32(EVIM_OUTCOME_HAS_COMPOSITION_CHANGES) != 0 {
+            if outcome.flags & UInt32(VIEM_OUTCOME_HAS_COMPOSITION_CHANGES) != 0 {
                 publishCompositionState(false)
             }
         }
-        if outcome.flags & UInt32(EVIM_OUTCOME_DOCUMENT_CHANGED) != 0 {
+        if outcome.flags & UInt32(VIEM_OUTCOME_DOCUMENT_CHANGED) != 0 {
             document.noteSourceChange(originatingViewID: viewID)
         }
     }

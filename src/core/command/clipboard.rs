@@ -47,7 +47,7 @@ pub struct ClipboardGeneration(pub u64);
 
 /// Cross-boundary clipboard contents.
 ///
-/// Plain text is required.  `portable_register` is an optional richer eVim
+/// Plain text is required.  `portable_register` is an optional richer Viem
 /// representation preserving character/line/block shape and semantic hard
 /// breaks.  Future rich styles can extend this record without weakening the
 /// plain-text contract.

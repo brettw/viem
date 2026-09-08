@@ -1,7 +1,7 @@
 //! Independent flat-string oracle for plain text, physical encodings, and history.
 //! None of the expected text, source bytes, or line boundaries use core helpers.
 use crate::support::{Recorder, Rng, RunStats};
-use evim_core::document::{
+use viem_core::document::{
     Document, Encoding, FileFormat, Format, HistoryRetentionPolicy, TextEdit,
 };
 use serde::{Deserialize, Serialize};

@@ -1287,7 +1287,7 @@ impl LogicalGraphemeSnapshot for FormattedDocument {
 
 impl FormattedDocument {
     pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
-        let trace = std::env::var_os("EVIM_HISTORY_MEMORY_BREAKDOWN").is_some();
+        let trace = std::env::var_os("VIEM_HISTORY_MEMORY_BREAKDOWN").is_some();
         let mut before = visitor.retained_bytes();
         self.text.visit_retained_memory(visitor);
         if trace { eprintln!("  text {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }

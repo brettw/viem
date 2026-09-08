@@ -38,7 +38,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
 
     public func buildMainMenu(for application: NSApplication) -> NSMenu {
         let mainMenu = NSMenu(title: "Main Menu")
-        mainMenu.addItem(topLevelItem("eVim", submenu: makeApplicationMenu(for: application)))
+        mainMenu.addItem(topLevelItem("Viem", submenu: makeApplicationMenu(for: application)))
         mainMenu.addItem(topLevelItem("File", submenu: makeFileMenu()))
         mainMenu.addItem(topLevelItem("Edit", submenu: makeEditMenu()))
         mainMenu.addItem(topLevelItem("Format", submenu: makeFormatMenu()))
@@ -111,9 +111,9 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     }
 
     private func makeApplicationMenu(for application: NSApplication) -> NSMenu {
-        let menu = NSMenu(title: "eVim")
+        let menu = NSMenu(title: "Viem")
         menu.addItem(responderItem(
-            "About eVim",
+            "About Viem",
             action: #selector(NSApplication.orderFrontStandardAboutPanel(_:))
         ))
         menu.addItem(applicationItem(
@@ -130,7 +130,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         application.servicesMenu = services
 
         menu.addItem(.separator())
-        menu.addItem(responderItem("Hide eVim", action: #selector(NSApplication.hide(_:)), key: "h"))
+        menu.addItem(responderItem("Hide Viem", action: #selector(NSApplication.hide(_:)), key: "h"))
         menu.addItem(responderItem(
             "Hide Others",
             action: #selector(NSApplication.hideOtherApplications(_:)),
@@ -139,7 +139,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         ))
         menu.addItem(responderItem("Show All", action: #selector(NSApplication.unhideAllApplications(_:))))
         menu.addItem(.separator())
-        menu.addItem(responderItem("Quit eVim", action: #selector(NSApplication.terminate(_:)), key: "q"))
+        menu.addItem(responderItem("Quit Viem", action: #selector(NSApplication.terminate(_:)), key: "q"))
         return menu
     }
 
@@ -440,7 +440,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         let menu = NSMenu(title: "Help")
         menu.addItem(.separator())
         for title in [
-            "eVim Help",
+            "Viem Help",
             "Vim Command Reference",
             "Keyboard Shortcuts",
             "Supported Vim Commands",

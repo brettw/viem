@@ -1,15 +1,15 @@
-//! Black-box acceptance tests for the portable eVim core.
+//! Black-box acceptance tests for the portable Viem core.
 //!
 //! These tests intentionally use only public APIs. They exercise the seams
 //! between source preservation, projections, command interpretation, history,
 //! and frontend-supplied text measurement.
 
-use evim_core::command::{CommandStatus, InputEvent, Key, Mode, RegisterKind};
-use evim_core::document::{BlockKind, DocumentError, SemanticInlineStyle, StyleApplication};
-use evim_core::layout::{
+use viem_core::command::{CommandStatus, InputEvent, Key, Mode, RegisterKind};
+use viem_core::document::{BlockKind, DocumentError, SemanticInlineStyle, StyleApplication};
+use viem_core::layout::{
     BoundaryAffinity, LayoutEngine, LayoutError, MockTextMeasurementProvider, ViewLayout,
 };
-use evim_core::{Core, CoreEvent, Document, Encoding, Format};
+use viem_core::{Core, CoreEvent, Document, Encoding, Format};
 
 fn encode_source(text: &str, encoding: Encoding) -> Vec<u8> {
     match encoding {

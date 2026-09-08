@@ -1,10 +1,10 @@
-use evim_core::layout::{
+use viem_core::layout::{
     compute_layout_job, inspect_layout_provider, install_layout_job, prepare_layout_job,
     LayoutCancellationToken, LayoutEngine, LayoutExecutionContext, LayoutInstallTarget,
     LayoutJobId, LayoutJobPriority, LayoutJobRegion, MockTextMeasurementProvider,
     RegionalLayoutCacheLimits, ViewLayout, ViewportLayoutRegion,
 };
-use evim_core::Document;
+use viem_core::Document;
 
 fn install_viewport(
     document: &Document,

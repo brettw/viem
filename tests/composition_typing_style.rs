@@ -1,10 +1,10 @@
-use evim_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
-use evim_core::command::{InputEvent, Key};
-use evim_core::document::{
+use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
+use viem_core::command::{InputEvent, Key};
+use viem_core::document::{
     BoundaryAffinity, Document, Encoding, FontSlant, Format, SemanticInlineStyle,
 };
-use evim_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
-use evim_core::{Core, CoreEvent};
+use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
+use viem_core::{Core, CoreEvent};
 
 #[test]
 fn marked_text_commits_pending_style_atomically_and_retains_it_for_subsequent_typing() {

@@ -1,9 +1,9 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVPendingTypingStyleTests: XCTestCase {
@@ -36,7 +36,7 @@ final class EVPendingTypingStyleTests: XCTestCase {
       XCTAssertEqual(surface.statusBarState.message, "", type)
       XCTAssertEqual(surface.presentation(for: .italic).state, .on, type)
       XCTAssertNotEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
-      surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+      surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
       surface.perform(menuCommand: .undo, sender: nil)
       XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8), type)
     }

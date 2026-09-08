@@ -1,4 +1,4 @@
-//! The versioned eVim pattern language. Thompson transitions come from the
+//! The versioned Viem pattern language. Thompson transitions come from the
 //! Unicode regex compiler; this bounded VM supplies semantic hard-line
 //! assertions instead of conflating literal LF content with document breaks.
 use std::collections::VecDeque;

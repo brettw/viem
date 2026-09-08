@@ -1,6 +1,6 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 
 @MainActor
 extension EVEditorSurfaceController: EVStyleMenuProviding {
@@ -9,7 +9,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
       let selection = try? session.listSelection(),
       let flags = try? session.listIndentCapabilities(expected: selection)
     else { return .disabled }
-    let capability = UInt32(unindent ? EVIM_LIST_CAN_UNINDENT : EVIM_LIST_CAN_INDENT)
+    let capability = UInt32(unindent ? VIEM_LIST_CAN_UNINDENT : VIEM_LIST_CAN_INDENT)
     return EVMenuItemPresentation(isEnabled: flags & capability != 0)
   }
 

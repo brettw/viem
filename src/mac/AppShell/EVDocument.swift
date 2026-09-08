@@ -34,7 +34,7 @@ public enum EVDocumentSerializationError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case let .unsupportedWritableType(typeName):
-            "eVim cannot serialize the requested document type ‘\(typeName)’ safely."
+            "Viem cannot serialize the requested document type ‘\(typeName)’ safely."
         case let .formatConversionUnavailable(current, requested):
             "Saving \(current.displayName) as \(requested.displayName) requires a document format conversion, which is not available yet."
         }
@@ -53,8 +53,8 @@ public final class EVDocument: NSDocument {
     public static let plainTextType = UTType.plainText.identifier
     public static let markdownType = UTType(filenameExtension: "md")?.identifier
         ?? "net.daringfireball.markdown"
-    public static let markdownSourceType = "com.evim.markdown-source"
-    public static let htmlSourceType = "com.evim.html-source"
+    public static let markdownSourceType = "com.viem.markdown-source"
+    public static let htmlSourceType = "com.viem.html-source"
     public static let htmlType = UTType.html.identifier
     public static let rtfType = UTType.rtf.identifier
 
@@ -342,7 +342,7 @@ public final class EVDocument: NSDocument {
         }
     }
 
-    /// Interactive eVim layout is deliberately continuous and unpaginated.
+    /// Interactive Viem layout is deliberately continuous and unpaginated.
     /// Keep AppKit's standard Print item present, but disabled until a
     /// separate paginated print projection exists; printing the editor view
     /// would otherwise emit only the currently materialized viewport.

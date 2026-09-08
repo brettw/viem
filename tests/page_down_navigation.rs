@@ -1,10 +1,10 @@
-use evim_core::command::{layout_motion::LayoutMotionError, CommandStatus, InputEvent, Key};
-use evim_core::document::{Encoding, Format};
-use evim_core::layout::{
+use viem_core::command::{layout_motion::LayoutMotionError, CommandStatus, InputEvent, Key};
+use viem_core::document::{Encoding, Format};
+use viem_core::layout::{
     compute_layout_job, LayoutCancellationToken, LayoutEngine, LayoutExecutionContext,
     LayoutJobPriority, MockTextMeasurementProvider,
 };
-use evim_core::{Core, CoreEvent, Document};
+use viem_core::{Core, CoreEvent, Document};
 
 #[test]
 fn page_down_demand_is_atomic_and_resumes_after_exact_layout_is_installed() {

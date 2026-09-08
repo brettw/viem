@@ -1,4 +1,4 @@
-use evim_core::document::{Document, Encoding, Format, HistoryRetentionPolicy};
+use viem_core::document::{Document, Encoding, Format, HistoryRetentionPolicy};
 
 fn html(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap()

@@ -1,4 +1,4 @@
-use evim_core::{
+use viem_core::{
     command::regex_v1::*,
     document::{Document, Encoding, FileFormat, Format},
 };

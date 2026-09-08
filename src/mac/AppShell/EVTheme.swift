@@ -86,7 +86,7 @@ public struct EVTheme: Codable, Equatable, Sendable {
 }
 
 extension Notification.Name {
-  public static let evimThemeDidChange = Notification.Name("com.evim.theme.did-change")
+  public static let viemThemeDidChange = Notification.Name("com.viem.theme.did-change")
 }
 
 @MainActor
@@ -110,6 +110,6 @@ public final class EVThemeStore {
     theme = value
     generation &+= 1
     if generation == 0 { generation = 1 }
-    center.post(name: .evimThemeDidChange, object: self)
+    center.post(name: .viemThemeDidChange, object: self)
   }
 }

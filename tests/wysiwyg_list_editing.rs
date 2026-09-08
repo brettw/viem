@@ -1,7 +1,7 @@
-use evim_core::command::{CommandStatus, InputEvent, Key};
-use evim_core::document::{BoundaryAffinity, Encoding, Format};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, Document, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key};
+use viem_core::document::{BoundaryAffinity, Encoding, Format};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, Document, ViewId};
 
 fn keys(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, input: &str) {
     for key in input.chars() {

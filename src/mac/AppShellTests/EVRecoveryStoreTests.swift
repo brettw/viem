@@ -1,10 +1,10 @@
 import AppKit
 import XCTest
-@testable import EvimAppShell
+@testable import ViemAppShell
 
 final class EVRecoveryStoreTests: XCTestCase {
     private func fixture() throws -> (URL, URL) {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-recovery-test-\(UUID().uuidString)")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-recovery-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let target = directory.appendingPathComponent("writing.md")
         try Data("original".utf8).write(to: target)
@@ -15,7 +15,7 @@ final class EVRecoveryStoreTests: XCTestCase {
         EVRecoverySnapshot(source: Data(text.utf8), format: .markdownSource, encoding: 2, fileFormat: 3, documentID: 19, documentRevision: revision)
     }
 
-    func testExclusiveSlotsPreserveExistingEVimAndForeignVimFiles() throws {
+    func testExclusiveSlotsPreserveExistingViemAndForeignVimFiles() throws {
         let (directory, target) = try fixture()
         let foreign = directory.appendingPathComponent(".writing.md.swp")
         try Data([0x62, 0x30, 0x56, 0x49, 0x4d, 0xff]).write(to: foreign)
@@ -37,13 +37,13 @@ final class EVRecoveryStoreTests: XCTestCase {
 
     func testZeroByteSlotAndCollidingStagingFileArePreserved() throws {
         let (directory, target) = try fixture()
-        let occupied = directory.appendingPathComponent(".writing.md.evim.swp")
+        let occupied = directory.appendingPathComponent(".writing.md.viem.swp")
         try Data().write(to: occupied)
         let store = try EVRecoveryStore.claim(for: target)
         XCTAssertNotEqual(store.url, occupied)
         store.write(snapshot("last good")); store.drainForTesting()
         let previous = try Data(contentsOf: store.url)
-        let staging = directory.appendingPathComponent(".evim-recovery-\(store.owner.uuidString)-2.tmp")
+        let staging = directory.appendingPathComponent(".viem-recovery-\(store.owner.uuidString)-2.tmp")
         try Data().write(to: staging)
         let rejected = expectation(description: "staging collision rejected")
         store.write(snapshot("new")) { error in XCTAssertNotNil(error); rejected.fulfill() }
@@ -98,7 +98,7 @@ final class EVRecoveryStoreTests: XCTestCase {
         let alias = directory.appendingPathComponent("alias.md")
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: target)
         let store = try EVRecoveryStore.claim(for: alias)
-        XCTAssertEqual(store.url.lastPathComponent, ".writing.md.evim.swp")
+        XCTAssertEqual(store.url.lastPathComponent, ".writing.md.viem.swp")
         store.write(snapshot("through alias")); store.drainForTesting()
         XCTAssertEqual(EVRecoveryStore.candidates(for: target).first?.snapshot?.source, Data("through alias".utf8))
         var bytes = try Data(contentsOf: store.url)

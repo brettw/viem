@@ -1,6 +1,6 @@
-use evim_core::command::ex::parse_ex;
-use evim_core::command::ex_execute::{execute_ex, ExExecutionContext, ExExecutionState};
-use evim_core::document::{Document, Encoding, FileFormat, Format, HardLineTransfer, ModelRequest};
+use viem_core::command::ex::parse_ex;
+use viem_core::command::ex_execute::{execute_ex, ExExecutionContext, ExExecutionState};
+use viem_core::document::{Document, Encoding, FileFormat, Format, HardLineTransfer, ModelRequest};
 
 fn encoded(text: &str, encoding: Encoding) -> Vec<u8> {
     match encoding {

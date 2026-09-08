@@ -1,7 +1,7 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
-import EvimCoreTextProvider
+import CViemCore
+import ViemAppShell
+import ViemCoreTextProvider
 
 /// A compact, declaration-aware typography palette. Default always removes the
 /// declaration; inherited values are displayed without being written back.
@@ -17,7 +17,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private var documentID: UInt64?
     private var theme = EVTheme.paper
     private var sourceFormat = EVSourceFormat.plainText
-    private let alignmentValues: [UInt32] = [UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_START), UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_CENTER), UInt32(EVIM_STYLE_PARAGRAPH_ALIGNMENT_END)]
+    private let alignmentValues: [UInt32] = [UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_START), UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER), UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_END)]
     private var updating = false
     private var editable = false
     private let family = NSComboBox()
@@ -99,7 +99,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             numeric(.paragraphFirstLineIndent, title: "First line", icon: .firstIndent),
         ])
         lineKind.addItems(withTitles: ["Normal", "Multiple", "At least", "Exactly"])
-        for (index, value) in [EVIM_STYLE_LINE_SPACING_NORMAL, EVIM_STYLE_LINE_SPACING_MULTIPLIER, EVIM_STYLE_LINE_SPACING_AT_LEAST, EVIM_STYLE_LINE_SPACING_EXACT].enumerated() {
+        for (index, value) in [VIEM_STYLE_LINE_SPACING_NORMAL, VIEM_STYLE_LINE_SPACING_MULTIPLIER, VIEM_STYLE_LINE_SPACING_AT_LEAST, VIEM_STYLE_LINE_SPACING_EXACT].enumerated() {
             lineKind.item(at: index)?.tag = Int(value)
         }
         lineKind.target = self
@@ -163,8 +163,8 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         lineValue.isEnabled = editable
         if case let .lineSpacing(value)? = definition?.properties[.paragraphLineSpacing]?.effective {
             lineKind.selectItem(withTag: Int(value.kind))
-            if value.kind != UInt32(EVIM_STYLE_LINE_SPACING_NORMAL) { lastLineValues[value.kind] = value.value }
-            lineValue.stringValue = value.kind == UInt32(EVIM_STYLE_LINE_SPACING_NORMAL) ? "" : Self.numberText(value.value)
+            if value.kind != UInt32(VIEM_STYLE_LINE_SPACING_NORMAL) { lastLineValues[value.kind] = value.value }
+            lineValue.stringValue = value.kind == UInt32(VIEM_STYLE_LINE_SPACING_NORMAL) ? "" : Self.numberText(value.value)
         } else { lineKind.selectItem(at: 0); lineValue.stringValue = "" }
         lineValue.isEnabled = paragraphEditable && lineKind.indexOfSelectedItem != 0
         synchronizeStepper(.paragraphLineSpacing, value: Double(Float(lineValue.stringValue) ?? 0), enabled: lineValue.isEnabled)
@@ -252,7 +252,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
 
     private func synchronizeStepper(_ property: EVStyleProperty, value: Double, enabled: Bool) {
         guard let control = steppers[property] else { return }
-        let multiplier = property == .paragraphLineSpacing && lineKind.selectedItem?.tag == Int(EVIM_STYLE_LINE_SPACING_MULTIPLIER)
+        let multiplier = property == .paragraphLineSpacing && lineKind.selectedItem?.tag == Int(VIEM_STYLE_LINE_SPACING_MULTIPLIER)
         let positive = property == .characterSize || multiplier
         control.increment = multiplier || property == .characterLetterSpacing ? 0.1 : 1
         control.minValue = positive ? min(max(value, Double(Float.leastNormalMagnitude)), sourceFormat == .rtf && property == .characterSize ? 0.5 : 0.1)
@@ -414,13 +414,13 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     @objc private func lineSpacingChanged(_ sender: Any?) {
         guard let item = lineKind.selectedItem else { return }
         let kind = UInt32(item.tag)
-        let normal = kind == UInt32(EVIM_STYLE_LINE_SPACING_NORMAL)
+        let normal = kind == UInt32(VIEM_STYLE_LINE_SPACING_NORMAL)
         var value = Float(lineValue.stringValue)
         if sender is NSPopUpButton, !normal {
-            value = lastLineValues[kind] ?? (kind == UInt32(EVIM_STYLE_LINE_SPACING_MULTIPLIER) ? 1 : number(.characterSize, fallback: 14) * 1.2)
+            value = lastLineValues[kind] ?? (kind == UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER) ? 1 : number(.characterSize, fallback: 14) * 1.2)
             lineValue.stringValue = Self.numberText(value!)
         }
-        let valid = value.map { $0.isFinite && (kind == UInt32(EVIM_STYLE_LINE_SPACING_MULTIPLIER) ? $0 > 0 : $0 >= 0) } == true
+        let valid = value.map { $0.isFinite && (kind == UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER) ? $0 > 0 : $0 >= 0) } == true
         guard normal || valid else {
             lineValue.textColor = .systemRed
             steppers[.paragraphLineSpacing]?.isEnabled = false

@@ -1,13 +1,13 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import XCTest
-@testable import EvimAppShell
-@testable import EvimEditor
+@testable import ViemAppShell
+@testable import ViemEditor
 
 @MainActor final class EVNativeExFileTests: XCTestCase {
     private func fixture() throws -> (URL, EVCoreDocumentBackend, EVDocument, EVDocumentWindowController) {
         EVFrontendRegistry.install { EVCoreDocumentBackend() }
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-ex-\(UUID())")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-ex-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let backend = EVCoreDocumentBackend()
         let document = EVDocument(editorBackend: backend)
@@ -29,7 +29,7 @@ import XCTest
         defer { window.close(); try? FileManager.default.removeItem(at: directory) }
         let session = try XCTUnwrap((window.editorSurface as? EVEditorSurfaceController)?.session)
         _ = try session.sendText("iChanged ")
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         let bytes = try backend.serializedSource(typeName: EVDocument.markdownType)
         let original = document.fileURL
         let alternate = directory.appendingPathComponent("copy.txt")

@@ -1,7 +1,7 @@
-use evim_core::command::{CommandStatus, InputEvent, Key};
-use evim_core::document::{BoundaryAffinity, Document, Encoding, Format};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key};
+use viem_core::document::{BoundaryAffinity, Document, Encoding, Format};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, ViewId};
 
 fn fixture(source: &str, at: usize, insert: bool) -> (Core<MockTextMeasurementProvider>, ViewId) {
     let document =
@@ -244,13 +244,13 @@ fn substitution_captures_keep_style_after_space_normalization() {
     assert!(!source.contains("white-space"), "{source}");
     let projection = core.document().projection();
     assert!(
-        evim_core::layout::DocumentLayoutStyles::semantic_character_at(projection, 2, false)
+        viem_core::layout::DocumentLayoutStyles::semantic_character_at(projection, 2, false)
             .unwrap()
             .bold,
         "{source}"
     );
     assert!(
-        !evim_core::layout::DocumentLayoutStyles::semantic_character_at(projection, 4, false)
+        !viem_core::layout::DocumentLayoutStyles::semantic_character_at(projection, 4, false)
             .unwrap()
             .bold,
         "{source}"
@@ -297,7 +297,7 @@ fn completing_text_before_a_generated_right_space_uses_simple_html() {
                 view,
                 CoreEvent::SetSelectionSemanticStyle {
                     expected,
-                    style: evim_core::document::SemanticInlineStyle::Strong,
+                    style: viem_core::document::SemanticInlineStyle::Strong,
                     enabled: true,
                 },
             )
@@ -350,7 +350,7 @@ fn authored_or_explicit_right_nbsp_keeps_its_nonbreaking_semantics() {
 
 #[test]
 fn styled_typing_before_protective_right_space_keeps_caret_after_authored_text() {
-    use evim_core::document::{
+    use viem_core::document::{
         FormattedPayloadEdit, FormattedTextPayload, StyleProperty, StylePropertyValue,
     };
     let mut document = Document::from_bytes(
@@ -392,7 +392,7 @@ fn core_styled_typing_before_right_space_keeps_the_caret_and_style() {
         view,
         CoreEvent::SetSelectionSemanticStyle {
             expected,
-            style: evim_core::document::SemanticInlineStyle::Strong,
+            style: viem_core::document::SemanticInlineStyle::Strong,
             enabled: true,
         },
     )
@@ -410,7 +410,7 @@ fn core_styled_typing_before_right_space_keeps_the_caret_and_style() {
 
 #[test]
 fn right_space_compaction_declares_only_the_insert_and_entity_patch() {
-    use evim_core::document::{ModelRequest, TextEdit};
+    use viem_core::document::{ModelRequest, TextEdit};
     let mut document = Document::from_bytes(
         b"<p>old B</p><!--keep-->".to_vec(),
         Encoding::Utf8,
@@ -448,7 +448,7 @@ fn right_space_compaction_declares_only_the_insert_and_entity_patch() {
 
 #[test]
 fn ime_before_a_protective_right_space_keeps_caret_before_the_space() {
-    use evim_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
+    use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
     let original = "<p>old B</p><!--keep-->";
     let (mut core, view) = fixture(original, 0, false);
     for event in "vec".chars() {

@@ -1,5 +1,5 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import Foundation
 
 enum EVStyleNamespace: UInt32, Hashable {
@@ -69,15 +69,15 @@ struct EVStyleSheetIdentity: Equatable {
         self.styleSheetRevision = styleSheetRevision
     }
 
-    init(_ value: EvimStyleSheetIdentityV1) {
+    init(_ value: ViemStyleSheetIdentityV1) {
         documentID = value.document_id
         documentRevision = value.document_revision
         styleSheetRevision = value.style_sheet_revision
     }
 
-    var abiValue: EvimStyleSheetIdentityV1 {
-        var value = EvimStyleSheetIdentityV1()
-        value.struct_size = UInt32(MemoryLayout<EvimStyleSheetIdentityV1>.size)
+    var abiValue: ViemStyleSheetIdentityV1 {
+        var value = ViemStyleSheetIdentityV1()
+        value.struct_size = UInt32(MemoryLayout<ViemStyleSheetIdentityV1>.size)
         value.document_id = documentID
         value.document_revision = documentRevision
         value.style_sheet_revision = styleSheetRevision
@@ -89,7 +89,7 @@ struct EVStyleSheetIdentity: Equatable {
 /// Keeping the complete ABI value prevents a token from being replayed against
 /// another view or document even if the numeric token is copied accidentally.
 struct EVStyleEditGroup {
-    fileprivate let abiValue: EvimStyleEditGroupV1
+    fileprivate let abiValue: ViemStyleEditGroupV1
 
     var token: UInt64 { abiValue.token }
 }
@@ -97,13 +97,13 @@ struct EVStyleEditGroup {
 struct EVStyleDefinitionFlags: OptionSet, Equatable {
     let rawValue: UInt32
 
-    static let hasParent = Self(rawValue: UInt32(EVIM_STYLE_DEFINITION_HAS_PARENT))
-    static let hasNextStyle = Self(rawValue: UInt32(EVIM_STYLE_DEFINITION_HAS_NEXT_STYLE))
-    static let baseDocument = Self(rawValue: UInt32(EVIM_STYLE_DEFINITION_BASE_DOCUMENT))
-    static let baseParagraph = Self(rawValue: UInt32(EVIM_STYLE_DEFINITION_BASE_PARAGRAPH))
-    static let baseCharacter = Self(rawValue: UInt32(EVIM_STYLE_DEFINITION_BASE_CHARACTER))
-    static let internalSyntax = Self(rawValue: UInt32(EVIM_STYLE_DEFINITION_INTERNAL))
-    static let internalList = Self(rawValue: UInt32(EVIM_STYLE_DEFINITION_INTERNAL_LIST))
+    static let hasParent = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_HAS_PARENT))
+    static let hasNextStyle = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_HAS_NEXT_STYLE))
+    static let baseDocument = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_BASE_DOCUMENT))
+    static let baseParagraph = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_BASE_PARAGRAPH))
+    static let baseCharacter = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_BASE_CHARACTER))
+    static let internalSyntax = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_INTERNAL))
+    static let internalList = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_INTERNAL_LIST))
 
     var isBase: Bool {
         !intersection([.baseDocument, .baseParagraph, .baseCharacter]).isEmpty
@@ -113,12 +113,12 @@ struct EVStyleDefinitionFlags: OptionSet, Equatable {
 struct EVStyleCapabilities: OptionSet, Equatable {
     let rawValue: UInt32
 
-    static let declarations = Self(rawValue: UInt32(EVIM_STYLE_CAPABILITY_EDIT_DECLARATIONS))
-    static let parent = Self(rawValue: UInt32(EVIM_STYLE_CAPABILITY_EDIT_PARENT))
-    static let nextStyle = Self(rawValue: UInt32(EVIM_STYLE_CAPABILITY_EDIT_NEXT_STYLE))
-    static let displayName = Self(rawValue: UInt32(EVIM_STYLE_CAPABILITY_EDIT_DISPLAY_NAME))
-    static let assign = Self(rawValue: UInt32(EVIM_STYLE_CAPABILITY_ASSIGN))
-    static let delete = Self(rawValue: UInt32(EVIM_STYLE_CAPABILITY_DELETE))
+    static let declarations = Self(rawValue: UInt32(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS))
+    static let parent = Self(rawValue: UInt32(VIEM_STYLE_CAPABILITY_EDIT_PARENT))
+    static let nextStyle = Self(rawValue: UInt32(VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE))
+    static let displayName = Self(rawValue: UInt32(VIEM_STYLE_CAPABILITY_EDIT_DISPLAY_NAME))
+    static let assign = Self(rawValue: UInt32(VIEM_STYLE_CAPABILITY_ASSIGN))
+    static let delete = Self(rawValue: UInt32(VIEM_STYLE_CAPABILITY_DELETE))
 }
 
 enum EVStyleOrigin: UInt32, Equatable {
@@ -263,7 +263,7 @@ struct EVResolvedStyleProperty: Equatable {
     var usesThemeDefault: Bool {
         [.characterForeground, .canvasBackground].contains(property)
             && declared == nil && contributor == nil
-            && contributorKind == UInt32(EVIM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY)
+            && contributorKind == UInt32(VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY)
     }
 }
 
@@ -359,48 +359,48 @@ enum EVStyleBridgeError: LocalizedError, Equatable {
 
     var isStale: Bool {
         if case let .core(status) = self {
-            return status == UInt32(EVIM_STATUS_STALE_REVISION)
-                || status == UInt32(EVIM_STATUS_UNKNOWN_STYLE)
+            return status == UInt32(VIEM_STATUS_STALE_REVISION)
+                || status == UInt32(VIEM_STATUS_UNKNOWN_STYLE)
         }
         return false
     }
 
     var isEndedStyleEditGroup: Bool {
         guard case let .core(status) = self else { return false }
-        return status == UInt32(EVIM_STATUS_INVALID_STYLE_EDIT_GROUP)
-            || status == UInt32(EVIM_STATUS_STYLE_EDIT_GROUP_WRONG_OWNER)
+        return status == UInt32(VIEM_STATUS_INVALID_STYLE_EDIT_GROUP)
+            || status == UInt32(VIEM_STATUS_STYLE_EDIT_GROUP_WRONG_OWNER)
     }
 
     private static func message(for status: UInt32) -> String {
         switch status {
-        case UInt32(EVIM_STATUS_STALE_REVISION):
+        case UInt32(VIEM_STATUS_STALE_REVISION):
             "The style sheet changed before this edit could be applied. The fields were refreshed."
-        case UInt32(EVIM_STATUS_UNKNOWN_STYLE):
+        case UInt32(VIEM_STATUS_UNKNOWN_STYLE):
             "The selected style no longer exists. Base Paragraph was selected."
-        case UInt32(EVIM_STATUS_STYLE_READ_ONLY):
+        case UInt32(VIEM_STATUS_STYLE_READ_ONLY):
             "This style is owned by the source adapter and is read-only."
-        case UInt32(EVIM_STATUS_INVALID_STYLE_VALUE):
+        case UInt32(VIEM_STATUS_INVALID_STYLE_VALUE):
             "The style value is invalid."
-        case UInt32(EVIM_STATUS_STYLE_INHERITANCE_CYCLE):
+        case UInt32(VIEM_STATUS_STYLE_INHERITANCE_CYCLE):
             "That parent would create an inheritance cycle."
-        case UInt32(EVIM_STATUS_INCOMPATIBLE_STYLE_ROLE):
+        case UInt32(VIEM_STATUS_INCOMPATIBLE_STYLE_ROLE):
             "That style cannot be used for this role."
-        case UInt32(EVIM_STATUS_INVALID_STYLE_RELATIONSHIP):
+        case UInt32(VIEM_STATUS_INVALID_STYLE_RELATIONSHIP):
             "That style relationship is not valid."
-        case UInt32(EVIM_STATUS_STYLE_EDIT_GROUP_ACTIVE):
+        case UInt32(VIEM_STATUS_STYLE_EDIT_GROUP_ACTIVE):
             "Another live style edit is already in progress."
-        case UInt32(EVIM_STATUS_INVALID_STYLE_EDIT_GROUP):
+        case UInt32(VIEM_STATUS_INVALID_STYLE_EDIT_GROUP):
             "That live style edit has already ended. The fields were refreshed."
-        case UInt32(EVIM_STATUS_STYLE_EDIT_GROUP_WRONG_OWNER):
+        case UInt32(VIEM_STATUS_STYLE_EDIT_GROUP_WRONG_OWNER):
             "That live style edit belongs to another document view."
         default:
-            "The style edit was rejected (eVim core status \(status))."
+            "The style edit was rejected (Viem core status \(status))."
         }
     }
 }
 
 extension Notification.Name {
-    static let evimCoreDocumentDidChange = Notification.Name("EVCoreDocumentDidChange")
+    static let viemCoreDocumentDidChange = Notification.Name("EVCoreDocumentDidChange")
 }
 
 @MainActor
@@ -416,7 +416,7 @@ extension EVCoreDocumentBackend {
                 continue
             }
         }
-        throw EVStyleBridgeError.core(status: UInt32(EVIM_STATUS_STALE_REVISION))
+        throw EVStyleBridgeError.core(status: UInt32(VIEM_STATUS_STALE_REVISION))
     }
 }
 
@@ -424,7 +424,7 @@ extension EVCoreDocumentBackend {
 extension EVCoreViewSession {
     @discardableResult
     func setDirectCharacterProperties(_ values: [(EVStyleProperty, EVStyleValue)],
-                                      expected selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
+                                      expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
         let outcome = try EVCoreStyleBridge.applyDirectCharacterBatch(core: document.core, view: viewID,
             values: values, selection: selection)
         finishStyleEdit(outcome)
@@ -444,7 +444,7 @@ extension EVCoreViewSession {
         key: EVStyleKey,
         expected: EVStyleSheetIdentity,
         mutation: EVStyleMutation
-    ) throws -> EvimCoreOutcomeV1 {
+    ) throws -> ViemCoreOutcomeV1 {
         guard viewID != 0 else { throw EVStyleBridgeError.noEditingView }
         let outcome = try EVCoreStyleBridge.apply(
             core: document.core,
@@ -459,7 +459,7 @@ extension EVCoreViewSession {
 
     @discardableResult
     func editDirectProperty(_ property: EVStyleProperty, value: EVStyleValue?,
-                            expected selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
+                            expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
         let outcome = try EVCoreStyleBridge.applyDirect(core: document.core, view: viewID,
             property: property, value: value, selection: selection)
         finishStyleEdit(outcome)
@@ -468,8 +468,8 @@ extension EVCoreViewSession {
 
     func decorationState(_ property: EVStyleProperty) throws -> UInt32 {
         var state: UInt32 = 0
-        let status = evim_core_view_decoration_state(document.core, viewID, property.rawValue, &state)
-        guard status == UInt32(EVIM_STATUS_OK) else {
+        let status = viem_core_view_decoration_state(document.core, viewID, property.rawValue, &state)
+        guard status == UInt32(VIEM_STATUS_OK) else {
             throw EVCoreFrontendError.core(operation: "Read decoration state", status: status)
         }
         return state
@@ -481,7 +481,7 @@ extension EVCoreViewSession {
         expected: EVStyleSheetIdentity,
         mutation: EVStyleMutation,
         in group: EVStyleEditGroup
-    ) throws -> EvimCoreOutcomeV1 {
+    ) throws -> ViemCoreOutcomeV1 {
         guard viewID != 0 else { throw EVStyleBridgeError.noEditingView }
         let outcome = try EVCoreStyleBridge.apply(
             core: document.core,
@@ -503,30 +503,30 @@ extension EVCoreViewSession {
 
 private enum EVCoreStyleBridge {
     static func beginGroup(
-        core: EvimCoreHandle,
-        view: EvimViewId,
+        core: ViemCoreHandle,
+        view: ViemViewId,
         expected: EVStyleSheetIdentity
     ) throws -> EVStyleEditGroup {
         var expectedValue = expected.abiValue
-        var group = EvimStyleEditGroupV1()
-        group.struct_size = UInt32(MemoryLayout<EvimStyleEditGroupV1>.size)
-        try check(evim_core_view_begin_style_edit_group(core, view, &expectedValue, &group))
+        var group = ViemStyleEditGroupV1()
+        group.struct_size = UInt32(MemoryLayout<ViemStyleEditGroupV1>.size)
+        try check(viem_core_view_begin_style_edit_group(core, view, &expectedValue, &group))
         return EVStyleEditGroup(abiValue: group)
     }
 
     static func endGroup(
-        core: EvimCoreHandle,
-        view: EvimViewId,
+        core: ViemCoreHandle,
+        view: ViemViewId,
         group: EVStyleEditGroup
     ) throws {
         var value = group.abiValue
-        try check(evim_core_view_end_style_edit_group(core, view, &value))
+        try check(viem_core_view_end_style_edit_group(core, view, &value))
     }
 
-    static func copyStyleSheet(core: EvimCoreHandle) throws -> EVStyleSheetSnapshot {
-        var info = EvimStyleSheetInfoV1()
-        info.struct_size = UInt32(MemoryLayout<EvimStyleSheetInfoV1>.size)
-        try check(evim_core_style_sheet_info(core, &info))
+    static func copyStyleSheet(core: ViemCoreHandle) throws -> EVStyleSheetSnapshot {
+        var info = ViemStyleSheetInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
+        try check(viem_core_style_sheet_info(core, &info))
 
         guard info.definition_count <= UInt64(Int.max),
               info.property_count <= UInt64(Int.max),
@@ -535,13 +535,13 @@ private enum EVCoreStyleBridge {
               info.string_bytes <= UInt64(Int.max)
         else { throw EVStyleBridgeError.malformedSnapshot("array length overflow") }
 
-        var definitions = Array(repeating: EvimStyleDefinitionV1(), count: Int(info.definition_count))
-        var properties = Array(repeating: EvimStylePropertyV1(), count: Int(info.property_count))
-        var items = Array(repeating: EvimStyleValueItemV1(), count: Int(info.value_item_count))
-        var dependencies = Array(repeating: EvimStyleDependencyV1(), count: Int(info.dependency_count))
+        var definitions = Array(repeating: ViemStyleDefinitionV1(), count: Int(info.definition_count))
+        var properties = Array(repeating: ViemStylePropertyV1(), count: Int(info.property_count))
+        var items = Array(repeating: ViemStyleValueItemV1(), count: Int(info.value_item_count))
+        var dependencies = Array(repeating: ViemStyleDependencyV1(), count: Int(info.dependency_count))
         var strings = Array(repeating: UInt8(0), count: Int(info.string_bytes))
-        var copiedInfo = EvimStyleSheetInfoV1()
-        copiedInfo.struct_size = UInt32(MemoryLayout<EvimStyleSheetInfoV1>.size)
+        var copiedInfo = ViemStyleSheetInfoV1()
+        copiedInfo.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
         var expected = info.identity
 
         let status = definitions.withUnsafeMutableBufferPointer { definitionsBuffer in
@@ -549,7 +549,7 @@ private enum EVCoreStyleBridge {
                 items.withUnsafeMutableBufferPointer { itemsBuffer in
                     dependencies.withUnsafeMutableBufferPointer { dependenciesBuffer in
                         strings.withUnsafeMutableBufferPointer { stringsBuffer in
-                            evim_core_copy_style_sheet(
+                            viem_core_copy_style_sheet(
                                 core,
                                 &expected,
                                 definitionsBuffer.baseAddress,
@@ -581,21 +581,21 @@ private enum EVCoreStyleBridge {
     }
 
     static func apply(
-        core: EvimCoreHandle,
-        view: EvimViewId,
+        core: ViemCoreHandle,
+        view: ViemViewId,
         key: EVStyleKey,
         expected: EVStyleSheetIdentity,
         mutation: EVStyleMutation,
         group: EVStyleEditGroup? = nil
-    ) throws -> EvimCoreOutcomeV1 {
+    ) throws -> ViemCoreOutcomeV1 {
         let encoded = EncodedMutation(key: key, expected: expected, mutation: mutation)
         return try encoded.withRequest { request in
             var request = request
-            var outcome = EvimCoreOutcomeV1()
-            outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+            var outcome = ViemCoreOutcomeV1()
+            outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
             if let group {
                 var groupValue = group.abiValue
-                try check(evim_core_view_edit_style_in_group(
+                try check(viem_core_view_edit_style_in_group(
                     core,
                     view,
                     &groupValue,
@@ -603,27 +603,27 @@ private enum EVCoreStyleBridge {
                     &outcome
                 ))
             } else {
-                try check(evim_core_view_edit_style(core, view, &request, &outcome))
+                try check(viem_core_view_edit_style(core, view, &request, &outcome))
             }
             return outcome
         }
     }
 
     private static func check(_ status: UInt32) throws {
-        guard status == UInt32(EVIM_STATUS_OK) else {
+        guard status == UInt32(VIEM_STATUS_OK) else {
             throw EVStyleBridgeError.core(status: status)
         }
     }
 
     private static func decode(
-        info: EvimStyleSheetInfoV1,
-        definitions rawDefinitions: [EvimStyleDefinitionV1],
-        properties rawProperties: [EvimStylePropertyV1],
-        items: [EvimStyleValueItemV1],
-        dependencies: [EvimStyleDependencyV1],
+        info: ViemStyleSheetInfoV1,
+        definitions rawDefinitions: [ViemStyleDefinitionV1],
+        properties rawProperties: [ViemStylePropertyV1],
+        items: [ViemStyleValueItemV1],
+        dependencies: [ViemStyleDependencyV1],
         strings: [UInt8]
     ) throws -> EVStyleSheetSnapshot {
-        func text(_ reference: EvimStyleStringRefV1) throws -> String {
+        func text(_ reference: ViemStyleStringRefV1) throws -> String {
             guard reference.offset <= UInt64(Int.max), reference.length <= UInt64(Int.max) else {
                 throw EVStyleBridgeError.malformedSnapshot("string range overflow")
             }
@@ -650,21 +650,21 @@ private enum EVCoreStyleBridge {
             return start..<(start + length)
         }
 
-        func decodeValue(_ raw: EvimStyleValueV1) throws -> EVStyleValue? {
+        func decodeValue(_ raw: ViemStyleValueV1) throws -> EVStyleValue? {
             switch raw.kind {
-            case UInt32(EVIM_STYLE_VALUE_NONE): return nil
-            case UInt32(EVIM_STYLE_VALUE_FLOAT): return .float(raw.number)
-            case UInt32(EVIM_STYLE_VALUE_UNSIGNED): return .unsigned(raw.enum_value)
-            case UInt32(EVIM_STYLE_VALUE_BOOLEAN): return .boolean(raw.enum_value != 0)
-            case UInt32(EVIM_STYLE_VALUE_COLOR):
+            case UInt32(VIEM_STYLE_VALUE_NONE): return nil
+            case UInt32(VIEM_STYLE_VALUE_FLOAT): return .float(raw.number)
+            case UInt32(VIEM_STYLE_VALUE_UNSIGNED): return .unsigned(raw.enum_value)
+            case UInt32(VIEM_STYLE_VALUE_BOOLEAN): return .boolean(raw.enum_value != 0)
+            case UInt32(VIEM_STYLE_VALUE_COLOR):
                 return .color(EVStyleColor(
                     red: raw.color.red,
                     green: raw.color.green,
                     blue: raw.color.blue,
                     alpha: raw.color.alpha
                 ))
-            case UInt32(EVIM_STYLE_VALUE_STRING): return .string(try text(raw.string))
-            case UInt32(EVIM_STYLE_VALUE_STRING_LIST):
+            case UInt32(VIEM_STYLE_VALUE_STRING): return .string(try text(raw.string))
+            case UInt32(VIEM_STYLE_VALUE_STRING_LIST):
                 let itemRange = try range(
                     first: raw.first_item,
                     count: raw.item_count,
@@ -672,14 +672,14 @@ private enum EVCoreStyleBridge {
                     label: "value-item"
                 )
                 return .stringList(try itemRange.map { index in
-                    guard items[index].kind == UInt32(EVIM_STYLE_VALUE_ITEM_STRING) else {
+                    guard items[index].kind == UInt32(VIEM_STYLE_VALUE_ITEM_STRING) else {
                         throw EVStyleBridgeError.malformedSnapshot("unexpected string-list item")
                     }
                     return try text(items[index].string)
                 })
-            case UInt32(EVIM_STYLE_VALUE_FONT_SLANT): return .fontSlant(raw.enum_value)
-            case UInt32(EVIM_STYLE_VALUE_WRITING_DIRECTION): return .writingDirection(raw.enum_value)
-            case UInt32(EVIM_STYLE_VALUE_OPEN_TYPE_FEATURES):
+            case UInt32(VIEM_STYLE_VALUE_FONT_SLANT): return .fontSlant(raw.enum_value)
+            case UInt32(VIEM_STYLE_VALUE_WRITING_DIRECTION): return .writingDirection(raw.enum_value)
+            case UInt32(VIEM_STYLE_VALUE_OPEN_TYPE_FEATURES):
                 let itemRange = try range(
                     first: raw.first_item,
                     count: raw.item_count,
@@ -687,7 +687,7 @@ private enum EVCoreStyleBridge {
                     label: "OpenType item"
                 )
                 return .openTypeFeatures(try itemRange.map { index in
-                    guard items[index].kind == UInt32(EVIM_STYLE_VALUE_ITEM_OPEN_TYPE_FEATURE) else {
+                    guard items[index].kind == UInt32(VIEM_STYLE_VALUE_ITEM_OPEN_TYPE_FEATURE) else {
                         throw EVStyleBridgeError.malformedSnapshot("unexpected OpenType item")
                     }
                     return EVOpenTypeFeature(
@@ -695,9 +695,9 @@ private enum EVCoreStyleBridge {
                         setting: items[index].unsigned_value
                     )
                 })
-            case UInt32(EVIM_STYLE_VALUE_LINE_SPACING):
+            case UInt32(VIEM_STYLE_VALUE_LINE_SPACING):
                 return .lineSpacing(EVLineSpacing(kind: raw.enum_value, value: raw.number))
-            case UInt32(EVIM_STYLE_VALUE_PARAGRAPH_ALIGNMENT):
+            case UInt32(VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT):
                 return .paragraphAlignment(raw.enum_value)
             default:
                 throw EVStyleBridgeError.malformedSnapshot("unknown value kind \(raw.kind)")
@@ -713,9 +713,9 @@ private enum EVCoreStyleBridge {
             let kind: EVStyleKind
             if namespace == .character {
                 kind = .character
-            } else if raw.role == UInt32(EVIM_STYLE_ROLE_DOCUMENT) {
+            } else if raw.role == UInt32(VIEM_STYLE_ROLE_DOCUMENT) {
                 kind = .document
-            } else if raw.role == UInt32(EVIM_STYLE_ROLE_PARAGRAPH) {
+            } else if raw.role == UInt32(VIEM_STYLE_ROLE_PARAGRAPH) {
                 kind = .paragraph
             } else {
                 throw EVStyleBridgeError.malformedSnapshot("unknown block role \(raw.role)")
@@ -753,7 +753,7 @@ private enum EVCoreStyleBridge {
                     )
                 }
                 let contributor: EVStyleKey?
-                if rawProperty.flags & UInt32(EVIM_STYLE_PROPERTY_CONTRIBUTOR_HAS_STYLE) != 0 {
+                if rawProperty.flags & UInt32(VIEM_STYLE_PROPERTY_CONTRIBUTOR_HAS_STYLE) != 0 {
                     guard let contributorNamespace = EVStyleNamespace(rawValue: rawProperty.contributor_namespace) else {
                         throw EVStyleBridgeError.malformedSnapshot("unknown contributor namespace")
                     }
@@ -764,10 +764,10 @@ private enum EVCoreStyleBridge {
                 } else {
                     contributor = nil
                 }
-                let declared = rawProperty.flags & UInt32(EVIM_STYLE_PROPERTY_DECLARED) != 0
+                let declared = rawProperty.flags & UInt32(VIEM_STYLE_PROPERTY_DECLARED) != 0
                     ? try decodeValue(rawProperty.declared)
                     : nil
-                let effective = rawProperty.flags & UInt32(EVIM_STYLE_PROPERTY_EFFECTIVE_PRESENT) != 0
+                let effective = rawProperty.flags & UInt32(VIEM_STYLE_PROPERTY_EFFECTIVE_PRESENT) != 0
                     ? try decodeValue(rawProperty.effective)
                     : nil
                 decodedProperties[property] = EVResolvedStyleProperty(
@@ -794,53 +794,53 @@ private enum EVCoreStyleBridge {
         return EVStyleSheetSnapshot(identity: EVStyleSheetIdentity(info.identity), definitions: decodedDefinitions)
     }
 
-    static func applyDirect(core: EvimCoreHandle, view: EvimViewId,
+    static func applyDirect(core: ViemCoreHandle, view: ViemViewId,
                             property: EVStyleProperty, value: EVStyleValue?,
-                            selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
+                            selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
         let mutation: EVStyleMutation = value.map { .setDeclaration(property, $0) } ?? .clearDeclaration(property)
         // Reuse the typed property's arena encoding; no named-style identity is
         // sent to the direct-edit endpoint.
         let encoded = EncodedMutation(key: .baseParagraph,
             expected: EVStyleSheetIdentity(documentID: selection.document_id,
                 documentRevision: selection.document_revision, styleSheetRevision: 0), mutation: mutation)
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         let status = encoded.withRequest { encoded in
-            var request = EvimDirectStyleEditV1()
-            request.struct_size = UInt32(MemoryLayout<EvimDirectStyleEditV1>.size)
+            var request = ViemDirectStyleEditV1()
+            request.struct_size = UInt32(MemoryLayout<ViemDirectStyleEditV1>.size)
             request.operation = encoded.operation
             request.property = encoded.property
             request.value = encoded.value
             request.expected_selection = selection
-            return evim_core_view_edit_direct_style(core, view, &request, &outcome)
+            return viem_core_view_edit_direct_style(core, view, &request, &outcome)
         }
-        guard status == UInt32(EVIM_STATUS_OK) else {
+        guard status == UInt32(VIEM_STATUS_OK) else {
             throw EVCoreFrontendError.core(operation: "Change direct formatting", status: status)
         }
         return outcome
     }
 
-    static func applyDirectCharacterBatch(core: EvimCoreHandle, view: EvimViewId,
+    static func applyDirectCharacterBatch(core: ViemCoreHandle, view: ViemViewId,
                                          values: [(EVStyleProperty, EVStyleValue)],
-                                         selection: EvimLogicalSelectionIdentityV1) throws -> EvimCoreOutcomeV1 {
+                                         selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
         let identity = EVStyleSheetIdentity(documentID: selection.document_id,
             documentRevision: selection.document_revision, styleSheetRevision: 0)
         let encoded = values.map { EncodedMutation(key: .baseCharacter, expected: identity,
             mutation: .setDeclaration($0.0, $0.1)) }
-        var requests: [EvimDirectStyleEditV1] = []
-        var outcome = EvimCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<EvimCoreOutcomeV1>.size)
+        var requests: [ViemDirectStyleEditV1] = []
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         // Nested arenas remain alive until the single batched call returns.
         func withArenas(_ index: Int) -> UInt32 {
             if index == encoded.count {
                 return requests.withUnsafeBufferPointer { requests in
-                    evim_core_view_edit_direct_character_batch(core, view,
+                    viem_core_view_edit_direct_character_batch(core, view,
                         requests.baseAddress, UInt64(requests.count), &outcome)
                 }
             }
             return encoded[index].withRequest { item in
-                var request = EvimDirectStyleEditV1()
-                request.struct_size = UInt32(MemoryLayout<EvimDirectStyleEditV1>.size)
+                var request = ViemDirectStyleEditV1()
+                request.struct_size = UInt32(MemoryLayout<ViemDirectStyleEditV1>.size)
                 request.operation = item.operation; request.property = item.property
                 request.value = item.value; request.expected_selection = selection
                 requests.append(request)
@@ -848,7 +848,7 @@ private enum EVCoreStyleBridge {
             }
         }
         let status = withArenas(0)
-        guard status == UInt32(EVIM_STATUS_OK) else {
+        guard status == UInt32(VIEM_STATUS_OK) else {
             throw EVCoreFrontendError.core(operation: "Change text typography", status: status)
         }
         return outcome
@@ -867,44 +867,44 @@ private enum EVCoreStyleBridge {
             self.expected = expected
             switch mutation {
             case let .setDeclaration(property, value):
-                operation = UInt32(EVIM_STYLE_EDIT_SET_DECLARATION)
+                operation = UInt32(VIEM_STYLE_EDIT_SET_DECLARATION)
                 self.property = property.rawValue
                 self.value = value
                 relationship = nil
             case let .clearDeclaration(property):
-                operation = UInt32(EVIM_STYLE_EDIT_CLEAR_DECLARATION)
+                operation = UInt32(VIEM_STYLE_EDIT_CLEAR_DECLARATION)
                 self.property = property.rawValue
                 value = nil
                 relationship = nil
             case let .setParent(id):
-                operation = UInt32(EVIM_STYLE_EDIT_SET_PARENT)
+                operation = UInt32(VIEM_STYLE_EDIT_SET_PARENT)
                 property = 0
                 value = nil
                 relationship = id.rawValue
             case .clearParent:
-                operation = UInt32(EVIM_STYLE_EDIT_CLEAR_PARENT)
+                operation = UInt32(VIEM_STYLE_EDIT_CLEAR_PARENT)
                 property = 0
                 value = nil
                 relationship = nil
             case let .setNextStyle(id):
-                operation = UInt32(EVIM_STYLE_EDIT_SET_NEXT_STYLE)
+                operation = UInt32(VIEM_STYLE_EDIT_SET_NEXT_STYLE)
                 property = 0
                 value = nil
                 relationship = id.rawValue
             case .clearNextStyle:
-                operation = UInt32(EVIM_STYLE_EDIT_CLEAR_NEXT_STYLE)
+                operation = UInt32(VIEM_STYLE_EDIT_CLEAR_NEXT_STYLE)
                 property = 0
                 value = nil
                 relationship = nil
             case let .setDisplayName(name):
-                operation = UInt32(EVIM_STYLE_EDIT_SET_DISPLAY_NAME)
+                operation = UInt32(VIEM_STYLE_EDIT_SET_DISPLAY_NAME)
                 property = 0
                 value = nil
                 relationship = name
             }
         }
 
-        func withRequest<Result>(_ body: (EvimStyleEditV1) throws -> Result) rethrows -> Result {
+        func withRequest<Result>(_ body: (ViemStyleEditV1) throws -> Result) rethrows -> Result {
             var groups = [Array(key.id.rawValue.utf8)]
             var relationshipGroup: Int?
             var itemGroupIndices: [Int] = []
@@ -921,13 +921,13 @@ private enum EVCoreStyleBridge {
                 case let .stringList(values):
                     for text in values {
                         itemGroupIndices.append(groups.count)
-                        itemSpecs.append((UInt32(EVIM_STYLE_VALUE_ITEM_STRING), 0))
+                        itemSpecs.append((UInt32(VIEM_STYLE_VALUE_ITEM_STRING), 0))
                         groups.append(Array(text.utf8))
                     }
                 case let .openTypeFeatures(values):
                     for feature in values {
                         itemGroupIndices.append(groups.count)
-                        itemSpecs.append((UInt32(EVIM_STYLE_VALUE_ITEM_OPEN_TYPE_FEATURE), feature.setting))
+                        itemSpecs.append((UInt32(VIEM_STYLE_VALUE_ITEM_OPEN_TYPE_FEATURE), feature.setting))
                         groups.append(Array(feature.tag.utf8))
                     }
                 default:
@@ -942,76 +942,76 @@ private enum EVCoreStyleBridge {
             }
 
             return try arena.withUnsafeBufferPointer { arenaBuffer in
-                func slice(for group: Int) -> EvimUtf8Slice {
-                    var slice = EvimUtf8Slice()
+                func slice(for group: Int) -> ViemUtf8Slice {
+                    var slice = ViemUtf8Slice()
                     let bytes = groups[group]
                     slice.data = bytes.isEmpty ? nil : arenaBuffer.baseAddress?.advanced(by: offsets[group])
                     slice.length = UInt64(bytes.count)
                     return slice
                 }
 
-                var editItems: [EvimStyleEditValueItemV1] = []
+                var editItems: [ViemStyleEditValueItemV1] = []
                 for (index, spec) in itemSpecs.enumerated() {
-                    var item = EvimStyleEditValueItemV1()
-                    item.struct_size = UInt32(MemoryLayout<EvimStyleEditValueItemV1>.size)
+                    var item = ViemStyleEditValueItemV1()
+                    item.struct_size = UInt32(MemoryLayout<ViemStyleEditValueItemV1>.size)
                     item.kind = spec.kind
                     item.text = slice(for: itemGroupIndices[index])
                     item.unsigned_value = spec.unsigned
                     editItems.append(item)
                 }
                 return try editItems.withUnsafeBufferPointer { itemBuffer in
-                    var abiValue = EvimStyleEditValueV1()
-                    abiValue.struct_size = UInt32(MemoryLayout<EvimStyleEditValueV1>.size)
+                    var abiValue = ViemStyleEditValueV1()
+                    abiValue.struct_size = UInt32(MemoryLayout<ViemStyleEditValueV1>.size)
                     if let relationshipGroup {
-                        abiValue.kind = UInt32(EVIM_STYLE_VALUE_STRING)
+                        abiValue.kind = UInt32(VIEM_STYLE_VALUE_STRING)
                         abiValue.text = slice(for: relationshipGroup)
                     } else if let value {
                         switch value {
                         case let .float(number):
-                            abiValue.kind = UInt32(EVIM_STYLE_VALUE_FLOAT)
+                            abiValue.kind = UInt32(VIEM_STYLE_VALUE_FLOAT)
                             abiValue.number = number
                         case let .unsigned(number):
-                            abiValue.kind = UInt32(EVIM_STYLE_VALUE_UNSIGNED)
+                            abiValue.kind = UInt32(VIEM_STYLE_VALUE_UNSIGNED)
                             abiValue.enum_value = number
                         case let .boolean(enabled):
-                            abiValue.kind = UInt32(EVIM_STYLE_VALUE_BOOLEAN)
+                            abiValue.kind = UInt32(VIEM_STYLE_VALUE_BOOLEAN)
                             abiValue.enum_value = enabled ? 1 : 0
                         case let .color(color):
-                            abiValue.kind = UInt32(EVIM_STYLE_VALUE_COLOR)
+                            abiValue.kind = UInt32(VIEM_STYLE_VALUE_COLOR)
                             abiValue.color.red = color.red
                             abiValue.color.green = color.green
                             abiValue.color.blue = color.blue
                             abiValue.color.alpha = color.alpha
                         case .string:
-                            abiValue.kind = UInt32(EVIM_STYLE_VALUE_STRING)
+                            abiValue.kind = UInt32(VIEM_STYLE_VALUE_STRING)
                         case .stringList:
-                            abiValue.kind = UInt32(EVIM_STYLE_VALUE_STRING_LIST)
+                            abiValue.kind = UInt32(VIEM_STYLE_VALUE_STRING_LIST)
                             abiValue.items = itemBuffer.baseAddress
                             abiValue.item_count = UInt64(itemBuffer.count)
                         case let .fontSlant(slant):
-                            abiValue.kind = UInt32(EVIM_STYLE_VALUE_FONT_SLANT)
+                            abiValue.kind = UInt32(VIEM_STYLE_VALUE_FONT_SLANT)
                             abiValue.enum_value = slant
                         case let .writingDirection(direction):
-                            abiValue.kind = UInt32(EVIM_STYLE_VALUE_WRITING_DIRECTION)
+                            abiValue.kind = UInt32(VIEM_STYLE_VALUE_WRITING_DIRECTION)
                             abiValue.enum_value = direction
                         case .openTypeFeatures:
-                            abiValue.kind = UInt32(EVIM_STYLE_VALUE_OPEN_TYPE_FEATURES)
+                            abiValue.kind = UInt32(VIEM_STYLE_VALUE_OPEN_TYPE_FEATURES)
                             abiValue.items = itemBuffer.baseAddress
                             abiValue.item_count = UInt64(itemBuffer.count)
                         case let .lineSpacing(spacing):
-                            abiValue.kind = UInt32(EVIM_STYLE_VALUE_LINE_SPACING)
+                            abiValue.kind = UInt32(VIEM_STYLE_VALUE_LINE_SPACING)
                             abiValue.enum_value = spacing.kind
                             abiValue.number = spacing.value
                         case let .paragraphAlignment(alignment):
-                            abiValue.kind = UInt32(EVIM_STYLE_VALUE_PARAGRAPH_ALIGNMENT)
+                            abiValue.kind = UInt32(VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT)
                             abiValue.enum_value = alignment
                         }
                     } else {
-                        abiValue.kind = UInt32(EVIM_STYLE_VALUE_NONE)
+                        abiValue.kind = UInt32(VIEM_STYLE_VALUE_NONE)
                     }
 
-                    var request = EvimStyleEditV1()
-                    request.struct_size = UInt32(MemoryLayout<EvimStyleEditV1>.size)
+                    var request = ViemStyleEditV1()
+                    request.struct_size = UInt32(MemoryLayout<ViemStyleEditV1>.size)
                     request.identity = expected.abiValue
                     request.namespace_id = key.namespace.rawValue
                     request.operation = operation

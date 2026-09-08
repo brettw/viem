@@ -1,11 +1,11 @@
-use evim_core::command::{CommandStatus, InputEvent, Key};
-use evim_core::document::{Encoding, Format, ModelRequest, ProjectionWorkScope, TextEdit};
-use evim_core::layout::{
+use viem_core::command::{CommandStatus, InputEvent, Key};
+use viem_core::document::{Encoding, Format, ModelRequest, ProjectionWorkScope, TextEdit};
+use viem_core::layout::{
     compute_layout_job, HardLineLayoutRegion, LayoutCancellationToken, LayoutEngine,
     LayoutExecutionContext, LayoutJobPriority, LayoutJobRegion, MockTextMeasurementProvider,
     MAX_LONG_LINE_LAYOUT_SLICE_BYTES,
 };
-use evim_core::{Core, CoreEvent, Document, ViewId};
+use viem_core::{Core, CoreEvent, Document, ViewId};
 
 fn open(source: &str, format: Format) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap()
@@ -224,7 +224,7 @@ fn flow_toggle_cancels_stale_work_and_long_source_paragraph_navigation_stays_bou
         CoreEvent::PlaceCursor {
             document_revision: core.document().revision(),
             text_offset: at,
-            affinity: evim_core::document::BoundaryAffinity::Downstream,
+            affinity: viem_core::document::BoundaryAffinity::Downstream,
             extend_selection: false,
         },
     )
@@ -287,8 +287,8 @@ fn local_source_marker_edits_split_and_rejoin_flow_groups_without_scanning_the_p
 
 #[test]
 fn long_source_flow_retains_first_paragraph_geometry_after_checkpoints_and_resize() {
-    use evim_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
-    use evim_core::document::BoundaryAffinity;
+    use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
+    use viem_core::document::BoundaryAffinity;
     let source = ("word ".repeat(30) + "\n").repeat(2_000);
     let mut document = open(&source, Format::MarkdownSource);
     let mut defaults: serde_json::Value =

@@ -1,16 +1,16 @@
-use evim_core::layout::{
+use viem_core::layout::{
     compute_layout_job, inspect_layout_provider, install_layout_job, prepare_layout_job,
     HardLineLayoutRegion, LayoutCancellationToken, LayoutExecutionContext, LayoutInstallTarget,
     LayoutJobId, LayoutJobPriority, LayoutJobRegion, LayoutJobRequest, LayoutProviderRequirements,
     MockTextMeasurementProvider, ViewLayout, ViewportLayoutRegion,
     MAX_LONG_LINE_LAYOUT_SLICE_BYTES,
 };
-use evim_core::{Core, CoreError, Document, ViewRemovalOutcome};
+use viem_core::{Core, CoreError, Document, ViewRemovalOutcome};
 
 #[test]
 fn public_background_layout_api_round_trips_a_revision_bound_request() {
     let document = Document::new("public API");
-    let mut engine = evim_core::layout::LayoutEngine::new(MockTextMeasurementProvider::new());
+    let mut engine = viem_core::layout::LayoutEngine::new(MockTextMeasurementProvider::new());
     let requirements: LayoutProviderRequirements = inspect_layout_provider(&engine);
     let mut view = ViewLayout::new(200.0, 100.0);
     let request: LayoutJobRequest = prepare_layout_job(
@@ -81,7 +81,7 @@ fn public_core_facade_captures_off_core_and_installs_atomically() {
         requirements.metrics_generation
     );
 
-    let mut worker = evim_core::layout::LayoutEngine::new(MockTextMeasurementProvider::new());
+    let mut worker = viem_core::layout::LayoutEngine::new(MockTextMeasurementProvider::new());
     let candidate =
         compute_layout_job(&mut worker, &request, LayoutExecutionContext::WorkerPool).unwrap();
     let installed = core.install_view_layout_job(view, candidate).unwrap();
@@ -129,7 +129,7 @@ fn public_view_lifecycle_is_fallible_and_cancels_owned_work() {
 fn public_viewport_api_bounds_a_multi_megabyte_wrapped_hard_line() {
     const LONG_LINE_BYTES: usize = 2 * 1024 * 1024;
     let document = Document::new("word ".repeat(LONG_LINE_BYTES / 5 + 1));
-    let mut engine = evim_core::layout::LayoutEngine::new(MockTextMeasurementProvider::new());
+    let mut engine = viem_core::layout::LayoutEngine::new(MockTextMeasurementProvider::new());
     let requirements = inspect_layout_provider(&engine);
     let mut view = ViewLayout::new(96.0, 80.0);
     let request = prepare_layout_job(
@@ -177,7 +177,7 @@ fn oversized_indivisible_words_extend_capture_without_creating_an_emergency_wrap
     let token = "x".repeat(MAX_LONG_LINE_LAYOUT_SLICE_BYTES + 100);
     for tail in [String::new(), format!(" {}", "tail ".repeat(20_000))] {
         let document = Document::new(format!("{token}{tail}"));
-        let mut engine = evim_core::layout::LayoutEngine::new(MockTextMeasurementProvider::new());
+        let mut engine = viem_core::layout::LayoutEngine::new(MockTextMeasurementProvider::new());
         let requirements = inspect_layout_provider(&engine);
         let mut view = ViewLayout::new(96.0, 80.0);
         let request = prepare_layout_job(

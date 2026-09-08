@@ -1,8 +1,8 @@
-use evim_core::document::{
+use viem_core::document::{
     Document, Encoding, FontSlant, Format, ModelRequest, ProjectionWorkScope, StyleApplication,
     TextEdit,
 };
-use evim_core::layout::DocumentLayoutStyles;
+use viem_core::layout::DocumentLayoutStyles;
 
 #[test]
 fn empty_html_soft_break_line_retains_enclosing_character_style() {

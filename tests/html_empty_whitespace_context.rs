@@ -1,7 +1,7 @@
-use evim_core::command::{InputEvent, Key};
-use evim_core::document::{BoundaryAffinity, Document, Encoding, Format};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent};
+use viem_core::command::{InputEvent, Key};
+use viem_core::document::{BoundaryAffinity, Document, Encoding, Format};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent};
 
 fn type_at_end(source: &str, typed: &str, expected_source: &str, expected_text: &str) {
     type_at(source, None, &[typed], expected_source, expected_text);

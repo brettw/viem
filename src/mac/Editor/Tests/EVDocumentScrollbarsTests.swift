@@ -1,7 +1,7 @@
 import AppKit
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVDocumentScrollbarsTests: XCTestCase {

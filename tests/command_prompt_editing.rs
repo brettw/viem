@@ -1,7 +1,7 @@
-use evim_core::command::{CommandLineEditAction, CommandLineEditRequest, InputEvent, Key};
-use evim_core::document::Document;
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, ViewId};
+use viem_core::command::{CommandLineEditAction, CommandLineEditRequest, InputEvent, Key};
+use viem_core::document::Document;
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, ViewId};
 fn key(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, key: Key) {
     core.handle(view, CoreEvent::Input(InputEvent::Key(key)))
         .unwrap();
@@ -199,7 +199,7 @@ fn recorded_macros_replay_backtab_native_directory_acceptance_and_caret_movement
         }
     }
     let directory = Directory(std::env::temp_dir().join(format!(
-        "evim-completion-macro-{}-{}",
+        "viem-completion-macro-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

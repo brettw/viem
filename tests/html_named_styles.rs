@@ -1,4 +1,4 @@
-use evim_core::document::*;
+use viem_core::document::*;
 
 fn apply(
     document: &mut Document,
@@ -67,8 +67,8 @@ fn deleting_each_builtin_heading_persists_default_assignment_and_undo() {
             Some(ParagraphAlignment::Center)
         );
         let saved = String::from_utf8(document.source_bytes()).unwrap();
-        assert!(saved.contains("--evim-style-deleted: \"true\";"));
-        assert!(saved.contains(&format!("<h{level} data-keep='x' style='text-align:center' class=\"evim-p-506172616772617068\">Head<br>line</h{level}>")), "{saved}");
+        assert!(saved.contains("--viem-style-deleted: \"true\";"));
+        assert!(saved.contains(&format!("<h{level} data-keep='x' style='text-align:center' class=\"viem-p-506172616772617068\">Head<br>line</h{level}>")), "{saved}");
         assert!(saved.ends_with(&format!("<p>Tail</p><!--keep-->{hidden}")));
         let reopened = html(&saved);
         assert_eq!(reopened.source_bytes(), saved.as_bytes());
@@ -175,7 +175,7 @@ fn deleted_heading_rules_follow_default_edits_and_explicit_recreation() {
     )
     .unwrap();
     let saved = String::from_utf8(document.source_bytes()).unwrap();
-    assert!(!saved.contains("--evim-style-deleted"));
+    assert!(!saved.contains("--viem-style-deleted"));
     let reopened = html(&saved);
     assert!(reopened
         .projection()
@@ -333,7 +333,7 @@ fn owned_styles_in_templates_atomic_content_and_script_text_are_not_adopted_or_e
                 source.ends_with(&original),
                 "hidden bytes must stay exact: {source}"
             );
-            assert_eq!(source.matches("<style id=\"evim-styles\"").count(), 2);
+            assert_eq!(source.matches("<style id=\"viem-styles\"").count(), 2);
             let reopened = html(&source);
             assert_eq!(
                 reopened
@@ -385,8 +385,8 @@ fn assigning_a_named_style_to_an_empty_html_buffer_preserves_owned_style_placeme
         StyleId::from("Custom")
     );
     let source = String::from_utf8(document.source_bytes()).unwrap();
-    assert!(source.starts_with("<style id=\"evim-styles\""));
-    assert!(source.ends_with("<p class=\"evim-p-437573746f6d\"></p>"));
+    assert!(source.starts_with("<style id=\"viem-styles\""));
+    assert!(source.ends_with("<p class=\"viem-p-437573746f6d\"></p>"));
 }
 
 #[test]
@@ -427,7 +427,7 @@ fn anonymous_paragraph_assignment_adds_minimal_wrappers_around_original_inline_s
             .unwrap();
         let source = String::from_utf8(document.source_bytes()).unwrap();
         assert_eq!(document.text(), "Words");
-        assert!(source.contains("<p class=\"evim-p-437573746f6d\">"));
+        assert!(source.contains("<p class=\"viem-p-437573746f6d\">"));
         assert!(source.contains("</p><!--tail-->"));
         assert_eq!(
             document.projection().blocks()[0].style,
@@ -455,7 +455,7 @@ fn anonymous_paragraph_assignment_adds_minimal_wrappers_around_original_inline_s
 
 #[test]
 fn character_assignment_spans_existing_named_and_semantic_wrappers_without_touching_them() {
-    let mut document=html("<p><span class='evim-c-41' data-x='keep'>ab</span><b foo='bar'>x</b><span class='evim-c-41'>cd</span></p>");
+    let mut document=html("<p><span class='viem-c-41' data-x='keep'>ab</span><b foo='bar'>x</b><span class='viem-c-41'>cd</span></p>");
     for id in ["A", "B"] {
         definition(
             &mut document,
@@ -490,7 +490,7 @@ fn character_assignment_spans_existing_named_and_semantic_wrappers_without_touch
     assert_eq!(committed.summary().source_patches().len(), 6);
     assert_eq!(document.text(), "abxcd");
     let after = String::from_utf8(document.source_bytes()).unwrap();
-    assert!(after.contains("<span class='evim-c-41' data-x='keep'>a<span class=\"evim-c-42\">b</span></span><b foo='bar'><span class=\"evim-c-42\">x</span></b><span class='evim-c-41'><span class=\"evim-c-42\">c</span>d</span>"));
+    assert!(after.contains("<span class='viem-c-41' data-x='keep'>a<span class=\"viem-c-42\">b</span></span><b foo='bar'><span class=\"viem-c-42\">x</span></b><span class='viem-c-41'><span class=\"viem-c-42\">c</span>d</span>"));
     for offset in 1..4 {
         assert!(document
             .projection()
@@ -527,11 +527,11 @@ fn canonical_character_styles_preserve_sparse_properties_ids_and_rule_locality()
     .unwrap();
     let source = String::from_utf8(document.source_bytes()).unwrap();
     assert!(
-        source.contains("<meta charset='utf-8'><style id=\"evim-styles\" data-evim-version=\"2\">")
+        source.contains("<meta charset='utf-8'><style id=\"viem-styles\" data-viem-version=\"2\">")
     );
-    assert!(source.contains(".evim-c-416363656e7420ceb1 {\n"));
-    assert!(source.contains("  --evim-prop-character-underline: \"false\";\n"));
-    assert!(source.contains("  --evim-prop-character-letter-spacing: \"0\";\n"));
+    assert!(source.contains(".viem-c-416363656e7420ceb1 {\n"));
+    assert!(source.contains("  --viem-prop-character-underline: \"false\";\n"));
+    assert!(source.contains("  --viem-prop-character-letter-spacing: \"0\";\n"));
     assert!(source.contains("<style>.foreign { color: red }</style>"));
     assert!(source.contains("<p data-id='keep'>Alpha &amp; Beta</p>"));
     let reopened = html(&source);
@@ -561,7 +561,7 @@ fn canonical_character_styles_preserve_sparse_properties_ids_and_rule_locality()
     assert_eq!(committed.summary().source_patches().len(), 1);
     assert!(String::from_utf8(document.source_bytes())
         .unwrap()
-        .contains(".evim-c-416363656e7420ceb1"));
+        .contains(".viem-c-416363656e7420ceb1"));
     assert!(document.undo());
     assert_eq!(document.source_bytes(), before);
     assert!(document.undo());
@@ -687,10 +687,10 @@ fn first_applicable_class_wins_and_assigning_preserves_other_attributes() {
         StyleId::from("First")
     );
     let source = String::from_utf8(document.source_bytes()).unwrap();
-    assert!(source.contains("class=\"evim-p-4669727374 foreign\" data-keep='yes'"));
+    assert!(source.contains("class=\"viem-p-4669727374 foreign\" data-keep='yes'"));
     let both = source.replace(
-        "evim-p-4669727374 foreign",
-        "foreign evim-p-5365636f6e64 evim-p-4669727374",
+        "viem-p-4669727374 foreign",
+        "foreign viem-p-5365636f6e64 viem-p-4669727374",
     );
     assert_eq!(
         html(&both).projection().blocks()[0].style,
@@ -745,10 +745,10 @@ fn character_assignments_use_named_layers_and_inline_overrides_win() {
         |span| span.range == (0..5) && span.application == StyleApplication::Named(id.clone())
     ));
     let source = String::from_utf8(document.source_bytes()).unwrap();
-    assert!(source.contains("<b><span class=\"evim-c-5175696574\">Alpha</span></b>"));
+    assert!(source.contains("<b><span class=\"viem-c-5175696574\">Alpha</span></b>"));
     let inline = source.replace(
-        "class=\"evim-c-5175696574\"",
-        "class=\"evim-c-5175696574\" style='font-weight: 800'",
+        "class=\"viem-c-5175696574\"",
+        "class=\"viem-c-5175696574\" style='font-weight: 800'",
     );
     let parsed = html(&inline);
     assert!(parsed.projection().style_spans().iter().any(|span|matches!(&span.application,StyleApplication::Direct(properties)if properties.weight==Some(800))));
@@ -775,7 +775,7 @@ fn character_assignments_use_named_layers_and_inline_overrides_win() {
 
 #[test]
 fn unsupported_owned_version_and_foreign_css_are_passive_and_unchanged() {
-    let source="<style id=\"evim-styles\" data-evim-version=\"2\">.evim-c-41 { --evim-style-id: \"A\"; color: red; }</style><p class='evim-c-41'>Text</p>";
+    let source="<style id=\"viem-styles\" data-viem-version=\"2\">.viem-c-41 { --viem-style-id: \"A\"; color: red; }</style><p class='viem-c-41'>Text</p>";
     let mut document = html(source);
     assert_eq!(document.text(), "Text");
     assert_eq!(document.source_bytes(), source.as_bytes());
@@ -792,8 +792,8 @@ fn unsupported_owned_version_and_foreign_css_are_passive_and_unchanged() {
 
 #[test]
 fn source_heading_inspector_field_edits_write_a_rule_and_are_undoable() {
-    use evim_core::layout::MockTextMeasurementProvider;
-    use evim_core::{Core, CoreEvent};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
     let mut core = Core::new(html("<h2 data-keep='yes'>Heading</h2><p>Body</p>"));
     let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 100.0);
     let document = core.document();
@@ -879,7 +879,7 @@ fn deleting_assigned_style_removes_only_its_rule_and_class_and_rebases_children(
     assert_eq!(committed.summary().source_patches().len(), 3);
     let source = String::from_utf8(document.source_bytes()).unwrap();
     assert!(source.contains("<p data-keep='yes'>"));
-    assert!(!source.contains("evim-c-506172656e74"));
+    assert!(!source.contains("viem-c-506172656e74"));
     assert_eq!(
         document
             .projection()
@@ -987,8 +987,8 @@ fn paragraph_heading_assignment_changes_only_tag_names_and_keeps_untouched_attri
 
 #[test]
 fn named_definition_edit_invalidates_visible_metrics_in_a_large_document() {
-    use evim_core::layout::MockTextMeasurementProvider;
-    use evim_core::{Core, CoreEvent};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
     let mut document = html("<p>Paragraph text</p>".repeat(2_000).as_str());
     definition(
         &mut document,
@@ -1010,7 +1010,7 @@ fn named_definition_edit_invalidates_visible_metrics_in_a_large_document() {
     .unwrap();
     let source = String::from_utf8(document.source_bytes())
         .unwrap()
-        .replace("<p>", "<p class=\"evim-p-426f647954657874\">");
+        .replace("<p>", "<p class=\"viem-p-426f647954657874\">");
     let mut core = Core::new(html(&source));
     let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 100.0);
     let before = core.layout(view).unwrap().snapshot().unwrap().rows[0].clusters[0].advance;

@@ -1,5 +1,5 @@
-use evim_core::document::{CharacterProperties, FontSlant, StyleApplication};
-use evim_core::{Document, Encoding, Format};
+use viem_core::document::{CharacterProperties, FontSlant, StyleApplication};
+use viem_core::{Document, Encoding, Format};
 
 fn open(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap()
@@ -104,7 +104,7 @@ fn super_and_sub_normalize_against_effective_size_and_reopen_as_exact_points() {
     }
     let mut document = open("<h2><span style='vertical-align:super'>Text</span></h2>");
     assert_eq!(direct(&document, 0).baseline_shift, Some(22.0 / 3.0));
-    use evim_core::document::*;
+    use viem_core::document::*;
     let mut heading = document
         .projection()
         .style_sheet()

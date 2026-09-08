@@ -1,7 +1,7 @@
 import AppKit
 import XCTest
 
-@testable import EvimAppShell
+@testable import ViemAppShell
 
 @MainActor
 final class EVDocumentWindowControllerTests: XCTestCase {
@@ -289,7 +289,7 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     let first = EVDocument(editorBackend: firstBackend)
     let second = EVDocument(editorBackend: secondBackend)
     let file = FileManager.default.temporaryDirectory.appendingPathComponent(
-      "evim-pane-\(UUID().uuidString).txt")
+      "viem-pane-\(UUID().uuidString).txt")
     try Data().write(to: file)
     defer { try? FileManager.default.removeItem(at: file) }
     second.fileURL = file
@@ -344,7 +344,7 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     let firstBackend = Backend()
     let first = EVDocument(editorBackend: firstBackend)
     let second = EVDocument(editorBackend: Backend())
-    let urls = ["first", "second"].map { URL(fileURLWithPath: "/tmp/evim-drop-\(UUID().uuidString)-\($0).txt") }
+    let urls = ["first", "second"].map { URL(fileURLWithPath: "/tmp/viem-drop-\(UUID().uuidString)-\($0).txt") }
     first.fileURL = urls[0]; second.fileURL = urls[1]
     for document in [original, first, second] { NSDocumentController.shared.addDocument(document) }
     defer { for document in [original, first, second] { document.close() } }
@@ -370,7 +370,7 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     let controller = try XCTUnwrap(original.windowControllers.first as? EVDocumentWindowController)
     let incomingBackend = Backend()
     let incoming = EVDocument(editorBackend: incomingBackend)
-    let url = URL(fileURLWithPath: "/tmp/evim-drop-\(UUID().uuidString).txt")
+    let url = URL(fileURLWithPath: "/tmp/viem-drop-\(UUID().uuidString).txt")
     incoming.fileURL = url
     incoming.makeWindowControllers()
     NSDocumentController.shared.addDocument(incoming)
@@ -393,7 +393,7 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     original.makeWindowControllers()
     let controller = try XCTUnwrap(original.windowControllers.first as? EVDocumentWindowController)
     let incoming = EVDocument(editorBackend: Backend())
-    let url = URL(fileURLWithPath: "/tmp/evim-drop-\(UUID().uuidString).txt")
+    let url = URL(fileURLWithPath: "/tmp/viem-drop-\(UUID().uuidString).txt")
     defer { original.close(); incoming.close() }
     var resume: (@MainActor (EVDocument?, Error?) -> Void)?
     let done = expectation(description: "delayed open")

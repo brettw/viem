@@ -1,4 +1,4 @@
-use evim_core::document::{
+use viem_core::document::{
     BlockProperties, BlockRole, BlockStyle, CharacterProperties, CharacterStyle,
     ConfigurationStyleIntent, Document, Encoding, FileFormat, Format, ModelChangeKind,
     ModelTransactionError, PersistedStyleIntent, PipelineCapabilityDecision, PipelineEditIntent,
@@ -325,7 +325,7 @@ fn document_root_configuration_is_undoable_and_reports_precise_layers() {
             &document,
             ConfigurationStyleIntent::SetDocumentCanvas(BlockProperties {
                 padding_left: Some(23.0),
-                background: Some(evim_core::document::Color {
+                background: Some(viem_core::document::Color {
                     red: 0.1,
                     green: 0.2,
                     blue: 0.3,

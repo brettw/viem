@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "scope": "Current eVim normative command matrix, adopted options and GAPS feature-family dispositions; not an exhaustive Vim index.",
+  "scope": "Current Viem normative command matrix, adopted options and GAPS feature-family dispositions; not an exhaustive Vim index.",
   "entries": [
     {
       "id": "command-surface",
@@ -131,7 +131,7 @@
     {
       "id": "vim-option-universe",
       "status": "rejected",
-      "decision": "Only actual eVim settings are accepted; no inert aliases, synthetic option types or a second Vim configuration authority.",
+      "decision": "Only actual Viem settings are accepted; no inert aliases, synthetic option types or a second Vim configuration authority.",
       "tests": []
     },
     {

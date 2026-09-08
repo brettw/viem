@@ -1,12 +1,12 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor final class EVCommandPromptFilenameCompletionTests: XCTestCase {
     private func makeSurface() throws -> (URL, EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession, NSWindow) {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-completion-\(UUID())", isDirectory: true)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-completion-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let backend = EVCoreDocumentBackend()
         try backend.read(source: Data("document".utf8), typeName: "public.plain-text")
@@ -122,7 +122,7 @@ import XCTest
         XCTAssertNil(surface.commandLine?.prompt)
         surface.editorView.keyDown(with: try key(48, modifiers: .shift))
         XCTAssertEqual(try backend.formattedText(), "\tdocument")
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_INSERT))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
     }
 
 }

@@ -1,7 +1,7 @@
 import AppKit
 import XCTest
 
-@testable import EvimAppShell
+@testable import ViemAppShell
 
 @MainActor
 final class EVDocumentLifecycleTests: XCTestCase {
@@ -145,7 +145,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
         backend.serializedData = Data("saved by backend".utf8)
         let document = EVDocument(editorBackend: backend)
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("evim-document-tests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("viem-document-tests-\(UUID().uuidString)", isDirectory: true)
         let inputURL = directory.appendingPathComponent("input.md")
         let outputURL = directory.appendingPathComponent("output.md")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -228,7 +228,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
             "the document lifecycle test must begin without process-global documents"
         )
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("evim-open-recent-tests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("viem-open-recent-tests-\(UUID().uuidString)", isDirectory: true)
         let inputURL = directory.appendingPathComponent("opened.txt")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try Data().write(to: inputURL)
@@ -259,7 +259,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
         backend.persistenceState = .init(isDirty: true)
         let document = EVDocument(editorBackend: backend)
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("evim-save-tests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("viem-save-tests-\(UUID().uuidString)", isDirectory: true)
         let outputURL = directory.appendingPathComponent("saved.txt")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -298,7 +298,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
         )
 
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("evim-cross-format-tests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("viem-cross-format-tests-\(UUID().uuidString)", isDirectory: true)
         let originalURL = directory.appendingPathComponent("original.md")
         let destinationURL = directory.appendingPathComponent("converted.txt")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -339,7 +339,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
         backend.persistenceState = .init(isDirty: true)
         let document = EVDocument(editorBackend: backend)
         let missingParent = FileManager.default.temporaryDirectory
-            .appendingPathComponent("evim-missing-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("viem-missing-\(UUID().uuidString)", isDirectory: true)
         let outputURL = missingParent.appendingPathComponent("saved.txt")
 
         let completion = expectation(description: "failed native save")
@@ -366,7 +366,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
         backend.persistenceState = .init(isDirty: true)
         let document = EVDocument(editorBackend: backend)
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("evim-save-to-tests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("viem-save-to-tests-\(UUID().uuidString)", isDirectory: true)
         let outputURL = directory.appendingPathComponent("copy.txt")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -396,7 +396,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
         backend.persistenceState = .init(isDirty: true)
         let document = EVDocument(editorBackend: backend)
         let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("evim-unwritten-\(UUID().uuidString).txt")
+            .appendingPathComponent("viem-unwritten-\(UUID().uuidString).txt")
 
         let completion = expectation(description: "rejected native save")
         var completionError: Error?

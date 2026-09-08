@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVScrollWheelTests: XCTestCase {
@@ -71,7 +71,7 @@ final class EVScrollWheelTests: XCTestCase {
         let firstRow = try XCTUnwrap(unwrapped.rows.first)
         let discreteRowDistance = max(CGFloat(firstRow.line_advance), 1)
         let maximumLeft = surface.viewportState.flags
-            & UInt32(EVIM_VIEWPORT_STATE_MAXIMUM_LEFT_EXACT) != 0
+            & UInt32(VIEM_VIEWPORT_STATE_MAXIMUM_LEFT_EXACT) != 0
             ? CGFloat(surface.viewportState.maximum_left)
             : max(
                 0,
@@ -104,7 +104,7 @@ final class EVScrollWheelTests: XCTestCase {
         surface.performInput { _ = try session.setViewportOrigin(left: 40) }
         XCTAssertGreaterThan(surface.viewportState.left, 0)
         surface.performInput { _ = try session.setWrap(true) }
-        XCTAssertNotEqual(surface.viewportState.flags & UInt32(EVIM_VIEWPORT_STATE_WRAP), 0)
+        XCTAssertNotEqual(surface.viewportState.flags & UInt32(VIEM_VIEWPORT_STATE_WRAP), 0)
         XCTAssertEqual(surface.viewportState.maximum_left, 0, accuracy: 0.01)
         XCTAssertEqual(surface.viewportState.left, 0, accuracy: 0.01)
 
@@ -120,7 +120,7 @@ final class EVScrollWheelTests: XCTestCase {
     func testWrappedUnbreakableWordKeepsHorizontalScrollingAvailable() throws {
         let source = String(repeating: "W", count: 240)
         let (backend, surface) = try makeSurface(source: source, size: NSSize(width: 240, height: 150))
-        XCTAssertNotEqual(surface.viewportState.flags & UInt32(EVIM_VIEWPORT_STATE_WRAP), 0)
+        XCTAssertNotEqual(surface.viewportState.flags & UInt32(VIEM_VIEWPORT_STATE_WRAP), 0)
         XCTAssertEqual(surface.layoutSnapshot?.rows.count, 1)
         XCTAssertGreaterThan(surface.viewportState.maximum_left, 80)
         surface.editorView.scrollWheel(with: WheelEvent(deltaX: -80, precise: true))

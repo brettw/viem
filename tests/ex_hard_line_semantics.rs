@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
-use evim_core::command::ex::parse_ex;
-use evim_core::command::ex_execute::{
+use viem_core::command::ex::parse_ex;
+use viem_core::command::ex_execute::{
     execute_ex, ExExecutionContext, ExExecutionState, ExOutcome, ExRegisterKind, ExRegisterReader,
     ExRegisterValue,
 };
-use evim_core::command::{CommandInterpreter, InputEvent, Key};
-use evim_core::document::{Document, Encoding, FileFormat, Format};
+use viem_core::command::{CommandInterpreter, InputEvent, Key};
+use viem_core::document::{Document, Encoding, FileFormat, Format};
 
 #[derive(Default)]
 struct Registers(BTreeMap<char, ExRegisterValue>);

@@ -1,6 +1,6 @@
-use evim_core::document::{Encoding, Format};
-use evim_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
-use evim_core::{Core, CoreEvent, Document};
+use viem_core::document::{Encoding, Format};
+use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
+use viem_core::{Core, CoreEvent, Document};
 
 #[test]
 fn consecutive_source_breaks_never_create_empty_semantic_style_spans() {

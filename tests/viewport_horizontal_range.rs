@@ -1,5 +1,5 @@
-use evim_core::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
-use evim_core::{Core, CoreEvent, Document};
+use viem_core::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
+use viem_core::{Core, CoreEvent, Document};
 
 #[test]
 fn horizontal_range_tracks_intersecting_rows_and_vertical_scroll_clamps_left() {

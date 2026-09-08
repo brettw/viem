@@ -44,8 +44,8 @@ to the eye icon and Visual Lines. Each Up then moves one displayed row. Insert
 arrows also use displayed rows. This specified distinction was preserved.
 
 Tests and computer use run with the isolated validation app and
-`EVIM_CONFIG_DIR=/private/tmp/evim-quality-config`. Disposable fixtures are under
-`/private/tmp/evim-html-eof-validation`; user documents are not edited.
+`VIEM_CONFIG_DIR=/private/tmp/viem-quality-config`. Disposable fixtures are under
+`/private/tmp/viem-html-eof-validation`; user documents are not edited.
 
 ## Regression coverage
 
@@ -56,7 +56,7 @@ Up/Down destination, plus the physical/visual navigation distinction.
 `EVHTMLEOFEditingTests` covers native text input, list exit, hyphen insertion,
 reopen, undo, and visible caret movement at ordinary and doubled zoom. Both new
 native tests failed against the original release core before the fix; the red
-log is `/private/tmp/evim-html-eof-native-red.log`.
+log is `/private/tmp/viem-html-eof-native-red.log`.
 
 Final validation passed: 1,465 Rust tests (one manual benchmark ignored),
 299 XCTest tests, and 26 Swift Testing tests. The native geometry regression
@@ -66,6 +66,6 @@ shaping caret. The release build and signing succeeded, and
 
 Final logs:
 
-- `/private/tmp/evim-html-eof-final-core.log`
-- `/private/tmp/evim-html-eof-final-native2.log`
-- `/private/tmp/evim-html-eof-final-build.log`
+- `/private/tmp/viem-html-eof-final-core.log`
+- `/private/tmp/viem-html-eof-final-native2.log`
+- `/private/tmp/viem-html-eof-final-build.log`

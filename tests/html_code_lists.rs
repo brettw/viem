@@ -1,4 +1,4 @@
-use evim_core::document::{BlockKind, Document, Encoding, Format, ModelRequest, StyleId};
+use viem_core::document::{BlockKind, Document, Encoding, Format, ModelRequest, StyleId};
 
 fn html(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap()
@@ -221,8 +221,8 @@ fn source_pre_partition_ignores_pre_spelling_in_inert_and_opaque_content() {
 
 #[test]
 fn large_pre_edits_preserve_paragraph_identity_and_bounded_invalidation_in_both_views() {
-    use evim_core::document::{ProjectionWorkScope, TextEdit};
-    use evim_core::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
+    use viem_core::document::{ProjectionWorkScope, TextEdit};
+    use viem_core::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
     let source = "<p>Before</p>\n<pre><code>".to_owned()
         + &"Code body line\n".repeat(10_000)
         + "Last</code></pre>\n<p>After</p>";

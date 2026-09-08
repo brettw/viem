@@ -1,10 +1,10 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
-import EvimCoreTextProvider
+import CViemCore
+import ViemAppShell
+import ViemCoreTextProvider
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVLayoutPaintIntegrationTests: XCTestCase {
   @MainActor
@@ -21,8 +21,8 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
     XCTAssertEqual(CoreTextMeasurementProvider.defaultFontSize, 14)
     assertRGBA(paint.info.canvas_background, red: 1, green: 1, blue: 1, alpha: 1)
     assertRGBA(paint.info.default_paint.foreground, red: 0, green: 0, blue: 0, alpha: 1)
-    XCTAssertEqual(paint.info.default_paint.flags, UInt32(EVIM_TEXT_PAINT_DEFAULT_FOREGROUND))
-    XCTAssertEqual(paint.info.flags, UInt32(EVIM_LAYOUT_PAINT_DEFAULT_CANVAS))
+    XCTAssertEqual(paint.info.default_paint.flags, UInt32(VIEM_TEXT_PAINT_DEFAULT_FOREGROUND))
+    XCTAssertEqual(paint.info.flags, UInt32(VIEM_LAYOUT_PAINT_DEFAULT_CANVAS))
     XCTAssertTrue(paint.runs.isEmpty)
 
     let image = try render(surface.editorView)
@@ -49,14 +49,14 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
     info.canvas_background = rgba(red: 0.1, green: 0.2, blue: 0.3, alpha: 1)
     info.default_paint = textPaint(foreground: rgba(red: 0, green: 0, blue: 0, alpha: 1))
     info.paint_run_count = 1
-    var run = EvimPaintStyleRunV1()
-    run.struct_size = UInt32(MemoryLayout<EvimPaintStyleRunV1>.size)
+    var run = ViemPaintStyleRunV1()
+    run.struct_size = UInt32(MemoryLayout<ViemPaintStyleRunV1>.size)
     run.text_start = second.text_start
     run.text_end = second.text_end
     run.paint = textPaint(
-      flags: UInt32(EVIM_TEXT_PAINT_HAS_BACKGROUND)
-        | UInt32(EVIM_TEXT_PAINT_UNDERLINE)
-        | UInt32(EVIM_TEXT_PAINT_STRIKETHROUGH),
+      flags: UInt32(VIEM_TEXT_PAINT_HAS_BACKGROUND)
+        | UInt32(VIEM_TEXT_PAINT_UNDERLINE)
+        | UInt32(VIEM_TEXT_PAINT_STRIKETHROUGH),
       foreground: rgba(red: 1, green: 0, blue: 0, alpha: 1),
       background: rgba(red: 1, green: 1, blue: 0, alpha: 1)
     )
@@ -194,7 +194,7 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
       surface.loadViewIfNeeded()
       let session = try XCTUnwrap(surface.session)
       if type == EVDocument.markdownSourceType { _ = try session.setParagraphFlow(true) }
-      var previousIdentity: EvimLayoutSnapshotIdentityV1?
+      var previousIdentity: ViemLayoutSnapshotIdentityV1?
       for width in [420, 280] {
         surface.view.frame = NSRect(x: 0, y: 0, width: width, height: 200)
         surface.viewDidLayout()
@@ -270,7 +270,7 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
 
   @MainActor
   private func unionOfInkBounds(
-    _ clusters: [EvimPositionedClusterV1],
+    _ clusters: [ViemPositionedClusterV1],
     in view: EVEditorView
   ) -> NSRect? {
     clusters.reduce(nil as NSRect?) { result, cluster in
@@ -297,8 +297,8 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
     return result
   }
 
-  private func rgba(red: Float, green: Float, blue: Float, alpha: Float) -> EvimRgbaV1 {
-    var value = EvimRgbaV1()
+  private func rgba(red: Float, green: Float, blue: Float, alpha: Float) -> ViemRgbaV1 {
+    var value = ViemRgbaV1()
     value.red = red
     value.green = green
     value.blue = blue
@@ -308,11 +308,11 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
 
   private func textPaint(
     flags: UInt32 = 0,
-    foreground: EvimRgbaV1,
-    background: EvimRgbaV1 = EvimRgbaV1()
-  ) -> EvimTextPaintV1 {
-    var value = EvimTextPaintV1()
-    value.struct_size = UInt32(MemoryLayout<EvimTextPaintV1>.size)
+    foreground: ViemRgbaV1,
+    background: ViemRgbaV1 = ViemRgbaV1()
+  ) -> ViemTextPaintV1 {
+    var value = ViemTextPaintV1()
+    value.struct_size = UInt32(MemoryLayout<ViemTextPaintV1>.size)
     value.flags = flags
     value.foreground = foreground
     value.background = background
@@ -320,7 +320,7 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
   }
 
   private func assertRGBA(
-    _ actual: EvimRgbaV1,
+    _ actual: ViemRgbaV1,
     red: Float,
     green: Float,
     blue: Float,

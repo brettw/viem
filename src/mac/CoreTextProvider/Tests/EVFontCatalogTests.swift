@@ -1,14 +1,14 @@
-import CEvimCore
+import CViemCore
 import CoreText
 import Testing
 
-@testable import EvimCoreTextProvider
+@testable import ViemCoreTextProvider
 
 @Suite("Font face and OpenType catalog")
 struct EVFontCatalogTests {
   @Test func portableMonospaceResolvesFixedPitchAcrossTraitsAndGenerationChanges() {
     for bold in [false, true] {
-      for slant in [EVIM_FONT_SLANT_UPRIGHT, EVIM_FONT_SLANT_ITALIC] {
+      for slant in [VIEM_FONT_SLANT_UPRIGHT, VIEM_FONT_SLANT_ITALIC] {
         let font = resolveFont(families: ["monospace"], size: 14,
           cssWeight: bold ? 700 : 400, slant: UInt32(slant), features: [], relativeBold: bold)
         #expect(CTFontGetSymbolicTraits(font).contains(.traitMonoSpace))
@@ -46,12 +46,12 @@ struct EVFontCatalogTests {
       baseWeight: light.weight, faces: faces.filter { !$0.italic })
     let font = resolveFont(
       families: [light.postScriptName], size: 16,
-      cssWeight: CGFloat(light.weight + 300), slant: UInt32(EVIM_FONT_SLANT_UPRIGHT),
+      cssWeight: CGFloat(light.weight + 300), slant: UInt32(VIEM_FONT_SLANT_UPRIGHT),
       features: [], relativeBold: true)
     #expect(EVFontCatalog.weight(of: font) == expected)
     let off = resolveFont(
       families: [light.postScriptName], size: 16,
-      cssWeight: CGFloat(light.weight), slant: UInt32(EVIM_FONT_SLANT_UPRIGHT), features: [])
+      cssWeight: CGFloat(light.weight), slant: UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [])
     #expect(CTFontCopyPostScriptName(off) as String == light.postScriptName)
   }
   @Test func catalogFeaturesAreFontOwnedAndDeterministic() {
@@ -65,7 +65,7 @@ struct EVFontCatalogTests {
   @Test func unavailableItalicRequestsSyntheticTreatment() {
     let font = resolveFont(
       families: ["Papyrus"], size: 16, cssWeight: 400,
-      slant: UInt32(EVIM_FONT_SLANT_ITALIC), features: [])
+      slant: UInt32(VIEM_FONT_SLANT_ITALIC), features: [])
     #expect(CTFontGetSymbolicTraits(font).contains(.traitItalic) || CTFontGetMatrix(font).c != 0)
   }
   @Test func generationChangeRetiresCatalogAndKeepsNewFaceRequestsValid() {

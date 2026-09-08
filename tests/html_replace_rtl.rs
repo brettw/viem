@@ -1,10 +1,10 @@
 //! A collapsed HTML space can have whitespace contributors on both sides of
 //! an ignored NUL. Replace must consume that whole space while preserving the
 //! ignored source bytes and its per-grapheme restoration journal.
-use evim_core::command::{CommandStatus, InputEvent, Key, Mode};
-use evim_core::document::{Document, DocumentError, Encoding, Format, SourceArtifactDigest};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreError, CoreEvent, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key, Mode};
+use viem_core::document::{Document, DocumentError, Encoding, Format, SourceArtifactDigest};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreError, CoreEvent, ViewId};
 
 fn open(source: &str) -> (Core<MockTextMeasurementProvider>, ViewId) {
     let document =

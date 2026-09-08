@@ -4,7 +4,7 @@
 #[path = "fuzz_backend/support.rs"]
 mod support;
 
-use evim_core::document::{Document, Encoding, Format, HistoryRetentionPolicy};
+use viem_core::document::{Document, Encoding, Format, HistoryRetentionPolicy};
 use serde_json::json;
 
 #[global_allocator]

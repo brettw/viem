@@ -1,7 +1,7 @@
-use evim_core::command::{CommandStatus, InputEvent, Key, Mode};
-use evim_core::document::{Document, HistoryRetentionPolicy};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key, Mode};
+use viem_core::document::{Document, HistoryRetentionPolicy};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, ViewId};
 
 fn input(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, input: InputEvent) {
     let outcome = core.handle(view, CoreEvent::Input(input)).unwrap();

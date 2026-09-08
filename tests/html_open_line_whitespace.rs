@@ -1,10 +1,10 @@
 //! Minimized from fuzz campaign 20260907T193459Z-15419, seed 1, action 1100.
 //! The malformed input was not essential: O at a wrapped row can move its
 //! insertion boundary when the preceding ordinary space becomes NBSP.
-use evim_core::command::{CommandStatus, InputEvent, Key, Mode};
-use evim_core::document::{BoundaryAffinity, Document, Encoding, Format, SourceArtifactDigest};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key, Mode};
+use viem_core::document::{BoundaryAffinity, Document, Encoding, Format, SourceArtifactDigest};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, ViewId};
 
 fn open(source: &str, width: f32, at: usize) -> (Core<MockTextMeasurementProvider>, ViewId) {
     let document =

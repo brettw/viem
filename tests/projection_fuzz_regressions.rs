@@ -1,4 +1,4 @@
-use evim_core::document::{Document, Encoding, FileFormat, Format};
+use viem_core::document::{Document, Encoding, FileFormat, Format};
 
 #[test]
 fn authored_marker_on_markdown_source_continuation_stays_literal() {
@@ -74,7 +74,7 @@ fn malformed_html_source_prefix_edit_recomputes_prose_flow_boundaries() {
 
 #[test]
 fn counted_open_lines_in_markdown_lists_keep_structural_ownership_and_repeat() {
-    use evim_core::command::{CommandInterpreter, InputEvent, Key};
+    use viem_core::command::{CommandInterpreter, InputEvent, Key};
     for source in [
         "- first\n  continuation\n- second",
         "3. first\n   continuation\n1. second",
@@ -106,7 +106,7 @@ fn counted_open_lines_in_markdown_lists_keep_structural_ownership_and_repeat() {
             assert_eq!(document.text(), expected, "{source:?} above={above}");
             assert!(document.projection().blocks().iter().all(|block| matches!(
                 block.kind,
-                evim_core::document::BlockKind::ListItem { .. }
+                viem_core::document::BlockKind::ListItem { .. }
             )));
             let once = document.source_bytes();
             commands
@@ -127,7 +127,7 @@ fn counted_open_lines_in_markdown_lists_keep_structural_ownership_and_repeat() {
 
 #[test]
 fn source_open_lines_preserve_paired_separator_rows_and_code_breaks() {
-    use evim_core::document::ModelRequest;
+    use viem_core::document::ModelRequest;
     for source in [
         "👩‍💻\n\na\n\n",
         "a\nb",
@@ -192,7 +192,7 @@ fn source_open_lines_preserve_paired_separator_rows_and_code_breaks() {
 
 #[test]
 fn contextual_markdown_sort_owners_return_precise_atomic_policy() {
-    use evim_core::document::{DocumentError, ModelRequest, ModelTransactionError};
+    use viem_core::document::{DocumentError, ModelRequest, ModelTransactionError};
     for source in [
         "\tcode\n\nprose",
         "```\ncode\n```\n\nprose",
@@ -229,7 +229,7 @@ fn contextual_markdown_sort_owners_return_precise_atomic_policy() {
 
 #[test]
 fn backspace_new_empty_markdown_item_removes_its_owned_label() {
-    use evim_core::command::{CommandInterpreter, InputEvent, Key};
+    use viem_core::command::{CommandInterpreter, InputEvent, Key};
     for source in [
         "- first\n- second",
         "5. first\n6. second",
@@ -344,7 +344,7 @@ fn html_join_of_paragraphs_in_one_list_item_retains_list_and_inline_scopes() {
                 assert_eq!(document.projection().blocks().len(), 2);
                 assert!(document.projection().blocks().iter().all(|block| matches!(
                     block.kind,
-                    evim_core::document::BlockKind::ListItem { .. }
+                    viem_core::document::BlockKind::ListItem { .. }
                 )));
                 assert!(document.undo());
                 assert_eq!(document.source_bytes(), original);
@@ -402,7 +402,7 @@ fn source_tail_paragraph_body_edit_keeps_terminal_source_ending() {
 
 #[test]
 fn source_body_edit_after_large_code_block_keeps_projection_work_regional() {
-    use evim_core::document::{ModelRequest, ProjectionWorkScope, TextEdit};
+    use viem_core::document::{ModelRequest, ProjectionWorkScope, TextEdit};
     let source = format!("```\n{}```\n\nTail.\n", "code line\n".repeat(10_000));
     let mut document = Document::from_bytes(
         source.as_bytes().to_vec(),
@@ -444,7 +444,7 @@ fn source_body_edit_after_large_code_block_keeps_projection_work_regional() {
 
 #[test]
 fn markdown_source_opening_fence_prefix_can_be_replaced() {
-    use evim_core::document::{ModelRequest, TextEdit};
+    use viem_core::document::{ModelRequest, TextEdit};
 
     for source in [
         "```",
@@ -483,7 +483,7 @@ fn markdown_source_opening_fence_prefix_can_be_replaced() {
 
 #[test]
 fn markdown_source_fence_edit_requires_explicit_source_intent_when_breaks_reinterpret() {
-    use evim_core::document::{DocumentError, ModelRequest, ModelTransactionError, TextEdit};
+    use viem_core::document::{DocumentError, ModelRequest, ModelTransactionError, TextEdit};
 
     // Removing the old opener makes the old closer open an unclosed code block:
     // its following paragraph separator becomes two literal code breaks. In
@@ -554,7 +554,7 @@ fn markdown_source_fence_edit_requires_explicit_source_intent_when_breaks_reinte
 
 fn assert_fence_prefix_edit(
     document: &mut Document,
-    prepared: evim_core::document::PreparedModelTransaction,
+    prepared: viem_core::document::PreparedModelTransaction,
     expected_source: &str,
     expected_text: &str,
 ) {

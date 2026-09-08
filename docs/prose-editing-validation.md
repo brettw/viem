@@ -68,7 +68,7 @@ Paragraphs** option, HTML trailing blank lines, and inline-formatting exit.
 
 Native tests use `scripts/test-mac.sh`, which isolates configuration from the
 user's preferences. Computer-use checks run in a separately identified
-`eVimTodoValidation.app` with fixtures and configuration under `/private/tmp`.
+`ViemTodoValidation.app` with fixtures and configuration under `/private/tmp`.
 The user's running editor is not restarted or used for testing.
 
 ## Final results
@@ -76,7 +76,7 @@ The user's running editor is not restarted or used for testing.
 - `cargo test --offline --all-targets --no-fail-fast`: **1,368 passed**.
 - `scripts/test-mac.sh`: **267 XCTest + 26 Swift Testing tests passed**.
 - `cargo fmt --all -- --check`, `git diff --check`, and compatibility JSON
-  validation pass. `.build/eVim.app` was rebuilt and signed after the final
+  validation pass. `.build/Viem.app` was rebuilt and signed after the final
   checked source-caret change.
 - Computer use verified Visual/ranged/unique/numeric sorting and undo, HTML
   repeated Return and saved `<br>` rows, and actual source caret movement past

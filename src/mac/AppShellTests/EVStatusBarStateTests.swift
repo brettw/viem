@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import EvimAppShell
+@testable import ViemAppShell
 
 final class EVStatusBarStateTests: XCTestCase {
     func testNewDocumentStatusDefaults() {

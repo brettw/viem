@@ -1952,8 +1952,8 @@ pub(super) fn apply_css(
                     character.size = Some(size);
                 }
             }
-            "--evim-bold" => character.bold = value.parse().ok(),
-            "--evim-base-weight" => {
+            "--viem-bold" => character.bold = value.parse().ok(),
+            "--viem-base-weight" => {
                 character.weight = value.parse::<u16>().ok().filter(|n| (1..=1000).contains(n))
             }
             "font-weight" => {
@@ -2116,8 +2116,8 @@ pub(super) fn character_css(properties: &CharacterProperties) -> String {
             base
         };
         declarations.push(format!("font-weight: {weight}"));
-        declarations.push(format!("--evim-base-weight: {base}"));
-        declarations.push(format!("--evim-bold: {bold}"));
+        declarations.push(format!("--viem-base-weight: {base}"));
+        declarations.push(format!("--viem-bold: {bold}"));
     } else if let Some(weight) = properties.weight {
         declarations.push(format!("font-weight: {weight}"));
     }

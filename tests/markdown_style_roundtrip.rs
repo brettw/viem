@@ -1,4 +1,4 @@
-use evim_core::document::{
+use viem_core::document::{
     Document, DocumentError, Encoding, Format, ModelChangeKind, ModelRequest, SemanticInlineStyle,
     StyleApplication,
 };

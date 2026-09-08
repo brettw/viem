@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import EvimAppShell
+@testable import ViemAppShell
 
 @MainActor
 final class EVDocumentCloseReviewTests: XCTestCase {
@@ -169,7 +169,7 @@ final class EVDocumentCloseReviewTests: XCTestCase {
         let secondBackend = Backend()
         let second = EVDocument(editorBackend: secondBackend)
         installDecisions(on: second)
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("evim-close-\(UUID().uuidString).txt")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("viem-close-\(UUID().uuidString).txt")
         try Data().write(to: url)
         second.fileURL = url
         NSDocumentController.shared.addDocument(second)

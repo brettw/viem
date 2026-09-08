@@ -1,11 +1,11 @@
-use evim_core::document::{
+use viem_core::document::{
     Document, Encoding, Format, ModelRequest, ProjectionWorkScope, TextEdit,
 };
 
 #[test]
 fn removing_last_rtf_group_character_retains_empty_typing_context() {
-    use evim_core::document::FontSlant;
-    use evim_core::layout::DocumentLayoutStyles;
+    use viem_core::document::FontSlant;
+    use viem_core::layout::DocumentLayoutStyles;
     for encoding in [Encoding::Utf8, Encoding::Latin1] {
         let original = r"{\rtf1 Before {\i x} after}";
         let bytes: Vec<u8> = match encoding {
@@ -222,7 +222,7 @@ fn multiline_paragraph_edits_reparse_only_the_affected_paragraph() {
 
 #[test]
 fn native_typed_payloads_use_the_bounded_rich_edit_path() {
-    use evim_core::document::{
+    use viem_core::document::{
         BoundaryAffinity, FormattedPayloadEdit, FormattedPayloadEditRequest, FormattedTextPayload,
     };
     let source = (0..15_000)

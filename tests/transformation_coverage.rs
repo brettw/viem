@@ -1,4 +1,4 @@
-use evim_core::document::{Document, Encoding, FileFormat, Format};
+use viem_core::document::{Document, Encoding, FileFormat, Format};
 
 fn encode(encoding: Encoding, text: &str, with_bom: bool) -> Vec<u8> {
     match encoding {

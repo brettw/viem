@@ -21,7 +21,7 @@ SPEC.loader.exec_module(fuzz)
 
 class SupervisorTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="evim-fuzz-test-")
+        self.temporary = tempfile.TemporaryDirectory(prefix="viem-fuzz-test-")
         self.directory = Path(self.temporary.name)
 
     def tearDown(self):

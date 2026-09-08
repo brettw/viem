@@ -1,9 +1,9 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVRecoveryCoreTests: XCTestCase {
@@ -12,13 +12,13 @@ final class EVRecoveryCoreTests: XCTestCase {
     let bytes = Data([0x23, 0x20, 0xe9, 0x0d, 0x62, 0x6f, 0x64, 0x79])
     let recovery = EVRecoverySnapshot(
       source: bytes, format: .markdownSource,
-      encoding: UInt32(EVIM_ENCODING_LATIN1), fileFormat: UInt32(EVIM_FILE_FORMAT_MAC),
+      encoding: UInt32(VIEM_ENCODING_LATIN1), fileFormat: UInt32(VIEM_FILE_FORMAT_MAC),
       documentID: 800, documentRevision: 200)
     try backend.restoreRecovery(recovery)
     XCTAssertEqual(try backend.formattedText(), "# é\nbody")
     XCTAssertEqual(backend.sourceFormat, .markdownSource)
-    XCTAssertEqual(backend.currentDocumentState.encoding, UInt32(EVIM_ENCODING_LATIN1))
-    XCTAssertEqual(backend.currentDocumentState.file_format, UInt32(EVIM_FILE_FORMAT_MAC))
+    XCTAssertEqual(backend.currentDocumentState.encoding, UInt32(VIEM_ENCODING_LATIN1))
+    XCTAssertEqual(backend.currentDocumentState.file_format, UInt32(VIEM_FILE_FORMAT_MAC))
     XCTAssertTrue(backend.persistenceState.isDirty)
     XCTAssertTrue(backend.persistenceState.isRecovered)
     let restored = try backend.recoverySnapshot()
@@ -53,7 +53,7 @@ final class EVRecoveryCoreTests: XCTestCase {
     surface.loadViewIfNeeded()
     let session = try XCTUnwrap(surface.session)
     surface.performInput { _ = try session.sendText(":w") }
-    surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ENTER)) }
+    surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
     let output = try XCTUnwrap(surface.commandOutput)
     XCTAssertTrue(output.contains("E45"))
     XCTAssertEqual(surface.statusBarState.message, "")

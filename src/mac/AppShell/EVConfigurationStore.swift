@@ -16,13 +16,13 @@ public final class EVConfigurationStore {
   public init(directory: URL? = nil, legacyDefaults: UserDefaults? = nil,
               manager: FileManager = .default) {
     self.manager = manager
-    let overriddenDirectory = ProcessInfo.processInfo.environment["EVIM_CONFIG_DIR"]
+    let overriddenDirectory = ProcessInfo.processInfo.environment["VIEM_CONFIG_DIR"]
     // Injected directories are isolated (tests, previews, portable profiles):
     // never consume the real application's legacy preferences there.
     let legacy = legacyDefaults ?? (directory == nil && overriddenDirectory == nil ? UserDefaults.standard : nil)
     self.directory = directory ?? overriddenDirectory.map {
       URL(fileURLWithPath: $0, isDirectory: true)
-    } ?? manager.homeDirectoryForCurrentUser.appendingPathComponent(".evim", isDirectory: true)
+    } ?? manager.homeDirectoryForCurrentUser.appendingPathComponent(".viem", isDirectory: true)
     let file = self.directory.appendingPathComponent("config.json")
     do {
       if manager.fileExists(atPath: file.path) {
@@ -155,7 +155,7 @@ public final class EVConfigurationStore {
     }
     return result
   }
-  private static func invalid(_ message: String) -> NSError { NSError(domain: "eVim.Configuration", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+  private static func invalid(_ message: String) -> NSError { NSError(domain: "Viem.Configuration", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
   private func invalid(_ message: String) -> NSError { Self.invalid(message) }
 }
 

@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVHTMLEOFEditingTests: XCTestCase {
@@ -83,8 +83,8 @@ final class EVHTMLEOFEditingTests: XCTestCase {
         // affinity fallback as the editor's insertion-indicator drawing.
         let requested = try? session.caretGeometry(offset: presentation.cursor_utf8_offset,
             affinity: presentation.cursor_affinity, in: snapshot.info)
-        let alternate = presentation.cursor_affinity == UInt32(EVIM_BOUNDARY_AFFINITY_UPSTREAM)
-            ? UInt32(EVIM_BOUNDARY_AFFINITY_DOWNSTREAM) : UInt32(EVIM_BOUNDARY_AFFINITY_UPSTREAM)
+        let alternate = presentation.cursor_affinity == UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
+            ? UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM) : UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
         return try (requested ?? session.caretGeometry(offset: presentation.cursor_utf8_offset,
             affinity: alternate, in: snapshot.info)).rect.y
     }

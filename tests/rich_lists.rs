@@ -1,6 +1,6 @@
-use evim_core::command::{CommandInterpreter, InputEvent, Key};
-use evim_core::document::{BlockKind, ListStyle};
-use evim_core::{Document, Encoding, Format};
+use viem_core::command::{CommandInterpreter, InputEvent, Key};
+use viem_core::document::{BlockKind, ListStyle};
+use viem_core::{Document, Encoding, Format};
 
 fn ordinals(document: &Document) -> Vec<u64> {
     document
@@ -84,7 +84,7 @@ fn rtf_list_wrappers_keep_inline_groups_balanced() {
     let text = document.text();
     let two = text.find("two").unwrap();
     assert!(!document.projection().style_spans().iter().any(|span|
-        span.range.contains(&two) && matches!(&span.application, evim_core::document::StyleApplication::Direct(p) if p.weight == Some(700))));
+        span.range.contains(&two) && matches!(&span.application, viem_core::document::StyleApplication::Direct(p) if p.weight == Some(700))));
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source);
 }
@@ -339,7 +339,7 @@ fn nested_html_list_children_belong_to_the_containing_multiparagraph_item() {
 
 #[test]
 fn continuation_paragraphs_align_with_list_body_and_preserve_local_layout_queries() {
-    use evim_core::layout::DocumentLayoutStyles;
+    use viem_core::layout::DocumentLayoutStyles;
     let mut source = String::from("<ul>");
     for _ in 0..2000 {
         source.push_str("<li><p>First</p><p>Continuation</p></li>");
@@ -462,7 +462,7 @@ fn empty_decorated_items_type_inside_the_innermost_formatting_context() {
         assert_eq!(document.text(), "é");
         assert!(document.projection().style_spans().iter().any(|span|
             span.range == (0..2) && matches!(&span.application,
-                evim_core::document::StyleApplication::Direct(properties) if properties.bold == Some(true))),
+                viem_core::document::StyleApplication::Direct(properties) if properties.bold == Some(true))),
             "{format:?}: {}", String::from_utf8_lossy(&document.source_bytes()));
         assert!(document.undo());
         assert_eq!(document.source_bytes(), source.as_bytes());
@@ -565,7 +565,7 @@ fn whole_line_delete_of_an_empty_decorated_item_changes_only_structure() {
         assert_eq!(document.text(), "");
         assert!(!document.projection().list_structure().lists.is_empty());
         document
-            .prepare_model_request(evim_core::document::ModelRequest::DeleteLines {
+            .prepare_model_request(viem_core::document::ModelRequest::DeleteLines {
                 document: document.id(),
                 revision: document.revision(),
                 range: 0..0,

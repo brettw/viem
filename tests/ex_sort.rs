@@ -1,9 +1,9 @@
-use evim_core::command::ex::{parse_ex, ExAction};
-use evim_core::command::ex_execute::{
+use viem_core::command::ex::{parse_ex, ExAction};
+use viem_core::command::ex_execute::{
     commit_ex, execute_ex, prepare_ex, ExExecutionContext, ExExecutionState, ExOutcome,
 };
-use evim_core::command::{CommandInterpreter, InputEvent, Key};
-use evim_core::document::{Document, Encoding, FileFormat, Format, ModelRequest};
+use viem_core::command::{CommandInterpreter, InputEvent, Key};
+use viem_core::document::{Document, Encoding, FileFormat, Format, ModelRequest};
 
 fn run(document: &mut Document, command: &str) -> ExOutcome {
     execute_ex(
@@ -374,7 +374,7 @@ fn unique_keeps_terminal_newline_and_one_source_row() {
 }
 #[test]
 fn sorted_line_identity_keeps_anchor_and_large_document_history() {
-    use evim_core::document::{Association, BoundaryAffinity, DeletionRecovery, MappingOutcome};
+    use viem_core::document::{Association, BoundaryAffinity, DeletionRecovery, MappingOutcome};
     let before = (0..10_000)
         .rev()
         .map(|n| format!("row{n:05}"))
@@ -444,10 +444,10 @@ fn numeric_overflow_saturates_and_pattern_resource_failure_is_atomic() {
     .is_err());
     assert_eq!(doc.source_bytes(), original);
     assert!(!doc.undo());
-    let invalid = evim_core::command::ex::ExCommand {
+    let invalid = viem_core::command::ex::ExCommand {
         range: None,
         bang: false,
-        action: ExAction::Sort(evim_core::command::ex::SortOptions {
+        action: ExAction::Sort(viem_core::command::ex::SortOptions {
             radix: Some(1),
             ..Default::default()
         }),
@@ -470,8 +470,8 @@ fn markdown_multiline_soft_paragraph_reorders_as_one_styled_line() {
 }
 #[test]
 fn coordinator_obeys_sort_cursor_even_when_new_ordinal_equals_old_zero() {
-    use evim_core::layout::MockTextMeasurementProvider;
-    use evim_core::{Core, CoreEvent};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
     for (format, before, command, expected_cursor) in [
         (
             Format::PlainText,
@@ -516,9 +516,9 @@ fn visual_line_sort_uses_selected_hard_line_range_and_one_undo() {
 }
 #[test]
 fn visual_character_line_and_block_enter_checked_hard_line_ex_ranges() {
-    use evim_core::command::Mode;
-    use evim_core::layout::MockTextMeasurementProvider;
-    use evim_core::{Core, CoreEvent};
+    use viem_core::command::Mode;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
     for (prefix, block, expected_range, expected) in [
         ("v2j", false, "1,3", "a\nb\nz\noutside"),
         ("Vj", false, "1,2", "a\nz\nb\noutside"),
@@ -553,9 +553,9 @@ fn visual_character_line_and_block_enter_checked_hard_line_ex_ranges() {
 }
 #[test]
 fn visual_ex_escape_remembers_selection_and_foreign_edit_makes_prefill_stale() {
-    use evim_core::command::{CommandStatus, Mode};
-    use evim_core::layout::MockTextMeasurementProvider;
-    use evim_core::{Core, CoreEvent};
+    use viem_core::command::{CommandStatus, Mode};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
     let mut core = Core::new(Document::new("z\na\noutside"));
     let first = core.add_view(MockTextMeasurementProvider::new(), 250., 200.);
     let second = core.add_view(MockTextMeasurementProvider::new(), 250., 200.);

@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>eVim</string>
+	<string>Viem</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
@@ -23,7 +23,7 @@
 				<string>public.plain-text</string>
 			</array>
 			<key>NSDocumentClass</key>
-			<string>EvimAppShell.EVDocument</string>
+			<string>ViemAppShell.EVDocument</string>
 		</dict>
 		<dict>
 			<key>CFBundleTypeExtensions</key>
@@ -42,7 +42,7 @@
 				<string>net.daringfireball.markdown</string>
 			</array>
 			<key>NSDocumentClass</key>
-			<string>EvimAppShell.EVDocument</string>
+			<string>ViemAppShell.EVDocument</string>
 		</dict>
 		<dict>
 			<key>CFBundleTypeExtensions</key>
@@ -59,7 +59,7 @@
 				<string>public.html</string>
 			</array>
 			<key>NSDocumentClass</key>
-			<string>EvimAppShell.EVDocument</string>
+			<string>ViemAppShell.EVDocument</string>
 		</dict>
 		<dict>
 			<key>CFBundleTypeExtensions</key>
@@ -75,17 +75,17 @@
 				<string>public.rtf</string>
 			</array>
 			<key>NSDocumentClass</key>
-			<string>EvimAppShell.EVDocument</string>
+			<string>ViemAppShell.EVDocument</string>
 		</dict>
 	</array>
 	<key>CFBundleExecutable</key>
-	<string>eVim</string>
+	<string>Viem</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.evim.editor</string>
+	<string>com.viem.editor</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>eVim</string>
+	<string>Viem</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

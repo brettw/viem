@@ -1,16 +1,16 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor
 final class EVEditingAssistanceIntegrationTests: XCTestCase {
   func testLiveSmartQuotePreferenceOnlyAffectsSubsequentTypedInput() throws {
-    let suite = "evim-assistance-native-\(UUID().uuidString)"
+    let suite = "viem-assistance-native-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-config-test-\(UUID().uuidString)")
+    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-config-test-\(UUID().uuidString)")
     addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
     let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
     defer { defaults.removePersistentDomain(forName: suite) }
@@ -41,7 +41,7 @@ final class EVEditingAssistanceIntegrationTests: XCTestCase {
     preferences.setSmartQuotes(false)
     type("\"")
     XCTAssertEqual(try backend.formattedText(), "\" “word”\"")
-    surface.performInput { _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE)) }
+    surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
     surface.perform(menuCommand: .undo, sender: nil)
     XCTAssertEqual(try backend.formattedText(), "")
   }

@@ -1,8 +1,8 @@
-import EvimAppShell
-import EvimEditor
+import ViemAppShell
+import ViemEditor
 
 @main
-struct EvimMain {
+struct ViemMain {
     @MainActor
     static func main() {
         EVEditorComposition.install()

@@ -46,12 +46,12 @@ cargo test --release --test format_switch_performance -- --ignored --nocapture
 The native regression measures the complete status-menu action, checks one
 presentation refresh and viewport-only text export, and preserves exact source.
 It normally uses a deterministic large Markdown fixture. Set
-`EVIM_PROFILE_MARKDOWN_PATH` to profile another local file.
+`VIEM_PROFILE_MARKDOWN_PATH` to profile another local file.
 
 ## Validation
 
 Computer use drove real untitled Delete and Cancel sheets in the isolated
-`com.evim.todo-validation` app. Delete closed immediately without a second
+`com.viem.todo-validation` app. Delete closed immediately without a second
 sheet; Cancel retained the exact draft and a later close prompted again.
 The final release app was also driven between Markdown Source and WYSIWYG at
 the beginning and near the end of the large AGENTS.md copy. Screenshots

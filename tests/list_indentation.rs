@@ -1,4 +1,4 @@
-use evim_core::document::*;
+use viem_core::document::*;
 fn open(source: &str, format: Format) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap()
 }
@@ -223,7 +223,7 @@ fn quoted_markdown_list_indentation_preserves_every_quote_marker() {
 }
 #[test]
 fn legacy_source_list_definitions_remain_active_and_lossless() {
-    let source="<style id=\"evim-styles\" data-evim-version=\"2\">li {\n  margin-inline-start: 16pt;\n}\n</style><ul><li>Bullet</li></ul><ol><li>Number</li></ol>";
+    let source="<style id=\"viem-styles\" data-viem-version=\"2\">li {\n  margin-inline-start: 16pt;\n}\n</style><ul><li>Bullet</li></ul><ol><li>Number</li></ol>";
     let document = open(source, Format::Html);
     assert_eq!(document.source_bytes(), source.as_bytes());
     assert_eq!(
@@ -254,7 +254,7 @@ fn legacy_source_list_definitions_remain_active_and_lossless() {
 }
 #[test]
 fn deeper_authored_levels_use_fourth_style_plus_structural_inset() {
-    use evim_core::layout::DocumentLayoutStyles;
+    use viem_core::layout::DocumentLayoutStyles;
     let source = "- a\n  - b\n    - c\n      - d\n        - e";
     let document = open(source, Format::Markdown);
     let styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
@@ -314,9 +314,9 @@ fn tabbed_markers_use_columns_and_preserve_the_original_marker_bytes() {
 }
 #[test]
 fn list_commands_create_empty_html_items_then_typing_and_history_work() {
-    use evim_core::command::InputEvent;
-    use evim_core::layout::MockTextMeasurementProvider;
-    use evim_core::{Core, CoreEvent};
+    use viem_core::command::InputEvent;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
     for (list, tag) in [(ListStyle::Bullet, "ul"), (ListStyle::Numbered, "ol")] {
         for source in ["", "<p></p>", "<!--keep-->", "<body></body>"] {
             let mut core = Core::new(open(source, Format::Html));

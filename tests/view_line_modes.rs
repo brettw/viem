@@ -1,7 +1,7 @@
-use evim_core::command::{CommandStatus, InputEvent, Key, LineMode};
-use evim_core::document::{Encoding, Format};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, Document, ViewId};
+use viem_core::command::{CommandStatus, InputEvent, Key, LineMode};
+use viem_core::document::{Encoding, Format};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, Document, ViewId};
 
 fn editor(document: Document, width: f32) -> (Core<MockTextMeasurementProvider>, ViewId) {
     let mut core = Core::new(document);
@@ -418,7 +418,7 @@ fn physical_utf16_dos_lines_preserve_encoding_bom_and_undo() {
         bytes.clone(),
         Encoding::Utf16Le,
         Format::PlainText,
-        evim_core::document::FileFormat::Dos,
+        viem_core::document::FileFormat::Dos,
     )
     .unwrap();
     let (mut core, view) = editor(document, 100.0);
@@ -454,8 +454,8 @@ fn joins_use_actual_boundaries_in_the_selected_line_domain() {
 
 #[test]
 fn location_in_resumed_first_hard_line_has_exact_global_and_fragment_ordinals() {
-    use evim_core::command::CommandInterpreter;
-    use evim_core::layout::{
+    use viem_core::command::CommandInterpreter;
+    use viem_core::layout::{
         compute_layout_job, inspect_layout_provider, install_layout_job, prepare_layout_job,
         LayoutCancellationToken, LayoutEngine, LayoutExecutionContext, LayoutInstallTarget,
         LayoutJobId, LayoutJobPriority, LayoutJobRegion, ViewLayout, ViewportLayoutRegion,
@@ -523,7 +523,7 @@ fn location_in_resumed_first_hard_line_has_exact_global_and_fragment_ordinals() 
 
 #[test]
 fn document_edge_keys_ignore_line_policy_and_preserve_editing_modes() {
-    use evim_core::command::Mode;
+    use viem_core::command::Mode;
     let source = "αβ\nmiddle words\n👩‍💻z";
     for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
         for (entry, mode) in [

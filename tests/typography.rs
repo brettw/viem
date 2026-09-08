@@ -1,5 +1,5 @@
-use evim_core::document::*;
-use evim_core::layout::DocumentLayoutStyles;
+use viem_core::document::*;
+use viem_core::layout::DocumentLayoutStyles;
 
 fn configured(source: &str, format: Format, weight: u16) -> Document {
     let mut document =
@@ -69,7 +69,7 @@ fn relative_html_bold_preserves_base_weight_source_and_partial_toggle() {
         (200, 200, false)
     );
     let saved = String::from_utf8(document.source_bytes()).unwrap();
-    assert!(saved.contains("font-weight: 200; --evim-base-weight: 200; --evim-bold: false"));
+    assert!(saved.contains("font-weight: 200; --viem-base-weight: 200; --viem-bold: false"));
     assert!(saved.contains("data-keep='yes'"));
     assert!(saved.ends_with("<!--keep-->"));
     let reopened =
@@ -185,7 +185,7 @@ fn first_rtf_font_table_does_not_change_the_unspecified_font_of_unselected_text(
 #[test]
 fn rtf_optional_features_are_scoped_lossless_clearable_and_reset_by_plain() {
     use std::collections::{BTreeMap, BTreeSet};
-    let source = r"{\rtf1 word tail{\*\unknown \evimfeaturegmgjghgb0 opaque}}";
+    let source = r"{\rtf1 word tail{\*\unknown \viemfeaturegmgjghgb0 opaque}}";
     let mut document =
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
     let features = BTreeMap::from([
@@ -256,7 +256,7 @@ fn rtf_optional_features_are_scoped_lossless_clearable_and_reset_by_plain() {
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source.as_bytes());
     let reset = Document::from_bytes(
-        br"{\rtf1\evimfeaturegmgjghgb0 old\plain new}".to_vec(),
+        br"{\rtf1\viemfeaturegmgjghgb0 old\plain new}".to_vec(),
         Encoding::Utf8,
         Format::Rtf,
     )
@@ -278,7 +278,7 @@ fn rtf_optional_features_are_scoped_lossless_clearable_and_reset_by_plain() {
 
 #[test]
 fn clearing_typography_preserves_unrecognized_private_control_parameters() {
-    let source = r"{\rtf1\evimfeatures7\evimweight9999\evimfeaturegmgjghgb Text}";
+    let source = r"{\rtf1\viemfeatures7\viemweight9999\viemfeaturegmgjghgb Text}";
     let mut document =
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
     let revision = document.revision();

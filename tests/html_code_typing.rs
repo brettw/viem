@@ -1,9 +1,9 @@
-use evim_core::command::{CommandStatus, InputEvent, Key};
-use evim_core::document::{
+use viem_core::command::{CommandStatus, InputEvent, Key};
+use viem_core::document::{
     BoundaryAffinity, Document, Encoding, Format, ModelRequest, ProjectionWorkScope, TextEdit,
 };
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, ViewId};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, ViewId};
 
 fn event(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, input: CoreEvent) {
     let update = core.handle(view, input).unwrap();

@@ -1,6 +1,6 @@
-use evim_core::document::FontSlant;
-use evim_core::document::{Document, DocumentError, Encoding, Format};
-use evim_core::layout::DocumentLayoutStyles;
+use viem_core::document::FontSlant;
+use viem_core::document::{Document, DocumentError, Encoding, Format};
+use viem_core::layout::DocumentLayoutStyles;
 
 fn assert_projection(source: &str, expected: &str) {
     let document =

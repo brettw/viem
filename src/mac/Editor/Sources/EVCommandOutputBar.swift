@@ -1,5 +1,5 @@
 import AppKit
-import EvimAppShell
+import ViemAppShell
 
 /// Native text selection and Copy remain available without mutating command output.
 @MainActor

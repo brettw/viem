@@ -1,21 +1,21 @@
 import AppKit
 import XCTest
 
-@testable import EvimAppShell
+@testable import ViemAppShell
 
 @MainActor
 final class EVThemeTests: XCTestCase {
   func testThemePersistsSeparatelyAndRejectsInvalidSettings() throws {
-    let name = "com.evim.tests.theme.\(UUID().uuidString)"
+    let name = "com.viem.tests.theme.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-config-test-\(UUID().uuidString)")
+    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-config-test-\(UUID().uuidString)")
     addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
     let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
     defer { defaults.removePersistentDomain(forName: name) }
     let center = NotificationCenter()
     let store = EVThemeStore(configuration: configuration, center: center)
     var notifications = 0
-    let observer = center.addObserver(forName: .evimThemeDidChange, object: nil, queue: .main) {
+    let observer = center.addObserver(forName: .viemThemeDidChange, object: nil, queue: .main) {
       _ in notifications += 1
     }
     defer { center.removeObserver(observer) }
@@ -44,9 +44,9 @@ final class EVThemeTests: XCTestCase {
   }
 
   func testMalformedSavedThemeFallsBackAndSettingsWindowFits() throws {
-    let name = "com.evim.tests.theme.\(UUID().uuidString)"
+    let name = "com.viem.tests.theme.\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-config-test-\(UUID().uuidString)")
+    let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-config-test-\(UUID().uuidString)")
     addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
     let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
     defer { defaults.removePersistentDomain(forName: name) }
@@ -58,7 +58,7 @@ final class EVThemeTests: XCTestCase {
     settings.showWindow(nil)
     let window = try XCTUnwrap(settings.window)
     window.contentView?.layoutSubtreeIfNeeded()
-    XCTAssertEqual(window.title, "eVim Settings")
+    XCTAssertEqual(window.title, "Viem Settings")
     XCTAssertGreaterThanOrEqual(window.contentLayoutRect.width, 760)
     XCTAssertGreaterThanOrEqual(window.contentLayoutRect.height, 640)
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))

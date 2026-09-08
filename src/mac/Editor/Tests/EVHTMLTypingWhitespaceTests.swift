@@ -1,9 +1,9 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
 
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVHTMLTypingWhitespaceTests: XCTestCase {
   @MainActor
@@ -18,10 +18,10 @@ final class EVHTMLTypingWhitespaceTests: XCTestCase {
       if splitParagraph {
         try session.sendText("l")
         try session.sendText("i")
-        try session.sendKey(kind: UInt32(EVIM_KEY_ENTER))
+        try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
       } else {
         try session.sendText("A")
-        try session.sendKey(kind: UInt32(EVIM_KEY_BACKSPACE))
+        try session.sendKey(kind: UInt32(VIEM_KEY_BACKSPACE))
       }
       let protectedSource = splitParagraph
         ? "<p>A</p><p>&nbsp;B</p><!--keep-->" : "<p>A&nbsp;</p><!--keep-->"
@@ -40,7 +40,7 @@ final class EVHTMLTypingWhitespaceTests: XCTestCase {
       try reopened.read(source: expected, typeName: EVDocument.htmlType)
       XCTAssertEqual(try reopened.formattedText(), expectedText)
 
-      try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+      try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
       surface.perform(menuCommand: .undo, sender: nil)
       XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), original)
       surface.perform(menuCommand: .redo, sender: nil)
@@ -79,7 +79,7 @@ final class EVHTMLTypingWhitespaceTests: XCTestCase {
     try reopened.read(source: expected, typeName: EVDocument.htmlType)
     XCTAssertEqual(try reopened.formattedText(), text)
 
-    try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+    try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
     surface.perform(menuCommand: .undo, sender: nil)
     XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), original)
     XCTAssertEqual(try backend.formattedText(), "")
@@ -112,7 +112,7 @@ final class EVHTMLTypingWhitespaceTests: XCTestCase {
     try reopened.read(source: expected, typeName: EVDocument.htmlType)
     XCTAssertEqual(try reopened.formattedText(), expectedText)
 
-    try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+    try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
     surface.perform(menuCommand: .undo, sender: nil)
     XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), original)
     surface.perform(menuCommand: .redo, sender: nil)

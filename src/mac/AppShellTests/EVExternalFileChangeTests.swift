@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-@testable import EvimAppShell
+@testable import ViemAppShell
 
 @MainActor
 final class EVExternalFileChangeTests: XCTestCase {
@@ -31,7 +31,7 @@ final class EVExternalFileChangeTests: XCTestCase {
     }
   }
   private func fixture() throws -> (EVDocument, Backend, URL) {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-external-\(UUID().uuidString)")
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-external-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
     let url = directory.appendingPathComponent("source.txt")
@@ -82,13 +82,13 @@ final class EVExternalFileChangeTests: XCTestCase {
     defer { window.close() }
     try Data("external".utf8).write(to: url, options: .atomic)
     let activation = expectation(description: "activation warning")
-    surface.received = { message in XCTAssertTrue(message.contains("outside eVim")); activation.fulfill() }
+    surface.received = { message in XCTAssertTrue(message.contains("outside Viem")); activation.fulfill() }
     window.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
     wait(for: [activation], timeout: 5)
     surface.received = nil
     let command = expectation(description: "checktime output")
     window.perform(documentHostRequests: [EVDocumentHostRequest(kind: .checkTime, documentID: 1, documentRevision: 0)]) { result in
-      XCTAssertTrue(((try? result.get()) ?? nil)?.contains("outside eVim") ?? false)
+      XCTAssertTrue(((try? result.get()) ?? nil)?.contains("outside Viem") ?? false)
       command.fulfill()
     }
     wait(for: [command], timeout: 5)

@@ -1,5 +1,5 @@
-use evim_core::document::*;
-use evim_core::layout::DocumentLayoutStyles;
+use viem_core::document::*;
+use viem_core::layout::DocumentLayoutStyles;
 
 fn html(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap()

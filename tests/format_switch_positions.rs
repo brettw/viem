@@ -1,7 +1,7 @@
-use evim_core::command::{InputEvent, Key, Mode};
-use evim_core::document::{BoundaryAffinity, Encoding, Format, HistoryNavigationRequest};
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent, Document, ViewId};
+use viem_core::command::{InputEvent, Key, Mode};
+use viem_core::document::{BoundaryAffinity, Encoding, Format, HistoryNavigationRequest};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, Document, ViewId};
 
 type Editor = Core<MockTextMeasurementProvider>;
 

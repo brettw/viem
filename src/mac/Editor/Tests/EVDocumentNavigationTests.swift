@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
-import EvimAppShell
+import CViemCore
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 @MainActor final class EVDocumentNavigationTests: XCTestCase {
     private func makeSurface(_ text: String, width: CGFloat = 600) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession, NSWindow) {
@@ -50,11 +50,11 @@ import XCTest
         surface.performInput { _ = try session.sendText("li") }
         surface.editorView.doCommand(by: #selector(NSResponder.moveToEndOfDocument(_:)))
         XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(source.utf8.count))
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(EVIM_MODE_INSERT))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
         surface.editorView.doCommand(by: #selector(NSResponder.moveToBeginningOfDocument(_:)))
         XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 0)
         surface.performInput {
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             _ = try session.sendText(":edit name")
         }
         surface.editorView.keyDown(with: try key(115, control: true))
@@ -74,7 +74,7 @@ import XCTest
         surface.performInput { _ = try session.sendText("V") }
         XCTAssertEqual(surface.visualSelection?.segments.first?.text_end, row.text_end)
         surface.performInput {
-            _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             try session.setLineMode(.physicalSource)
             _ = try session.sendText("V")
         }

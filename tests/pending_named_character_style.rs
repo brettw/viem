@@ -1,11 +1,11 @@
-use evim_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
-use evim_core::command::{CommandInterpreter, InputEvent, Key, LineMode, Mode};
-use evim_core::document::{
+use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
+use viem_core::command::{CommandInterpreter, InputEvent, Key, LineMode, Mode};
+use viem_core::document::{
     Document, Encoding, FontSlant, Format, SemanticInlineStyle, StyleApplication, StyleId,
     StyleNamespace, StyleProperty, StylePropertyValue,
 };
-use evim_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
-use evim_core::{Core, CoreEvent, ViewId};
+use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
+use viem_core::{Core, CoreEvent, ViewId};
 use std::ops::Range;
 
 type Editor = Core<MockTextMeasurementProvider>;

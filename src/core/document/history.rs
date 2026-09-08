@@ -641,7 +641,7 @@ impl<T, M> History<T, M> {
 
     fn retained_memory_bytes(&self) -> usize {
         if self.visit_state_memory.is_none() { return self.retained_source_bytes; }
-        if std::env::var_os("EVIM_HISTORY_MEMORY_BREAKDOWN").is_some() {
+        if std::env::var_os("VIEM_HISTORY_MEMORY_BREAKDOWN").is_some() {
             eprintln!("  ledger allocations {}", self.memory.allocation_count());
         }
         self.memory.bytes()

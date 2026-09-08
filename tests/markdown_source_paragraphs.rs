@@ -1,9 +1,9 @@
-use evim_core::command::{InputEvent, Key};
-use evim_core::document::{
+use viem_core::command::{InputEvent, Key};
+use viem_core::document::{
     BlockKind, Document, Encoding, FileFormat, Format, ModelRequest, ProjectionWorkScope, TextEdit,
 };
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{Core, CoreEvent};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent};
 
 fn encode(text: &str, encoding: Encoding) -> Vec<u8> {
     match encoding {
@@ -20,7 +20,7 @@ fn open(source: &str) -> Document {
     )
     .unwrap()
 }
-fn keys(core: &mut Core<MockTextMeasurementProvider>, view: evim_core::ViewId, text: &str) {
+fn keys(core: &mut Core<MockTextMeasurementProvider>, view: viem_core::ViewId, text: &str) {
     for ch in text.chars() {
         core.handle(view, CoreEvent::Input(InputEvent::key(ch)))
             .unwrap();
@@ -123,7 +123,7 @@ fn edits_and_formatting_after_mapped_separator_preserve_exact_source() {
         b"First\r\n \t\r\n## New Second\r\n\r\nTail"
     );
     document
-        .set_list_style(6..6, Some(evim_core::document::ListStyle::Bullet))
+        .set_list_style(6..6, Some(viem_core::document::ListStyle::Bullet))
         .unwrap();
     assert_eq!(
         document.source_bytes(),
@@ -265,7 +265,7 @@ fn source_enter_splits_prose_with_lossless_paragraph_bytes_and_reopens_in_both_v
                 CoreEvent::PlaceCursor {
                     document_revision: core.document().revision(),
                     text_offset: "First ".len(),
-                    affinity: evim_core::document::BoundaryAffinity::Downstream,
+                    affinity: viem_core::document::BoundaryAffinity::Downstream,
                     extend_selection: false,
                 },
             )
@@ -320,7 +320,7 @@ fn source_enter_retains_literal_code_newlines_and_list_continuation() {
             CoreEvent::PlaceCursor {
                 document_revision: core.document().revision(),
                 text_offset: at,
-                affinity: evim_core::document::BoundaryAffinity::Downstream,
+                affinity: viem_core::document::BoundaryAffinity::Downstream,
                 extend_selection: false,
             },
         )

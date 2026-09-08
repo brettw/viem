@@ -1,7 +1,7 @@
 import AppKit
-import EvimAppShell
+import ViemAppShell
 import XCTest
-@testable import EvimEditor
+@testable import ViemEditor
 
 final class EVRtfInteroperabilityTests: XCTestCase {
     @MainActor

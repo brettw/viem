@@ -6,7 +6,7 @@ import Darwin
 enum EVExFileWriter {
   static func write(_ data: Data, to destination: URL, force: Bool, expected: EVFileFingerprint? = nil) throws {
     let target = destination.standardizedFileURL
-    let temporary = target.deletingLastPathComponent().appendingPathComponent(".evim-write-\(UUID().uuidString)")
+    let temporary = target.deletingLastPathComponent().appendingPathComponent(".viem-write-\(UUID().uuidString)")
     try data.write(to: temporary, options: .withoutOverwriting)
     defer { try? FileManager.default.removeItem(at: temporary) }
     if let permissions = try? FileManager.default.attributesOfItem(atPath: target.path)[.posixPermissions] {

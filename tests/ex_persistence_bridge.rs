@@ -1,16 +1,16 @@
-use evim_core::command::ex_execute::{
+use viem_core::command::ex_execute::{
     ExFileRequest, ExFrontendRequest, ExPostWriteDisposition, HardLineRange,
     PreparedExArtifactWrite, PreparedExFileRequest,
 };
-use evim_core::document::{
+use viem_core::document::{
     execute_prepared_artifact_write, ArtifactOverwrite, ArtifactPath, ArtifactStorageProvider,
     ArtifactWriteCompletion, ArtifactWriteCompletionStatus, ArtifactWritePurpose,
     ArtifactWriteToken, Document, Encoding, FileFormat, Format, HardLineSourceRangeError,
     InMemoryArtifactStorage, LineEndingOpenPolicy, PersistenceError,
 };
-use evim_core::layout::MockTextMeasurementProvider;
-use evim_core::{command::InputEvent, command::Key};
-use evim_core::{Core, CoreError, CoreEvent};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{command::InputEvent, command::Key};
+use viem_core::{Core, CoreError, CoreEvent};
 
 fn core_from(document: Document) -> Core<MockTextMeasurementProvider> {
     Core::new(document)

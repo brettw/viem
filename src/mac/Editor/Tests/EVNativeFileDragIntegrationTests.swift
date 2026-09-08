@@ -1,8 +1,8 @@
 import AppKit
-import CEvimCore
+import CViemCore
 import XCTest
-@testable import EvimAppShell
-@testable import EvimEditor
+@testable import ViemAppShell
+@testable import ViemEditor
 
 @MainActor
 final class EVNativeFileDragIntegrationTests: XCTestCase {
@@ -69,7 +69,7 @@ final class EVNativeFileDragIntegrationTests: XCTestCase {
 
     func testActualDragCallbacksReplaceCleanDocumentThenKeepDirtyTextInItsWindow() throws {
         EVFrontendRegistry.install { EVCoreDocumentBackend() }
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("evim-real-drag-\(UUID().uuidString)")
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-real-drag-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let originalURL = directory.appendingPathComponent("original.txt")
         let firstURL = directory.appendingPathComponent("first file café.txt")
@@ -108,9 +108,9 @@ final class EVNativeFileDragIntegrationTests: XCTestCase {
         XCTAssertEqual(try originalBackend.serializedSource(typeName: EVDocument.plainTextType), originalBytes)
 
         let session = try XCTUnwrap(firstSurface.session)
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_CHARACTER), codepoint: 105)
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 105)
         _ = try session.sendText("Unsaved draft: ")
-        _ = try session.sendKey(kind: UInt32(EVIM_KEY_ESCAPE))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         firstSurface.refreshPresentation()
         let draft = try firstBackend.serializedSource(typeName: EVDocument.plainTextType)
         XCTAssertTrue(firstBackend.persistenceState.isDirty)
