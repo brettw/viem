@@ -414,6 +414,12 @@ pub enum CoreEvent {
         affinity: BoundaryAffinity,
         extend_selection: bool,
     },
+    /// Select every logical content item in the exact document snapshot.
+    /// Line policy and partial viewport layout do not limit this selection.
+    SelectAll {
+        document: DocumentId,
+        revision: Revision,
+    },
     /// Navigate one retained history edge independently of the current Vim
     /// mode. Native Edit menu actions use this instead of synthesizing `u` or
     /// Ctrl-R key input.
@@ -3390,6 +3396,38 @@ impl<P: TextMeasurementProvider> Core<P> {
         })
     }
 
+    fn select_all(
+        &mut self,
+        view_id: ViewId,
+        document: DocumentId,
+        revision: Revision,
+    ) -> Result<CoreOutcome, CoreError> {
+        if document != self.document.id() {
+            return Err(DocumentError::WrongDocument.into());
+        }
+        if revision != self.document.revision() {
+            return Err(DocumentError::WrongSnapshot {
+                expected: self.document.revision(),
+                actual: revision,
+            }
+            .into());
+        }
+        let mut composition_changes = Vec::new();
+        if self
+            .views
+            .get(&view_id)
+            .is_some_and(|view| view.composition.is_some())
+        {
+            let cancelled = self.handle_composition_event(view_id, CompositionEvent::Cancel)?;
+            composition_changes.extend(cancelled.composition_changes);
+        }
+        // The dedicated input intention is recordable and replayable without
+        // depending on the original document's final visual row or byte length.
+        let mut outcome = self.handle(view_id, CoreEvent::Input(InputEvent::Key(Key::SelectAll)))?;
+        outcome.composition_changes.extend(composition_changes);
+        Ok(outcome)
+    }
+
     fn validate_style_sheet_identity(
         &self,
         document: DocumentId,
@@ -3732,10 +3770,22 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         request: ModelRequest,
     ) -> Result<CoreOutcome, CoreError> {
-        let preflight = self
-            .document
-            .prepare_model_request(request.clone())
-            .map_err(command_model_transaction_error)?;
+        let quote_at_end = match &request {
+            ModelRequest::AssignNamedStyle { range, namespace: StyleNamespace::Block, style, .. }
+            | ModelRequest::SetParagraphStyle { range, style, .. }
+                if range.is_empty() && style.0 == "Block quote"
+                    && self.list_selection_identity(view_id)?.kind() == LogicalSelectionKind::None =>
+            {
+                self.document.prepare_quote_after_paragraph(range.start)
+                    .map_err(command_model_transaction_error)?
+            }
+            _ => None,
+        };
+        let preflight = match quote_at_end {
+            Some(prepared) => prepared,
+            None => self.document.prepare_model_request(request.clone())
+                .map_err(command_model_transaction_error)?,
+        };
         if preflight.is_no_op() {
             return Ok(CoreOutcome {
                 command: None,
@@ -4490,6 +4540,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                     affinity,
                     extend_selection,
                 );
+            }
+            CoreEvent::SelectAll { document, revision } => {
+                return self.select_all(view_id, document, revision);
             }
             CoreEvent::NavigateHistory(navigation) => {
                 return self.navigate_history(view_id, navigation);
@@ -5496,6 +5549,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             CoreEvent::PlaceCursor { .. } => {
                 unreachable!("pointer placements return before ordinary dispatch")
+            }
+            CoreEvent::SelectAll { .. } => {
+                unreachable!("native whole-document selection returns before ordinary dispatch")
             }
             CoreEvent::NavigateHistory(_) => {
                 unreachable!("native history navigation returns before ordinary dispatch")

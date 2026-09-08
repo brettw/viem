@@ -382,6 +382,7 @@ pub const VIEM_KEY_CONTROL_CHARACTER: u32 = 15;
 pub const VIEM_KEY_BACK_TAB: u32 = 16;
 pub const VIEM_KEY_DOCUMENT_START: u32 = 17;
 pub const VIEM_KEY_DOCUMENT_END: u32 = 18;
+pub const VIEM_KEY_SHIFT_ENTER: u32 = 19;
 
 pub const VIEM_COMMAND_STATUS_NONE: u32 = 0;
 pub const VIEM_COMMAND_STATUS_COMPLETE: u32 = 1;
@@ -4457,6 +4458,7 @@ fn parse_key(input: ViemKeyInputV1) -> Result<Key, ViemStatus> {
         VIEM_KEY_CHARACTER => Ok(Key::Char(scalar()?)),
         VIEM_KEY_ESCAPE => special(Key::Escape),
         VIEM_KEY_ENTER => special(Key::Enter),
+        VIEM_KEY_SHIFT_ENTER => special(Key::ShiftEnter),
         VIEM_KEY_TAB => special(Key::Tab),
         VIEM_KEY_BACK_TAB => special(Key::BackTab),
         VIEM_KEY_BACKSPACE => special(Key::Backspace),
@@ -9331,6 +9333,35 @@ pub unsafe extern "C" fn viem_core_view_place_cursor(
     })
 }
 
+/// Select the full formatted document in an exact source revision.
+///
+/// # Safety
+/// `out_outcome` must identify one aligned writable outcome.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_select_all(
+    handle: ViemCoreHandle,
+    view: ViemViewId,
+    document: u64,
+    revision: u64,
+    out_outcome: *mut ViemCoreOutcomeV1,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            dispatch_event(
+                core,
+                view,
+                CoreEvent::SelectAll {
+                    document: DocumentId(document),
+                    revision: Revision(revision),
+                },
+            )
+        })?;
+        unsafe { out_outcome.write(outcome) };
+        Ok(())
+    })
+}
+
 unsafe fn core_view_navigate_history(
     handle: ViemCoreHandle,
     view: ViemViewId,
@@ -10166,7 +10197,8 @@ pub unsafe extern "C" fn viem_core_view_set_paragraph_style(
 
 /// Assign an existing paragraph or character style at exact source, style-sheet,
 /// and logical-selection identities. With no selection, character assignment
-/// updates the pending typing style; paragraph assignment targets the paragraph.
+/// updates the pending typing style. Paragraph assignment targets the current
+/// paragraph; Block quote at the end of ordinary prose creates a blank quote.
 ///
 /// # Safety
 /// Request, its UTF-8 slice, and outcome must be valid and not overlap output.

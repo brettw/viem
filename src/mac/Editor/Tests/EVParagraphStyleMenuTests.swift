@@ -157,6 +157,39 @@ import XCTest
         XCTAssertFalse(quote.presentation.isEnabled)
     }
 
+    func testBlockQuoteMenuAtDocumentEndCreatesBlankQuoteReadyForTyping() throws {
+        for (type, source, before, quotedText) in [
+            (EVDocument.markdownType, "one **two**", "one two", "one two\n"),
+            (EVDocument.htmlType, "<p data-keep='yes'>one <b>two</b></p><!--keep-->", "one two", "one two\n"),
+            (EVDocument.htmlType, "<p>one<br>two<br></p>", "one\ntwo\n", "one\ntwo\n"),
+        ] {
+            let (backend, view, session) = try surface(source, type: type)
+            for scalar in "GA".unicodeScalars {
+                _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: scalar.value)
+            }
+            view.refreshPresentation()
+            XCTAssertEqual(try backend.formattedText(), before)
+            XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+            XCTAssertEqual(view.viewPresentation.cursor_utf8_offset, UInt64(before.utf8.count))
+            try choose("Block quote", in: view)
+            XCTAssertEqual(try backend.formattedText(), quotedText)
+            XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+            XCTAssertEqual(view.viewPresentation.cursor_utf8_offset, UInt64(quotedText.utf8.count))
+            XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "Block quote")
+            let quoted = try backend.serializedSource(typeName: type)
+            let (reopenedBackend, _, _) = try surface(String(decoding: quoted, as: UTF8.self), type: type)
+            XCTAssertEqual(try reopenedBackend.formattedText(), quotedText)
+            view.perform(menuCommand: .undo, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+            view.perform(menuCommand: .redo, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), quoted)
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: UnicodeScalar("i").value)
+            _ = try session.sendText("العربية")
+            XCTAssertEqual(try backend.formattedText(), quotedText + "العربية")
+            XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "Block quote")
+        }
+    }
+
     func testBlockQuoteBorderIsNonTextFurnitureAndCullsOutsideDirtyRegion() throws {
         let originalTheme = EVThemeStore.shared.theme
         EVThemeStore.shared.update(.paper)

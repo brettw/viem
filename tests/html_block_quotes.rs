@@ -15,7 +15,7 @@ fn assign(document: &mut Document, range: std::ops::Range<usize>, style: &str) {
             namespace: StyleNamespace::Block,
             style: style.into(),
         })
-        .unwrap();
+        .unwrap_or_else(|error| panic!("{style}: {error:?}; source={:?}", String::from_utf8_lossy(&document.source_bytes())));
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn removing_quote_from_one_contained_paragraph_preserves_its_siblings_and_attrib
     let saved = document.source_bytes();
     let syntax = String::from_utf8(saved.clone()).unwrap();
     assert!(
-        syntax.contains("</blockquote><h2>two</h2><blockquote cite='original'>"),
+        syntax.contains("</blockquote><p>two</p><blockquote cite='original'>"),
         "{syntax}"
     );
     let reopened = open(&syntax, Format::Html);
@@ -99,7 +99,7 @@ fn removing_quote_from_one_contained_paragraph_preserves_its_siblings_and_attrib
             .iter()
             .map(|block| block.style.0.as_str())
             .collect::<Vec<_>>(),
-        ["Block quote", "Heading2", "Block quote"]
+        ["Block quote", "Paragraph", "Block quote"]
     );
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source.as_bytes());
@@ -299,35 +299,37 @@ fn enter_and_typing_keep_native_quote_paragraphs_and_exact_history() {
 }
 
 #[test]
-fn adding_and_removing_quote_preserves_native_heading_code_and_list_bodies() {
+fn quote_assignment_replaces_native_heading_code_and_list_styles() {
     for format in [Format::Html, Format::HtmlSource] {
-        for (source, expected) in [
-            ("<h2 data-keep='heading'>one</h2>", "<blockquote><h2 data-keep='heading'>one</h2></blockquote>"),
-            ("<pre data-keep='code'>one\n two</pre>", "<blockquote><pre data-keep='code'>one\n two</pre></blockquote>"),
-            ("<ul data-keep='list'><li data-keep='item'>one <b>two</b></li><li>other</li></ul>", "<ul data-keep='list'><li data-keep='item'><blockquote>one <b>two</b></blockquote></li><li>other</li></ul>"),
-            ("<ol start='3'><li><p data-keep='para'>one</p><ul><li>nested</li></ul></li></ol>", "<ol start='3'><li><blockquote><p data-keep='para'>one</p></blockquote><ul><li>nested</li></ul></li></ol>"),
+        for source in [
+            "<h2 data-keep='heading'>one</h2>",
+            "<pre data-keep='code'>one\n two</pre>",
+            "<ul data-keep='list'><li data-keep='item'>one <b>two</b></li><li>other</li></ul>",
+            "<ol start='3'><li><p data-keep='para'>one</p><ul><li>nested</li></ul></li></ol>",
         ] {
             let mut document = open(source, format);
-            let initial = document.projection().blocks().iter().map(|block| block.kind.clone()).collect::<Vec<_>>();
+            let original_text = open(source, Format::Html).text().to_owned();
             let at = document.text().find("one").unwrap();
             assign(&mut document, at..at, "Block quote");
-            assert_eq!(document.source_bytes(), expected.as_bytes(), "{format:?}: {source}");
             let saved = document.source_bytes();
             let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, format).unwrap();
             assert_eq!(reopened.text(), document.text());
-            let visible = open(expected, Format::Html);
-            assert_eq!(visible.projection().blocks()[0].style.0, "Block quote");
-            if format == Format::Html {
-                assert_eq!(document.projection().blocks().iter().map(|block| block.kind.clone()).collect::<Vec<_>>(), initial);
-            }
+            let visible = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Html).unwrap();
+            assert_eq!(visible.text(), original_text);
+            let block = &visible.projection().blocks()[0];
+            assert_eq!(block.style.0, "Block quote");
+            assert!(!visible.projection().list_structure().lists.iter().any(|list| list.items.iter().any(|item| item.paragraph_ids.contains(&block.id))));
+            assert!(!String::from_utf8(saved.clone()).unwrap().contains("<pre"));
+            assert!(!String::from_utf8(saved.clone()).unwrap().contains("<h2"));
             assert!(document.undo());
             assert_eq!(document.source_bytes(), source.as_bytes());
             assert!(document.redo());
             assert_eq!(document.source_bytes(), saved);
             let at = document.text().find("one").unwrap();
             assign(&mut document, at..at, "Paragraph");
-            assert_eq!(document.source_bytes(), source.as_bytes(), "{format:?}: {source}");
-            assert_eq!(open(source, format).text(), document.text());
+            let plain = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Html).unwrap();
+            assert_eq!(plain.projection().blocks()[0].style.0, "Paragraph");
+            assert_eq!(plain.text(), original_text);
         }
     }
 }
@@ -392,7 +394,7 @@ fn quote_container_survives_inner_named_paragraphs_and_list_headings() {
 }
 
 #[test]
-fn enter_in_quoted_pre_keeps_one_code_paragraph_and_exact_history() {
+fn enter_in_quoted_pre_keeps_code_and_exits_an_empty_quote_with_exact_history() {
     for source in [
         "<blockquote><pre data-x='keep'>code</pre></blockquote>",
         "<blockquote><pre></pre></blockquote>",
@@ -415,11 +417,11 @@ fn enter_in_quoted_pre_keeps_one_code_paragraph_and_exact_history() {
                     )
                 });
         }
-        assert_eq!(core.document().text(), format!("{before}\ntail"));
+        assert_eq!(core.document().text(), if before.is_empty() { "tail".to_owned() } else { format!("{before}\ntail") });
         assert_eq!(core.document().projection().blocks().len(), 1);
         assert_eq!(
             core.document().projection().blocks()[0].style.0,
-            "Block quote"
+            if before.is_empty() { "Paragraph" } else { "Block quote" }
         );
         let saved = core.document().source_bytes();
         let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Html).unwrap();

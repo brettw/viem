@@ -1391,7 +1391,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private func specialKeyKind(for event: NSEvent) -> UInt32? {
         switch event.keyCode {
         case 53: UInt32(VIEM_KEY_ESCAPE)
-        case 36, 76: UInt32(VIEM_KEY_ENTER)
+        case 36, 76: UInt32(event.modifierFlags.contains(.shift) ? VIEM_KEY_SHIFT_ENTER : VIEM_KEY_ENTER)
         case 48:
             UInt32(event.modifierFlags.contains(.shift) && surface?.commandLine?.prompt != nil
                 ? VIEM_KEY_BACK_TAB : VIEM_KEY_TAB)
@@ -1423,7 +1423,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         case #selector(pageDown(_:)), #selector(scrollPageDown(_:)): UInt32(VIEM_KEY_PAGE_DOWN)
         case #selector(deleteBackward(_:)): UInt32(VIEM_KEY_BACKSPACE)
         case #selector(deleteForward(_:)): UInt32(VIEM_KEY_DELETE)
-        case #selector(insertNewline(_:)), #selector(insertLineBreak(_:)): UInt32(VIEM_KEY_ENTER)
+        case #selector(insertNewline(_:)): UInt32(VIEM_KEY_ENTER)
+        case #selector(insertLineBreak(_:)): UInt32(VIEM_KEY_SHIFT_ENTER)
         case #selector(insertTab(_:)): UInt32(VIEM_KEY_TAB)
         case #selector(insertBacktab(_:)) where surface?.commandLine?.prompt != nil: UInt32(VIEM_KEY_BACK_TAB)
         case #selector(cancelOperation(_:)): UInt32(VIEM_KEY_ESCAPE)

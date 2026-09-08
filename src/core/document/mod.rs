@@ -1767,6 +1767,15 @@ impl Document {
         })
     }
 
+    /// Delete an explicitly selected complete document, including content
+    /// formatting scopes that ordinary last-character deletion retains.
+    pub fn clear_document_content(&mut self) -> Result<(), DocumentError> {
+        self.execute_compat_request(ModelRequest::ClearDocumentContent {
+            document: self.id,
+            revision: self.revision(),
+        })
+    }
+
     /// Apply non-overlapping edits expressed in the current formatted
     /// snapshot. All source patches and verification commit as one undo unit.
     pub fn apply_edits(&mut self, edits: Vec<TextEdit>) -> Result<(), DocumentError> {

@@ -228,7 +228,7 @@ fn contextual_markdown_sort_owners_return_precise_atomic_policy() {
 }
 
 #[test]
-fn backspace_new_empty_markdown_item_removes_its_owned_label() {
+fn backspace_new_empty_markdown_item_becomes_an_ordinary_empty_paragraph() {
     use viem_core::command::{CommandInterpreter, InputEvent, Key};
     for source in [
         "- first\n- second",
@@ -246,8 +246,18 @@ fn backspace_new_empty_markdown_item_removes_its_owned_label() {
                 .handle(&mut document, InputEvent::Key(key))
                 .unwrap();
         }
-        assert_eq!(document.text(), before);
+        assert_eq!(document.text(), before.replacen('\n', "\n\n", 1));
+        let blocks = document.projection().blocks();
+        assert_eq!(blocks[1].style.0, "Paragraph");
+        assert!(blocks[1].range.is_empty());
+        let after = document.source_bytes();
+        let reopened = Document::from_bytes(after.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(reopened.text(), document.text());
+        assert_eq!(reopened.projection().blocks()[1].style.0, "Paragraph");
+        assert!(document.undo());
         assert_eq!(document.source_bytes(), original);
+        assert!(document.redo());
+        assert_eq!(document.source_bytes(), after);
     }
 }
 

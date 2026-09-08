@@ -116,7 +116,9 @@ impl ConversionWriter {
                 }
                 TextSpelling::Markdown => {
                     for character in grapheme.chars() {
-                        if matches!(character, '\\' | '*' | '_' | '`' | '#') {
+                        if matches!(character, '\\' | '*' | '_' | '`' | '#')
+                            || character == '<' && super::projection::markdown_inline_break_length(&text[offset..]).is_some()
+                        {
                             self.source.push('\\');
                         }
                         self.source.push(character);

@@ -1935,6 +1935,10 @@ mod tests {
 /// Replace only the first effective class attribute's value, retaining tag
 /// case, other attributes, quote spelling and duplicate attributes untouched.
 fn class_patch(text: &str, tag_range: Range<usize>, value: &str) -> (Range<usize>, String) {
+    attribute_patch(text, tag_range, "class", value)
+}
+
+fn attribute_patch(text: &str, tag_range: Range<usize>, name: &str, value: &str) -> (Range<usize>, String) {
     let tag = &text[tag_range.clone()];
     let bytes = tag.as_bytes();
     let mut at = 1;
@@ -1958,7 +1962,7 @@ fn class_patch(text: &str, tag_range: Range<usize>, value: &str) -> (Range<usize
             at += 1;
         }
         if bytes.get(at) != Some(&b'=') {
-            if key.eq_ignore_ascii_case("class") {
+            if key.eq_ignore_ascii_case(name) {
                 if value.is_empty() {
                     return (
                         tag_range.start + attribute_start..tag_range.start + at,
@@ -1967,7 +1971,7 @@ fn class_patch(text: &str, tag_range: Range<usize>, value: &str) -> (Range<usize
                 }
                 return (
                     tag_range.start + start..tag_range.start + at,
-                    format!("class={}", html_attribute(value)),
+                    format!("{name}={}", html_attribute(value)),
                 );
             }
             if bytes.get(at) == Some(&b'>') {
@@ -1995,7 +1999,7 @@ fn class_patch(text: &str, tag_range: Range<usize>, value: &str) -> (Range<usize
         if quote.is_some() && at < bytes.len() {
             at += 1;
         }
-        if key.eq_ignore_ascii_case("class") {
+        if key.eq_ignore_ascii_case(name) {
             if value.is_empty() {
                 return (
                     tag_range.start + attribute_start..tag_range.start + at,
@@ -2009,7 +2013,7 @@ fn class_patch(text: &str, tag_range: Range<usize>, value: &str) -> (Range<usize
         }
     }
     let at = tag_range.end - 1;
-    (at..at, format!(" class={}", html_attribute(value)))
+    (at..at, format!(" {name}={}", html_attribute(value)))
 }
 
 /// Built-in list styles are structural HTML. Existing ordered lists keep their
@@ -2334,6 +2338,24 @@ pub(super) fn paragraph_assignment_patches(
             .map(str::to_owned)
             .collect::<Vec<_>>();
         if let Some(element) = &element {
+            if tag.name == "pre" && element != "pre" && {
+                let body_end = tokens.iter().find(|next| next.range.start >= token.range.end
+                    && matches!(&next.kind, TokenKind::Tag(tag) if tag.end && tag.name == "pre"))
+                    .map_or(input.text.len(), |token| token.range.start);
+                let body = &input.text[token.range.end..body_end];
+                body.contains(['\n', '\r', '\t', '&']) || body.trim() != body
+                    || body.contains("  ") || body.contains('<') && body.contains(' ')
+            } {
+                // The code style is replaced, while its literal spaces and
+                // hard breaks remain content through standard CSS whitespace.
+                let existing = tag.attribute("style").unwrap_or("");
+                let css = if existing.is_empty() { "white-space: pre-wrap".into() }
+                    else { format!("{existing};white-space: pre-wrap") };
+                let (range, replacement) = attribute_patch(
+                    &input.text, token.range.clone(), "style", &css,
+                );
+                patches.push((converter.source_range(range), replacement));
+            }
             if &tag.name != element {
                 patches.push((
                     converter.source_range(

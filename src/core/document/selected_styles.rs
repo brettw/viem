@@ -19,7 +19,16 @@ impl FormattedDocument {
         affinity: BoundaryAffinity,
     ) -> SelectedNamedStyles {
         let length = self.text_tree().byte_len();
+        // An empty paragraph has its own editable boundary even at EOF. It
+        // must not inherit the previous paragraph's menu assignment merely
+        // because there is no following character to sample.
+        let empty_paragraph = range.is_empty()
+            && self
+                .blocks_for_region(&range)
+                .iter()
+                .any(|block| block.range.is_empty() && block.range.start == range.start);
         let start = if range.is_empty()
+            && !empty_paragraph
             && (affinity == BoundaryAffinity::Upstream || range.start == length)
         {
             range.start.saturating_sub(1)
@@ -139,6 +148,23 @@ impl FormattedDocument {
 mod tests {
     use super::*;
     use crate::document::{Document, Encoding, Format};
+
+    #[test]
+    fn empty_terminal_paragraph_reports_its_own_style_for_either_affinity() {
+        for (format, source) in [
+            (Format::Html, "<p>prose</p><blockquote><p></p></blockquote>"),
+            (Format::Markdown, "prose\n\n> "),
+        ] {
+            let doc =
+                Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+            let at = doc.text().len();
+            for affinity in [BoundaryAffinity::Upstream, BoundaryAffinity::Downstream] {
+                let selected = doc.projection().selected_named_styles(at..at, affinity);
+                assert_eq!(selected.paragraph, Some("Block quote".into()));
+                assert!(!selected.paragraph_mixed);
+            }
+        }
+    }
 
     #[test]
     fn uniform_character_assignment_across_paragraphs_ignores_separator_gaps() {

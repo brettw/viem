@@ -237,6 +237,7 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_KEY_BACK_TAB 16u
 #define VIEM_KEY_DOCUMENT_START 17u
 #define VIEM_KEY_DOCUMENT_END 18u
+#define VIEM_KEY_SHIFT_ENTER 19u
 
 #define VIEM_COMMAND_STATUS_NONE 0u
 #define VIEM_COMMAND_STATUS_COMPLETE 1u
@@ -2050,6 +2051,12 @@ ViemStatus viem_effect_batch_release(ViemEffectBatchHandle batch);
 ViemStatus viem_core_view_place_cursor(
     ViemCoreHandle core, ViemViewId view,
     const ViemPlaceCursorV1 *request, ViemCoreOutcomeV1 *out_outcome);
+
+/* Select all logical content through EOF, independently of line policy. */
+ViemStatus viem_core_view_select_all(
+    ViemCoreHandle core, ViemViewId view,
+    uint64_t document_id, uint64_t document_revision,
+    ViemCoreOutcomeV1 *out_outcome);
 
 /* Native Edit-menu history navigation; behavior is independent of Vim mode. */
 ViemStatus viem_core_view_undo(ViemCoreHandle core, ViemViewId view,

@@ -222,7 +222,8 @@ pub(super) fn support_patches(
         first
     } else {
         projection
-            .hard_line_at_offset(range.end.saturating_sub(1))
+            .hard_line_at_offset(document.previous_grapheme_boundary(range.end)
+                .ok_or(DocumentError::VerificationFailed)?)
             .ok_or(DocumentError::VerificationFailed)?
     };
     let mut patches = Vec::new();

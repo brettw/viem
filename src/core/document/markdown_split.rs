@@ -13,6 +13,25 @@ pub(super) fn patches(
     range: &Range<usize>,
     replacement: &str,
 ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
+    patches_with_separator(document, range, replacement, "\n\n", None)
+}
+
+pub(super) fn hard_break_patches(
+    document: &Document,
+    at: usize,
+    source_at: usize,
+    separator: &str,
+) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
+    patches_with_separator(document, &(at..at), "\n", separator, Some(source_at))
+}
+
+fn patches_with_separator(
+    document: &Document,
+    range: &Range<usize>,
+    replacement: &str,
+    separator: &str,
+    insertion_source: Option<usize>,
+) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
     if document.format() != Format::Markdown
         || !replacement.contains('\n')
         || !document
@@ -148,7 +167,7 @@ pub(super) fn patches(
         }
     }
     let mut source = if range.is_empty() {
-        let Some(at) = projection.source_insertion_point(range.start, true) else {
+        let Some(at) = insertion_source.or_else(|| projection.source_insertion_point(range.start, true)) else {
             return Ok(None);
         };
         at..at
@@ -197,7 +216,7 @@ pub(super) fn patches(
     for (index, segment) in replacement.split('\n').enumerate() {
         if index > 0 {
             transition(&scopes, &mut current, &[], &mut syntax);
-            syntax.push_str("\n\n");
+            syntax.push_str(separator);
             line_start = true;
         }
         if !segment.is_empty() {

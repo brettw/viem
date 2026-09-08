@@ -122,9 +122,9 @@ fn quote_assignment_is_local_and_restores_exact_source_on_removal_and_history() 
 fn quote_removal_preserves_body_structure_and_neighbor_boundaries() {
     for (source, expected) in [
         ("before\n> quote\n\nafter", "before\n\nquote\n\nafter"),
-        ("> # heading\n>\n> - item", "# heading\n\n- item"),
+        ("> # heading\n>\n> - item", "heading\n\nitem"),
         ("> first\n>\n> second", "first\n\nsecond"),
-        ("> ```\n> > literal\n> ```", "```\n> literal\n```"),
+        ("> ```\n> > literal\n> ```", "\\> literal"),
     ] {
         let mut doc = document(source, Format::Markdown);
         let before = doc.text().to_owned();
@@ -358,7 +358,7 @@ fn quoted_prose_after_a_closed_fence_still_enters_a_paragraph() {
 }
 
 #[test]
-fn enter_on_an_empty_quoted_list_item_exits_the_list_and_keeps_the_quote() {
+fn enter_on_an_empty_quoted_list_item_exits_its_visible_paragraph_style() {
     for format in [Format::Markdown, Format::MarkdownSource] {
         for source in ["> - ", "> 1. ", "> - first\n> - "] {
             let mut core = Core::new(document(source, format));
@@ -378,7 +378,7 @@ fn enter_on_an_empty_quoted_list_item_exits_the_list_and_keeps_the_quote() {
             }
             let last = core.document().projection().blocks().last().unwrap();
             assert_eq!(last.kind, BlockKind::Paragraph);
-            assert_eq!(last.style.0, "Block quote");
+            assert_eq!(last.style.0, if format == Format::Markdown { "Paragraph" } else { "Block quote" });
             let saved = core.document().source_bytes();
             let visible =
                 Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Markdown).unwrap();

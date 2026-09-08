@@ -1308,6 +1308,20 @@ final class EVCoreViewSession {
         return outcome
     }
 
+    @discardableResult
+    func selectAll() throws -> ViemCoreOutcomeV1 {
+        let state = try document.documentState()
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        try checked(
+            viem_core_view_select_all(document.core, viewID, state.document_id,
+                                      state.document_revision, &outcome),
+            operation: "Select all text"
+        )
+        finish(outcome, composition: .cancelIfChanged)
+        return outcome
+    }
+
     func caretGeometry(
         offset: UInt64,
         affinity: UInt32,

@@ -146,6 +146,7 @@ pub enum Key {
     Char(char),
     Escape,
     Enter,
+    ShiftEnter,
     Tab,
     BackTab,
     Backspace,
@@ -158,6 +159,8 @@ pub enum Key {
     End,
     DocumentStart,
     DocumentEnd,
+    /// Portable replayable native whole-document selection intention.
+    SelectAll,
     PageUp,
     PageDown,
     Ctrl(char),
@@ -801,6 +804,7 @@ enum EditSessionStep {
     TypingStyle(typing_style::TypingStyle),
     Text(RegisterValue),
     ListEnter,
+    HardBreak,
     Backspace,
     Delete,
     DeleteWord,
@@ -1939,6 +1943,9 @@ impl CommandInterpreter {
         event: &InputEvent,
         clipboard: Option<&ClipboardCommandContext>,
     ) -> bool {
+        if matches!(event, InputEvent::Key(Key::SelectAll)) {
+            return false;
+        }
         if self.mode == Mode::CommandLine {
             return matches!(event, InputEvent::Key(Key::Enter))
                 && self
@@ -2555,6 +2562,21 @@ impl CommandInterpreter {
         true
     }
 
+    /// Select the complete logical document, including its final hard break.
+    /// The host closes an active editing session before invoking this method.
+    pub(crate) fn select_all(&mut self, document: &Document) -> Result<(), DocumentError> {
+        let end = document.projection().text_tree().byte_len();
+        document.text_point(0)?;
+        document.text_point(end)?;
+        self.set_cursor_from_pointer(document, 0, BoundaryAffinity::Downstream, false);
+        self.mode = Mode::VisualCharacter;
+        self.visual_anchor = Some(0);
+        self.cursor = end;
+        self.boundary_affinity = BoundaryAffinity::Upstream;
+        self.visual_to_line_end = false;
+        Ok(())
+    }
+
     /// Publish a text commit performed by a non-keyboard core input source,
     /// such as an IME composition. Insert/Replace modes retain a boundary
     /// caret; character-shaped modes normalize it to their associated item.
@@ -2825,6 +2847,9 @@ impl CommandInterpreter {
             });
         }
 
+        if matches!(&event, InputEvent::Key(Key::SelectAll)) {
+            return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
+        }
         if self.needs_input_assistance(context.document(), &event)
             || !self.typing_style.is_empty()
             || (self.mode == Mode::Replace
@@ -3123,6 +3148,11 @@ impl CommandInterpreter {
             return Ok(None);
         }
         let document = context.document();
+        if let InputEvent::Key(key) = event {
+            if let Some(request) = self.paragraph_key_request(document, *key)? {
+                return self.plan_paragraph_key(document, event, *key, request).map(Some);
+            }
+        }
         match event {
             InputEvent::Key(Key::Backspace) => {
                 return self.plan_edit_mode_backspace(document, event).map(Some)
@@ -3271,6 +3301,103 @@ impl CommandInterpreter {
                 CommandPresentationRequest::RevealCaret,
             ],
         }))
+    }
+
+    fn paragraph_key_request(
+        &self,
+        document: &Document,
+        key: Key,
+    ) -> Result<Option<ModelRequest>, DocumentError> {
+        if key == Key::ShiftEnter {
+            return Ok(Some(ModelRequest::InsertHardBreak {
+                document: document.id(), revision: document.revision(),
+                at: self.cursor, affinity: self.insertion_boundary_affinity(),
+            }));
+        }
+        if !matches!(key, Key::Enter | Key::Backspace) {
+            return Ok(None);
+        }
+        if key == Key::Backspace && self.mode == Mode::Replace
+            && self.insert_session.as_ref().and_then(|session| session.replace_journal.last())
+                .is_some_and(|entry| entry.frontier() == Some(self.cursor))
+        {
+            return Ok(None);
+        }
+        document.paragraph_boundary_reset_request(self.cursor, key == Key::Enter)
+    }
+
+    fn note_paragraph_key(&mut self, key: Key) {
+        self.invalidate_replace_restoration();
+        if key != Key::ShiftEnter {
+            self.typing_style = Default::default();
+        }
+        self.boundary_affinity = BoundaryAffinity::Downstream;
+        if let Some(session) = self.insert_session.as_mut() {
+            if !session.replaying_program {
+                session.preserve_normal_repeat = false;
+                if let Some(program) = session.repeat_program.as_mut() {
+                    program.push(match key {
+                        Key::ShiftEnter => EditSessionStep::HardBreak,
+                        Key::Backspace => EditSessionStep::Backspace,
+                        _ => EditSessionStep::ListEnter,
+                    });
+                }
+                if key == Key::ShiftEnter {
+                    session.last_inserted.append_inserted_payload(&RegisterValue::characterwise("\n"));
+                }
+            }
+        }
+    }
+
+    fn plan_paragraph_key(
+        &self,
+        document: &Document,
+        event: &InputEvent,
+        key: Key,
+        request: ModelRequest,
+    ) -> Result<CommandPlan, DocumentError> {
+        let prepared = document.prepare_model_request(request.clone()).map_err(command_document_error)?;
+        let mut next = self.clone();
+        next.record_event(event);
+        next.cursor = if key == Key::ShiftEnter {
+            prepared_break_cursor(document, &prepared, self.cursor)?
+        } else {
+            prepared_cursor(document, &prepared, self.cursor, Association::BeforeInsertion)?
+        };
+        next.note_paragraph_key(key);
+        let mut output = CommandOutput { document_changed: !prepared.is_no_op(), cursor_moved: true, ..CommandOutput::complete() };
+        next.finish_non_layout_dispatch(&output);
+        next.finish_explicit_register_prefix(&output);
+        next.finish_clipboard_writes(&mut output);
+        Ok(CommandPlan {
+            document: document.id(), revision: document.revision(),
+            model: Some(CommandModelRequest::Model(request)),
+            success_controller: Box::new(next),
+            failure_controller: Box::new(self.failed_plan_controller(document.revision())),
+            line_undo: PlannedLineUndoEffect::Update(self.capture_line_undo_at_cursor(document)),
+            post_commit: PlannedPostCommit::None,
+            output, replay: None, undo_group: UndoGroupDirective::Preserve,
+            presentation: vec![CommandPresentationRequest::Relayout, CommandPresentationRequest::RevealCaret],
+        })
+    }
+
+    fn apply_paragraph_key(
+        &mut self,
+        document: &mut Document,
+        key: Key,
+        request: ModelRequest,
+    ) -> Result<CommandOutput, DocumentError> {
+        let prepared = document.prepare_model_request(request).map_err(command_document_error)?;
+        let cursor = if key == Key::ShiftEnter {
+            prepared_break_cursor(document, &prepared, self.cursor)?
+        } else {
+            prepared_cursor(document, &prepared, self.cursor, Association::BeforeInsertion)?
+        };
+        let changed = !prepared.is_no_op();
+        document.commit_model_transaction(prepared).map_err(command_document_error)?;
+        self.cursor = cursor;
+        self.note_paragraph_key(key);
+        Ok(CommandOutput { document_changed: changed, cursor_moved: true, ..CommandOutput::complete() })
     }
 
     fn plan_edit_mode_backspace(
@@ -8127,6 +8254,27 @@ impl CommandInterpreter {
         document: &mut Document,
         key: Key,
     ) -> Result<CommandOutput, DocumentError> {
+        if key == Key::SelectAll {
+            let mut output = if self.visual_block_insert.is_some() {
+                self.finish_visual_block_insert(document)?
+            } else if matches!(self.mode, Mode::Insert | Mode::Replace)
+                || self.insert_session.is_some()
+            {
+                self.finish_insert(document)?
+            } else {
+                CommandOutput::complete()
+            };
+            if output.status != CommandStatus::Complete {
+                return Ok(output);
+            }
+            self.select_all(document)?;
+            output.mode_changed = true;
+            output.cursor_moved = true;
+            return Ok(output);
+        }
+        let key = if key == Key::ShiftEnter && !matches!(self.mode, Mode::Insert | Mode::Replace) {
+            Key::Enter
+        } else { key };
         let key = self.clipboard_copy_alias_key(key);
         if let Some(output) = self.try_html_assistance_key(document, key)? {
             return Ok(output);
@@ -9014,7 +9162,11 @@ impl CommandInterpreter {
             extent.range = covered_line_range(&lines, extent.range);
             extent.kind = MotionKind::Linewise;
         }
+        let full_selection = matches!(self.mode, Mode::VisualCharacter | Mode::VisualLine)
+            && extent.range.start == 0
+            && extent.range.end == document.projection().text_tree().byte_len();
         if extent.range.is_empty()
+            && !full_selection
             && operator != Operator::Change
             && !(operator == Operator::Delete && extent.kind == MotionKind::Linewise)
         {
@@ -9052,7 +9204,9 @@ impl CommandInterpreter {
                 if operator == Operator::Change {
                     document.begin_edit_group();
                 }
-                let result = if operator == Operator::Delete && extent.kind == MotionKind::Linewise
+                let result = if full_selection && replacement.is_empty() {
+                    document.clear_document_content()
+                } else if operator == Operator::Delete && extent.kind == MotionKind::Linewise
                 {
                     document.delete_lines(edit_range.clone())
                 } else {
@@ -10261,6 +10415,11 @@ impl CommandInterpreter {
             }
             return Ok(output);
         }
+        if key != Key::Backspace {
+            if let Some(request) = self.paragraph_key_request(document, key)? {
+                return self.apply_paragraph_key(document, key, request);
+            }
+        }
         match key {
             Key::Backspace => self.edit_mode_backspace(document),
             Key::Delete => self.edit_mode_delete(document),
@@ -10488,7 +10647,7 @@ impl CommandInterpreter {
                 self.register_pending = true;
                 Ok(CommandOutput::pending())
             }
-            Key::Enter => Ok(CommandOutput::unsupported(
+            Key::Enter | Key::ShiftEnter => Ok(CommandOutput::unsupported(
                 "Visual Block insertion cannot contain a hard line break",
             )),
             Key::DocumentStart | Key::DocumentEnd | Key::BackTab
@@ -10505,6 +10664,7 @@ impl CommandInterpreter {
                 "cursor motion is unavailable while a deferred Visual Block insertion is collected",
             )),
             Key::Escape => unreachable!("handled above"),
+            Key::SelectAll => self.handle_key(document, key),
         }
     }
 
@@ -11069,6 +11229,9 @@ impl CommandInterpreter {
             }
             self.invalidate_replace_restoration();
         }
+        if let Some(request) = self.paragraph_key_request(document, Key::Backspace)? {
+            return self.apply_paragraph_key(document, Key::Backspace, request);
+        }
         let Some(start) = document
             .hard_line_snapshot()
             .previous_grapheme_boundary(self.cursor)
@@ -11331,6 +11494,9 @@ impl CommandInterpreter {
                         EditSessionStep::DeleteToLineStart => self.insert_ctrl_u(document)?,
                         EditSessionStep::ListEnter => {
                             self.handle_edit_mode_key(document, Key::Enter)?
+                        }
+                        EditSessionStep::HardBreak => {
+                            self.handle_edit_mode_key(document, Key::ShiftEnter)?
                         }
                     };
                     output.merge(next);

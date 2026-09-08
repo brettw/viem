@@ -670,7 +670,8 @@ fn macro_events_as_put_value(events: &[InputEvent]) -> Option<RegisterValue> {
                 text.push(ctrl_key_as_c0(*character)?);
             }
             InputEvent::Key(
-                Key::BackTab
+                Key::ShiftEnter
+                | Key::BackTab
                 | Key::Backspace
                 | Key::Delete
                 | Key::Left
@@ -681,6 +682,7 @@ fn macro_events_as_put_value(events: &[InputEvent]) -> Option<RegisterValue> {
                 | Key::End
                 | Key::DocumentStart
                 | Key::DocumentEnd
+                | Key::SelectAll
                 | Key::PageUp
                 | Key::PageDown,
             ) => return None,
@@ -710,6 +712,7 @@ fn macro_events_as_register_value(events: &[InputEvent]) -> RegisterValue {
             InputEvent::Text(value) => text.push_str(value),
             InputEvent::Key(Key::Char(character)) => text.push(*character),
             InputEvent::Key(Key::Enter) => text.push_str("<Enter>"),
+            InputEvent::Key(Key::ShiftEnter) => text.push_str("<S-Enter>"),
             InputEvent::Key(Key::Tab) => text.push_str("<Tab>"),
             InputEvent::Key(Key::BackTab) => text.push_str("<S-Tab>"),
             InputEvent::Key(Key::Escape) => text.push_str("<Esc>"),
@@ -723,6 +726,7 @@ fn macro_events_as_register_value(events: &[InputEvent]) -> RegisterValue {
             InputEvent::Key(Key::End) => text.push_str("<End>"),
             InputEvent::Key(Key::DocumentStart) => text.push_str("<C-Home>"),
             InputEvent::Key(Key::DocumentEnd) => text.push_str("<C-End>"),
+            InputEvent::Key(Key::SelectAll) => text.push_str("<SelectAll>"),
             InputEvent::Key(Key::PageUp) => text.push_str("<PageUp>"),
             InputEvent::Key(Key::PageDown) => text.push_str("<PageDown>"),
             InputEvent::Key(Key::Ctrl(character)) => {

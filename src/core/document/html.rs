@@ -1311,6 +1311,28 @@ pub(super) fn list_patches(
                 let TokenKind::Tag(parent_tag) = &tokens[parent].kind else {
                     unreachable!()
                 };
+                let siblings = nodes.iter().filter(|(index, _, owner)| {
+                    *owner == Some(parent)
+                        && matches!(&tokens[*index].kind, TokenKind::Tag(tag) if tag.name == "li")
+                }).collect::<Vec<_>>();
+                let item = siblings.iter().position(|(index, _, _)| index == open)
+                    .ok_or(super::DocumentError::AmbiguousProjection)?;
+                let selected = |index: usize| owners.iter().enumerate().any(|(target, owner)| {
+                    *owner == Some(index) && !handled.contains(&target)
+                });
+                let leave = if item == 0 {
+                    result.push((mapper.source_range(tokens[parent].range.clone()), String::new()));
+                    String::new()
+                } else if selected(siblings[item - 1].0) {
+                    String::new()
+                } else {
+                    format!("</{}>", parent_tag.name)
+                };
+                if item + 1 == siblings.len() {
+                    let (_, parent_close, _) = nodes.iter().find(|(index, _, _)| *index == parent)
+                        .ok_or(super::DocumentError::AmbiguousProjection)?;
+                    result.push((mapper.source_range(tokens[*parent_close].range.clone()), String::new()));
+                }
                 let mut resume = input.text[tokens[parent].range.clone()].to_owned();
                 if parent_tag.name == "ol" {
                     resume.insert_str(
@@ -1321,7 +1343,10 @@ pub(super) fn list_patches(
                         ),
                     );
                 }
-                (format!("</{}>", parent_tag.name), resume)
+                if item + 1 == siblings.len() || selected(siblings[item + 1].0) {
+                    resume.clear();
+                }
+                (leave, resume)
             } else {
                 (String::new(), String::new())
             };

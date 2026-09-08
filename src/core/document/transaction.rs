@@ -5,6 +5,8 @@
 //! the candidate state needed for publication.  Commit only rechecks the
 //! captured model preconditions and installs that already-verified candidate.
 
+#[path = "clear_content.rs"]
+mod clear_content;
 #[path = "fragments.rs"]
 mod fragments;
 #[path = "clipboard_fragment.rs"]
@@ -14,6 +16,10 @@ pub use clipboard_fragment::ClipboardFragment;
 mod named_character;
 #[path = "markdown_block_styles.rs"]
 mod markdown_block_styles;
+#[path = "structural_style.rs"]
+mod structural_style;
+#[path = "paragraph_insertion.rs"]
+mod paragraph_insertion;
 #[path = "markdown_quote_edit.rs"]
 mod markdown_quote_edit;
 #[path = "list_indent.rs"]
@@ -28,6 +34,8 @@ mod markdown_split;
 mod markdown_typing;
 #[path = "replacement.rs"]
 mod replacement;
+#[path = "paragraph_keys.rs"]
+mod paragraph_keys;
 #[path = "typing.rs"]
 mod typing;
 pub use fragments::{FragmentEdit, ReplacementFragment};
@@ -214,6 +222,12 @@ pub enum ModelRequest {
         revision: Revision,
         range: Range<usize>,
     },
+    /// Remove all content and its enclosing formatting scopes, retaining the
+    /// source format's document envelope and metadata.
+    ClearDocumentContent {
+        document: DocumentId,
+        revision: Revision,
+    },
     SetSemanticStyle {
         document: DocumentId,
         revision: Revision,
@@ -255,6 +269,12 @@ pub enum ModelRequest {
         document: DocumentId,
         revision: Revision,
         at: usize,
+    },
+    InsertHardBreak {
+        document: DocumentId,
+        revision: Revision,
+        at: usize,
+        affinity: BoundaryAffinity,
     },
     /// Open a new editable row, retaining list ownership even when the current
     /// item is empty. This differs from Enter's empty-item exit intention.
@@ -328,6 +348,7 @@ impl ModelRequest {
             Self::ApplyFragmentEdits { document, .. }
             | Self::ApplyTextEdits { document, .. }
             | Self::DeleteLines { document, .. }
+            | Self::ClearDocumentContent { document, .. }
             | Self::SetSemanticStyle { document, .. }
             | Self::SetListStyle { document, .. }
             | Self::IndentList { document, .. }
@@ -335,6 +356,7 @@ impl ModelRequest {
             | Self::AssignNamedStyle { document, .. }
             | Self::EditNamedStyleDefinition { document, .. }
             | Self::ContinueList { document, .. }
+            | Self::InsertHardBreak { document, .. }
             | Self::OpenLine { document, .. }
             | Self::SetFileFormat { document, .. }
             | Self::SetIncludeStyleDefinitionsInFile { document, .. }
@@ -355,6 +377,7 @@ impl ModelRequest {
             Self::ApplyFragmentEdits { revision, .. }
             | Self::ApplyTextEdits { revision, .. }
             | Self::DeleteLines { revision, .. }
+            | Self::ClearDocumentContent { revision, .. }
             | Self::SetSemanticStyle { revision, .. }
             | Self::SetListStyle { revision, .. }
             | Self::IndentList { revision, .. }
@@ -362,6 +385,7 @@ impl ModelRequest {
             | Self::AssignNamedStyle { revision, .. }
             | Self::EditNamedStyleDefinition { revision, .. }
             | Self::ContinueList { revision, .. }
+            | Self::InsertHardBreak { revision, .. }
             | Self::OpenLine { revision, .. }
             | Self::SetFileFormat { revision, .. }
             | Self::SetIncludeStyleDefinitionsInFile { revision, .. }
@@ -1080,6 +1104,7 @@ impl Document {
             } => self.prepare_physical_source(range, replacement),
             ModelRequest::ApplyTextEdits { edits, .. } => self.prepare_text_edits(edits),
             ModelRequest::DeleteLines { range, .. } => self.prepare_line_deletion(range),
+            ModelRequest::ClearDocumentContent { .. } => self.prepare_clear_document_content(),
             ModelRequest::SetSemanticStyle {
                 range,
                 style,
@@ -1121,6 +1146,7 @@ impl Document {
                 self.prepare_persisted_style_intent(intent)
             }
             ModelRequest::ContinueList { at, .. } => self.prepare_rich_list_enter(at),
+            ModelRequest::InsertHardBreak { at, affinity, .. } => self.prepare_intra_paragraph_break(at, affinity),
             ModelRequest::OpenLine { at, .. } => self.prepare_open_line(at),
             ModelRequest::SetFileFormat { target, .. } => self.prepare_file_format(target),
             ModelRequest::SetIncludeStyleDefinitionsInFile { enabled, .. } => {
@@ -1961,6 +1987,21 @@ impl Document {
     }
 
     fn prepare_html_named_style(
+        &self,
+        intent: PersistedStyleIntent,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if let PersistedStyleIntent::AssignBlockStyle {
+            target: StyleBlockTarget::Paragraphs(range), style,
+        } = &intent {
+            let selected = range.start().offset()..range.end().offset();
+            if let Some(prepared) = self.prepare_exclusive_structural_style(
+                selected, structural_style::Assignment::Paragraph(style.clone()),
+            )? { return Ok(prepared); }
+        }
+        self.prepare_html_named_style_raw(intent)
+    }
+
+    fn prepare_html_named_style_raw(
         &self,
         intent: PersistedStyleIntent,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
@@ -4436,6 +4477,19 @@ impl Document {
         range: Range<usize>,
         style: StyleId,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
+            if let Some(prepared) = self.prepare_exclusive_structural_style(
+                range.clone(), structural_style::Assignment::Paragraph(style.clone()),
+            )? { return Ok(prepared); }
+        }
+        self.prepare_markdown_paragraph_style_raw(range, style)
+    }
+
+    fn prepare_markdown_paragraph_style_raw(
+        &self,
+        mut range: Range<usize>,
+        style: StyleId,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         if self.format() == Format::HtmlSource {
             let range = TextRange::new(self.text_point(range.start)?, self.text_point(range.end)?)?;
             return self.prepare_persisted_style_intent(PersistedStyleIntent::AssignBlockStyle {
@@ -4458,6 +4512,17 @@ impl Document {
         self.validate_range(&range)?;
         if !matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
             return Err(DocumentError::UnsupportedFormatting.into());
+        }
+        if self.format() == Format::Markdown {
+            let selected = self.projection().blocks_for_region(&range).into_iter()
+                .filter(|block| if range.is_empty() {
+                    block.range.start <= range.start && range.start <= block.range.end
+                } else {
+                    block.range.start < range.end && range.start < block.range.end
+                }).collect::<Vec<_>>();
+            if let (Some(first), Some(last)) = (selected.first(), selected.last()) {
+                range = first.range.start..last.range.end;
+            }
         }
         if style.0 == "Block quote"
             || style.0 == "Paragraph" && self.projection().blocks_for_region(&range)
@@ -4560,10 +4625,25 @@ impl Document {
             };
             edits.push(TextEdit::new(line.start..line.start + remove, replacement));
         }
-        self.prepare_text_edits_with_patches(edits, Some(patches))
+        if self.format() == Format::Markdown && level > 0 {
+            self.prepare_markdown_heading_patches(patches, &range, &style)
+        } else {
+            self.prepare_text_edits_with_patches(edits, Some(patches))
+        }
     }
 
     fn prepare_list_style(
+        &self,
+        range: Range<usize>,
+        style: Option<super::ListStyle>,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if let Some(prepared) = self.prepare_exclusive_structural_style(
+            range.clone(), structural_style::Assignment::List(style),
+        )? { return Ok(prepared); }
+        self.prepare_list_style_raw(range, style)
+    }
+
+    fn prepare_list_style_raw(
         &self,
         range: Range<usize>,
         style: Option<super::ListStyle>,

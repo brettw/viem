@@ -375,7 +375,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 }
             }
         case .selectAll:
-            performInput { try self.sendNormalSequence(["g", "g", "V", "G"], session: session) }
+            performInput { try session.selectAll() }
         case .selectWord:
             performInput { try self.sendNormalSequence(["v", "i", "w"], session: session) }
         case .selectSentence:

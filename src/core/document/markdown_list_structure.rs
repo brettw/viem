@@ -99,6 +99,16 @@ pub(super) fn deletion_patches(
     let (Some(first), Some(last)) = (paragraphs.first(), paragraphs.last()) else {
         return Ok(None);
     };
+    // A hard break inside one item is still item content. Deleting that
+    // content must retain the label; only a paragraph boundary or an explicit
+    // whole-line operation owns the enclosing list structure.
+    if !whole_line
+        && paragraphs.len() == 1
+        && range.start == first.range.start
+        && range.end == first.range.end
+    {
+        return Ok(None);
+    }
     if !paragraphs
         .iter()
         .any(|block| matches!(block.kind, super::super::BlockKind::ListItem { .. }))

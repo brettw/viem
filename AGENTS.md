@@ -963,10 +963,27 @@ indentation and noneditable left border in both formats. Source HTML retains
 its tags and applies quote presentation to their source paragraph. Markdown
 Source retains every `>`; quote indentation and border apply when Flow Source
 Paragraphs is enabled and are suppressed when it is disabled. Assigning or
-removing quotation treatment uses local source patches and preserves contained
-inline and block syntax, text, hard-line structure, and exact history bytes.
-Enter continues the quotation in a new paragraph; the generated quote style
-therefore uses itself as its next-paragraph style.
+removing quotation treatment uses local source patches and preserves inline
+formatting, text, hard-line structure, and exact history bytes. Paragraph-style
+commands assign one structural treatment at a time: changing a list item,
+heading, or code paragraph to Block quote replaces that treatment, and changing
+a quote to a list removes its quotation treatment. Only selected paragraphs
+change; neighboring items and containers retain their source bytes. Imported
+nested containers remain lossless and editable until an explicit style change
+normalizes the affected paragraph.
+
+In WYSIWYG, choosing Block quote without a selection at the end of a nonempty
+ordinary paragraph creates a blank quote after the existing prose and places
+the insertion cursor there. An existing empty final paragraph is reused; an
+empty final row within ordinary prose becomes its own quote paragraph. The
+insertion and style assignment are one atomic, undoable transaction.
+Enter continues a nonempty quotation in a new paragraph; the generated quote
+style therefore uses itself as its next-paragraph style. Enter in an empty quote
+removes its quotation treatment. Backspace at the beginning of a quote or list
+item changes the current paragraph to ordinary Paragraph without deleting text.
+Deleting the entire selected document also removes content-level paragraph
+wrappers, leaving an empty ordinary paragraph ready for typing; untouched
+document metadata and source encoding are retained.
 Future tables, callouts, and other container kinds remain outside this scope.
 
 ### Semantic edit intentions and reverse projection
@@ -1743,6 +1760,10 @@ a buffer to RTF returns any physical-mode views to Visual.
   mode. Counts, registers, replay, dot repeat, and undo retain that policy.
 - Explicit `g` visual-row motions keep their visual meaning. Ex addresses and
   ranges retain their explicit formatted hard-line domain.
+- Native Select All selects the entire formatted document through its exact
+  terminal boundary, independently of Visual/Physical Source line policy or
+  the previously active selection mode. Wrapped rows and internal breaks in
+  the last paragraph are included.
 - Visual vertical motion retains desired x and uses shaping caret stops;
   physical motion retains its source column and a checked source position when
   the destination has no visible text. Source positions must be invalidated or
@@ -4041,6 +4062,16 @@ breaks preserve code indentation and blank rows and are distinct from automatic
 word wrapping. HTML entities are decoded in WYSIWYG code; source-visible code
 retains the literal source. Enter inside HTML preformatted content inserts a
 `<br>` when needed to preserve the requested line on reprojection.
+In WYSIWYG, Shift-Enter inserts an explicit line break within the current paragraph:
+HTML uses `<br>`, Markdown uses a backslash followed by a source line ending,
+and RTF uses `\line`. Markdown uses inline `<br>` where a physical source
+ending would change paragraph structure, such as headings and empty items.
+Bare inline `<br>` and `<br />` project as breaks; escaped tags and code spans
+retain their literal text. Markdown quote/list continuation syntax keeps the break
+inside the same paragraph and item. In preformatted Markdown code and plain
+text, the source line ending itself expresses the break. This is distinct from
+automatic soft wrapping and from Enter's paragraph-splitting behavior. Source
+views retain literal source-line-ending insertion for Shift-Enter.
 Typing spaces or tabs in an HTML context that already preserves whitespace
 uses literal source whitespace; it does not add nested preservation spans.
 Explicit HTML whitespace overrides retain their own semantics.

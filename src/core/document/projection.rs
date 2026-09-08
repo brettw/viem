@@ -4518,10 +4518,14 @@ fn project_markdown_lines(
         kind = markdown_presented_kind(kind, preserve_markers);
         builder.parse_inline(content_start, line.end);
         let output_end = builder.output.len();
-        if output_start == output_end && (matches!(kind, BlockKind::ListItem { .. }) || quoted) {
-            // The source label belongs to list structure. An empty item still
-            // exposes a text insertion boundary immediately after that label.
-            let at = context.map_or_else(|| quote.map_or(source_content_end, |quote| quote.content_start), |context| context.content_start);
+        if output_start == output_end && (matches!(kind, BlockKind::ListItem { .. } | BlockKind::Heading(_)) || quoted) {
+            // Structural prefixes are source syntax. Empty blocks retain the
+            // boundary after their prefix, including an empty ATX heading.
+            let content_at = builder.unit_at(content_start)
+                .map_or(source_content_end, |unit| unit.source.start);
+            let at = if matches!(kind, BlockKind::Heading(_)) { content_at } else {
+                context.map_or_else(|| quote.map_or(content_at, |quote| quote.content_start), |context| context.content_start)
+            };
             builder.provenance.push(ProvenanceSpan {
                 formatted: output_start..output_start,
                 source: at..at,
@@ -4549,6 +4553,9 @@ fn project_markdown_lines(
         line_index += 1;
     }
 
+    hard_breaks.append(&mut builder.inline_hard_breaks);
+    hard_breaks.sort_unstable();
+    hard_breaks.dedup();
     let text_len = builder.output.len();
     let mut projection = FormattedDocument::from_parts(
         revision,
@@ -4637,6 +4644,7 @@ struct MarkdownBuilder<'a> {
     source_text: &'a str,
     units: &'a [LogicalUnit],
     output: String,
+    inline_hard_breaks: Vec<usize>,
     blocks: Vec<Block>,
     styles: Vec<StyleSpan>,
     provenance: Vec<ProvenanceSpan>,
@@ -4657,6 +4665,7 @@ impl<'a> MarkdownBuilder<'a> {
             source_text,
             units,
             output: String::new(),
+            inline_hard_breaks: Vec::new(),
             blocks: Vec::new(),
             styles: Vec::new(),
             provenance: Vec::new(),
@@ -4690,6 +4699,22 @@ impl<'a> MarkdownBuilder<'a> {
                             at = next + escaped.len_utf8();
                             continue;
                         }
+                    }
+                }
+            }
+
+            if !self.preserve_markers {
+                if let Some(length) = markdown_inline_break_length(&self.source_text[at..end]) {
+                    if let (Some(first), Some(last)) = (self.unit_at(at), self.unit_at(at + length - 1)) {
+                        let source = first.source.start..last.source.end;
+                        let output_start = self.output.len();
+                        self.inline_hard_breaks.push(output_start);
+                        self.output.push('\n');
+                        self.provenance.push(ProvenanceSpan {
+                            formatted: output_start..self.output.len(), source,
+                        });
+                        at += length;
+                        continue;
                     }
                 }
             }
@@ -4999,6 +5024,21 @@ impl<'a> MarkdownBuilder<'a> {
         }
         None
     }
+}
+
+/// The native inline HTML spelling for a hard break. Escapes and code spans
+/// are consumed before their contents reach this recognizer; attributes and
+/// other HTML remain literal source content in this Markdown adapter.
+pub(super) fn markdown_inline_break_length(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if !bytes.get(..3)?.eq_ignore_ascii_case(b"<br") { return None; }
+    let mut at = 3;
+    while matches!(bytes.get(at), Some(b' ' | b'\t')) { at += 1; }
+    if bytes.get(at) == Some(&b'/') {
+        at += 1;
+        while matches!(bytes.get(at), Some(b' ' | b'\t')) { at += 1; }
+    }
+    (bytes.get(at) == Some(&b'>')).then_some(at + 1)
 }
 
 pub(crate) fn escape_markdown_insert(text: &str) -> String {

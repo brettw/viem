@@ -549,9 +549,11 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         surface.refreshPresentation()
         surface.perform(menuCommand: .selectAll, sender: nil)
         XCTAssertEqual(surface.selectionText(), "one two\nthree\n")
+        // Select All owns the exact full text range, independently of row
+        // policy; it does not derive an extent from a final line motion.
         XCTAssertEqual(
             surface.visualSelection?.info.identity.kind,
-            UInt32(VIEM_VISUAL_SELECTION_KIND_LINE)
+            UInt32(VIEM_VISUAL_SELECTION_KIND_CHARACTER)
         )
     }
 
