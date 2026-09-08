@@ -929,21 +929,25 @@ pub(super) fn list_enter_patch(
 ) -> Result<(Range<usize>, String), super::DocumentError> {
     let mapper = Builder::new(input, Revision(0));
     let tokens = tokenize(&input.text);
-    let mut stack: Vec<(String, String)> = Vec::new();
-    for token in tokens {
-        if mapper.source_range(token.range.clone()).end > source_at {
-            break;
-        }
-        if let TokenKind::Tag(tag) = token.kind {
-            if tag.end {
-                if let Some(index) = stack.iter().rposition(|(name, _)| *name == tag.name) {
-                    stack.truncate(index);
-                }
-            } else if !void(&tag.name) {
-                stack.push((tag.name, input.text[token.range].to_owned()));
-            }
-        }
-    }
+    // Use the same implicit paragraph closure rules as paragraph splitting.
+    // A raw push/pop stack retains prior <p> siblings with omitted end tags,
+    // then closes and reopens them all as extra empty paragraphs on Enter.
+    // Stop at the last complete token before the upstream source boundary so
+    // an adjacent paragraph opener still belongs to the following content.
+    let at = tokens
+        .iter()
+        .take_while(|token| mapper.source_range(token.range.clone()).end <= source_at)
+        .last()
+        .map_or(0, |token| token.range.end);
+    let stack = super::html_paragraph::stack_at(&tokens, at)
+        .into_iter()
+        .map(|token| {
+            let TokenKind::Tag(tag) = &token.kind else {
+                unreachable!()
+            };
+            (tag.name.clone(), input.text[token.range.clone()].to_owned())
+        })
+        .collect::<Vec<_>>();
     let list = stack
         .iter()
         .rposition(|(name, _)| name == "li")
@@ -973,6 +977,31 @@ pub(super) fn list_enter_patch(
             }
         }
         syntax.push_str(opening);
+    }
+    if stack.len() == list + 1
+        && tokens.iter().any(|token| {
+            mapper.source_range(token.range.clone()).start == source_at
+                && matches!(&token.kind, TokenKind::Tag(tag)
+                    if !tag.end && paragraph(&tag.name) && tag.name != "li")
+        })
+    {
+        // A bare item's body has no paragraph opener to carry into the new
+        // item. An immediately following <p> would become its first paragraph
+        // and absorb the old boundary. Give the new empty body its own explicit
+        // paragraph, leaving that authored following paragraph intact.
+        syntax.push_str("<p");
+        // Paragraph elements reset named block-style inheritance. Retain the
+        // item's authored class assignment on this newly explicit paragraph.
+        if let Some(Token {
+            kind: TokenKind::Tag(tag),
+            ..
+        }) = tokenize(&stack[list].1).into_iter().next()
+        {
+            if let Some(classes) = tag.attribute("class") {
+                syntax.push_str(&format!(" class=\"{}\"", attribute_escape(classes)));
+            }
+        }
+        syntax.push_str("></p>");
     }
     Ok((source_at..source_at, syntax))
 }

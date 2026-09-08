@@ -188,12 +188,14 @@ produced these end-of-run measurements:
 
 | Policy | Retained nodes | Live Rust heap | Retained memory charge |
 | --- | ---: | ---: | ---: |
-| Default | 428 | 243.2 MB | 267.6 MB |
-| Unlimited | 1,501 | 795.3 MB | 861.5 MB |
-| 128 nodes | 128 | 72.2 MB | 78.3 MB |
+| Default | 1,501 | 55.8 MB | 62.1 MB |
+| Unlimited | 1,501 | 55.8 MB | 62.1 MB |
+| 128 nodes | 128 | 8.4 MB | 9.3 MB |
 
-MB in this table is decimal; the default 256 MiB target is 268.4 MB. All three
-runs returned to approximately 2.7 KB live heap after document teardown.
+MB in this table is decimal; the default 256 MiB target is 268.4 MB. This
+workload now fits within the default budget, so it retains the same history as
+the unlimited policy. All three runs returned to approximately 2.7 KB live heap
+after document teardown.
 The model fuzz suite deliberately retains unlimited history for its independent
 undo oracle, so its large-session peaks should not be confused with the editor's
 default retention policy.

@@ -999,7 +999,22 @@ pub(super) fn text_source_runs(
     }
     let mut runs: Vec<Range<usize>> = Vec::new();
     let mut position = range.start;
-    for span in document.projection().provenance_for_region(range) {
+    // Include one following grapheme to bound any omitted contributors to a
+    // selected HTML space. This stays local even when the selection ends at
+    // that space, and never consumes the following visible content.
+    let end = if document.format() == super::Format::Html {
+        document
+            .hard_line_snapshot()
+            .next_grapheme_boundary(range.end)
+            .unwrap_or(range.end)
+    } else {
+        range.end
+    };
+    let spans = document.projection().provenance_for_region(&(range.start..end));
+    for (index, span) in spans.iter().enumerate() {
+        if position == range.end {
+            break;
+        }
         if span.formatted.start != position
             || span.formatted.end > range.end
             || span.source.is_empty()
@@ -1010,7 +1025,16 @@ pub(super) fn text_source_runs(
         if let Some(last) = runs.last_mut().filter(|last| last.end == span.source.start) {
             last.end = span.source.end;
         } else {
-            runs.push(span.source);
+            runs.push(span.source.clone());
+        }
+        if document.format() == super::Format::Html {
+            if let Some(following) = spans[index + 1..].iter().find(|s| !s.formatted.is_empty()) {
+                runs.extend(super::html_whitespace::collapsed_space_tail(
+                    document,
+                    span,
+                    following.source.start,
+                )?);
+            }
         }
     }
     if position != range.end {

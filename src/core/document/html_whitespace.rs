@@ -13,6 +13,80 @@ pub(super) fn collapsible(ch: char) -> bool {
     matches!(ch, ' ' | '\t' | '\n' | '\r')
 }
 
+/// The projection gives a collapsed space its first contiguous source run.
+/// HTML can also collapse later whitespace across ignored NULs or inline
+/// trivia. Reverse edits must consume those contributors as separate runs,
+/// preserving the intervening opaque bytes instead of replacing their hull.
+pub(super) fn collapsed_space_tail(
+    document: &Document,
+    span: &super::ProvenanceSpan,
+    following_source: usize,
+) -> Result<Vec<Range<usize>>, DocumentError> {
+    if span.source.end >= following_source
+        || span.formatted.len() != 1
+        || document
+            .projection()
+            .text_tree()
+            .slice(span.formatted.clone())
+            .map_err(DocumentError::FormattedTextStorage)?
+            != " "
+    {
+        return Ok(Vec::new());
+    }
+    let gap = span.source.end..following_source;
+    let bytes = document
+        .state()
+        .source
+        .bytes_in(gap.clone())
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let decoded = document.encoding().decode_region(&bytes, gap.start)?;
+    let input = super::line_endings::normalize(&decoded, document.file_format());
+    let mapper = super::rich_text::Builder::new(&input, document.revision());
+    let mut ranges: Vec<Range<usize>> = Vec::new();
+    for token in super::html::tokenize(&input.text) {
+        match token.kind {
+            super::html::TokenKind::Text => {
+                let mut at = token.range.start;
+                while at < token.range.end {
+                    // Only literal NUL is ignored by the HTML tokenizer. A
+                    // character reference to zero projects a replacement char.
+                    if input.text.as_bytes()[at] == 0 {
+                        at += 1;
+                        continue;
+                    }
+                    let (value, length) =
+                        super::html::reference(&input.text[at..token.range.end], false)
+                            .unwrap_or_else(|| {
+                                let ch = input.text[at..].chars().next().unwrap();
+                                (ch.to_string(), ch.len_utf8())
+                            });
+                    if !value.chars().all(collapsible) {
+                        return Ok(Vec::new());
+                    }
+                    let source = mapper.source_range(at..at + length);
+                    if let Some(previous) = ranges.last_mut().filter(|r| r.end == source.start) {
+                        previous.end = source.end;
+                    } else {
+                        ranges.push(source);
+                    }
+                    at += length;
+                }
+            }
+            super::html::TokenKind::Opaque if input.text[token.range].starts_with("<!--") => {}
+            super::html::TokenKind::Tag(tag)
+                if !super::html::block(&tag.name)
+                    && !super::html::hidden(&tag.name)
+                    && !super::html::atomic(&tag.name)
+                    && tag.name != "br"
+                    && tag.attributes.is_empty() => {}
+            // Other syntax can change visibility or whitespace context. It
+            // needs the adapter's structural translation, not a trivia scan.
+            _ => return Ok(Vec::new()),
+        }
+    }
+    Ok(ranges)
+}
+
 /// Inserting into an empty inline element can divide one collapsed whitespace
 /// run. Remove only the formerly invisible whitespace that would become a new
 /// visible space on the other side of the insertion; retain every tag/comment.

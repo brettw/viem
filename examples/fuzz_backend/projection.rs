@@ -213,6 +213,29 @@ impl Oracle {
                 }
                 Action::Check => {}
                 _ => {
+                    let expected_text = match action {
+                        Action::Replace { start, end, text }
+                            if document.format() != Format::MarkdownSource =>
+                        {
+                            let mut expected = before.text.clone();
+                            let preserves_whitespace =
+                                document.projection().style_spans().iter().any(|span| {
+                                    span.application == StyleApplication::SourcePreservedWhitespace
+                                        && span.range.start <= *start
+                                        && *start <= span.range.end
+                                });
+                            let replacement =
+                                if document.format() == Format::Html && !preserves_whitespace {
+                                    text.replace('\t', " ")
+                                } else {
+                                    text.clone()
+                                };
+                            expected.replace_range(*start..*end, &replacement);
+                            Some(expected)
+                        }
+                        _ => None,
+                    };
+                    let source_intention = source_visible_replacement_intention(document, action);
                     let request = match action {
                         Action::Replace { start, end, text } => ModelRequest::ApplyTextEdits {
                             document: document.id(),
@@ -263,7 +286,9 @@ impl Oracle {
                                 &document.revision(),
                                 &revision,
                             )?;
-                            if !expected_rejection(&error) {
+                            if !expected_rejection(&error)
+                                && !unreprojectable_request(document, action, &error)
+                            {
                                 return Err(format!("unexpected model failure: {error:?}"));
                             }
                             compare_fresh(document)?;
@@ -297,13 +322,30 @@ impl Oracle {
                         &document.source_bytes(),
                         &expected_bytes,
                     )?;
-                    if let Action::Replace { start, end, text } = action {
-                        let mut expected = before.text.clone();
-                        expected.replace_range(*start..*end, text);
+                    if let Some(expected) = expected_text {
+                        // HTML preserves authored spacing with NBSP where an
+                        // ordinary space would collapse, and can simplify a
+                        // generated NBSP once adjacent content makes it safe.
+                        // Compare the scalar spacing sequence, not its chosen
+                        // nonbreaking spelling; never collapse or discard it.
+                        let canonical = |text: &str| {
+                            if before.format == Format::Html {
+                                text.replace('\u{a0}', " ")
+                            } else {
+                                text.to_owned()
+                            }
+                        };
                         same(
                             "requested formatted replacement",
-                            &document.text(),
-                            &expected.as_str(),
+                            &canonical(document.text()),
+                            &canonical(&expected),
+                        )?;
+                    }
+                    if let Some(expected) = source_intention {
+                        same(
+                            "literal source-visible replacement",
+                            &document.source_bytes(),
+                            &expected,
                         )?;
                     }
                     if let Action::SourceReplace { start, end, text } = action {
@@ -360,6 +402,57 @@ impl Oracle {
         compare_fresh(self.document.as_ref().unwrap())?;
         Ok(false)
     }
+}
+
+fn source_visible_replacement_intention(document: &Document, action: &Action) -> Option<Vec<u8>> {
+    let Action::Replace { start, end, text } = action else {
+        return None;
+    };
+    if document.format() != Format::MarkdownSource || start == end || text.contains('\n') {
+        return None;
+    }
+    // Delimiter changes in Source mode can change which blank separators are
+    // folded, so a flat formatted splice is not its semantic oracle. For a
+    // nonempty, newline-free replacement independently patch its original
+    // physical provenance. Newline authoring additionally pairs separators;
+    // every case still audits declared patches, fresh parsing and exact history.
+    let spans = document.projection().provenance();
+    let first = spans
+        .iter()
+        .find(|span| span.formatted.start == *start && span.formatted.end > *start)?;
+    let last = spans
+        .iter()
+        .rev()
+        .find(|span| span.formatted.end == *end && span.formatted.start < *end)?;
+    let replacement = match document.encoding() {
+        Encoding::Utf8 => text.as_bytes().to_vec(),
+        Encoding::Latin1 => text
+            .chars()
+            .map(|ch| u8::try_from(ch as u32))
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?,
+        Encoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+        Encoding::Utf16Be => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+    };
+    let mut expected = document.source_bytes();
+    expected.splice(first.source.start..last.source.end, replacement);
+    Some(expected)
+}
+
+fn unreprojectable_request(
+    document: &Document,
+    action: &Action,
+    error: &ModelTransactionError,
+) -> bool {
+    // The generic edit API requests literal CR. HTML's tokenization cannot
+    // recreate it (even a numeric reference is normalized), so this exact
+    // intention remains rejected. Do not excuse other verification failures.
+    document.format() == Format::Html
+        && matches!(action, Action::Replace { text, .. } if text.contains('\r'))
+        && matches!(
+            error,
+            ModelTransactionError::Document(DocumentError::VerificationFailed)
+        )
 }
 
 fn expected_rejection(error: &ModelTransactionError) -> bool {
@@ -833,5 +926,84 @@ mod tests {
             .execute(&Action::Undo)
             .unwrap_err()
             .contains("exact history restoration"));
+    }
+
+    #[test]
+    fn html_oracle_accepts_protected_spacing_and_retains_preformatted_tabs() {
+        for (source, replacement, expected) in [
+            ("<p>A B</p>", " ", "\u{a0} B"),
+            ("<p>A B</p>", "\t", "\u{a0} B"),
+            ("<pre>A B</pre>", "\t", "\t B"),
+        ] {
+            let mut oracle = Oracle::default();
+            oracle
+                .execute(&Action::Init {
+                    bytes: source.as_bytes().to_vec(),
+                    format: SourceFormat::Html,
+                    encoding: SourceEncoding::Utf8,
+                    endings: Endings::Unix,
+                })
+                .unwrap();
+            assert!(!oracle
+                .execute(&Action::Replace {
+                    start: 0,
+                    end: 1,
+                    text: replacement.into(),
+                })
+                .unwrap());
+            assert_eq!(oracle.document.as_ref().unwrap().text(), expected);
+        }
+    }
+
+    #[test]
+    fn only_explicit_unreprojectable_html_cr_excuses_verification_failure() {
+        let document =
+            Document::from_bytes(b"<p>A</p>".to_vec(), Encoding::Utf8, Format::Html).unwrap();
+        let error = ModelTransactionError::Document(DocumentError::VerificationFailed);
+        let replacement = |text: &str| Action::Replace {
+            start: 0,
+            end: 1,
+            text: text.into(),
+        };
+        assert!(unreprojectable_request(
+            &document,
+            &replacement("\r"),
+            &error
+        ));
+        assert!(!unreprojectable_request(
+            &document,
+            &replacement("\n"),
+            &error
+        ));
+        assert!(!unreprojectable_request(
+            &document,
+            &replacement(" "),
+            &error
+        ));
+        assert!(!expected_rejection(&error));
+    }
+
+    #[test]
+    fn source_oracle_checks_literal_fence_deletion_and_reprojection() {
+        let mut oracle = Oracle::default();
+        oracle
+            .execute(&Action::Init {
+                bytes: b"```\na\n\nb\n```\n\nTail".to_vec(),
+                format: SourceFormat::MarkdownSource,
+                encoding: SourceEncoding::Utf8,
+                endings: Endings::Unix,
+            })
+            .unwrap();
+        oracle
+            .execute(&Action::Replace {
+                start: 0,
+                end: 2,
+                text: String::new(),
+            })
+            .unwrap();
+        assert_eq!(
+            oracle.document.as_ref().unwrap().source_bytes(),
+            b"`\na\n\nb\n```\n\nTail"
+        );
     }
 }

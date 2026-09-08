@@ -382,6 +382,50 @@ pub(crate) struct History<T, M = ()> {
     memory_metadata_bytes: usize,
     visit_state_memory: Option<fn(&T, &mut MemoryVisitor<'_>)>,
     visit_map_memory: Option<fn(&M, &mut MemoryVisitor<'_>)>,
+    command_checkpoints: Vec<HistoryCommandCheckpoint<T, M>>,
+}
+
+/// A short-lived mutation journal, never a copy of the retained history tree.
+/// Existing transaction vectors remain in place; rollback truncates only the
+/// entries appended by the command. Retention is deferred while this exists.
+struct HistoryCommandCheckpoint<T, M> {
+    node_count: usize,
+    nodes_capacity: usize,
+    node_indexes_capacity: usize,
+    change_indexes_capacity: usize,
+    current: usize,
+    group_node: Option<usize>,
+    next_change_number: u64,
+    save_point: HistoryNodeId,
+    save_point_digest: Option<SourceArtifactDigest>,
+    save_point_source: Option<SourceSnapshotIdentity>,
+    retention: HistoryRetentionPolicy,
+    retained_source_bytes: usize,
+    retention_requested: bool,
+    nodes: HashMap<usize, NodeCommandCheckpoint<T, M>>,
+}
+
+struct NodeCommandCheckpoint<T, M> {
+    children_len: usize,
+    children_capacity: usize,
+    preferred_child: Option<usize>,
+    content: Option<NodeContentCheckpoint<T, M>>,
+}
+
+struct NodeContentCheckpoint<T, M> {
+    state: Arc<T>,
+    retained_buffers_capacity: usize,
+    edge: Option<EdgeCommandCheckpoint<M>>,
+}
+
+struct EdgeCommandCheckpoint<M> {
+    map: M,
+    semantic_len: usize,
+    semantic_capacity: usize,
+    transactions_len: usize,
+    transactions_capacity: usize,
+    restoration: Option<HistoryRestoration>,
+    command_restoration_attached: bool,
 }
 
 struct Node<T, M> {
@@ -547,6 +591,7 @@ impl<T, M> History<T, M> {
             memory_metadata_bytes: 0,
             visit_state_memory: None,
             visit_map_memory: None,
+            command_checkpoints: Vec::new(),
         }
     }
 
@@ -562,6 +607,9 @@ impl<T, M> History<T, M> {
     }
 
     fn refresh_node_memory(&mut self, index: usize) {
+        if !self.command_checkpoints.is_empty() {
+            return;
+        }
         let Some(visit_state) = self.visit_state_memory else { return; };
         let node = &self.nodes[index];
         let roots = self.memory.capture(|visitor| {
@@ -636,6 +684,171 @@ impl<T, M> History<T, M> {
 
     pub(crate) fn current(&self) -> &Arc<T> {
         &self.nodes[self.current].state
+    }
+
+    pub(crate) fn has_command_checkpoint(&self) -> bool {
+        !self.command_checkpoints.is_empty()
+    }
+
+    pub(crate) fn command_checkpoint_depth(&self) -> usize {
+        self.command_checkpoints.len()
+    }
+
+    pub(crate) fn begin_command_checkpoint(&mut self) {
+        self.command_checkpoints.push(HistoryCommandCheckpoint {
+            node_count: self.nodes.len(),
+            nodes_capacity: self.nodes.capacity(),
+            node_indexes_capacity: self.node_indexes.capacity(),
+            change_indexes_capacity: self.change_indexes.capacity(),
+            current: self.current,
+            group_node: self.group_node,
+            next_change_number: self.next_change_number,
+            save_point: self.save_point,
+            save_point_digest: self.save_point_digest,
+            save_point_source: self.save_point_source,
+            retention: self.retention,
+            retained_source_bytes: self.retained_source_bytes,
+            retention_requested: false,
+            nodes: HashMap::new(),
+        });
+    }
+
+    fn checkpoint_node(&mut self, index: usize) {
+        for checkpoint in &mut self.command_checkpoints {
+            if index >= checkpoint.node_count {
+                continue;
+            }
+            checkpoint.nodes.entry(index).or_insert_with(|| {
+                let node = &self.nodes[index];
+                NodeCommandCheckpoint {
+                    children_len: node.children.len(),
+                    children_capacity: node.children.capacity(),
+                    preferred_child: node.preferred_child,
+                    content: None,
+                }
+            });
+        }
+    }
+
+    fn checkpoint_node_content(&mut self, index: usize)
+    where
+        M: Clone,
+    {
+        self.checkpoint_node(index);
+        for checkpoint in &mut self.command_checkpoints {
+            let Some(saved) = checkpoint.nodes.get_mut(&index) else {
+                continue;
+            };
+            if saved.content.is_some() {
+                continue;
+            }
+            let node = &mut self.nodes[index];
+            saved.content = Some(NodeContentCheckpoint {
+                state: node.state.clone(),
+                retained_buffers_capacity: node.retained_buffers.capacity(),
+                edge: node.incoming.as_mut().map(|edge| {
+                    // Keep the original map allocation alive until its ledger
+                    // roots are released. A clone alone would not preserve those
+                    // allocation identities when a grouped edit replaces it.
+                    let working_map = edge.map.clone();
+                    EdgeCommandCheckpoint {
+                        map: std::mem::replace(&mut edge.map, working_map),
+                        semantic_len: edge.record.semantic.changes.len(),
+                        semantic_capacity: edge.record.semantic.changes.capacity(),
+                        transactions_len: edge.record.transactions.len(),
+                        transactions_capacity: edge.record.transactions.capacity(),
+                        restoration: edge.record.restoration.clone(),
+                        command_restoration_attached: edge.record.command_restoration_attached,
+                    }
+                }),
+            });
+        }
+    }
+
+    pub(crate) fn commit_command_checkpoint(&mut self) {
+        let checkpoint = self
+            .command_checkpoints
+            .pop()
+            .expect("command checkpoint active");
+        if !self.command_checkpoints.is_empty() {
+            // Every outer frame has already journaled these mutations. Its
+            // original allocations remain alive until outer publication.
+            return;
+        }
+        for index in checkpoint.nodes.keys().copied() {
+            self.refresh_node_memory(index);
+        }
+        for index in checkpoint.node_count..self.nodes.len() {
+            self.refresh_node_memory(index);
+        }
+        if checkpoint.retention_requested {
+            self.enforce_retention();
+        }
+        // Old snapshots/maps must outlive replacement of their ledger roots.
+        drop(checkpoint);
+    }
+
+    pub(crate) fn rollback_command_checkpoint(&mut self) {
+        let checkpoint = self
+            .command_checkpoints
+            .pop()
+            .expect("command checkpoint active");
+        for node in &self.nodes[checkpoint.node_count..] {
+            self.node_indexes.remove(&node.id);
+            self.change_indexes.remove(&node.change);
+        }
+        self.nodes.truncate(checkpoint.node_count);
+        for (index, saved) in checkpoint.nodes {
+            let node = &mut self.nodes[index];
+            node.children.truncate(saved.children_len);
+            node.children.shrink_to(saved.children_capacity);
+            node.preferred_child = saved.preferred_child;
+            if let Some(content) = saved.content {
+                node.state = content.state;
+                node.retained_buffers =
+                    collect_retained_buffers(self.accounting.as_ref(), &node.state);
+                node.retained_buffers
+                    .shrink_to(content.retained_buffers_capacity);
+                if node.retained_buffers.capacity() < content.retained_buffers_capacity {
+                    node.retained_buffers.reserve_exact(
+                        content.retained_buffers_capacity - node.retained_buffers.len(),
+                    );
+                }
+                if let Some(edge) = content.edge {
+                    let current = node
+                        .incoming
+                        .as_mut()
+                        .expect("existing history edge retained");
+                    current.map = edge.map;
+                    current.record.semantic.changes.truncate(edge.semantic_len);
+                    current
+                        .record
+                        .semantic
+                        .changes
+                        .shrink_to(edge.semantic_capacity);
+                    current.record.transactions.truncate(edge.transactions_len);
+                    current
+                        .record
+                        .transactions
+                        .shrink_to(edge.transactions_capacity);
+                    current.record.restoration = edge.restoration;
+                    current.record.command_restoration_attached = edge.command_restoration_attached;
+                }
+            }
+        }
+        self.nodes.shrink_to(checkpoint.nodes_capacity);
+        self.node_indexes
+            .shrink_to(checkpoint.node_indexes_capacity);
+        self.change_indexes
+            .shrink_to(checkpoint.change_indexes_capacity);
+        self.current = checkpoint.current;
+        self.group_node = checkpoint.group_node;
+        self.next_change_number = checkpoint.next_change_number;
+        self.save_point = checkpoint.save_point;
+        self.save_point_digest = checkpoint.save_point_digest;
+        self.save_point_source = checkpoint.save_point_source;
+        self.retention = checkpoint.retention;
+        self.retained_source_bytes = checkpoint.retained_source_bytes;
     }
 
     pub(crate) fn begin_group(&mut self) {
@@ -849,13 +1062,21 @@ impl<T, M> History<T, M> {
         &mut self,
         expected: HistoryNodeId,
         restoration: HistoryRestoration,
-    ) -> Result<(), HistoryError> {
+    ) -> Result<(), HistoryError>
+    where
+        M: Clone,
+    {
+        self.checkpoint_node_content(self.current);
         let current = &mut self.nodes[self.current];
         if current.id != expected {
             return Err(HistoryError::NodeNotFound(expected));
         }
         let Some(edge) = current.incoming.as_mut() else {
-            return Err(HistoryError::Boundary(HistoryBoundary::Oldest));
+            // Retention can promote a committed state to the root before the
+            // coordinator publishes its final command restoration (including
+            // when Insert closes its undo group). That state has no retained
+            // undo edge, so there is no restoration record left to update.
+            return Ok(());
         };
         edge.record.attach_command_restoration(restoration);
         self.enforce_retention();
@@ -873,6 +1094,7 @@ impl<T, M> History<T, M> {
                 available,
             });
         };
+        self.checkpoint_node(self.current);
         self.nodes[self.current].preferred_child = Some(child);
         Ok(HistoryBranch {
             ordinal: branch,
@@ -1004,6 +1226,7 @@ impl<T, M> History<T, M> {
 
     fn prefer_path(&mut self, path: &[usize]) {
         for edge in path.windows(2) {
+            self.checkpoint_node(edge[0]);
             self.nodes[edge[0]].preferred_child = Some(edge[1]);
         }
     }
@@ -1014,6 +1237,12 @@ impl<T, M> History<T, M> {
     }
 
     fn enforce_retention(&mut self) {
+        if !self.command_checkpoints.is_empty() {
+            for checkpoint in &mut self.command_checkpoints {
+                checkpoint.retention_requested = true;
+            }
+            return;
+        }
         self.refresh_node_memory(self.current);
         if self.nodes.len() <= 1
             && !self.exceeds_retention(self.nodes.len(), self.retained_memory_bytes())
@@ -1252,6 +1481,7 @@ impl<T> History<T> {
         if grouping {
             if let Some(group) = self.group_node {
                 debug_assert_eq!(group, self.current);
+                self.checkpoint_node_content(group);
                 let previous = std::mem::replace(&mut self.nodes[group].state, Arc::new(state));
                 self.nodes[group].retained_buffers = retained_buffers;
                 self.enforce_retention();
@@ -1270,6 +1500,7 @@ impl<T> History<T> {
         incoming: Option<HistoryEdge<()>>,
     ) {
         let parent = self.current;
+        self.checkpoint_node(parent);
         let index = self.nodes.len();
         let id = next_node_id();
         let change = HistoryChangeNumber(self.next_change_number);
@@ -1332,6 +1563,7 @@ impl<T> History<T, PositionMap> {
                     .as_ref()
                     .expect("a non-root group node has an incoming edge");
                 let composed_forward = edge.map.then(&forward)?;
+                self.checkpoint_node_content(group);
                 let previous_state = std::mem::replace(&mut self.nodes[group].state, Arc::new(state));
                 self.nodes[group].retained_buffers = retained_buffers;
                 let edge = self.nodes[group]
@@ -1347,6 +1579,7 @@ impl<T> History<T, PositionMap> {
         }
 
         let parent = self.current;
+        self.checkpoint_node(parent);
         let index = self.nodes.len();
         let id = next_node_id();
         let change = HistoryChangeNumber(self.next_change_number);
@@ -1457,6 +1690,30 @@ mod tests {
             digest_byte_state,
             |state| state.0.identity(),
         )
+    }
+
+    #[test]
+    fn command_checkpoint_journals_only_touched_history_nodes() {
+        let mut history = History::new(0usize);
+        for value in 1..128 {
+            history.commit(value, false);
+        }
+        let before = history.status();
+        history.begin_command_checkpoint();
+        assert!(history.command_checkpoints.last().unwrap().nodes.is_empty());
+        history.commit(128, true);
+        history.commit(129, true);
+        assert_eq!(history.command_checkpoints.last().unwrap().nodes.len(), 1);
+        assert!(history
+            .command_checkpoints
+            .last()
+            .unwrap()
+            .nodes
+            .values()
+            .all(|node| node.content.is_none()));
+        history.rollback_command_checkpoint();
+        assert_eq!(history.status(), before);
+        assert_eq!(**history.current(), 127);
     }
 
     #[test]

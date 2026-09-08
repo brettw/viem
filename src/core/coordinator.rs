@@ -839,6 +839,8 @@ pub struct Core<P: TextMeasurementProvider> {
     replay_undo_floor: Option<usize>,
     queued_replay: Option<ReplayPlan>,
     compound_replay_event_limit: usize,
+    #[cfg(test)]
+    input_position_map_override: Option<PositionMap>,
 }
 
 #[derive(Clone, Debug)]
@@ -846,6 +848,25 @@ struct OpenGroupRestoration {
     generation: u64,
     parent: HistoryLocation,
     before: HistoryRestorationSnapshot,
+}
+
+/// Only model/controller state participates in input publication. Layout
+/// snapshots remain disposable, and no document-sized layout cache is cloned.
+struct InputPublicationCheckpoint {
+    document: crate::document::DocumentCommandCheckpoint,
+    commands: CommandInterpreter,
+    views: BTreeMap<ViewId, InputViewCheckpoint>,
+    edit_group_owner: Option<ViewId>,
+    edit_group_restoration: Option<OpenGroupRestoration>,
+    replay_undo_floor: Option<usize>,
+}
+
+struct InputViewCheckpoint {
+    viewport_anchor: Option<ViewportTextAnchor>,
+    viewport_left: f32,
+    viewport_top: f32,
+    wrap: bool,
+    linebreak: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -950,6 +971,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             replay_undo_floor: None,
             queued_replay: None,
             compound_replay_event_limit: MACRO_REPLAY_EVENT_LIMIT,
+            #[cfg(test)]
+            input_position_map_override: None,
         }
     }
 
@@ -2743,7 +2766,11 @@ impl<P: TextMeasurementProvider> Core<P> {
         Ok(())
     }
 
-    fn ensure_command_layout(&mut self, view_id: ViewId) -> Result<bool, CoreError> {
+    fn ensure_command_layout(
+        &mut self,
+        view_id: ViewId,
+        intent: ImmediateLayoutIntent,
+    ) -> Result<bool, CoreError> {
         let document_revision = self.document.revision();
         let needs_layout = {
             let view = self
@@ -2780,7 +2807,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                 })
         };
         if needs_layout {
-            self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::PreserveViewport)?;
+            // Rebuilding only the viewport can leave a scrolled-away caret
+            // outside the new snapshot too. Caret-relative commands need its
+            // row; viewport-relative commands need their original viewport.
+            self.materialize_immediate_viewport(view_id, intent)?;
         }
         Ok(needs_layout)
     }
@@ -4260,6 +4290,71 @@ impl<P: TextMeasurementProvider> Core<P> {
         })
     }
 
+    fn begin_input_publication(&mut self, invoking: ViewId) -> InputPublicationCheckpoint {
+        InputPublicationCheckpoint {
+            document: self.document.begin_command_checkpoint(),
+            commands: self.views[&invoking].commands.clone(),
+            views: self
+                .views
+                .iter()
+                .map(|(id, view)| {
+                    (
+                        *id,
+                        InputViewCheckpoint {
+                            viewport_anchor: view.viewport_anchor,
+                            viewport_left: view.layout.viewport_left(),
+                            viewport_top: view.layout.viewport_top(),
+                            wrap: view.layout.wrap(),
+                            linebreak: view.layout.linebreak(),
+                        },
+                    )
+                })
+                .collect(),
+            edit_group_owner: self.edit_group_owner,
+            edit_group_restoration: self.edit_group_restoration.clone(),
+            replay_undo_floor: self.replay_undo_floor,
+        }
+    }
+
+    fn rollback_input_publication(
+        &mut self,
+        invoking: ViewId,
+        checkpoint: InputPublicationCheckpoint,
+        failed: bool,
+    ) {
+        self.document
+            .rollback_command_checkpoint(checkpoint.document);
+        let commands = &mut self
+            .views
+            .get_mut(&invoking)
+            .expect("input does not detach views")
+            .commands;
+        if failed {
+            commands.restore_failed_command(checkpoint.commands);
+        } else {
+            *commands = checkpoint.commands;
+        }
+        self.edit_group_owner = checkpoint.edit_group_owner;
+        self.edit_group_restoration = checkpoint.edit_group_restoration;
+        self.replay_undo_floor = checkpoint.replay_undo_floor;
+        for (id, saved) in checkpoint.views {
+            let view = self
+                .views
+                .get_mut(&id)
+                .expect("input does not detach views");
+            view.viewport_anchor = saved.viewport_anchor;
+            view.layout.set_wrap(saved.wrap);
+            view.layout.set_linebreak(saved.linebreak);
+            view.layout
+                .set_viewport_top(saved.viewport_top)
+                .expect("captured finite viewport");
+            view.layout
+                .set_viewport_left(saved.viewport_left)
+                .expect("captured finite viewport");
+            view.long_line_checkpoints = LongLineCheckpointCache::default();
+        }
+    }
+
     pub fn handle(&mut self, view_id: ViewId, event: CoreEvent) -> Result<CoreOutcome, CoreError> {
         if !self.views.contains_key(&view_id) {
             return Err(CoreError::UnknownView(view_id));
@@ -4549,7 +4644,6 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             event => (event, None),
         };
-        let mut emitted_replay = None;
         if let CoreEvent::Input(input) = &event {
             if self
                 .views
@@ -4590,6 +4684,45 @@ impl<P: TextMeasurementProvider> Core<P> {
                 return Ok(continued);
             }
         }
+        let mut emitted_replay = None;
+        let checkpoint =
+            matches!(&event, CoreEvent::Input(_)).then(|| self.begin_input_publication(view_id));
+        let result = self.dispatch_core_event(view_id, event, &clipboard_context, &mut emitted_replay);
+        if let Some(checkpoint) = checkpoint {
+            match &result {
+                Ok(outcome)
+                    if outcome.command.as_ref().is_some_and(|command| {
+                        matches!(command.status, CommandStatus::NeedsMoreLayout(_))
+                    }) =>
+                {
+                    self.rollback_input_publication(view_id, checkpoint, false)
+                }
+                Ok(_) => self.document.commit_command_checkpoint(checkpoint.document),
+                Err(_) => self.rollback_input_publication(view_id, checkpoint, true),
+            }
+        }
+        let outcome = result?;
+        let Some(plan) = emitted_replay else {
+            return Ok(outcome);
+        };
+        if self.replay_undo_floor.is_some() {
+            debug_assert!(self.queued_replay.is_none());
+            self.queued_replay = Some(plan);
+            return Ok(outcome);
+        }
+        self.run_compound_replay(view_id, clipboard_context, outcome, plan)
+    }
+
+    /// One event remains tentative through controller rebasing and history
+    /// restoration capture. Compound replay calls this boundary for each event,
+    /// so an error never discards the successful prefix of a macro.
+    fn dispatch_core_event(
+        &mut self,
+        view_id: ViewId,
+        event: CoreEvent,
+        clipboard_context: &Option<ClipboardCommandContext>,
+        emitted_replay: &mut Option<ReplayPlan>,
+    ) -> Result<CoreOutcome, CoreError> {
         if matches!(&event, CoreEvent::Input(_)) {
             self.install_buffer_commands(view_id);
         }
@@ -4923,19 +5056,25 @@ impl<P: TextMeasurementProvider> Core<P> {
                 })
             }
             CoreEvent::Input(input) => {
-                let requires_layout = {
+                let (requires_layout, layout_intent) = {
                     let target_view = self
                         .views
                         .get(&view_id)
                         .expect("view existence checked above");
-                    target_view.commands.requires_layout_for_input(
+                    let requires_layout = target_view.commands.requires_layout_for_input(
                         &self.document,
                         &input,
                         clipboard_context.as_ref(),
-                    )
+                    );
+                    let intent = if target_view.commands.layout_input_preserves_viewport(&input) {
+                        ImmediateLayoutIntent::PreserveViewport
+                    } else {
+                        ImmediateLayoutIntent::RevealCaret
+                    };
+                    (requires_layout, intent)
                 };
                 let layout_is_stale = if requires_layout {
-                    self.ensure_command_layout(view_id)?
+                    self.ensure_command_layout(view_id, layout_intent)?
                 } else {
                     false
                 };
@@ -5012,7 +5151,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     output: command,
                     replay,
                 } = step;
-                emitted_replay = replay;
+                *emitted_replay = replay;
                 if matches!(command.status, CommandStatus::NeedsMoreLayout(_)) {
                     debug_assert_eq!(self.document.revision(), before);
                     if let Some((checkpoint, _)) = active_position_state.as_ref() {
@@ -5095,6 +5234,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                         || viewport_changed,
                     composition_changes: Vec::new(),
                 };
+                let mut rebased = Vec::with_capacity(inactive_positions.len());
                 if changed {
                     // The source publication is the invalidation point for
                     // every attached view, not only the invoking one.
@@ -5110,6 +5250,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                         }));
                     }
                     let map = committed_position_map;
+                    #[cfg(test)]
+                    let map = self.input_position_map_override.take().unwrap_or(map);
                     outcome.position_map = Some(map.clone());
                     if let Some((checkpoint, anchors)) = active_position_state {
                         let commands = &mut self
@@ -5130,7 +5272,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                             }));
                         }
                     }
-                    let mut rebased = Vec::with_capacity(inactive_positions.len());
                     for (id, anchors) in inactive_positions {
                         let mut commands = self
                             .views
@@ -5148,13 +5289,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                                 actual: anchors.revision(),
                             }));
                         }
+                        commands.capture_position_anchors(&self.document)?;
                         rebased.push((id, commands));
-                    }
-                    for (id, commands) in rebased {
-                        self.views
-                            .get_mut(&id)
-                            .expect("prepared view remains attached during serial dispatch")
-                            .commands = commands;
                     }
                     let history_after = self.document.history_status().current;
                     if history_navigation {
@@ -5215,22 +5351,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                         )?;
                     }
                     self.rebase_viewport_anchors(&map)?;
-                    for (id, view) in &mut self.views {
-                        if *id == view_id {
-                            continue;
-                        }
-                        if let Some(session) = view.composition.take() {
-                            view.composition_layout = None;
-                            outcome.composition_changes.push(ViewCompositionChange {
-                                view: *id,
-                                outcome: ViewCompositionOutcome::Invalidated {
-                                    reason: CompositionCancelReason::ExternalDocumentChange,
-                                    base_revision: session.base_revision(),
-                                    current_revision: revision,
-                                },
-                            });
-                        }
-                    }
                 }
                 if !changed && !remains_in_edit {
                     if let Some(open) = self.edit_group_restoration.as_ref() {
@@ -5310,6 +5430,32 @@ impl<P: TextMeasurementProvider> Core<P> {
                     }
                 } else if self.replay_undo_floor.is_none() {
                     self.edit_group_restoration = None;
+                }
+                // All fallible controller/history publication checks have
+                // succeeded. Presentation sessions can now be invalidated.
+                for (id, commands) in rebased {
+                    self.views
+                        .get_mut(&id)
+                        .expect("prepared view remains attached during serial dispatch")
+                        .commands = commands;
+                }
+                if changed {
+                    for (id, view) in &mut self.views {
+                        if *id == view_id {
+                            continue;
+                        }
+                        if let Some(session) = view.composition.take() {
+                            view.composition_layout = None;
+                            outcome.composition_changes.push(ViewCompositionChange {
+                                view: *id,
+                                outcome: ViewCompositionOutcome::Invalidated {
+                                    reason: CompositionCancelReason::ExternalDocumentChange,
+                                    base_revision: session.base_revision(),
+                                    current_revision: self.document.revision(),
+                                },
+                            });
+                        }
+                    }
                 }
                 self.publish_buffer_commands(view_id);
                 let presentation_result = if changed {
@@ -5392,16 +5538,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 unreachable!("clipboard input is normalized before ordinary dispatch")
             }
         };
-        let outcome = outcome?;
-        let Some(plan) = emitted_replay else {
-            return Ok(outcome);
-        };
-        if self.replay_undo_floor.is_some() {
-            debug_assert!(self.queued_replay.is_none());
-            self.queued_replay = Some(plan);
-            return Ok(outcome);
-        }
-        self.run_compound_replay(view_id, clipboard_context, outcome, plan)
+        outcome
     }
 
     /// Open one undo/restoration segment of a synchronous compound replay.
@@ -6789,6 +6926,153 @@ mod tests {
     };
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn html_open_line_post_edit_rebase_failure_rolls_back_model_and_all_views() {
+        for inactive_failure in [false, true] {
+            let original = b"<p data-keep='x'>A\n\nB</p><!--keep-->".to_vec();
+            let mut document =
+                Document::from_bytes(original.clone(), Encoding::Utf8, Format::Html).unwrap();
+            // Keep an existing redo branch: rollback must remove the tentative
+            // node and restore branch preference, not synthesize an undo.
+            document.insert(0, "X").unwrap();
+            let redo_source = document.source_bytes();
+            assert!(document.undo());
+            let mut core = Core::new(document);
+            let view = core.add_view(MockTextMeasurementProvider::new(), 20., 300.);
+            core.handle(
+                view,
+                CoreEvent::PlaceCursor {
+                    document_revision: core.document.revision(),
+                    text_offset: 2,
+                    affinity: BoundaryAffinity::Downstream,
+                    extend_selection: false,
+                },
+            )
+            .unwrap();
+            if inactive_failure {
+                let other = core.add_view(MockTextMeasurementProvider::new(), 200., 300.);
+                core.handle(
+                    other,
+                    CoreEvent::PlaceCursor {
+                        document_revision: core.document.revision(),
+                        text_offset: 2,
+                        affinity: BoundaryAffinity::Downstream,
+                        extend_selection: false,
+                    },
+                )
+                .unwrap();
+            } else {
+                // Active cursor mapping succeeds; a retained mark will expose
+                // the invalid rebase while capturing history restoration.
+                core.handle(view, CoreEvent::Input(InputEvent::key('m')))
+                    .unwrap();
+                core.handle(view, CoreEvent::Input(InputEvent::key('a')))
+                    .unwrap();
+            }
+            let revision = core.document.revision();
+            let prepared = core
+                .document
+                .prepare_model_request(ModelRequest::OpenLine {
+                    document: core.document.id(),
+                    revision,
+                    at: 2,
+                })
+                .unwrap();
+            // Model a defective post-edit map that retains the old offset 2.
+            // Its dimensions/revisions are correct, but that offset is inside
+            // NBSP in the real candidate "A\u{a0}\nB". This is injected only
+            // after the actual source transaction has committed.
+            core.input_position_map_override = Some(
+                PositionMap::for_text(
+                    core.document.id(),
+                    revision,
+                    prepared.after_revision(),
+                    "A B",
+                    "A Bxy",
+                    vec![crate::document::Splice::new(3..3, 2).unwrap()],
+                )
+                .unwrap(),
+            );
+            let history = core.document.history_status();
+            let node = core
+                .document
+                .history_node_details(history.current.node)
+                .unwrap();
+            let controllers = core
+                .views
+                .iter()
+                .map(|(id, view)| {
+                    (
+                        *id,
+                        format!(
+                            "{:?}",
+                            view.commands
+                                .capture_position_anchors(&core.document)
+                                .unwrap()
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let group = (
+                core.document.edit_group_depth(),
+                core.document.edit_group_generation(),
+            );
+            let error = core
+                .handle(view, CoreEvent::Input(InputEvent::key('O')))
+                .unwrap_err();
+            assert_eq!(
+                error,
+                CoreError::Document(DocumentError::NotGraphemeBoundary(2))
+            );
+            assert_eq!(core.document.source_bytes(), original);
+            assert_eq!(core.document.text(), "A B");
+            assert_eq!(core.document.revision(), revision);
+            assert_eq!(core.document.history_status(), history);
+            assert_eq!(
+                core.document
+                    .history_node_details(history.current.node)
+                    .unwrap(),
+                node
+            );
+            assert_eq!(
+                (
+                    core.document.edit_group_depth(),
+                    core.document.edit_group_generation()
+                ),
+                group
+            );
+            assert_eq!(core.views[&view].commands.mode(), Mode::Normal);
+            assert_eq!(core.views[&view].commands.cursor(), 2);
+            assert_eq!(core.edit_group_owner, None);
+            for (id, anchors) in controllers {
+                assert_eq!(
+                    format!(
+                        "{:?}",
+                        core.views[&id]
+                            .commands
+                            .capture_position_anchors(&core.document)
+                            .unwrap()
+                    ),
+                    anchors
+                );
+            }
+            // The old branch still works, and a retry uses the unconsumed
+            // revision and opens one ordinary Insert undo unit.
+            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r'))))
+                .unwrap();
+            assert_eq!(core.document.source_bytes(), redo_source);
+            core.handle(view, CoreEvent::Input(InputEvent::key('u')))
+                .unwrap();
+            core.handle(view, CoreEvent::Input(InputEvent::key('O')))
+                .unwrap();
+            assert_eq!(core.document.revision(), prepared.after_revision());
+            assert_eq!(core.views[&view].commands.mode(), Mode::Insert);
+            core.document
+                .text_point(core.views[&view].commands.cursor())
+                .unwrap();
+        }
+    }
 
     #[derive(Clone, Debug)]
     struct ControlledFailureProvider {
@@ -10064,6 +10348,39 @@ mod tests {
             core.layout(view).unwrap().snapshot().unwrap().revision,
             installed_revision
         );
+    }
+
+    #[test]
+    fn layout_demand_preserves_another_views_open_undo_group() {
+        let contents = (0..500)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut core = Core::new(Document::new(contents.clone()));
+        let reader = core.add_view(MockTextMeasurementProvider::new(), 300.0, 32.0);
+        let writer = core.add_view(MockTextMeasurementProvider::new(), 300.0, 32.0);
+        for character in ['2', '0', '0', 'g'] {
+            core.handle(reader, key(character)).unwrap();
+        }
+        core.handle(writer, key('i')).unwrap();
+        core.handle(writer, text("X")).unwrap();
+        let history = core.document.history_status();
+        let depth = core.document.edit_group_depth();
+        let generation = core.document.edit_group_generation();
+        let edge = core.handle(reader, key('j')).unwrap();
+        assert!(matches!(
+            edge.command.unwrap().status,
+            CommandStatus::NeedsMoreLayout(_)
+        ));
+        assert_eq!(core.document.history_status(), history);
+        assert_eq!(core.document.edit_group_depth(), depth);
+        assert_eq!(core.document.edit_group_generation(), generation);
+        assert_eq!(core.edit_group_owner, Some(writer));
+        core.handle(writer, text("Y")).unwrap();
+        core.handle(writer, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+            .unwrap();
+        core.handle(writer, key('u')).unwrap();
+        assert_eq!(core.document.text(), contents);
     }
 
     #[test]

@@ -1,6 +1,82 @@
 //! Local source ownership for list edits whose labels are layout decorations.
 use super::*;
 
+/// Joining an item boundary owns the following source label, which has no
+/// formatted characters. This applies equally to Backspace and Vim's spaced J.
+pub(super) fn joining_patches(
+    document: &Document,
+    range: &Range<usize>,
+    replacement: &str,
+) -> Result<Option<Vec<SourcePatch>>, DocumentError> {
+    if document.format() != Format::Markdown || range.len() != 1 || replacement.contains('\n') {
+        return Ok(None);
+    }
+    let projection = document.projection();
+    if !projection
+        .hard_breaks_for_region(range)
+        .contains(&range.start)
+    {
+        return Ok(None);
+    }
+    if projection
+        .blocks_for_region(range)
+        .iter()
+        .any(|block| block.range.end == range.start && block.style.0 == "Code Block")
+    {
+        // The code adapter must relocate its closing fence as part of the
+        // join; consuming only the following label cannot cross that syntax.
+        return Ok(None);
+    }
+    let right = projection
+        .blocks_for_region(&(range.end..range.end))
+        .into_iter()
+        .find(|block| {
+            block.range.start == range.end
+                && matches!(
+                    block.kind,
+                    super::super::BlockKind::ListItem {
+                        item_start: true,
+                        ..
+                    }
+                )
+        });
+    let Some(right) = right else {
+        return Ok(None);
+    };
+    let at = projection
+        .source_insertion_point(right.range.start, true)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let line = document
+        .state()
+        .source_hard_lines
+        .line_at_offset(at)
+        .and_then(|index| document.state().source_hard_lines.get(index))
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let bytes = document
+        .state()
+        .source
+        .bytes_in(line.start..line.end.min(line.start + 512))
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let decoded = document.encoding().decode_region(&bytes, line.start)?;
+    let Some(prefix) = super::super::markdown_blocks::marker_prefix_length(&decoded.text) else {
+        return Ok(None);
+    };
+    let source_start = projection
+        .source_range(range.clone())
+        .ok_or(DocumentError::AmbiguousProjection)?
+        .start;
+    let source_end = line.start
+        + document
+            .encoding()
+            .encode_fragment(&decoded.text[..prefix])?
+            .len();
+    let syntax = document.escape_markdown_source_text(source_start, replacement)?;
+    Ok(Some(vec![SourcePatch::primary(
+        source_start..source_end,
+        document.encoding().encode_fragment(&syntax)?,
+    )]))
+}
+
 pub(super) fn deletion_patches(
     document: &Document,
     range: &Range<usize>,
@@ -10,30 +86,9 @@ pub(super) fn deletion_patches(
         return Ok(None);
     }
     let projection = document.projection();
-    if !whole_line && range.len() == 1
-        && projection.hard_breaks_for_region(range).contains(&range.start)
-    {
-        let right = projection.blocks_for_region(&(range.end..range.end)).into_iter()
-            .find(|block| block.range.start == range.end
-                && matches!(block.kind, super::super::BlockKind::ListItem { item_start: true, .. }));
-        if let Some(right) = right {
-            let at = projection.source_insertion_point(right.range.start, true)
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            let line = document.state().source_hard_lines.line_at_offset(at)
-                .and_then(|index| document.state().source_hard_lines.get(index))
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            let bytes = document.state().source.bytes_in(line.start..line.end.min(line.start + 512))
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            let decoded = document.encoding().decode_region(&bytes, line.start)?;
-            if let Some(prefix) = super::super::markdown_blocks::marker_prefix_length(&decoded.text) {
-                let source_start = projection.source_range(range.clone())
-                    .ok_or(DocumentError::AmbiguousProjection)?.start;
-                let source_end = line.start + document.encoding().encode_fragment(&decoded.text[..prefix])?.len();
-                // The following item's label has no text to delete. Joining
-                // its boundary owns that syntax, while inline delimiters and
-                // the item's following separator stay untouched.
-                return Ok(Some(vec![SourcePatch::primary(source_start..source_end, Vec::new())]));
-            }
+    if !whole_line {
+        if let Some(patches) = joining_patches(document, range, "")? {
+            return Ok(Some(patches));
         }
     }
     let paragraphs = projection

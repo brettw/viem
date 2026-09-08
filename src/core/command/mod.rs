@@ -1961,6 +1961,9 @@ impl CommandInterpreter {
                 if pending.g_prefix && matches!(*key, Key::Char('j' | 'k' | '0' | '^' | '$')) {
                     return true;
                 }
+                if !pending.g_prefix && matches!(*key, Key::Char('H' | 'M' | 'L')) {
+                    return true;
+                }
             }
             if let Pending::G { register, .. } = self.pending {
                 if self.mode == Mode::Normal
@@ -2023,6 +2026,63 @@ impl CommandInterpreter {
                 matches!(*key, Key::Up | Key::Down | Key::PageUp | Key::PageDown)
             }
             Mode::VisualBlock => true,
+            Mode::CommandLine => false,
+        }
+    }
+
+    /// Whether layout acquisition must retain the viewport used by this input.
+    /// Caret-relative commands can reveal an unmaterialized caret, but viewport
+    /// motions must resolve their target against the viewport before the command.
+    /// Visual modes also acquire layout for pending grammar; those prefixes must
+    /// not reveal the caret before the eventual command chooses its target.
+    pub(crate) fn layout_input_preserves_viewport(&self, event: &InputEvent) -> bool {
+        if self.register_pending || self.count_overflowed || self.visual_block_insert.is_some() {
+            return true;
+        }
+        let InputEvent::Key(key) = event else {
+            return false;
+        };
+        if *key == Key::Escape {
+            return true;
+        }
+        match self.mode {
+            Mode::Normal | Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock => {
+                match self.pending {
+                    Pending::None => match *key {
+                        Key::Char('0') => self.count.is_some(),
+                        Key::Char('1'..='9' | '"' | 'g' | 'z' | 'r' | 'f' | 'F' | 't' | 'T')
+                        | Key::Char('i' | 'a' | 'm' | '`' | '\'' | 'q' | '@' | '/' | '?' | ':') => true,
+                        Key::Char('H' | 'M' | 'L')
+                        | Key::PageDown
+                        | Key::PageUp
+                        | Key::Ctrl(
+                            'f' | 'F' | 'b' | 'B' | 'd' | 'D' | 'u' | 'U' | 'e' | 'E' | 'y' | 'Y',
+                        ) => true,
+                        _ => false,
+                    },
+                    Pending::Operator(pending) => {
+                        !pending.g_prefix && matches!(*key, Key::Char('H' | 'M' | 'L'))
+                    }
+                    Pending::SetMark | Pending::MacroRecord | Pending::MacroPlay { .. } => true,
+                    Pending::G { .. } => {
+                        !matches!(
+                            *key,
+                            Key::Char('g' | 'e' | 'E' | '_' | '*' | '#' | 'v' | '~' | 'u' | 'U' | 'J')
+                                | Key::Char('j' | 'k' | '0' | '^' | '$')
+                        ) && !(self.mode == Mode::Normal && matches!(*key, Key::Char('p' | 'P')))
+                    }
+                    Pending::Z { .. } => !matches!(*key, Key::Char('t' | 'z' | 'b')),
+                    Pending::Find { .. } => !matches!(*key, Key::Char(_)),
+                    Pending::VisualTextObject { .. } => {
+                        !matches!(*key, Key::Char(key) if TextObjectKind::from_vim_key(key).is_some())
+                    }
+                    Pending::JumpMark { .. } => !matches!(*key, Key::Char('a'..='z')),
+                    _ => false,
+                }
+            }
+            Mode::Insert | Mode::Replace => {
+                self.pending == Pending::None && matches!(*key, Key::PageUp | Key::PageDown)
+            }
             Mode::CommandLine => false,
         }
     }
@@ -2522,6 +2582,7 @@ impl CommandInterpreter {
         document: &mut Document,
         event: InputEvent,
     ) -> Result<CommandOutput, DocumentError> {
+        let model_checkpoint = document.begin_command_checkpoint();
         let checkpoint = self.clone();
         if matches!(
             &event,
@@ -2562,9 +2623,11 @@ impl CommandInterpreter {
                     );
                 }
                 self.finish_clipboard_writes(&mut output);
+                document.commit_command_checkpoint(model_checkpoint);
                 Ok(output)
             }
             Err(error) => {
+                document.rollback_command_checkpoint(model_checkpoint);
                 self.rollback_failed_event(document, checkpoint, edit_group_depth);
                 Err(error)
             }
@@ -2596,6 +2659,7 @@ impl CommandInterpreter {
         event: InputEvent,
         context: &mut LayoutCommandContext<'_>,
     ) -> Result<CommandOutput, DocumentError> {
+        let model_checkpoint = document.begin_command_checkpoint();
         let checkpoint = self.clone();
         let edit_group_depth = document.edit_group_depth();
         let before_lines = document.hard_line_snapshot();
@@ -2608,6 +2672,7 @@ impl CommandInterpreter {
         match result {
             Ok(mut output) => {
                 if matches!(output.status, CommandStatus::NeedsMoreLayout(_)) {
+                    document.rollback_command_checkpoint(model_checkpoint);
                     *self = checkpoint;
                     context.viewport = viewport;
                     return Ok(output);
@@ -2626,10 +2691,12 @@ impl CommandInterpreter {
                     );
                 }
                 self.finish_clipboard_writes(&mut output);
+                document.commit_command_checkpoint(model_checkpoint);
                 Ok(output)
             }
             Err(error) => {
                 context.viewport = viewport;
+                document.rollback_command_checkpoint(model_checkpoint);
                 self.rollback_failed_event(document, checkpoint, edit_group_depth);
                 Err(error)
             }
@@ -3643,8 +3710,14 @@ impl CommandInterpreter {
         checkpoint: Self,
         edit_group_depth: usize,
     ) {
+        self.restore_failed_command(checkpoint);
+        document.restore_edit_group_depth(edit_group_depth);
+        self.position_revision = Some(document.revision());
+    }
+
+    pub(crate) fn restore_failed_command(&mut self, checkpoint: Self) {
         let cancel_pending = checkpoint.pending != Pending::None || checkpoint.register_pending;
-        *self = checkpoint.clone();
+        *self = checkpoint;
         if cancel_pending {
             self.clear_pending();
         } else {
@@ -3652,8 +3725,6 @@ impl CommandInterpreter {
             // failed. Restoring it would silently retarget the next command.
             self.requested_register = None;
         }
-        document.restore_edit_group_depth(edit_group_depth);
-        self.position_revision = Some(document.revision());
     }
 
     fn update_line_undo_after_event(
@@ -11107,10 +11178,15 @@ impl CommandInterpreter {
                         let payload = FormattedTextPayload::new(&lines, "\n", vec![0])
                             .expect("a repeated open-line separator is a semantic hard break");
                         document.insert_formatted_payload(self.cursor, payload)?;
+                        self.cursor += 1;
                     } else {
-                        document.open_formatted_line(self.cursor)?;
+                        let (prepared, cursor) =
+                            prepare_open_line_with_cursor(document, self.cursor, true)?;
+                        document
+                            .commit_model_transaction(prepared)
+                            .map_err(command_document_error)?;
+                        self.cursor = cursor;
                     }
-                    self.cursor += 1;
                     output.merge(CommandOutput {
                         document_changed: true,
                         cursor_moved: true,
@@ -11251,8 +11327,11 @@ impl CommandInterpreter {
         if self.line_mode == LineMode::PhysicalSource {
             self.open_physical_line(document, above)?;
         } else {
-            document.open_formatted_line(position)?;
-            self.cursor = if above { position } else { position + 1 };
+            let (prepared, cursor) = prepare_open_line_with_cursor(document, position, !above)?;
+            document
+                .commit_model_transaction(prepared)
+                .map_err(command_document_error)?;
+            self.cursor = cursor;
         }
         // The newly opened line supplies the first insertion's context. An
         // upstream affinity retained from the old cursor (for example `$`)
@@ -15080,7 +15159,7 @@ fn prepared_cursor(
     at: usize,
     association: Association,
 ) -> Result<usize, DocumentError> {
-    Ok(prepared
+    let offset = prepared
         .text_position_map()
         .map_text_point(
             document.text_point(at)?,
@@ -15091,7 +15170,8 @@ fn prepared_cursor(
         .map_err(command_position_document_error)?
         .value()
         .ok_or(DocumentError::AmbiguousProjection)?
-        .offset())
+        .offset();
+    Ok(document.prepared_text_point(prepared, offset)?.offset())
 }
 
 fn commit_model_with_cursor(
@@ -15124,9 +15204,10 @@ fn prepared_break_cursor(
         .iter()
         .find(|splice| splice.old_range() == (at..at))
         .map_or(0, |splice| splice.inserted_len());
-    start
+    let cursor = start
         .checked_add(inserted)
-        .ok_or(DocumentError::AmbiguousProjection)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    Ok(document.prepared_text_point(prepared, cursor)?.offset())
 }
 
 fn continue_list_with_cursor(document: &mut Document, at: usize) -> Result<usize, DocumentError> {
@@ -15146,6 +15227,35 @@ fn continue_list_with_cursor(document: &mut Document, at: usize) -> Result<usize
         .commit_model_transaction(prepared)
         .map_err(command_document_error)?;
     Ok(cursor)
+}
+
+fn prepare_open_line_with_cursor(
+    document: &Document,
+    at: usize,
+    after: bool,
+) -> Result<(PreparedModelTransaction, usize), DocumentError> {
+    let prepared = document
+        .prepare_model_request(ModelRequest::OpenLine {
+            document: document.id(),
+            revision: document.revision(),
+            at,
+        })
+        .map_err(command_document_error)?;
+    // Opening a wrapped HTML row can also protect adjacent whitespace. Resolve
+    // the caret before committing, including the UTF-8 growth of those spaces.
+    // Cross only the inserted break for o; a following supporting replacement
+    // must not advance the caret past the newly opened row.
+    let cursor = if document.format() == crate::document::Format::Html {
+        if after {
+            prepared_break_cursor(document, &prepared, at)?
+        } else {
+            prepared_cursor(document, &prepared, at, Association::BeforeInsertion)?
+        }
+    } else {
+        at + usize::from(after)
+    };
+    document.prepared_text_point(&prepared, cursor)?;
+    Ok((prepared, cursor))
 }
 
 fn delete_with_cursor(document: &mut Document, range: Range<usize>) -> Result<usize, DocumentError> {

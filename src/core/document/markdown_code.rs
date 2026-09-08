@@ -11,6 +11,9 @@ pub(super) fn patches(
     if document.format() != Format::Markdown {
         return Ok(None);
     }
+    if let Some(patches) = join_following_paragraph(document, range, replacement)? {
+        return Ok(Some(patches));
+    }
     let block = document
         .projection()
         .blocks_for_region(range)
@@ -228,6 +231,157 @@ pub(super) fn patches(
         }
     }
     Ok(Some(result))
+}
+
+/// Joining the last code line owns its closing fence. Move that fence after
+/// the following paragraph's visible content; otherwise removing only the
+/// projected separator leaves source grammar between the joined characters.
+fn join_following_paragraph(
+    document: &Document,
+    range: &Range<usize>,
+    replacement: &str,
+) -> Result<Option<Vec<(Range<usize>, String)>>, DocumentError> {
+    if range.is_empty() || replacement.contains('\n') {
+        return Ok(None);
+    }
+    let projection = document.projection();
+    let blocks = projection.blocks_for_region(range);
+    let Some(code) = blocks.iter().find(|block| {
+        block.range.end == range.start
+            && block.style.0 == "Code Block"
+            && block.kind == super::BlockKind::Paragraph
+            && !block.range.is_empty()
+    }) else {
+        return Ok(None);
+    };
+    let Some(following) = blocks.iter().find(|block| {
+        block.range.start == range.start + 1
+            && range.end <= block.range.end
+            && block.style.0 != "Code Block"
+            && !block.range.is_empty()
+    }) else {
+        return Ok(None);
+    };
+    let code_source = projection
+        .source_range(code.range.clone())
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let following_source = projection
+        .source_range(following.range.clone())
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let source_lines = &document.state().source_hard_lines;
+    let last_code_line = source_lines
+        .line_at_offset(code_source.end)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let Some(closing) = source_lines.get(last_code_line + 1) else {
+        return Ok(None);
+    };
+    let bytes = document
+        .state()
+        .source
+        .bytes_in(closing.clone())
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let decoded = document.encoding().decode_region(&bytes, closing.start)?;
+    let normalized = super::line_endings::normalize(&decoded, document.file_format());
+    let closing_text = normalized.text.trim_end_matches('\n');
+    let Some((delimiter, closing_width)) = super::projection::markdown_fence(closing_text) else {
+        return Ok(None);
+    };
+    if !closing_text.trim().bytes().all(|byte| byte == delimiter) {
+        return Ok(None);
+    }
+    let first_code_line = source_lines
+        .line_at_offset(code_source.start)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let Some(opening) = first_code_line
+        .checked_sub(1)
+        .and_then(|index| source_lines.get(index))
+    else {
+        return Ok(None);
+    };
+    let bytes = document
+        .state()
+        .source
+        .bytes_in(opening.clone())
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let opening_decoded = document.encoding().decode_region(&bytes, opening.start)?;
+    let Some((opening_delimiter, opening_width)) =
+        super::projection::markdown_fence(&opening_decoded.text)
+    else {
+        return Ok(None);
+    };
+    if opening_delimiter != delimiter {
+        return Ok(None);
+    }
+    let end_line = source_lines
+        .line_at_offset(following_source.end.saturating_sub(1))
+        .and_then(|index| source_lines.get(index))
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let bytes = document
+        .state()
+        .source
+        .bytes_in(end_line.clone())
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let decoded = document.encoding().decode_region(&bytes, end_line.start)?;
+    let normalized = super::line_endings::normalize(&decoded, document.file_format());
+    let end = normalized
+        .endings
+        .last()
+        .filter(|ending| ending.source.end == end_line.end)
+        .map_or(end_line.end, |ending| ending.source.start);
+    let tail = projection
+        .text_tree()
+        .slice(range.end..following.range.end)
+        .map_err(DocumentError::FormattedTextStorage)?;
+    let mut appended = replacement.to_owned();
+    appended.push_str(&tail);
+    let last_line = projection
+        .hard_line_at_offset(code.range.end)
+        .and_then(|index| projection.hard_line_range(index))
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let mut joined_tail = projection
+        .text_tree()
+        .slice(last_line.start..code.range.end)
+        .map_err(DocumentError::FormattedTextStorage)?;
+    joined_tail.push_str(&appended);
+    let needed = joined_tail
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            (!line.is_empty() && line.bytes().all(|byte| byte == delimiter))
+                .then_some(line.len() + 1)
+        })
+        .max()
+        .unwrap_or(opening_width)
+        .max(opening_width);
+    let mut patches = Vec::new();
+    if needed > opening_width {
+        let indent =
+            opening_decoded.text.len() - opening_decoded.text.trim_start_matches(' ').len();
+        let start = opening.start
+            + document
+                .encoding()
+                .encode_fragment(&opening_decoded.text[..indent])?
+                .len();
+        let end = start
+            + document
+                .encoding()
+                .encode_fragment(&(delimiter as char).to_string().repeat(opening_width))?
+                .len();
+        let marker = (delimiter as char).to_string().repeat(needed);
+        patches.push((start..end, marker));
+    }
+    let closing_text = if needed > closing_width {
+        (delimiter as char).to_string().repeat(needed)
+    } else {
+        closing_text.to_owned()
+    };
+    appended.push('\n');
+    appended.push_str(&closing_text);
+    patches.push((
+        code_source.end..end,
+        appended.replace('\n', document.file_format().spelling()),
+    ));
+    Ok(Some(patches))
 }
 
 pub(super) fn delimiter_ranges(
