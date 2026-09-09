@@ -1105,19 +1105,6 @@ pub(super) fn project(
             Kind::Character(c) if !state.hidden => {
                 state.group_start = false;
                 flush(&mut pending_unicode, &mut builder);
-                builder.paragraph = state.paragraph.clone();
-                if let Some((id, level, ..)) = paragraph_list {
-                    if let Some(defaults) = list_tables.level(id, level) {
-                        builder.paragraph.leading_indent = builder
-                            .paragraph
-                            .leading_indent
-                            .or(defaults.paragraph.leading_indent);
-                        builder.paragraph.first_line_indent = builder
-                            .paragraph
-                            .first_line_indent
-                            .or(defaults.paragraph.first_line_indent);
-                    }
-                }
                 if c as u32 <= 255 {
                     emit_encoded_byte(
                         c as u8,
@@ -1134,19 +1121,6 @@ pub(super) fn project(
             Kind::Byte(byte) if !state.hidden => {
                 state.group_start = false;
                 flush(&mut pending_unicode, &mut builder);
-                builder.paragraph = state.paragraph.clone();
-                if let Some((id, level, ..)) = paragraph_list {
-                    if let Some(defaults) = list_tables.level(id, level) {
-                        builder.paragraph.leading_indent = builder
-                            .paragraph
-                            .leading_indent
-                            .or(defaults.paragraph.leading_indent);
-                        builder.paragraph.first_line_indent = builder
-                            .paragraph
-                            .first_line_indent
-                            .or(defaults.paragraph.first_line_indent);
-                    }
-                }
                 emit_encoded_byte(
                     byte,
                     token.range,

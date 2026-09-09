@@ -2,6 +2,7 @@
 //! v2 uses native element selectors and ordinary declarations, with metadata
 //! only for identities, inheritance, and semantics CSS cannot preserve.
 use super::html::{self, TokenKind};
+use super::rich_text::{overlay as overlay_character, overlay_block};
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -757,46 +758,6 @@ pub(super) fn select_class(sheet: &StyleSheet, classes: &str, character: bool) -
     None
 }
 
-fn overlay_character(target: &mut CharacterProperties, layer: &CharacterProperties) {
-    if layer.weight.is_some() {
-        target.bold = None;
-    }
-    macro_rules! copy {($($field:ident),*)=>{$(if layer.$field.is_some(){target.$field=layer.$field.clone();})*};}
-    copy!(
-        font_families,
-        size,
-        weight,
-        bold,
-        slant,
-        foreground,
-        background,
-        underline,
-        strikethrough,
-        language,
-        direction,
-        open_type_features,
-        letter_spacing,
-        baseline_shift
-    );
-}
-fn overlay_block(target: &mut BlockProperties, layer: &BlockProperties) {
-    macro_rules! copy {($($field:ident),*)=>{$(if layer.$field.is_some(){target.$field=layer.$field.clone();})*};}
-    copy!(
-        spacing_before,
-        spacing_after,
-        line_spacing,
-        first_line_indent,
-        leading_indent,
-        trailing_indent,
-        padding_top,
-        padding_right,
-        padding_bottom,
-        padding_left,
-        background,
-        alignment,
-        base_direction
-    );
-}
 pub(super) fn character_chain(sheet: &StyleSheet, id: &StyleId) -> CharacterProperties {
     let mut chain = Vec::new();
     let mut current = Some(id);

@@ -6608,6 +6608,31 @@ fn regions_overlap(left: (usize, usize), right: (usize, usize)) -> bool {
     pointer_ranges_overlap(left.0 as *const u8, left.1, right.0 as *const u8, right.1)
 }
 
+/// Validate a batch before reading requests or writing any of its outputs.
+fn validate_disjoint_regions(regions: &[(usize, usize)]) -> Result<(), ViemStatus> {
+    for (index, left) in regions.iter().enumerate() {
+        if regions[index + 1..]
+            .iter()
+            .any(|right| regions_overlap(*left, *right))
+        {
+            return Err(ViemStatus::InvalidArgument);
+        }
+    }
+    Ok(())
+}
+
+/// Copy an already validated output, allowing null buffers for empty exports.
+///
+/// # Safety
+/// For a nonempty slice, `output` must be aligned, writable for every element,
+/// and disjoint from `values`. Callers must validate every buffer's capacity
+/// before copying any member of an atomic batch.
+unsafe fn copy_output<T: Copy>(values: &[T], output: *mut T) {
+    if !values.is_empty() {
+        unsafe { std::ptr::copy_nonoverlapping(values.as_ptr(), output, values.len()) };
+    }
+}
+
 fn parse_clipboard_target(value: u32) -> Result<ClipboardTarget, ViemStatus> {
     match value {
         VIEM_CLIPBOARD_TARGET_CLIPBOARD => Ok(ClipboardTarget::Clipboard),
@@ -7956,13 +7981,7 @@ pub unsafe extern "C" fn viem_core_copy_style_sheet(
             typed_pointer_region(string_bytes, string_capacity)?,
             typed_pointer_region(out_info, 1)?,
         ];
-        for left in 0..regions.len() {
-            for right in left + 1..regions.len() {
-                if regions_overlap(regions[left], regions[right]) {
-                    return Err(ViemStatus::InvalidArgument);
-                }
-            }
-        }
+        validate_disjoint_regions(&regions)?;
         let expected = unsafe { read_style_sheet_identity(expected)? };
         unsafe { out_info.write(ViemStyleSheetInfoV1::default()) };
         let export = with_core(handle, |core| {
@@ -7979,41 +7998,11 @@ pub unsafe extern "C" fn viem_core_copy_style_sheet(
             return Err(ViemStatus::BufferTooSmall);
         }
         unsafe {
-            if !export.definitions.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.definitions.as_ptr(),
-                    definitions,
-                    export.definitions.len(),
-                );
-            }
-            if !export.properties.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.properties.as_ptr(),
-                    properties,
-                    export.properties.len(),
-                );
-            }
-            if !export.value_items.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.value_items.as_ptr(),
-                    value_items,
-                    export.value_items.len(),
-                );
-            }
-            if !export.dependencies.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.dependencies.as_ptr(),
-                    dependencies,
-                    export.dependencies.len(),
-                );
-            }
-            if !export.strings.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.strings.as_ptr(),
-                    string_bytes,
-                    export.strings.len(),
-                );
-            }
+            copy_output(&export.definitions, definitions);
+            copy_output(&export.properties, properties);
+            copy_output(&export.value_items, value_items);
+            copy_output(&export.dependencies, dependencies);
+            copy_output(&export.strings, string_bytes);
         }
         Ok(())
     })
@@ -8140,9 +8129,7 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_paint(
         };
         debug_assert_eq!(export.info, info);
         unsafe {
-            if !export.runs.is_empty() {
-                std::ptr::copy_nonoverlapping(export.runs.as_ptr(), runs, export.runs.len());
-            }
+            copy_output(&export.runs, runs);
         }
         Ok(())
     })
@@ -8171,13 +8158,7 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
             typed_pointer_region(labels, label_capacity)?,
             typed_pointer_region(out_info, 1)?,
         ];
-        for (index, left) in regions.iter().enumerate() {
-            for right in &regions[index + 1..] {
-                if regions_overlap(*left, *right) {
-                    return Err(ViemStatus::InvalidArgument);
-                }
-            }
-        }
+        validate_disjoint_regions(&regions)?;
         let expected = unsafe { read_layout_identity(expected)? };
         unsafe { out_info.write(ViemLayoutDecorationsInfoV1::default()) };
         let (info, values, bytes) = with_core(handle, |core| {
@@ -8237,12 +8218,8 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
             return Err(ViemStatus::BufferTooSmall);
         }
         unsafe {
-            if !values.is_empty() {
-                std::ptr::copy_nonoverlapping(values.as_ptr(), decorations, values.len());
-            }
-            if !bytes.is_empty() {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), labels, bytes.len());
-            }
+            copy_output(&values, decorations);
+            copy_output(&bytes, labels);
         }
         Ok(())
     })
@@ -8284,13 +8261,7 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_snapshot(
             cluster_region,
             caret_region,
         ];
-        for left in 0..regions.len() {
-            for right in left + 1..regions.len() {
-                if regions_overlap(regions[left], regions[right]) {
-                    return Err(ViemStatus::InvalidArgument);
-                }
-            }
-        }
+        validate_disjoint_regions(&regions)?;
         let expected = unsafe { read_layout_identity(expected)? };
         unsafe { out_info.write(ViemLayoutSnapshotInfoV1::default()) };
         let (info, export) = with_core(handle, |core| {
@@ -8312,19 +8283,9 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_snapshot(
         };
         debug_assert_eq!(export.info, info);
         unsafe {
-            if !export.rows.is_empty() {
-                std::ptr::copy_nonoverlapping(export.rows.as_ptr(), rows, export.rows.len());
-            }
-            if !export.clusters.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.clusters.as_ptr(),
-                    clusters,
-                    export.clusters.len(),
-                );
-            }
-            if !export.carets.is_empty() {
-                std::ptr::copy_nonoverlapping(export.carets.as_ptr(), carets, export.carets.len());
-            }
+            copy_output(&export.rows, rows);
+            copy_output(&export.clusters, clusters);
+            copy_output(&export.carets, carets);
         }
         Ok(())
     })
@@ -8519,9 +8480,7 @@ pub unsafe extern "C" fn viem_core_view_copy_command_line(
             return Err(ViemStatus::BufferTooSmall);
         }
         unsafe {
-            if !export.bytes.is_empty() {
-                std::ptr::copy_nonoverlapping(export.bytes.as_ptr(), utf8, export.bytes.len());
-            }
+            copy_output(&export.bytes, utf8);
         }
         Ok(())
     })
@@ -8581,13 +8540,7 @@ pub unsafe extern "C" fn viem_core_view_copy_visual_selection(
             rectangle_region,
             info_region,
         ];
-        for left in 0..regions.len() {
-            for right in left + 1..regions.len() {
-                if regions_overlap(regions[left], regions[right]) {
-                    return Err(ViemStatus::InvalidArgument);
-                }
-            }
-        }
+        validate_disjoint_regions(&regions)?;
         let expected = unsafe { read_visual_selection_identity(expected)? };
         unsafe { out_info.write(ViemVisualSelectionInfoV1::default()) };
         let export = with_core(handle, |core| {
@@ -8605,20 +8558,8 @@ pub unsafe extern "C" fn viem_core_view_copy_visual_selection(
             return Err(ViemStatus::BufferTooSmall);
         }
         unsafe {
-            if !export.segments.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.segments.as_ptr(),
-                    segments,
-                    export.segments.len(),
-                );
-            }
-            if !export.rectangles.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.rectangles.as_ptr(),
-                    rectangles,
-                    export.rectangles.len(),
-                );
-            }
+            copy_output(&export.segments, segments);
+            copy_output(&export.rectangles, rectangles);
         }
         Ok(())
     })
@@ -9155,13 +9096,7 @@ pub unsafe extern "C" fn viem_effect_batch_copy(
             typed_pointer_region(string_bytes, string_capacity)?,
             typed_pointer_region(out_info, 1)?,
         ];
-        for left in 0..regions.len() {
-            for right in left + 1..regions.len() {
-                if regions_overlap(regions[left], regions[right]) {
-                    return Err(ViemStatus::InvalidArgument);
-                }
-            }
-        }
+        validate_disjoint_regions(&regions)?;
         unsafe { out_info.write(ViemEffectBatchInfoV1::default()) };
         let batch = owned_effect_batch(handle)?;
         let export = export_effect_batch(handle, &batch)?;
@@ -9181,76 +9116,16 @@ pub unsafe extern "C" fn viem_effect_batch_copy(
         }
 
         unsafe {
-            if !export.clipboard_writes.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.clipboard_writes.as_ptr(),
-                    clipboard_writes,
-                    export.clipboard_writes.len(),
-                );
-            }
-            if !export.ex_requests.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.ex_requests.as_ptr(),
-                    ex_requests,
-                    export.ex_requests.len(),
-                );
-            }
-            if !export.ex_options.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.ex_options.as_ptr(),
-                    ex_options,
-                    export.ex_options.len(),
-                );
-            }
-            if !export.ex_marks.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.ex_marks.as_ptr(),
-                    ex_marks,
-                    export.ex_marks.len(),
-                );
-            }
-            if !export.ex_registers.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.ex_registers.as_ptr(),
-                    ex_registers,
-                    export.ex_registers.len(),
-                );
-            }
-            if !export.ex_jumps.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.ex_jumps.as_ptr(),
-                    ex_jumps,
-                    export.ex_jumps.len(),
-                );
-            }
-            if !export.ex_text_lines.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.ex_text_lines.as_ptr(),
-                    ex_text_lines,
-                    export.ex_text_lines.len(),
-                );
-            }
-            if !export.file_formats.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.file_formats.as_ptr(),
-                    file_formats,
-                    export.file_formats.len(),
-                );
-            }
-            if !export.hard_breaks.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.hard_breaks.as_ptr(),
-                    hard_breaks,
-                    export.hard_breaks.len(),
-                );
-            }
-            if !export.strings.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    export.strings.as_ptr(),
-                    string_bytes,
-                    export.strings.len(),
-                );
-            }
+            copy_output(&export.clipboard_writes, clipboard_writes);
+            copy_output(&export.ex_requests, ex_requests);
+            copy_output(&export.ex_options, ex_options);
+            copy_output(&export.ex_marks, ex_marks);
+            copy_output(&export.ex_registers, ex_registers);
+            copy_output(&export.ex_jumps, ex_jumps);
+            copy_output(&export.ex_text_lines, ex_text_lines);
+            copy_output(&export.file_formats, file_formats);
+            copy_output(&export.hard_breaks, hard_breaks);
+            copy_output(&export.strings, string_bytes);
         }
         Ok(())
     })
@@ -10751,13 +10626,7 @@ pub unsafe extern "C" fn viem_core_view_edit_style_in_group(
             typed_pointer_region(request, 1)?,
             typed_pointer_region(out_outcome, 1)?,
         ];
-        for left in 0..regions.len() {
-            for right in left + 1..regions.len() {
-                if regions_overlap(regions[left], regions[right]) {
-                    return Err(ViemStatus::InvalidArgument);
-                }
-            }
-        }
+        validate_disjoint_regions(&regions)?;
         let group = unsafe { read_style_edit_group(group)? }.into_core();
         let request = unsafe { parse_style_edit_request(request, out_outcome)? };
         unsafe { clear_outcome(out_outcome)? };
@@ -14039,13 +13908,7 @@ pub unsafe extern "C" fn viem_core_view_set_format_with_effects(
             typed_pointer_region(out_outcome, 1)?,
             typed_pointer_region(out_effects, 1)?,
         ];
-        for a in 0..regions.len() {
-            for b in a + 1..regions.len() {
-                if regions_overlap(regions[a], regions[b]) {
-                    return Err(ViemStatus::InvalidArgument);
-                }
-            }
-        }
+        validate_disjoint_regions(&regions)?;
         let request = unsafe { request.read() };
         if request.struct_size < VIEM_SET_FORMAT_V1_SIZE {
             return Err(ViemStatus::InvalidArgument);
@@ -14108,13 +13971,7 @@ pub unsafe extern "C" fn viem_core_view_set_encoding_with_effects(
             typed_pointer_region(out_outcome, 1)?,
             typed_pointer_region(out_effects, 1)?,
         ];
-        for a in 0..regions.len() {
-            for b in a + 1..regions.len() {
-                if regions_overlap(regions[a], regions[b]) {
-                    return Err(ViemStatus::InvalidArgument);
-                }
-            }
-        }
+        validate_disjoint_regions(&regions)?;
         let request = unsafe { request.read() };
         if request.struct_size < VIEM_SET_ENCODING_V1_SIZE {
             return Err(ViemStatus::InvalidArgument);
@@ -14181,13 +14038,7 @@ pub unsafe extern "C" fn viem_core_copy_hard_line_source_bytes(
             typed_pointer_region(out_required, 1)?,
             typed_pointer_region(out_complete, 1)?,
         ];
-        for a in 0..regions.len() {
-            for b in a + 1..regions.len() {
-                if regions_overlap(regions[a], regions[b]) {
-                    return Err(ViemStatus::InvalidArgument);
-                }
-            }
-        }
+        validate_disjoint_regions(&regions)?;
         unsafe {
             out_required.write(0);
             out_complete.write(0);

@@ -157,6 +157,13 @@ pub struct CharacterProperties {
 }
 
 impl CharacterProperties {
+    pub(super) fn overlay(&mut self, layer: &Self) {
+        if layer.weight.is_some() {
+            self.bold = None;
+        }
+        self.merge_declarations(layer);
+    }
+
     pub(super) fn owned_heap_bytes(&self) -> usize {
         self.font_families.as_ref().map_or(0, |families| {
             families.capacity() * std::mem::size_of::<String>()
@@ -166,39 +173,6 @@ impl CharacterProperties {
                 style_map_heap_bytes(features.len(), std::mem::size_of::<(String, u32)>())
                     + features.keys().map(|name| name.capacity() + 16).sum::<usize>()
             })
-    }
-
-    /// Exact normalized declaration keys which differ between two sparse
-    /// layers. Absence and an explicit default-valued declaration are
-    /// intentionally different.
-    pub fn changed_properties(&self, other: &Self) -> BTreeSet<StyleProperty> {
-        let mut changed = BTreeSet::new();
-        macro_rules! compare {
-            ($field:ident, $property:expr) => {
-                if self.$field != other.$field {
-                    changed.insert($property);
-                }
-            };
-        }
-        compare!(font_families, StyleProperty::CharacterFontFamilies);
-        compare!(size, StyleProperty::CharacterSize);
-        compare!(weight, StyleProperty::CharacterWeight);
-        compare!(bold, StyleProperty::CharacterBold);
-        compare!(slant, StyleProperty::CharacterSlant);
-        compare!(foreground, StyleProperty::CharacterForeground);
-        compare!(background, StyleProperty::CharacterBackground);
-        compare!(underline, StyleProperty::CharacterUnderline);
-        compare!(strikethrough, StyleProperty::CharacterStrikethrough);
-        compare!(language, StyleProperty::CharacterLanguage);
-        compare!(direction, StyleProperty::CharacterDirection);
-        compare!(open_type_features, StyleProperty::CharacterOpenTypeFeatures);
-        compare!(letter_spacing, StyleProperty::CharacterLetterSpacing);
-        compare!(baseline_shift, StyleProperty::CharacterBaselineShift);
-        changed
-    }
-
-    pub fn declared_properties(&self) -> BTreeSet<StyleProperty> {
-        self.changed_properties(&Self::default())
     }
 }
 
@@ -220,39 +194,6 @@ pub struct BlockProperties {
     pub background: Option<Color>,
     pub alignment: Option<ParagraphAlignment>,
     pub base_direction: Option<WritingDirection>,
-}
-
-impl BlockProperties {
-    /// Exact normalized declaration keys which differ between two sparse
-    /// block layers.
-    pub fn changed_properties(&self, other: &Self) -> BTreeSet<StyleProperty> {
-        let mut changed = BTreeSet::new();
-        macro_rules! compare {
-            ($field:ident, $property:expr) => {
-                if self.$field != other.$field {
-                    changed.insert($property);
-                }
-            };
-        }
-        compare!(spacing_before, StyleProperty::ParagraphSpacingBefore);
-        compare!(spacing_after, StyleProperty::ParagraphSpacingAfter);
-        compare!(line_spacing, StyleProperty::ParagraphLineSpacing);
-        compare!(first_line_indent, StyleProperty::ParagraphFirstLineIndent);
-        compare!(leading_indent, StyleProperty::ParagraphLeadingIndent);
-        compare!(trailing_indent, StyleProperty::ParagraphTrailingIndent);
-        compare!(padding_top, StyleProperty::CanvasPaddingTop);
-        compare!(padding_right, StyleProperty::CanvasPaddingRight);
-        compare!(padding_bottom, StyleProperty::CanvasPaddingBottom);
-        compare!(padding_left, StyleProperty::CanvasPaddingLeft);
-        compare!(background, StyleProperty::CanvasBackground);
-        compare!(alignment, StyleProperty::ParagraphAlignment);
-        compare!(base_direction, StyleProperty::ParagraphBaseDirection);
-        changed
-    }
-
-    pub fn declared_properties(&self) -> BTreeSet<StyleProperty> {
-        self.changed_properties(&Self::default())
-    }
 }
 
 /// Normalized style assignment for the formatted document root.
@@ -2601,164 +2542,110 @@ fn inapplicable_style_property(style: &StyleId, property: StyleProperty) -> Styl
     }
 }
 
-pub(super) fn set_character_property(
-    style: &StyleId,
-    properties: &mut CharacterProperties,
-    property: StyleProperty,
-    value: &StylePropertyValue,
-) -> Result<(), StyleError> {
-    match (property, value) {
-        (StyleProperty::CharacterFontFamilies, StylePropertyValue::FontFamilies(value)) => {
-            properties.font_families = Some(value.clone());
+// One registry relates sparse fields, normalized property keys, and their
+// typed values. Keeping these operations together makes adding a property an
+// explicit, exhaustive change instead of synchronizing independent match tables.
+macro_rules! sparse_property_operations {
+    ($type:ident, $set:ident, $clear:ident; $(
+        $field:ident => $property:ident($value:ident)
+    ),+ $(,)?) => {
+        impl $type {
+            /// Exact declaration keys which differ. An absent declaration and
+            /// an explicit default value remain observably different.
+            pub fn changed_properties(&self, other: &Self) -> BTreeSet<StyleProperty> {
+                let mut changed = BTreeSet::new();
+                $(if self.$field != other.$field {
+                    changed.insert(StyleProperty::$property);
+                })+
+                changed
+            }
+
+            pub fn declared_properties(&self) -> BTreeSet<StyleProperty> {
+                self.changed_properties(&Self::default())
+            }
+
+            pub(super) fn clear_declaration(&mut self, property: StyleProperty) -> bool {
+                match property {
+                    $(StyleProperty::$property => self.$field = None,)+
+                    _ => return false,
+                }
+                true
+            }
+
+            /// Merge sparse declarations without changing undeclared fields.
+            /// Cascade policy, such as weight overriding inherited bold, is
+            /// applied separately by the caller.
+            pub(super) fn merge_declarations(&mut self, layer: &Self) {
+                $(if layer.$field.is_some() {
+                    self.$field.clone_from(&layer.$field);
+                })+
+            }
         }
-        (StyleProperty::CharacterSize, StylePropertyValue::Float(value)) => {
-            properties.size = Some(*value);
+
+        pub(super) fn $set(
+            style: &StyleId,
+            properties: &mut $type,
+            property: StyleProperty,
+            value: &StylePropertyValue,
+        ) -> Result<(), StyleError> {
+            match (property, value) {
+                $((StyleProperty::$property, StylePropertyValue::$value(value)) => {
+                    properties.$field = Some(value.clone());
+                })+
+                $( (StyleProperty::$property, _) => {
+                    return Err(invalid_style_value(style, property));
+                })+
+                _ => return Err(inapplicable_style_property(style, property)),
+            }
+            Ok(())
         }
-        (StyleProperty::CharacterWeight, StylePropertyValue::FontWeight(value)) => {
-            properties.weight = Some(*value);
+
+        pub(super) fn $clear(
+            style: &StyleId,
+            properties: &mut $type,
+            property: StyleProperty,
+        ) -> Result<(), StyleError> {
+            if !properties.clear_declaration(property) {
+                return Err(inapplicable_style_property(style, property));
+            }
+            Ok(())
         }
-        (StyleProperty::CharacterBold, StylePropertyValue::Boolean(value)) => {
-            properties.bold = Some(*value);
-        }
-        (StyleProperty::CharacterSlant, StylePropertyValue::FontSlant(value)) => {
-            properties.slant = Some(*value);
-        }
-        (StyleProperty::CharacterForeground, StylePropertyValue::Color(value)) => {
-            properties.foreground = Some(*value);
-        }
-        (StyleProperty::CharacterBackground, StylePropertyValue::Color(value)) => {
-            properties.background = Some(*value);
-        }
-        (StyleProperty::CharacterUnderline, StylePropertyValue::Boolean(value)) => {
-            properties.underline = Some(*value);
-        }
-        (StyleProperty::CharacterStrikethrough, StylePropertyValue::Boolean(value)) => {
-            properties.strikethrough = Some(*value);
-        }
-        (StyleProperty::CharacterLanguage, StylePropertyValue::Text(value)) => {
-            properties.language = Some(value.clone());
-        }
-        (StyleProperty::CharacterDirection, StylePropertyValue::WritingDirection(value)) => {
-            properties.direction = Some(*value);
-        }
-        (StyleProperty::CharacterOpenTypeFeatures, StylePropertyValue::OpenTypeFeatures(value)) => {
-            properties.open_type_features = Some(value.clone());
-        }
-        (StyleProperty::CharacterLetterSpacing, StylePropertyValue::Float(value)) => {
-            properties.letter_spacing = Some(*value);
-        }
-        (StyleProperty::CharacterBaselineShift, StylePropertyValue::Float(value)) => {
-            properties.baseline_shift = Some(*value);
-        }
-        (property, _) if !is_character_property(property) => {
-            return Err(inapplicable_style_property(style, property));
-        }
-        (property, _) => return Err(invalid_style_value(style, property)),
-    }
-    Ok(())
+    };
 }
 
-pub(super) fn clear_character_property(
-    style: &StyleId,
-    properties: &mut CharacterProperties,
-    property: StyleProperty,
-) -> Result<(), StyleError> {
-    match property {
-        StyleProperty::CharacterFontFamilies => properties.font_families = None,
-        StyleProperty::CharacterSize => properties.size = None,
-        StyleProperty::CharacterWeight => properties.weight = None,
-        StyleProperty::CharacterBold => properties.bold = None,
-        StyleProperty::CharacterSlant => properties.slant = None,
-        StyleProperty::CharacterForeground => properties.foreground = None,
-        StyleProperty::CharacterBackground => properties.background = None,
-        StyleProperty::CharacterUnderline => properties.underline = None,
-        StyleProperty::CharacterStrikethrough => properties.strikethrough = None,
-        StyleProperty::CharacterLanguage => properties.language = None,
-        StyleProperty::CharacterDirection => properties.direction = None,
-        StyleProperty::CharacterOpenTypeFeatures => properties.open_type_features = None,
-        StyleProperty::CharacterLetterSpacing => properties.letter_spacing = None,
-        StyleProperty::CharacterBaselineShift => properties.baseline_shift = None,
-        property => return Err(inapplicable_style_property(style, property)),
-    }
-    Ok(())
+sparse_property_operations! {
+    CharacterProperties, set_character_property, clear_character_property;
+    font_families => CharacterFontFamilies(FontFamilies),
+    size => CharacterSize(Float),
+    weight => CharacterWeight(FontWeight),
+    bold => CharacterBold(Boolean),
+    slant => CharacterSlant(FontSlant),
+    foreground => CharacterForeground(Color),
+    background => CharacterBackground(Color),
+    underline => CharacterUnderline(Boolean),
+    strikethrough => CharacterStrikethrough(Boolean),
+    language => CharacterLanguage(Text),
+    direction => CharacterDirection(WritingDirection),
+    open_type_features => CharacterOpenTypeFeatures(OpenTypeFeatures),
+    letter_spacing => CharacterLetterSpacing(Float),
+    baseline_shift => CharacterBaselineShift(Float),
 }
 
-pub(super) fn set_block_property(
-    style: &StyleId,
-    properties: &mut BlockProperties,
-    property: StyleProperty,
-    value: &StylePropertyValue,
-) -> Result<(), StyleError> {
-    match (property, value) {
-        (StyleProperty::CanvasBackground, StylePropertyValue::Color(value)) => {
-            properties.background = Some(*value);
-        }
-        (StyleProperty::CanvasPaddingTop, StylePropertyValue::Float(value)) => {
-            properties.padding_top = Some(*value);
-        }
-        (StyleProperty::CanvasPaddingRight, StylePropertyValue::Float(value)) => {
-            properties.padding_right = Some(*value);
-        }
-        (StyleProperty::CanvasPaddingBottom, StylePropertyValue::Float(value)) => {
-            properties.padding_bottom = Some(*value);
-        }
-        (StyleProperty::CanvasPaddingLeft, StylePropertyValue::Float(value)) => {
-            properties.padding_left = Some(*value);
-        }
-        (StyleProperty::ParagraphSpacingBefore, StylePropertyValue::Float(value)) => {
-            properties.spacing_before = Some(*value);
-        }
-        (StyleProperty::ParagraphSpacingAfter, StylePropertyValue::Float(value)) => {
-            properties.spacing_after = Some(*value);
-        }
-        (StyleProperty::ParagraphLineSpacing, StylePropertyValue::LineSpacing(value)) => {
-            properties.line_spacing = Some(*value);
-        }
-        (StyleProperty::ParagraphFirstLineIndent, StylePropertyValue::Float(value)) => {
-            properties.first_line_indent = Some(*value);
-        }
-        (StyleProperty::ParagraphLeadingIndent, StylePropertyValue::Float(value)) => {
-            properties.leading_indent = Some(*value);
-        }
-        (StyleProperty::ParagraphTrailingIndent, StylePropertyValue::Float(value)) => {
-            properties.trailing_indent = Some(*value);
-        }
-        (StyleProperty::ParagraphAlignment, StylePropertyValue::ParagraphAlignment(value)) => {
-            properties.alignment = Some(*value)
-        }
-        (StyleProperty::ParagraphBaseDirection, StylePropertyValue::WritingDirection(value)) => {
-            properties.base_direction = Some(*value)
-        }
-        (property, _) if is_character_property(property) => {
-            return Err(inapplicable_style_property(style, property));
-        }
-        (property, _) => return Err(invalid_style_value(style, property)),
-    }
-    Ok(())
-}
-
-pub(super) fn clear_block_property(
-    style: &StyleId,
-    properties: &mut BlockProperties,
-    property: StyleProperty,
-) -> Result<(), StyleError> {
-    match property {
-        StyleProperty::CanvasBackground => properties.background = None,
-        StyleProperty::CanvasPaddingTop => properties.padding_top = None,
-        StyleProperty::CanvasPaddingRight => properties.padding_right = None,
-        StyleProperty::CanvasPaddingBottom => properties.padding_bottom = None,
-        StyleProperty::CanvasPaddingLeft => properties.padding_left = None,
-        StyleProperty::ParagraphSpacingBefore => properties.spacing_before = None,
-        StyleProperty::ParagraphSpacingAfter => properties.spacing_after = None,
-        StyleProperty::ParagraphLineSpacing => properties.line_spacing = None,
-        StyleProperty::ParagraphFirstLineIndent => properties.first_line_indent = None,
-        StyleProperty::ParagraphLeadingIndent => properties.leading_indent = None,
-        StyleProperty::ParagraphTrailingIndent => properties.trailing_indent = None,
-        StyleProperty::ParagraphAlignment => properties.alignment = None,
-        StyleProperty::ParagraphBaseDirection => properties.base_direction = None,
-        property => return Err(inapplicable_style_property(style, property)),
-    }
-    Ok(())
+sparse_property_operations! {
+    BlockProperties, set_block_property, clear_block_property;
+    spacing_before => ParagraphSpacingBefore(Float),
+    spacing_after => ParagraphSpacingAfter(Float),
+    line_spacing => ParagraphLineSpacing(LineSpacing),
+    first_line_indent => ParagraphFirstLineIndent(Float),
+    leading_indent => ParagraphLeadingIndent(Float),
+    trailing_indent => ParagraphTrailingIndent(Float),
+    padding_top => CanvasPaddingTop(Float),
+    padding_right => CanvasPaddingRight(Float),
+    padding_bottom => CanvasPaddingBottom(Float),
+    padding_left => CanvasPaddingLeft(Float),
+    background => CanvasBackground(Color),
+    alignment => ParagraphAlignment(ParagraphAlignment),
+    base_direction => ParagraphBaseDirection(WritingDirection),
 }
 
 pub(super) fn validate_character_properties(

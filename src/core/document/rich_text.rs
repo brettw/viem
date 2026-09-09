@@ -214,7 +214,7 @@ impl<'a> Builder<'a> {
         self.emit_read_only(value);
         self.retain_empty_boundary(source.end, style);
     }
-    fn finish_line(&mut self) {
+    fn current_block(&self, start: usize) -> Block {
         let mut style = self
             .paragraph_style
             .clone()
@@ -232,14 +232,17 @@ impl<'a> Builder<'a> {
         {
             style = self.style_sheet.base_paragraph.clone();
         }
-        self.blocks.push(Block {
+        Block {
             id: 0,
-            range: self.line_start..self.text.len(),
+            range: start..self.text.len(),
             kind: self.kind.clone(),
             style,
             direct_paragraph: self.paragraph.clone(),
             direct_default_character: self.defaults.clone(),
-        });
+        }
+    }
+    fn finish_line(&mut self) {
+        self.blocks.push(self.current_block(self.line_start));
     }
     pub fn hard_break(&mut self, input_range: Range<usize>) {
         self.pending_empty_seed = None;
@@ -250,31 +253,7 @@ impl<'a> Builder<'a> {
         self.line_start = self.text.len();
     }
     fn finish_paragraph(&mut self) {
-        let mut style = self
-            .paragraph_style
-            .clone()
-            .unwrap_or_else(|| match &self.kind {
-                BlockKind::Heading(level) => format!("Heading{level}").as_str().into(),
-                BlockKind::ListItem { ordered, level, .. } => {
-                    self.style_sheet.list_style_id(*ordered, *level)
-                }
-                _ => "Paragraph".into(),
-            });
-        if self
-            .style_sheet
-            .deleted_source_blocks()
-            .any(|id| id == &style)
-        {
-            style = self.style_sheet.base_paragraph.clone();
-        }
-        self.paragraphs.push(Block {
-            id: 0,
-            range: self.paragraph_start..self.text.len(),
-            kind: self.kind.clone(),
-            style,
-            direct_paragraph: self.paragraph.clone(),
-            direct_default_character: self.defaults.clone(),
-        });
+        self.paragraphs.push(self.current_block(self.paragraph_start));
     }
     /// A paragraph boundary is a hard break plus a separate paragraph identity.
     /// Inline br/line breaks keep paragraph styles, first-indent and spacing
@@ -365,26 +344,7 @@ pub(super) fn editable_source_range(
 }
 
 pub(super) fn overlay(target: &mut CharacterProperties, source: &CharacterProperties) {
-    if source.weight.is_some() {
-        target.bold = None;
-    }
-    macro_rules! copy { ($($field:ident),*) => { $(if source.$field.is_some() { target.$field = source.$field.clone(); })* }; }
-    copy!(
-        font_families,
-        size,
-        weight,
-        bold,
-        slant,
-        foreground,
-        background,
-        underline,
-        strikethrough,
-        language,
-        direction,
-        open_type_features,
-        letter_spacing,
-        baseline_shift
-    );
+    target.overlay(source);
 }
 
 /// Validate every affected and unaffected style interval, independent of span
@@ -474,22 +434,7 @@ fn character_edit_verified_with_queries(
 }
 
 pub(super) fn overlay_block(target: &mut BlockProperties, source: &BlockProperties) {
-    macro_rules! copy {($($field:ident),*)=>{$(if source.$field.is_some(){target.$field=source.$field.clone();})*};}
-    copy!(
-        spacing_before,
-        spacing_after,
-        line_spacing,
-        first_line_indent,
-        leading_indent,
-        trailing_indent,
-        padding_top,
-        padding_right,
-        padding_bottom,
-        padding_left,
-        background,
-        alignment,
-        base_direction
-    );
+    target.merge_declarations(source);
 }
 
 pub(super) fn character_clear_verified(

@@ -74,7 +74,7 @@ impl Document {
                 self, &edit, None,
             )?);
         }
-        let mut scratch = structural_style::scratch_document(self);
+        let mut scratch = self.scratch_document();
         let materialized = scratch.prepare_source_only_patches(patches)?;
         let mut sources = PatchComposition::new(self.source_byte_len());
         for patch in materialized.summary.source_patches.iter().rev() {

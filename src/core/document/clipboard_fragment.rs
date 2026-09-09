@@ -500,7 +500,7 @@ impl Document {
         {
             return Ok(prepared);
         }
-        let mut scratch = structural_style::scratch_document(self);
+        let mut scratch = self.scratch_document();
         let mut sources = replacement::PatchComposition::new(self.source_byte_len());
         for patch in prepared.summary.source_patches.iter().rev() {
             sources.splice(patch.range(), patch.replacement());

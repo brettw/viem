@@ -578,23 +578,7 @@ impl Document {
         if edit.payload.text().is_empty() {
             return Ok((self.no_op_prepared(), at));
         }
-        let mut scratch = Document {
-            id: self.id,
-            history: super::super::new_document_history(self.state().clone()),
-            open_work: self.open_work,
-            next_revision: self.next_revision,
-            next_projected_block_id: self.next_projected_block_id,
-            edit_group_depth: 0,
-            edit_group_generation: 0,
-            position_map_capture: None,
-            artifact_binding: None,
-            pending_artifact_writes: Default::default(),
-            next_artifact_write_token: 1,
-            next_save_sequence: 1,
-            last_successful_save_sequence: 0,
-            read_only: false,
-            recovered_dirty: false,
-        };
+        let mut scratch = self.scratch_document();
         let mut sources = PatchComposition::new(self.source_byte_len());
         let mut formatted = PatchComposition::new(self.projection().text_tree().byte_len());
         let publish = |scratch: &mut Document,

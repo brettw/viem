@@ -97,7 +97,7 @@ impl Document {
         if !needs_normalization {
             return Ok(None);
         }
-        let mut scratch = scratch_document(self);
+        let mut scratch = self.scratch_document();
         let mut sources = PatchComposition::new(self.source_byte_len());
         let mut formatted = PatchComposition::new(self.projection().text_tree().byte_len());
         let mut selected_range = range;
@@ -346,24 +346,4 @@ fn publish(
     scratch.commit_model_transaction(prepared)?;
     *selection = start..end;
     Ok(())
-}
-
-pub(super) fn scratch_document(document: &Document) -> Document {
-    Document {
-        id: document.id,
-        history: super::super::new_document_history(document.state().clone()),
-        open_work: document.open_work,
-        next_revision: document.next_revision,
-        next_projected_block_id: document.next_projected_block_id,
-        edit_group_depth: 0,
-        edit_group_generation: 0,
-        position_map_capture: None,
-        artifact_binding: None,
-        pending_artifact_writes: Default::default(),
-        next_artifact_write_token: 1,
-        next_save_sequence: 1,
-        last_successful_save_sequence: 0,
-        read_only: false,
-        recovered_dirty: false,
-    }
 }

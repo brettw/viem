@@ -8,11 +8,14 @@ struct EVFormattedSnapshot {
     var utf16Length: Int? { Int(exactly: info.utf16_length) }
 }
 
-/// A scalar-aligned, exact-snapshot window into the formatted projection.
-/// Its byte offsets remain document-global so layout clusters can address it
-/// without copying or rebasing the surrounding document.
-struct EVFormattedTextSlice {
-    let identity: ViemFormattedSnapshotIdentityV1
+typealias EVFormattedTextSlice = EVSnapshotTextSlice<ViemFormattedSnapshotIdentityV1>
+typealias EVCompositionTextSlice = EVSnapshotTextSlice<ViemCompositionOverlayIdentityV1>
+
+/// A scalar-aligned window whose identity distinguishes formatted text from a
+/// composition overlay. Document-global offsets let layout clusters address
+/// its bytes without copying or rebasing the surrounding document.
+struct EVSnapshotTextSlice<Identity> {
+    let identity: Identity
     let utf8Range: Range<UInt64>
     let bytes: [UInt8]
 
@@ -53,33 +56,6 @@ struct EVCompositionOverlayExport {
               let end = Int(exactly: info.selected_end), start <= end
         else { return nil }
         return start ..< end
-    }
-}
-
-struct EVCompositionTextSlice {
-    let identity: ViemCompositionOverlayIdentityV1
-    let utf8Range: Range<UInt64>
-    let bytes: [UInt8]
-
-    func text(in requestedRange: Range<Int>) -> String? {
-        guard let lower = UInt64(exactly: requestedRange.lowerBound),
-              let upper = UInt64(exactly: requestedRange.upperBound),
-              utf8Range.lowerBound <= lower,
-              lower <= upper,
-              upper <= utf8Range.upperBound,
-              let localLower = Int(exactly: lower - utf8Range.lowerBound),
-              let localUpper = Int(exactly: upper - utf8Range.lowerBound),
-              localUpper <= bytes.count
-        else { return nil }
-        return String(bytes: bytes[localLower ..< localUpper], encoding: .utf8)
-    }
-
-    func byte(atUTF8Offset offset: Int) -> UInt8? {
-        guard let offset = UInt64(exactly: offset), utf8Range.contains(offset),
-              let local = Int(exactly: offset - utf8Range.lowerBound),
-              local < bytes.count
-        else { return nil }
-        return bytes[local]
     }
 }
 

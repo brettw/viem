@@ -222,7 +222,7 @@ impl Document {
             .block_style(&origin.style)
             .and_then(|style| style.next_paragraph_style.clone())
             .unwrap_or_else(|| origin.style.clone());
-        let mut scratch = structural_style::scratch_document(self);
+        let mut scratch = self.scratch_document();
         let mut sources = PatchComposition::new(self.source_byte_len());
         let split = if matches!(block.kind, BlockKind::ListItem { .. }) {
             if self.format() == Format::Markdown {

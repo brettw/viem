@@ -980,6 +980,28 @@ impl From<StyleError> for ModelTransactionError {
 }
 
 impl Document {
+    /// Isolated candidate editing state: share the immutable document snapshot,
+    /// but do not inherit UI history groups, position captures or file writes.
+    fn scratch_document(&self) -> Self {
+        Document {
+            id: self.id,
+            history: super::new_document_history(self.state().clone()),
+            open_work: self.open_work,
+            next_revision: self.next_revision,
+            next_projected_block_id: self.next_projected_block_id,
+            edit_group_depth: 0,
+            edit_group_generation: 0,
+            position_map_capture: None,
+            artifact_binding: None,
+            pending_artifact_writes: Default::default(),
+            next_artifact_write_token: 1,
+            next_save_sequence: 1,
+            last_successful_save_sequence: 0,
+            read_only: false,
+            recovered_dirty: false,
+        }
+    }
+
     /// Validate a controller boundary in the prepared result before any source
     /// or history state is published. Position maps describe structural shifts;
     /// their numeric result alone does not prove a logical grapheme boundary.
@@ -2697,7 +2719,7 @@ impl Document {
             }
             ConfigurationStyleIntent::SetDocumentCanvas(properties) => {
                 let before = document_style.direct_canvas.clone();
-                merge_block_properties(&mut document_style.direct_canvas, properties);
+                document_style.direct_canvas.merge_declarations(properties);
                 let changed = before != document_style.direct_canvas;
                 if changed {
                     style_sheet.set_configuration_revision(style_sheet_revision);
@@ -2969,124 +2991,14 @@ impl Document {
             }
         }
         let translate_source = explicit_source_patches.is_none();
-        let mut source_patches = Vec::with_capacity(edits.len());
-        let mut rich_edits = Vec::new();
-        if let Some(patches) = explicit_source_patches {
-            source_patches = patches;
-        } else {
-            for edit in &edits {
-                if let Some(patches) = self.structural_text_patches(edit)? {
-                    source_patches.extend(patches);
-                    continue;
-                }
-                if let Some(patches) = markdown_list_structure::empty_insertion_patches(
-                    self,
-                    &edit.range,
-                    &edit.replacement,
-                )? {
-                    source_patches.extend(patches);
-                    continue;
-                }
-                if let Some(patches) =
-                    super::markdown_code::patches(self, &edit.range, &edit.replacement)?
-                {
-                    source_patches.extend(
-                        patches
-                            .into_iter()
-                            .map(|(range, syntax)| {
-                                self.encoding()
-                                    .encode_fragment(&syntax)
-                                    .map(|bytes| SourcePatch::primary(range, bytes))
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                    );
-                    continue;
-                }
-                if self.format() == Format::Markdown && edit.replacement.contains('\n') {
-                    if let Some(patches) = self.markdown_retained_break_rewrite_patches(
-                        &edit.range,
-                        &edit.replacement,
-                        &edit.replacement.match_indices('\n').map(|(at, _)| at).collect::<Vec<_>>(),
-                    )? {
-                        source_patches.extend(patches);
-                        continue;
-                    }
-                }
-                if let Some(patches) = markdown_split::patches(self, &edit.range, &edit.replacement)? {
-                    source_patches.extend(patches);
-                    continue;
-                }
-                if matches!(self.format(), Format::Html | Format::Rtf) {
-                    rich_edits.push((edit.clone(), None));
-                    continue;
-                }
-                let source_range = if matches!(self.format(), Format::Html | Format::Rtf) {
-                    super::rich_text::text_source_range(self, &edit.range)?
-                } else if edit.range.is_empty() {
-                    let at = self
-                        .state()
-                        .projection
-                        .source_insertion_point(edit.range.start, true)
-                        .ok_or(DocumentError::AmbiguousProjection)?;
-                    at..at
-                } else {
-                    self.state()
-                        .projection
-                        .source_range(edit.range.clone())
-                        .ok_or(DocumentError::AmbiguousProjection)?
-                };
-
-                self.reject_unsafe_opaque_mapping(&edit.range, &source_range)?;
-                if self.state().format == Format::Markdown && !edit.replacement.contains('\n') {
-                    if let Some(patches) = self
-                        .markdown_line_local_text_rewrite_patches(&edit.range, &edit.replacement)?
-                    {
-                        source_patches.extend(patches);
-                        continue;
-                    }
-                }
-
-                let in_code = self.state().format == Format::Markdown
-                    && self
-                        .projection()
-                        .markdown_replacement_begins_in_code(&edit.range);
-                let syntax = match self.state().format {
-                    Format::MarkdownSource => self.markdown_source_replacement(edit)?,
-                    Format::PlainText | Format::HtmlSource => edit.replacement.clone(),
-                    Format::Html => {
-                        super::rich_text::escape_html_text(&edit.replacement, self.encoding())
-                    }
-                    Format::Rtf => {
-                        if self.state().source.len() == 0 {
-                            format!("{{\\rtf1\\ansi {}}}", super::rtf::escape(&edit.replacement))
-                        } else {
-                            super::rtf::escape_insertion(
-                                self,
-                                source_range.start,
-                                &edit.replacement,
-                            )?
-                        }
-                    }
-                    Format::Markdown if in_code && !edit.replacement.contains('`') => {
-                        edit.replacement.clone()
-                    }
-                    Format::Markdown => self
-                        .escape_markdown_source_text(source_range.start, &edit.replacement)?
-                        .replace('\n', "\n\n"),
-                };
-                let syntax = spell_logical_breaks(&syntax, self.state().file_format);
-                let replacement = self.state().encoding.encode_fragment(&syntax)?;
-                source_patches.push(SourcePatch::primary(source_range, replacement));
-            }
-        }
-        source_patches.extend(super::source_edit::rich_text_batch_patches(self, &rich_edits)?);
-        if translate_source && self.format() == Format::Markdown {
-            markdown_block_styles::preserve_join_boundaries(self, &edits, &mut source_patches)?;
-            markdown_block_styles::preserve_split_literals(self, &edits, &mut source_patches)?;
-            markdown_block_styles::preserve_split_boundaries(
-                self,
-                edits
-                    .iter()
+        let mut source_patches = match explicit_source_patches {
+            Some(patches) => patches,
+            None => self.translate_source_edits(edits.iter().map(|edit| (edit, None)))?,
+        };
+        if translate_source {
+            self.preserve_markdown_edit_boundaries(
+                &edits,
+                edits.iter()
                     .filter(|edit| edit.replacement.contains('\n'))
                     .map(|edit| &edit.range),
                 &mut source_patches,
@@ -3468,28 +3380,17 @@ impl Document {
                 !edit.payload.text().contains('\n') && edit.payload.break_offsets().is_empty()
             })
         {
-            let rich_edits = edits.iter().map(|edit| (edit.text_edit(), edit.boundary_affinity)).collect::<Vec<_>>();
-            let text_edits = edits.iter().map(|edit| edit.text_edit()).collect::<Vec<_>>();
-            if let Some(prepared) = self.prepare_structural_text_batch(&text_edits)? {
+            if let Some(prepared) = self.prepare_structural_text_batch(&logical_edits)? {
                 return Ok(prepared);
             }
-            let mut patches = Vec::new();
-            let mut ordinary = Vec::new();
-            for (edit, affinity) in rich_edits {
-                if let Some(structural) = self.structural_text_patches(&edit)? {
-                    patches.extend(structural);
-                } else {
-                    ordinary.push((edit, affinity));
-                }
-            }
-            patches.extend(super::source_edit::rich_text_batch_patches(self, &ordinary)?);
-            return self.prepare_text_edits_with_patches(text_edits, Some(patches));
+            let patches = self.translate_source_edits(
+                logical_edits.iter().zip(&edits)
+                    .map(|(text, payload)| (text, Some(payload))),
+            )?;
+            return self.prepare_text_edits_with_patches(logical_edits, Some(patches));
         }
 
-        let text_edits = edits
-            .iter()
-            .map(|edit| edit.text_edit())
-            .collect::<Vec<_>>();
+        let text_edits = logical_edits;
         let old_text = self.text().to_owned();
         let mut expected_text = old_text.clone();
         for edit in edits.iter().rev() {
@@ -3502,123 +3403,17 @@ impl Document {
             expected_text.len(),
         )?;
 
-        let mut source_patches = Vec::with_capacity(edits.len());
-        let mut rich_edits = Vec::new();
-        for edit in &edits {
-            if let Some(patches) = self.structural_text_patches(&edit.text_edit())? {
-                source_patches.extend(patches);
-                continue;
-            }
-            if let Some(patches) = markdown_list_structure::empty_insertion_patches(
-                self,
-                &edit.range,
-                edit.payload.text(),
-            )? {
-                source_patches.extend(patches);
-                continue;
-            }
-            if let Some(patches) = markdown_list_structure::insertion_patches(self, edit)? {
-                source_patches.extend(patches);
-                continue;
-            }
-            if let Some(patches) =
-                super::markdown_code::patches(self, &edit.range, edit.payload.text())?
-            {
-                source_patches.extend(
-                    patches
-                        .into_iter()
-                        .map(|(range, syntax)| {
-                            self.encoding()
-                                .encode_fragment(&syntax)
-                                .map(|bytes| SourcePatch::primary(range, bytes))
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                );
-                continue;
-            }
-            if let Some(patches) = self.markdown_retained_break_rewrite_patches(
-                &edit.range,
-                edit.payload.text(),
-                edit.payload.break_offsets(),
-            )? {
-                source_patches.extend(patches);
-                continue;
-            }
-            if edit.payload.break_offsets().len() == edit.payload.text().matches('\n').count() {
-                if let Some(patches) = markdown_split::patches(self, &edit.range, edit.payload.text())? {
-                    source_patches.extend(patches);
-                    continue;
-                }
-            }
-            if matches!(self.format(), Format::Html | Format::Rtf) {
-                rich_edits.push((edit.text_edit(), edit.boundary_affinity));
-                continue;
-            }
-            let source_range = if matches!(self.format(), Format::Html | Format::Rtf) {
-                super::rich_text::text_source_range(self, &edit.range)?
-            } else if edit.range.is_empty() {
-                let at = self
-                    .projection()
-                    .source_insertion_point(
-                        edit.range.start,
-                        edit.boundary_affinity != Some(BoundaryAffinity::Upstream),
-                    )
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                at..at
-            } else {
-                self.projection()
-                    .source_range(edit.range.clone())
-                    .ok_or(DocumentError::AmbiguousProjection)?
-            };
-
-            self.reject_unsafe_opaque_mapping(&edit.range, &source_range)?;
-            if self.state().format == Format::Markdown
-                && edit.payload.break_offsets().is_empty()
-                && !(edit.range.is_empty()
-                    && edit.boundary_affinity == Some(BoundaryAffinity::Upstream))
-            {
-                if let Some(patches) =
-                    self.markdown_line_local_text_rewrite_patches(&edit.range, edit.payload.text())?
-                {
-                    source_patches.extend(patches);
-                    continue;
-                }
-            }
-
-            let in_code = self.state().format == Format::Markdown
-                && self
-                    .projection()
-                    .markdown_replacement_begins_in_code(&edit.range);
-            let syntax = structured_payload_syntax(
-                &edit.payload,
-                self.state().format,
-                in_code,
-                self.state().file_format,
-            );
-            let syntax = if self.format() == Format::Markdown
-                && !in_code
-                && edit.payload.break_offsets().is_empty()
-            {
-                self.escape_markdown_source_text(source_range.start, edit.payload.text())?
-            } else {
-                syntax
-            };
-            let replacement = self.state().encoding.encode_fragment(&syntax)?;
-            source_patches.push(SourcePatch::primary(source_range, replacement));
-        }
-        source_patches.extend(super::source_edit::rich_text_batch_patches(self, &rich_edits)?);
-        if self.format() == Format::Markdown {
-            markdown_block_styles::preserve_join_boundaries(self, &text_edits, &mut source_patches)?;
-            markdown_block_styles::preserve_split_literals(self, &text_edits, &mut source_patches)?;
-            markdown_block_styles::preserve_split_boundaries(
-                self,
-                edits
-                    .iter()
-                    .filter(|edit| !edit.payload.break_offsets().is_empty())
-                    .map(|edit| &edit.range),
-                &mut source_patches,
-            )?;
-        }
+        let mut source_patches = self.translate_source_edits(
+            text_edits.iter().zip(&edits)
+                .map(|(text, payload)| (text, Some(payload))),
+        )?;
+        self.preserve_markdown_edit_boundaries(
+            &text_edits,
+            edits.iter()
+                .filter(|edit| !edit.payload.break_offsets().is_empty())
+                .map(|edit| &edit.range),
+            &mut source_patches,
+        )?;
         validate_source_patches(&mut source_patches)?;
 
         let source = apply_source_patches(&self.state().source, &source_patches)?;
@@ -7634,49 +7429,11 @@ fn merge_character_properties(
     target: &mut CharacterProperties,
     declarations: &CharacterProperties,
 ) {
-    macro_rules! merge {
-        ($field:ident) => {
-            if declarations.$field.is_some() {
-                target.$field.clone_from(&declarations.$field);
-            }
-        };
-    }
-    merge!(font_families);
-    merge!(size);
-    merge!(weight);
-    merge!(slant);
-    merge!(foreground);
-    merge!(background);
-    merge!(underline);
-    merge!(strikethrough);
-    merge!(language);
-    merge!(direction);
-    merge!(open_type_features);
-    merge!(letter_spacing);
-    merge!(baseline_shift);
-}
-
-fn merge_block_properties(target: &mut BlockProperties, declarations: &BlockProperties) {
-    macro_rules! merge {
-        ($field:ident) => {
-            if declarations.$field.is_some() {
-                target.$field.clone_from(&declarations.$field);
-            }
-        };
-    }
-    merge!(spacing_before);
-    merge!(spacing_after);
-    merge!(line_spacing);
-    merge!(first_line_indent);
-    merge!(leading_indent);
-    merge!(trailing_indent);
-    merge!(padding_top);
-    merge!(padding_right);
-    merge!(padding_bottom);
-    merge!(padding_left);
-    merge!(background);
-    merge!(alignment);
-    merge!(base_direction);
+    // Configuration updates historically leave semantic bold unchanged. Keep
+    // that policy separate from ordinary source/style cascade merging.
+    let bold = target.bold;
+    target.merge_declarations(declarations);
+    target.bold = bold;
 }
 
 fn clear_character_properties(
@@ -7685,22 +7442,8 @@ fn clear_character_properties(
     expected: StylePropertyTarget,
 ) -> Result<(), ModelTransactionError> {
     for property in properties {
-        match property {
-            StyleProperty::CharacterFontFamilies => target.font_families = None,
-            StyleProperty::CharacterSize => target.size = None,
-            StyleProperty::CharacterWeight => target.weight = None,
-            StyleProperty::CharacterBold => target.bold = None,
-            StyleProperty::CharacterSlant => target.slant = None,
-            StyleProperty::CharacterForeground => target.foreground = None,
-            StyleProperty::CharacterBackground => target.background = None,
-            StyleProperty::CharacterUnderline => target.underline = None,
-            StyleProperty::CharacterStrikethrough => target.strikethrough = None,
-            StyleProperty::CharacterLanguage => target.language = None,
-            StyleProperty::CharacterDirection => target.direction = None,
-            StyleProperty::CharacterOpenTypeFeatures => target.open_type_features = None,
-            StyleProperty::CharacterLetterSpacing => target.letter_spacing = None,
-            StyleProperty::CharacterBaselineShift => target.baseline_shift = None,
-            _ => return Err(invalid_style_property_target(*property, expected)),
+        if !target.clear_declaration(*property) {
+            return Err(invalid_style_property_target(*property, expected));
         }
     }
     Ok(())

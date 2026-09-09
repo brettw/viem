@@ -857,6 +857,51 @@ struct InsertSession {
     replace_journal: Vec<ReplaceJournalEntry>,
 }
 
+impl InsertSession {
+    /// Record user input once, independently of model preparation or commit.
+    /// Count/dot replay updates restoration state but must not grow its own
+    /// recipe or the last-insert register, nor take ownership from Ctrl-O.
+    fn record_edit(
+        &mut self,
+        update: impl FnOnce(Option<&mut EditSessionProgram>, &mut RegisterValue),
+    ) {
+        if !self.replaying_program {
+            self.preserve_normal_repeat = false;
+            update(self.repeat_program.as_mut(), &mut self.last_inserted);
+        }
+    }
+
+    fn record_step(&mut self, step: EditSessionStep) {
+        self.record_edit(|program, _| {
+            if let Some(program) = program {
+                program.push(step);
+            }
+        });
+    }
+
+    fn record_inserted(&mut self, value: &RegisterValue, step: Option<EditSessionStep>) {
+        self.record_edit(|program, inserted| {
+            if let Some(program) = program {
+                if let Some(step) = step {
+                    program.push(step);
+                } else {
+                    program.append_text(value);
+                }
+            }
+            inserted.append_inserted_payload(value);
+        });
+    }
+
+    fn record_deleted(&mut self, format: crate::document::Format, removed: &str, step: EditSessionStep) {
+        self.record_edit(|program, inserted| {
+            if let Some(program) = program {
+                program.push(step);
+            }
+            remove_typing_inserted_suffix(format, inserted, removed);
+        });
+    }
+}
+
 /// The deferred edit being collected after a Visual Block insert command.
 ///
 /// Unlike ordinary Insert mode, the source is not changed while the payload is
@@ -3058,27 +3103,7 @@ impl CommandInterpreter {
         }
 
         let lines = document.hard_line_snapshot();
-        let range = if backward {
-            let mut start = self.cursor;
-            let line_start = line_start(&lines, self.cursor);
-            for _ in 0..count {
-                let Some(previous) = lines.previous_grapheme_boundary(start) else {
-                    break;
-                };
-                if previous < line_start {
-                    break;
-                }
-                start = previous;
-            }
-            start..self.cursor
-        } else {
-            let line_end = line_end(&lines, self.cursor);
-            self.cursor
-                ..lines
-                    .advance_graphemes(self.cursor, count)
-                    .unwrap_or(line_end)
-                    .min(line_end)
-        };
+        let range = normal_delete_range(&lines, self.cursor, count, backward);
         if range.is_empty() {
             next.clipboard_context = previous_clipboard;
             let output = CommandOutput::complete();
@@ -3114,26 +3139,17 @@ impl CommandInterpreter {
         next.finish_clipboard_writes(&mut output);
         next.clipboard_context = previous_clipboard;
 
-        Ok(Some(CommandPlan {
-            document: document.id(),
-            revision: document.revision(),
-            model: Some(CommandModelRequest::Model(ModelRequest::ApplyTextEdits {
+        Ok(Some(self.edited_plan(
+            document,
+            next,
+            CommandModelRequest::Model(ModelRequest::ApplyTextEdits {
                 document: document.id(),
                 revision: document.revision(),
                 edits: vec![TextEdit::new(range, "")],
-            })),
-            success_controller: Box::new(next),
-            failure_controller: Box::new(self.failed_plan_controller(document.revision())),
-            line_undo: PlannedLineUndoEffect::Update(self.capture_line_undo_at_cursor(document)),
-            post_commit: PlannedPostCommit::NormalizeNormalCursor,
+            }),
             output,
-            replay: None,
-            undo_group: UndoGroupDirective::Preserve,
-            presentation: vec![
-                CommandPresentationRequest::Relayout,
-                CommandPresentationRequest::RevealCaret,
-            ],
-        }))
+            PlannedPostCommit::NormalizeNormalCursor,
+        )))
     }
 
     fn plan_direct_edit_text(
@@ -3265,17 +3281,7 @@ impl CommandInterpreter {
             typing_caret
         };
         if let Some(session) = next.insert_session.as_mut() {
-            if !session.replaying_program {
-                session.preserve_normal_repeat = false;
-                if let Some(program) = session.repeat_program.as_mut() {
-                    if list_enter.is_some() {
-                        program.push(EditSessionStep::ListEnter);
-                    } else {
-                        program.append_text(&value);
-                    }
-                }
-                session.last_inserted.append_inserted_payload(&value);
-            }
+            session.record_inserted(&value, list_enter.as_ref().map(|_| EditSessionStep::ListEnter));
         }
         let mut output = CommandOutput {
             document_changed: true,
@@ -3286,22 +3292,7 @@ impl CommandInterpreter {
         next.finish_explicit_register_prefix(&output);
         next.finish_clipboard_writes(&mut output);
 
-        Ok(Some(CommandPlan {
-            document: document.id(),
-            revision: document.revision(),
-            model: Some(model),
-            success_controller: Box::new(next),
-            failure_controller: Box::new(self.failed_plan_controller(document.revision())),
-            line_undo: PlannedLineUndoEffect::Update(self.capture_line_undo_at_cursor(document)),
-            post_commit,
-            output,
-            replay: None,
-            undo_group: UndoGroupDirective::Preserve,
-            presentation: vec![
-                CommandPresentationRequest::Relayout,
-                CommandPresentationRequest::RevealCaret,
-            ],
-        }))
+        Ok(Some(self.edited_plan(document, next, model, output, post_commit)))
     }
 
     fn paragraph_key_request(
@@ -3337,19 +3328,17 @@ impl CommandInterpreter {
         }
         self.boundary_affinity = BoundaryAffinity::Downstream;
         if let Some(session) = self.insert_session.as_mut() {
-            if !session.replaying_program {
-                session.preserve_normal_repeat = false;
-                if let Some(program) = session.repeat_program.as_mut() {
-                    program.push(match key {
-                        Key::ShiftEnter => EditSessionStep::HardBreak,
-                        Key::Backspace => EditSessionStep::Backspace,
-                        Key::Tab | Key::BackTab => EditSessionStep::ListIndent { unindent: key == Key::BackTab },
-                        _ => EditSessionStep::ListEnter,
-                    });
-                }
-                if key == Key::ShiftEnter {
-                    session.last_inserted.append_inserted_payload(&RegisterValue::characterwise("\n"));
-                }
+            if key == Key::ShiftEnter {
+                session.record_inserted(
+                    &RegisterValue::characterwise("\n"),
+                    Some(EditSessionStep::HardBreak),
+                );
+            } else {
+                session.record_step(match key {
+                    Key::Backspace => EditSessionStep::Backspace,
+                    Key::Tab | Key::BackTab => EditSessionStep::ListIndent { unindent: key == Key::BackTab },
+                    _ => EditSessionStep::ListEnter,
+                });
             }
         }
     }
@@ -3376,16 +3365,13 @@ impl CommandInterpreter {
         next.finish_non_layout_dispatch(&output);
         next.finish_explicit_register_prefix(&output);
         next.finish_clipboard_writes(&mut output);
-        Ok(CommandPlan {
-            document: document.id(), revision: document.revision(),
-            model: Some(CommandModelRequest::Model(request)),
-            success_controller: Box::new(next),
-            failure_controller: Box::new(self.failed_plan_controller(document.revision())),
-            line_undo: PlannedLineUndoEffect::Update(self.capture_line_undo_at_cursor(document)),
-            post_commit: PlannedPostCommit::None,
-            output, replay: None, undo_group: UndoGroupDirective::Preserve,
-            presentation: vec![CommandPresentationRequest::Relayout, CommandPresentationRequest::RevealCaret],
-        })
+        Ok(self.edited_plan(
+            document,
+            next,
+            CommandModelRequest::Model(request),
+            output,
+            PlannedPostCommit::None,
+        ))
     }
 
     fn apply_paragraph_key(
@@ -3442,13 +3428,7 @@ impl CommandInterpreter {
                 next.cursor = entry.start;
                 if let Some(session) = next.insert_session.as_mut() {
                     session.replace_journal.pop();
-                    if !session.replaying_program {
-                        session.preserve_normal_repeat = false;
-                        if let Some(program) = session.repeat_program.as_mut() {
-                            program.push(EditSessionStep::Backspace);
-                        }
-                        remove_typing_inserted_suffix(document.format(), &mut session.last_inserted, &entry.inserted);
-                    }
+                    session.record_deleted(document.format(), &entry.inserted, EditSessionStep::Backspace);
                 }
                 return Ok(self.planned_flat_text_edit(
                     document,
@@ -3469,13 +3449,7 @@ impl CommandInterpreter {
         let removed = document.text()[start..self.cursor].to_owned();
         next.cursor = start;
         if let Some(session) = next.insert_session.as_mut() {
-            if !session.replaying_program {
-                session.preserve_normal_repeat = false;
-                if let Some(program) = session.repeat_program.as_mut() {
-                    program.push(EditSessionStep::Backspace);
-                }
-                remove_typing_inserted_suffix(document.format(), &mut session.last_inserted, &removed);
-            }
+            session.record_deleted(document.format(), &removed, EditSessionStep::Backspace);
         }
         Ok(self.planned_flat_text_edit(document, next, start..self.cursor, "", true))
     }
@@ -3493,22 +3467,12 @@ impl CommandInterpreter {
             .next_grapheme_boundary(self.cursor)
         else {
             if let Some(session) = next.insert_session.as_mut() {
-                if !session.replaying_program {
-                    session.preserve_normal_repeat = false;
-                    if let Some(program) = session.repeat_program.as_mut() {
-                        program.push(EditSessionStep::Delete);
-                    }
-                }
+                session.record_step(EditSessionStep::Delete);
             }
             return Ok(next.non_mutating_plan(document, CommandOutput::complete()));
         };
         if let Some(session) = next.insert_session.as_mut() {
-            if !session.replaying_program {
-                session.preserve_normal_repeat = false;
-                if let Some(program) = session.repeat_program.as_mut() {
-                    program.push(EditSessionStep::Delete);
-                }
-            }
+            session.record_step(EditSessionStep::Delete);
         }
         Ok(self.planned_flat_text_edit(document, next, self.cursor..end, "", false))
     }
@@ -3522,38 +3486,9 @@ impl CommandInterpreter {
         let mut next = self.clone();
         next.record_event(event);
         next.invalidate_replace_restoration();
-        let line = document
-            .hard_line_snapshot()
-            .line_at_offset(self.cursor)
-            .expect("an edit caret resolves to one hard line")
-            .content_range();
-        let range = match &step {
-            EditSessionStep::DeleteWord => {
-                ctrl_w_delete_range(document.text(), line.clone(), self.cursor)
-            }
-            EditSessionStep::DeleteToLineStart => {
-                let floor = self
-                    .insert_session
-                    .as_ref()
-                    .map_or(line.start, |session| session.unit_floor);
-                ctrl_u_delete_range_since(document.text(), line, self.cursor, floor)
-            }
-            _ => unreachable!("only Insert-mode delete motions use this planner"),
-        };
-        let range = match range {
+        let range = match self.insert_delete_motion_range(document, &step) {
             Ok(range) => range,
-            Err(error) => {
-                let name = if step == EditSessionStep::DeleteWord {
-                    "Ctrl-W"
-                } else {
-                    "Ctrl-U"
-                };
-                let output = CommandOutput {
-                    status: CommandStatus::Error(format!("Insert {name} motion failed: {error:?}")),
-                    ..CommandOutput::complete()
-                };
-                return Ok(next.non_mutating_plan(document, output));
-            }
+            Err(output) => return Ok(next.non_mutating_plan(document, output)),
         };
         if range.is_empty() {
             return Ok(next.non_mutating_plan(document, CommandOutput::complete()));
@@ -3562,13 +3497,7 @@ impl CommandInterpreter {
         next.cursor = range.start;
         if let Some(session) = next.insert_session.as_mut() {
             session.unit_floor = session.unit_floor.min(next.cursor);
-            if !session.replaying_program {
-                session.preserve_normal_repeat = false;
-                if let Some(program) = session.repeat_program.as_mut() {
-                    program.push(step);
-                }
-                remove_typing_inserted_suffix(document.format(), &mut session.last_inserted, &removed);
-            }
+            session.record_deleted(document.format(), &removed, step);
         }
         Ok(self.planned_flat_text_edit(document, next, range, "", true))
     }
@@ -3589,18 +3518,35 @@ impl CommandInterpreter {
         next.finish_non_layout_dispatch(&output);
         next.finish_explicit_register_prefix(&output);
         next.finish_clipboard_writes(&mut output);
-        CommandPlan {
-            document: document.id(),
-            revision: document.revision(),
-            model: Some(CommandModelRequest::Model(ModelRequest::ApplyTextEdits {
+        self.edited_plan(
+            document,
+            next,
+            CommandModelRequest::Model(ModelRequest::ApplyTextEdits {
                 document: document.id(),
                 revision: document.revision(),
                 edits: vec![TextEdit::new(range, replacement)],
-            })),
+            }),
+            output,
+            PlannedPostCommit::None,
+        )
+    }
+
+    fn edited_plan(
+        &self,
+        document: &Document,
+        next: Self,
+        model: CommandModelRequest,
+        output: CommandOutput,
+        post_commit: PlannedPostCommit,
+    ) -> CommandPlan {
+        CommandPlan {
+            document: document.id(),
+            revision: document.revision(),
+            model: Some(model),
             success_controller: Box::new(next),
             failure_controller: Box::new(self.failed_plan_controller(document.revision())),
             line_undo: PlannedLineUndoEffect::Update(self.capture_line_undo_at_cursor(document)),
-            post_commit: PlannedPostCommit::None,
+            post_commit,
             output,
             replay: None,
             undo_group: UndoGroupDirective::Preserve,
@@ -3611,6 +3557,13 @@ impl CommandInterpreter {
         }
     }
 
+    fn replace_payload_is_journalable(&self, input: &str) -> bool {
+        self.mode == Mode::Replace
+            && !input.contains('\n')
+            && self.insert_session.as_ref()
+                .is_some_and(|session| session.placement == InsertPlacement::Replace)
+    }
+
     fn plan_replace_payload_state(
         &mut self,
         document: &Document,
@@ -3618,54 +3571,11 @@ impl CommandInterpreter {
         value: &RegisterValue,
     ) -> (usize, PlannedPostCommit) {
         let input = value.text.as_str();
-        let journalable = self.mode == Mode::Replace
-            && !input.contains('\n')
-            && self
-                .insert_session
-                .as_ref()
-                .is_some_and(|session| session.placement == InsertPlacement::Replace);
+        let journalable = self.replace_payload_is_journalable(input);
         if !journalable {
             self.invalidate_replace_restoration();
         }
-        let start = self.cursor;
-        let mut end = start;
-        let mut journal_entries = Vec::new();
-        for (relative, inserted) in input.grapheme_indices(true) {
-            if inserted == "\n" && value.hard_break_offsets().binary_search(&relative).is_ok() {
-                continue;
-            }
-            let Some(range) = grapheme_range_at(document.text(), end) else {
-                if journalable {
-                    journal_entries.push(ReplaceJournalEntry {
-                        source_record: None,
-                        start: start + relative,
-                        inserted: inserted.to_owned(),
-                        original: None,
-                    });
-                }
-                continue;
-            };
-            if is_hard_line_separator(lines, &range) {
-                if journalable {
-                    journal_entries.push(ReplaceJournalEntry {
-                        source_record: None,
-                        start: start + relative,
-                        inserted: inserted.to_owned(),
-                        original: None,
-                    });
-                }
-                continue;
-            }
-            if journalable {
-                journal_entries.push(ReplaceJournalEntry {
-                    source_record: None,
-                    start: start + relative,
-                    inserted: inserted.to_owned(),
-                    original: Some(document.text()[range.clone()].to_owned()),
-                });
-            }
-            end = range.end;
-        }
+        let (end, journal_entries) = replacement_payload_targets(document, lines, self.cursor, value, journalable);
         let post_commit = if journalable {
             PlannedPostCommit::ReplaceJournal(journal_entries)
         } else {
@@ -4513,75 +4423,14 @@ impl CommandInterpreter {
             return Some(output);
         }
 
-        let controller_only = matches!(
-            key,
-            Key::Char(
-                '"' | 'g'
-                    | 'z'
-                    | 'd'
-                    | 'c'
-                    | 'y'
-                    | '>'
-                    | '<'
-                    | '='
-                    | 'r'
-                    | 'f'
-                    | 'F'
-                    | 't'
-                    | 'T'
-                    | ';'
-                    | ','
-                    | '/'
-                    | '?'
-                    | ':'
-                    | 'n'
-                    | 'N'
-                    | 'v'
-                    | 'V'
-                    | 'm'
-                    | '`'
-                    | '\''
-                    | 'q'
-                    | '@'
-                    | 'h'
-                    | 'l'
-                    | ' '
-                    | 'j'
-                    | 'k'
-                    | '+'
-                    | '-'
-                    | '0'
-                    | '^'
-                    | '$'
-                    | '|'
-                    | 'w'
-                    | 'W'
-                    | 'e'
-                    | 'E'
-                    | 'b'
-                    | 'B'
-                    | '('
-                    | ')'
-                    | '{'
-                    | '}'
-                    | '%'
-                    | '*'
-                    | '#'
-                    | 'G'
-            ) | Key::Left
-                | Key::Right
-                | Key::Backspace
-                | Key::Up
-                | Key::Down
-                | Key::Home
-                | Key::End
-                | Key::Enter
-                | Key::Ctrl('o' | 'O' | 'i' | 'I')
-        );
-        if !controller_only {
-            return None;
-        }
+        self.try_handle_controller_only_normal_action(document, key)
+    }
 
+    fn try_handle_controller_only_normal_action(
+        &mut self,
+        document: &Document,
+        key: Key,
+    ) -> Option<CommandOutput> {
         let explicit_count = self.count.take();
         let count = explicit_count.unwrap_or(1).max(1);
         let output = match key {
@@ -4740,7 +4589,10 @@ impl CommandInterpreter {
                 document,
                 explicit_count.unwrap_or_else(|| document.line_count()),
             ),
-            _ => unreachable!("controller-only Normal key was classified above"),
+            _ => {
+                self.count = explicit_count;
+                return None;
+            }
         };
         Some(output)
     }
@@ -4856,69 +4708,14 @@ impl CommandInterpreter {
             return Some(output);
         }
 
-        let controller_only = matches!(
-            key,
-            Key::Char(
-                '"' | ':'
-                    | 'g'
-                    | 'z'
-                    | 'i'
-                    | 'a'
-                    | 'f'
-                    | 'F'
-                    | 't'
-                    | 'T'
-                    | ';'
-                    | ','
-                    | '/'
-                    | '?'
-                    | 'n'
-                    | 'N'
-                    | '*'
-                    | '#'
-                    | '`'
-                    | '\''
-                    | 'o'
-                    | 'O'
-                    | 'v'
-                    | 'V'
-                    | 'r'
-                    | 'h'
-                    | 'l'
-                    | ' '
-                    | 'j'
-                    | 'k'
-                    | '+'
-                    | '-'
-                    | '0'
-                    | '^'
-                    | '$'
-                    | '|'
-                    | 'w'
-                    | 'W'
-                    | 'e'
-                    | 'E'
-                    | 'b'
-                    | 'B'
-                    | '('
-                    | ')'
-                    | '{'
-                    | '}'
-                    | '%'
-                    | 'G'
-            ) | Key::Left
-                | Key::Right
-                | Key::Up
-                | Key::Down
-                | Key::Home
-                | Key::End
-                | Key::Enter
-                | Key::Ctrl('o' | 'O' | 'i' | 'I')
-        );
-        if !controller_only {
-            return None;
-        }
+        self.try_handle_controller_only_visual_action(document, key)
+    }
 
+    fn try_handle_controller_only_visual_action(
+        &mut self,
+        document: &Document,
+        key: Key,
+    ) -> Option<CommandOutput> {
         let explicit_count = self.count.take();
         let count = explicit_count.unwrap_or(1).max(1);
         let output = match key {
@@ -5061,7 +4858,10 @@ impl CommandInterpreter {
             ),
             Key::Ctrl('o' | 'O') => self.navigate_jump(document, false, count),
             Key::Ctrl('i' | 'I') => self.navigate_jump(document, true, count),
-            _ => unreachable!("controller-only Visual key was classified above"),
+            _ => {
+                self.count = explicit_count;
+                return None;
+            }
         };
         Some(output)
     }
@@ -8343,7 +8143,7 @@ impl CommandInterpreter {
                     Ok(layout_required("visual block command"))
                 }
             }
-            Mode::CommandLine => self.handle_command_line_key(document, key),
+            Mode::CommandLine => self.submit_command_line(document),
             Mode::Normal => self.handle_normal_key(document, key),
         }
     }
@@ -8353,28 +8153,7 @@ impl CommandInterpreter {
         document: &mut Document,
         key: Key,
     ) -> Result<CommandOutput, DocumentError> {
-        if key == Key::Escape {
-            self.clear_pending();
-            return Ok(CommandOutput {
-                status: CommandStatus::Cancelled,
-                ..CommandOutput::complete()
-            });
-        }
-
-        if self.register_pending {
-            self.register_pending = false;
-            return Ok(match key {
-                Key::Char(name) if is_valid_register(name) => {
-                    self.requested_register = Some(name);
-                    CommandOutput::pending()
-                }
-                _ => {
-                    self.requested_register = None;
-                    CommandOutput::unsupported("invalid register")
-                }
-            });
-        }
-
+        // Controller-only grammar and motions have already run in handle_key.
         match self.pending {
             Pending::ReplaceCharacter { count, register } => {
                 self.pending = Pending::None;
@@ -8402,11 +8181,11 @@ impl CommandInterpreter {
             }
             Pending::G {
                 count,
-                count_explicit,
                 register,
+                ..
             } => {
                 self.pending = Pending::None;
-                return self.handle_g_command(document, key, count, count_explicit, register);
+                return self.handle_g_command(document, key, count, register);
             }
             Pending::Z { .. } => {
                 self.pending = Pending::None;
@@ -8417,26 +8196,6 @@ impl CommandInterpreter {
             }
             Pending::Operator(operator) => {
                 return self.handle_operator_key(document, key, operator);
-            }
-            Pending::Find {
-                forward,
-                till,
-                count,
-            } => {
-                self.pending = Pending::None;
-                return match key {
-                    Key::Char(character) => Ok(self.execute_find(
-                        document,
-                        FindState {
-                            needle: character.to_string(),
-                            forward,
-                            till,
-                        },
-                        count,
-                        true,
-                    )),
-                    _ => Ok(CommandOutput::unsupported("find expects text")),
-                };
             }
             Pending::OperatorFind {
                 operator,
@@ -8476,39 +8235,6 @@ impl CommandInterpreter {
                     _ => Ok(CommandOutput::unsupported("text object expects a key")),
                 };
             }
-            Pending::SetMark => {
-                self.pending = Pending::None;
-                return Ok(match key {
-                    Key::Char(name @ 'a'..='z') => {
-                        self.marks.insert(name, self.cursor);
-                        CommandOutput::complete()
-                    }
-                    _ => CommandOutput::unsupported("mark expects a-z"),
-                });
-            }
-            Pending::JumpMark { linewise } => {
-                self.pending = Pending::None;
-                return Ok(match key {
-                    Key::Char(name @ 'a'..='z') => self.jump_to_mark(document, name, linewise),
-                    _ => CommandOutput::unsupported("jump expects a-z"),
-                });
-            }
-            Pending::MacroRecord => {
-                self.pending = Pending::None;
-                return Ok(match key {
-                    Key::Char(name @ 'a'..='z') => {
-                        self.recording = Some((name, Vec::new()));
-                        CommandOutput::complete()
-                    }
-                    Key::Char(name @ 'A'..='Z') => {
-                        let normalized = name.to_ascii_lowercase();
-                        let existing = self.registers.macro_events(normalized).unwrap_or_default();
-                        self.recording = Some((normalized, existing));
-                        CommandOutput::complete()
-                    }
-                    _ => CommandOutput::unsupported("macro register expects a-z or A-Z"),
-                });
-            }
             Pending::MacroPlay { count } => {
                 self.pending = Pending::None;
                 return match key {
@@ -8521,6 +8247,10 @@ impl CommandInterpreter {
                     )),
                 };
             }
+            Pending::Find { .. }
+            | Pending::SetMark
+            | Pending::JumpMark { .. }
+            | Pending::MacroRecord => unreachable!("controller-only pending command was dispatched"),
             Pending::VisualTextObject { .. }
             | Pending::ReplaceVisual
             | Pending::ReplaceVisualBlock
@@ -8537,123 +8267,16 @@ impl CommandInterpreter {
             return Ok(output);
         }
 
+        if let Some(output) = self.try_handle_controller_only_normal_action(document, key) {
+            return Ok(output);
+        }
         let explicit_count = self.count.take();
         let count = explicit_count.unwrap_or(1).max(1);
         match key {
-            Key::Char('"') => {
-                self.register_pending = true;
-                Ok(CommandOutput::pending())
-            }
-            Key::Char('g') => {
-                let register = self.requested_register.take();
-                self.pending = Pending::G {
-                    count,
-                    count_explicit: explicit_count.is_some(),
-                    register,
-                };
-                Ok(CommandOutput::pending())
-            }
-            Key::Char('z') => {
-                self.pending = Pending::Z {
-                    count,
-                    count_explicit: explicit_count.is_some(),
-                };
-                Ok(CommandOutput::pending())
-            }
-            Key::Char(character @ ('d' | 'c' | 'y' | '>' | '<' | '=')) => {
-                let operator = match character {
-                    'd' => Operator::Delete,
-                    'c' => Operator::Change,
-                    'y' => Operator::Yank,
-                    '>' => Operator::Indent,
-                    '<' => Operator::Outdent,
-                    '=' => Operator::Reindent,
-                    _ => unreachable!(),
-                };
-                self.start_operator(operator, count, explicit_count.is_some());
-                Ok(CommandOutput::pending())
-            }
-            Key::Char('r') => {
-                let register = self.requested_register.take();
-                self.pending = Pending::ReplaceCharacter { count, register };
-                Ok(CommandOutput::pending())
-            }
-            Key::Char('f' | 'F' | 't' | 'T') => {
-                let Key::Char(command) = key else {
-                    unreachable!()
-                };
-                self.pending = Pending::Find {
-                    forward: matches!(command, 'f' | 't'),
-                    till: matches!(command, 't' | 'T'),
-                    count,
-                };
-                Ok(CommandOutput::pending())
-            }
-            Key::Char(';') => Ok(self.repeat_find(document, false, count)),
-            Key::Char(',') => Ok(self.repeat_find(document, true, count)),
-            Key::Char('/') => {
-                self.enter_search(SearchDirection::Forward, count);
-                Ok(CommandOutput {
-                    mode_changed: true,
-                    ..CommandOutput::pending()
-                })
-            }
-            Key::Char('?') => {
-                self.enter_search(SearchDirection::Backward, count);
-                Ok(CommandOutput {
-                    mode_changed: true,
-                    ..CommandOutput::pending()
-                })
-            }
-            Key::Char(':') => {
-                self.enter_command_line(CommandLineKind::Ex);
-                Ok(CommandOutput {
-                    mode_changed: true,
-                    ..CommandOutput::pending()
-                })
-            }
-            Key::Char('n') => Ok(self.repeat_search(document, false, count)),
-            Key::Char('N') => Ok(self.repeat_search(document, true, count)),
             Key::Char('.') => self.repeat_last_change(document, explicit_count),
             Key::Char('u') => Ok(self.history(document, false, count)),
             Key::Char('U') => self.undo_current_line(document),
             Key::Ctrl('r' | 'R') => Ok(self.history(document, true, count)),
-            Key::Char('v') => Ok(self.enter_visual(
-                document,
-                Mode::VisualCharacter,
-                count,
-                explicit_count.is_some(),
-            )),
-            Key::Char('V') => {
-                Ok(self.enter_visual(document, Mode::VisualLine, count, explicit_count.is_some()))
-            }
-            Key::Char('m') => {
-                self.pending = Pending::SetMark;
-                Ok(CommandOutput::pending())
-            }
-            Key::Char('`') => {
-                self.pending = Pending::JumpMark { linewise: false };
-                Ok(CommandOutput::pending())
-            }
-            Key::Char('\'') => {
-                self.pending = Pending::JumpMark { linewise: true };
-                Ok(CommandOutput::pending())
-            }
-            Key::Char('q') => {
-                if let Some((name, events)) = self.recording.take() {
-                    self.registers.set_macro(name, events);
-                    Ok(CommandOutput::complete())
-                } else {
-                    self.pending = Pending::MacroRecord;
-                    Ok(CommandOutput::pending())
-                }
-            }
-            Key::Char('@') => {
-                self.pending = Pending::MacroPlay { count };
-                Ok(CommandOutput::pending())
-            }
-            Key::Ctrl('o' | 'O') => Ok(self.navigate_jump(document, false, count)),
-            Key::Ctrl('i' | 'I') => Ok(self.navigate_jump(document, true, count)),
             Key::Char('i') => Ok(self.enter_insert(document, InsertPlacement::Before, count)),
             Key::Char('I') => Ok(self.enter_insert(document, InsertPlacement::LineStart, count)),
             Key::Char('a') => Ok(self.enter_insert(document, InsertPlacement::After, count)),
@@ -8663,11 +8286,11 @@ impl CommandInterpreter {
             Key::Char('R') => Ok(self.enter_insert(document, InsertPlacement::Replace, count)),
             Key::Char('x') | Key::Delete => {
                 let register = self.requested_register.take();
-                self.delete_forward(document, count, register)
+                self.delete_characters(document, count, register, false)
             }
             Key::Char('X') => {
                 let register = self.requested_register.take();
-                self.delete_backward(document, count, register)
+                self.delete_characters(document, count, register, true)
             }
             Key::Char('s') => {
                 let register = self.requested_register.take();
@@ -8694,59 +8317,6 @@ impl CommandInterpreter {
             Key::Char('P') => self.paste(document, true, count),
             Key::Char('J') => self.join_lines(document, count, true),
             Key::Char('~') => self.toggle_at_cursor(document, count),
-            Key::Char('h') | Key::Left | Key::Backspace => {
-                Ok(self.move_cursor(document, Motion::Horizontal(-1), count))
-            }
-            Key::Char('l') | Key::Right | Key::Char(' ') => {
-                Ok(self.move_cursor(document, Motion::Horizontal(1), count))
-            }
-            Key::Char('j') | Key::Down => {
-                Ok(self.move_cursor(document, Motion::Vertical(1), count))
-            }
-            Key::Char('k') | Key::Up => Ok(self.move_cursor(document, Motion::Vertical(-1), count)),
-            Key::Char('+') | Key::Enter => {
-                Ok(self.move_cursor(document, Motion::LineOffsetFirstNonBlank(1), count))
-            }
-            Key::Char('-') => {
-                Ok(self.move_cursor(document, Motion::LineOffsetFirstNonBlank(-1), count))
-            }
-            Key::Char('0') | Key::Home => Ok(self.move_cursor(document, Motion::LineStart, 1)),
-            Key::Char('^') => Ok(self.move_cursor(document, Motion::FirstNonBlank, 1)),
-            Key::Char('$') | Key::End => Ok(self.move_cursor(document, Motion::LineEnd, count)),
-            Key::Char('|') => Ok(self.move_cursor(document, Motion::Column(count), 1)),
-            Key::Char('w') => Ok(self.move_cursor(document, Motion::WordForward(false), count)),
-            Key::Char('W') => Ok(self.move_cursor(document, Motion::WordForward(true), count)),
-            Key::Char('e') => Ok(self.move_cursor(document, Motion::WordEnd(false), count)),
-            Key::Char('E') => Ok(self.move_cursor(document, Motion::WordEnd(true), count)),
-            Key::Char('b') => Ok(self.move_cursor(document, Motion::WordBackward(false), count)),
-            Key::Char('B') => Ok(self.move_cursor(document, Motion::WordBackward(true), count)),
-            Key::Char('(') => {
-                Ok(self.move_cursor_as_jump(document, Motion::Sentence(false), count))
-            }
-            Key::Char(')') => Ok(self.move_cursor_as_jump(document, Motion::Sentence(true), count)),
-            Key::Char('{') => {
-                Ok(self.move_cursor_as_jump(document, Motion::Paragraph(false), count))
-            }
-            Key::Char('}') => {
-                Ok(self.move_cursor_as_jump(document, Motion::Paragraph(true), count))
-            }
-            Key::Char('%') => {
-                if let Some(percent) = explicit_count {
-                    let lines = document.hard_line_snapshot();
-                    let Some(line) = percentage_line(&lines, percent) else {
-                        return Ok(invalid_percentage(percent));
-                    };
-                    Ok(self.goto_line(document, line))
-                } else {
-                    Ok(self.match_pair_motion(document))
-                }
-            }
-            Key::Char('*') => Ok(self.search_word_at_cursor(document, true, true, count)),
-            Key::Char('#') => Ok(self.search_word_at_cursor(document, false, true, count)),
-            Key::Char('G') => Ok(self.goto_line(
-                document,
-                explicit_count.unwrap_or_else(|| document.line_count()),
-            )),
             Key::Char('H' | 'M' | 'L')
             | Key::Ctrl('f' | 'F' | 'b' | 'B' | 'd' | 'D' | 'u' | 'U' | 'e' | 'E' | 'y' | 'Y')
             | Key::PageUp
@@ -8771,19 +8341,11 @@ impl CommandInterpreter {
         document: &mut Document,
         key: Key,
         count: usize,
-        count_explicit: bool,
         register: Option<char>,
     ) -> Result<CommandOutput, DocumentError> {
         match key {
             Key::Char('j' | 'k' | '0' | '^' | '$') => Ok(layout_required("visual-row motion")),
-            Key::Char('g') => Ok(self.goto_line(document, count)),
             Key::Char('J') => self.join_lines(document, count, false),
-            Key::Char('e') => Ok(self.move_cursor(document, Motion::WordEndBackward(false), count)),
-            Key::Char('E') => Ok(self.move_cursor(document, Motion::WordEndBackward(true), count)),
-            Key::Char('_') => Ok(self.move_cursor(document, Motion::LastNonBlank, count)),
-            Key::Char('*') => Ok(self.search_word_at_cursor(document, true, false, count)),
-            Key::Char('#') => Ok(self.search_word_at_cursor(document, false, false, count)),
-            Key::Char('v') => Ok(self.restore_visual(document)),
             Key::Char('p') => {
                 self.requested_register = register;
                 self.paste_after_and_follow(document, false, count)
@@ -8791,21 +8353,6 @@ impl CommandInterpreter {
             Key::Char('P') => {
                 self.requested_register = register;
                 self.paste_after_and_follow(document, true, count)
-            }
-            Key::Char('~') => {
-                self.requested_register = register;
-                self.start_operator(Operator::ToggleCase, count, count_explicit);
-                Ok(CommandOutput::pending())
-            }
-            Key::Char('u') => {
-                self.requested_register = register;
-                self.start_operator(Operator::Lowercase, count, count_explicit);
-                Ok(CommandOutput::pending())
-            }
-            Key::Char('U') => {
-                self.requested_register = register;
-                self.start_operator(Operator::Uppercase, count, count_explicit);
-                Ok(CommandOutput::pending())
             }
             _ => {
                 self.requested_register = None;
@@ -9487,69 +9034,13 @@ impl CommandInterpreter {
         document: &mut Document,
         key: Key,
     ) -> Result<CommandOutput, DocumentError> {
-        if key == Key::Escape && self.visual_command_is_pending() {
-            self.clear_pending();
-            return Ok(CommandOutput {
-                status: CommandStatus::Cancelled,
-                ..CommandOutput::complete()
-            });
-        }
-        if key == Key::Escape {
-            self.leave_visual();
-            return Ok(CommandOutput {
-                status: CommandStatus::Cancelled,
-                mode_changed: true,
-                ..CommandOutput::complete()
-            });
-        }
-        if self.register_pending {
-            self.register_pending = false;
-            return Ok(match key {
-                Key::Char(name) if is_valid_register(name) => {
-                    self.requested_register = Some(name);
-                    CommandOutput::pending()
-                }
-                _ => {
-                    self.requested_register = None;
-                    CommandOutput::unsupported("invalid register")
-                }
-            });
-        }
+        // Selection-changing grammar/motions share the immutable dispatcher;
+        // this fallback owns edits and their pending-state-specific behavior.
         match self.pending {
-            Pending::Find {
-                forward,
-                till,
-                count,
-            } => {
-                self.pending = Pending::None;
-                return match key {
-                    Key::Char(character) => Ok(self.execute_find(
-                        document,
-                        FindState {
-                            needle: character.to_string(),
-                            forward,
-                            till,
-                        },
-                        count,
-                        true,
-                    )),
-                    _ => Ok(CommandOutput::unsupported("find expects text")),
-                };
-            }
             Pending::G { count, .. } => {
                 self.pending = Pending::None;
                 return Ok(match key {
                     Key::Char('j' | 'k' | '0' | '^' | '$') => layout_required("visual-row motion"),
-                    Key::Char('e') => {
-                        self.move_cursor(document, Motion::WordEndBackward(false), count)
-                    }
-                    Key::Char('E') => {
-                        self.move_cursor(document, Motion::WordEndBackward(true), count)
-                    }
-                    Key::Char('g') => self.goto_line(document, count),
-                    Key::Char('_') => self.move_cursor(document, Motion::LastNonBlank, count),
-                    Key::Char('*') => self.search_word_at_cursor(document, true, false, count),
-                    Key::Char('#') => self.search_word_at_cursor(document, false, false, count),
                     Key::Char('~') => {
                         return self.apply_visual_operator(document, Operator::ToggleCase, count)
                     }
@@ -9559,23 +9050,8 @@ impl CommandInterpreter {
                     Key::Char('U') => {
                         return self.apply_visual_operator(document, Operator::Uppercase, count)
                     }
-                    Key::Char('v') => return Ok(self.exchange_visual(document)),
                     Key::Char('J') => return self.visual_join(document, false),
                     _ => CommandOutput::unsupported(format!("visual g{key:?}")),
-                });
-            }
-            Pending::VisualTextObject { scope, count } => {
-                self.pending = Pending::None;
-                return Ok(match key {
-                    Key::Char(key) => self.select_visual_text_object(document, scope, key, count),
-                    _ => CommandOutput::unsupported("text object expects a key"),
-                });
-            }
-            Pending::JumpMark { linewise } => {
-                self.pending = Pending::None;
-                return Ok(match key {
-                    Key::Char(name @ 'a'..='z') => self.jump_to_mark(document, name, linewise),
-                    _ => CommandOutput::unsupported("jump expects a-z"),
                 });
             }
             _ => {}
@@ -9618,106 +9094,11 @@ impl CommandInterpreter {
         if let Some(output) = self.finish_overflowed_count() {
             return Ok(output);
         }
-        let explicit_count = self.count.take();
-        let count = explicit_count.unwrap_or(1).max(1);
+        if let Some(output) = self.try_handle_controller_only_visual_action(document, key) {
+            return Ok(output);
+        }
+        let count = self.count.take().unwrap_or(1).max(1);
         match key {
-            Key::Char(':') => Ok(self.enter_visual_ex(document)),
-            Key::Char('"') => {
-                self.register_pending = true;
-                Ok(CommandOutput::pending())
-            }
-            Key::Char('g') => {
-                self.pending = Pending::G {
-                    count,
-                    count_explicit: explicit_count.is_some(),
-                    register: None,
-                };
-                Ok(CommandOutput::pending())
-            }
-            Key::Char('z') => {
-                self.pending = Pending::Z {
-                    count,
-                    count_explicit: explicit_count.is_some(),
-                };
-                Ok(CommandOutput::pending())
-            }
-            Key::Char(scope @ ('i' | 'a')) => {
-                self.pending = Pending::VisualTextObject {
-                    scope: if scope == 'i' {
-                        TextObjectScope::Inner
-                    } else {
-                        TextObjectScope::Around
-                    },
-                    count,
-                };
-                Ok(CommandOutput::pending())
-            }
-            Key::Char('f' | 'F' | 't' | 'T') => {
-                let Key::Char(command) = key else {
-                    unreachable!()
-                };
-                self.pending = Pending::Find {
-                    forward: matches!(command, 'f' | 't'),
-                    till: matches!(command, 't' | 'T'),
-                    count,
-                };
-                Ok(CommandOutput::pending())
-            }
-            Key::Char(';') => Ok(self.repeat_find(document, false, count)),
-            Key::Char(',') => Ok(self.repeat_find(document, true, count)),
-            Key::Char('/') => {
-                self.enter_search(SearchDirection::Forward, count);
-                Ok(CommandOutput {
-                    mode_changed: true,
-                    ..CommandOutput::pending()
-                })
-            }
-            Key::Char('?') => {
-                self.enter_search(SearchDirection::Backward, count);
-                Ok(CommandOutput {
-                    mode_changed: true,
-                    ..CommandOutput::pending()
-                })
-            }
-            Key::Char('n') => Ok(self.repeat_search(document, false, count)),
-            Key::Char('N') => Ok(self.repeat_search(document, true, count)),
-            Key::Char('*') => Ok(self.search_word_at_cursor(document, true, true, count)),
-            Key::Char('#') => Ok(self.search_word_at_cursor(document, false, true, count)),
-            Key::Char('`') => {
-                self.pending = Pending::JumpMark { linewise: false };
-                Ok(CommandOutput::pending())
-            }
-            Key::Char('\'') => {
-                self.pending = Pending::JumpMark { linewise: true };
-                Ok(CommandOutput::pending())
-            }
-            Key::Char('o' | 'O') => {
-                if let Some(anchor) = self.visual_anchor.as_mut() {
-                    std::mem::swap(anchor, &mut self.cursor);
-                }
-                Ok(CommandOutput {
-                    cursor_moved: true,
-                    ..CommandOutput::complete()
-                })
-            }
-            Key::Char('v') => {
-                self.mode = Mode::VisualCharacter;
-                Ok(CommandOutput {
-                    mode_changed: true,
-                    ..CommandOutput::complete()
-                })
-            }
-            Key::Char('V') => {
-                self.mode = Mode::VisualLine;
-                Ok(CommandOutput {
-                    mode_changed: true,
-                    ..CommandOutput::complete()
-                })
-            }
-            Key::Char('r') => {
-                self.pending = Pending::ReplaceVisual;
-                Ok(CommandOutput::pending())
-            }
             Key::Char('y') => self.apply_visual_operator(document, Operator::Yank, count),
             Key::Char('d' | 'x') | Key::Backspace | Key::Delete => {
                 self.apply_visual_operator(document, Operator::Delete, count)
@@ -9732,63 +9113,10 @@ impl CommandInterpreter {
             Key::Char('p') => self.visual_paste(document, false, count),
             Key::Char('P') => self.visual_paste(document, true, count),
             Key::Char('J') => self.visual_join(document, true),
-            Key::Char('h') | Key::Left => {
-                Ok(self.move_cursor(document, Motion::Horizontal(-1), count))
-            }
-            Key::Char('l') | Key::Right | Key::Char(' ') => {
-                Ok(self.move_cursor(document, Motion::Horizontal(1), count))
-            }
-            Key::Char('j') | Key::Down => {
-                Ok(self.move_cursor(document, Motion::Vertical(1), count))
-            }
-            Key::Char('k') | Key::Up => Ok(self.move_cursor(document, Motion::Vertical(-1), count)),
-            Key::Char('+') | Key::Enter => {
-                Ok(self.move_cursor(document, Motion::LineOffsetFirstNonBlank(1), count))
-            }
-            Key::Char('-') => {
-                Ok(self.move_cursor(document, Motion::LineOffsetFirstNonBlank(-1), count))
-            }
-            Key::Char('0') | Key::Home => Ok(self.move_cursor(document, Motion::LineStart, 1)),
-            Key::Char('^') => Ok(self.move_cursor(document, Motion::FirstNonBlank, 1)),
-            Key::Char('$') | Key::End => Ok(self.move_cursor(document, Motion::LineEnd, count)),
-            Key::Char('|') => Ok(self.move_cursor(document, Motion::Column(count), 1)),
-            Key::Char('w') => Ok(self.move_cursor(document, Motion::WordForward(false), count)),
-            Key::Char('W') => Ok(self.move_cursor(document, Motion::WordForward(true), count)),
-            Key::Char('e') => Ok(self.move_cursor(document, Motion::WordEnd(false), count)),
-            Key::Char('E') => Ok(self.move_cursor(document, Motion::WordEnd(true), count)),
-            Key::Char('b') => Ok(self.move_cursor(document, Motion::WordBackward(false), count)),
-            Key::Char('B') => Ok(self.move_cursor(document, Motion::WordBackward(true), count)),
-            Key::Char('(') => {
-                Ok(self.move_cursor_as_jump(document, Motion::Sentence(false), count))
-            }
-            Key::Char(')') => Ok(self.move_cursor_as_jump(document, Motion::Sentence(true), count)),
-            Key::Char('{') => {
-                Ok(self.move_cursor_as_jump(document, Motion::Paragraph(false), count))
-            }
-            Key::Char('}') => {
-                Ok(self.move_cursor_as_jump(document, Motion::Paragraph(true), count))
-            }
-            Key::Char('%') => {
-                if let Some(percent) = explicit_count {
-                    let lines = document.hard_line_snapshot();
-                    let Some(line) = percentage_line(&lines, percent) else {
-                        return Ok(invalid_percentage(percent));
-                    };
-                    Ok(self.goto_line(document, line))
-                } else {
-                    Ok(self.match_pair_motion(document))
-                }
-            }
-            Key::Char('G') => Ok(self.goto_line(
-                document,
-                explicit_count.unwrap_or_else(|| document.line_count()),
-            )),
             Key::Char('H' | 'M' | 'L')
             | Key::Ctrl('f' | 'F' | 'b' | 'B' | 'd' | 'D' | 'u' | 'U' | 'e' | 'E' | 'y' | 'Y')
             | Key::PageUp
             | Key::PageDown => Ok(layout_required("viewport command")),
-            Key::Ctrl('o' | 'O') => Ok(self.navigate_jump(document, false, count)),
-            Key::Ctrl('i' | 'I') => Ok(self.navigate_jump(document, true, count)),
             _ => Ok(CommandOutput::unsupported(format!("visual key {key:?}"))),
         }
     }
@@ -10481,15 +9809,10 @@ impl CommandInterpreter {
                             self.cursor = edit.range.start + edit.replacement.len();
                         }
                         if let Some(session) = self.insert_session.as_mut() {
-                            if !session.replaying_program {
-                                session.preserve_normal_repeat = false;
-                                if let Some(program) = session.repeat_program.as_mut() {
-                                    program.push(EditSessionStep::ListEnter);
-                                }
-                                session.last_inserted.append_inserted_payload(
-                                    &RegisterValue::characterwise(&edit.replacement),
-                                );
-                            }
+                            session.record_inserted(
+                                &RegisterValue::characterwise(&edit.replacement),
+                                Some(EditSessionStep::ListEnter),
+                            );
                         }
                         Ok(CommandOutput {
                             document_changed: true,
@@ -10514,8 +9837,8 @@ impl CommandInterpreter {
                 self.register_pending = true;
                 Ok(CommandOutput::pending())
             }
-            Key::Ctrl('w' | 'W') => self.insert_ctrl_w(document),
-            Key::Ctrl('u' | 'U') => self.insert_ctrl_u(document),
+            Key::Ctrl('w' | 'W') => self.insert_delete_motion(document, EditSessionStep::DeleteWord),
+            Key::Ctrl('u' | 'U') => self.insert_delete_motion(document, EditSessionStep::DeleteToLineStart),
             Key::Ctrl('o' | 'O') => {
                 document.end_edit_group();
                 self.invalidate_replace_restoration();
@@ -10807,48 +10130,44 @@ impl CommandInterpreter {
         })
     }
 
-    fn insert_ctrl_w(&mut self, document: &mut Document) -> Result<CommandOutput, DocumentError> {
-        self.invalidate_replace_restoration();
+    fn insert_delete_motion_range(
+        &self,
+        document: &Document,
+        step: &EditSessionStep,
+    ) -> Result<Range<usize>, CommandOutput> {
         let line = document
             .hard_line_snapshot()
             .line_at_offset(self.cursor)
             .expect("an edit caret resolves to one hard line")
             .content_range();
-        let range = match ctrl_w_delete_range(document.text(), line, self.cursor) {
-            Ok(range) => range,
-            Err(error) => {
-                return Ok(CommandOutput {
-                    status: CommandStatus::Error(format!("Insert Ctrl-W motion failed: {error:?}")),
-                    ..CommandOutput::complete()
-                })
+        let (name, range) = match step {
+            EditSessionStep::DeleteWord => (
+                "Ctrl-W",
+                ctrl_w_delete_range(document.text(), line, self.cursor),
+            ),
+            EditSessionStep::DeleteToLineStart => {
+                let floor = self.insert_session.as_ref()
+                    .map_or(line.start, |session| session.unit_floor);
+                ("Ctrl-U", ctrl_u_delete_range_since(document.text(), line, self.cursor, floor))
             }
+            _ => unreachable!("only Insert-mode delete motions use this resolver"),
         };
-        self.delete_insert_mode_range(document, range, EditSessionStep::DeleteWord)
+        range.map_err(|error| CommandOutput {
+            status: CommandStatus::Error(format!("Insert {name} motion failed: {error:?}")),
+            ..CommandOutput::complete()
+        })
     }
 
-    fn insert_ctrl_u(&mut self, document: &mut Document) -> Result<CommandOutput, DocumentError> {
+    fn insert_delete_motion(
+        &mut self,
+        document: &mut Document,
+        step: EditSessionStep,
+    ) -> Result<CommandOutput, DocumentError> {
         self.invalidate_replace_restoration();
-        let lines = document.hard_line_snapshot();
-        let floor = self
-            .insert_session
-            .as_ref()
-            .map_or(line_start(&lines, self.cursor), |session| {
-                session.unit_floor
-            });
-        let line = lines
-            .line_at_offset(self.cursor)
-            .expect("an edit caret resolves to one hard line")
-            .content_range();
-        let range = match ctrl_u_delete_range_since(document.text(), line, self.cursor, floor) {
-            Ok(range) => range,
-            Err(error) => {
-                return Ok(CommandOutput {
-                    status: CommandStatus::Error(format!("Insert Ctrl-U motion failed: {error:?}")),
-                    ..CommandOutput::complete()
-                })
-            }
-        };
-        self.delete_insert_mode_range(document, range, EditSessionStep::DeleteToLineStart)
+        match self.insert_delete_motion_range(document, &step) {
+            Ok(range) => self.delete_insert_mode_range(document, range, step),
+            Err(output) => Ok(output),
+        }
     }
 
     fn delete_insert_mode_range(
@@ -10865,13 +10184,7 @@ impl CommandInterpreter {
         self.cursor = delete_with_cursor(document, range)?;
         if let Some(session) = self.insert_session.as_mut() {
             session.unit_floor = session.unit_floor.min(self.cursor);
-            if !session.replaying_program {
-                session.preserve_normal_repeat = false;
-                if let Some(program) = session.repeat_program.as_mut() {
-                    program.push(step);
-                }
-                remove_typing_inserted_suffix(document.format(), &mut session.last_inserted, &removed);
-            }
+            session.record_deleted(document.format(), &removed, step);
         }
         Ok(CommandOutput {
             document_changed: true,
@@ -10940,13 +10253,7 @@ impl CommandInterpreter {
         }
         self.finish_typing_caret(document)?;
         if let Some(session) = self.insert_session.as_mut() {
-            if !session.replaying_program {
-                session.preserve_normal_repeat = false;
-                if let Some(program) = session.repeat_program.as_mut() {
-                    program.append_text(value);
-                }
-                session.last_inserted.append_inserted_payload(value);
-            }
+            session.record_inserted(value, None);
         }
         Ok(CommandOutput {
             document_changed: true,
@@ -11026,12 +10333,7 @@ impl CommandInterpreter {
         if input.is_empty() {
             return Ok(CommandOutput::complete());
         }
-        let journalable = self.mode == Mode::Replace
-            && !input.contains('\n')
-            && self
-                .insert_session
-                .as_ref()
-                .is_some_and(|session| session.placement == InsertPlacement::Replace);
+        let journalable = self.replace_payload_is_journalable(input);
         if journalable
             && (document.format() == crate::document::Format::Html
                 || !self.typing_style.is_empty()
@@ -11082,13 +10384,7 @@ impl CommandInterpreter {
                         original: record.original.clone(),
                         source_record: Some(record),
                     }));
-                if !session.replaying_program {
-                    session.preserve_normal_repeat = false;
-                    if let Some(program) = session.repeat_program.as_mut() {
-                        program.append_text(value);
-                    }
-                    session.last_inserted.append_inserted_payload(value);
-                }
+                session.record_inserted(value, None);
             }
             return Ok(CommandOutput {
                 document_changed: changed,
@@ -11108,47 +10404,7 @@ impl CommandInterpreter {
         // paste event.
         let start = self.cursor;
         let lines = document.hard_line_snapshot();
-        let mut end = start;
-        let mut journal_entries = Vec::new();
-        for (relative, inserted) in input.grapheme_indices(true) {
-            // A hard-line break is inserted in Replace mode; it does not
-            // consume the character that follows it. Subsequent graphemes in
-            // the same text event can continue replacing on the new line.
-            if inserted == "\n" && value.hard_break_offsets().binary_search(&relative).is_ok() {
-                continue;
-            }
-            let Some(range) = grapheme_range_at(document.text(), end) else {
-                if journalable {
-                    journal_entries.push(ReplaceJournalEntry {
-                        source_record: None,
-                        start: start + relative,
-                        inserted: inserted.to_owned(),
-                        original: None,
-                    });
-                }
-                continue;
-            };
-            if is_hard_line_separator(&lines, &range) {
-                if journalable {
-                    journal_entries.push(ReplaceJournalEntry {
-                        source_record: None,
-                        start: start + relative,
-                        inserted: inserted.to_owned(),
-                        original: None,
-                    });
-                }
-                continue;
-            }
-            if journalable {
-                journal_entries.push(ReplaceJournalEntry {
-                    source_record: None,
-                    start: start + relative,
-                    inserted: inserted.to_owned(),
-                    original: Some(document.text()[range.clone()].to_owned()),
-                });
-            }
-            end = range.end;
-        }
+        let (end, journal_entries) = replacement_payload_targets(document, &lines, start, value, journalable);
         let before = document.revision();
         let payload = FormattedTextPayload::new(&lines, input, value.hard_break_offsets().to_vec())
             .expect("replacement register payload has validated semantic breaks");
@@ -11169,13 +10425,7 @@ impl CommandInterpreter {
         }
         self.finish_typing_caret(document)?;
         if let Some(session) = self.insert_session.as_mut() {
-            if !session.replaying_program {
-                session.preserve_normal_repeat = false;
-                if let Some(program) = session.repeat_program.as_mut() {
-                    program.append_text(value);
-                }
-                session.last_inserted.append_inserted_payload(value);
-            }
+            session.record_inserted(value, None);
             if journalable {
                 let continues_frontier = session.replace_journal.last().map_or(true, |entry| {
                     entry.start.checked_add(entry.inserted.len()) == Some(start)
@@ -11237,13 +10487,7 @@ impl CommandInterpreter {
                             .restoration
                             .after_newer_frontier_restored(document.revision());
                     }
-                    if !session.replaying_program {
-                        session.preserve_normal_repeat = false;
-                        if let Some(program) = session.repeat_program.as_mut() {
-                            program.push(EditSessionStep::Backspace);
-                        }
-                        remove_typing_inserted_suffix(document.format(), &mut session.last_inserted, &entry.inserted);
-                    }
+                    session.record_deleted(document.format(), &entry.inserted, EditSessionStep::Backspace);
                 }
                 return Ok(CommandOutput {
                     document_changed: document.revision() != before,
@@ -11265,13 +10509,7 @@ impl CommandInterpreter {
         let removed = document.text()[start..self.cursor].to_owned();
         self.cursor = delete_with_cursor(document, start..self.cursor)?;
         if let Some(session) = self.insert_session.as_mut() {
-            if !session.replaying_program {
-                session.preserve_normal_repeat = false;
-                if let Some(program) = session.repeat_program.as_mut() {
-                    program.push(EditSessionStep::Backspace);
-                }
-                remove_typing_inserted_suffix(document.format(), &mut session.last_inserted, &removed);
-            }
+            session.record_deleted(document.format(), &removed, EditSessionStep::Backspace);
         }
         Ok(CommandOutput {
             document_changed: true,
@@ -11290,23 +10528,13 @@ impl CommandInterpreter {
             .next_grapheme_boundary(self.cursor)
         else {
             if let Some(session) = self.insert_session.as_mut() {
-                if !session.replaying_program {
-                    session.preserve_normal_repeat = false;
-                    if let Some(program) = session.repeat_program.as_mut() {
-                        program.push(EditSessionStep::Delete);
-                    }
-                }
+                session.record_step(EditSessionStep::Delete);
             }
             return Ok(CommandOutput::complete());
         };
         self.cursor = delete_with_cursor(document, self.cursor..end)?;
         if let Some(session) = self.insert_session.as_mut() {
-            if !session.replaying_program {
-                session.preserve_normal_repeat = false;
-                if let Some(program) = session.repeat_program.as_mut() {
-                    program.push(EditSessionStep::Delete);
-                }
-            }
+            session.record_step(EditSessionStep::Delete);
         }
         Ok(CommandOutput {
             document_changed: true,
@@ -11514,8 +10742,8 @@ impl CommandInterpreter {
                             }
                         }
                         EditSessionStep::Delete => self.edit_mode_delete(document)?,
-                        EditSessionStep::DeleteWord => self.insert_ctrl_w(document)?,
-                        EditSessionStep::DeleteToLineStart => self.insert_ctrl_u(document)?,
+                        EditSessionStep::DeleteWord => self.insert_delete_motion(document, EditSessionStep::DeleteWord)?,
+                        EditSessionStep::DeleteToLineStart => self.insert_delete_motion(document, EditSessionStep::DeleteToLineStart)?,
                         EditSessionStep::ListEnter => {
                             self.handle_edit_mode_key(document, Key::Enter)?
                         }
@@ -11665,87 +10893,40 @@ impl CommandInterpreter {
         })
     }
 
-    fn delete_forward(
+    fn delete_characters(
         &mut self,
         document: &mut Document,
         count: usize,
         register: Option<char>,
+        backward: bool,
     ) -> Result<CommandOutput, DocumentError> {
         if let Err(output) = self.require_register_write(register) {
             return Ok(output);
         }
-        let start = self.cursor;
         let lines = document.hard_line_snapshot();
-        let line_end = line_end(&lines, start);
-        let end = lines
-            .advance_graphemes(start, count)
-            .unwrap_or(line_end)
-            .min(line_end);
-        if start == end {
+        let range = normal_delete_range(&lines, self.cursor, count, backward);
+        if range.is_empty() {
             return Ok(CommandOutput::complete());
         }
         let value = register_value(
             document,
             &lines,
             &MotionExtent {
-                range: start..end,
+                range: range.clone(),
                 kind: MotionKind::Characterwise,
             },
             register,
         );
-        let cursor = delete_with_cursor(document, start..end)?;
+        let cursor = delete_with_cursor(document, range)?;
         self.delete_register(register, value, DeletionClass::Small);
         self.cursor =
             normalize_normal_cursor(document.text(), &document.hard_line_snapshot(), cursor);
         if !self.replaying {
-            self.last_repeat = Some(RepeatAction::DeleteForward { count });
-        }
-        Ok(CommandOutput {
-            document_changed: true,
-            cursor_moved: true,
-            ..CommandOutput::complete()
-        })
-    }
-
-    fn delete_backward(
-        &mut self,
-        document: &mut Document,
-        count: usize,
-        register: Option<char>,
-    ) -> Result<CommandOutput, DocumentError> {
-        if let Err(output) = self.require_register_write(register) {
-            return Ok(output);
-        }
-        let mut start = self.cursor;
-        let lines = document.hard_line_snapshot();
-        let line_start = line_start(&lines, self.cursor);
-        for _ in 0..count {
-            let Some(previous) = lines.previous_grapheme_boundary(start) else {
-                break;
-            };
-            if previous < line_start {
-                break;
-            }
-            start = previous;
-        }
-        if start == self.cursor {
-            return Ok(CommandOutput::complete());
-        }
-        let value = register_value(
-            document,
-            &lines,
-            &MotionExtent {
-                range: start..self.cursor,
-                kind: MotionKind::Characterwise,
-            },
-            register,
-        );
-        let cursor = delete_with_cursor(document, start..self.cursor)?;
-        self.delete_register(register, value, DeletionClass::Small);
-        self.cursor =
-            normalize_normal_cursor(document.text(), &document.hard_line_snapshot(), cursor);
-        if !self.replaying {
-            self.last_repeat = Some(RepeatAction::DeleteBackward { count });
+            self.last_repeat = Some(if backward {
+                RepeatAction::DeleteBackward { count }
+            } else {
+                RepeatAction::DeleteForward { count }
+            });
         }
         Ok(CommandOutput {
             document_changed: true,
@@ -12174,10 +11355,10 @@ impl CommandInterpreter {
         match action {
             RepeatAction::Noop => Ok(CommandOutput::complete()),
             RepeatAction::DeleteForward { count } => {
-                self.delete_forward(document, choose_repeat_count(override_count, count), None)
+                self.delete_characters(document, choose_repeat_count(override_count, count), None, false)
             }
             RepeatAction::DeleteBackward { count } => {
-                self.delete_backward(document, choose_repeat_count(override_count, count), None)
+                self.delete_characters(document, choose_repeat_count(override_count, count), None, true)
             }
             RepeatAction::ReplaceCharacter { count, value } => self.replace_characters(
                 document,
@@ -12812,187 +11993,93 @@ impl CommandInterpreter {
         self.requested_register = requested_register;
     }
 
-    fn handle_command_line_key(
+    fn submit_command_line(
         &mut self,
         document: &mut Document,
-        key: Key,
     ) -> Result<CommandOutput, DocumentError> {
-        match key {
-            Key::Escape => {
-                self.mode = self
-                    .command_line_state
-                    .take()
-                    .map_or(Mode::Normal, |state| state.return_mode);
-                Ok(CommandOutput {
-                    status: CommandStatus::Cancelled,
-                    mode_changed: true,
-                    ..CommandOutput::complete()
-                })
-            }
-            Key::Backspace => {
-                if let Some(state) = self.command_line_state.as_mut() {
-                    command_line_backspace(&mut state.buffer);
-                }
-                Ok(CommandOutput::pending())
-            }
-            Key::Delete => {
-                if let Some(state) = self.command_line_state.as_mut() {
-                    command_line_delete(&mut state.buffer);
-                }
-                Ok(CommandOutput::pending())
-            }
-            Key::Left => {
-                if let Some(state) = self.command_line_state.as_mut() {
-                    state.buffer.selection_anchor = None;
-                    state.buffer.cursor =
-                        previous_grapheme_boundary(&state.buffer.input, state.buffer.cursor)
-                            .unwrap_or(0);
-                }
-                Ok(CommandOutput::pending())
-            }
-            Key::Right => {
-                if let Some(state) = self.command_line_state.as_mut() {
-                    state.buffer.selection_anchor = None;
-                    state.buffer.cursor =
-                        next_grapheme_boundary(&state.buffer.input, state.buffer.cursor)
-                            .unwrap_or(state.buffer.input.len());
-                }
-                Ok(CommandOutput::pending())
-            }
-            Key::Home | Key::DocumentStart | Key::Ctrl('b' | 'B') => {
-                if let Some(state) = self.command_line_state.as_mut() {
-                    state.buffer.selection_anchor = None;
-                    state.buffer.cursor = 0;
-                }
-                Ok(CommandOutput::pending())
-            }
-            Key::End | Key::DocumentEnd | Key::Ctrl('e' | 'E') => {
-                if let Some(state) = self.command_line_state.as_mut() {
-                    state.buffer.selection_anchor = None;
-                    state.buffer.cursor = state.buffer.input.len();
-                }
-                Ok(CommandOutput::pending())
-            }
-            Key::Up | Key::Ctrl('p' | 'P') => {
-                self.navigate_command_line_history(true);
-                Ok(CommandOutput::pending())
-            }
-            Key::Down | Key::Ctrl('n' | 'N') => {
-                self.navigate_command_line_history(false);
-                Ok(CommandOutput::pending())
-            }
-            Key::Ctrl('u' | 'U') => {
-                if let Some(state) = self.command_line_state.as_mut() {
-                    let cursor = state.buffer.cursor;
-                    state.buffer.input.replace_range(..cursor, "");
-                    state.buffer.selection_anchor = None;
-                    state.buffer.cursor = 0;
-                    state.buffer.detach_from_history();
-                }
-                Ok(CommandOutput::pending())
-            }
-            Key::Ctrl('w' | 'W') => {
-                if let Some(state) = self.command_line_state.as_mut() {
-                    command_line_delete_word(&mut state.buffer);
-                }
-                Ok(CommandOutput::pending())
-            }
-            Key::Enter => {
-                let Some(state) = self.command_line_state.take() else {
-                    return Ok(CommandOutput::unsupported("command line"));
+        let Some(state) = self.command_line_state.take() else {
+            return Ok(CommandOutput::unsupported("command line"));
+        };
+        self.mode = state.return_mode;
+        if state
+            .visual_range_revision
+            .is_some_and(|revision| revision != document.revision())
+        {
+            return Ok(CommandOutput {
+                status: CommandStatus::Error(
+                    "Visual Ex range is stale; reselect the range".into(),
+                ),
+                mode_changed: true,
+                ..CommandOutput::complete()
+            });
+        }
+        match state.kind {
+            CommandLineKind::SearchForward | CommandLineKind::SearchBackward => {
+                let direction = match state.kind {
+                    CommandLineKind::SearchForward => SearchDirection::Forward,
+                    CommandLineKind::SearchBackward => SearchDirection::Backward,
+                    CommandLineKind::Ex => unreachable!(),
                 };
-                self.mode = state.return_mode;
-                if state
-                    .visual_range_revision
-                    .is_some_and(|revision| revision != document.revision())
-                {
+                let entered = state.buffer.input;
+                let pattern = if entered.is_empty() {
+                    self.last_search
+                        .as_ref()
+                        .map(|(_, pattern)| pattern.clone())
+                        .unwrap_or_default()
+                } else {
+                    entered
+                };
+                if pattern.is_empty() {
                     return Ok(CommandOutput {
-                        status: CommandStatus::Error(
-                            "Visual Ex range is stale; reselect the range".into(),
-                        ),
+                        status: CommandStatus::Error("no previous search".into()),
                         mode_changed: true,
                         ..CommandOutput::complete()
                     });
                 }
-                match state.kind {
-                    CommandLineKind::SearchForward | CommandLineKind::SearchBackward => {
-                        let direction = match state.kind {
-                            CommandLineKind::SearchForward => SearchDirection::Forward,
-                            CommandLineKind::SearchBackward => SearchDirection::Backward,
-                            CommandLineKind::Ex => unreachable!(),
-                        };
-                        let entered = state.buffer.input;
-                        let pattern = if entered.is_empty() {
-                            self.last_search
-                                .as_ref()
-                                .map(|(_, pattern)| pattern.clone())
-                                .unwrap_or_default()
-                        } else {
-                            entered
-                        };
-                        if pattern.is_empty() {
-                            return Ok(CommandOutput {
-                                status: CommandStatus::Error("no previous search".into()),
-                                mode_changed: true,
-                                ..CommandOutput::complete()
-                            });
-                        }
-                        let origin = self.cursor;
-                        let mut output = if let Some(operator) = state.operator {
-                            self.execute_operator_search(
-                                document,
-                                operator,
-                                OperatorSearch {
-                                    direction,
-                                    pattern: pattern.clone(),
-                                },
-                            )?
-                        } else {
-                            self.search_pattern(document, direction, &pattern, state.count)
-                        };
-                        output.mode_changed = true;
-                        if !matches!(output.status, CommandStatus::Error(_))
-                            && (state.operator.is_none()
-                                || matches!(output.status, CommandStatus::Complete))
-                        {
-                            push_history(&mut self.search_history, pattern.clone());
-                            self.last_search = Some((direction, pattern));
-                        }
-                        Ok(if state.operator.is_some() {
-                            output
-                        } else {
-                            self.record_successful_jump(document, origin, output)
-                        })
-                    }
-                    CommandLineKind::Ex => {
-                        let command = state.buffer.input;
-                        if command.is_empty() {
-                            return Ok(CommandOutput {
-                                mode_changed: true,
-                                ..CommandOutput::complete()
-                            });
-                        }
-                        let output = self.execute_ex_command(document, &command);
-                        if !matches!(
-                            output.status,
-                            CommandStatus::Error(_) | CommandStatus::ExError(_)
-                        ) {
-                            push_history(&mut self.ex_history, command);
-                        }
-                        Ok(output)
-                    }
+                let origin = self.cursor;
+                let mut output = if let Some(operator) = state.operator {
+                    self.execute_operator_search(
+                        document,
+                        operator,
+                        OperatorSearch {
+                            direction,
+                            pattern: pattern.clone(),
+                        },
+                    )?
+                } else {
+                    self.search_pattern(document, direction, &pattern, state.count)
+                };
+                output.mode_changed = true;
+                if !matches!(output.status, CommandStatus::Error(_))
+                    && (state.operator.is_none()
+                        || matches!(output.status, CommandStatus::Complete))
+                {
+                    push_history(&mut self.search_history, pattern.clone());
+                    self.last_search = Some((direction, pattern));
                 }
+                Ok(if state.operator.is_some() {
+                    output
+                } else {
+                    self.record_successful_jump(document, origin, output)
+                })
             }
-            Key::Char(character) => {
-                if let Some(state) = self.command_line_state.as_mut() {
-                    let mut encoded = [0; 4];
-                    state.buffer.insert(character.encode_utf8(&mut encoded));
+            CommandLineKind::Ex => {
+                let command = state.buffer.input;
+                if command.is_empty() {
+                    return Ok(CommandOutput {
+                        mode_changed: true,
+                        ..CommandOutput::complete()
+                    });
                 }
-                Ok(CommandOutput::pending())
+                let output = self.execute_ex_command(document, &command);
+                if !matches!(
+                    output.status,
+                    CommandStatus::Error(_) | CommandStatus::ExError(_)
+                ) {
+                    push_history(&mut self.ex_history, command);
+                }
+                Ok(output)
             }
-            _ => Ok(CommandOutput::unsupported(format!(
-                "command-line key {key:?}"
-            ))),
         }
     }
 
@@ -15444,6 +14531,40 @@ fn remove_inserted_suffix(value: &mut RegisterValue, removed: &str) {
     *value = RegisterValue::characterwise("");
 }
 
+/// Resolve the complete replacement against its input snapshot before any
+/// mutation, so one text event remains atomic even if later input is rejected.
+fn replacement_payload_targets(
+    document: &Document,
+    lines: &HardLineSnapshot,
+    start: usize,
+    value: &RegisterValue,
+    journalable: bool,
+) -> (usize, Vec<ReplaceJournalEntry>) {
+    let mut end = start;
+    let mut journal_entries = Vec::new();
+    for (relative, inserted) in value.text.grapheme_indices(true) {
+        // Semantic breaks insert without consuming the next grapheme. Literal
+        // LF follows the same replacement rules as any other source character.
+        if inserted == "\n" && value.hard_break_offsets().binary_search(&relative).is_ok() {
+            continue;
+        }
+        let replaced = grapheme_range_at(document.text(), end)
+            .filter(|range| !is_hard_line_separator(lines, range));
+        if journalable {
+            journal_entries.push(ReplaceJournalEntry {
+                source_record: None,
+                start: start + relative,
+                inserted: inserted.to_owned(),
+                original: replaced.as_ref().map(|range| document.text()[range.clone()].to_owned()),
+            });
+        }
+        if let Some(range) = replaced {
+            end = range.end;
+        }
+    }
+    (end, journal_entries)
+}
+
 fn replacement_payload_end(
     text: &str,
     lines: &HardLineSnapshot,
@@ -15573,6 +14694,28 @@ fn prepare_open_line_with_cursor(
     };
     document.prepared_text_point(&prepared, cursor)?;
     Ok((prepared, cursor))
+}
+
+fn normal_delete_range(
+    lines: &HardLineSnapshot,
+    cursor: usize,
+    count: usize,
+    backward: bool,
+) -> Range<usize> {
+    if backward {
+        let mut start = cursor;
+        let floor = line_start(lines, cursor);
+        for _ in 0..count {
+            match lines.previous_grapheme_boundary(start) {
+                Some(previous) if previous >= floor => start = previous,
+                _ => break,
+            }
+        }
+        start..cursor
+    } else {
+        let end = line_end(lines, cursor);
+        cursor..lines.advance_graphemes(cursor, count).unwrap_or(end).min(end)
+    }
 }
 
 fn delete_with_cursor(document: &mut Document, range: Range<usize>) -> Result<usize, DocumentError> {

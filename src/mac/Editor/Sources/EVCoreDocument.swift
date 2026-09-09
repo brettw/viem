@@ -698,30 +698,22 @@ final class EVCoreViewSession {
 
     @discardableResult
     func sendText(_ text: String) throws -> ViemCoreOutcomeV1 {
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        var effectBatch: ViemEffectBatchHandle = 0
         let data = Data(text.utf8)
-        let status = withCommandTurnContext { context in
-            data.withUnsafeBytes { raw in
-                viem_core_view_send_text_with_host_context_v2(
-                    document.core,
-                    viewID,
-                    raw.bindMemory(to: UInt8.self).baseAddress,
-                    UInt64(raw.count),
-                    context,
-                    &outcome,
-                    &effectBatch
-                )
+        return try performHostEffectTurn("Send text input") { outcome, effects in
+            withCommandTurnContext { context in
+                data.withUnsafeBytes { raw in
+                    viem_core_view_send_text_with_host_context_v2(
+                        document.core,
+                        viewID,
+                        raw.bindMemory(to: UInt8.self).baseAddress,
+                        UInt64(raw.count),
+                        context,
+                        outcome,
+                        effects
+                    )
+                }
             }
         }
-        try finishHostContextTurn(
-            status: status,
-            outcome: outcome,
-            effectBatch: effectBatch,
-            operation: "Send text input"
-        )
-        return outcome
     }
 
     @discardableResult
@@ -730,25 +722,31 @@ final class EVCoreViewSession {
         input.struct_size = UInt32(MemoryLayout<ViemKeyInputV1>.size)
         input.kind = kind
         input.codepoint = codepoint
+        return try performHostEffectTurn("Send key input") { outcome, effects in
+            withCommandTurnContext { context in
+                viem_core_view_send_key_with_host_context_v2(
+                    document.core,
+                    viewID,
+                    &input,
+                    context,
+                    outcome,
+                    effects
+                )
+            }
+        }
+    }
+
+    /// Commands with host effects keep ownership/release and error precedence
+    /// together. The caller still decides whether the turn needs host context.
+    private func performHostEffectTurn(
+        _ operation: String,
+        _ body: (UnsafeMutablePointer<ViemCoreOutcomeV1>, UnsafeMutablePointer<ViemEffectBatchHandle>) -> UInt32
+    ) throws -> ViemCoreOutcomeV1 {
         var outcome = ViemCoreOutcomeV1()
         outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        var effectBatch: ViemEffectBatchHandle = 0
-        let status = withCommandTurnContext { context in
-            viem_core_view_send_key_with_host_context_v2(
-                document.core,
-                viewID,
-                &input,
-                context,
-                &outcome,
-                &effectBatch
-            )
-        }
-        try finishHostContextTurn(
-            status: status,
-            outcome: outcome,
-            effectBatch: effectBatch,
-            operation: "Send key input"
-        )
+        var effects: ViemEffectBatchHandle = 0
+        let status = body(&outcome, &effects)
+        try finishHostContextTurn(status: status, outcome: outcome, effectBatch: effects, operation: operation)
         return outcome
     }
 
@@ -794,9 +792,9 @@ final class EVCoreViewSession {
     }
 
     func setParagraphFlow(_ enabled: Bool) throws {
-        var outcome = ViemCoreOutcomeV1(); outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(viem_core_view_set_paragraph_flow(document.core, viewID, enabled ? 1 : 0, &outcome), operation: "Change paragraph flow")
-        finish(outcome, composition: .cancelIfChanged)
+        _ = try performCoreOperation("Change paragraph flow") { outcome in
+            viem_core_view_set_paragraph_flow(document.core, viewID, enabled ? 1 : 0, outcome)
+        }
     }
 
     func lineMode() throws -> EVLineMode {
@@ -806,9 +804,9 @@ final class EVCoreViewSession {
     }
 
     func setLineMode(_ mode: EVLineMode) throws {
-        var outcome = ViemCoreOutcomeV1(); outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(viem_core_view_set_line_mode(document.core, viewID, mode.rawValue, &outcome), operation: "Change line mode")
-        finish(outcome, composition: .cancelIfChanged)
+        _ = try performCoreOperation("Change line mode") { outcome in
+            viem_core_view_set_line_mode(document.core, viewID, mode.rawValue, outcome)
+        }
     }
 
     func setThemePadding(_ padding: EVThemePadding) throws {
@@ -850,14 +848,9 @@ final class EVCoreViewSession {
 
     @discardableResult
     func setScale(_ scale: CGFloat) throws -> ViemCoreOutcomeV1 {
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(
-            viem_core_view_set_scale(document.core, viewID, Float(scale), &outcome),
-            operation: "Change editor zoom"
-        )
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+        return try performCoreOperation("Change editor zoom") { outcome in
+            viem_core_view_set_scale(document.core, viewID, Float(scale), outcome)
+        }
     }
 
     func semanticStylePresentation(
@@ -889,19 +882,14 @@ final class EVCoreViewSession {
         request.enabled = enabled ? 1 : 0
         request.reserved = 0
         request.expected_selection = selection
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(
+        return try performCoreOperation(enabled ? "Apply selection semantic style" : "Clear selection semantic style") { outcome in
             viem_core_view_set_semantic_style(
                 document.core,
                 viewID,
                 &request,
-                &outcome
-            ),
-            operation: enabled ? "Apply selection semantic style" : "Clear selection semantic style"
-        )
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+                outcome
+            )
+        }
     }
 
     @discardableResult
@@ -909,43 +897,28 @@ final class EVCoreViewSession {
         _ selection: ViemVisualSelectionIdentityV1
     ) throws -> ViemCoreOutcomeV1 {
         var expected = selection
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(
+        return try performCoreOperation("Use selection for find") { outcome in
             viem_core_view_use_selection_for_find(
                 document.core,
                 viewID,
                 &expected,
-                &outcome
-            ),
-            operation: "Use selection for find"
-        )
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+                outcome
+            )
+        }
     }
 
     @discardableResult
     func revealSelection() throws -> ViemCoreOutcomeV1 {
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(
-            viem_core_view_reveal_selection(document.core, viewID, &outcome),
-            operation: "Jump to selection"
-        )
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+        return try performCoreOperation("Jump to selection") { outcome in
+            viem_core_view_reveal_selection(document.core, viewID, outcome)
+        }
     }
 
     @discardableResult
     func setWrap(_ enabled: Bool) throws -> ViemCoreOutcomeV1 {
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(
-            viem_core_view_set_wrap(document.core, viewID, enabled ? 1 : 0, &outcome),
-            operation: "Change wrapping"
-        )
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+        return try performCoreOperation("Change wrapping") { outcome in
+            viem_core_view_set_wrap(document.core, viewID, enabled ? 1 : 0, outcome)
+        }
     }
 
     @discardableResult
@@ -958,14 +931,9 @@ final class EVCoreViewSession {
         request.file_format = fileFormat
         request.document_id = state.document_id
         request.document_revision = state.document_revision
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(
-            viem_core_view_set_file_format(document.core, viewID, &request, &outcome),
-            operation: "Change line endings"
-        )
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+        return try performCoreOperation("Change line endings") { outcome in
+            viem_core_view_set_file_format(document.core, viewID, &request, outcome)
+        }
     }
 
     @discardableResult
@@ -978,14 +946,9 @@ final class EVCoreViewSession {
         request.enabled = enabled ? 1 : 0
         request.document_id = state.document_id
         request.document_revision = state.document_revision
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(
-            viem_core_view_set_include_style_definitions(document.core, viewID, &request, &outcome),
-            operation: "Change inclusion of style definitions"
-        )
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+        return try performCoreOperation("Change inclusion of style definitions") { outcome in
+            viem_core_view_set_include_style_definitions(document.core, viewID, &request, outcome)
+        }
     }
 
     func listSelection() throws -> ViemLogicalSelectionIdentityV1 {
@@ -1009,12 +972,9 @@ final class EVCoreViewSession {
         request.struct_size = UInt32(MemoryLayout<ViemListIndentV1>.size)
         request.unindent = unindent ? 1 : 0
         request.expected_selection = selection
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(viem_core_view_indent_list(document.core, viewID, &request, &outcome),
-                    operation: unindent ? "Unindent list item" : "Indent list item")
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+        return try performCoreOperation(unindent ? "Unindent list item" : "Indent list item") { outcome in
+            viem_core_view_indent_list(document.core, viewID, &request, outcome)
+        }
     }
 
     @discardableResult
@@ -1023,11 +983,9 @@ final class EVCoreViewSession {
         request.struct_size = UInt32(MemoryLayout<ViemSetListStyleV1>.size)
         request.style = style
         request.expected_selection = selection
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(viem_core_view_set_list_style(document.core, viewID, &request, &outcome), operation: "Change paragraph list")
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+        return try performCoreOperation("Change paragraph list") { outcome in
+            viem_core_view_set_list_style(document.core, viewID, &request, outcome)
+        }
     }
 
     @discardableResult
@@ -1036,22 +994,19 @@ final class EVCoreViewSession {
         request.struct_size = UInt32(MemoryLayout<ViemCreateStyleV1>.size)
         request.namespace = key.namespace.rawValue
         request.identity = identity.abiValue
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         let idBytes = Array(key.id.rawValue.utf8)
         let nameBytes = Array(name.utf8)
-        let status = idBytes.withUnsafeBufferPointer { id in
-            nameBytes.withUnsafeBufferPointer { name in
-                request.style_id.data = id.baseAddress
-                request.style_id.length = UInt64(id.count)
-                request.display_name.data = name.baseAddress
-                request.display_name.length = UInt64(name.count)
-                return viem_core_view_create_style(document.core, viewID, &request, &outcome)
+        return try performCoreOperation("Create named style") { outcome in
+            idBytes.withUnsafeBufferPointer { id in
+                nameBytes.withUnsafeBufferPointer { name in
+                    request.style_id.data = id.baseAddress
+                    request.style_id.length = UInt64(id.count)
+                    request.display_name.data = name.baseAddress
+                    request.display_name.length = UInt64(name.count)
+                    return viem_core_view_create_style(document.core, viewID, &request, outcome)
+                }
             }
         }
-        try checked(status, operation: "Create named style")
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
     }
 
     @discardableResult
@@ -1060,17 +1015,14 @@ final class EVCoreViewSession {
         request.struct_size = UInt32(MemoryLayout<ViemDeleteStyleV1>.size)
         request.namespace = key.namespace.rawValue
         request.identity = identity.abiValue
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         let bytes = Array(key.id.rawValue.utf8)
-        let status = bytes.withUnsafeBufferPointer { buffer in
-            request.style_id.data = buffer.baseAddress
-            request.style_id.length = UInt64(buffer.count)
-            return viem_core_view_delete_style(document.core, viewID, &request, &outcome)
+        return try performCoreOperation("Delete named style") { outcome in
+            bytes.withUnsafeBufferPointer { buffer in
+                request.style_id.data = buffer.baseAddress
+                request.style_id.length = UInt64(buffer.count)
+                return viem_core_view_delete_style(document.core, viewID, &request, outcome)
+            }
         }
-        try checked(status, operation: "Delete named style")
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
     }
 
     @discardableResult
@@ -1081,17 +1033,14 @@ final class EVCoreViewSession {
         request.namespace = key.namespace.rawValue
         request.identity = identity.abiValue
         request.expected_selection = selection
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         let bytes = Array(key.id.rawValue.utf8)
-        let status = bytes.withUnsafeBufferPointer { buffer in
-            request.style_id.data = buffer.baseAddress
-            request.style_id.length = UInt64(buffer.count)
-            return viem_core_view_assign_style(document.core, viewID, &request, &outcome)
+        return try performCoreOperation("Assign named style") { outcome in
+            bytes.withUnsafeBufferPointer { buffer in
+                request.style_id.data = buffer.baseAddress
+                request.style_id.length = UInt64(buffer.count)
+                return viem_core_view_assign_style(document.core, viewID, &request, outcome)
+            }
         }
-        try checked(status, operation: "Assign named style")
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
     }
 
     @discardableResult
@@ -1100,11 +1049,9 @@ final class EVCoreViewSession {
         request.struct_size = UInt32(MemoryLayout<ViemSetParagraphStyleV1>.size)
         request.level = level
         request.expected_selection = selection
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(viem_core_view_set_paragraph_style(document.core, viewID, &request, &outcome), operation: "Change paragraph style")
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+        return try performCoreOperation("Change paragraph style") { outcome in
+            viem_core_view_set_paragraph_style(document.core, viewID, &request, outcome)
+        }
     }
 
     @discardableResult
@@ -1121,12 +1068,9 @@ final class EVCoreViewSession {
         }
         request.document_id = state.document_id
         request.document_revision = state.document_revision
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        var effects: ViemEffectBatchHandle = 0
-        let status = viem_core_view_set_format_with_effects(document.core, viewID, &request, &outcome, &effects)
-        try finishHostContextTurn(status: status, outcome: outcome, effectBatch: effects, operation: "Change document format")
-        return outcome
+        return try performHostEffectTurn("Change document format") { outcome, effects in
+            viem_core_view_set_format_with_effects(document.core, viewID, &request, outcome, effects)
+        }
     }
 
     @discardableResult
@@ -1136,36 +1080,23 @@ final class EVCoreViewSession {
         request.encoding = encoding
         request.document_id = state.document_id
         request.document_revision = state.document_revision
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        var effects: ViemEffectBatchHandle = 0
-        let status = viem_core_view_set_encoding_with_effects(document.core, viewID, &request, &outcome, &effects)
-        try finishHostContextTurn(status: status, outcome: outcome, effectBatch: effects, operation: "Change document encoding")
-        return outcome
+        return try performHostEffectTurn("Change document encoding") { outcome, effects in
+            viem_core_view_set_encoding_with_effects(document.core, viewID, &request, outcome, effects)
+        }
     }
 
     @discardableResult
     func undo() throws -> ViemCoreOutcomeV1 {
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(
-            viem_core_view_undo(document.core, viewID, &outcome),
-            operation: "Undo"
-        )
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+        return try performCoreOperation("Undo") { outcome in
+            viem_core_view_undo(document.core, viewID, outcome)
+        }
     }
 
     @discardableResult
     func redo() throws -> ViemCoreOutcomeV1 {
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(
-            viem_core_view_redo(document.core, viewID, &outcome),
-            operation: "Redo"
-        )
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+        return try performCoreOperation("Redo") { outcome in
+            viem_core_view_redo(document.core, viewID, outcome)
+        }
     }
 
     @discardableResult
@@ -1188,14 +1119,9 @@ final class EVCoreViewSession {
             request.expected_metrics_generation = state.metrics_generation
         }
 
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(
-            viem_core_view_set_viewport_origin(document.core, viewID, &request, &outcome),
-            operation: top == nil ? "Scroll editor horizontally" : "Scroll editor vertically"
-        )
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+        return try performCoreOperation(top == nil ? "Scroll editor horizontally" : "Scroll editor vertically") { outcome in
+            viem_core_view_set_viewport_origin(document.core, viewID, &request, outcome)
+        }
     }
 
     func viewportState() throws -> ViemViewportStateV1 {
@@ -1298,28 +1224,18 @@ final class EVCoreViewSession {
         request.document_revision = point.document_revision
         request.text_offset = point.text_offset
         request.affinity = point.affinity
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(
-            viem_core_view_place_cursor(document.core, viewID, &request, &outcome),
-            operation: "Place editor cursor"
-        )
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+        return try performCoreOperation("Place editor cursor") { outcome in
+            viem_core_view_place_cursor(document.core, viewID, &request, outcome)
+        }
     }
 
     @discardableResult
     func selectAll() throws -> ViemCoreOutcomeV1 {
         let state = try document.documentState()
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        try checked(
+        return try performCoreOperation("Select all text") { outcome in
             viem_core_view_select_all(document.core, viewID, state.document_id,
-                                      state.document_revision, &outcome),
-            operation: "Select all text"
-        )
-        finish(outcome, composition: .cancelIfChanged)
-        return outcome
+                                      state.document_revision, outcome)
+        }
     }
 
     func caretGeometry(
@@ -1348,7 +1264,7 @@ final class EVCoreViewSession {
         request.document_revision = try document.revision()
         request.replacement_start = range.lowerBound
         request.replacement_end = range.upperBound
-        return try compositionCall("Begin marked text", transition: .activate) { outcome in
+        return try performCoreOperation("Begin marked text", transition: .activate) { outcome in
             viem_core_view_composition_begin(document.core, viewID, &request, outcome)
         }
     }
@@ -1364,7 +1280,7 @@ final class EVCoreViewSession {
         return try data.withUnsafeBytes { raw in
             request.marked_text.data = raw.bindMemory(to: UInt8.self).baseAddress
             request.marked_text.length = UInt64(raw.count)
-            return try compositionCall("Update marked text", transition: .activate) { outcome in
+            return try performCoreOperation("Update marked text", transition: .activate) { outcome in
                 viem_core_view_composition_update(document.core, viewID, &request, outcome)
             }
         }
@@ -1379,7 +1295,7 @@ final class EVCoreViewSession {
         return try data.withUnsafeBytes { raw in
             request.committed_text.data = raw.bindMemory(to: UInt8.self).baseAddress
             request.committed_text.length = UInt64(raw.count)
-            return try compositionCall("Commit marked text", transition: .deactivate) { outcome in
+            return try performCoreOperation("Commit marked text", transition: .deactivate) { outcome in
                 viem_core_view_composition_commit(document.core, viewID, &request, outcome)
             }
         }
@@ -1390,14 +1306,16 @@ final class EVCoreViewSession {
         var request = ViemCompositionCancelV1()
         request.struct_size = UInt32(MemoryLayout<ViemCompositionCancelV1>.size)
         request.document_revision = try document.revision()
-        return try compositionCall("Cancel marked text", transition: .deactivate) { outcome in
+        return try performCoreOperation("Cancel marked text", transition: .deactivate) { outcome in
             viem_core_view_composition_cancel(document.core, viewID, &request, outcome)
         }
     }
 
-    private func compositionCall(
+    /// Publish successful native operations through one composition and source
+    /// change path; failed C calls never update the session's last outcome.
+    private func performCoreOperation(
         _ operation: String,
-        transition: CompositionTransition,
+        transition: CompositionTransition = .cancelIfChanged,
         _ body: (UnsafeMutablePointer<ViemCoreOutcomeV1>) -> UInt32
     ) throws -> ViemCoreOutcomeV1 {
         var outcome = ViemCoreOutcomeV1()

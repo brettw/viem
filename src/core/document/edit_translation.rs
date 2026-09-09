@@ -3,6 +3,174 @@
 use super::*;
 
 impl Document {
+    /// Text and payload edits share adapter dispatch, mapping, escaping and
+    /// encoding. A payload supplies explicit hard-break identity and affinity;
+    /// ordinary text treats every inserted LF as a requested logical break.
+    pub(super) fn translate_source_edits<'a>(
+        &self,
+        edits: impl IntoIterator<Item = (&'a TextEdit, Option<&'a FormattedPayloadEdit>)>,
+    ) -> Result<Vec<SourcePatch>, ModelTransactionError> {
+        let mut patches = Vec::new();
+        let mut rich_edits = Vec::new();
+        for (edit, payload) in edits {
+            if let Some(translated) = self.translate_source_edit(edit, payload)? {
+                patches.extend(translated);
+            } else {
+                rich_edits.push((
+                    edit.clone(),
+                    payload.and_then(|edit| edit.boundary_affinity),
+                ));
+            }
+        }
+        patches.extend(super::super::source_edit::rich_text_batch_patches(
+            self,
+            &rich_edits,
+        )?);
+        Ok(patches)
+    }
+
+    /// `None` defers an ordinary HTML/RTF edit to contributor-aware batch
+    /// translation, where edits sharing one source entity are combined once.
+    fn translate_source_edit(
+        &self,
+        edit: &TextEdit,
+        payload: Option<&FormattedPayloadEdit>,
+    ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
+        if let Some(patches) = self.structural_text_patches(edit)? {
+            return Ok(Some(patches));
+        }
+        if let Some(patches) =
+            markdown_list_structure::empty_insertion_patches(self, &edit.range, &edit.replacement)?
+        {
+            return Ok(Some(patches));
+        }
+        if let Some(payload) = payload {
+            if let Some(patches) = markdown_list_structure::insertion_patches(self, payload)? {
+                return Ok(Some(patches));
+            }
+        }
+        if let Some(patches) =
+            super::super::markdown_code::patches(self, &edit.range, &edit.replacement)?
+        {
+            return patches
+                .into_iter()
+                .map(|(range, syntax)| {
+                    self.encoding()
+                        .encode_fragment(&syntax)
+                        .map(|bytes| SourcePatch::primary(range, bytes))
+                        .map_err(ModelTransactionError::from)
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Some);
+        }
+        let breaks = match payload {
+            Some(payload) => std::borrow::Cow::Borrowed(payload.payload.break_offsets()),
+            None if self.format() == Format::Markdown && edit.replacement.contains('\n') => {
+                std::borrow::Cow::Owned(
+                    edit.replacement
+                        .match_indices('\n')
+                        .map(|(at, _)| at)
+                        .collect::<Vec<_>>(),
+                )
+            }
+            None => std::borrow::Cow::Borrowed(&[][..]),
+        };
+        if let Some(patches) =
+            self.markdown_retained_break_rewrite_patches(&edit.range, &edit.replacement, &breaks)?
+        {
+            return Ok(Some(patches));
+        }
+        if payload.is_none() || breaks.len() == edit.replacement.matches('\n').count() {
+            if let Some(patches) = markdown_split::patches(self, &edit.range, &edit.replacement)? {
+                return Ok(Some(patches));
+            }
+        }
+        if matches!(self.format(), Format::Html | Format::Rtf) {
+            return Ok(None);
+        }
+        let affinity = payload.and_then(|edit| edit.boundary_affinity);
+        let source_range = if edit.range.is_empty() {
+            let at = self
+                .projection()
+                .source_insertion_point(
+                    edit.range.start,
+                    affinity != Some(BoundaryAffinity::Upstream),
+                )
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            at..at
+        } else {
+            self.projection()
+                .source_range(edit.range.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?
+        };
+        self.reject_unsafe_opaque_mapping(&edit.range, &source_range)?;
+        let line_local = match payload {
+            Some(_) => {
+                breaks.is_empty()
+                    && !(edit.range.is_empty() && affinity == Some(BoundaryAffinity::Upstream))
+            }
+            None => !edit.replacement.contains('\n'),
+        };
+        if self.format() == Format::Markdown && line_local {
+            if let Some(patches) =
+                self.markdown_line_local_text_rewrite_patches(&edit.range, &edit.replacement)?
+            {
+                return Ok(Some(patches));
+            }
+        }
+        let in_code = self.format() == Format::Markdown
+            && self
+                .projection()
+                .markdown_replacement_begins_in_code(&edit.range);
+        let syntax = if let Some(payload) = payload {
+            if self.format() == Format::Markdown && !in_code && breaks.is_empty() {
+                self.escape_markdown_source_text(source_range.start, &edit.replacement)?
+            } else {
+                structured_payload_syntax(
+                    &payload.payload,
+                    self.format(),
+                    in_code,
+                    self.file_format(),
+                )
+            }
+        } else {
+            let syntax = match self.format() {
+                Format::MarkdownSource => self.markdown_source_replacement(edit)?,
+                Format::PlainText | Format::HtmlSource => edit.replacement.clone(),
+                Format::Markdown if in_code && !edit.replacement.contains('`') => {
+                    edit.replacement.clone()
+                }
+                Format::Markdown => self
+                    .escape_markdown_source_text(source_range.start, &edit.replacement)?
+                    .replace('\n', "\n\n"),
+                Format::Html | Format::Rtf => unreachable!("rich edits are translated as a batch"),
+            };
+            spell_logical_breaks(&syntax, self.file_format())
+        };
+        Ok(Some(vec![SourcePatch::primary(
+            source_range,
+            self.encoding().encode_fragment(&syntax)?,
+        )]))
+    }
+
+    pub(super) fn preserve_markdown_edit_boundaries<'a>(
+        &self,
+        edits: &[TextEdit],
+        paragraph_break_ranges: impl Iterator<Item = &'a Range<usize>>,
+        patches: &mut Vec<SourcePatch>,
+    ) -> Result<(), ModelTransactionError> {
+        if self.format() == Format::Markdown {
+            markdown_block_styles::preserve_join_boundaries(self, edits, patches)?;
+            markdown_block_styles::preserve_split_literals(self, edits, patches)?;
+            markdown_block_styles::preserve_split_boundaries(
+                self,
+                paragraph_break_ranges,
+                patches,
+            )?;
+        }
+        Ok(())
+    }
+
     pub(super) fn prepare_recovered_source_edit(
         &self,
         edits: &[TextEdit],
@@ -24,7 +192,7 @@ impl Document {
         if patches.is_empty() {
             return Ok(None);
         }
-        let mut scratch = structural_style::scratch_document(self);
+        let mut scratch = self.scratch_document();
         let materialized = scratch.prepare_source_only_patches(patches)?;
         let mut sources = replacement::PatchComposition::new(self.source_byte_len());
         for patch in materialized.summary.source_patches.iter().rev() {
@@ -91,7 +259,7 @@ impl Document {
         {
             return Ok(None);
         }
-        let mut scratch = structural_style::scratch_document(self);
+        let mut scratch = self.scratch_document();
         let mut sources = replacement::PatchComposition::new(self.source_byte_len());
         let is_structural = |edit: &TextEdit| {
             !super::super::edit_boundary::merged_paragraphs(self, &edit.range).is_empty()
@@ -165,7 +333,7 @@ impl Document {
         if super::super::edit_boundary::merged_paragraphs(self, &range).is_empty() {
             return Ok(None);
         }
-        let mut scratch = structural_style::scratch_document(self);
+        let mut scratch = self.scratch_document();
         let deleted = scratch.prepare_text_edits(vec![TextEdit::new(range.clone(), "")])?;
         let at = deleted
             .text_position_map()

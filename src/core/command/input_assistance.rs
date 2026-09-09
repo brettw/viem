@@ -241,20 +241,14 @@ impl CommandInterpreter {
                         .then(|| AutoTag::capture(document, start, prefix, suffix))
                         .flatten();
                     if let Some(session) = self.insert_session.as_mut() {
-                        if !session.replaying_program {
-                            session.preserve_normal_repeat = false;
-                            if let Some(program) = session.repeat_program.as_mut() {
+                        session.record_edit(|program, inserted| {
+                            if let Some(program) = program {
                                 program.push(EditSessionStep::Backspace);
                             }
-                            if let Some((at, _)) = session
-                                .last_inserted
-                                .text
-                                .grapheme_indices(true)
-                                .next_back()
-                            {
-                                session.last_inserted.text.truncate(at);
+                            if let Some((at, _)) = inserted.text.grapheme_indices(true).next_back() {
+                                inserted.text.truncate(at);
                             }
-                        }
+                        });
                     }
                     return Ok(Some(CommandOutput {
                         document_changed: true,
@@ -272,15 +266,12 @@ impl CommandInterpreter {
 
     fn record_assisted_input(&mut self, input: &str) {
         if let Some(session) = self.insert_session.as_mut() {
-            if !session.replaying_program {
-                session.preserve_normal_repeat = false;
-                if let Some(program) = session.repeat_program.as_mut() {
+            session.record_edit(|program, inserted| {
+                if let Some(program) = program {
                     program.push(EditSessionStep::AssistedText(input.to_owned()));
                 }
-                session
-                    .last_inserted
-                    .append_inserted_payload(&RegisterValue::characterwise(input));
-            }
+                inserted.append_inserted_payload(&RegisterValue::characterwise(input));
+            });
         }
     }
 }

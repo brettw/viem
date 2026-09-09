@@ -28,7 +28,7 @@ impl Document {
         {
             return Ok(None);
         }
-        let mut scratch = structural_style::scratch_document(self);
+        let mut scratch = self.scratch_document();
         let mut sources = PatchComposition::new(self.source_byte_len());
         let mut formatted = PatchComposition::new(at);
         // An empty final row within this same paragraph already supplies the

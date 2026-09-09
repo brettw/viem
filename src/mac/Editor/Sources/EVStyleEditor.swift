@@ -208,7 +208,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private let paragraphControls = NSView()
     private let preview = EVCoreTextStylePreviewView()
     private let summary = NSTextView()
-    private var propertyRows: [EVStyleProperty: EVStylePropertyRow] = [:]
     private let compactControls = EVCompactStyleControls()
     private let nextStyleRow = EVFollowingStyleRow()
 
@@ -241,7 +240,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             declaredProperties: Set(definition?.properties.values.compactMap {
                 $0.isDeclared ? $0.property : nil
             } ?? []),
-            hasInvalidDraft: nameDraftIsInvalid || compactControls.hasInvalidDraft || propertyRows.values.contains(where: \.hasInvalidDraft),
+            hasInvalidDraft: nameDraftIsInvalid || compactControls.hasInvalidDraft,
             diagnostic: diagnosticMessage,
             summary: summary.string,
             preview: preview.inspection()
@@ -616,47 +615,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         }
     }
 
-    private func makePropertyRow(_ property: EVStyleProperty) -> NSView {
-        let row = EVStylePropertyRow(property: property)
-        row.onSet = { [weak self] property, value in _ = self?.commit(.setDeclaration(property, value)) }
-        row.onClear = { [weak self] property in _ = self?.commit(.clearDeclaration(property)) }
-        row.onContinuousEditBegan = { [weak self] in self?.beginContinuousStyleEdit() }
-        row.onContinuousEditEnded = { [weak self] in self?.endContinuousStyleEdit() }
-        propertyRows[property] = row
-        return row.view
-    }
-
-    private func installScroll(rows: [NSView], in container: NSView) {
-        let documentStack = EVFlippedStyleStackView()
-        for row in rows { documentStack.addArrangedSubview(row) }
-        documentStack.orientation = .vertical
-        documentStack.alignment = .leading
-        documentStack.spacing = 7
-        documentStack.edgeInsets = NSEdgeInsets(top: 6, left: 4, bottom: 8, right: 8)
-        documentStack.translatesAutoresizingMaskIntoConstraints = false
-        documentStack.setContentCompressionResistancePriority(.required, for: .vertical)
-        for row in rows { row.widthAnchor.constraint(equalTo: documentStack.widthAnchor, constant: -12).isActive = true }
-        let scroll = NSScrollView()
-        scroll.borderType = .noBorder
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.drawsBackground = false
-        scroll.documentView = documentStack
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(scroll)
-        NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: container.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            documentStack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            documentStack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
-            documentStack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
-            documentStack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
-            documentStack.heightAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.heightAnchor),
-        ])
-    }
-
     private func reloadCommittedStyle(preferredKey: EVStyleKey? = nil) {
         guard let document else { renderNoDocument(); return }
         do {
@@ -714,14 +672,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         availabilityLabel.isHidden = availabilityLabel.stringValue.isEmpty
 
         compactControls.configure(definition, theme: themeStore.theme, sourceFormat: document?.backend.sourceFormat ?? .plainText, documentID: snapshot.identity.documentID)
-        let canEditDeclarations = definition.capabilities.contains(.declarations)
-        for property in EVStyleProperty.characterProperties + EVStyleProperty.paragraphProperties {
-            propertyRows[property]?.configure(
-                resolved: definition.properties[property],
-                editable: canEditDeclarations,
-                contributorName: contributorName(for: definition.properties[property])
-            )
-        }
         nextStyleRow.configure(
             selected: definition.nextStyleID.map { EVStyleKey(namespace: .block, id: $0) },
             choices: snapshot.compatibleFollowingStyles(for: definition),
@@ -992,7 +942,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.character.rawValue)
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.paragraph.rawValue)
         compactControls.configure(nil, theme: themeStore.theme)
-        propertyRows.values.forEach { $0.configure(resolved: nil, editable: false, contributorName: "Unavailable") }
         nextStyleRow.configure(selected: nil, choices: [], editable: false)
         characterControls.isHidden = false
         paragraphControls.isHidden = true
@@ -1226,10 +1175,6 @@ private final class EVStyleEditorPreviewContainer: EVStyleEditorBorderedView {
     }
 }
 
-private final class EVFlippedStyleStackView: NSStackView {
-    override var isFlipped: Bool { true }
-}
-
 private final class EVStyleKeyBox: NSObject {
     let key: EVStyleKey
     init(_ key: EVStyleKey) { self.key = key }
@@ -1278,384 +1223,6 @@ private final class EVFollowingStyleRow: NSObject {
     @objc private func changed(_ sender: NSPopUpButton) {
         guard !isConfiguring else { return }
         onChange?((sender.selectedItem?.representedObject as? EVStyleKeyBox)?.key)
-    }
-}
-
-@MainActor
-private final class EVStylePropertyRow: NSObject, NSTextFieldDelegate {
-    let property: EVStyleProperty
-    let view: NSView
-    var onSet: ((EVStyleProperty, EVStyleValue) -> Void)?
-    var onClear: ((EVStyleProperty) -> Void)?
-    var onContinuousEditBegan: (() -> Void)?
-    var onContinuousEditEnded: (() -> Void)?
-
-    private let textField = NSTextField()
-    private let popup = NSPopUpButton()
-    private let lineKindPopup = NSPopUpButton()
-    private let lineValueField = NSTextField()
-    private let inheritedButton = NSButton(title: "Use Inherited", target: nil, action: nil)
-    private let originLabel = NSTextField(labelWithString: "")
-    private let validationLabel = NSTextField(labelWithString: "")
-    private let editorStack = NSStackView()
-    private var resolved: EVResolvedStyleProperty?
-    private var isConfiguring = false
-    private var canEdit = false
-    private(set) var hasInvalidDraft = false
-    private var lastLineValues: [UInt32: Float] = [
-        UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER): 1,
-        UInt32(VIEM_STYLE_LINE_SPACING_AT_LEAST): 0,
-        UInt32(VIEM_STYLE_LINE_SPACING_EXACT): 14,
-    ]
-
-    init(property: EVStyleProperty) {
-        self.property = property
-        let title = NSTextField(labelWithString: property.displayName)
-        title.alignment = .right
-        title.widthAnchor.constraint(equalToConstant: 155).isActive = true
-        editorStack.orientation = .horizontal
-        editorStack.alignment = .centerY
-        editorStack.spacing = 5
-        editorStack.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        inheritedButton.bezelStyle = .inline
-        inheritedButton.controlSize = .small
-        inheritedButton.setAccessibilityLabel("Use inherited \(property.displayName.lowercased())")
-        originLabel.font = .systemFont(ofSize: 10, weight: .medium)
-        originLabel.textColor = .secondaryLabelColor
-        originLabel.setContentHuggingPriority(.required, for: .horizontal)
-        originLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 105).isActive = true
-        let main = NSStackView(views: [title, editorStack, inheritedButton, originLabel])
-        main.orientation = .horizontal
-        main.alignment = .centerY
-        main.spacing = 10
-        validationLabel.font = .systemFont(ofSize: 10)
-        validationLabel.textColor = .systemRed
-        validationLabel.isHidden = true
-        validationLabel.setAccessibilityLabel("\(property.displayName) validation")
-        let vertical = NSStackView(views: [main, validationLabel])
-        vertical.orientation = .vertical
-        vertical.alignment = .leading
-        vertical.spacing = 2
-        view = vertical
-        super.init()
-        configureEditor()
-        inheritedButton.target = self
-        inheritedButton.action = #selector(useInherited(_:))
-    }
-
-    func configure(resolved: EVResolvedStyleProperty?, editable: Bool, contributorName: String) {
-        isConfiguring = true
-        defer { isConfiguring = false }
-        self.resolved = resolved
-        canEdit = editable && resolved != nil
-        clearValidation()
-        let shownValue = resolved?.declared ?? resolved?.effective
-        textField.isEnabled = canEdit
-        popup.isEnabled = canEdit
-        lineKindPopup.isEnabled = canEdit
-        for case let control as NSControl in editorStack.arrangedSubviews {
-            control.isEnabled = canEdit
-        }
-        inheritedButton.isEnabled = canEdit && resolved?.isDeclared == true
-        originLabel.stringValue = contributorName
-        originLabel.textColor = resolved?.isDeclared == true ? .secondaryLabelColor : .controlAccentColor
-        originLabel.toolTip = resolved?.isDeclared == true
-            ? "This style explicitly declares the value."
-            : "The displayed effective value is inherited and not declared at this layer."
-
-        switch property {
-        case .characterSlant, .characterUnderline, .characterStrikethrough,
-             .characterDirection, .paragraphAlignment, .paragraphBaseDirection:
-            popup.selectItem(withTag: Int(enumValue(shownValue)))
-        case .paragraphLineSpacing:
-            let spacing: EVLineSpacing
-            if case let .lineSpacing(value)? = shownValue { spacing = value }
-            else { spacing = EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_NORMAL), value: 0) }
-            lineKindPopup.selectItem(withTag: Int(spacing.kind))
-            if spacing.kind != UInt32(VIEM_STYLE_LINE_SPACING_NORMAL) { lastLineValues[spacing.kind] = spacing.value }
-            lineValueField.stringValue = formatNumber(spacing.value)
-            lineValueField.isEnabled = canEdit && spacing.kind != UInt32(VIEM_STYLE_LINE_SPACING_NORMAL)
-        default:
-            textField.stringValue = editableText(shownValue)
-            textField.placeholderString = shownValue == nil ? "None" : nil
-        }
-        let accessibilityValue = "\(format(shownValue)), \(contributorName)"
-        textField.setAccessibilityValue(accessibilityValue)
-        popup.setAccessibilityValue(accessibilityValue)
-        lineKindPopup.setAccessibilityValue(accessibilityValue)
-    }
-
-    private func configureEditor() {
-        textField.delegate = self
-        textField.target = self
-        textField.action = #selector(textCommitted(_:))
-        textField.setAccessibilityLabel(property.displayName)
-        textField.widthAnchor.constraint(greaterThanOrEqualToConstant: 205).isActive = true
-        popup.target = self
-        popup.action = #selector(popupChanged(_:))
-        popup.setAccessibilityLabel(property.displayName)
-        switch property {
-        case .characterSlant:
-            addPopupItems([
-                ("Upright", UInt32(VIEM_FONT_SLANT_UPRIGHT)),
-                ("Italic", UInt32(VIEM_FONT_SLANT_ITALIC)),
-                ("Oblique", UInt32(VIEM_FONT_SLANT_OBLIQUE)),
-            ])
-            editorStack.addArrangedSubview(popup)
-            editorStack.addArrangedSubview(convenienceButton("Italic", action: #selector(makeItalic(_:))))
-        case .characterUnderline, .characterStrikethrough:
-            addPopupItems([("Off", 0), ("On", 1)])
-            editorStack.addArrangedSubview(popup)
-        case .characterDirection, .paragraphBaseDirection:
-            addPopupItems([
-                ("Natural", UInt32(VIEM_TEXT_DIRECTION_AUTO)),
-                ("Left to right", UInt32(VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT)),
-                ("Right to left", UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT)),
-            ])
-            editorStack.addArrangedSubview(popup)
-        case .paragraphAlignment:
-            addPopupItems([
-                ("Start", UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_START)),
-                ("Center", UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER)),
-                ("End", UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_END)),
-            ])
-            editorStack.addArrangedSubview(popup)
-        case .paragraphLineSpacing:
-            for item in [
-                ("Normal", UInt32(VIEM_STYLE_LINE_SPACING_NORMAL)),
-                ("Multiplier", UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER)),
-                ("At least", UInt32(VIEM_STYLE_LINE_SPACING_AT_LEAST)),
-                ("Exact", UInt32(VIEM_STYLE_LINE_SPACING_EXACT)),
-            ] {
-                lineKindPopup.addItem(withTitle: item.0)
-                lineKindPopup.lastItem?.tag = Int(item.1)
-            }
-            lineKindPopup.target = self
-            lineKindPopup.action = #selector(lineKindChanged(_:))
-            lineKindPopup.setAccessibilityLabel("Line spacing kind")
-            lineValueField.delegate = self
-            lineValueField.target = self
-            lineValueField.action = #selector(lineValueCommitted(_:))
-            lineValueField.setAccessibilityLabel("Line spacing value")
-            lineValueField.widthAnchor.constraint(equalToConstant: 74).isActive = true
-            editorStack.addArrangedSubview(lineKindPopup)
-            editorStack.addArrangedSubview(lineValueField)
-        case .characterWeight:
-            editorStack.addArrangedSubview(textField)
-            editorStack.addArrangedSubview(convenienceButton("Bold", action: #selector(makeBold(_:))))
-        default:
-            editorStack.addArrangedSubview(textField)
-        }
-    }
-
-    private func convenienceButton(_ title: String, action: Selector) -> NSButton {
-        let button = NSButton(title: title, target: self, action: action)
-        button.bezelStyle = .inline
-        button.controlSize = .small
-        return button
-    }
-
-    private func addPopupItems(_ items: [(String, UInt32)]) {
-        for item in items {
-            popup.addItem(withTitle: item.0)
-            popup.lastItem?.tag = Int(item.1)
-        }
-    }
-
-    func controlTextDidChange(_ notification: Notification) {
-        guard !isConfiguring, canEdit else { return }
-        if notification.object as AnyObject? === lineValueField { validateLineSpacing() }
-        else if notification.object as AnyObject? === textField { validateTextField() }
-    }
-
-    func controlTextDidBeginEditing(_ notification: Notification) {
-        guard notification.object as AnyObject? === textField
-                || notification.object as AnyObject? === lineValueField
-        else { return }
-        onContinuousEditBegan?()
-    }
-
-    func controlTextDidEndEditing(_ notification: Notification) {
-        guard notification.object as AnyObject? === textField
-                || notification.object as AnyObject? === lineValueField
-        else { return }
-        onContinuousEditEnded?()
-    }
-
-    private func validateTextField() {
-        switch parseText(textField.stringValue) {
-        case let .success(value):
-            clearValidation()
-            if value != resolved?.declared { onSet?(property, value) }
-        case let .failure(message): showValidation(message)
-        }
-    }
-
-    private func validateLineSpacing() {
-        let kind = UInt32(lineKindPopup.selectedTag())
-        guard kind != UInt32(VIEM_STYLE_LINE_SPACING_NORMAL) else { return }
-        guard let number = Float(lineValueField.stringValue), number.isFinite,
-              (kind == UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER) ? number > 0 : number >= 0)
-        else {
-            showValidation(kind == UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER)
-                ? "Enter a multiplier greater than zero."
-                : "Enter a nonnegative finite line height.")
-            return
-        }
-        clearValidation()
-        lastLineValues[kind] = number
-        let value = EVStyleValue.lineSpacing(EVLineSpacing(kind: kind, value: number))
-        if value != resolved?.declared { onSet?(property, value) }
-    }
-
-    private func parseText(_ text: String) -> Result<EVStyleValue, EVStyleDraftError> {
-        switch property {
-        case .characterFontFamilies:
-            let values = text.split(separator: ",", omittingEmptySubsequences: false)
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            guard !values.isEmpty, values.allSatisfy({ !$0.isEmpty }) else {
-                return .failure(.message("Enter one or more comma-separated font families in fallback order."))
-            }
-            return .success(.stringList(values))
-        case .characterSize:
-            guard let value = Float(text), value.isFinite, value > 0 else {
-                return .failure(.message("Enter a finite font size greater than zero."))
-            }
-            return .success(.float(value))
-        case .characterWeight:
-            guard let value = UInt32(text), (1...1000).contains(value) else {
-                return .failure(.message("Enter a numeric weight from 1 through 1000."))
-            }
-            return .success(.unsigned(value))
-        case .characterForeground, .characterBackground:
-            guard let value = parseColor(text) else { return .failure(.message("Enter #RRGGBB or #RRGGBBAA.")) }
-            return .success(.color(value))
-        case .characterLanguage:
-            guard !text.isEmpty, !text.contains("\0") else { return .failure(.message("Enter a nonempty language tag.")) }
-            return .success(.string(text))
-        case .characterOpenTypeFeatures:
-            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return .success(.openTypeFeatures([]))
-            }
-            var values: [EVOpenTypeFeature] = []
-            var seen = Set<String>()
-            for component in text.split(separator: ",") {
-                let pieces = component.split(separator: "=", maxSplits: 1).map {
-                    $0.trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-                guard pieces.count == 2, pieces[0].utf8.count == 4,
-                      pieces[0].utf8.allSatisfy({ (0x20...0x7E).contains($0) }),
-                      let setting = UInt32(pieces[1]), seen.insert(pieces[0]).inserted
-                else { return .failure(.message("Use unique four-character tags such as liga=1, kern=0.")) }
-                values.append(EVOpenTypeFeature(tag: pieces[0], setting: setting))
-            }
-            return .success(.openTypeFeatures(values.sorted { $0.tag < $1.tag }))
-        case .paragraphSpacingBefore, .paragraphSpacingAfter,
-             .paragraphFirstLineIndent, .paragraphLeadingIndent, .paragraphTrailingIndent,
-             .characterLetterSpacing, .characterBaselineShift:
-            guard let value = Float(text), value.isFinite else { return .failure(.message("Enter a finite number in layout units.")) }
-            return .success(.float(value))
-        default:
-            return .failure(.message("This property uses a choice control."))
-        }
-    }
-
-    private func parseColor(_ text: String) -> EVStyleColor? {
-        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard value.hasPrefix("#") else { return nil }
-        let hex = String(value.dropFirst())
-        guard hex.count == 6 || hex.count == 8, let packed = UInt32(hex, radix: 16) else { return nil }
-        let hasAlpha = hex.count == 8
-        return EVStyleColor(
-            red: Float((packed >> (hasAlpha ? 24 : 16)) & 0xFF) / 255,
-            green: Float((packed >> (hasAlpha ? 16 : 8)) & 0xFF) / 255,
-            blue: Float((packed >> (hasAlpha ? 8 : 0)) & 0xFF) / 255,
-            alpha: hasAlpha ? Float(packed & 0xFF) / 255 : 1
-        )
-    }
-
-    private func editableText(_ value: EVStyleValue?) -> String {
-        switch value {
-        case let .float(number): formatNumber(number)
-        case let .unsigned(number): String(number)
-        case let .color(color): colorHex(color)
-        case let .string(value): value
-        case let .stringList(values): values.joined(separator: ", ")
-        case let .openTypeFeatures(values): values.map { "\($0.tag)=\($0.setting)" }.joined(separator: ", ")
-        case nil: ""
-        default: format(value)
-        }
-    }
-
-    private func enumValue(_ value: EVStyleValue?) -> UInt32 {
-        switch value {
-        case let .boolean(enabled): enabled ? 1 : 0
-        case let .fontSlant(value), let .writingDirection(value), let .paragraphAlignment(value): value
-        default: 0
-        }
-    }
-
-    private func showValidation(_ error: EVStyleDraftError) { showValidation(error.description) }
-    private func showValidation(_ message: String) {
-        hasInvalidDraft = true
-        validationLabel.stringValue = message
-        validationLabel.isHidden = false
-        textField.backgroundColor = NSColor.systemRed.withAlphaComponent(0.12)
-        lineValueField.backgroundColor = NSColor.systemRed.withAlphaComponent(0.12)
-    }
-
-    private func clearValidation() {
-        hasInvalidDraft = false
-        validationLabel.stringValue = ""
-        validationLabel.isHidden = true
-        textField.backgroundColor = .textBackgroundColor
-        lineValueField.backgroundColor = .textBackgroundColor
-    }
-
-    @objc private func textCommitted(_ sender: NSTextField) { validateTextField() }
-
-    @objc private func popupChanged(_ sender: NSPopUpButton) {
-        guard !isConfiguring, canEdit else { return }
-        let selected = UInt32(sender.selectedTag())
-        let value: EVStyleValue
-        switch property {
-        case .characterSlant: value = .fontSlant(selected)
-        case .characterUnderline, .characterStrikethrough: value = .boolean(selected != 0)
-        case .characterDirection, .paragraphBaseDirection: value = .writingDirection(selected)
-        case .paragraphAlignment: value = .paragraphAlignment(selected)
-        default: return
-        }
-        if value != resolved?.declared { onSet?(property, value) }
-    }
-
-    @objc private func lineKindChanged(_ sender: NSPopUpButton) {
-        guard !isConfiguring, canEdit else { return }
-        let kind = UInt32(sender.selectedTag())
-        lineValueField.isEnabled = kind != UInt32(VIEM_STYLE_LINE_SPACING_NORMAL)
-        if kind == UInt32(VIEM_STYLE_LINE_SPACING_NORMAL) {
-            let value = EVStyleValue.lineSpacing(EVLineSpacing(kind: kind, value: 0))
-            if value != resolved?.declared { onSet?(property, value) }
-        } else {
-            lineValueField.stringValue = formatNumber(lastLineValues[kind] ?? 0)
-            validateLineSpacing()
-        }
-    }
-
-    @objc private func lineValueCommitted(_ sender: NSTextField) { validateLineSpacing() }
-    @objc private func useInherited(_ sender: NSButton) {
-        guard canEdit, resolved?.isDeclared == true else { return }
-        onClear?(property)
-    }
-    @objc private func makeBold(_ sender: NSButton) { if canEdit { onSet?(property, .unsigned(700)) } }
-    @objc private func makeItalic(_ sender: NSButton) {
-        if canEdit { onSet?(property, .fontSlant(UInt32(VIEM_FONT_SLANT_ITALIC))) }
-    }
-}
-
-private enum EVStyleDraftError: Error, CustomStringConvertible {
-    case message(String)
-    var description: String {
-        switch self { case let .message(value): value }
     }
 }
 

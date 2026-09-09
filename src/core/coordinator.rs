@@ -3635,6 +3635,75 @@ impl<P: TextMeasurementProvider> Core<P> {
         })
     }
 
+    /// Prepare all controller images before a native transaction commits. The
+    /// caller chooses ordinary or format-conversion anchor association; every
+    /// view must map successfully before any live controller is replaced.
+    fn prepare_mapped_commands(
+        &self,
+        map: &PositionMap,
+        capture_anchors: fn(
+            &CommandInterpreter,
+            &Document,
+        ) -> Result<crate::command::CommandPositionAnchors, DocumentError>,
+    ) -> Result<BTreeMap<ViewId, CommandInterpreter>, CoreError> {
+        let anchors = self
+            .views
+            .iter()
+            .map(|(id, view)| {
+                capture_anchors(&view.commands, &self.document).map(|anchors| (*id, anchors))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut next_commands = self
+            .views
+            .iter()
+            .map(|(id, view)| (*id, view.commands.clone()))
+            .collect::<BTreeMap<_, _>>();
+        for (id, captured) in &anchors {
+            let commands = next_commands
+                .get_mut(id)
+                .expect("captured view remains attached during serial dispatch");
+            if !commands.apply_position_map(captured, map)? {
+                return Err(CoreError::Position(PositionError::WrongSnapshot {
+                    expected: self.document.revision(),
+                    actual: captured.revision(),
+                }));
+            }
+        }
+        Ok(next_commands)
+    }
+
+    /// Publish native model changes to viewport and composition state only
+    /// after the prepared document and command images have been installed.
+    fn refresh_views_after_native_change(
+        &mut self,
+        view_id: ViewId,
+        map: &PositionMap,
+    ) -> Result<Vec<ViewCompositionChange>, CoreError> {
+        self.cancel_all_active_layout_work();
+        self.rebase_viewport_anchors(map)?;
+        self.publish_buffer_commands(view_id);
+        let current_revision = self.document.revision();
+        let mut composition_changes = Vec::new();
+        for (id, view) in &mut self.views {
+            if let Some(session) = view.composition.take() {
+                view.composition_layout = None;
+                composition_changes.push(ViewCompositionChange {
+                    view: *id,
+                    outcome: ViewCompositionOutcome::Invalidated {
+                        reason: CompositionCancelReason::ExternalDocumentChange,
+                        base_revision: session.base_revision(),
+                        current_revision,
+                    },
+                });
+            }
+        }
+        self.materialize_views_after_document_change(
+            view_id,
+            ImmediateLayoutIntent::PreserveViewport,
+        );
+        Ok(composition_changes)
+    }
+
     /// Publish one source-backed semantic inline-style change as a standalone
     /// undo unit. Selection identity and model capability are validated before
     /// an existing Insert/Replace unit is closed, so rejection is atomic with
@@ -3714,31 +3783,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             .expect("view existence checked before native semantic style change")
             .commands
             .capture_history_restoration(&self.document)?;
-        let anchors = self
-            .views
-            .iter()
-            .map(|(id, view)| {
-                view.commands
-                    .capture_position_anchors(&self.document)
-                    .map(|anchors| (*id, anchors))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut next_commands = self
-            .views
-            .iter()
-            .map(|(id, view)| (*id, view.commands.clone()))
-            .collect::<BTreeMap<_, _>>();
-        for (id, captured) in &anchors {
-            let commands = next_commands
-                .get_mut(id)
-                .expect("captured view remains attached during serial dispatch");
-            if !commands.apply_position_map(captured, &expected_map)? {
-                return Err(CoreError::Position(PositionError::WrongSnapshot {
-                    expected: before_revision,
-                    actual: captured.revision(),
-                }));
-            }
-        }
+        let next_commands = self.prepare_mapped_commands(
+            &expected_map,
+            CommandInterpreter::capture_position_anchors,
+        )?;
         drop(preflight);
 
         self.finalize_open_edit_group(view_id)?;
@@ -3774,28 +3822,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             HistoryRestoration::new(before_restoration, after_restoration),
         )?;
 
-        self.cancel_all_active_layout_work();
-        self.rebase_viewport_anchors(&expected_map)?;
-        self.publish_buffer_commands(view_id);
-        let current_revision = self.document.revision();
-        let mut composition_changes = Vec::new();
-        for (id, view) in &mut self.views {
-            if let Some(session) = view.composition.take() {
-                view.composition_layout = None;
-                composition_changes.push(ViewCompositionChange {
-                    view: *id,
-                    outcome: ViewCompositionOutcome::Invalidated {
-                        reason: CompositionCancelReason::ExternalDocumentChange,
-                        base_revision: session.base_revision(),
-                        current_revision,
-                    },
-                });
-            }
-        }
-        self.materialize_views_after_document_change(
-            view_id,
-            ImmediateLayoutIntent::PreserveViewport,
-        );
+        let composition_changes = self.refresh_views_after_native_change(view_id, &expected_map)?;
         Ok(CoreOutcome {
             command: None,
             document_changed: changed,
@@ -3852,34 +3879,12 @@ impl<P: TextMeasurementProvider> Core<P> {
             .expect("view existence checked before native file-format change")
             .commands
             .capture_history_restoration(&self.document)?;
-        let anchors = self
-            .views
-            .iter()
-            .map(|(id, view)| {
-                let anchors = if matches!(request, ModelRequest::SetFormat { .. }) {
-                    view.commands.capture_format_position_anchors(&self.document)
-                } else {
-                    view.commands.capture_position_anchors(&self.document)
-                };
-                anchors.map(|anchors| (*id, anchors))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut next_commands = self
-            .views
-            .iter()
-            .map(|(id, view)| (*id, view.commands.clone()))
-            .collect::<BTreeMap<_, _>>();
-        for (id, captured) in &anchors {
-            let commands = next_commands
-                .get_mut(id)
-                .expect("captured view remains attached during serial dispatch");
-            if !commands.apply_position_map(captured, &expected_map)? {
-                return Err(CoreError::Position(PositionError::WrongSnapshot {
-                    expected: before_revision,
-                    actual: captured.revision(),
-                }));
-            }
-        }
+        let capture_anchors = if matches!(request, ModelRequest::SetFormat { .. }) {
+            CommandInterpreter::capture_format_position_anchors
+        } else {
+            CommandInterpreter::capture_position_anchors
+        };
+        let next_commands = self.prepare_mapped_commands(&expected_map, capture_anchors)?;
         // Preserve the restoration endpoint of the view which owns an open
         // edit group, even when another view invoked this native operation.
         self.finalize_open_edit_group(view_id)?;
@@ -3921,28 +3926,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             HistoryRestoration::new(before_restoration, after_restoration),
         )?;
 
-        self.cancel_all_active_layout_work();
-        self.rebase_viewport_anchors(&expected_map)?;
-        self.publish_buffer_commands(view_id);
-        let current_revision = self.document.revision();
-        let mut composition_changes = Vec::new();
-        for (id, view) in &mut self.views {
-            if let Some(session) = view.composition.take() {
-                view.composition_layout = None;
-                composition_changes.push(ViewCompositionChange {
-                    view: *id,
-                    outcome: ViewCompositionOutcome::Invalidated {
-                        reason: CompositionCancelReason::ExternalDocumentChange,
-                        base_revision: session.base_revision(),
-                        current_revision,
-                    },
-                });
-            }
-        }
-        self.materialize_views_after_document_change(
-            view_id,
-            ImmediateLayoutIntent::PreserveViewport,
-        );
+        let composition_changes = self.refresh_views_after_native_change(view_id, &expected_map)?;
         let warnings = committed.summary().conversion_warnings();
         let command = if warnings.is_empty() {
             None
@@ -4116,7 +4100,6 @@ impl<P: TextMeasurementProvider> Core<P> {
             });
         }
 
-        let before_revision = self.document.revision();
         let expected_map = preflight.text_position_map().clone();
         let before_restoration = if grouped {
             None
@@ -4129,31 +4112,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .capture_history_restoration(&self.document)?,
             )
         };
-        let anchors = self
-            .views
-            .iter()
-            .map(|(id, view)| {
-                view.commands
-                    .capture_position_anchors(&self.document)
-                    .map(|anchors| (*id, anchors))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut next_commands = self
-            .views
-            .iter()
-            .map(|(id, view)| (*id, view.commands.clone()))
-            .collect::<BTreeMap<_, _>>();
-        for (id, captured) in &anchors {
-            let commands = next_commands
-                .get_mut(id)
-                .expect("captured view remains attached during serial dispatch");
-            if !commands.apply_position_map(captured, &expected_map)? {
-                return Err(CoreError::Position(PositionError::WrongSnapshot {
-                    expected: before_revision,
-                    actual: captured.revision(),
-                }));
-            }
-        }
+        let next_commands = self.prepare_mapped_commands(
+            &expected_map,
+            CommandInterpreter::capture_position_anchors,
+        )?;
         let prepared = if grouped {
             preflight
         } else {
@@ -4203,28 +4165,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             )?;
         }
 
-        self.cancel_all_active_layout_work();
-        self.rebase_viewport_anchors(&expected_map)?;
-        self.publish_buffer_commands(view_id);
-        let current_revision = self.document.revision();
-        let mut composition_changes = Vec::new();
-        for (id, view) in &mut self.views {
-            if let Some(session) = view.composition.take() {
-                view.composition_layout = None;
-                composition_changes.push(ViewCompositionChange {
-                    view: *id,
-                    outcome: ViewCompositionOutcome::Invalidated {
-                        reason: CompositionCancelReason::ExternalDocumentChange,
-                        base_revision: session.base_revision(),
-                        current_revision,
-                    },
-                });
-            }
-        }
-        self.materialize_views_after_document_change(
-            view_id,
-            ImmediateLayoutIntent::PreserveViewport,
-        );
+        let composition_changes = self.refresh_views_after_native_change(view_id, &expected_map)?;
         Ok(CoreOutcome {
             command: None,
             document_changed: changed,

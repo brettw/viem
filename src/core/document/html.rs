@@ -1591,7 +1591,8 @@ pub(super) fn reference(input: &str, attribute: bool) -> Option<(String, usize)>
             1 + prefix + len + usize::from(digits.as_bytes().get(len) == Some(&b';')),
         ));
     }
-    // The WHATWG named character table is generated as sorted immutable data.
+    // Reuse the WHATWG table already maintained by our HTML parser. Its
+    // zero-valued entries are prefix sentinels, not complete references.
     let limit = input
         .bytes()
         .take_while(|b| b.is_ascii_alphanumeric() || *b == b';')
@@ -1599,7 +1600,10 @@ pub(super) fn reference(input: &str, attribute: bool) -> Option<(String, usize)>
         .count();
     for length in (1..=limit).rev() {
         let candidate = &input[..length];
-        if let Ok(index) = entities::NAMED.binary_search_by_key(&candidate, |(name, _)| *name) {
+        if let Some(&(first, second)) = html5ever::data::NAMED_ENTITIES.get(candidate) {
+            if first == 0 {
+                continue;
+            }
             if attribute
                 && !candidate.ends_with(';')
                 && input
@@ -1609,7 +1613,12 @@ pub(super) fn reference(input: &str, attribute: bool) -> Option<(String, usize)>
             {
                 return None;
             }
-            return Some((entities::NAMED[index].1.to_owned(), length + 1));
+            let value = [first, second]
+                .into_iter()
+                .filter(|&code| code != 0)
+                .map(|code| char::from_u32(code).expect("WHATWG references contain valid scalars"))
+                .collect();
+            return Some((value, length + 1));
         }
     }
     None
@@ -1629,9 +1638,6 @@ fn decode_references(input: &str, attribute: bool) -> String {
     }
     out
 }
-#[path = "html_entities.rs"]
-mod entities;
-
 fn direction(value: &str) -> Option<WritingDirection> {
     match value.trim().to_ascii_lowercase().as_str() {
         "ltr" => Some(WritingDirection::LeftToRight),
@@ -2413,4 +2419,51 @@ pub(super) fn empty_insertion_point(input: &NormalizedText) -> Option<usize> {
         .or(document_close)
         .or_else(|| input.units.last().map(|u| u.source.end))
         .or(Some(0))
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+
+    #[test]
+    fn named_references_retain_the_complete_imported_mapping() {
+        let mut entries = html5ever::data::NAMED_ENTITIES
+            .entries()
+            .filter(|(_, value)| value.0 != 0)
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>();
+        entries.sort_unstable();
+        assert_eq!(entries.len(), 2231);
+        let mut serialized = String::new();
+        for name in entries {
+            let (value, consumed) = reference(&format!("&{name}"), false).unwrap();
+            assert_eq!(consumed, name.len() + 1);
+            serialized.push_str(name);
+            serialized.push('\0');
+            serialized.push_str(&value);
+            serialized.push('\0');
+        }
+        // Frozen from the former local table, including legacy names and
+        // references which decode to two scalars. A dependency update must
+        // preserve these mappings unless the behavior change is intentional.
+        assert_eq!(
+            super::super::SourceArtifactDigest::from_bytes(serialized.as_bytes()).as_bytes(),
+            &[
+                0xfe, 0xcb, 0x04, 0x24, 0x88, 0x4c, 0x51, 0x7f, 0xaf, 0x8d, 0xcd, 0xac, 0xa4, 0x58,
+                0x3b, 0x3c, 0x9e, 0xf9, 0x2a, 0x53, 0x0c, 0x54, 0x04, 0xe0, 0x80, 0x97, 0xc1, 0x8c,
+                0xc0, 0xb8, 0x0b, 0x97,
+            ],
+        );
+    }
+
+    #[test]
+    fn named_reference_prefixes_and_attribute_rules_remain_distinct() {
+        assert_eq!(reference("&notin;tail", false), Some(("∉".into(), 7)));
+        assert_eq!(reference("&notinX", false), Some(("¬".into(), 4)));
+        assert_eq!(reference("&notinX", true), None);
+        assert_eq!(reference("&amp=", true), None);
+        assert_eq!(reference("&amp;=", true), Some(("&".into(), 5)));
+        assert_eq!(reference("&CounterClockwise", false), None);
+        assert_eq!(reference("&apos", false), None);
+    }
 }
