@@ -401,3 +401,252 @@ fn hard_break_preparation_rejects_invalid_boundary_without_mutation() {
     assert_eq!(document.revision(), revision);
     assert!(!document.history_status().can_undo);
 }
+
+#[test]
+fn escape_keeps_the_cursor_in_a_new_terminal_empty_paragraph() {
+    for (format, source) in [
+        (Format::PlainText, "body"),
+        (Format::Html, "<p>body</p>"),
+        (Format::Html, "<h1>body</h1>"),
+        (Format::Markdown, "body"),
+        (Format::Markdown, "# body"),
+        (Format::Rtf, "{\\rtf1 body}"),
+    ] {
+        let (mut core, view) = open(source, format);
+        input(&mut core, view, InputEvent::key('A'));
+        input(&mut core, view, InputEvent::Key(Key::Enter));
+        let at = core.document().text().len();
+        assert_eq!(core.command_state(view).unwrap().cursor(), at);
+        let before = core.document().source_bytes();
+        input(&mut core, view, InputEvent::Key(Key::Escape));
+        assert_eq!(core.document().source_bytes(), before);
+        assert_eq!(core.command_state(view).unwrap().cursor(), at, "{format:?}");
+        assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
+        let layout = core.layout(view).unwrap().snapshot().unwrap();
+        let caret = layout
+            .caret_point(at, BoundaryAffinity::Downstream)
+            .unwrap();
+        let geometry = layout.caret_geometry(caret).unwrap();
+        assert_eq!(layout.rows[geometry.row_index].text_range, at..at);
+        assert!(geometry.rect.height > 0.0);
+        input(&mut core, view, InputEvent::key('i'));
+        input(&mut core, view, InputEvent::text("next"));
+        assert_eq!(core.document().text(), "body\nnext", "{format:?}");
+    }
+}
+
+#[test]
+fn revisiting_a_new_empty_list_item_keeps_backspace_semantic() {
+    for (format, source) in [
+        (Format::Html, "<ul><li><b>body</b></li></ul>"),
+        (
+            Format::Html,
+            "<ol><li><p><b>body</b></p></li><li>tail</li></ol>",
+        ),
+        (Format::Markdown, "- **body**"),
+        (Format::Markdown, "1. **body**\n2. tail"),
+    ] {
+        let (mut core, view) = open(source, format);
+        input(&mut core, view, InputEvent::key('A'));
+        input(&mut core, view, InputEvent::Key(Key::Enter));
+        let at = core.command_state(view).unwrap().cursor();
+        input(&mut core, view, InputEvent::Key(Key::Up));
+        input(&mut core, view, InputEvent::Key(Key::Down));
+        assert_eq!(core.command_state(view).unwrap().cursor(), at, "{source}");
+        let before = core.document().text().to_owned();
+        input(&mut core, view, InputEvent::Key(Key::Backspace));
+        assert_eq!(core.document().text(), before, "{source}");
+        let block = core
+            .document()
+            .projection()
+            .blocks()
+            .iter()
+            .find(|block| block.range == (at..at))
+            .unwrap();
+        assert_eq!(block.style.0, "Paragraph", "{source}");
+    }
+}
+
+#[test]
+fn tab_and_backtab_at_list_start_change_structure_and_stay_in_the_insert_undo_unit() {
+    use viem_core::document::BlockKind;
+    for (format, source) in [
+        (
+            Format::Html,
+            "<ul><li>parent</li><li><b>body</b></li><li>tail</li></ul>",
+        ),
+        (
+            Format::Html,
+            "<ol start='4'><li>parent</li><li>body</li><li>tail</li></ol>",
+        ),
+        (Format::Markdown, "- parent\n- **body**\n- tail"),
+        (Format::Markdown, "4. parent\n5. body\n6. tail"),
+        (
+            Format::Rtf,
+            r"{\rtf1{\*\listtable{\list{\listlevel\levelnfc23\levelstartat1{\leveltext\'01\u8226?;}{\levelnumbers;}\li640\fi-200}{\listlevel\levelnfc23\levelstartat1{\leveltext\'01\u8226?;}{\levelnumbers;}\li1280\fi-200}\listid42}}{\*\listoverridetable{\listoverride\listid42\listoverridecount0\ls1}}\pard\ls1\ilvl0 parent\par body\par tail}",
+        ),
+    ] {
+        let (mut core, view) = open(source, format);
+        let at = core.document().text().find("body").unwrap();
+        insert_at(&mut core, view, at);
+        input(&mut core, view, InputEvent::Key(Key::Tab));
+        let block = &core.document().projection().blocks()[1];
+        assert!(
+            matches!(block.kind, BlockKind::ListItem { level: 1, .. }),
+            "{format:?}: {block:?}"
+        );
+        assert_eq!(core.document().text(), "parent\nbody\ntail");
+        assert_eq!(core.command_state(view).unwrap().cursor(), at);
+        input(&mut core, view, InputEvent::Key(Key::BackTab));
+        let block = &core.document().projection().blocks()[1];
+        assert!(
+            matches!(block.kind, BlockKind::ListItem { level: 0, .. }),
+            "{format:?}: {block:?}"
+        );
+        input(&mut core, view, InputEvent::Key(Key::Tab));
+        assert!(matches!(
+            core.document().projection().blocks()[1].kind,
+            BlockKind::ListItem { level: 1, .. }
+        ));
+        input(&mut core, view, InputEvent::text("new "));
+        input(&mut core, view, InputEvent::Key(Key::Escape));
+        assert_eq!(core.document().text(), "parent\nnew body\ntail");
+        reopen_and_history(&mut core, view, source.as_bytes());
+    }
+}
+
+#[test]
+fn unavailable_list_indentation_is_a_noop_and_tab_elsewhere_inserts_text() {
+    for (format, source) in [
+        (Format::Html, "<ul><li>body</li></ul>"),
+        (Format::Markdown, "- body"),
+    ] {
+        let (mut core, view) = open(source, format);
+        insert_at(&mut core, view, 0);
+        let revision = core.document().revision();
+        input(&mut core, view, InputEvent::Key(Key::Tab));
+        input(&mut core, view, InputEvent::Key(Key::BackTab));
+        assert_eq!(core.document().revision(), revision);
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        input(&mut core, view, InputEvent::Key(Key::Right));
+        input(&mut core, view, InputEvent::Key(Key::Tab));
+        assert!(core.document().text().starts_with('b'));
+        assert!(core.document().text().ends_with("ody"));
+        assert_ne!(core.document().source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn list_indentation_is_replayed_as_structure_by_dot_and_macros() {
+    use viem_core::document::BlockKind;
+    for record in [false, true] {
+        let (mut core, view) = open("- parent\n- body\n- tail", Format::Markdown);
+        input(&mut core, view, InputEvent::key('j'));
+        input(&mut core, view, InputEvent::key('0'));
+        if record {
+            input(&mut core, view, InputEvent::key('q'));
+            input(&mut core, view, InputEvent::key('a'));
+        }
+        input(&mut core, view, InputEvent::key('i'));
+        input(&mut core, view, InputEvent::Key(Key::Tab));
+        input(&mut core, view, InputEvent::Key(Key::Escape));
+        if record {
+            input(&mut core, view, InputEvent::key('q'));
+        }
+        input(&mut core, view, InputEvent::key('j'));
+        input(&mut core, view, InputEvent::key('0'));
+        if record {
+            input(&mut core, view, InputEvent::key('@'));
+            input(&mut core, view, InputEvent::key('a'));
+        } else {
+            input(&mut core, view, InputEvent::key('.'));
+        }
+        let levels = core
+            .document()
+            .projection()
+            .blocks()
+            .iter()
+            .filter_map(|block| match block.kind {
+                BlockKind::ListItem { level, .. } => Some(level),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(levels, [0, 1, 1], "record={record}");
+        assert_eq!(core.document().text(), "parent\nbody\ntail");
+    }
+}
+
+#[test]
+fn source_list_body_start_uses_structural_tab_and_preserves_literal_backspace() {
+    use viem_core::document::BlockKind;
+    for (format, source) in [
+        (
+            Format::HtmlSource,
+            "<ul><li>parent</li><li><b>body</b></li><li>tail</li></ul>",
+        ),
+        (
+            Format::HtmlSource,
+            "<ul><li>parent</li><li><blockquote>body</blockquote></li><li>tail</li></ul>",
+        ),
+        (Format::MarkdownSource, "- parent\n- **body**\n- tail"),
+    ] {
+        let (mut core, view) = open(source, format);
+        let at = core.document().text().find("body").unwrap();
+        insert_at(&mut core, view, at);
+        for key in [Key::Tab, Key::BackTab] {
+            input(&mut core, view, InputEvent::Key(key));
+            let semantic = Document::from_bytes(
+                core.document().source_bytes(),
+                Encoding::Utf8,
+                if format == Format::HtmlSource {
+                    Format::Html
+                } else {
+                    Format::Markdown
+                },
+            )
+            .unwrap();
+            assert_eq!(semantic.text(), "parent\nbody\ntail");
+            let block = &semantic.projection().blocks()[1];
+            assert!(
+                matches!(block.kind, BlockKind::ListItem { level, .. } if level == if key == Key::Tab { 1 } else { 0 }),
+                "{format:?}: {block:?}"
+            );
+            assert_eq!(
+                core.command_state(view).unwrap().cursor(),
+                core.document().text().find("body").unwrap()
+            );
+        }
+        input(&mut core, view, InputEvent::text("new "));
+        input(&mut core, view, InputEvent::Key(Key::Escape));
+        reopen_and_history(&mut core, view, source.as_bytes());
+
+        let (mut core, view) = open(source, format);
+        let at = core.document().text().find("body").unwrap();
+        insert_at(&mut core, view, at);
+        input(&mut core, view, InputEvent::Key(Key::Backspace));
+        let mut expected = source.to_owned();
+        expected.remove(at - 1);
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+    }
+}
+
+#[test]
+fn markdown_source_tab_recognizes_marker_start_and_body_boundary() {
+    use viem_core::document::BlockKind;
+    let source = "- parent\n- **body**\n- tail";
+    for at in [9, 11] {
+        let (mut core, view) = open(source, Format::MarkdownSource);
+        insert_at(&mut core, view, at);
+        input(&mut core, view, InputEvent::Key(Key::Tab));
+        let semantic = Document::from_bytes(
+            core.document().source_bytes(),
+            Encoding::Utf8,
+            Format::Markdown,
+        )
+        .unwrap();
+        assert!(matches!(
+            semantic.projection().blocks()[1].kind,
+            BlockKind::ListItem { level: 1, .. }
+        ));
+    }
+}

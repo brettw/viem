@@ -375,11 +375,25 @@ impl Document {
                     .encode_fragment(&encoding.decode(input)?.text)
             }
         };
-        let source_range = if range == (0..self.text().len()) {
-            0..self.source_byte_len()
+        let source_edit = super::super::source_edit::complete_contributors(
+            self.projection(), &TextEdit::new(range.clone(), text),
+        )?;
+        let source_runs = if range == (0..self.text().len()) {
+            vec![0..self.source_byte_len()]
         } else {
-            super::super::rich_text::text_source_range(self, &range)?
+            super::super::rich_text::text_source_runs(self, &source_edit.range)?
         };
+        let preserved = |range: Range<usize>| -> Result<Vec<u8>, DocumentError> {
+            let text = self.projection().text_tree().slice(range).map_err(DocumentError::FormattedTextStorage)?;
+            let syntax = if self.format() == Format::Html {
+                super::super::rich_text::escape_html_text(&text, self.encoding())
+            } else {
+                super::super::rtf::escape(&text)
+            };
+            self.encoding().encode_fragment(&syntax)
+        };
+        let prefix = preserved(source_edit.range.start..range.start)?;
+        let suffix = preserved(range.end..source_edit.range.end)?;
         let whole = range == (0..self.text().len());
         // Whole replacement reproduces the original byte image, including
         // malformed-but-supported syntax. Embedded pastes use balanced scopes
@@ -395,13 +409,17 @@ impl Document {
         };
         let mut error = DocumentError::AmbiguousProjection.into();
         for candidate in candidates {
+            let mut replacement = prefix.clone();
+            replacement.extend(bytes(candidate)?);
+            if source_runs.len() == 1 { replacement.extend_from_slice(&suffix); }
+            let mut patches = vec![SourcePatch::primary(source_runs[0].clone(), replacement)];
+            patches.extend(source_runs[1..].iter().enumerate().map(|(index, range)| {
+                SourcePatch::primary(range.clone(), if index + 2 == source_runs.len() { suffix.clone() } else { Vec::new() })
+            }));
             let prepared = self
                 .prepare_text_edits_with_patches(
                     vec![TextEdit::new(range.clone(), text)],
-                    Some(vec![SourcePatch::primary(
-                        source_range.clone(),
-                        bytes(candidate)?,
-                    )]),
+                    Some(patches),
                 )
                 .and_then(|prepared| {
                     verify_styles(prepared, &export, range.clone(), whole, self.projection())

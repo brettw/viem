@@ -242,6 +242,22 @@ impl DocumentLayoutStyles {
         Self::resolve_region(document, 0..document.text_tree().byte_len())
     }
 
+    pub(crate) fn source_flow_paragraphs(
+        document: &FormattedDocument,
+        range: Range<usize>,
+    ) -> Result<Option<Vec<ParagraphLayoutStyle>>, DocumentStyleError> {
+        let Some(blocks) = document.flow_blocks_for_region(&range) else {
+            return Ok(None);
+        };
+        let resolved = Self::resolve_validated(StyleCascadeInput {
+            blocks: &blocks,
+            style_spans: &[],
+            style_sheet: document.style_sheet(),
+            document_style: document.document_style(),
+        })?;
+        Ok(Some(resolved.paragraphs))
+    }
+
     /// Resolve only blocks and character spans that can affect a contiguous
     /// formatted-text region. Document-root values are still resolved from the
     /// immutable style sheet, while paragraph/run work is proportional to the
@@ -249,6 +265,14 @@ impl DocumentLayoutStyles {
     pub fn resolve_region(
         document: &FormattedDocument,
         text_range: Range<usize>,
+    ) -> Result<Self, DocumentStyleError> {
+        Self::resolve_region_with_flow(document, text_range, false)
+    }
+
+    pub(crate) fn resolve_region_with_flow(
+        document: &FormattedDocument,
+        text_range: Range<usize>,
+        flow: bool,
     ) -> Result<Self, DocumentStyleError> {
         let text = document.text_tree();
         if text_range.start > text_range.end
@@ -258,8 +282,22 @@ impl DocumentLayoutStyles {
         {
             return Err(DocumentStyleError::InvalidBlockRange { index: 0 });
         }
-        let regional_blocks = document.blocks_for_region(&text_range);
-        let regional_spans = document.style_spans_for_region(&text_range);
+        let flow_blocks = flow
+            .then(|| document.flow_blocks_for_region(&text_range))
+            .flatten();
+        let structural_flow = flow_blocks.is_some();
+        let regional_blocks =
+            flow_blocks.unwrap_or_else(|| document.blocks_for_region(&text_range));
+        let mut regional_spans = document.style_spans_for_region(&text_range);
+        if structural_flow {
+            // The structural block now supplies the complete paragraph
+            // cascade, including empty elements and their surrounding tags.
+            // Physical-line character overlays must not reapply a neighbor's
+            // paragraph defaults on top of that assignment.
+            regional_spans.retain(|span| {
+                !matches!(span.application, StyleApplication::SourceParagraph { .. })
+            });
+        }
         validate_blocks_in_tree(text, &regional_blocks)?;
         validate_spans_in_tree(text, &regional_spans)?;
         let mut styles = Self::resolve_validated(StyleCascadeInput {
@@ -269,9 +307,11 @@ impl DocumentLayoutStyles {
             document_style: document.document_style(),
         })?;
         for (paragraph, block) in styles.paragraphs.iter_mut().zip(&regional_blocks) {
-            paragraph.list_marker_range = document
-                .list_marker_range_for_block(block)
-                .filter(|range| !range.is_empty());
+            if !structural_flow {
+                paragraph.list_marker_range = document
+                    .list_marker_range_for_block(block)
+                    .filter(|range| !range.is_empty());
+            }
         }
         Ok(styles)
     }

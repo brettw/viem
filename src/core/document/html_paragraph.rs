@@ -639,6 +639,11 @@ pub(super) fn deletion_patches(
     range: &Range<usize>,
     whole_line: bool,
 ) -> Result<Option<Vec<(Range<usize>, String)>>, DocumentError> {
+    if whole_line {
+        if let Some(patches) = partial_paragraph_line_deletion(document, range)? {
+            return Ok(Some(patches));
+        }
+    }
     if !whole_line
         && !document
             .projection()
@@ -700,10 +705,9 @@ pub(super) fn deletion_patches(
         let mut previous_removed = false;
         for item in &list.items {
             let removed = item.paragraph_ids.iter().any(|id| selected.contains(id));
+            let mut remove_owner = removed
+                && item.paragraph_ids.iter().all(|id| selected.contains(id));
             if removed {
-                if !item.paragraph_ids.iter().all(|id| selected.contains(id)) {
-                    return Err(DocumentError::AmbiguousProjection);
-                }
                 let mut children = item.child_lists.clone();
                 while let Some(child) = children.pop() {
                     let list = structure
@@ -713,16 +717,21 @@ pub(super) fn deletion_patches(
                         .ok_or(DocumentError::AmbiguousProjection)?;
                     for item in &list.items {
                         if !item.paragraph_ids.iter().all(|id| selected.contains(id)) {
-                            return Err(DocumentError::AmbiguousProjection);
+                            remove_owner = false;
                         }
                         children.extend(item.child_lists.iter().copied());
                     }
                 }
-                owners.push(item.paragraph_id);
+                // The selected paragraph does not own surviving continuation
+                // paragraphs or nested items. Keep their existing list owner;
+                // deleting visible text must never implicitly delete children.
+                if remove_owner {
+                    owners.push(item.paragraph_id);
+                }
             } else if previous_removed && list.style == super::ListStyle::Numbered {
                 preserve_ordinals.push((item.paragraph_id, item.ordinal));
             }
-            previous_removed = removed;
+            previous_removed = remove_owner;
         }
     }
     let tokens = html::tokenize(&input.text);
@@ -740,6 +749,19 @@ pub(super) fn deletion_patches(
     let mut patches = Vec::new();
     for span in document.projection().provenance_for_region(range) {
         if span.formatted.is_empty() {
+            continue;
+        }
+        if span.formatted.len() == 1
+            && document
+                .projection()
+                .blocks_for_region(&span.formatted)
+                .iter()
+                .any(|block| block.range.end == span.formatted.start)
+        {
+            // A structural separator can map to an opening container tag,
+            // such as the <ul> preceding a nested list. That tag belongs to
+            // the surviving structure; owner patches below remove only the
+            // containers whose content is completely selected.
             continue;
         }
         if span.source.is_empty() {
@@ -818,4 +840,76 @@ pub(super) fn deletion_patches(
     }
     result.sort_by_key(|(range, _)| (range.start, range.end));
     Ok(Some(result))
+}
+
+/// A hard-line deletion inside a paragraph removes its text and its native
+/// break, retaining the paragraph/list owner. At a paragraph's final hard line,
+/// the preceding intra-paragraph break is the delimiter to remove: the following
+/// synthetic separator belongs to the surviving adjacent paragraph.
+fn partial_paragraph_line_deletion(
+    document: &super::Document,
+    range: &Range<usize>,
+) -> Result<Option<Vec<(Range<usize>, String)>>, DocumentError> {
+    let Some(range) = partial_paragraph_line_range(document, range) else {
+        return Ok(None);
+    };
+    Ok(Some(
+        super::rich_text::text_source_runs(document, &range)?
+            .into_iter()
+            .map(|source| (source, String::new()))
+            .collect(),
+    ))
+}
+
+/// Name the actual hard-break item removed by a line deletion. Commands still
+/// capture their register from the original line extent; the transaction and
+/// its position map retain the surviving paragraph boundary's identity.
+pub(super) fn line_deletion_range(document: &super::Document, range: &Range<usize>) -> Range<usize> {
+    partial_paragraph_line_range(document, range).unwrap_or_else(|| range.clone())
+}
+
+fn partial_paragraph_line_range(
+    document: &super::Document,
+    range: &Range<usize>,
+) -> Option<Range<usize>> {
+    let projection = document.projection();
+    let Some(block) = projection
+        .blocks_for_region(range)
+        .into_iter()
+        .find(|block| {
+            block.range.start <= range.start
+                && range.start <= block.range.end
+                && range.end <= block.range.end.saturating_add(1)
+        })
+    else {
+        return None;
+    };
+    let ends_in_break = block.range.end > block.range.start
+        && projection
+            .hard_breaks_for_region(&(block.range.end - 1..block.range.end))
+            .contains(&(block.range.end - 1));
+    let partial = range.start > block.range.start
+        || range.end < block.range.end
+        || (range.end == block.range.end && ends_in_break);
+    if !partial {
+        return None;
+    }
+    let end = range.end.min(block.range.end);
+    let start = if range.end > block.range.end {
+        let preceding = range.start.saturating_sub(1);
+        if preceding < block.range.start
+            || !projection
+                .hard_breaks_for_region(&(preceding..range.start))
+                .contains(&preceding)
+        {
+            return None;
+        }
+        preceding
+    } else {
+        range.start
+    };
+    if start >= end {
+        return None;
+    }
+    Some(start..end)
 }

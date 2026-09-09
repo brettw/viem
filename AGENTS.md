@@ -70,6 +70,13 @@ targets, and finally assembles and ad-hoc signs `.build/Viem.app` for local
 development and end-to-end testing. A future distribution/archive workflow MAY
 add an Xcode project without changing those source ownership boundaries.
 
+The root Makefile exposes `make debug` (the default), `make release`, and
+`make clean`. Build targets delegate to the packaging script. `make run-debug`
+and `make run-release` build the corresponding configuration and launch
+`.build/Viem.app`; `make run` aliases `make run-release`. Cleaning removes the
+repository-local `.build` and `target` directories, including path-dependent
+Swift/Clang module caches that must be discarded after renaming the checkout.
+
 The initial deployment target is macOS 26.0 so the frontend can use the current
 `NSTextInsertionIndicator` API without a second caret implementation.
 
@@ -429,6 +436,25 @@ PartiallyMapped { mapped ranges, formatted gaps }
 Reverse-edit translation consumes that result and either produces an explicit
 minimal patch set or returns unsupported, ambiguous, stale, or needs-policy.
 Synthetic or partially mapped content is not silently dropped from an edit.
+
+Ordinary editing uses one shared minimal-source rule: a caret names the visible
+insertion location within its hard line or paragraph, including an empty body;
+hidden opening/closing syntax does not create competing editing locations.
+Line ownership selects the context at line edges, and boundary affinity selects
+adjacent inline context within a line. A nonempty text edit consumes the smallest
+complete set of contributing source runs while retaining intervening hidden
+syntax. If one indivisible source entity represents several editable characters,
+rewrite that entity while preserving its unselected prefix and suffix. This
+source expansion does not expand the logical selection or its position map.
+Independent logical edits that share an indivisible source contributor rewrite
+that contributor once while retaining their separate logical change ranges.
+Text edits, formatted payloads, clipboard replacement, and character formatting
+share this resolver; text and payload translation share the encoding path.
+Structural breaks and list/paragraph ownership use their adapter's semantic
+operation, followed by normal candidate verification. Unsupported structure,
+opaque content, stale identities, and incomplete provenance are not resolved by
+deleting the nearest source hull. User-facing errors describe the unsupported
+edit or format constraint; they never expose an "unambiguous source range" error.
 
 ### Complexity and API requirements
 
@@ -1844,6 +1870,10 @@ geometry based on the current caret height and a minimum width derived from the
 active font's en width (one half em); never assume a glyph exists under the
 caret. Empty documents use the current resolved typing font, not a status or
 command-line font.
+
+Leaving Insert mode preserves a final empty hard line/paragraph and places the
+Normal block caret at its existing empty boundary. It must not move backward
+over the preceding paragraph separator.
 
 When an editor view is not the active first responder, its caret is a
 nonblinking hollow outline in the same geometry instead of a filled block,
@@ -4121,15 +4151,21 @@ identities and generated buffer configuration, like generated Markdown styles.
 Their customization survives edits and history navigation in that buffer,
 never changes HTML bytes, and returns to defaults when a document is reopened.
 
-HTML Source uses physical source lines as its displayed paragraph units, except
-that each preformatted block shares one paragraph across its source lines.
+With Flow Source Paragraphs disabled, HTML Source uses physical source lines as
+its displayed paragraph units, except that each preformatted block shares one
+paragraph across its source lines.
 Recovered semantic paragraph styles contribute character defaults and named
 style identity to their source spans. Paragraph spacing and alignment remain
 editable source properties and take full effect in WYSIWYG; independent HTML
 paragraphs on one physical source line cannot each align that same displayed
-line differently. With Flow Source Paragraphs enabled, nonstructural physical
-breaks flow within the corresponding structural presentation paragraph. The
-default source view does not invent additional visible line breaks.
+line differently. With Flow Source Paragraphs enabled, semantic blocks have
+independent presentation paragraphs, including adjacent blocks on a single
+physical source line and empty blocks. Their paragraph styles, spacing,
+alignment, and indentation apply as in WYSIWYG, with the surrounding source tags
+additionally visible. Nonstructural physical breaks flow within the corresponding
+structural presentation paragraph; preformatted internal breaks remain literal.
+These presentation boundaries do not change source bytes or source coordinates.
+The default source view does not invent additional visible line breaks.
 
 ### Authored-input assistance
 
@@ -4220,6 +4256,14 @@ table has a compatible target level; legacy flat RTF lists and unavailable
 target levels leave Indent and Unindent disabled.
 Remove List remains available among the Format paragraph controls. Enter
 continues an item; Enter on an empty item exits the list.
+At the visible beginning of a list item in Insert mode, Tab and Shift-Tab invoke
+the same verified Indent and Unindent actions when the format can express them.
+An unavailable nesting change leaves the item unchanged. Source views also
+recognize the semantic body beginning; Markdown Source recognizes both the
+literal marker beginning and the boundary after its marker. Backspace at the
+visible WYSIWYG beginning removes list treatment regardless of whether the caret
+arrived by typing, navigation, or pointer placement; hidden tags and insertion
+history do not redefine the beginning.
 Numbered continuation and repeat calculate the next ordinal from current
 structure. One list action and its supporting source patches form one undo unit.
 New plain-text lists and Markdown source use `- ` or decimal `1. ` markers, with
@@ -4236,6 +4280,9 @@ displayed ordinals. The transaction may add explicit HTML `li value` attributes
 or scoped RTF numbering overrides to preserve those ordinals; source tables and
 unrelated opaque content remain untouched. Markdown numbering follows the
 container's starting ordinal while preserving untouched source label spellings.
+Deleting a hard line within an HTML list paragraph retains its item and any
+unselected continuation paragraphs or nested lists. Only completely selected
+item structure is removed; surviving descendants are not implicitly selected.
 Enter advances following item numbers within the same list until an explicit restart or container boundary. HTML `li value`
 restarts bound that change; RTF updates the affected legacy numbering controls
 or adds scoped overrides while preserving table handles. New RTF paragraphs

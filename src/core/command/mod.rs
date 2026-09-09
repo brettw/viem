@@ -805,6 +805,7 @@ enum EditSessionStep {
     Text(RegisterValue),
     ListEnter,
     HardBreak,
+    ListIndent { unindent: bool },
     Backspace,
     Delete,
     DeleteWord,
@@ -3308,6 +3309,9 @@ impl CommandInterpreter {
         document: &Document,
         key: Key,
     ) -> Result<Option<ModelRequest>, DocumentError> {
+        if matches!(key, Key::Tab | Key::BackTab) && self.mode == Mode::Insert {
+            return document.list_item_indent_key_request(self.cursor, key == Key::BackTab);
+        }
         if key == Key::ShiftEnter {
             return Ok(Some(ModelRequest::InsertHardBreak {
                 document: document.id(), revision: document.revision(),
@@ -3339,6 +3343,7 @@ impl CommandInterpreter {
                     program.push(match key {
                         Key::ShiftEnter => EditSessionStep::HardBreak,
                         Key::Backspace => EditSessionStep::Backspace,
+                        Key::Tab | Key::BackTab => EditSessionStep::ListIndent { unindent: key == Key::BackTab },
                         _ => EditSessionStep::ListEnter,
                     });
                 }
@@ -3356,9 +3361,11 @@ impl CommandInterpreter {
         key: Key,
         request: ModelRequest,
     ) -> Result<CommandPlan, DocumentError> {
-        let prepared = document.prepare_model_request(request.clone()).map_err(command_document_error)?;
         let mut next = self.clone();
         next.record_event(event);
+        let Some(prepared) = Self::prepare_paragraph_key(document, key, request.clone())? else {
+            return Ok(next.non_mutating_plan(document, CommandOutput::complete()));
+        };
         next.cursor = if key == Key::ShiftEnter {
             prepared_break_cursor(document, &prepared, self.cursor)?
         } else {
@@ -3387,7 +3394,9 @@ impl CommandInterpreter {
         key: Key,
         request: ModelRequest,
     ) -> Result<CommandOutput, DocumentError> {
-        let prepared = document.prepare_model_request(request).map_err(command_document_error)?;
+        let Some(prepared) = Self::prepare_paragraph_key(document, key, request)? else {
+            return Ok(CommandOutput::complete());
+        };
         let cursor = if key == Key::ShiftEnter {
             prepared_break_cursor(document, &prepared, self.cursor)?
         } else {
@@ -3398,6 +3407,21 @@ impl CommandInterpreter {
         self.cursor = cursor;
         self.note_paragraph_key(key);
         Ok(CommandOutput { document_changed: changed, cursor_moved: true, ..CommandOutput::complete() })
+    }
+
+    fn prepare_paragraph_key(
+        document: &Document,
+        key: Key,
+        request: ModelRequest,
+    ) -> Result<Option<PreparedModelTransaction>, DocumentError> {
+        match document.prepare_model_request(request) {
+            Ok(prepared) => Ok(Some(prepared)),
+            // Reaching the list nesting limit, or an item with no suitable
+            // parent/sibling, makes the structural key a harmless no-op.
+            Err(ModelTransactionError::Document(DocumentError::UnsupportedFormatting))
+                if matches!(key, Key::Tab | Key::BackTab) => Ok(None),
+            Err(error) => Err(command_document_error(error)),
+        }
     }
 
     fn plan_edit_mode_backspace(
@@ -10479,7 +10503,7 @@ impl CommandInterpreter {
                     self.replace_text(document, "\n")
                 }
             }
-            Key::Tab => {
+            Key::Tab | Key::BackTab => {
                 if self.mode == Mode::Insert {
                     self.insert_text(document, "\t")
                 } else {
@@ -11497,6 +11521,9 @@ impl CommandInterpreter {
                         }
                         EditSessionStep::HardBreak => {
                             self.handle_edit_mode_key(document, Key::ShiftEnter)?
+                        }
+                        EditSessionStep::ListIndent { unindent } => {
+                            self.handle_edit_mode_key(document, if *unindent { Key::BackTab } else { Key::Tab })?
                         }
                     };
                     output.merge(next);

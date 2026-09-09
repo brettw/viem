@@ -2581,7 +2581,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         document: &Document,
         view: &mut ViewLayout,
     ) -> Result<(), LayoutError> {
-        let mut document_styles = DocumentLayoutStyles::resolve(document.projection())?;
+        let mut document_styles = DocumentLayoutStyles::resolve_region_with_flow(
+            document.projection(), 0..document.projection().text_tree().byte_len(), view.paragraph_flow(),
+        )?;
         document_styles.apply_source_quote_policy(document.format(), view.paragraph_flow());
         let hard_lines = if view.paragraph_flow() {
             (0..document.projection().presentation_line_count(true))
@@ -2595,7 +2597,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let flowed;
         let text = if view.paragraph_flow() {
             flowed = super::jobs::flow_text(document.text().to_owned(), 0, &hard_lines);
-            super::jobs::flow_paragraph_styles(&mut document_styles, &hard_lines);
+            super::jobs::resolve_flow_paragraph_styles(document.projection(), &mut document_styles, &hard_lines)?;
             &flowed
         } else {
             document.text()
@@ -3389,7 +3391,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             return Err(LayoutError::InvalidStyle.into());
         }
 
-        validate_hard_line_ranges(text, hard_lines, control)?;
+        validate_hard_line_ranges(text, hard_lines, view.paragraph_flow(), control)?;
         let measurement_environment_id = self.provider.measurement_environment_id();
         let metrics_generation = self.provider.metrics_generation();
         let mut line_paragraphs = Vec::with_capacity(hard_lines.len());
@@ -5030,6 +5032,7 @@ fn boundaries_in_ordered_ranges(
 fn validate_hard_line_ranges(
     text: &str,
     lines: &[Range<usize>],
+    paragraph_flow: bool,
     control: &LayoutRunControl<'_>,
 ) -> Result<(), LayoutComputationError> {
     control.checkpoint()?;
@@ -5059,7 +5062,8 @@ fn validate_hard_line_ranges(
         let separator = pair[0].end..pair[1].start;
         if separator.start > separator.end
             || separator.end > text.len()
-            || text.get(separator) != Some("\n")
+            || !(text.get(separator.clone()) == Some("\n")
+                || paragraph_flow && separator.is_empty())
         {
             return Err(LayoutError::MalformedMeasurement(
                 "adjacent hard lines lack one explicit U+000A break item",

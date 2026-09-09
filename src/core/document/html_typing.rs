@@ -189,13 +189,16 @@ pub(super) fn insertion(
     } else if document.projection().text_tree().byte_len() == 0 {
         Some(super::rich_text::text_source_range(document, &(at..at))?.start)
     } else {
-        document.projection().source_insertion_point(
-            at,
-            affinity == BoundaryAffinity::Downstream
-                && at < document.projection().text_tree().byte_len(),
-        )
-    }
-    .ok_or(DocumentError::AmbiguousProjection)?;
+        super::source_edit::insertion_point(document.projection(), at, Some(affinity))
+    };
+    let Some(source) = source else {
+        if super::source_edit::complete_contributors(document.projection(), &super::TextEdit::new(at..at, text))?.range != (at..at) {
+            // Materialize the indivisible source contributor first, then apply
+            // the requested style to only the newly inserted logical text.
+            return Ok(None);
+        }
+        return Err(DocumentError::AmbiguousProjection);
+    };
     let decoded = document.encoding().decode(&document.source_bytes())?;
     let input = super::line_endings::normalize(&decoded, document.file_format());
     let position = input

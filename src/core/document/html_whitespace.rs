@@ -5,7 +5,7 @@
 //! source provenance decides the local patch and whether old generated spacing
 //! can be simplified without changing imported or explicitly nonbreaking text.
 use super::{
-    BoundaryAffinity, Document, DocumentError, Format, FormattedPayloadEdit, FormattedTextPayload,
+    Document, DocumentError, Format, FormattedPayloadEdit, FormattedTextPayload,
 };
 use std::ops::Range;
 
@@ -396,14 +396,9 @@ impl Document {
             if !edit.replacement.contains(' ') {
                 continue;
             }
-            let runs = match super::rich_text::text_source_runs(self, &edit.range) {
-                Err(DocumentError::AmbiguousProjection) if !edit.range.is_empty() => {
-                    super::rich_text::text_source_runs(self, &(edit.range.start..edit.range.start))?
-                }
-                result => result?,
-            };
+            let source_at = super::source_edit::text_context(self, edit, None)?;
             inserted_preserved[index] =
-                super::rich_text::html_preserves_whitespace_at_source(self, runs[0].start)?;
+                super::rich_text::html_preserves_whitespace_at_source(self, source_at)?;
         }
         let preserved = |origin: Origin| match origin {
             Origin::Original(at) => original_preserved(at),
@@ -641,26 +636,7 @@ impl Document {
         // not have a contiguous visible source run. Only its starting context
         // is needed here; the transaction still translates and verifies the
         // complete structural edit independently.
-        let runs = match super::rich_text::text_source_runs(self, &edit.range) {
-            Err(DocumentError::AmbiguousProjection) if !edit.range.is_empty() => {
-                super::rich_text::text_source_runs(self, &(edit.range.start..edit.range.start))?
-            }
-            result => result?,
-        };
-        let source_at = if edit.range.is_empty()
-            && edit.boundary_affinity == Some(BoundaryAffinity::Upstream)
-            && self
-                .projection()
-                .hard_line_at_offset(edit.range.start)
-                .and_then(|line| self.projection().hard_line_range(line))
-                .is_some_and(|line| !line.is_empty())
-        {
-            self.projection()
-                .source_insertion_point(edit.range.start, false)
-                .ok_or(DocumentError::AmbiguousProjection)?
-        } else {
-            runs[0].start
-        };
+        let source_at = super::source_edit::text_context(self, &edit.text_edit(), edit.boundary_affinity)?;
         edit.typing_normalized = true;
         if super::rich_text::html_preserves_whitespace_at_source(self, source_at)? {
             if edit.payload.text().contains('\r') {

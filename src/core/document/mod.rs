@@ -42,6 +42,7 @@ mod projection;
 mod range_index;
 mod selected_styles;
 mod source;
+mod source_edit;
 mod source_line_index;
 mod source_lines;
 pub use selected_styles::SelectedNamedStyles;
@@ -591,7 +592,7 @@ impl fmt::Display for DocumentError {
                 actual.0, expected.0
             ),
             Self::AmbiguousProjection => {
-                formatter.write_str("formatted range has no unambiguous source mapping")
+                formatter.write_str("this edit is not supported for the selected content structure")
             }
             Self::VerificationFailed => {
                 formatter.write_str("candidate source did not reproduce the requested edit")

@@ -183,16 +183,14 @@ pub(crate) fn normalize_normal_cursor(
     lines: &HardLineSnapshot,
     offset: usize,
 ) -> usize {
-    let offset = floor_grapheme_boundary(text, offset.min(text.len()));
-    let start = line_start(lines, offset);
-    let end = line_end(lines, offset);
-    if start == end {
-        return start;
-    }
-    if offset >= end {
-        return last_grapheme_start(text, start, end).unwrap_or(start);
-    }
-    offset
+    // EOF is a boundary in its own right, including the sole boundary of a
+    // terminal empty paragraph. Grapheme starts do not contain that boundary.
+    let offset = if offset >= text.len() {
+        text.len()
+    } else {
+        floor_grapheme_boundary(text, offset)
+    };
+    normalize_normal_cursor_snapshot(lines, offset)
 }
 
 /// Normalize an already validated logical boundary without materializing the

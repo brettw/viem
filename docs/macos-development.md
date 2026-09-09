@@ -14,17 +14,35 @@ Requirements:
 Build and launch a debug application:
 
 ```sh
-./scripts/run-mac-app.sh debug
+make run-debug
 ```
+
+`make run-release` builds and launches an optimized application; `make run` is
+an alias for `make run-release`. All run targets launch a fresh instance of
+`.build/Viem.app`, even if another instance is already running.
 
 Build the bundle without launching it:
 
 ```sh
-./scripts/build-mac-app.sh debug
+make debug
+make release
 ```
 
-The resulting application is `.build/Viem.app`. Use `release` in place of
-`debug` for an optimized local build.
+Both targets build the Rust core and Swift frontend, then assemble and locally
+sign `.build/Viem.app`. `make debug` (also the default for `make`) builds with
+debug information; `make release` builds an optimized application. Each replaces
+the same application bundle.
+
+After moving or renaming the checkout, remove cached build artifacts before
+rebuilding. Swift and Clang precompiled modules can retain absolute source paths:
+
+```sh
+make clean
+make debug
+```
+
+`make clean` removes the repository's `.build` and `target` directories, including
+the application bundle, Swift/Clang module caches, and Rust build artifacts.
 
 Run the portable and native test suites independently:
 

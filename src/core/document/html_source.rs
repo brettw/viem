@@ -429,8 +429,147 @@ pub(super) fn project_with_configuration(
             soft.insert(ending.normalized.start);
         }
     }
-    result.install_flow_ranges(super::paragraph_flow::flow_ranges(input, &soft));
+    let paragraphs = structural_flow_paragraphs(input, &tokens, &semantic);
+    let mut boundaries = paragraphs
+        .iter()
+        .skip(1)
+        .map(|block| block.range.start)
+        .chain(tokens.iter().filter_map(|token| {
+            matches!(&token.kind,
+            TokenKind::Tag(tag) if !tag.end && tag.name == "br")
+            .then_some(token.range.end)
+        }))
+        .collect::<Vec<_>>();
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    let mut flow = Vec::new();
+    for physical in super::paragraph_flow::flow_ranges(input, &soft) {
+        let mut start = physical.start;
+        let first = boundaries.partition_point(|at| *at <= start);
+        let last = boundaries
+            .partition_point(|at| *at < physical.end)
+            .max(first);
+        for &boundary in &boundaries[first..last] {
+            flow.push(start..boundary);
+            start = boundary;
+        }
+        flow.push(start..physical.end);
+    }
+    result.install_flow_ranges(flow);
+    result.install_flow_blocks(paragraphs);
     result
+}
+
+/// Keep markup in source order while allowing recovered block boundaries to
+/// break a displayed source line. Container tags stay with their adjacent
+/// content; explicit empty paragraphs still own a presentation paragraph.
+fn structural_flow_paragraphs(
+    input: &NormalizedText,
+    tokens: &[html::Token],
+    semantic: &FormattedDocument,
+) -> Vec<Block> {
+    let mut starts = vec![0];
+    let mut content = false;
+    let mut pending = false;
+    let mut protected = Vec::new();
+    for token in tokens {
+        match &token.kind {
+            TokenKind::Tag(tag) => {
+                if tag.end {
+                    if protected.last().is_some_and(|name| name == &tag.name) {
+                        protected.pop();
+                    }
+                    if protected.is_empty() && html::block(&tag.name) {
+                        pending |= content
+                            || matches!(
+                                tag.name.as_str(),
+                                "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "pre"
+                            );
+                    }
+                } else {
+                    if protected.is_empty() && (html::block(&tag.name) && content || pending) {
+                        starts.push(token.range.start);
+                        content = false;
+                        pending = false;
+                    }
+                    if matches!(tag.name.as_str(), "pre" | "script" | "style" | "textarea") {
+                        protected.push(tag.name.clone());
+                    }
+                }
+            }
+            _ => {
+                if input.text[token.range.clone()].trim().is_empty() {
+                    continue;
+                }
+                if pending && protected.is_empty() {
+                    starts.push(token.range.start);
+                    pending = false;
+                }
+                content = true;
+            }
+        }
+    }
+    if input
+        .endings
+        .last()
+        .is_some_and(|ending| ending.normalized.end == input.text.len())
+    {
+        starts.push(input.text.len());
+    }
+    starts.dedup();
+    let mut witnesses = Vec::new();
+    for span in semantic.provenance() {
+        // A paragraph's source separator can be the previous closing tag.
+        // Only body content and explicit empty-body anchors own its style.
+        if !span.formatted.is_empty()
+            && semantic.text()[span.formatted.clone()]
+                .chars()
+                .all(|ch| ch == '\n')
+        {
+            continue;
+        }
+        let at = input
+            .units
+            .partition_point(|unit| unit.source.end <= span.source.start);
+        let at = input
+            .units
+            .get(at)
+            .map_or(input.text.len(), |unit| unit.normalized.start);
+        let index = semantic
+            .blocks()
+            .partition_point(|block| block.range.start <= span.formatted.start)
+            .saturating_sub(1);
+        witnesses.push((at, index));
+    }
+    witnesses.sort_unstable();
+    starts
+        .iter()
+        .enumerate()
+        .map(|(index, &start)| {
+            let end = starts.get(index + 1).copied().unwrap_or(input.text.len());
+            let witness = witnesses
+                .get(witnesses.partition_point(|(at, _)| *at < start))
+                .filter(|(at, _)| *at < end || start == end);
+            let mut block = witness
+                .map(|(_, index)| semantic.blocks()[*index].clone())
+                .unwrap_or_else(|| Block {
+                    id: 0,
+                    range: start..end,
+                    kind: BlockKind::Paragraph,
+                    style: semantic.style_sheet().base_paragraph.clone(),
+                    direct_paragraph: Default::default(),
+                    direct_default_character: Default::default(),
+                });
+            block.id = 0;
+            block.range = start..end;
+            // Literal list tags already remain visible. Preserve list geometry
+            // without adding a second, generated WYSIWYG marker.
+            if let BlockKind::ListItem { item_start, .. } = &mut block.kind {
+                *item_start = false;
+            }
+            block
+        })
+        .collect()
 }
 
 impl Document {
@@ -943,7 +1082,7 @@ pub(super) fn inherited_literal_projection(
             block.direct_default_character = code.direct_default_character.clone();
         }
     }
-    FormattedDocument::from_parts(
+    let mut result = FormattedDocument::from_parts(
         revision,
         input.text.clone(),
         blocks,
@@ -953,5 +1092,47 @@ pub(super) fn inherited_literal_projection(
         previous.style_sheet().clone(),
         start,
         end,
-    )
+    );
+    let local_range = |range: Range<usize>| {
+        let start = range.start.max(region.start);
+        let end = range.end.min(region.end);
+        let start = if start > edit.range.start {
+            shift(start)
+        } else {
+            start
+        };
+        let end = if end >= edit.range.end {
+            shift(end)
+        } else {
+            end
+        };
+        start - region.start..end - region.start
+    };
+    let intersects = |range: &Range<usize>| {
+        range.start < region.end && region.start < range.end
+            || range.is_empty() && region.start <= range.start && range.start <= region.end
+    };
+    if let Some(blocks) = previous.flow_blocks_for_region(region) {
+        result.install_flow_blocks(
+            blocks
+                .into_iter()
+                .filter(|block| intersects(&block.range))
+                .map(|mut block| {
+                    block.id = 0;
+                    block.range = local_range(block.range);
+                    block
+                })
+                .collect(),
+        );
+    }
+    if let Some(ranges) = previous.flow_ranges_for_region(region) {
+        result.install_flow_ranges(
+            ranges
+                .into_iter()
+                .filter(intersects)
+                .map(local_range)
+                .collect(),
+        );
+    }
+    result
 }

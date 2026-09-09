@@ -45,6 +45,71 @@ final class EVListDecorationIntegrationTests: XCTestCase {
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
     }
 
+    func testNativeTabAndShiftTabIndentAtTheVisibleItemStart() throws {
+        let (_, surface) = try makeSurface("<ul><li>Parent</li><li><b>Body</b></li></ul>")
+        let session = try XCTUnwrap(surface.session)
+        surface.performInput { _ = try session.sendText("ji") }
+        let original = try session.layoutExport()
+        let originalX = try XCTUnwrap(original.decorations.last).x
+        let cursor = surface.viewPresentation.cursor_utf8_offset
+        let tab = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+            characters: "\t", charactersIgnoringModifiers: "\t", isARepeat: false, keyCode: 48))
+        surface.editorView.keyDown(with: tab)
+        XCTAssertGreaterThan(try XCTUnwrap(try session.layoutExport().decorations.last).x, originalX)
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, cursor)
+        let backtab = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+            modifierFlags: .shift, timestamp: 0, windowNumber: 0, context: nil,
+            characters: "\t", charactersIgnoringModifiers: "\t", isARepeat: false, keyCode: 48))
+        surface.editorView.keyDown(with: backtab)
+        XCTAssertEqual(try XCTUnwrap(try session.layoutExport().decorations.last).x, originalX, accuracy: 0.001)
+        surface.editorView.doCommand(by: #selector(NSResponder.insertTab(_:)))
+        XCTAssertGreaterThan(try XCTUnwrap(try session.layoutExport().decorations.last).x, originalX)
+        surface.editorView.doCommand(by: #selector(NSResponder.insertBacktab(_:)))
+        XCTAssertEqual(try XCTUnwrap(try session.layoutExport().decorations.last).x, originalX, accuracy: 0.001)
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, cursor)
+        XCTAssertNil(surface.commandOutput)
+    }
+
+    func testEscapeKeepsTheNativeCaretOnTheTerminalEmptyParagraph() throws {
+        let (backend, surface) = try makeSurface("<p>Body</p>")
+        let session = try XCTUnwrap(surface.session)
+        surface.performInput { _ = try session.sendText("A") }
+        surface.editorView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        surface.editorView.cancelOperation(nil)
+        XCTAssertEqual(try backend.formattedText(), "Body\n")
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 5)
+        let layout = try session.layoutExport()
+        let empty = try XCTUnwrap(layout.rows.last)
+        XCTAssertEqual(empty.text_start, 5)
+        XCTAssertEqual(empty.text_end, 5)
+        let caret = try session.caretGeometry(offset: surface.viewPresentation.cursor_utf8_offset,
+            affinity: surface.viewPresentation.cursor_affinity, in: layout.info)
+        XCTAssertGreaterThanOrEqual(caret.rect.y, empty.y)
+        XCTAssertGreaterThan(caret.rect.height, 0)
+        XCTAssertGreaterThan(try session.currentFontEnWidth(), 0)
+    }
+
+    func testNativeArrowReturnToAnEmptyItemKeepsBackspaceAtItsVisibleStart() throws {
+        for source in ["<ul><li><b>Body</b></li></ul>", "<ol><li><p><b>Body</b></p></li><li>Tail</li></ol>"] {
+            let (backend, surface) = try makeSurface(source)
+            let session = try XCTUnwrap(surface.session)
+            surface.performInput { _ = try session.sendText("A") }
+            surface.editorView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+            let start = surface.viewPresentation.cursor_utf8_offset
+            let text = try backend.formattedText()
+            surface.editorView.doCommand(by: #selector(NSResponder.moveUp(_:)))
+            surface.editorView.doCommand(by: #selector(NSResponder.moveDown(_:)))
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, start)
+            surface.editorView.doCommand(by: #selector(NSResponder.deleteBackward(_:)))
+            XCTAssertEqual(try backend.formattedText(), text)
+            XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "Paragraph")
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, start)
+            XCTAssertNil(surface.commandOutput)
+        }
+    }
+
     func testMarkerDrawingCullsOutsideDirtyRegionAtOrdinaryZoomStops() throws {
         let (_, surface) = try makeSurface("<ul><li>First body</li><li>Second body</li></ul>")
         let session = try XCTUnwrap(surface.session)

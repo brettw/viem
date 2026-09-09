@@ -21,7 +21,7 @@ public enum EVCoreFrontendError: LocalizedError, Equatable {
             case UInt32(VIEM_STATUS_VERIFICATION_FAILED):
                 "This edit cannot preserve the format's text and structure."
             case UInt32(VIEM_STATUS_AMBIGUOUS_PROJECTION):
-                "This selection has no unambiguous editable source range."
+                "This edit is not supported for the selected content structure."
             case UInt32(VIEM_STATUS_UNREPRESENTABLE_CHARACTER):
                 "This character cannot be represented in the document's encoding."
             case UInt32(VIEM_STATUS_UNSUPPORTED_OPERATION):

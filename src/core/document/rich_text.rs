@@ -336,29 +336,7 @@ pub(super) fn block_source_point(
     projection: &FormattedDocument,
     block: &Block,
 ) -> Result<usize, DocumentError> {
-    if block.range.is_empty() {
-        let spans = projection.provenance();
-        let end = spans.partition_point(|span| span.formatted.start <= block.range.start);
-        return spans[..end]
-            .iter()
-            .rev()
-            .take_while(|span| span.formatted.start == block.range.start)
-            .find(|span| span.formatted.is_empty() && span.source.is_empty())
-            .map(|span| span.source.start)
-            .ok_or(DocumentError::AmbiguousProjection);
-    }
-    let spans = projection.provenance_for_region(&block.range);
-    spans
-        .iter()
-        .find(|span| !span.formatted.is_empty() && !span.source.is_empty())
-        .map(|span| span.source.start)
-        .or_else(|| {
-            spans
-                .iter()
-                .rev()
-                .find(|span| span.formatted == block.range && span.source.is_empty())
-                .map(|span| span.source.start)
-        })
+    super::source_edit::insertion_point(projection, block.range.start, None)
         .ok_or(DocumentError::AmbiguousProjection)
 }
 
@@ -369,45 +347,7 @@ pub(super) fn editable_source_range(
     projection: &FormattedDocument,
     range: &Range<usize>,
 ) -> Result<Range<usize>, DocumentError> {
-    if range.is_empty() {
-        // An empty rich document requires a grammar-specific body insertion
-        // anchor. Refuse to insert outside its wrapper until one is available.
-        if projection.text_tree().byte_len() == 0 {
-            return Err(DocumentError::AmbiguousProjection);
-        }
-        let downstream = range.start != projection.text_tree().byte_len()
-            && !projection
-                .hard_line_at_offset(range.start)
-                .and_then(|line| projection.hard_line_range(line))
-                .is_some_and(|line| range.start == line.end && !line.is_empty());
-        let at = projection
-            .source_insertion_point(range.start, downstream)
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        return Ok(at..at);
-    }
-    let mut formatted = range.start;
-    let mut result: Option<Range<usize>> = None;
-    for span in projection.provenance_for_region(range) {
-        if span.formatted.start != formatted
-            || span.formatted.end > range.end
-            || span.source.is_empty()
-        {
-            return Err(DocumentError::AmbiguousProjection);
-        }
-        formatted = span.formatted.end;
-        if let Some(source) = result.as_mut() {
-            if source.end != span.source.start {
-                return Err(DocumentError::AmbiguousProjection);
-            }
-            source.end = span.source.end;
-        } else {
-            result = Some(span.source.clone());
-        }
-    }
-    if formatted != range.end {
-        return Err(DocumentError::AmbiguousProjection);
-    }
-    result.ok_or(DocumentError::AmbiguousProjection)
+    super::source_edit::contiguous_range(projection, range)
 }
 
 pub(super) fn overlay(target: &mut CharacterProperties, source: &CharacterProperties) {
@@ -997,48 +937,25 @@ pub(super) fn text_source_runs(
     if range.is_empty() {
         return Ok(vec![text_source_range(document, range)?]);
     }
-    let mut runs: Vec<Range<usize>> = Vec::new();
-    let mut position = range.start;
-    // Include one following grapheme to bound any omitted contributors to a
-    // selected HTML space. This stays local even when the selection ends at
-    // that space, and never consumes the following visible content.
-    let end = if document.format() == super::Format::Html {
-        document
-            .hard_line_snapshot()
-            .next_grapheme_boundary(range.end)
-            .unwrap_or(range.end)
-    } else {
-        range.end
-    };
-    let spans = document.projection().provenance_for_region(&(range.start..end));
-    for (index, span) in spans.iter().enumerate() {
-        if position == range.end {
-            break;
-        }
-        if span.formatted.start != position
-            || span.formatted.end > range.end
-            || span.source.is_empty()
-        {
-            return Err(DocumentError::AmbiguousProjection);
-        }
-        position = span.formatted.end;
-        if let Some(last) = runs.last_mut().filter(|last| last.end == span.source.start) {
-            last.end = span.source.end;
-        } else {
-            runs.push(span.source.clone());
-        }
-        if document.format() == super::Format::Html {
+    let visible = super::source_edit::visible_runs(document.projection(), range)?;
+    let mut runs = visible.into_iter().map(|run| run.source).collect::<Vec<_>>();
+    // HTML whitespace may have additional collapsed contributors separated by
+    // hidden syntax. Preserve that grammar-specific relation alongside the
+    // shared minimal visible runs.
+    if document.format() == super::Format::Html {
+        let end = document.hard_line_snapshot().next_grapheme_boundary(range.end)
+            .unwrap_or(range.end);
+        let spans = document.projection().provenance_for_region(&(range.start..end));
+        for (index, span) in spans.iter().enumerate().filter(|(_, span)| {
+            !span.formatted.is_empty() && span.formatted.end <= range.end
+        }) {
             if let Some(following) = spans[index + 1..].iter().find(|s| !s.formatted.is_empty()) {
                 runs.extend(super::html_whitespace::collapsed_space_tail(
-                    document,
-                    span,
-                    following.source.start,
+                    document, span, following.source.start,
                 )?);
             }
         }
-    }
-    if position != range.end {
-        return Err(DocumentError::AmbiguousProjection);
+        runs.sort_by_key(|run| (run.start, run.end));
     }
     Ok(runs)
 }

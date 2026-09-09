@@ -157,3 +157,99 @@ fn whole_html_clipboard_reconstruction_retains_unclosed_source_exactly() {
         assert_undo_redo(&mut target, &mut commands, b"", source);
     }
 }
+
+#[test]
+fn rich_clipboard_replacement_preserves_hidden_syntax_between_selected_runs() {
+    let content = copy_word(b"<b>word</b>", true, FontSlant::Upright);
+    let source = b"<!--outside--><p>A<b>bc</b><!--keep--><i>de</i>Z</p><!--tail-->";
+    let mut document = html(source);
+    let mut commands = CommandInterpreter::new();
+    let before_a = DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap();
+    let before_z = DocumentLayoutStyles::character_at(document.projection(), 5, false).unwrap();
+    let context = ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(
+        ClipboardTarget::Clipboard,
+        ClipboardGeneration(1),
+        content,
+    ));
+    for key in "lv3l\"+p".chars() {
+        event(&mut commands, &mut document, &context, InputEvent::key(key));
+    }
+    assert_eq!(document.text(), "AwordZ");
+    let changed = document.source_bytes();
+    let serialized = std::str::from_utf8(&changed).unwrap();
+    assert!(serialized.starts_with("<!--outside--><p>A<b>"));
+    assert!(serialized.contains("</b><!--keep--><i></i>Z</p><!--tail-->"));
+    for snapshot in [&document, &html(&changed)] {
+        for at in 1..5 {
+            let style =
+                DocumentLayoutStyles::character_at(snapshot.projection(), at, false).unwrap();
+            assert!(style.bold);
+            assert_eq!(style.slant, FontSlant::Upright);
+        }
+        assert_eq!(
+            DocumentLayoutStyles::character_at(snapshot.projection(), 0, false).unwrap(),
+            before_a
+        );
+        assert_eq!(
+            DocumentLayoutStyles::character_at(snapshot.projection(), 5, false).unwrap(),
+            before_z
+        );
+    }
+    assert_undo_redo(&mut document, &mut commands, source, &changed);
+}
+
+#[test]
+fn rich_clipboard_at_entity_interior_preserves_unselected_entity_text() {
+    let content = copy_word(b"<b>word</b>", true, FontSlant::Upright);
+    let source = b"<p><b>&fjlig;</b><!--keep-->Z</p>";
+    let mut document = html(source);
+    let mut commands = paste_word(&mut document, content, 'a');
+    assert_eq!(document.text(), "fwordjZ");
+    let changed = document.source_bytes();
+    assert!(std::str::from_utf8(&changed)
+        .unwrap()
+        .ends_with("</b><!--keep-->Z</p>"));
+    assert_undo_redo(&mut document, &mut commands, source, &changed);
+}
+
+#[test]
+fn entity_suffix_keeps_its_original_style_after_cross_run_text_replacement() {
+    let source = b"<p><i>A</i><b>&fjlig;</b><!--keep-->Z</p>";
+    let mut document = html(source);
+    let original_j = DocumentLayoutStyles::character_at(document.projection(), 2, false).unwrap();
+    document.replace(0..2, "X").unwrap();
+    assert_eq!(document.text(), "XjZ");
+    assert_eq!(
+        DocumentLayoutStyles::character_at(document.projection(), 1, false).unwrap(),
+        original_j
+    );
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source);
+}
+
+#[test]
+fn entity_suffix_keeps_its_original_style_after_cross_run_rich_paste() {
+    let content = copy_word(b"<i>word</i>", false, FontSlant::Italic);
+    let source = b"<p><i>A</i><b>&fjlig;</b><!--keep-->Z</p>";
+    let mut document = html(source);
+    let original_j = DocumentLayoutStyles::character_at(document.projection(), 2, false).unwrap();
+    let mut commands = CommandInterpreter::new();
+    let context = ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(
+        ClipboardTarget::Clipboard,
+        ClipboardGeneration(1),
+        content,
+    ));
+    for key in "vl\"+p".chars() {
+        event(&mut commands, &mut document, &context, InputEvent::key(key));
+    }
+    assert_eq!(document.text(), "wordjZ");
+    assert_eq!(
+        DocumentLayoutStyles::character_at(document.projection(), 4, false).unwrap(),
+        original_j
+    );
+    let changed = document.source_bytes();
+    assert!(std::str::from_utf8(&changed)
+        .unwrap()
+        .ends_with("</b><!--keep-->Z</p>"));
+    assert_undo_redo(&mut document, &mut commands, source, &changed);
+}

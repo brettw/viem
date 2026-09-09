@@ -3034,7 +3034,53 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             text = String::from_utf8(bytes).expect("ASCII whitespace changes preserve UTF-8");
         }
-        let line_ranges = hard_line_ranges_with_origin(&text, text_origin);
+        let mut line_ranges = hard_line_ranges_with_origin(&text, text_origin);
+        if flow {
+            // Source-flow block boundaries may have no newline character.
+            // Preserve their positions in the composition overlay alongside
+            // the physical breaks and newly authored composition newlines.
+            let mut boundaries = Vec::new();
+            for line in base_region.start + 1..base_region.end {
+                let previous = self
+                    .document
+                    .projection()
+                    .presentation_line_range(line - 1, true)
+                    .unwrap();
+                let next = self
+                    .document
+                    .projection()
+                    .presentation_line_range(line, true)
+                    .unwrap();
+                if previous.end == next.start && !replaced.contains(&next.start) {
+                    let association = if affinity == BoundaryAffinity::Upstream {
+                        Association::AfterInsertion
+                    } else {
+                        Association::BeforeInsertion
+                    };
+                    if let Some(at) =
+                        overlay.overlay_offset_for_base_boundary(next.start, association)
+                    {
+                        boundaries.push(at);
+                    }
+                }
+            }
+            line_ranges = line_ranges
+                .into_iter()
+                .flat_map(|range| {
+                    let mut start = range.start;
+                    let mut split = Vec::new();
+                    for &at in boundaries
+                        .iter()
+                        .filter(|&&at| range.start < at && at < range.end)
+                    {
+                        split.push(start..at);
+                        start = at;
+                    }
+                    split.push(start..range.end);
+                    split
+                })
+                .collect();
+        }
         let overlay_line_count = base_line_count - base_region.len() + line_ranges.len();
         let requested_end = base_region
             .start
@@ -3075,9 +3121,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             .transpose()
             .map_err(DocumentError::FormattedTextStorage)?
             .unwrap_or(base_text_end);
-        let mut styles = DocumentLayoutStyles::resolve_region(
+        let mut styles = DocumentLayoutStyles::resolve_region_with_flow(
             self.document.projection(),
             base_text_start..style_end,
+            flow,
         )
         .map_err(LayoutError::from)?;
         if flow {
@@ -3243,9 +3290,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .transpose()
                 .map_err(DocumentError::FormattedTextStorage)?
                 .unwrap_or_else(|| to_base(capture.end, true));
-            let mut styles = DocumentLayoutStyles::resolve_region(
+            let mut styles = DocumentLayoutStyles::resolve_region_with_flow(
                 self.document.projection(),
                 to_base(capture.start, false)..style_end,
+                flow,
             )
             .map_err(LayoutError::from)?;
             if flow {

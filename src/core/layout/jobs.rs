@@ -422,7 +422,8 @@ pub(crate) fn flow_paragraph_styles(styles: &mut DocumentLayoutStyles, lines: &[
     let mut paragraphs: Vec<super::ParagraphLayoutStyle> = Vec::new();
     for line in lines {
         if let Some(paragraph) = styles.paragraphs.iter().find(|paragraph| {
-            paragraph.text_range.start <= line.start && line.start <= paragraph.text_range.end
+            paragraph.text_range.start <= line.start && line.start < paragraph.text_range.end
+                || paragraph.text_range.is_empty() && paragraph.text_range.start == line.start
         }) {
             // A Source paragraph can retain explicit hard breaks while its soft
             // breaks flow. Keep its original start/identity so continuation
@@ -453,6 +454,14 @@ pub(crate) fn resolve_flow_paragraph_styles(
     styles: &mut DocumentLayoutStyles,
     lines: &[Range<usize>],
 ) -> Result<(), DocumentStyleError> {
+    if let (Some(first), Some(last)) = (lines.first(), lines.last()) {
+        if let Some(paragraphs) =
+            DocumentLayoutStyles::source_flow_paragraphs(projection, first.start..last.end)?
+        {
+            styles.paragraphs = paragraphs;
+            return Ok(());
+        }
+    }
     for line in lines {
         if !styles.paragraphs.iter().any(|paragraph| {
             paragraph.text_range.start <= line.start && line.start <= paragraph.text_range.end
@@ -789,7 +798,7 @@ where
             return Err(LayoutJobError::Cancelled);
         }
         let mut styles =
-            DocumentLayoutStyles::resolve_region(document.projection(), context_start..style_end)?;
+            DocumentLayoutStyles::resolve_region_with_flow(document.projection(), context_start..style_end, view.paragraph_flow())?;
         styles.apply_source_quote_policy(document.format(), view.paragraph_flow());
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
@@ -859,7 +868,7 @@ where
             return Err(LayoutJobError::Cancelled);
         }
         let mut styles =
-            DocumentLayoutStyles::resolve_region(document.projection(), text_origin..style_end)?;
+            DocumentLayoutStyles::resolve_region_with_flow(document.projection(), text_origin..style_end, view.paragraph_flow())?;
         styles.apply_source_quote_policy(document.format(), view.paragraph_flow());
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);

@@ -1231,6 +1231,9 @@ pub struct FormattedDocument {
     /// content (for example forced legacy-Mac input).
     hard_lines: OrderedRangeStore<HardLine>,
     flow_lines: Option<OrderedRangeStore<HardLine>>,
+    /// Source-visible structural paragraphs, used only by paragraph flow.
+    /// Their ranges retain every source character, including surrounding tags.
+    flow_blocks: Option<OrderedRangeStore<Block>>,
     styles: IntervalRangeStore<StyleSpan>,
     provenance: IntervalRangeStore<ProvenanceSpan>,
     source_boundaries: IntervalRangeStore<SourceTextBoundary>,
@@ -1250,6 +1253,7 @@ impl PartialEq for FormattedDocument {
             && self.blocks == other.blocks
             && self.hard_lines == other.hard_lines
             && self.flow_lines == other.flow_lines
+            && self.flow_blocks == other.flow_blocks
             && self.styles == other.styles
             && self.provenance == other.provenance
             && self.decoding_diagnostics == other.decoding_diagnostics
@@ -1299,6 +1303,7 @@ impl FormattedDocument {
         self.hard_lines.visit_retained_memory(visitor);
         if trace { eprintln!("  hard_lines {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
         if let Some(lines) = &self.flow_lines { lines.visit_retained_memory(visitor); }
+        if let Some(blocks) = &self.flow_blocks { blocks.visit_retained_memory(visitor); }
         self.styles.visit_retained_memory(visitor);
         if trace { eprintln!("  styles {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
         self.provenance.visit_retained_memory(visitor);
@@ -1364,6 +1369,7 @@ impl FormattedDocument {
             blocks: OrderedRangeStore::new(blocks),
             hard_lines: OrderedRangeStore::new(hard_lines),
             flow_lines: None,
+            flow_blocks: None,
             styles: IntervalRangeStore::new(styles),
             provenance: IntervalRangeStore::new(provenance),
             source_boundaries,
@@ -1378,17 +1384,43 @@ impl FormattedDocument {
     }
 
     pub(crate) fn install_flow_ranges(&mut self, ranges: Vec<Range<usize>>) {
-        let length = self.text.byte_len();
+        let ends = ranges
+            .iter()
+            .skip(1)
+            .map(|range| range.start)
+            .chain(std::iter::once(self.text.byte_len()))
+            .collect::<Vec<_>>();
         self.flow_lines = Some(OrderedRangeStore::new(
             ranges
                 .into_iter()
-                .map(|range| HardLine {
+                .zip(ends)
+                .map(|(range, next_start)| HardLine {
                     id: 0,
-                    separator_length: usize::from(range.end < length),
+                    separator_length: next_start - range.end,
                     range,
                 })
                 .collect(),
         ));
+    }
+
+    pub(crate) fn install_flow_blocks(&mut self, blocks: Vec<Block>) {
+        self.flow_blocks = Some(OrderedRangeStore::new(blocks));
+    }
+
+    pub(crate) fn flow_blocks_for_region(&self, range: &Range<usize>) -> Option<Vec<Block>> {
+        self.flow_blocks
+            .as_ref()
+            .map(|blocks| blocks.query_touching(range))
+    }
+
+    pub(crate) fn flow_ranges_for_region(&self, range: &Range<usize>) -> Option<Vec<Range<usize>>> {
+        self.flow_lines.as_ref().map(|lines| {
+            lines
+                .query_touching(range)
+                .into_iter()
+                .map(|line| line.range)
+                .collect()
+        })
     }
 
     pub fn presentation_line_count(&self, flow: bool) -> usize {
@@ -1895,6 +1927,46 @@ impl FormattedDocument {
         let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
         self.blocks = OrderedRangeStore::new(blocks);
         let next_id = self.assign_initial_hard_line_ids(next_id)?;
+        self.reconcile_flow_block_ids(None, &[], next_id)
+    }
+
+    fn reconcile_flow_block_ids(
+        &mut self,
+        previous: Option<&Self>,
+        edits: &[TextEdit],
+        next_id: u64,
+    ) -> Result<u64, BlockIdentityError> {
+        let Some(flow) = &self.flow_blocks else {
+            return Ok(next_id);
+        };
+        let mut blocks = flow.to_vec();
+        if let Some(previous) = previous {
+            let mappings = build_edit_mappings(previous.text().len(), self.text().len(), edits)?;
+            if let Some(old) = &previous.flow_blocks {
+                for block in old.as_slice() {
+                    if let Some(witness) =
+                        block_identity_witness(previous.text(), block, &mappings)?
+                    {
+                        let at = map_surviving_byte(witness, &mappings)?;
+                        let index = block_index_for_witness(
+                            self.text(),
+                            &blocks,
+                            at,
+                            witness_side(previous.text(), block, witness),
+                        )?;
+                        if let Some(candidate) = blocks.get_mut(index).filter(|block| block.id == 0)
+                        {
+                            candidate.id = block.id;
+                        }
+                    }
+                }
+            }
+        }
+        let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
+        self.flow_blocks = Some(OrderedRangeStore::new(blocks));
+        if let Some(old) = previous.and_then(|previous| previous.flow_blocks.as_ref()) {
+            self.flow_blocks.as_mut().unwrap().reuse_equal_chunks(old);
+        }
         Ok(next_id)
     }
 
@@ -1933,6 +2005,16 @@ impl FormattedDocument {
         self.blocks = OrderedRangeStore::new(blocks);
         self.blocks.reuse_equal_chunks(&previous.blocks);
         self.install_unchanged_hard_line_ids(previous)?;
+        if let (Some(flow), Some(old)) = (&mut self.flow_blocks, &previous.flow_blocks) {
+            let mut blocks = flow.to_vec();
+            if blocks.len() != old.len() || blocks.iter().zip(old.as_slice())
+                .any(|(block, old)| block.range != old.range) {
+                return Err(BlockIdentityError::InvalidProjection);
+            }
+            for (block, old) in blocks.iter_mut().zip(old.as_slice()) { block.id = old.id; }
+            *flow = OrderedRangeStore::new(blocks);
+            flow.reuse_equal_chunks(old);
+        }
         self.styles.reuse_equal_chunks(&previous.styles);
         Ok(())
     }
@@ -2071,6 +2153,7 @@ impl FormattedDocument {
         self.blocks = OrderedRangeStore::new(blocks);
         self.blocks.reuse_equal_chunks(&previous.blocks);
         let next_id = self.reconcile_hard_line_ids(previous, edits, next_id)?;
+        let next_id = self.reconcile_flow_block_ids(Some(previous), edits, next_id)?;
         self.styles.reuse_equal_chunks(&previous.styles);
         Ok(next_id)
     }
@@ -2204,7 +2287,7 @@ impl FormattedDocument {
             self.hard_lines = OrderedRangeStore::new(lines);
             self.hard_lines.reuse_equal_chunks(&previous.hard_lines);
             self.styles.reuse_equal_chunks(&previous.styles);
-            return Ok(next_id);
+            return self.reconcile_flow_block_ids(None, &[], next_id);
         }
         if previous_blocks.len() != previous.hard_lines.len()
             || blocks.len() != self.hard_lines.len()
@@ -2246,7 +2329,7 @@ impl FormattedDocument {
         self.blocks.reuse_equal_chunks(&previous.blocks);
         self.rebuild_hard_lines_from_blocks(Some(previous))?;
         self.styles.reuse_equal_chunks(&previous.styles);
-        Ok(next_id)
+        self.reconcile_flow_block_ids(None, &[], next_id)
     }
 
     #[cfg(test)]
@@ -2744,6 +2827,13 @@ impl FormattedDocument {
                 }
             }
             self.blocks = OrderedRangeStore::new(blocks);
+            if let Some(flow) = &mut self.flow_blocks {
+                let mut blocks = flow.to_vec();
+                for block in &mut blocks {
+                    if &block.style == id { block.style = self.style_sheet.base_paragraph.clone(); }
+                }
+                *flow = OrderedRangeStore::new(blocks);
+            }
             if &self.document_style.style == id {
                 self.document_style.style = self.style_sheet.base_document.clone();
             }
@@ -2802,6 +2892,10 @@ impl FormattedDocument {
                 .filter(|block| block_styles.contains(&block.style))
                 .map(|block| block.range.clone()),
         );
+        if let Some(blocks) = &self.flow_blocks {
+            ranges.extend(blocks.iter().filter(|block| block_styles.contains(&block.style))
+                .map(|block| block.range.clone()));
+        }
         ranges.extend(
             self.styles
                 .iter()
@@ -2922,6 +3016,9 @@ impl FormattedDocument {
         if range.start > range.end || range.end > self.text.byte_len() {
             return None;
         }
+        if range.is_empty() {
+            return super::source_edit::insertion_point(self, range.start, None).map(|at| at..at);
+        }
         let start = self.source_boundary(range.start, Side::Downstream)?;
         let end = self.source_boundary(range.end, Side::Upstream)?;
         (start <= end).then_some(start..end)
@@ -2953,34 +3050,7 @@ impl FormattedDocument {
             return None;
         }
 
-        let spans = self.provenance.query_overlapping(&range);
-        let mut formatted_at = range.start;
-        let mut runs: Vec<VisibleSourceRun> = Vec::new();
-        for span in spans {
-            // A public text range cannot split a scalar provenance unit. If a
-            // later adapter emits a many-to-one or overlapping relation, this
-            // specialized rewrite path must conservatively decline it.
-            if span.formatted.start != formatted_at || span.formatted.end > range.end {
-                return None;
-            }
-            formatted_at = span.formatted.end;
-
-            if let Some(previous) = runs.last_mut() {
-                if span.source.start < previous.source.end {
-                    return None;
-                }
-                if span.source.start == previous.source.end {
-                    previous.formatted.end = span.formatted.end;
-                    previous.source.end = span.source.end;
-                    continue;
-                }
-            }
-            runs.push(VisibleSourceRun {
-                formatted: span.formatted,
-                source: span.source,
-            });
-        }
-        (formatted_at == range.end && !runs.is_empty()).then_some(runs)
+        super::source_edit::visible_runs(self, &range).ok()
     }
 
     /// Whether replacement text inserted at the downstream side of this
@@ -3525,6 +3595,8 @@ pub(crate) fn splice_line_local_projection(
     target_text: FormattedTextTree,
     new_source_content_end: usize,
     source_paragraphs: bool,
+    edits: &[TextEdit],
+    next_projected_block_id: &mut u64,
 ) -> Result<(FormattedDocument, ProjectionSpliceStatistics), BlockIdentityError> {
     if regional.revision != revision
         || regional.source_content_start != new_source.start
@@ -3765,6 +3837,78 @@ pub(crate) fn splice_line_local_projection(
         None
     };
 
+    let flow_blocks = if let Some(old_flow) = &previous.flow_blocks {
+        let indices = old_flow.partition_point(|block| {
+            block.range.end <= old_formatted.start && !block.range.is_empty()
+        })..old_flow.partition_point(|block| {
+            block.range.start < old_formatted.end
+                || block.range.is_empty() && block.range.start == old_formatted.end
+        });
+        let old = old_flow
+            .get_range(&indices)
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        let parsed = regional
+            .flow_blocks
+            .as_ref()
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        let mut next = parsed.to_vec();
+        for block in &mut next {
+            block.id = 0;
+            block.range = shift_region_range(&block.range, old_formatted.start)?;
+        }
+        if let (Some(first), Some(old)) = (next.first_mut(), old.first()) {
+            first.range.start = first.range.start.min(old.range.start);
+        }
+        if let (Some(last), Some(old)) = (next.last_mut(), old.last()) {
+            if old.range.end > old_formatted.end {
+                last.range.end = old.range.end - old_formatted.end + new_formatted_end;
+            }
+        }
+        // Source tags can create, join, or remove several presentation
+        // paragraphs inside an unchanged physical source line. Reconcile
+        // only the touched metadata, using surviving bytes as identity
+        // witnesses and the owning document's normal ID allocator.
+        let mappings =
+            build_edit_mappings(previous.text.byte_len(), target_text.byte_len(), edits)?;
+        for old in &old {
+            let at = if let Some(witness) = first_surviving_byte(&old.range, &mappings) {
+                map_surviving_byte(witness, &mappings)?
+            } else if old.range.is_empty() {
+                match map_old_boundary_before(old.range.start, &mappings) {
+                    Ok(at) => at,
+                    Err(_) => continue,
+                }
+            } else {
+                continue;
+            };
+            let index = next
+                .partition_point(|block| block.range.start <= at)
+                .saturating_sub(1);
+            if let Some(block) = next.get_mut(index).filter(|block| {
+                block.id == 0
+                    && (block.range.contains(&at)
+                        || block.range.is_empty() && block.range.start == at)
+            }) {
+                block.id = old.id;
+            }
+        }
+        *next_projected_block_id =
+            allocate_unassigned_block_ids(&mut next, *next_projected_block_id)?;
+        Some(
+            old_flow
+                .splice(
+                    indices,
+                    next,
+                    old_formatted.end,
+                    new_formatted_end,
+                    &mut range_stats,
+                )
+                .ok_or(BlockIdentityError::InvalidProjection)?,
+        )
+    } else {
+        None
+    };
+
     let style_indices = contained_interval_indices(&previous.styles, &old_formatted)?;
     let regional_styles = regional
         .styles
@@ -3970,6 +4114,7 @@ pub(crate) fn splice_line_local_projection(
         blocks,
         hard_lines,
         flow_lines,
+        flow_blocks,
         styles,
         provenance,
         source_boundaries,

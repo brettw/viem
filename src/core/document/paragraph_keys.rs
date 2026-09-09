@@ -3,22 +3,116 @@
 use super::*;
 
 impl Document {
+    /// Paragraph keyboard actions use the formatted boundary, independently
+    /// of its source spelling, affinity, or how the caret arrived there.
+    fn keyboard_paragraph(&self, at: usize) -> Result<Option<super::super::Block>, DocumentError> {
+        self.text_point(at)?;
+        if !matches!(self.format(), Format::Markdown | Format::Html | Format::Rtf) {
+            return Ok(None);
+        }
+        Ok(self
+            .projection()
+            .blocks_for_region(&(at..at))
+            .into_iter()
+            .filter(|block| block.range.start <= at && at <= block.range.end)
+            .max_by_key(|block| block.range.start))
+    }
+
+    pub(crate) fn list_item_indent_key_request(
+        &self,
+        at: usize,
+        unindent: bool,
+    ) -> Result<Option<ModelRequest>, DocumentError> {
+        if matches!(self.format(), Format::HtmlSource | Format::MarkdownSource) {
+            self.text_point(at)?;
+            let source_blocks = self
+                .projection()
+                .flow_blocks_for_region(&(at..at))
+                .unwrap_or_else(|| self.projection().blocks_for_region(&(at..at)));
+            let in_list = source_blocks.iter().any(|block| {
+                matches!(block.kind, super::super::BlockKind::ListItem { .. })
+            }) || self.projection().style_spans_touching(&(at..at)).iter().any(|span| {
+                matches!(&span.application, StyleApplication::SourceParagraph { style, .. } if style.is_internal_list())
+            });
+            if !in_list {
+                return Ok(None);
+            }
+            let source_at = self
+                .projection()
+                .source_insertion_point(at, true)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let semantic = Document::from_bytes_with_file_format(
+                self.source_bytes(),
+                self.encoding(),
+                if self.format() == Format::HtmlSource {
+                    Format::Html
+                } else {
+                    Format::Markdown
+                },
+                self.file_format(),
+            )?;
+            let visible_at = semantic.visible_point_for_source(source_at, true)?;
+            let Some(block) = semantic.keyboard_paragraph(visible_at)? else {
+                return Ok(None);
+            };
+            if visible_at != block.range.start
+                || !matches!(
+                    block.kind,
+                    super::super::BlockKind::ListItem {
+                        item_start: true,
+                        ..
+                    }
+                )
+            {
+                return Ok(None);
+            }
+            // In source mode, the actual body start remains a structural
+            // boundary even when opening inline syntax precedes it. Markdown
+            // additionally exposes its literal marker and marker/body boundary.
+            let at_body_start = semantic
+                .projection()
+                .source_insertion_point(visible_at, true)
+                == Some(source_at);
+            let at_marker = self.format() == Format::MarkdownSource
+                && source_blocks.iter().any(|block| {
+                    self.projection()
+                        .list_marker_range_for_block(block)
+                        .is_some_and(|marker| at == marker.start || at == marker.end)
+                });
+            return Ok(
+                (at_body_start || at_marker).then(|| ModelRequest::IndentList {
+                    document: self.id(),
+                    revision: self.revision(),
+                    range: at..at,
+                    unindent,
+                }),
+            );
+        }
+        let Some(block) = self.keyboard_paragraph(at)? else {
+            return Ok(None);
+        };
+        Ok((at == block.range.start
+            && matches!(
+                block.kind,
+                super::super::BlockKind::ListItem {
+                    item_start: true,
+                    ..
+                }
+            ))
+        .then(|| ModelRequest::IndentList {
+            document: self.id(),
+            revision: self.revision(),
+            range: block.range,
+            unindent,
+        }))
+    }
+
     pub(crate) fn paragraph_boundary_reset_request(
         &self,
         at: usize,
         empty_quote_only: bool,
     ) -> Result<Option<ModelRequest>, DocumentError> {
-        self.text_point(at)?;
-        if !matches!(self.format(), Format::Markdown | Format::Html | Format::Rtf) {
-            return Ok(None);
-        }
-        let Some(block) = self
-            .projection()
-            .blocks_for_region(&(at..at))
-            .into_iter()
-            .filter(|block| block.range.start <= at && at <= block.range.end)
-            .max_by_key(|block| block.range.start)
-        else {
+        let Some(block) = self.keyboard_paragraph(at)? else {
             return Ok(None);
         };
         let quote = block.style == StyleId::from("Block quote");
