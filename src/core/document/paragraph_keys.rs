@@ -6,16 +6,10 @@ impl Document {
     /// Paragraph keyboard actions use the formatted boundary, independently
     /// of its source spelling, affinity, or how the caret arrived there.
     fn keyboard_paragraph(&self, at: usize) -> Result<Option<super::super::Block>, DocumentError> {
-        self.text_point(at)?;
         if !matches!(self.format(), Format::Markdown | Format::Html | Format::Rtf) {
             return Ok(None);
         }
-        Ok(self
-            .projection()
-            .blocks_for_region(&(at..at))
-            .into_iter()
-            .filter(|block| block.range.start <= at && at <= block.range.end)
-            .max_by_key(|block| block.range.start))
+        super::super::edit_boundary::paragraph_at(self, at)
     }
 
     pub(crate) fn list_item_indent_key_request(
@@ -123,24 +117,17 @@ impl Document {
         } else if at != block.range.start {
             return Ok(None);
         }
-        if quote {
+        if empty_quote_only || super::super::edit_boundary::is_code_paragraph(self, &block)?
+            || matches!(block.kind, super::super::BlockKind::ListItem { .. })
+        {
             return Ok(Some(ModelRequest::SetParagraphStyle {
                 document: self.id(),
                 revision: self.revision(),
                 range: block.range,
-                style: StyleId::from("Paragraph"),
+                style: self.projection().style_sheet().base_paragraph.clone(),
             }));
         }
-        Ok(
-            matches!(block.kind, super::super::BlockKind::ListItem { .. }).then(|| {
-                ModelRequest::SetListStyle {
-                    document: self.id(),
-                    revision: self.revision(),
-                    range: block.range,
-                    style: None,
-                }
-            }),
-        )
+        Ok(None)
     }
 
     pub(super) fn prepare_intra_paragraph_break(
@@ -153,12 +140,7 @@ impl Document {
             // Plain/source projections author a literal source line ending.
             return self.prepare_text_edits(vec![TextEdit::new(at..at, "\n")]);
         }
-        let block = self
-            .projection()
-            .blocks_for_region(&(at..at))
-            .into_iter()
-            .filter(|block| block.range.start <= at && at <= block.range.end)
-            .max_by_key(|block| block.range.start)
+        let block = super::super::edit_boundary::paragraph_at(self, at)?
             .ok_or(DocumentError::AmbiguousProjection)?;
         if self.format() == Format::Markdown
             && block.style == StyleId::from("Block quote")

@@ -6,6 +6,143 @@ use super::{BlockKind, Document, DocumentError, Revision};
 use std::collections::BTreeSet;
 use std::ops::Range;
 
+/// A deleted paragraph boundary keeps the first paragraph's formatting. RTF
+/// controls after the boundary still govern their original source lifetime;
+/// scoped overrides on the retained tail prevent them from retargeting the
+/// merged paragraph or changing the next untouched paragraph.
+pub(super) fn joining_patches(
+    document: &Document,
+    input: &NormalizedText,
+    edit: &super::TextEdit,
+) -> Result<Option<Vec<super::SourcePatch>>, DocumentError> {
+    if edit.range.is_empty() || edit.replacement.contains('\n') {
+        return Ok(None);
+    }
+    let projection = document.projection();
+    let blocks = projection.blocks_for_region(&edit.range);
+    let Some(first) = blocks.iter().find(|block| {
+        block.range.start <= edit.range.start && edit.range.start <= block.range.end
+    }) else {
+        return Ok(None);
+    };
+    let Some(last) = blocks.iter().rev().find(|block| {
+        block.range.start <= edit.range.end && edit.range.end <= block.range.end
+    }) else {
+        return Ok(None);
+    };
+    if first.id == last.id || edit.range.end <= first.range.end {
+        return Ok(None);
+    }
+    let mut patches = super::source_edit::rich_text_patches(document, edit, None)?;
+    let mut controls = String::from("\\pard");
+    if let BlockKind::ListItem { ordered, ordinal, .. } = first.kind {
+        let at = super::rich_text::block_source_point(projection, first)?;
+        if let Some(selector) = modern_selector_at(input, at) {
+            controls.push_str(&selector);
+        } else if ordered {
+            controls.push_str(&format!("{{\\*\\pn\\pnlvlbody\\pndec\\pnstart{ordinal}{{\\pntxta .}}}}"));
+        } else {
+            controls.push_str("{\\*\\pn\\pnlvlblt\\pnf0{\\pntxtb\\bullet}}");
+        }
+    } else {
+        let styles = super::rtf_styles::read(input);
+        if let Some(handle) = super::rtf_styles::handle(&styles, &first.style, false) {
+            if handle != 0 || styles.id(0, false).is_some() {
+                controls.push_str(&format!("\\s{handle}"));
+            }
+        }
+    }
+    controls.push_str(&super::rtf_styles::paragraph_controls(&first.direct_paragraph)?);
+
+    let end = if projection
+        .hard_breaks_for_region(&(last.range.end..last.range.end + 1))
+        .contains(&last.range.end)
+    {
+        last.range.end + 1
+    } else {
+        last.range.end
+    };
+    let retained = edit.range.end..end;
+    if retained.is_empty() {
+        return Ok(Some(patches));
+    }
+    let runs = super::source_edit::visible_runs(projection, &retained)?;
+    let mapper = super::rich_text::Builder::new(input, Revision(0));
+    let tokens = rtf::tokenize(input);
+    let mut token_at = 0;
+    let mut context = CharacterContext::default();
+    let mut stack = Vec::new();
+    for run in runs {
+        while token_at < tokens.len()
+            && mapper.source_range(tokens[token_at].range.clone()).end <= run.source.start
+        {
+            let token = &tokens[token_at];
+            match &token.kind {
+                Kind::Open => {
+                    stack.push(context.clone());
+                    context.start = true;
+                }
+                Kind::Close => context = stack.pop().unwrap_or_default(),
+                Kind::Symbol('*') if context.start => context.hidden = true,
+                Kind::Control(name, number) => {
+                    if context.start && rtf::non_body(name) {
+                        context.hidden = true;
+                    }
+                    if !matches!(name.as_str(), "rtf" | "ansi" | "mac" | "pc" | "pca") {
+                        context.start = false;
+                    }
+                    if !context.hidden {
+                        if matches!(name.as_str(), "s" | "cs" | "plain") {
+                            context.controls.clear();
+                            context.plain = (name == "plain").then_some(token_at);
+                        } else if let Some(property) = super::rtf_direct::character_property(name, *number) {
+                            let tag = if property == super::StyleProperty::CharacterOpenTypeFeatures {
+                                name.clone()
+                            } else {
+                                String::new()
+                            };
+                            context.controls.insert((property, tag), token_at);
+                        }
+                    }
+                }
+                Kind::Character('\r' | '\n') => {}
+                _ => context.start = false,
+            }
+            token_at += 1;
+        }
+        let mut prefix = format!("{{{controls}");
+        // A named paragraph assignment resets direct character declarations.
+        // Replay the active original controls, preserving inline formatting
+        // without inheriting the following paragraph's named style defaults.
+        let mut character = context.controls.values().copied().collect::<Vec<_>>();
+        character.extend(context.plain);
+        character.sort_unstable();
+        for index in character {
+            prefix.push_str(&input.text[tokens[index].range.clone()]);
+        }
+        if !prefix.ends_with([' ', '}']) {
+            prefix.push(' ');
+        }
+        patches.push(super::SourcePatch::primary(
+            run.source.start..run.source.start,
+            document.encoding().encode_fragment(&prefix)?,
+        ));
+        patches.push(super::SourcePatch::primary(
+            run.source.end..run.source.end,
+            document.encoding().encode_fragment("}")?,
+        ));
+    }
+    Ok(Some(patches))
+}
+
+#[derive(Clone, Default)]
+struct CharacterContext {
+    hidden: bool,
+    start: bool,
+    plain: Option<usize>,
+    controls: std::collections::BTreeMap<(super::StyleProperty, String), usize>,
+}
+
 pub(super) fn deletion_patches(
     document: &Document,
     input: &NormalizedText,
@@ -133,7 +270,9 @@ pub(super) fn deletion_patches(
             let legacy = pn_groups.iter().find(|group| group.end == origin);
             if removed {
                 if !item.paragraph_ids.iter().all(|id| selected.contains(id)) {
-                    return Err(DocumentError::AmbiguousProjection);
+                    // The item still owns unselected paragraphs. Its numbering
+                    // resource and selectors remain attached to that content.
+                    continue;
                 }
                 if let Some(group) = legacy {
                     origins.push(group.clone());
@@ -168,8 +307,8 @@ pub(super) fn deletion_patches(
     }
     // A shared old numbering destination cannot be erased while a surviving
     // paragraph still refers to it; scope an explicit neutral override instead.
-    for origin in &origins {
-        if structure
+    origins.retain(|origin| {
+        !structure
             .lists
             .iter()
             .flat_map(|list| &list.items)
@@ -180,10 +319,7 @@ pub(super) fn deletion_patches(
                     .and_then(|at| numbering_origins.at(at))
                     == Some(origin.end)
             })
-        {
-            return Err(DocumentError::AmbiguousProjection);
-        }
-    }
+    });
     let mut ranges = origins;
     ranges.extend(selectors);
     for span in projection.provenance_for_region(range) {

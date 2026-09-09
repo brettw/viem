@@ -169,6 +169,8 @@ fn source_open_lines_preserve_paired_separator_rows_and_code_breaks() {
                         document: document.id(),
                         revision: document.revision(),
                         at,
+                        origin: at,
+                        after: true,
                     })
                     .unwrap_or_else(|error| panic!("{source:?} at{at}: {error:?}"));
                 assert_eq!(document.text(), expected);

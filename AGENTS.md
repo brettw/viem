@@ -451,9 +451,13 @@ that contributor once while retaining their separate logical change ranges.
 Text edits, formatted payloads, clipboard replacement, and character formatting
 share this resolver; text and payload translation share the encoding path.
 Structural breaks and list/paragraph ownership use their adapter's semantic
-operation, followed by normal candidate verification. Unsupported structure,
-opaque content, stale identities, and incomplete provenance are not resolved by
-deleting the nearest source hull. User-facing errors describe the unsupported
+operation, followed by normal candidate verification. At a valid rich-text caret,
+an insertion must find the equivalent editable position in the containing
+paragraph, normally the innermost applicable inline scope. Hidden syntax must
+not make that position unusable. Atomic objects expose explicit before/after
+positions and may be deleted or replaced only as complete source contributors.
+Stale identities and incomplete provenance are not resolved by deleting the
+nearest source hull. User-facing errors describe the unsupported
 edit or format constraint; they never expose an "unambiguous source range" error.
 
 ### Complexity and API requirements
@@ -952,8 +956,44 @@ Splitting a paragraph normally copies its paragraph-style assignment and direct
 paragraph declarations to the new paragraph. A paragraph style may name a
 `next_paragraph_style`; when present, Enter at the paragraph's terminal boundary
 uses it for the new paragraph. Joining paragraphs keeps the first paragraph's
-style for the result unless the format adapter reports that source semantics
-require an explicit policy choice.
+style and paragraph declarations for the result, including across different
+list, quote, heading, code, and ordinary container boundaries. Retained explicit
+inline formatting remains attached to its text.
+
+In rich-text editing modes, `o` and `O` create a paragraph using the originating
+paragraph style's following-style rule, defaulting to that same style when no
+next style is configured. `O` uses that rule even though the new paragraph is
+placed before its origin. The originating paragraph and the direction are
+explicit in the semantic request; its insertion offset alone is insufficient.
+Counts and repeat evaluate the rule for each newly opened paragraph, and opening,
+styling, and subsequent typing share one Insert undo unit. Literal source modes
+retain source-line editing.
+
+Markdown rich-text editing preserves body-leading ASCII spaces and tabs with
+native numeric character references when literal source whitespace would be
+consumed as structural indentation. These references project as whitespace
+outside code; code and source-visible modes retain their literal spelling.
+Typing reference syntax as ordinary text escapes it, and a no-op save preserves
+the original source bytes.
+
+#### Rich-text deletion boundaries
+
+Backspace at the visible beginning of a list item or code paragraph removes
+that structural treatment and assigns the normal paragraph style without
+deleting text. The reset removes every enclosing structural layer that would
+otherwise keep that paragraph in a list, quote, or code treatment. At the beginning of every other paragraph it removes the previous
+paragraph boundary and joins into the preceding paragraph. With no preceding
+content or resettable treatment it is a no-op. Within a paragraph it deletes the
+preceding grapheme, including when the caret begins an inline character-style
+range; inline tags are not extra deletion stops.
+
+Forward Delete removes the following grapheme or paragraph boundary and is a
+no-op only at document end. Selection deletion removes exactly the selected
+logical items and joins every crossed paragraph boundary into the paragraph at
+the selection's beginning. Flat edits, formatted payloads, clipboard replacement,
+and keyboard commands share this structural translation. Source patches that
+share structural delimiters are composed before one atomic publication; logical
+selection ranges and position maps remain unchanged by supporting source edits.
 
 #### Lists and future structured blocks
 
@@ -1005,8 +1045,8 @@ empty final row within ordinary prose becomes its own quote paragraph. The
 insertion and style assignment are one atomic, undoable transaction.
 Enter continues a nonempty quotation in a new paragraph; the generated quote
 style therefore uses itself as its next-paragraph style. Enter in an empty quote
-removes its quotation treatment. Backspace at the beginning of a quote or list
-item changes the current paragraph to ordinary Paragraph without deleting text.
+removes its quotation treatment. Backspace at the beginning of a quote joins it
+into the preceding paragraph; list and code treatment follow the reset rule above.
 Deleting the entire selected document also removes content-level paragraph
 wrappers, leaving an empty ordinary paragraph ready for typing; untouched
 document metadata and source encoding are retained.
@@ -1170,8 +1210,9 @@ attributes are preserved but never executed. `head` metadata, comments,
 other nonprinting nodes produce no editable body text. Unsupported visible
 elements retain their source structure; their unambiguous visible descendant
 text may still be projected using supported inline semantics. Unsupported
-atomic content may instead appear as a read-only opaque object when omitting it
-would conceal a visible document item.
+atomic content may instead appear as an opaque object with no editable interior
+when omitting it would conceal a visible document item. Its source extent remains
+one complete contributor for whole-object deletion and replacement.
 
 The adapter does not apply external stylesheets, arbitrary selectors, layout
 scripts, or browser default CSS. It interprets only:
@@ -1197,6 +1238,8 @@ The initial structural mapping is:
   through Heading 6 paragraph styles respectively, again subject to an
   applicable Viem-owned paragraph class;
 - `br` creates a formatted hard-line boundary inside the current paragraph;
+- a block container with a recognized paragraph-style assignment owns a logical
+  paragraph, including when empty; source-flow layout uses the same ownership;
 - visible phrasing content outside an explicit supported paragraph is grouped
   into the minimum anonymous Base Paragraph blocks necessary to represent it;
   and
@@ -1209,6 +1252,12 @@ Changing a paragraph's block kind between Base Paragraph and a heading rewrites
 the corresponding `p`/`h1`…`h6` tags. Editing a heading style definition writes
 or updates its canonical rule in the Viem-owned stylesheet; it does not replace
 heading elements with generic paragraphs.
+
+A verified paragraph merge MAY use a flow-capable `div` with the same assigned
+paragraph style when a retained child such as a table cannot remain inside `p`.
+Recovered HTML source order is materialized only for the affected contributors,
+with unchanged text, paragraph assignments, character styles, and hard lines,
+before applying the requested edit as one atomic transaction.
 
 In normal HTML text contexts, source whitespace that HTML treats as
 collapsible projects to the corresponding visible spacing with many-to-one
@@ -1494,7 +1543,8 @@ controls follow RTF state rules while remaining in the lossless tree.
 Pictures, objects, fields, headers/footers, annotations, macros, data stores,
 and other unsupported destinations are never executed, updated, fetched, or
 instantiated. An unsupported item that is visibly positioned in body content
-may project as a read-only atomic opaque object.
+may project as an atomic opaque object with no editable interior. Whole-object
+deletion or replacement owns its complete source group.
 
 For fields, Viem may display an unambiguous stored result destination, but it
 never evaluates or refreshes the instruction. A visible edit that would make

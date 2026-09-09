@@ -54,8 +54,8 @@ fn saved_html_open_above_case_commits_a_local_rewrite_with_a_valid_cursor() {
     assert_eq!(core.command_state(view).unwrap().cursor(), 295);
     assert_ne!(core.document().revision(), revision);
     let mut expected_source = source.as_bytes().to_vec();
-    expected_source.splice(429..431, b"&nbsp;<br>".iter().copied());
-    assert_eq!(expected_source.len(), 1002);
+    expected_source.splice(429..431, b"&nbsp;</p><p>".iter().copied());
+    assert_eq!(expected_source.len(), 1005);
     assert_eq!(core.document().source_bytes(), expected_source);
     let expected_text = format!("{}\u{a0}\n{}", &original_text[..293], &original_text[294..]);
     assert_eq!(core.document().text(), expected_text);
@@ -83,9 +83,9 @@ fn saved_html_open_above_case_commits_a_local_rewrite_with_a_valid_cursor() {
         before_at = patch.range().end;
         after_at = after_end;
     }
-    assert_eq!(after_at, 439);
+    assert_eq!(after_at, 442);
     assert_eq!(&expected_source[..429], &source.as_bytes()[..429]);
-    assert_eq!(&expected_source[439..], &source.as_bytes()[431..]);
+    assert_eq!(&expected_source[442..], &source.as_bytes()[431..]);
     let reopened =
         Document::from_bytes(expected_source.clone(), Encoding::Utf8, Format::Html).unwrap();
     assert_eq!(reopened.text(), expected_text);

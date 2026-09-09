@@ -7057,6 +7057,8 @@ mod tests {
                     document: core.document.id(),
                     revision,
                     at: 2,
+                    origin: 2,
+                    after: true,
                 })
                 .unwrap();
             // Model a defective post-edit map that retains the old offset 2.

@@ -11473,7 +11473,7 @@ impl CommandInterpreter {
                         self.cursor += 1;
                     } else {
                         let (prepared, cursor) =
-                            prepare_open_line_with_cursor(document, self.cursor, true)?;
+                            prepare_open_line_with_cursor(document, self.cursor, self.cursor, true)?;
                         document
                             .commit_model_transaction(prepared)
                             .map_err(command_document_error)?;
@@ -11628,7 +11628,7 @@ impl CommandInterpreter {
         if self.line_mode == LineMode::PhysicalSource {
             self.open_physical_line(document, above)?;
         } else {
-            let (prepared, cursor) = prepare_open_line_with_cursor(document, position, !above)?;
+            let (prepared, cursor) = prepare_open_line_with_cursor(document, position, self.cursor, !above)?;
             document
                 .commit_model_transaction(prepared)
                 .map_err(command_document_error)?;
@@ -15546,6 +15546,7 @@ fn continue_list_with_cursor(document: &mut Document, at: usize) -> Result<usize
 fn prepare_open_line_with_cursor(
     document: &Document,
     at: usize,
+    origin: usize,
     after: bool,
 ) -> Result<(PreparedModelTransaction, usize), DocumentError> {
     let prepared = document
@@ -15553,6 +15554,8 @@ fn prepare_open_line_with_cursor(
             document: document.id(),
             revision: document.revision(),
             at,
+            origin,
+            after,
         })
         .map_err(command_document_error)?;
     // Opening a wrapped HTML row can also protect adjacent whitespace. Resolve

@@ -253,3 +253,137 @@ fn entity_suffix_keeps_its_original_style_after_cross_run_rich_paste() {
         .ends_with("</b><!--keep-->Z</p>"));
     assert_undo_redo(&mut document, &mut commands, source, &changed);
 }
+
+#[test]
+fn rich_paste_uses_shared_paragraph_merge_and_overlapping_object_source_plans() {
+    let copied_style =
+        DocumentLayoutStyles::character_at(html(b"<b>word</b>").projection(), 0, false).unwrap();
+    for (source, selection, expected) in [
+        ("<h2>A</h2><!--keep--><p>B</p><p>C</p>", "vjl", "word\nC"),
+        (
+            "<table><b>foster</b><tr><td>keep</td></tr></table><!--tail-->",
+            "6lv",
+            "fosterword",
+        ),
+    ] {
+        let content = copy_word(b"<b>word</b>", true, FontSlant::Upright);
+        let context = ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(
+            ClipboardTarget::Clipboard,
+            ClipboardGeneration(1),
+            content,
+        ));
+        let mut document = html(source.as_bytes());
+        let mut commands = CommandInterpreter::new();
+        for key in format!("{selection}\"+p").chars() {
+            event(&mut commands, &mut document, &context, InputEvent::key(key));
+        }
+        assert_eq!(document.text(), expected, "{source}");
+        let after = document.source_bytes();
+        let reopened = html(&after);
+        for snapshot in [&document, &reopened] {
+            assert_eq!(snapshot.text(), expected);
+            let start = expected.find("word").unwrap();
+            for at in start..start + 4 {
+                assert_eq!(
+                    DocumentLayoutStyles::character_at(snapshot.projection(), at, false).unwrap(),
+                    copied_style
+                );
+            }
+        }
+        let serialized = std::str::from_utf8(&after).unwrap();
+        if source.starts_with("<h2>") {
+            assert!(serialized.starts_with("<h2><b>"));
+            assert!(serialized.ends_with("<!--keep--></h2><p>C</p>"));
+            assert_eq!(document.projection().blocks()[0].style.0, "Heading2");
+        } else {
+            assert!(serialized.starts_with("<b>foster"));
+            assert!(serialized.ends_with("</b><!--tail-->"));
+        }
+        assert_undo_redo(&mut document, &mut commands, source.as_bytes(), &after);
+    }
+}
+
+#[test]
+fn direct_character_formatting_at_a_paragraph_end_keeps_following_unstyled_text() {
+    use viem_core::document::{ModelRequest, StyleProperty, StylePropertyValue};
+    let source = b"<p>A</p><!--keep--><p>B</p>";
+    let mut document = html(source);
+    let original_b = DocumentLayoutStyles::character_at(document.projection(), 2, false).unwrap();
+    document
+        .apply_model_request(ModelRequest::SetDirectCharacterProperties {
+            document: document.id(),
+            revision: document.revision(),
+            range: 0..1,
+            values: vec![(
+                StyleProperty::CharacterSize,
+                StylePropertyValue::Float(20.0),
+            )],
+        })
+        .unwrap();
+    let after = document.source_bytes();
+    for snapshot in [&document, &html(&after)] {
+        assert_eq!(snapshot.text(), "A\nB");
+        assert_eq!(
+            DocumentLayoutStyles::character_at(snapshot.projection(), 0, false)
+                .unwrap()
+                .size,
+            20.0
+        );
+        assert_eq!(
+            DocumentLayoutStyles::character_at(snapshot.projection(), 2, false).unwrap(),
+            original_b
+        );
+    }
+    assert!(std::str::from_utf8(&after)
+        .unwrap()
+        .ends_with("</p><!--keep--><p>B</p>"));
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source);
+    assert!(document.redo());
+    assert_eq!(document.source_bytes(), after);
+}
+
+#[test]
+fn rich_paste_replaces_an_entire_recovered_anonymous_paragraph() {
+    let copied_style =
+        DocumentLayoutStyles::character_at(html(b"<i>word</i>").projection(), 0, false).unwrap();
+    for prefix in ["", "<!doctype html>"] {
+        let source = format!("{prefix}<p>A</p><!--before--><table><b>B</b><tr><td>keep</td></tr></table><!--after--><p>C</p>");
+        let mut document = html(source.as_bytes());
+        assert_eq!(document.text(), "A\nB\u{fffc}\nC");
+        let before_a = DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap();
+        let before_c = DocumentLayoutStyles::character_at(document.projection(), 7, false).unwrap();
+        let content = copy_word(b"<i>word</i>", false, FontSlant::Italic);
+        let context = ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(
+            ClipboardTarget::Clipboard,
+            ClipboardGeneration(1),
+            content,
+        ));
+        let mut commands = CommandInterpreter::new();
+        for key in "jv$\"+p".chars() {
+            event(&mut commands, &mut document, &context, InputEvent::key(key));
+        }
+        let after = document.source_bytes();
+        for snapshot in [&document, &html(&after)] {
+            assert_eq!(snapshot.text(), "A\nword\nC");
+            assert_eq!(
+                DocumentLayoutStyles::character_at(snapshot.projection(), 0, false).unwrap(),
+                before_a
+            );
+            assert_eq!(
+                DocumentLayoutStyles::character_at(snapshot.projection(), 7, false).unwrap(),
+                before_c
+            );
+            for at in 2..6 {
+                assert_eq!(
+                    DocumentLayoutStyles::character_at(snapshot.projection(), at, false).unwrap(),
+                    copied_style
+                );
+            }
+        }
+        let serialized = std::str::from_utf8(&after).unwrap();
+        assert!(serialized.starts_with(&format!("{prefix}<p>A</p><!--before-->")));
+        assert!(serialized.ends_with("<!--after--><p>C</p>"));
+        assert_undo_redo(&mut document, &mut commands, source.as_bytes(), &after);
+    }
+}

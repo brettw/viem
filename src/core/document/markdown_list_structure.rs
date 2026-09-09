@@ -1,80 +1,70 @@
 //! Local source ownership for list edits whose labels are layout decorations.
 use super::*;
 
-/// Joining an item boundary owns the following source label, which has no
-/// formatted characters. This applies equally to Backspace and Vim's spaced J.
+/// Joining a paragraph boundary owns the following block prefix, which has no
+/// formatted characters. Inline delimiters remain attached to their content.
+/// This applies equally to Backspace, Delete and Vim's spaced J.
 pub(super) fn joining_patches(
     document: &Document,
     range: &Range<usize>,
     replacement: &str,
 ) -> Result<Option<Vec<SourcePatch>>, DocumentError> {
-    if document.format() != Format::Markdown || range.len() != 1 || replacement.contains('\n') {
+    if document.format() != Format::Markdown || range.is_empty() || replacement.contains('\n') {
         return Ok(None);
     }
     let projection = document.projection();
-    if !projection
-        .hard_breaks_for_region(range)
-        .contains(&range.start)
-    {
-        return Ok(None);
+    let blocks = projection.blocks_for_region(range);
+    let Some(first) = blocks.iter().find(|block| {
+        block.range.start <= range.start && range.start <= block.range.end
+    }) else { return Ok(None); };
+    let Some(last) = blocks.iter().rev().find(|block| {
+        block.range.start <= range.end && range.end <= block.range.end
+    }) else { return Ok(None); };
+    if first.id == last.id || range.end <= first.range.end { return Ok(None); }
+    for block in [first, last] {
+        if block.style.0 == "Code Block" || super::super::markdown_quotes::is_fenced_block(document, block)? {
+            // The code adapter relocates fences and translates literal content.
+            return Ok(None);
+        }
     }
-    if projection
-        .blocks_for_region(range)
-        .iter()
-        .any(|block| block.range.end == range.start && block.style.0 == "Code Block")
-    {
-        // The code adapter must relocate its closing fence as part of the
-        // join; consuming only the following label cannot cross that syntax.
-        return Ok(None);
-    }
-    let right = projection
-        .blocks_for_region(&(range.end..range.end))
-        .into_iter()
-        .find(|block| {
-            block.range.start == range.end
-                && matches!(
-                    block.kind,
-                    super::super::BlockKind::ListItem {
-                        item_start: true,
-                        ..
-                    }
-                )
-        });
-    let Some(right) = right else {
-        return Ok(None);
-    };
-    let at = projection
-        .source_insertion_point(right.range.start, true)
+    let at = projection.source_insertion_point(last.range.start, true)
         .ok_or(DocumentError::AmbiguousProjection)?;
-    let line = document
-        .state()
-        .source_hard_lines
-        .line_at_offset(at)
+    let line = document.state().source_hard_lines.line_at_offset(at)
         .and_then(|index| document.state().source_hard_lines.get(index))
         .ok_or(DocumentError::AmbiguousProjection)?;
-    let bytes = document
-        .state()
-        .source
-        .bytes_in(line.start..line.end.min(line.start + 512))
+    let bytes = document.state().source.bytes_in(line.start..line.end.min(line.start + 512))
         .ok_or(DocumentError::AmbiguousProjection)?;
     let decoded = document.encoding().decode_region(&bytes, line.start)?;
-    let Some(prefix) = super::super::markdown_blocks::marker_prefix_length(&decoded.text) else {
-        return Ok(None);
-    };
-    let source_start = projection
-        .source_range(range.clone())
-        .ok_or(DocumentError::AmbiguousProjection)?
-        .start;
-    let source_end = line.start
-        + document
-            .encoding()
-            .encode_fragment(&decoded.text[..prefix])?
-            .len();
-    let syntax = document.escape_markdown_source_text(source_start, replacement)?;
-    Ok(Some(vec![SourcePatch::primary(
-        source_start..source_end,
-        document.encoding().encode_fragment(&syntax)?,
-    )]))
+    let quote = super::super::markdown_quotes::prefix(&decoded.text);
+    let body = &decoded.text[quote..];
+    let mut prefix = quote + super::super::markdown_blocks::marker_prefix_length(body)
+        .unwrap_or_else(|| super::super::projection::markdown_block_prefix(body, 0, body.len()).0);
+    if matches!(last.kind, super::super::BlockKind::ListItem { item_start: false, .. }) {
+        prefix += decoded.text[prefix..].len() - decoded.text[prefix..].trim_start_matches([' ', '\t']).len();
+    }
+    let start = projection.source_range(first.range.end..first.range.end + 1)
+        .ok_or(DocumentError::AmbiguousProjection)?.start;
+    let end = line.start + document.encoding().encode_fragment(&decoded.text[..prefix])?.len();
+    let mut sources = vec![start..end];
+    for selected in [range.start..first.range.end, last.range.start..range.end] {
+        if !selected.is_empty() {
+            sources.extend(super::super::source_edit::visible_runs(projection, &selected)?
+                .into_iter().map(|run| run.source));
+        }
+    }
+    sources.extend(super::super::markdown_code::selected_inline_delimiters(document, range)?);
+    sources.sort_by_key(|source| (source.start, source.end));
+    let mut merged: Vec<Range<usize>> = Vec::new();
+    for source in sources {
+        if let Some(previous) = merged.last_mut().filter(|previous| source.start <= previous.end) {
+            previous.end = previous.end.max(source.end);
+        } else { merged.push(source); }
+    }
+    let syntax = document.escape_markdown_source_text(merged[0].start, replacement)?;
+    let replacement = document.encoding().encode_fragment(&syntax)?;
+    Ok(Some(merged.into_iter().enumerate().map(|(index, source)| {
+        SourcePatch::primary(source, if index == 0 { replacement.clone() } else { Vec::new() })
+    }).collect()))
 }
 
 pub(super) fn deletion_patches(
@@ -89,6 +79,13 @@ pub(super) fn deletion_patches(
     if !whole_line {
         if let Some(patches) = joining_patches(document, range, "")? {
             return Ok(Some(patches));
+        }
+        for block in projection.blocks_for_region(range) {
+            if block.style.0 == "Code Block"
+                || super::super::markdown_quotes::is_fenced_block(document, &block)?
+            {
+                return Ok(None);
+            }
         }
     }
     let paragraphs = projection
@@ -173,7 +170,8 @@ pub(super) fn empty_insertion_patches(
         .blocks_for_region(range)
         .iter()
         .any(|block| {
-            block.range == *range && matches!(block.kind, super::super::BlockKind::ListItem { .. })
+            block.range == *range && block.style.0 != "Code Block"
+                && matches!(block.kind, super::super::BlockKind::ListItem { .. })
         })
     {
         return Ok(None);
@@ -197,7 +195,7 @@ pub(super) fn empty_insertion_patches(
     if prefix.ends_with([' ', '\t']) {
         return Ok(None);
     }
-    let syntax = format!(" {}", escape_markdown_insert(text));
+    let syntax = format!(" {}", document.escape_markdown_source_text(at, text)?);
     Ok(Some(vec![SourcePatch::primary(
         at..at,
         document.encoding().encode_fragment(&syntax)?,

@@ -72,12 +72,12 @@ import XCTest
         }
     }
 
-    func testNativeBackspaceAndEmptyQuoteReturnRemoveOnlyCurrentParagraphStyle() throws {
+    func testNativeBackspaceResetsListsAndJoinsQuotesWhileEmptyQuoteReturnResetsStyle() throws {
         for (source, type, at, enter, text) in [
-            ("<p>previous</p><blockquote><p>body</p></blockquote><p>next</p>", EVDocument.htmlType, 9, false, "previous\nbody\nnext"),
+            ("<p>previous</p><blockquote><p>body</p></blockquote><p>next</p>", EVDocument.htmlType, 9, false, "previousbody\nnext"),
             ("<p>previous</p><ul><li>body</li></ul><p>next</p>", EVDocument.htmlType, 9, false, "previous\nbody\nnext"),
             ("<p>previous</p><ol><li>body</li></ol><p>next</p>", EVDocument.htmlType, 9, false, "previous\nbody\nnext"),
-            ("previous\n\n> body\n\nnext", EVDocument.markdownType, 9, false, "previous\nbody\nnext"),
+            ("previous\n\n> body\n\nnext", EVDocument.markdownType, 9, false, "previousbody\nnext"),
             ("previous\n\n- body\n\nnext", EVDocument.markdownType, 9, false, "previous\nbody\nnext"),
             ("previous\n\n1. body\n\nnext", EVDocument.markdownType, 9, false, "previous\nbody\nnext"),
             ("<p>previous</p><blockquote></blockquote><p>next</p>", EVDocument.htmlType, 9, true, "previous\n\nnext"),
@@ -87,12 +87,33 @@ import XCTest
             try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: UnicodeScalar("i").value)
             view.refreshPresentation()
             view.editorView.setAccessibilitySelectedTextRange(NSRange(location: at, length: 0))
+            let previousLength = try backend.formattedText().utf8.count
             view.editorView.keyDown(with: try key(enter ? 36 : 51))
             XCTAssertEqual(try backend.formattedText(), text)
-            XCTAssertEqual(view.viewPresentation.cursor_utf8_offset, UInt64(at))
+            XCTAssertEqual(view.viewPresentation.cursor_utf8_offset, UInt64(at + text.utf8.count - previousLength))
             XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
             XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "Paragraph")
             try checkHistory(backend, view, source: source, type: type)
         }
     }
+
+    func testNativeOpenAboveAndBelowUseTheHeadingFollowingStyle() throws {
+        for (source, type) in [
+            ("<h1>Title</h1><!--keep-->", EVDocument.htmlType),
+            ("# Title", EVDocument.markdownType),
+            ("{\\rtf1{\\stylesheet{\\s0 Normal;}{\\s5\\sbasedon0\\snext0 Heading 1;}}\\s5 Title}", EVDocument.rtfType),
+        ] {
+            for (command, text) in [("o", "Title\nbody"), ("O", "body\nTitle")] {
+                let (backend, view, session) = try surface(source, type: type)
+                view.editorView.insertText(command, replacementRange: NSRange(location: NSNotFound, length: 0))
+                XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+                XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "Paragraph", "\(type) \(command)")
+                view.editorView.insertText("body", replacementRange: NSRange(location: NSNotFound, length: 0))
+                XCTAssertEqual(try backend.formattedText(), text)
+                XCTAssertEqual(Set(try XCTUnwrap(view.layoutSnapshot).rows.map(\.paragraph_id)).count, 2)
+                try checkHistory(backend, view, source: source, type: type)
+            }
+        }
+    }
+
 }

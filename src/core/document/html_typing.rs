@@ -8,6 +8,95 @@ use super::{
 };
 use std::ops::Range;
 
+pub(super) fn retained_inline_syntax(
+    document: &Document,
+    source: Range<usize>,
+    retained: &[Range<usize>],
+) -> Result<Vec<Range<usize>>, DocumentError> {
+    let bytes = document.state().source.bytes_in(source.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+    let decoded = document.encoding().decode_region(&bytes, source.start)?;
+    let input = super::line_endings::normalize(&decoded, document.file_format());
+    let mapper = super::rich_text::Builder::new(&input, document.revision());
+    let mut open = Vec::<Token>::new();
+    let mut result = Vec::new();
+    for token in html::tokenize(&input.text) {
+        let TokenKind::Tag(tag) = &token.kind else { continue };
+        if tag.end {
+            if let Some(index) = open.iter().rposition(|token| matches!(&token.kind, TokenKind::Tag(other) if other.name == tag.name)) {
+                let opening = &open[index];
+                if !html::block(&tag.name) && !html::atomic(&tag.name) && !html::hidden(&tag.name)
+                    && !matches!(tag.name.as_str(), "tr" | "td" | "th" | "thead" | "tbody" | "tfoot" | "caption" | "colgroup")
+                {
+                    let before = mapper.source_range(opening.range.clone());
+                    let after = mapper.source_range(token.range.clone());
+                    if retained.iter().any(|range| before.end <= range.start && range.end <= after.start) {
+                        result.extend([before, after]);
+                    }
+                }
+                open.truncate(index);
+            }
+        } else if !html::void(&tag.name) { open.push(token); }
+    }
+    Ok(result)
+}
+
+/// Recovered text can inherit an unclosed inline scope whose source must stay
+/// inside an atomic owner. Copy that scope around the moved contributor; do
+/// not remove the original, which can also style later recovered content.
+pub(super) fn recovered_inline_wrapper(
+    document: &Document,
+    owner: Range<usize>,
+    retained: Range<usize>,
+) -> Result<(String, String), DocumentError> {
+    let bytes = document.state().source.bytes_in(owner.clone())
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let decoded = document.encoding().decode_region(&bytes, owner.start)?;
+    let input = super::line_endings::normalize(&decoded, document.file_format());
+    let at = input.units.get(input.units.partition_point(|unit| unit.source.end <= retained.start))
+        .map_or(input.text.len(), |unit| unit.normalized.start);
+    let tokens = html::tokenize(&input.text);
+    let stack = super::html_paragraph::stack_at(&tokens, at);
+    let scopes = stack.into_iter().filter(|token| {
+        matches!(&token.kind, TokenKind::Tag(tag)
+            if !html::block(&tag.name) && !html::atomic(&tag.name) && !html::hidden(&tag.name)
+                && !matches!(tag.name.as_str(), "tr" | "td" | "th" | "thead" | "tbody" | "tfoot" | "caption" | "colgroup"))
+    }).collect::<Vec<_>>();
+    let opening = scopes.iter().map(|token| &input.text[token.range.clone()]).collect();
+    let closing = scopes.iter().rev().map(|token| {
+        let TokenKind::Tag(tag) = &token.kind else { unreachable!() };
+        format!("</{}>", tag.name)
+    }).collect();
+    Ok((opening, closing))
+}
+
+/// A source file may end inside an opaque object. Its trailing visible caret
+/// is outside that object, so materialize only the missing closing syntax
+/// before inserting text at that edge. Existing object bytes stay untouched.
+pub(super) fn opaque_closing_syntax(
+    document: &Document,
+    source: Range<usize>,
+) -> Result<String, DocumentError> {
+    let bytes = document.state().source.bytes_in(source.clone())
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let input = document.encoding().decode_region(&bytes, source.start)?.text;
+    let mut open = Vec::<String>::new();
+    for token in html::tokenize(&input) {
+        let TokenKind::Tag(tag) = token.kind else { continue };
+        if tag.end {
+            if let Some(index) = open.iter().rposition(|name| *name == tag.name) {
+                open.truncate(index);
+            }
+        } else if !html::void(&tag.name)
+            && !(input[token.range].trim_end().ends_with("/>")
+                && (matches!(tag.name.as_str(), "svg" | "math")
+                    || open.iter().any(|name| matches!(name.as_str(), "svg" | "math"))))
+        {
+            open.push(tag.name);
+        }
+    }
+    Ok(open.into_iter().rev().map(|name| format!("</{name}>")).collect())
+}
+
 fn declarations(token: &Token) -> CharacterProperties {
     let mut result = CharacterProperties::default();
     let TokenKind::Tag(tag) = &token.kind else {

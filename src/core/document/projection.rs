@@ -2400,28 +2400,6 @@ impl FormattedDocument {
             });
         }
 
-        if let Some(span) = self
-            .provenance
-            .iter()
-            .find(|span| span.source.start < source_offset && source_offset < span.source.end)
-        {
-            let opaque = self.decoding_diagnostics.iter().any(|diagnostic| {
-                diagnostic.source_range.start <= source_offset
-                    && source_offset < diagnostic.source_range.end
-            });
-            return Err(if opaque {
-                SourceToTextError::InteriorOpaqueUnit {
-                    source_range: span.source.clone(),
-                    formatted_range: span.formatted.clone(),
-                }
-            } else {
-                SourceToTextError::InteriorMappedUnit {
-                    source_range: span.source.clone(),
-                    formatted_range: span.formatted.clone(),
-                }
-            });
-        }
-
         let mut upstream: Vec<_> = self
             .provenance
             .iter()
@@ -2451,6 +2429,31 @@ impl FormattedDocument {
                 affinity,
                 relation,
             );
+        }
+
+        // Exact child boundaries remain editable inside a larger source owner
+        // when a format parser has reordered its visible children. Only a
+        // point with no exact contributor boundary is an interior source unit.
+        if let Some(span) = self
+            .provenance
+            .iter()
+            .find(|span| span.source.start < source_offset && source_offset < span.source.end)
+        {
+            let opaque = self.decoding_diagnostics.iter().any(|diagnostic| {
+                diagnostic.source_range.start <= source_offset
+                    && source_offset < diagnostic.source_range.end
+            });
+            return Err(if opaque {
+                SourceToTextError::InteriorOpaqueUnit {
+                    source_range: span.source.clone(),
+                    formatted_range: span.formatted.clone(),
+                }
+            } else {
+                SourceToTextError::InteriorMappedUnit {
+                    source_range: span.source.clone(),
+                    formatted_range: span.formatted.clone(),
+                }
+            });
         }
 
         if let Some((source_range, upstream_formatted, downstream_formatted)) =
@@ -2735,6 +2738,24 @@ impl FormattedDocument {
 
     pub(crate) fn provenance_touching(&self, range: &Range<usize>) -> Vec<ProvenanceSpan> {
         self.provenance.query_touching(range)
+    }
+
+    /// Source-contained contributors, including content reordered by a format
+    /// parser. The source boundary index keeps this query local to the owner.
+    pub(crate) fn provenance_contained_in_source(&self, range: &Range<usize>) -> Vec<ProvenanceSpan> {
+        let mut result = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for boundary in self.source_boundaries.query_touching(range) {
+            for span in self.provenance_touching(&(boundary.formatted..boundary.formatted)) {
+                if !span.formatted.is_empty() && !span.source.is_empty()
+                    && range.start <= span.source.start && span.source.end <= range.end
+                    && seen.insert((span.formatted.start, span.formatted.end, span.source.start, span.source.end))
+                {
+                    result.push(span);
+                }
+            }
+        }
+        result
     }
 
     /// Presentation recovery at the nearest real source boundary, in
@@ -4849,6 +4870,18 @@ impl<'a> MarkdownBuilder<'a> {
             }
 
             if !self.preserve_markers {
+                if let Some((length, whitespace)) = markdown_inline_whitespace_reference(&self.source_text[at..end]) {
+                    if let (Some(first), Some(last)) = (self.unit_at(at), self.unit_at(at + length - 1)) {
+                        let source = first.source.start..last.source.end;
+                        let output_start = self.output.len();
+                        self.output.push(whitespace);
+                        self.provenance.push(ProvenanceSpan {
+                            formatted: output_start..self.output.len(), source,
+                        });
+                        at += length;
+                        continue;
+                    }
+                }
                 if let Some(length) = markdown_inline_break_length(&self.source_text[at..end]) {
                     if let (Some(first), Some(last)) = (self.unit_at(at), self.unit_at(at + length - 1)) {
                         let source = first.source.start..last.source.end;
@@ -5184,6 +5217,23 @@ pub(super) fn markdown_inline_break_length(text: &str) -> Option<usize> {
         while matches!(bytes.get(at), Some(b' ' | b'\t')) { at += 1; }
     }
     (bytes.get(at) == Some(&b'>')).then_some(at + 1)
+}
+
+/// Numeric whitespace references keep authored list-body padding visible.
+/// Source views and code retain their literal spelling, like inline br syntax.
+fn markdown_inline_whitespace_reference(text: &str) -> Option<(usize, char)> {
+    let body = text.strip_prefix("&#")?;
+    let end = body.find(';').filter(|end| *end <= 8)?;
+    let digits = &body[..end];
+    let value = if let Some(hex) = digits.strip_prefix(['x', 'X']) {
+        if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) { return None; }
+        u32::from_str_radix(hex, 16).ok()?
+    } else {
+        if !digits.bytes().all(|byte| byte.is_ascii_digit()) { return None; }
+        digits.parse::<u32>().ok()?
+    };
+    let whitespace = match value { 9 => '\t', 32 => ' ', _ => return None };
+    Some((end + 3, whitespace))
 }
 
 pub(crate) fn escape_markdown_insert(text: &str) -> String {

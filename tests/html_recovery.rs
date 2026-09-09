@@ -172,10 +172,10 @@ fn html5_foster_parenting_keeps_unique_text_provenance_and_atomic_table_source()
     );
     assert_eq!(document.text(), "BEFOREafter\u{fffc}tail");
     let before = document.source_bytes();
-    assert!(
-        document.replace(6..14, "").is_err(),
-        "opaque table source cannot be deleted by a visible hull"
-    );
+    document.replace(6..14, "").unwrap();
+    assert_eq!(document.text(), "BEFOREtail");
+    assert_eq!(document.source_bytes(), b"BEFOREtail");
+    assert!(document.undo());
     assert_eq!(document.source_bytes(), before);
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source.as_bytes());

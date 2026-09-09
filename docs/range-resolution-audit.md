@@ -3,8 +3,9 @@
 This audit covers the `DocumentError::AmbiguousProjection` producers in the
 portable core and their macOS presentation. Function names below are stable
 references; line numbers in review notes refer to the code at the start of the
-September 2026 list/boundary fix. This is an inventory and policy assessment,
-not a claim that every listed adapter limitation has been implemented.
+September 2026 list/boundary fix. The later rich-editing pass applies the explicit
+paragraph-ownership rules below; formatting and explicit move limitations remain
+separately identified.
 
 ## Shared rule
 
@@ -46,6 +47,57 @@ the original logical style intention on that speculative snapshot. Its composed
 publication retains an identity text map and one atomic source patch set. An
 already-satisfied semantic style is a byte-exact no-op.
 
+Paragraph ownership is centralized in `edit_boundary::{paragraph_at, merged_paragraphs,
+is_code_paragraph}`. `edit_translation::structural_text_patches` is the shared
+adapter dispatch for flat edits and formatted payloads. Removing a boundary
+keeps the preceding paragraph's assignment and paragraph declarations, including
+across different containers; retained explicit character declarations remain
+attached to their text. The same rule handles Backspace, Forward Delete,
+selection deletion/replacement, and joins. Backspace at a list/code start is the
+one structural reset: it assigns the normal paragraph style without removing
+text. Other paragraph starts join into their predecessor.
+
+`html_merge` replaces the former two-sibling restriction with a structural-context
+splice: retain the left owner, keep the right text's inline and whitespace
+context, and restore the untouched following paragraph's original containers.
+Empty merged paragraphs retain an explicit editable owner. Markdown owns the
+crossed prefixes/fences and retains literal code text; RTF scopes the preceding
+paragraph context over the retained tail while preserving subsequent controls
+and shared numbering resources. `prepare_structural_text_batch` composes shared
+source delimiters before one publication, rebasing every intermediate range
+through named position maps. Supporting whitespace is prepared before joins.
+Rich clipboard replacement uses the same deletion plan before inserting its
+balanced source fragment. If the destination paragraph changes the copied
+character style through inheritance, the existing character-formatting adapter
+isolates the copied formatting locally, and the complete paste is verified again.
+
+Paragraph opening carries both the origin and the requested side to the shared
+following-style computation. Empty paragraphs are verified before any text is
+typed. In RTF, assigning the style of an empty paragraph includes its terminating
+`\par` in the scope, so the parser does not restore the preceding style before
+emitting that paragraph. Paragraph-style assignment checks the result as well as
+text preservation. Character-style verification partitions at hard boundaries,
+so a paragraph separator cannot masquerade as a character-style interval.
+
+Opaque objects now retain their complete original source extent as one atomic
+contributor, with usable before/after insertion positions. Their interiors remain
+uneditable. `source_edit::overlapping_text_plan` subtracts unselected visible
+contributors and their required inline syntax when HTML recovery moves text out
+of an atomic source owner (for example, fostered table text). Text and rich
+clipboard edits share the logical replacement-placement rule. Before structural edits through recovered HTML, `prepare_with_recovered_source`
+materializes only the affected relation in a verified scratch snapshot. It moves
+recovered text and its inline scopes into visible order, supplies an explicit
+paragraph owner where needed, and then invokes the original text/payload/clipboard
+operation. Paragraph assignments, character styles, and hard lines must remain
+identical during materialization. The final transaction retains the original
+logical edits and position maps. A styled `div` supplies a flow-capable owner when
+HTML's content model would otherwise close a `p` around a retained table.
+
+An unclosed object
+receives only the missing closing syntax needed to insert after it. Complete
+malformed decoding units likewise retain their source extent; partial-unit and
+stale-position protections remain.
+
 HTML hard-line deletion now distinguishes a selected paragraph from selected
 lines inside it. It removes native intra-paragraph breaks while retaining the
 surviving paragraph boundary. A partially selected list owner is retained for its
@@ -62,8 +114,8 @@ The original producers and their replacements fall into these families. Files ar
 | --- | --- | --- |
 | Text endpoint/run resolution | `source_edit::{rich_text_patches, rich_text_batch_patches, insertion_point, visible_runs, complete_contributors, contiguous_range}` and `rich_text::{text_source_range, editable_source_range, text_source_runs, block_source_point, list_item_source_point}`; callers in `transaction::{prepare_text_edits_with_patches, prepare_formatted_payload_edits, prepare_rich_list_enter, prepare_html_paragraph_enter, prepare_rtf_next_paragraph_enter}` | Caret ownership and complete contributor enumeration now use the shared source-edit policy. The earlier strict contiguous mapping rejected editable text split by harmless inline syntax; remaining contiguous helpers are limited to callers that actually require one source interval. |
 | Source-visible semantic translation | `html_source::map_range`, `list_indent::prepare_list_indent`, `transaction::{prepare_html_source_patches, prepare_physical_source}` | Use the same boundary rule after mapping through the explicit source/cooked domains. Do not swap inverted endpoints or collapse a nonempty selection merely because hidden syntax has no visible interior. |
-| Structural HTML | `html::{list_enter_patch, list_patches}`, `html_paragraph::{enter_patches, join_patches, deletion_patches}`, `html_quotes::{in_native_pre, remove_patches}`, `list_indent::html_patches` | Source ownership should use the shared resolver. Unsupported tree restructurings and malformed owner relationships need specific structural failures; they cannot safely be fixed by a hull. |
-| Structural Markdown | `markdown_list_edit`, `markdown_list_structure`, `markdown_quote_edit`, `markdown_quotes`, `markdown_code`, `markdown_split`, `markdown_block_styles`, `paragraph_keys`, `structural_style`, `list_indent::{markdown_patches, block_source_at}`, `transaction::{markdown_empty_code_patches, prepare_markdown_paragraph_style_raw, prepare_list_style_raw}` | Most emissions are failed source-boundary/line lookups and should disappear with consistent ownership. Missing certified list/quote/fence delimiters indicate unsupported syntax or a projection invariant, not competing editable ranges. Keep supporting delimiter edits and semantic verification. |
+| Structural HTML | `html::{list_enter_patch, list_patches}`, `html_paragraph::{enter_patches, deletion_patches}`, `html_merge::{patches, anonymous_break_patches}`, `html_quotes::{in_native_pre, remove_patches}`, `list_indent::html_patches` | Text boundary joins use the shared owner rule across containers. Styling and explicit tree moves remain distinct intentions; they cannot safely be fixed by a hull. |
+| Structural Markdown | `markdown_list_edit`, `markdown_list_structure`, `markdown_quote_edit`, `markdown_quotes`, `markdown_code`, `markdown_split`, `markdown_block_styles`, `paragraph_keys`, `structural_style`, `list_indent::{markdown_patches, block_source_at}`, `transaction::{prepare_markdown_paragraph_style_raw, prepare_list_style_raw}` | Most emissions are failed source-boundary/line lookups and should disappear with consistent ownership. Missing certified list/quote/fence delimiters indicate unsupported syntax or a projection invariant, not competing editable ranges. Keep supporting delimiter edits and semantic verification. |
 | Character and paragraph styling | `named_character`, `typing`, `html_typing`, `markdown_typing`, `html_direct::clear_character_patches`, `rtf_direct::clear_character_patches`, `rtf_styles::character_assignment_patches`, `transaction::{prepare_html_named_style_raw, prepare_rtf_named_style, prepare_rich_block_properties, rtf_paragraph_property_patches, prepare_rich_list_style, rich_character_source_patches, semantic_style_source_patches, markdown_style_removal_patches}` | Reuse contributor enumeration for character runs and paragraph ownership for block styles. Exact delimiter removal, misnested scopes, and partial indivisible contributors remain distinct checks. Styling can ignore semantic paragraph separators by explicit policy; ordinary text deletion cannot. |
 | Whitespace and RTF encoding context | `html_whitespace::{collapsed_space_tail, exposed_whitespace, html_boundary_space_edits, normalize_typing_payload}`, `rich_text::{escape_html_source_edit_with_context, html_preserves_whitespace_at_source}`, `rtf::{escape_insertion, advance_past_fallback_scope}`, `transaction::escape_markdown_source_text` | Required contributors and encoding context must remain complete. Centralize basic boundary resolution while retaining format escaping and whitespace normalization. Some emissions are arithmetic/storage failures, not ambiguity. |
 | Rich clipboard | `clipboard_fragment::{clipboard_fragment_with_source, prepare_clipboard_fragment, source_hull, html_separator_source_hull, selected_source}` | Separate export of owned syntax from editable text runs. A copied fragment can require balanced wrappers and resources beyond visible text; candidate verification must remain. Serialization failure should have a clipboard/format-specific result. |
@@ -76,31 +128,29 @@ The original producers and their replacements fall into these families. Files ar
 
 These are the places where choosing a minimal raw range is not sufficient:
 
-- **Partially selected RTF list owners.** `rtf_structure::deletion_patches`
-  still rejects partial multiparagraph items. The recommended policy matches the
-  implemented HTML behavior: retain the owner of surviving content and remove
-  only the selected paragraph. Removing or promoting descendants implicitly would
-  exceed the selected hard-line extent.
-- **Joining or moving across different structural parents.**
-  `html_paragraph::join_patches` checks matching parent ancestry and intervening
-  structure; `reorder::map_owners` checks nonoverlapping owners and common ancestry.
-  Minimal text patches alone do not specify which list, quote, table cell, or
-  block container should own the result.
-- **Shared RTF numbering definitions.** `rtf_structure::deletion_patches` refuses
-  removal of a numbering destination still referenced by surviving items.
-  Preserve the resource and add a local override when the adapter can verify it;
-  do not erase shared bytes because they are the nearest source representation.
+- **Explicit moves across different structural parents.**
+  `reorder::map_owners` still requires nonoverlapping owners and common ancestry.
+  The paragraph-boundary deletion rule now explicitly chooses the preceding
+  owner for joins, but a move must separately specify where list, quote, or
+  container ownership should travel.
 - **Malformed/misnested HTML and uncertified Markdown delimiters.**
   `html_direct::clear_character_patches`, `reorder::html_rows`, and
-  `markdown_code::patches` cannot always establish a native syntax owner.
-  Preserving imported syntax should remain the default until an explicit
-  structural rewrite policy exists.
-- **Synthetic or indivisible content.** Synthetic breaks need paragraph/list
-  operations. Atomic objects need object deletion/replacement rules. Partial
-  malformed decoding units and overlapping/reordered provenance need an exact
-  adapter relation. A minimum byte slice must not split or discard them. Ordinary
-  multi-character entities are handled by `complete_contributors`: preserve the
-  unselected visible portion while rewriting the complete source entity.
+  `markdown_code::patches` require native source ownership for structural changes.
+  Ordinary text editing now materializes the required local delimiters and
+  recovered source order while preserving literal text; arbitrary formatting or reordering still requires a
+  separately verified rewrite.
+- **Partial indivisible content and invalid coordinates.** Synthetic paragraph
+  separators and complete atomic objects have explicit deletion rules. An edit
+  must still identify a complete valid logical item; invalid grapheme boundaries,
+  stale snapshots, or partial decoding units cannot be repaired by taking a
+  minimum byte slice. Multi-character entities remain editable by materializing
+  the complete contributor and preserving its unselected visible text.
+- **Appending after a truncated encoding unit.** A UTF-16 source ending in one
+  unmatched byte cannot accept bytes after that unit while retaining both the
+  original byte and the same decoded text. `OpaqueDecodingConflict` remains for
+  that operation; inserting before the diagnostic or explicitly replacing the
+  complete malformed unit succeeds. Repairing the byte or changing the encoding
+  would require an explicit policy, not a different source-range tie break.
 - **Markup-only source selections for semantic formatting.**
   `html_source::map_range` can map both ends of tag-only syntax to different
   neighboring visible locations. Targeting the containing paragraph is sensible
@@ -140,7 +190,7 @@ These are the places where choosing a minimal raw range is not sufficient:
 - Keep ordinary caret/run resolution local. Use indexed adjacent provenance and
   block lookup; do not scan all blocks, paragraphs, or anchors on each keypress.
 
-## Validation of this change
+## Earlier range-refactor validation
 
 - The complete Rust suite (`cargo test --all-targets --no-fail-fast`) has 1,892
   passing tests and one preexisting failure:
@@ -157,3 +207,22 @@ These are the places where choosing a minimal raw range is not sufficient:
   geometry, structural hard-line deletion, and flowed HTML source blocks.
   Layout tests cover composition, cache invalidation, stable identities, and
   bounded work when editing a large document with many same-line source blocks.
+
+## Rich-editing audit validation
+
+- Final `cargo test --all-targets --no-fail-fast`: 1,945 passing tests and the
+  same preexisting Markdown Source fence expectation listed above. No new Rust
+  failures remain. Full output: `/tmp/viem-rich-verified-rust.log`.
+- Final `scripts/test-mac.sh`: all 366 XCTest tests and all 26 Swift Testing
+  tests pass with isolated temporary settings. The script rebuilt and signed
+  `.build/Viem.app`. Full output: `/tmp/viem-rich-verified-native.log`.
+- Regressions cover immediate empty-paragraph following styles for `o`/`O`,
+  count/repeat/history, nested structural resets after arrow navigation,
+  inline-grapheme deletion, every legal selection through mixed blocks and
+  recovered objects, payload snapshot rebinding and no-ops, rich paste, exact
+  reopen/undo behavior, and source-flow ownership of empty styled containers.
+- The 10,000-paragraph checks retain unrelated block identities and cached
+  layout, limit ordinary styled-container typing to regional projection with
+  less than 256 decoded source bytes and at most one shaping request, and bound
+  character-verification queries while detecting a changed distant style.
+- Both working-tree and staged `git diff --check` pass.

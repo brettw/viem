@@ -44,7 +44,7 @@ fn space(c: u8) -> bool {
 fn css_space(c: u8) -> bool {
     matches!(c, b' ' | b'\t' | b'\r' | b'\n')
 }
-fn void(name: &str) -> bool {
+pub(super) fn void(name: &str) -> bool {
     matches!(
         name,
         "area"
@@ -68,6 +68,10 @@ fn paragraph(name: &str) -> bool {
         name,
         "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "pre"
     )
+}
+pub(super) fn owns_paragraph(tag: &Tag, sheet: &StyleSheet) -> bool {
+    paragraph(&tag.name) || block(&tag.name) && tag.attribute("class")
+        .and_then(|classes| super::html_styles::select_class(sheet, classes, false)).is_some()
 }
 pub(super) fn block(name: &str) -> bool {
     paragraph(name)
@@ -110,6 +114,36 @@ pub(super) fn atomic(name: &str) -> bool {
             | "canvas"
             | "table"
     )
+}
+
+/// Atomic projection nodes own their complete original syntax. DOM tree
+/// construction can synthesize end tags or omit a pop callback, so a DOM
+/// closing token alone is not a reliable source boundary for these objects.
+fn atomic_source_extents(input: &str) -> BTreeMap<usize, Range<usize>> {
+    let mut extents = BTreeMap::new();
+    let mut open = Vec::<(String, usize)>::new();
+    for token in tokenize(input) {
+        let TokenKind::Tag(tag) = token.kind else { continue };
+        if !atomic(&tag.name) { continue; }
+        if tag.end {
+            if let Some(index) = open.iter().rposition(|(name, _)| *name == tag.name) {
+                for (_, start) in open.drain(index..) {
+                    extents.insert(start, start..token.range.end);
+                }
+            }
+        } else if void(&tag.name)
+            || matches!(tag.name.as_str(), "svg" | "math")
+                && input[token.range.clone()].trim_end().ends_with("/>")
+        {
+            extents.insert(token.range.start, token.range);
+        } else {
+            open.push((tag.name, token.range.start));
+        }
+    }
+    for (_, start) in open {
+        extents.insert(start, start..input.len());
+    }
+    extents
 }
 
 pub(super) fn tokenize(input: &str) -> Vec<Token> {
@@ -294,6 +328,7 @@ struct Frame {
     output_start: usize,
     source_inner_start: usize,
     list_container_only: bool,
+    styled_paragraph: bool,
 }
 impl Default for Frame {
     fn default() -> Self {
@@ -313,6 +348,7 @@ impl Default for Frame {
             output_start: 0,
             source_inner_start: 0,
             list_container_only: false,
+            styled_paragraph: false,
         }
     }
 }
@@ -445,6 +481,11 @@ pub(super) fn project_tokens_with_configuration(
     let mut pending_space_is_segment_break = false;
     let mut paragraph_seen = false;
     let container_items = list_container_items(&tokens);
+    let atomic_extents = if tokens.iter().any(|token| {
+        matches!(&token.kind, TokenKind::Tag(tag) if !tag.end && atomic(&tag.name))
+    }) {
+        atomic_source_extents(&input.text)
+    } else { BTreeMap::new() };
     for token in tokens {
         match token.kind {
             TokenKind::Opaque => {}
@@ -495,7 +536,7 @@ pub(super) fn project_tokens_with_configuration(
                 builder.defaults = stack
                     .iter()
                     .rev()
-                    .find(|ancestor| paragraph(&ancestor.name))
+                    .find(|ancestor| paragraph(&ancestor.name) || ancestor.styled_paragraph)
                     .map(|ancestor| ancestor.character.clone())
                     .unwrap_or_default();
                 builder.named_character = frame.named_character.clone();
@@ -511,7 +552,7 @@ pub(super) fn project_tokens_with_configuration(
                     builder.named_character = named;
                 }
                 if !mapped {
-                    builder.emit_read_only(&value);
+                    builder.emit_read_only_with_boundaries(&value, token.range, &frame.character);
                 } else if hard_break {
                     builder.hard_break(token.range);
                 } else {
@@ -526,7 +567,9 @@ pub(super) fn project_tokens_with_configuration(
                 if tag.end {
                     if let Some(index) = stack.iter().rposition(|f| f.name == tag.name) {
                         let was_hidden = stack.last().unwrap().hidden;
+                        let was_opaque = stack.last().unwrap().opaque;
                         let closed = &stack[index];
+                        let closed_paragraph = paragraph(&tag.name) || closed.styled_paragraph;
                         if !closed.hidden
                             && !closed.opaque
                             // An empty element beyond a deferred paragraph
@@ -561,10 +604,10 @@ pub(super) fn project_tokens_with_configuration(
                             }
                         }
                         stack.truncate(index.max(1));
-                        if !was_hidden && block(&tag.name) {
+                        if !was_hidden && !was_opaque && block(&tag.name) {
                             pending_space = None;
                             if !builder.line_is_empty()
-                                || paragraph(&tag.name)
+                                || closed_paragraph
                                 || tag.name == "blockquote"
                             {
                                 pending_break = Some(token.range.clone());
@@ -591,7 +634,11 @@ pub(super) fn project_tokens_with_configuration(
                         builder.emit(" ", range, &pending_space_style);
                         builder.named_character = named;
                     }
-                    builder.emit_read_only("\u{fffc}");
+                    builder.emit(
+                        "\u{fffc}",
+                        atomic_extents.get(&token.range.start).cloned().unwrap_or(token.range.clone()),
+                        &stack.last().unwrap().character,
+                    );
                     paragraph_seen = true;
                 }
                 if tag.name == "br" && !frame.hidden && !frame.opaque {
@@ -611,7 +658,13 @@ pub(super) fn project_tokens_with_configuration(
                 let first_item_paragraph = containing_item.is_some_and(|index| {
                     stack[index].output_start == builder.text.len() && pending_break.is_none()
                 });
+                let assigned_paragraph = block(&tag.name).then(|| {
+                    tag.attribute("class").and_then(|classes|
+                        super::html_styles::select_class(&builder.style_sheet, classes, false))
+                }).flatten();
+                frame.styled_paragraph = assigned_paragraph.is_some();
                 let paragraph_element = (paragraph(&tag.name)
+                    || frame.styled_paragraph
                     || tag.name == "blockquote"
                     || containing_item.is_some())
                     && !frame.list_container_only;
@@ -738,7 +791,7 @@ pub(super) fn project_tokens_with_configuration(
                     );
                 }
                 if let Some(classes) = tag.attribute("class") {
-                    if paragraph(&tag.name) {
+                    if paragraph(&tag.name) || frame.styled_paragraph {
                         if let Some(style) =
                             super::html_styles::select_class(&builder.style_sheet, classes, false)
                         {
@@ -913,7 +966,7 @@ pub(super) fn project_tokens_with_configuration(
                     builder.defaults = stack
                         .iter()
                         .rev()
-                        .find(|ancestor| paragraph(&ancestor.name))
+                        .find(|ancestor| paragraph(&ancestor.name) || ancestor.styled_paragraph)
                         .map(|ancestor| ancestor.character.clone())
                         .unwrap_or_default();
                     builder.named_character = frame.named_character.clone();

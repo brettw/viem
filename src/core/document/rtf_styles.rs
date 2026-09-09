@@ -559,6 +559,7 @@ pub(super) fn character_assignment_patches(
 
 pub(super) fn assignment_patches(
     input: &NormalizedText,
+    projection: &FormattedDocument,
     sources: &[Range<usize>],
     id: &StyleId,
     character: bool,
@@ -576,6 +577,27 @@ pub(super) fn assignment_patches(
     let mut patches = Vec::new();
     for source in sources {
         let mut source = source.clone();
+        let empty_paragraph = !character && source.is_empty();
+        if empty_paragraph {
+            // Empty inline scopes can close between the caret seed and its
+            // paragraph delimiter. The next visible contributor must be that
+            // delimiter; hidden destinations cannot supply it and following
+            // text/objects cannot be crossed to find one.
+            if let Some(next) = projection.provenance().iter().find(|span| {
+                !span.formatted.is_empty()
+                    && !span.source.is_empty()
+                    && span.source.start >= source.start
+            }) {
+                if projection.text().get(next.formatted.clone()) == Some("\n")
+                    && tokens.iter().any(|token| {
+                        matches!(&token.kind, Kind::Control(name, _) if name == "par")
+                            && mapper.source_range(token.range.clone()) == next.source
+                    })
+                {
+                    source.end = next.source.end;
+                }
+            }
+        }
         loop {
             let before = source.clone();
             for group in &groups {
@@ -597,6 +619,39 @@ pub(super) fn assignment_patches(
         } else {
             format!("\\{}{number}", if character { "cs" } else { "s" })
         };
+        if empty_paragraph && !source.is_empty() {
+            // A retained caret inside an empty group must keep this style
+            // when text is later inserted there. Retarget inner paragraph
+            // selectors; otherwise they would override the new outer scope.
+            // Their following direct character controls remain authoritative.
+            let has_text = projection.provenance().iter().any(|span| {
+                !span.formatted.is_empty()
+                    && span.source.start < source.end
+                    && source.start < span.source.end
+                    && projection.text().get(span.formatted.clone()) != Some("\n")
+            });
+            if !has_text {
+                for token in rtf::definition_tokens(&tokens) {
+                    let range = mapper.source_range(token.range.clone());
+                    if source.start <= range.start && range.end <= source.end {
+                        let replacement = match &token.kind {
+                            Kind::Control(name, handle)
+                                if name == "s" && *handle != Some(number) =>
+                            {
+                                Some(format!("{control} "))
+                            }
+                            Kind::Control(name, _) if name == "pard" && control != "\\pard" => {
+                                Some(format!("\\pard{control} "))
+                            }
+                            _ => None,
+                        };
+                        if let Some(value) = replacement {
+                            patches.push((range, value));
+                        }
+                    }
+                }
+            }
+        }
         if source.is_empty() {
             patches.push((source, format!("{{{control} }}")));
         } else {

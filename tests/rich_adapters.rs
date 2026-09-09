@@ -87,7 +87,7 @@ fn html_recovers_optional_paragraphs_and_keeps_named_references() {
     assert_eq!(document.projection().hard_line_count(), 3);
 }
 #[test]
-fn rich_edits_cannot_consume_hidden_source_or_opaque_objects() {
+fn rich_edits_preserve_hidden_source_and_delete_complete_atomic_objects() {
     for (source, format) in [
         (
             b"<p>a<script>secret()</script>b</p>".as_slice(),
@@ -113,7 +113,9 @@ fn rich_edits_cannot_consume_hidden_source_or_opaque_objects() {
         Format::Html,
     );
     assert_eq!(document.text(), "one\u{fffc}two");
-    assert!(document.replace(3..6, "").is_err());
+    document.replace(3..6, "").unwrap();
+    assert_eq!(document.text(), "onetwo");
+    assert_eq!(document.source_bytes(), b"<p>onetwo</p>");
 }
 #[test]
 fn rtf_scoped_formatting_tables_controls_and_breaks() {

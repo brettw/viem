@@ -246,7 +246,7 @@ fn shift_enter_at_paragraph_edges_keeps_one_paragraph_and_source_modes_insert_li
 }
 
 #[test]
-fn empty_quote_enter_and_first_backspace_remove_style_without_joining_previous_paragraph() {
+fn empty_quote_enter_and_list_backspace_reset_while_other_block_backspace_joins() {
     for (format, source, at, enter, expected) in [
         (Format::Html, "<p>previous</p><blockquote cite='keep'><p>body</p></blockquote><p>next</p>", 9, false, "previous\nbody\nnext"),
         (Format::Html, "<p>previous</p><ul><li>body</li></ul><p>next</p>", 9, false, "previous\nbody\nnext"),
@@ -264,10 +264,14 @@ fn empty_quote_enter_and_first_backspace_remove_style_without_joining_previous_p
         assert_eq!(core.document().text(), expected, "fixture {source}");
         insert_at(&mut core, view, at);
         input(&mut core, view, InputEvent::Key(if enter { Key::Enter } else { Key::Backspace }));
-        assert_eq!(core.document().text(), expected, "{source}");
-        let block = core.document().projection().blocks().into_iter().find(|block| block.range.start == at).unwrap();
+        let joins_quote = !enter && (source.contains("cite='keep'") || source.contains("\n\n> body"));
+        let cursor = if joins_quote { at - 1 } else { at };
+        let after = if joins_quote { expected.replacen('\n', "", 1) } else { expected.to_owned() };
+        assert_eq!(core.document().text(), after, "{source}");
+        let block = core.document().projection().blocks().into_iter()
+            .find(|block| block.range.start <= cursor && cursor <= block.range.end).unwrap();
         assert_eq!(block.style.0, "Paragraph", "{source}");
-        assert_eq!(core.command_state(view).unwrap().cursor(), at);
+        assert_eq!(core.command_state(view).unwrap().cursor(), cursor);
         assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
         reopen_and_history(&mut core, view, source.as_bytes());
     }

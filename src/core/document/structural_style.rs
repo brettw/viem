@@ -84,12 +84,14 @@ impl Document {
         self.validate_range(&range)?;
         let wants_quote =
             matches!(&assignment, Assignment::Paragraph(style) if style.0 == "Block quote");
+        let wants_plain = matches!(&assignment, Assignment::Paragraph(style)
+            if style == &self.projection().style_sheet().base_paragraph);
         let selected = selected_blocks(self, &range);
         let needs_normalization = selected.iter().any(|block| {
             if wants_quote {
                 structural_body(block)
             } else {
-                block.style.0 == "Block quote"
+                block.style.0 == "Block quote" || wants_plain && structural_body(block)
             }
         });
         if !needs_normalization {

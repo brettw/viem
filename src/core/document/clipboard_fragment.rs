@@ -367,6 +367,23 @@ impl Document {
         {
             return Ok(None);
         }
+        if range != (0..self.text().len()) {
+            if let Some(prepared) = self.prepare_with_recovered_source(
+                &[TextEdit::new(range.clone(), text)],
+                |scratch| {
+                    scratch.prepare_clipboard_fragment(range.clone(), fragment, text)?
+                        .ok_or_else(|| DocumentError::UnsupportedFormatting.into())
+                },
+            )? {
+                return Ok(Some(prepared));
+            }
+            if let Some(prepared) = self.prepare_structural_replacement(range.clone(), text, |scratch, at| {
+                scratch.prepare_clipboard_fragment(at..at, fragment, text)?
+                    .ok_or_else(|| DocumentError::UnsupportedFormatting.into())
+            })? {
+                return Ok(Some(prepared));
+            }
+        }
         let bytes = |input: &[u8]| -> Result<Vec<u8>, DocumentError> {
             if encoding == self.encoding() {
                 Ok(input.to_vec())
@@ -378,11 +395,17 @@ impl Document {
         let source_edit = super::super::source_edit::complete_contributors(
             self.projection(), &TextEdit::new(range.clone(), text),
         )?;
-        let source_runs = if range == (0..self.text().len()) {
-            vec![0..self.source_byte_len()]
-        } else {
-            super::super::rich_text::text_source_runs(self, &source_edit.range)?
+        let whole = range == (0..self.text().len());
+        let plan = if whole { None } else {
+            super::super::source_edit::overlapping_text_plan(self, &source_edit.range)?
         };
+        let source_runs = if whole {
+            vec![0..self.source_byte_len()]
+        } else if let Some(plan) = &plan {
+            plan.ranges.clone()
+        } else { super::super::rich_text::text_source_runs(self, &source_edit.range)? };
+        let insertion = plan.as_ref().map_or(source_runs[0].start, |plan| plan.insertion);
+        let insertion_index = plan.as_ref().map_or(Some(0), |plan| plan.insertion_run());
         let preserved = |range: Range<usize>| -> Result<Vec<u8>, DocumentError> {
             let text = self.projection().text_tree().slice(range).map_err(DocumentError::FormattedTextStorage)?;
             let syntax = if self.format() == Format::Html {
@@ -394,7 +417,6 @@ impl Document {
         };
         let prefix = preserved(source_edit.range.start..range.start)?;
         let suffix = preserved(range.end..source_edit.range.end)?;
-        let whole = range == (0..self.text().len());
         // Whole replacement reproduces the original byte image, including
         // malformed-but-supported syntax. Embedded pastes use balanced scopes
         // so an unclosed copied tag cannot restyle untouched following text.
@@ -411,16 +433,28 @@ impl Document {
         for candidate in candidates {
             let mut replacement = prefix.clone();
             replacement.extend(bytes(candidate)?);
-            if source_runs.len() == 1 { replacement.extend_from_slice(&suffix); }
-            let mut patches = vec![SourcePatch::primary(source_runs[0].clone(), replacement)];
-            patches.extend(source_runs[1..].iter().enumerate().map(|(index, range)| {
-                SourcePatch::primary(range.clone(), if index + 2 == source_runs.len() { suffix.clone() } else { Vec::new() })
-            }));
+            let mut patches = source_runs.iter().enumerate().map(|(index, range)| {
+                let mut value = if insertion_index == Some(index) { replacement.clone() } else { Vec::new() };
+                if index + 1 == source_runs.len() { value.extend_from_slice(&suffix); }
+                SourcePatch::primary(range.clone(), value)
+            }).collect::<Vec<_>>();
+            if insertion_index.is_none() {
+                patches.push(SourcePatch::primary(insertion..insertion, replacement));
+            }
             let prepared = self
                 .prepare_text_edits_with_patches(
                     vec![TextEdit::new(range.clone(), text)],
                     Some(patches),
                 )
+                .and_then(|prepared| {
+                    if whole {
+                        Ok(prepared)
+                    } else {
+                        self.isolate_clipboard_character_styles(
+                            prepared, &export, range.clone(), &bytes(candidate)?,
+                        )
+                    }
+                })
                 .and_then(|prepared| {
                     verify_styles(prepared, &export, range.clone(), whole, self.projection())
                 });
@@ -430,6 +464,108 @@ impl Document {
             }
         }
         Err(error)
+    }
+
+    /// A balanced inline fragment can inherit different character defaults in
+    /// its destination paragraph. Preserve its independently reproducible
+    /// appearance with local declarations, using the normal formatting adapter.
+    /// Missing source style definitions are still rejected by verification.
+    fn isolate_clipboard_character_styles(
+        &self,
+        prepared: PreparedModelTransaction,
+        export: &Export,
+        replaced: Range<usize>,
+        candidate: &[u8],
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if !matches!(self.format(), Format::Html | Format::Rtf) {
+            return Ok(prepared);
+        }
+        let PreparedPublication::State(state) = &prepared.publication else {
+            return Ok(prepared);
+        };
+        let inserted = replaced.start..replaced.start + export.source_plain_text.len();
+        let (actual, _) = style_runs(&state.projection, &inserted)?;
+        if styles_match(&export.character_runs, &actual) {
+            return Ok(prepared);
+        }
+        let standalone = Document::from_bytes_with_file_format(
+            candidate.to_vec(),
+            self.encoding(),
+            self.format(),
+            self.file_format(),
+        )?;
+        let (independent, _) = style_runs(standalone.projection(), &(0..standalone.text().len()))?;
+        if standalone.text() != export.source_plain_text
+            || !styles_match(&export.character_runs, &independent)
+        {
+            return Ok(prepared);
+        }
+        let mut scratch = structural_style::scratch_document(self);
+        let mut sources = replacement::PatchComposition::new(self.source_byte_len());
+        for patch in prepared.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        let inserted = scratch.prepare_text_edits_with_patches(
+            vec![TextEdit::new(replaced.clone(), &export.source_plain_text)],
+            Some(prepared.summary.source_patches),
+        )?;
+        scratch.commit_model_transaction(inserted)?;
+        for expected in &export.character_runs {
+            for current in &actual {
+                let start = expected["start"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .max(current["start"].as_u64().unwrap_or(0))
+                    as usize;
+                let end = expected["end"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .min(current["end"].as_u64().unwrap_or(0)) as usize;
+                if start >= end {
+                    continue;
+                }
+                let properties = |run: &Value| -> Result<CharacterProperties, DocumentError> {
+                    let mut values = run.clone();
+                    values["weight"] = values["base_weight"].clone();
+                    if values["foreground_is_default"] == true {
+                        values["foreground"] = Value::Null;
+                    }
+                    serde_json::from_value(values).map_err(|_| DocumentError::UnsupportedFormatting)
+                };
+                let mut authored = properties(expected)?;
+                let current = properties(current)?;
+                for property in authored.declared_properties() {
+                    if !authored.changed_properties(&current).contains(&property) {
+                        super::super::style::clear_character_property(
+                            &StyleId::from("Clipboard"),
+                            &mut authored,
+                            property,
+                        )?;
+                    }
+                }
+                // A CSS face weight also controls conventional bold; retain
+                // copied emphasis when changing the inherited paragraph face.
+                if authored.weight.is_some() && authored.bold.is_none() {
+                    authored.bold = expected["bold"].as_bool();
+                }
+                if authored.declared_properties().is_empty() {
+                    continue;
+                }
+                let styled = scratch.prepare_rich_character_properties(
+                    replaced.start + start..replaced.start + end,
+                    authored,
+                    None,
+                )?;
+                for patch in styled.summary.source_patches.iter().rev() {
+                    sources.splice(patch.range(), patch.replacement());
+                }
+                scratch.commit_model_transaction(styled)?;
+            }
+        }
+        self.prepare_text_edits_with_patches(
+            vec![TextEdit::new(replaced, &export.source_plain_text)],
+            Some(sources.source_patches(&scratch.state().source)?),
+        )
     }
 }
 
@@ -822,6 +958,30 @@ fn style_runs(
     Ok((characters, paragraphs))
 }
 
+fn styles_match(expected: &[Value], actual: &[Value]) -> bool {
+    expected.iter().all(|expected| {
+        let start = expected["start"].as_u64().unwrap_or(0);
+        let end = expected["end"].as_u64().unwrap_or(0);
+        let relevant = actual
+            .iter()
+            .filter(|run| {
+                run["start"].as_u64().unwrap_or(0) < end && run["end"].as_u64().unwrap_or(0) > start
+            })
+            .collect::<Vec<_>>();
+        (start == end || !relevant.is_empty())
+            && relevant.into_iter().all(|run| {
+                expected.as_object().is_some_and(|properties| {
+                    properties.iter().all(|(name, value)| {
+                        name == "start"
+                            || name == "end"
+                            || name == "resolved_direction"
+                            || run.get(name) == Some(value)
+                    })
+                })
+            })
+    })
+}
+
 fn verify_styles(
     prepared: PreparedModelTransaction,
     export: &Export,
@@ -836,30 +996,6 @@ fn verify_styles(
         &state.projection,
         &(replaced.start..replaced.start + export.source_plain_text.len()),
     )?;
-    let compare = |expected: &[Value], actual: &[Value]| {
-        expected.iter().all(|expected| {
-            let start = expected["start"].as_u64().unwrap_or(0);
-            let end = expected["end"].as_u64().unwrap_or(0);
-            let relevant = actual
-                .iter()
-                .filter(|run| {
-                    run["start"].as_u64().unwrap_or(0) < end
-                        && run["end"].as_u64().unwrap_or(0) > start
-                })
-                .collect::<Vec<_>>();
-            (start == end || !relevant.is_empty())
-                && relevant.into_iter().all(|run| {
-                    expected.as_object().is_some_and(|properties| {
-                        properties.iter().all(|(name, value)| {
-                            name == "start"
-                                || name == "end"
-                                || name == "resolved_direction"
-                                || run.get(name) == Some(value)
-                        })
-                    })
-                })
-        })
-    };
     let actual_breaks = state
         .projection
         .hard_breaks_for_region(&(replaced.start..replaced.start + export.source_plain_text.len()))
@@ -873,8 +1009,8 @@ fn verify_styles(
         .filter(|offset| *offset < export.source_plain_text.len())
         .collect::<Vec<_>>();
     if actual_breaks != expected_breaks
-        || !compare(&export.character_runs, &actual)
-        || paragraphs && !compare(&export.paragraph_runs, &paragraph_runs)
+        || !styles_match(&export.character_runs, &actual)
+        || paragraphs && !styles_match(&export.paragraph_runs, &paragraph_runs)
     {
         return Err(DocumentError::UnsupportedFormatting.into());
     }
@@ -891,7 +1027,7 @@ fn verify_styles(
         }
         let (old_character, old_paragraph) = style_runs(before, &old_range)?;
         let (new_character, new_paragraph) = style_runs(&state.projection, &new_range)?;
-        if !compare(&old_character, &new_character) || !compare(&old_paragraph, &new_paragraph) {
+        if !styles_match(&old_character, &new_character) || !styles_match(&old_paragraph, &new_paragraph) {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
     }

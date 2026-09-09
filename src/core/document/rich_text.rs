@@ -200,6 +200,20 @@ impl<'a> Builder<'a> {
         }
         self.text.push_str(value);
     }
+    /// An opaque item has no editable interior, but both of its visible edges
+    /// remain insertion locations. Retain only those boundaries, without
+    /// declaring its source bytes to be ordinary replaceable text.
+    pub fn emit_read_only_with_boundaries(
+        &mut self,
+        value: &str,
+        input_range: Range<usize>,
+        style: &CharacterProperties,
+    ) {
+        let source = self.source_range(input_range);
+        self.retain_empty_boundary(source.start, style);
+        self.emit_read_only(value);
+        self.retain_empty_boundary(source.end, style);
+    }
     fn finish_line(&mut self) {
         let mut style = self
             .paragraph_style
@@ -382,25 +396,35 @@ pub(super) fn character_edit_verified(
     selected: &Range<usize>,
     properties: &CharacterProperties,
 ) -> bool {
+    character_edit_verified_with_queries(before, after, selected, properties, |_, _| {})
+}
+
+fn character_edit_verified_with_queries(
+    before: &FormattedDocument,
+    after: &FormattedDocument,
+    selected: &Range<usize>,
+    properties: &CharacterProperties,
+    mut observe_queries: impl FnMut(usize, usize),
+) -> bool {
     let mut boundaries = vec![0, before.text().len(), selected.start, selected.end];
+    for at in before.hard_breaks_for_region(&(0..before.text().len())) {
+        boundaries.extend([at, at + 1]);
+    }
     for span in before.style_spans().iter().chain(after.style_spans()) {
         boundaries.extend([span.range.start, span.range.end]);
     }
     boundaries.sort_unstable();
     boundaries.dedup();
-    let at = |document: &FormattedDocument,
+    let mut at = |document: &FormattedDocument,
               offset,
               override_properties: Option<&CharacterProperties>| {
-        let block = document
-            .blocks()
-            .iter()
-            .find(|block| block.range.contains(&offset))?;
+        let blocks = document.blocks_for_region(&(offset..offset));
+        let spans = document.style_spans_touching(&(offset..offset));
+        observe_queries(blocks.len(), spans.len());
+        let block = blocks.iter().find(|block| block.range.contains(&offset))?;
         let mut direct = CharacterProperties::default();
         let mut named = None;
-        for span in document
-            .style_spans()
-            .iter()
-            .filter(|s| s.range.contains(&offset))
+        for span in spans.iter().filter(|span| span.range.contains(&offset))
         {
             match &span.application {
                 StyleApplication::Direct(layer) => overlay(&mut direct, layer),
@@ -958,4 +982,39 @@ pub(super) fn text_source_runs(
         runs.sort_by_key(|run| (run.start, run.end));
     }
     Ok(runs)
+}
+
+#[cfg(test)]
+mod character_verification_tests {
+    use super::*;
+    use crate::document::{Document, Encoding, Format};
+
+    #[test]
+    fn complete_character_verification_uses_bounded_context_queries_in_large_documents() {
+        let paragraphs = 10_000;
+        let source = "<p><span style='color:#123456'>A</span>B</p>".repeat(paragraphs);
+        let before = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+        let mut block_records = 0;
+        let mut style_records = 0;
+        assert!(character_edit_verified_with_queries(
+            before.projection(), before.projection(), &(0..0), &CharacterProperties::default(),
+            |blocks, styles| { block_records += blocks; style_records += styles; },
+        ));
+        // Each complete-document interval needs only its adjacent paragraph
+        // and style runs, regardless of all the other paragraphs in the file.
+        assert!(block_records <= paragraphs * 8, "{block_records} block records");
+        assert!(style_records <= paragraphs * 8, "{style_records} style records");
+        assert!(block_records >= paragraphs * 2);
+        assert!(style_records >= paragraphs);
+
+        let mut changed = source;
+        let at = changed.rfind("#123456").unwrap();
+        changed.replace_range(at..at + 7, "#654321");
+        let after = Document::from_bytes(changed.into_bytes(), Encoding::Utf8, Format::Html).unwrap();
+        // A late, unselected style change must still be rejected: indexing
+        // accelerates complete verification rather than narrowing its scope.
+        assert!(!character_edit_verified(
+            before.projection(), after.projection(), &(0..1), &CharacterProperties::default(),
+        ));
+    }
 }

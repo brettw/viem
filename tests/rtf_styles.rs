@@ -31,6 +31,97 @@ fn range(document: &Document, start: usize, end: usize) -> TextRange {
 }
 
 #[test]
+fn empty_paragraph_assignment_survives_scope_closures_and_reopen() {
+    let header = r"{\rtf1{\stylesheet{\s0 Normal;}{\s5\sbasedon0\snext0\b Heading 1;}}";
+    let mut failures = Vec::new();
+    for (requested, expected) in [("Paragraph", "Paragraph"), ("Heading1", "RtfP5")] {
+        for (body, at) in [
+            (r"\s5\par \s0 Tail}", 0),
+            (r"\s0 A\par \s5\par \s0 Tail}", 2),
+            (r"\s5 A\par}", 2),
+            (r"\s5{\i }\par \s0 Tail}", 0),
+            (r"\s5{\*\unknown keep}\par \s0 Tail}", 0),
+            (r"\s5{\i }{\*\unknown \par keep}\par \s0 Tail}", 0),
+            (r"\s5{\i }\par \s0 Tail\par \s5 Last}", 0),
+            (r"\s0 A\par {\s5 }\par \s0 Tail}", 2),
+            (r"\s0 A\par {\s5\i }\par \s0 Tail}", 2),
+        ] {
+            let source = format!("{header}{body}");
+            let mut document =
+                Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf)
+                    .unwrap();
+            let previous = document.projection().blocks().to_vec();
+            let selected = range(&document, at, at);
+            let request = StyleModelRequest::new(
+                document.id(),
+                document.revision(),
+                StyleModelIntent::Persisted(PersistedStyleIntent::AssignBlockStyle {
+                    target: StyleBlockTarget::Paragraphs(selected),
+                    style: requested.into(),
+                }),
+            );
+            if let Err(error) = document.apply_style_request(request) {
+                failures.push(format!("{body:?} at {at}, {requested}: {error:?}"));
+                continue;
+            }
+            let saved = document.source_bytes();
+            assert!(saved.starts_with(header.as_bytes()));
+            if body.contains(r"{\*\unknown \par keep}") {
+                assert!(String::from_utf8_lossy(&saved).contains(r"{\*\unknown \par keep}"));
+            }
+            let mut reopened =
+                Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Rtf).unwrap();
+            for snapshot in [&document, &reopened] {
+                for (old, block) in previous.iter().zip(snapshot.projection().blocks()) {
+                    assert_eq!(
+                        block.style,
+                        if old.range == (at..at) {
+                            expected.into()
+                        } else {
+                            old.style.clone()
+                        },
+                        "{body}"
+                    );
+                }
+            }
+            reopened.replace(at..at, "X").unwrap();
+            assert_eq!(
+                reopened
+                    .projection()
+                    .blocks()
+                    .iter()
+                    .find(|block| block.range.contains(&at))
+                    .unwrap()
+                    .style
+                    .0,
+                expected,
+                "{body}: subsequent typing"
+            );
+            let typed = viem_core::layout::DocumentLayoutStyles::character_at(
+                reopened.projection(),
+                at,
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                typed.slant,
+                if body.contains(r"\i") {
+                    FontSlant::Italic
+                } else {
+                    FontSlant::Upright
+                },
+                "{body}: retained inline context"
+            );
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            assert!(document.redo());
+            assert_eq!(document.source_bytes(), saved);
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn imports_native_style_handles_links_and_body_assignments() {
     let document = open();
     assert_eq!(document.text(), "Title\nBody accent");

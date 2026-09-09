@@ -1934,7 +1934,7 @@ mod tests {
 
 /// Replace only the first effective class attribute's value, retaining tag
 /// case, other attributes, quote spelling and duplicate attributes untouched.
-fn class_patch(text: &str, tag_range: Range<usize>, value: &str) -> (Range<usize>, String) {
+pub(super) fn class_patch(text: &str, tag_range: Range<usize>, value: &str) -> (Range<usize>, String) {
     attribute_patch(text, tag_range, "class", value)
 }
 

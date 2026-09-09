@@ -209,6 +209,7 @@ pub(super) struct State {
     paragraph_style: Option<super::StyleId>,
     named_character: Option<super::StyleId>,
     group_output_start: usize,
+    group_source_start: usize,
 }
 impl Default for State {
     fn default() -> Self {
@@ -230,6 +231,7 @@ impl Default for State {
             paragraph_style: None,
             named_character: None,
             group_output_start: 0,
+            group_source_start: 0,
         }
     }
 }
@@ -710,16 +712,14 @@ fn emit_encoded_byte(
         return;
     }
     let Some(encoding) = codepage_encoding(state, tables) else {
-        builder.emit_read_only("\u{fffd}");
+        builder.emit("\u{fffd}", range, &state.character);
         return;
     };
     let mut decoder = encoding.new_decoder_without_bom_handling();
     let mut output = String::with_capacity(32);
     let mut next = byte;
-    let mut invalid = false;
     loop {
-        let (_, _, errors) = decoder.decode_to_string(&[next], &mut output, false);
-        invalid |= errors;
+        let _ = decoder.decode_to_string(&[next], &mut output, false);
         if !output.is_empty() {
             break;
         }
@@ -733,16 +733,13 @@ fn emit_encoded_byte(
             range.end = token.range.end;
             next = byte;
         } else {
-            let (_, _, errors) = decoder.decode_to_string(&[], &mut output, true);
-            invalid |= errors;
+            let _ = decoder.decode_to_string(&[], &mut output, true);
             break;
         }
     }
-    if invalid {
-        builder.emit_read_only(&output);
-    } else {
-        builder.emit(&output, range, &state.character);
-    }
+    // A diagnostic scalar owns the complete source unit just as decoded text
+    // does; its interior is unavailable, but its full visible item is editable.
+    builder.emit(&output, range, &state.character);
 }
 
 pub(super) fn project(
@@ -752,6 +749,20 @@ pub(super) fn project(
     end: usize,
 ) -> FormattedDocument {
     let tokens = tokenize(input);
+    let mut group_ends = BTreeMap::new();
+    let mut group_starts = Vec::new();
+    for token in &tokens {
+        match token.kind {
+            Kind::Open => group_starts.push(token.range.start),
+            Kind::Close => if let Some(start) = group_starts.pop() {
+                group_ends.insert(start, token.range.end);
+            },
+            _ => {}
+        }
+    }
+    for start in group_starts {
+        group_ends.insert(start, input.text.len());
+    }
     let tables = tables(&tokens);
     let list_tables = super::rtf_lists::ListTables::read(&tokens);
     let mut numbering = super::rtf_lists::Numbering::default();
@@ -906,6 +917,7 @@ pub(super) fn project(
                 state.group_start = true;
                 state.numbering_destination = false;
                 state.group_output_start = builder.text.len();
+                state.group_source_start = token.range.start;
             }
             Kind::Close => {
                 flush(&mut pending_unicode, &mut builder);
@@ -963,7 +975,8 @@ pub(super) fn project(
                 if state.group_start && non_body(&name) {
                     if !state.hidden && matches!(name.as_str(), "pict" | "object" | "field" | "shp")
                     {
-                        builder.emit_read_only("\u{fffc}");
+                        let end = group_ends.get(&state.group_source_start).copied().unwrap_or(token.range.end);
+                        builder.emit("\u{fffc}", state.group_source_start..end, &state.character);
                     }
                     state.hidden = true;
                 }
@@ -1553,6 +1566,25 @@ pub(super) fn empty_insertion_point(input: &NormalizedText) -> Option<usize> {
     tokenize(input).iter().rev().find_map(|token| {
         matches!(token.kind, Kind::Close).then(|| builder.source_range(token.range.clone()).start)
     })
+}
+
+pub(super) fn opaque_closing_syntax(
+    document: &super::Document,
+    source: Range<usize>,
+) -> Result<String, super::DocumentError> {
+    let bytes = document.state().source.bytes_in(source.clone())
+        .ok_or(super::DocumentError::AmbiguousProjection)?;
+    let decoded = document.encoding().decode_region(&bytes, source.start)?;
+    let input = super::line_endings::normalize(&decoded, document.file_format());
+    let mut depth = 0usize;
+    for token in tokenize(&input) {
+        match token.kind {
+            Kind::Open => depth += 1,
+            Kind::Close => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok("}".repeat(depth))
 }
 
 /// Unicode fallback scopes carry no character formatting. A caret after their

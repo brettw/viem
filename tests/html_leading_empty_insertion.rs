@@ -54,9 +54,8 @@ fn assert_reopen_equivalent(document: &Document) {
     }
 }
 
-fn open_above_and_type(pre_insertion_source: &str, motion: char) {
-    let insertion_at = pre_insertion_source.find("<br>").unwrap();
-    let original_source = pre_insertion_source.replacen("<br>", "", 1);
+fn open_above_and_type(original_source: &str, pre_insertion_source: &str, motion: char) {
+    let insertion_at = pre_insertion_source.find("</p>").unwrap();
     let document = Document::from_bytes(
         original_source.as_bytes().to_vec(),
         Encoding::Utf8,
@@ -68,7 +67,7 @@ fn open_above_and_type(pre_insertion_source: &str, motion: char) {
     let view = core.add_view(MockTextMeasurementProvider::new(), 300., 100.);
 
     // `$` leaves upstream affinity at the old line end. O must associate its
-    // new empty line with the following <br>, independent of that old side.
+    // new empty paragraph with its own body, independent of that old side.
     for event in [
         InputEvent::Key(Key::Escape),
         InputEvent::key(motion),
@@ -145,24 +144,34 @@ fn open_above_and_type(pre_insertion_source: &str, motion: char) {
 }
 
 #[test]
-fn opening_a_leading_empty_html_line_resets_the_previous_cursor_side() {
-    for source in [
-        "<p><br>;", // Minimized from the captured malformed fixture.
-        "<p><br>achanged</p>",
-        "<p style='font-style:italic'><br>achanged</p>",
-        "<p><br>achanged</p><!--keep--><unknown data-x='untouched'><!--tail--></unknown>",
+fn opening_a_leading_empty_html_paragraph_resets_the_previous_cursor_side() {
+    for (original, opened) in [
+        ("<p>;", "<p></p><p>;</p>"), // Minimized from the captured malformed fixture.
+        ("<p>achanged</p>", "<p></p><p>achanged</p>"),
+        (
+            "<p style='font-style:italic'>achanged</p>",
+            "<p style='font-style:italic'></p><p style=\"font-style: italic\">achanged</p>",
+        ),
+        (
+            "<p>achanged</p><!--keep--><unknown data-x='untouched'><!--tail--></unknown>",
+            "<p></p><p>achanged</p><!--keep--><unknown data-x='untouched'><!--tail--></unknown>",
+        ),
     ] {
         for motion in ['$', '0'] {
-            open_above_and_type(source, motion);
+            open_above_and_type(original, opened, motion);
         }
     }
 }
 
 #[test]
-fn leading_empty_line_in_captured_malformed_html_accepts_typing() {
+fn leading_empty_paragraph_in_captured_malformed_html_accepts_typing() {
     // Exact pre-insertion source from core fuzz seed 1, action 694. The fixture
     // deliberately retains NULs, malformed tags, misnesting, and unknown bytes.
-    open_above_and_type(include_str!("fixtures/html-leading-empty-line.html"), '$');
+    let captured = include_str!("fixtures/html-leading-empty-line.html");
+    assert!(captured.starts_with("<p><br>"));
+    let original = captured.replacen("<br>", "", 1);
+    let opened = format!("<p></p>{original}");
+    open_above_and_type(&original, &opened, '$');
 }
 
 #[test]

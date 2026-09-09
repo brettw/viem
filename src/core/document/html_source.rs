@@ -472,21 +472,31 @@ fn structural_flow_paragraphs(
     let mut content = false;
     let mut pending = false;
     let mut protected = Vec::new();
+    let mut paragraph_owners = Vec::<(String, bool)>::new();
     for token in tokens {
         match &token.kind {
             TokenKind::Tag(tag) => {
                 if tag.end {
+                    let explicit_owner = paragraph_owners.iter().rposition(|(name, _)| name == &tag.name)
+                        .map(|index| {
+                            let owned = paragraph_owners[index].1;
+                            paragraph_owners.truncate(index);
+                            owned
+                        }).unwrap_or(false);
                     if protected.last().is_some_and(|name| name == &tag.name) {
                         protected.pop();
                     }
                     if protected.is_empty() && html::block(&tag.name) {
-                        pending |= content
+                        pending |= content || explicit_owner
                             || matches!(
                                 tag.name.as_str(),
                                 "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "pre"
                             );
                     }
                 } else {
+                    if html::block(&tag.name) {
+                        paragraph_owners.push((tag.name.clone(), html::owns_paragraph(tag, semantic.style_sheet())));
+                    }
                     if protected.is_empty() && (html::block(&tag.name) && content || pending) {
                         starts.push(token.range.start);
                         content = false;

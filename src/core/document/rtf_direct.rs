@@ -6,7 +6,7 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-fn character_property(name: &str, number: Option<i32>) -> Option<StyleProperty> {
+pub(super) fn character_property(name: &str, number: Option<i32>) -> Option<StyleProperty> {
     use StyleProperty::*;
     Some(match name {
         "b" => CharacterBold,

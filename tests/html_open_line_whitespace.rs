@@ -123,10 +123,10 @@ fn open_above_a_wrapped_row_maps_past_the_protected_space() {
         assert_reopens(
             &core,
             &format!("{word}\u{a0}\nB"),
-            &format!("<p data-keep='x'>{word}&nbsp;<br>B</p><!--keep-->"),
+            &format!("<p data-keep='x'>{word}&nbsp;</p><p>B</p><!--keep-->"),
         );
         input(&mut core, view, InputEvent::text("C"));
-        let changed = format!("<p data-keep='x'>{word} C<br>B</p><!--keep-->");
+        let changed = format!("<p data-keep='x'>{word} C</p><p>B</p><!--keep-->");
         assert_reopens(&core, &format!("{word} C\nB"), &changed);
         assert_eq!(core.command_state(view).unwrap().cursor(), word.len() + 2);
         input(&mut core, view, InputEvent::Key(Key::Escape));
@@ -137,8 +137,8 @@ fn open_above_a_wrapped_row_maps_past_the_protected_space() {
 #[test]
 fn open_below_a_wrapped_row_stays_after_its_own_break() {
     for (width, text, caret, source) in [
-        (20., "A\u{a0}\nB", 4, "<p>A&nbsp;<br>B</p><!--keep-->"),
-        (12., "A\u{a0}\nB", 4, "<p>A&nbsp;<br>B</p><!--keep-->"),
+        (20., "A\u{a0}\nB", 4, "<p>A&nbsp;</p><p>B</p><!--keep-->"),
+        (12., "A\u{a0}\nB", 4, "<p>A&nbsp;</p><p>B</p><!--keep-->"),
     ] {
         let original = "<p>A B</p><!--keep-->";
         let (mut core, view) = open(original, width, 0);
@@ -148,7 +148,7 @@ fn open_below_a_wrapped_row_stays_after_its_own_break() {
         input(&mut core, view, InputEvent::text("C"));
         // Even at 12px, the space stays with its preceding word instead of
         // introducing an emergency break before the whitespace.
-        let (text, changed) = ("A\u{a0}\nCB", "<p>A&nbsp;<br>CB</p><!--keep-->");
+        let (text, changed) = ("A\u{a0}\nCB", "<p>A&nbsp;</p><p>CB</p><!--keep-->");
         assert_reopens(&core, text, changed);
         assert_eq!(core.command_state(view).unwrap().cursor(), caret + 1);
         input(&mut core, view, InputEvent::Key(Key::Escape));
@@ -170,9 +170,9 @@ fn wrapped_open_line_keeps_other_view_anchors_valid() {
         .unwrap();
     input(&mut core, view, InputEvent::text("C"));
     assert_eq!(core.command_state(other).unwrap().cursor(), 4);
-    assert_reopens(&core, "A C\nB", "<p>A C<br>B</p><!--keep-->");
+    assert_reopens(&core, "A C\nB", "<p>A C</p><p>B</p><!--keep-->");
     input(&mut core, view, InputEvent::Key(Key::Escape));
-    history_roundtrip(&mut core, view, original, "<p>A C<br>B</p><!--keep-->");
+    history_roundtrip(&mut core, view, original, "<p>A C</p><p>B</p><!--keep-->");
     core.document()
         .text_point(core.command_state(other).unwrap().cursor())
         .unwrap();
@@ -185,17 +185,17 @@ fn counted_open_lines_and_dot_repeat_keep_whitespace_and_undo_groups() {
             'O',
             2,
             "A C\nC\nB",
-            "<p>A C<br>C<br>B</p>",
+            "<p>A C</p><p>C</p><p>B</p>",
             "A C\nC\nC\nC\nB",
-            "<p>A C<br>C<br>C<br>C<br>B</p>",
+            "<p>A C</p><p>C</p><p>C</p><p>C</p><p>B</p>",
         ),
         (
             'o',
             0,
             "A\u{a0}\nC\nCB",
-            "<p>A&nbsp;<br>C<br>CB</p>",
+            "<p>A&nbsp;</p><p>C</p><p>CB</p>",
             "A\u{a0}\nC\nCB\nC\nC",
-            "<p>A&nbsp;<br>C<br>CB<br>C<br>C</p>",
+            "<p>A&nbsp;</p><p>C</p><p>CB</p><p>C</p><p>C</p>",
         ),
     ] {
         let original = "<p>A B</p>";

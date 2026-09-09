@@ -87,302 +87,6 @@ fn escape(value: &str) -> String {
         .replace('<', "&lt;")
 }
 
-/// Join two sibling paragraphs by removing their boundary syntax. The first
-/// paragraph owns the result; the second paragraph's direct character values
-/// stay attached to its original text in a local span.
-pub(super) fn join_patches(
-    document: &super::Document,
-    input: &super::line_endings::NormalizedText,
-    edit: &super::TextEdit,
-    all_edits: &[super::TextEdit],
-) -> Result<Option<Vec<(Range<usize>, String)>>, DocumentError> {
-    let blocks = document.projection().blocks();
-    let boundaries = blocks
-        .windows(2)
-        .filter(|pair| edit.range.start <= pair[0].range.end && pair[0].range.end < edit.range.end)
-        .collect::<Vec<_>>();
-    if boundaries.len() != 1 {
-        return Ok(None);
-    }
-    let pair = boundaries[0];
-    let first = &pair[0];
-    let second = &pair[1];
-    if edit.range.start < first.range.start
-        || second.range.end < edit.range.end
-        || edit.replacement.contains('\n')
-    {
-        return Ok(None);
-    }
-    let tokens = html::tokenize(&input.text);
-    let converter = super::rich_text::Builder::new(input, Revision(0));
-    let text_source_at = |block: &Block| -> Result<usize, DocumentError> {
-        document
-            .projection()
-            .provenance_for_region(&block.range)
-            .into_iter()
-            .find(|span| !span.source.is_empty())
-            .map(|span| span.source.start)
-            .or_else(|| {
-                document
-                    .projection()
-                    .source_insertion_point(block.range.start, true)
-            })
-            .ok_or(DocumentError::AmbiguousProjection)
-    };
-    let normalized_at = |source: usize| -> Result<usize, DocumentError> {
-        input
-            .units
-            .iter()
-            .find(|unit| unit.source.start == source)
-            .map(|unit| unit.normalized.start)
-            .ok_or(DocumentError::AmbiguousProjection)
-    };
-    let first_stack = stack_at(&tokens, normalized_at(text_source_at(first)?)?);
-    let second_stack = stack_at(&tokens, normalized_at(text_source_at(second)?)?);
-    let first_open = first_stack
-        .iter()
-        .rev()
-        .find(|token| matches!(&token.kind,TokenKind::Tag(tag) if paragraph(&tag.name)))
-        .or_else(|| {
-            first_stack
-                .iter()
-                .rev()
-                .find(|token| matches!(&token.kind,TokenKind::Tag(tag) if tag.name == "li"))
-        })
-        .copied()
-        .ok_or(DocumentError::UnsupportedFormatting)?;
-    let second_open = second_stack
-        .iter()
-        .rev()
-        .find(|token| matches!(&token.kind,TokenKind::Tag(tag) if paragraph(&tag.name)))
-        .copied()
-        .ok_or(DocumentError::UnsupportedFormatting)?;
-    let TokenKind::Tag(first_tag) = &first_open.kind else {
-        unreachable!()
-    };
-    let TokenKind::Tag(second_tag) = &second_open.kind else {
-        unreachable!()
-    };
-    let joins_boundary = |boundary: usize| {
-        all_edits.iter().any(|edit| {
-            edit.range.start <= boundary
-                && boundary < edit.range.end
-                && !edit.replacement.contains('\n')
-        })
-    };
-    let first_index = blocks
-        .iter()
-        .position(|block| block.id == first.id)
-        .ok_or(DocumentError::AmbiguousProjection)?;
-    let mut origin_index = first_index;
-    while origin_index > 0 && joins_boundary(blocks[origin_index - 1].range.end) {
-        origin_index -= 1;
-    }
-    let prior_join = origin_index != first_index;
-    let following_join = joins_boundary(second.range.end);
-    let origin_stack = stack_at(
-        &tokens,
-        normalized_at(text_source_at(&blocks[origin_index])?)?,
-    );
-    let origin = origin_stack
-        .iter()
-        .rev()
-        .find_map(|token| match &token.kind {
-            TokenKind::Tag(tag) if paragraph(&tag.name) => Some(tag.name.as_str()),
-            _ => None,
-        })
-        .or_else(|| {
-            matches!(blocks[origin_index].kind, super::BlockKind::ListItem { .. }).then_some("")
-        })
-        .ok_or(DocumentError::UnsupportedFormatting)?;
-    let parent = |stack: &Vec<&Token>| {
-        stack.iter().filter(|token|matches!(&token.kind,TokenKind::Tag(tag) if structural(&tag.name)&&!paragraph(&tag.name))).map(|token|token.range.start).collect::<Vec<_>>()
-    };
-    if parent(&first_stack) != parent(&second_stack) {
-        return Err(DocumentError::AmbiguousProjection);
-    }
-    let mut patches = Vec::new();
-    for span in document.projection().provenance_for_region(&edit.range) {
-        if span.formatted == (first.range.end..second.range.start) {
-            continue;
-        }
-        if span.source.is_empty() {
-            return Err(DocumentError::AmbiguousProjection);
-        } else {
-            patches.push((span.source, String::new()));
-        }
-    }
-    let source_at = document
-        .projection()
-        .source_insertion_point(edit.range.start, false)
-        .ok_or(DocumentError::AmbiguousProjection)?;
-    if !edit.replacement.is_empty() {
-        patches.push((
-            source_at..source_at,
-            super::rich_text::escape_html_text_edit(document, source_at, edit)?,
-        ));
-    }
-    // Whitespace previously trimmed at the two paragraph edges becomes inline
-    // after joining. Keep it when it can collapse with an inserted ordinary
-    // space; otherwise remove only the newly exposed whitespace, retaining
-    // every intervening element and comment.
-    let trim_before = edit
-        .replacement
-        .chars()
-        .next()
-        .map_or(true, |ch| !super::html_whitespace::collapsible(ch));
-    let trim_after = edit
-        .replacement
-        .chars()
-        .next_back()
-        .map_or(true, |ch| !super::html_whitespace::collapsible(ch));
-    if trim_before || trim_after {
-        let before = document
-            .projection()
-            .provenance_for_region(&first.range)
-            .into_iter()
-            .rev()
-            .find(|span| !span.formatted.is_empty() && !span.source.is_empty())
-            .map(|span| span.source.end);
-        let after = document
-            .projection()
-            .provenance_for_region(&second.range)
-            .into_iter()
-            .find(|span| !span.formatted.is_empty() && !span.source.is_empty())
-            .map(|span| span.source.start);
-        if let (Some(before), Some(after)) = (before, after) {
-            let mut hidden = Vec::new();
-            let mut whitespace: Vec<Range<usize>> = Vec::new();
-            for token in &tokens {
-                match &token.kind {
-                    TokenKind::Tag(tag) => {
-                        if tag.end {
-                            if let Some(index) = hidden.iter().rposition(|name| name == &tag.name) {
-                                hidden.truncate(index);
-                            }
-                        } else if !void(&tag.name)
-                            && (html::hidden(&tag.name) || html::atomic(&tag.name))
-                        {
-                            hidden.push(tag.name.clone());
-                        }
-                    }
-                    TokenKind::Text if hidden.is_empty() => {
-                        let source = converter.source_range(token.range.clone());
-                        if source.end <= before || source.start >= after {
-                            continue;
-                        }
-                        let mut at = token.range.start;
-                        while at < token.range.end {
-                            let (value, length) =
-                                html::reference(&input.text[at..token.range.end], false)
-                                    .unwrap_or_else(|| {
-                                        let ch = input.text[at..].chars().next().unwrap();
-                                        (ch.to_string(), ch.len_utf8())
-                                    });
-                            let source = converter.source_range(at..at + length);
-                            at += length;
-                            if source.start < before
-                                || source.end > after
-                                || !value.chars().all(super::html_whitespace::collapsible)
-                                || !(source.end <= source_at && trim_before
-                                    || source.start >= source_at && trim_after)
-                            {
-                                continue;
-                            }
-                            if let Some(previous) = whitespace
-                                .last_mut()
-                                .filter(|previous| previous.end == source.start)
-                            {
-                                previous.end = source.end;
-                            } else {
-                                whitespace.push(source);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            patches.extend(whitespace.into_iter().map(|range| (range, String::new())));
-        }
-    }
-    for token in tokens.iter().filter(|token| {
-        first_open.range.end <= token.range.start && token.range.start < second_open.range.start
-    }) {
-        if let TokenKind::Tag(tag) = &token.kind {
-            if tag.end && tag.name == first_tag.name {
-                if !prior_join {
-                    patches.push((converter.source_range(token.range.clone()), String::new()));
-                }
-            } else if structural(&tag.name) {
-                return Err(DocumentError::AmbiguousProjection);
-            }
-        }
-    }
-    let mut character = CharacterProperties::default();
-    if let Some(css) = second_tag.attribute("style") {
-        html::apply_css(css, &mut character, &mut Default::default());
-    }
-    if let Some(language) = second_tag.attribute("lang") {
-        character.language = Some(language.into());
-    }
-    if let Some(direction) = second_tag.attribute("dir") {
-        character.direction = match direction {
-            "rtl" => Some(super::WritingDirection::RightToLeft),
-            "ltr" => Some(super::WritingDirection::LeftToRight),
-            _ => None,
-        };
-    }
-    let (opening, closing) = if character == CharacterProperties::default() {
-        (String::new(), String::new())
-    } else {
-        html::character_wrapper(&character)
-    };
-    patches.push((converter.source_range(second_open.range.clone()), opening));
-    let mut explicit = false;
-    let mut end = input.text.len();
-    for token in tokens
-        .iter()
-        .filter(|token| second_open.range.end <= token.range.start)
-    {
-        let TokenKind::Tag(tag) = &token.kind else {
-            continue;
-        };
-        if tag.end && tag.name == second_tag.name {
-            patches.push((
-                converter.source_range(token.range.clone()),
-                format!(
-                    "{closing}{}",
-                    if following_join || origin.is_empty() {
-                        String::new()
-                    } else {
-                        format!("</{origin}>")
-                    }
-                ),
-            ));
-            explicit = true;
-            break;
-        }
-        if structural(&tag.name) {
-            end = token.range.start;
-            break;
-        }
-    }
-    if !explicit {
-        let value = format!(
-            "{closing}{}",
-            if following_join || origin.is_empty() {
-                String::new()
-            } else {
-                format!("</{origin}>")
-            }
-        );
-        if !value.is_empty() {
-            patches.push((converter.source_range(end..end), value));
-        }
-    }
-    patches.sort_by_key(|(range, _)| (range.start, range.end));
-    Ok(Some(patches))
-}
 fn opening(
     style: &StyleId,
     sheet: &StyleSheet,
@@ -391,6 +95,8 @@ fn opening(
 ) -> (String, String) {
     let name = if style == &sheet.base_paragraph {
         "p".to_owned()
+    } else if style.0 == "Code Block" {
+        "pre".to_owned()
     } else if let Some(level) = style
         .0
         .strip_prefix("Heading")
@@ -470,7 +176,8 @@ pub(super) fn enter_patches(
     let open = stack_at(&tokens, at);
     let current = open
         .iter()
-        .rposition(|token| matches!(&token.kind, TokenKind::Tag(tag) if paragraph(&tag.name)));
+        .rposition(|token| matches!(&token.kind, TokenKind::Tag(tag)
+            if paragraph(&tag.name) || block.style.0 == "Code Block" && tag.name == "pre"));
     let original = current.map(|index| {
         let TokenKind::Tag(tag) = &open[index].kind else {
             unreachable!()
@@ -577,7 +284,18 @@ pub(super) fn enter_patches(
     patches.extend(
         insertions
             .into_iter()
-            .map(|(at, value)| (converter.source_range(at..at), value)),
+            .map(|(at, mut value)| {
+                // HTML discards a literal LF immediately after a newly opened
+                // pre. Spell that existing hard break explicitly when splitting
+                // code at the end of an internal row.
+                let end = if new_name == "pre" && value.contains("<pre")
+                    && input.text[at..].starts_with('\n')
+                {
+                    value.push_str("<br>");
+                    at + 1
+                } else { at };
+                (converter.source_range(at..end), value)
+            }),
     );
     patches.sort_by_key(|(range, _)| (range.start, range.end));
     Ok(patches)

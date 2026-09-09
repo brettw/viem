@@ -14,6 +14,9 @@ pub(super) fn text_context(
     affinity: Option<BoundaryAffinity>,
 ) -> Result<usize, DocumentError> {
     let edit = complete_contributors(document.projection(), edit)?;
+    if let Some(plan) = overlapping_text_plan(document, &edit.range)? {
+        return Ok(plan.insertion);
+    }
     if edit.range.is_empty() && document.projection().text_tree().byte_len() != 0 {
         return insertion_point(document.projection(), edit.range.start, affinity)
             .ok_or(DocumentError::AmbiguousProjection);
@@ -38,7 +41,11 @@ pub(super) fn rich_text_patches(
     let original = edit;
     let mut edit = complete_contributors(document.projection(), edit)?;
     let html = document.format() == Format::Html;
-    let mut runs = super::rich_text::text_source_runs(document, &edit.range)?;
+    let plan = overlapping_text_plan(document, &edit.range)?;
+    let mut runs = match &plan {
+        Some(plan) => plan.ranges.clone(),
+        None => super::rich_text::text_source_runs(document, &edit.range)?,
+    };
     let suffix = if runs.len() > 1 {
         let suffix = document
             .projection()
@@ -62,14 +69,15 @@ pub(super) fn rich_text_patches(
             runs = vec![at..at];
         }
     }
+    let source_at = plan.as_ref().map_or(runs[0].start, |plan| plan.insertion);
     let syntax = if html {
-        super::rich_text::escape_html_text_edit(document, runs[0].start, &edit)?
+        super::rich_text::escape_html_text_edit(document, source_at, &edit)?
     } else if document.source_byte_len() == 0 {
         format!("{{\\rtf1\\ansi {}}}", super::rtf::escape(&edit.replacement))
     } else {
-        super::rtf::escape_insertion(document, runs[0].start, &edit.replacement)?
+        super::rtf::escape_insertion(document, source_at, &edit.replacement)?
     };
-    let syntax = if html && runs.len() == 1 {
+    let syntax = if html && runs.len() == 1 && plan.is_none() {
         if let Some((range, compact)) =
             super::rich_text::compact_generated_html_space(document, &edit, runs[0].start)?
         {
@@ -81,16 +89,44 @@ pub(super) fn rich_text_patches(
     } else {
         syntax
     };
+    let syntax = if edit.range.is_empty() && !edit.replacement.is_empty() {
+        let closing = document
+            .projection()
+            .provenance_touching(&edit.range)
+            .into_iter()
+            .find(|span| {
+                span.formatted.end == edit.range.start
+                    && span.source.end == runs[0].start
+                    && document
+                        .projection()
+                        .text_tree()
+                        .slice(span.formatted.clone())
+                        .ok()
+                        .as_deref()
+                        == Some("\u{fffc}")
+            })
+            .map(|span| match document.format() {
+                Format::Html => super::html_typing::opaque_closing_syntax(document, span.source),
+                Format::Rtf => super::rtf::opaque_closing_syntax(document, span.source),
+                _ => Ok(String::new()),
+            })
+            .transpose()?
+            .unwrap_or_default();
+        format!("{closing}{syntax}")
+    } else {
+        syntax
+    };
     let replacement = document.encoding().encode_fragment(&syntax)?;
     let mut patches = Vec::new();
     if html {
-        for range in super::html_whitespace::exposed_whitespace(document, &edit, runs[0].start)? {
+        for range in super::html_whitespace::exposed_whitespace(document, &edit, source_at)? {
             patches.push(SourcePatch::primary(range, Vec::new()));
         }
     }
     let last = runs.len() - 1;
+    let insertion_run = plan.as_ref().map_or(Some(0), TextSourcePlan::insertion_run);
     for (index, range) in runs.into_iter().enumerate() {
-        let value = if index == 0 {
+        let value = if Some(index) == insertion_run {
             replacement.clone()
         } else if index == last && !suffix.is_empty() {
             let syntax = if html {
@@ -112,7 +148,126 @@ pub(super) fn rich_text_patches(
         };
         patches.push(SourcePatch::primary(range, value).with_generated_text(html));
     }
+    if insertion_run.is_none() && !replacement.is_empty() {
+        patches.push(
+            SourcePatch::primary(source_at..source_at, replacement).with_generated_text(html),
+        );
+    }
     Ok(patches)
+}
+
+pub(super) struct TextSourcePlan {
+    pub ranges: Vec<Range<usize>>,
+    pub insertion: usize,
+}
+
+impl TextSourcePlan {
+    /// A supporting removal can precede the logical insertion. If no removal
+    /// contains that boundary, authored bytes need a separate empty patch.
+    pub fn insertion_run(&self) -> Option<usize> {
+        self.ranges
+            .iter()
+            .position(|range| range.start <= self.insertion && self.insertion <= range.end)
+    }
+}
+
+/// Selected contributors can physically contain visible text which a parser
+/// moved outside their logical owner. Subtract that unselected text and its
+/// inline scopes, then place authored text at the selected logical boundary.
+/// Supporting deletions before that boundary do not become insertion sites.
+pub(super) fn overlapping_text_plan(
+    document: &super::Document,
+    range: &Range<usize>,
+) -> Result<Option<TextSourcePlan>, DocumentError> {
+    if range.is_empty() {
+        return Ok(None);
+    }
+    let projection = document.projection();
+    let spans: Vec<_> = projection
+        .provenance_for_region(range)
+        .into_iter()
+        .filter(|span| !span.formatted.is_empty())
+        .collect();
+    let mut position = range.start;
+    for span in &spans {
+        if span.formatted.start != position
+            || span.formatted.end > range.end
+            || span.source.is_empty()
+        {
+            return Ok(None);
+        }
+        position = span.formatted.end;
+    }
+    if position != range.end {
+        return Ok(None);
+    }
+    let mut retained = Vec::new();
+    for selected in &spans {
+        for other in projection.provenance_contained_in_source(&selected.source) {
+            if other.formatted.end <= range.start || range.end <= other.formatted.start {
+                retained.push(other.source);
+            }
+        }
+    }
+    if retained.is_empty()
+        && spans
+            .windows(2)
+            .all(|pair| pair[0].source.end <= pair[1].source.start)
+    {
+        return Ok(None);
+    }
+    let mut selected: Vec<_> = spans.iter().map(|span| span.source.clone()).collect();
+    merge_ranges(&mut selected);
+    merge_ranges(&mut retained);
+    if document.format() == super::Format::Html && !retained.is_empty() {
+        let mut syntax = Vec::new();
+        for source in &selected {
+            syntax.extend(super::html_typing::retained_inline_syntax(
+                document,
+                source.clone(),
+                &retained,
+            )?);
+        }
+        retained.extend(syntax);
+        merge_ranges(&mut retained);
+    }
+    let mut ranges = Vec::new();
+    for selected in selected {
+        let mut start = selected.start;
+        for keep in &retained {
+            if keep.end <= start || selected.end <= keep.start {
+                continue;
+            }
+            if start < keep.start {
+                ranges.push(start..keep.start);
+            }
+            start = start.max(keep.end);
+        }
+        if start < selected.end {
+            ranges.push(start..selected.end);
+        }
+    }
+    let insertion =
+        insertion_point(projection, range.start, None).ok_or(DocumentError::AmbiguousProjection)?;
+    if ranges.is_empty() {
+        // Fully shared synthetic ownership has no independently editable
+        // source bytes; an adapter must materialize that relation explicitly.
+        return Err(DocumentError::UnsupportedFormatting);
+    }
+    Ok(Some(TextSourcePlan { ranges, insertion }))
+}
+
+fn merge_ranges(ranges: &mut Vec<Range<usize>>) {
+    ranges.sort_by_key(|range| (range.start, range.end));
+    let mut merged: Vec<Range<usize>> = Vec::new();
+    for range in ranges.drain(..) {
+        if let Some(last) = merged.last_mut().filter(|last| range.start <= last.end) {
+            last.end = last.end.max(range.end);
+        } else {
+            merged.push(range);
+        }
+    }
+    *ranges = merged;
 }
 
 /// A source entity may encode several logical items. Rewrite only that
@@ -161,12 +316,17 @@ pub(super) fn insertion_point(
 ) -> Option<usize> {
     let line = projection.hard_line_range(projection.hard_line_at_offset(at)?)?;
     let spans = projection.provenance_touching(&(at..at));
+    let inside_object = |source| spans.iter().any(|span| {
+        span.source.start < source && source < span.source.end
+            && projection.text_tree().slice(span.formatted.clone()).ok().as_deref() == Some("\u{fffc}")
+    });
     // A retained empty inline/paragraph context is an editable location, not
     // an alternative range through surrounding opening or closing syntax.
     if let Some(seed) = spans
         .iter()
         .rev()
-        .find(|span| span.formatted == (at..at) && span.source.is_empty())
+        .find(|span| span.formatted == (at..at) && span.source.is_empty()
+            && !inside_object(span.source.start))
     {
         return Some(seed.source.start);
     }
@@ -183,6 +343,14 @@ pub(super) fn insertion_point(
             !span.formatted.is_empty() && !span.source.is_empty() && span.formatted.start == at
         })
         .map(|span| span.source.start);
+    // A format parser can move visible children ahead of their physical
+    // container (HTML table foster parenting). The preceding text endpoint
+    // remains the insertion location between that text and its outer owner.
+    if let (Some(before), Some(after)) = (preceding, following) {
+        if after < before {
+            return Some(before);
+        }
+    }
     // Paragraph/line ownership wins at its edges. Affinity still chooses the
     // adjacent inline context at an interior split caret.
     let downstream = if at == line.start {
