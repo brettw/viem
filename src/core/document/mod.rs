@@ -107,6 +107,9 @@ pub use style::{
     StyleInvalidationEffect, StyleNamespace, StyleProperty, StylePropertyValue, StyleSheet,
     StyleSheetRevision, WritingDirection,
 };
+pub(crate) use style::{
+    CANVAS_STYLE_PROPERTIES, CHARACTER_STYLE_PROPERTIES, PARAGRAPH_STYLE_PROPERTIES,
+};
 pub(crate) use transaction::RecordedReplacement;
 pub use transaction::{
     ClipboardFragment, CommittedModelTransaction, FragmentEdit, HistoryNavigationRequest, ModelChangeKind,

@@ -29,8 +29,8 @@ use crate::document::{
     StyleSheetRevision, TextAnchor,
 };
 use crate::layout::{
-    compute_layout_job, inspect_layout_provider, install_layout_job, prepare_layout_job,
-    DocumentLayoutStyles, InstalledLayoutJob, LayoutCancellationToken, LayoutComputationError,
+    compute_layout_job, hard_line_ranges, inspect_layout_provider, install_layout_job,
+    prepare_layout_job, DocumentLayoutStyles, InstalledLayoutJob, LayoutCancellationToken, LayoutComputationError,
     LayoutCoverage, LayoutEngine, LayoutError, LayoutExecutionContext, LayoutInstallTarget,
     LayoutJobCandidate, LayoutJobError, LayoutJobId, LayoutJobInstallRejection, LayoutJobPriority,
     LayoutJobRegion, LayoutProviderRequirements, LayoutRevision, LongLineCheckpointCache,
@@ -3028,7 +3028,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             text = String::from_utf8(bytes).expect("ASCII whitespace changes preserve UTF-8");
         }
-        let mut line_ranges = hard_line_ranges_with_origin(&text, text_origin);
+        let mut line_ranges = hard_line_ranges(&text, text_origin);
         if flow {
             // Source-flow block boundaries may have no newline character.
             // Preserve their positions in the composition overlay alongside
@@ -6384,20 +6384,6 @@ fn map_base_range_to_overlay(
         .overlay_offset_for_base_boundary(range.end, Association::AfterInsertion)
         .ok_or(LayoutError::InvalidTextOffset(range.end))?;
     Ok(start..end)
-}
-
-fn hard_line_ranges_with_origin(text: &str, origin: usize) -> Vec<std::ops::Range<usize>> {
-    let mut ranges = Vec::new();
-    let mut start = origin;
-    for (local, character) in text.char_indices() {
-        if character == '\n' {
-            let offset = origin + local;
-            ranges.push(start..offset);
-            start = offset + 1;
-        }
-    }
-    ranges.push(start..origin + text.len());
-    ranges
 }
 
 fn composition_layout_styles(

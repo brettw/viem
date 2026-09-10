@@ -2671,7 +2671,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         cancellation: &dyn LayoutCancellationProbe,
     ) -> Result<(), LayoutComputationError> {
         let control = LayoutRunControl::cancellable(cancellation);
-        let hard_lines = hard_line_ranges_cancellable(text, &control)?;
+        let hard_lines = hard_line_ranges_cancellable(text, 0, &control)?;
         self.relayout_text_with_document_styles_controlled(
             document_id,
             document_revision,
@@ -3295,7 +3295,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         view: &mut ViewLayout,
         document_styles: Option<DocumentLayoutStyles>,
     ) -> Result<(), LayoutError> {
-        let hard_lines = hard_line_ranges(text);
+        let hard_lines = hard_line_ranges(text, 0);
         self.relayout_text_with_document_styles_and_hard_lines(
             document_id,
             document_revision,
@@ -4947,40 +4947,42 @@ fn unicode_line_break_opportunities_for_slice(
     )
 }
 
-fn hard_line_ranges(text: &str) -> Vec<Range<usize>> {
-    let mut lines = Vec::new();
-    let mut start = 0;
-    for (offset, character) in text.char_indices() {
-        if character == '\n' {
-            lines.push(start..offset);
-            start = offset + 1;
-        }
-    }
-    lines.push(start..text.len());
-    lines
-}
-
+/// Split `text` into hard-line ranges expressed from `origin`, checkpointing
+/// for cancellation as the scan proceeds.
+///
+/// This is the only definition of where the engine believes hard lines begin
+/// and end. Callers preparing text for layout use it too, so a composition
+/// overlay and the engine can never disagree about the same content.
 fn hard_line_ranges_cancellable(
     text: &str,
+    origin: usize,
     control: &LayoutRunControl<'_>,
 ) -> Result<Vec<Range<usize>>, LayoutComputationError> {
     control.checkpoint()?;
     let mut lines = Vec::new();
-    let mut start = 0;
+    let mut start = origin;
     let mut next_checkpoint = CANCELLATION_TEXT_SCAN_BYTES;
-    for (offset, character) in text.char_indices() {
-        if offset >= next_checkpoint {
+    for (local, character) in text.char_indices() {
+        if local >= next_checkpoint {
             control.checkpoint()?;
-            next_checkpoint = offset.saturating_add(CANCELLATION_TEXT_SCAN_BYTES);
+            next_checkpoint = local.saturating_add(CANCELLATION_TEXT_SCAN_BYTES);
         }
         if character == '\n' {
+            let offset = origin + local;
             lines.push(start..offset);
             start = offset + 1;
         }
     }
-    lines.push(start..text.len());
+    lines.push(start..origin + text.len());
     control.checkpoint()?;
     Ok(lines)
+}
+
+/// Synchronous counterpart of [`hard_line_ranges_cancellable`]. A scan which
+/// cannot be cancelled cannot fail.
+pub(crate) fn hard_line_ranges(text: &str, origin: usize) -> Vec<Range<usize>> {
+    hard_line_ranges_cancellable(text, origin, &LayoutRunControl::synchronous(&NeverCancelled))
+        .expect("a never-cancelled hard-line scan cannot fail")
 }
 
 fn logical_grapheme_boundaries(
@@ -6749,7 +6751,7 @@ mod tests {
         };
         let line_control = LayoutRunControl::cancellable(&line_cancellation);
         assert_eq!(
-            hard_line_ranges_cancellable(&text, &line_control),
+            hard_line_ranges_cancellable(&text, 0, &line_control),
             Err(LayoutComputationError::Cancelled)
         );
         assert_eq!(line_cancellation.checks.get(), 2);

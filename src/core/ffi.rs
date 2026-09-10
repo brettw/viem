@@ -32,7 +32,8 @@ use crate::command::{
     CommandLineKind, CommandOutput, CommandStatus, InputEvent, Key, Mode, RegisterKind,
 };
 use crate::document::{
-    BlockProperties, BlockRole, BoundaryAffinity, CharacterProperties, Color, Document,
+    BlockProperties, BlockRole, BoundaryAffinity, CANVAS_STYLE_PROPERTIES,
+    CHARACTER_STYLE_PROPERTIES, PARAGRAPH_STYLE_PROPERTIES, CharacterProperties, Color, Document,
     DocumentError, DocumentId, DocumentStyleAssignment, Encoding, FileFormat, FileFormatOrigin,
     FontSlant, Format, FormatOperation, FormattedTextError, HardLineQueryError,
     HistorySemanticChangeKind, HistorySemanticSummary, LineSpacing, ModelTransactionError,
@@ -4617,41 +4618,8 @@ struct StyleSheetExport {
     strings: Vec<u8>,
 }
 
-const FFI_CANVAS_PROPERTIES: [StyleProperty; 5] = [
-    StyleProperty::CanvasBackground,
-    StyleProperty::CanvasPaddingTop,
-    StyleProperty::CanvasPaddingRight,
-    StyleProperty::CanvasPaddingBottom,
-    StyleProperty::CanvasPaddingLeft,
-];
 
-const FFI_PARAGRAPH_PROPERTIES: [StyleProperty; 8] = [
-    StyleProperty::ParagraphSpacingBefore,
-    StyleProperty::ParagraphSpacingAfter,
-    StyleProperty::ParagraphLineSpacing,
-    StyleProperty::ParagraphFirstLineIndent,
-    StyleProperty::ParagraphLeadingIndent,
-    StyleProperty::ParagraphTrailingIndent,
-    StyleProperty::ParagraphAlignment,
-    StyleProperty::ParagraphBaseDirection,
-];
 
-const FFI_CHARACTER_PROPERTIES: [StyleProperty; 14] = [
-    StyleProperty::CharacterFontFamilies,
-    StyleProperty::CharacterSize,
-    StyleProperty::CharacterWeight,
-    StyleProperty::CharacterBold,
-    StyleProperty::CharacterSlant,
-    StyleProperty::CharacterForeground,
-    StyleProperty::CharacterBackground,
-    StyleProperty::CharacterUnderline,
-    StyleProperty::CharacterStrikethrough,
-    StyleProperty::CharacterLanguage,
-    StyleProperty::CharacterDirection,
-    StyleProperty::CharacterOpenTypeFeatures,
-    StyleProperty::CharacterLetterSpacing,
-    StyleProperty::CharacterBaselineShift,
-];
 
 fn style_sheet_identity(document: &Document) -> ViemStyleSheetIdentityV1 {
     ViemStyleSheetIdentityV1 {
@@ -5171,13 +5139,13 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, ViemStatu
         let first_property = checked_export_count(properties.len())?;
         let property_keys = match style.role {
             BlockRole::Document => [
-                FFI_CANVAS_PROPERTIES.as_slice(),
-                FFI_CHARACTER_PROPERTIES.as_slice(),
+                CANVAS_STYLE_PROPERTIES.as_slice(),
+                CHARACTER_STYLE_PROPERTIES.as_slice(),
             ]
             .concat(),
             BlockRole::Paragraph => [
-                FFI_PARAGRAPH_PROPERTIES.as_slice(),
-                FFI_CHARACTER_PROPERTIES.as_slice(),
+                PARAGRAPH_STYLE_PROPERTIES.as_slice(),
+                CHARACTER_STYLE_PROPERTIES.as_slice(),
             ]
             .concat(),
         };
@@ -5316,7 +5284,7 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, ViemStatu
             )
             .map_err(style_error_status)?;
         let first_property = checked_export_count(properties.len())?;
-        for property in FFI_CHARACTER_PROPERTIES {
+        for property in CHARACTER_STYLE_PROPERTIES {
             push_style_property(
                 &mut properties,
                 &mut value_items,
@@ -5367,7 +5335,7 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, ViemStatu
             parent_id,
             next_style_id: ViemStyleStringRefV1::default(),
             first_property,
-            property_count: checked_export_count(FFI_CHARACTER_PROPERTIES.len())?,
+            property_count: checked_export_count(CHARACTER_STYLE_PROPERTIES.len())?,
         });
     }
 
@@ -7530,18 +7498,12 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_paint(
     out_info: *mut ViemLayoutPaintInfoV1,
 ) -> ViemStatus {
     ffi_boundary(|| {
-        let expected_region = typed_pointer_region(expected, 1)?;
-        let run_region = typed_pointer_region(runs, run_capacity)?;
-        let info_region = typed_pointer_region(out_info, 1)?;
-        for (left, right) in [
-            (expected_region, run_region),
-            (expected_region, info_region),
-            (run_region, info_region),
-        ] {
-            if regions_overlap(left, right) {
-                return Err(ViemStatus::InvalidArgument);
-            }
-        }
+        let regions = [
+            typed_pointer_region(expected, 1)?,
+            typed_pointer_region(runs, run_capacity)?,
+            typed_pointer_region(out_info, 1)?,
+        ];
+        validate_disjoint_regions(&regions)?;
         let expected = unsafe { read_layout_identity(expected)? };
         unsafe { out_info.write(ViemLayoutPaintInfoV1::default()) };
         let (info, export) = with_core(handle, |core| {
@@ -7887,18 +7849,12 @@ pub unsafe extern "C" fn viem_core_view_copy_command_line(
     out_info: *mut ViemCommandLineInfoV1,
 ) -> ViemStatus {
     ffi_boundary(|| {
-        let expected_region = typed_pointer_region(expected, 1)?;
-        let utf8_region = typed_pointer_region(utf8, utf8_capacity)?;
-        let info_region = typed_pointer_region(out_info, 1)?;
-        for (left, right) in [
-            (expected_region, utf8_region),
-            (expected_region, info_region),
-            (utf8_region, info_region),
-        ] {
-            if regions_overlap(left, right) {
-                return Err(ViemStatus::InvalidArgument);
-            }
-        }
+        let regions = [
+            typed_pointer_region(expected, 1)?,
+            typed_pointer_region(utf8, utf8_capacity)?,
+            typed_pointer_region(out_info, 1)?,
+        ];
+        validate_disjoint_regions(&regions)?;
         let expected = unsafe { read_command_line_identity(expected)? };
         unsafe { out_info.write(ViemCommandLineInfoV1::default()) };
         let export = with_core(handle, |core| {

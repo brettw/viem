@@ -929,7 +929,10 @@ impl StyleProperty {
     }
 }
 
-const CANVAS_STYLE_PROPERTIES: [StyleProperty; 5] = [
+/// The three property groups below are the single definition of which
+/// properties belong to which style scope. The C ABI exports the same grouping
+/// and reads it from here rather than restating it.
+pub(crate) const CANVAS_STYLE_PROPERTIES: [StyleProperty; 5] = [
     StyleProperty::CanvasBackground,
     StyleProperty::CanvasPaddingTop,
     StyleProperty::CanvasPaddingRight,
@@ -937,7 +940,7 @@ const CANVAS_STYLE_PROPERTIES: [StyleProperty; 5] = [
     StyleProperty::CanvasPaddingLeft,
 ];
 
-const PARAGRAPH_STYLE_PROPERTIES: [StyleProperty; 8] = [
+pub(crate) const PARAGRAPH_STYLE_PROPERTIES: [StyleProperty; 8] = [
     StyleProperty::ParagraphSpacingBefore,
     StyleProperty::ParagraphSpacingAfter,
     StyleProperty::ParagraphLineSpacing,
@@ -948,7 +951,7 @@ const PARAGRAPH_STYLE_PROPERTIES: [StyleProperty; 8] = [
     StyleProperty::ParagraphBaseDirection,
 ];
 
-const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 14] = [
+pub(crate) const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 14] = [
     StyleProperty::CharacterFontFamilies,
     StyleProperty::CharacterSize,
     StyleProperty::CharacterWeight,
