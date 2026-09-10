@@ -1178,10 +1178,7 @@ impl StyleSheet {
             let paragraph = sheet.block_styles.get_mut(&sheet.base_paragraph).unwrap();
             paragraph.block.spacing_before = Some(7.0);
             paragraph.block.spacing_after = Some(7.0);
-            if matches!(
-                format,
-                super::Format::Markdown | super::Format::MarkdownSource
-            ) {
+            if format.is_markdown() {
                 sheet
                     .block_styles
                     .get_mut(&StyleId("Code Block".into()))

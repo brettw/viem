@@ -121,6 +121,20 @@ Use these terms consistently in code, tests, and documentation:
   named style.
 - **Document**: a source artifact, its configured transformation pipeline, and
   cached derived projections.
+- **WYSIWYG view**: a format which presents block structure and named styles
+  instead of the syntax spelling them: Markdown, HTML, and RTF.
+- **Source view**: a format whose own markup is visible, editable text:
+  Markdown Source and HTML Source.
+- **Rich text**: a WYSIWYG view whose source persists arbitrary character and
+  paragraph declarations: HTML and RTF. Markdown carries structure but only a
+  fixed inline vocabulary, so it is structured without being rich text.
+
+  These families are `const fn` predicates on `Format` (`is_wysiwyg`,
+  `is_source_view`, `is_rich_text`, `is_markdown`, `is_html`,
+  `has_rich_source`, `has_structural_lists`). Code MUST ask through them rather
+  than spelling a `matches!` set of variants, so that adding a format is a
+  deliberate decision at each predicate instead of a search for every call
+  site. Their membership is pinned by test.
 - **Buffer**: an editing session for a document plus undo history, registers,
   marks, and buffer-local state. A buffer can be displayed by multiple views.
 - **View**: a presentation of a formatted document with its own viewport, wrap

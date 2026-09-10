@@ -241,7 +241,7 @@ impl Document {
         } else {
             at
         };
-        if matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
+        if self.format().is_markdown() {
             let spans = self
                 .projection()
                 .style_spans_for_region(&(sample..sample + 1));
@@ -478,7 +478,7 @@ impl Document {
         let properties = self.validate_typing_properties(values)?;
         let mut at = edit.range.start;
         if named.is_none()
-            && matches!(self.format(), Format::Markdown | Format::MarkdownSource)
+            && self.format().is_markdown()
             && edit.payload.text().trim().is_empty()
         {
             let caret = at + edit.payload.text().len();
@@ -624,7 +624,7 @@ impl Document {
                 self.encoding().encode_fragment(&insertion.syntax)?,
             )
             .with_generated_text(self.format() == Format::Html)];
-            if matches!(self.format(), Format::HtmlSource | Format::MarkdownSource) {
+            if self.format().is_source_view() {
                 caret = insertion.source_caret;
                 at = caret - edit.payload.text().len();
                 scratch.prepare_html_source_patches(patches)?
@@ -710,7 +710,7 @@ impl Document {
                 &mut formatted,
             )?;
         }
-        if matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
+        if self.format().is_markdown() {
             for (style, enabled) in [
                 (
                     SemanticInlineStyle::Emphasis,

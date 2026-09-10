@@ -1643,7 +1643,7 @@ impl Document {
         &self,
         intent: PersistedStyleIntent,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if matches!(self.format(), Format::Html | Format::Rtf) {
+        if self.format().is_rich_text() {
             if let Some(prepared) = self.prepare_materialized_character_intent(&intent)? {
                 return Ok(prepared);
             }
@@ -1676,7 +1676,7 @@ impl Document {
             }
             return Ok(prepared);
         }
-        if matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
+        if self.format().is_markdown() {
             if let PersistedStyleIntent::AssignCharacterStyle { range, style } = &intent {
                 if style.0 == "Code" || style == &self.projection().style_sheet().base_character {
                     self.validate_style_text_range(*range)?;
@@ -1714,7 +1714,7 @@ impl Document {
             }
         }
 
-        if matches!(self.format(), Format::Html | Format::Rtf) {
+        if self.format().is_rich_text() {
             match &intent {
                 PersistedStyleIntent::SetDirectCharacterProperties { range, properties } => {
                     self.validate_style_text_range(*range)?;
@@ -1879,7 +1879,7 @@ impl Document {
         &self,
         enabled: bool,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if !matches!(self.format(), Format::Html | Format::HtmlSource) {
+        if !self.format().is_html() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
         if enabled == self.include_style_definitions_in_file() {
@@ -2762,7 +2762,7 @@ impl Document {
             return Ok(self.no_op_prepared());
         }
 
-        if matches!(self.format(), Format::Html | Format::HtmlSource) {
+        if self.format().is_html() {
             if let ConfigurationStyleIntent::EditDefinition(edit) = &intent {
                 if super::html_styles::is_native_style(
                     &style_sheet,
@@ -2793,7 +2793,7 @@ impl Document {
             &intent,
         )?;
 
-        if matches!(self.format(), Format::Html | Format::HtmlSource) {
+        if self.format().is_html() {
             if let ConfigurationStyleIntent::EditDefinition(edit) = &intent {
                 if super::html_styles::is_native_style(
                     &style_sheet,
@@ -2855,7 +2855,7 @@ impl Document {
         };
         let patches = if self.format() == Format::Markdown {
             markdown_list_structure::deletion_patches(self, &range, true)?
-        } else if matches!(self.format(), Format::Html | Format::Rtf) {
+        } else if self.format().is_rich_text() {
             let decoded = self.encoding().decode(&self.source_bytes())?;
             let input = normalize(&decoded, self.file_format());
             let patches = if self.format() == Format::Html {
@@ -3375,7 +3375,7 @@ impl Document {
             return Ok(prepared);
         }
 
-        if matches!(self.format(), Format::Html | Format::Rtf)
+        if self.format().is_rich_text()
             && edits.iter().all(|edit| {
                 !edit.payload.text().contains('\n') && edit.payload.break_offsets().is_empty()
             })
@@ -3939,7 +3939,7 @@ impl Document {
         range: Range<usize>,
         style: StyleId,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
+        if self.format().is_markdown() {
             if let Some(prepared) = self.prepare_exclusive_structural_style(
                 range.clone(), structural_style::Assignment::Paragraph(style.clone()),
             )? { return Ok(prepared); }
@@ -3959,7 +3959,7 @@ impl Document {
                 style,
             });
         }
-        if matches!(self.format(), Format::Html | Format::Rtf) {
+        if self.format().is_rich_text() {
             let range = TextRange::new(self.text_point(range.start)?, self.text_point(range.end)?)?;
             let intention = PersistedStyleIntent::AssignBlockStyle {
                 target: StyleBlockTarget::Paragraphs(range),
@@ -3972,7 +3972,7 @@ impl Document {
             };
         }
         self.validate_range(&range)?;
-        if !matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
+        if !self.format().is_markdown() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
         if self.format() == Format::Markdown {
@@ -4025,7 +4025,7 @@ impl Document {
             if index != first && line.start >= range.end {
                 break;
             }
-            let source_index = if matches!(self.format(), Format::Markdown | Format::MarkdownSource)
+            let source_index = if self.format().is_markdown()
             {
                 let source_at = self
                     .projection()
@@ -4115,7 +4115,7 @@ impl Document {
             let patches = super::html_source::translate_list(self, range, style)?;
             return self.prepare_html_source_patches(patches);
         }
-        if matches!(self.format(), Format::Html | Format::Rtf) {
+        if self.format().is_rich_text() {
             return self.prepare_rich_list_style(range, style);
         }
         if !matches!(
@@ -4193,7 +4193,7 @@ impl Document {
             if self.format() != Format::Markdown && visible[..remove_visible] == prefix {
                 continue;
             }
-            let source_index = if matches!(self.format(), Format::Markdown | Format::MarkdownSource)
+            let source_index = if self.format().is_markdown()
             {
                 let source_at = self
                     .projection()
@@ -4824,7 +4824,7 @@ impl Document {
                 },
             );
         }
-        if matches!(self.format(), Format::Html | Format::Rtf) {
+        if self.format().is_rich_text() {
             let properties = rich_semantic_properties(style, enabled)?;
             if super::rich_text::character_edit_verified(
                 self.projection(), self.projection(), &range, &properties,
@@ -4920,7 +4920,7 @@ impl Document {
         style: SemanticInlineStyle,
         enabled: bool,
     ) -> Result<(), ModelTransactionError> {
-        if matches!(self.format(), Format::Html | Format::Rtf)
+        if self.format().is_rich_text()
             && !style_contributors::boundary_materializations(self, &range)?.is_empty()
         {
             return self.prepare_semantic_style(range, style, enabled).map(|_| ());
@@ -5240,7 +5240,7 @@ impl Document {
         if range.is_empty() {
             return Ok(None);
         }
-        if matches!(self.format(), Format::Html | Format::Rtf) {
+        if self.format().is_rich_text() {
             let properties = rich_semantic_properties(style, enabled)?;
             return self
                 .rich_character_source_patches(range, &properties, None)
@@ -5938,10 +5938,7 @@ impl Document {
                 .install_unchanged_text_storage(self.projection())
                 .map_err(DocumentError::FormattedTextStorage)?;
             if preserves_current_hard_lines {
-                if matches!(
-                    self.format(),
-                    Format::Html | Format::HtmlSource | Format::Rtf
-                ) {
+                if self.format().has_rich_source() {
                     candidate
                         .projection
                         .install_source_block_ids(self.projection())
@@ -6232,7 +6229,7 @@ impl Document {
         edits: &[TextEdit],
         patches: &[SourcePatch],
     ) -> Result<Option<TextEditCandidate>, ModelTransactionError> {
-        if !matches!(self.format(), Format::Html | Format::Rtf | Format::Markdown)
+        if !self.format().is_wysiwyg()
             || edits.len() != 1
             || patches.len() != 1
         {
@@ -6993,7 +6990,7 @@ impl Document {
                 }
             }
         }
-        if matches!(self.format(), Format::Markdown | Format::MarkdownSource)
+        if self.format().is_markdown()
             && edits.iter().any(|edit| {
                 edit.replacement.contains(['`', '~'])
                     || self
@@ -7006,7 +7003,7 @@ impl Document {
             return Ok(None);
         }
         // Stateful HTML/RTF parsing cannot restart at a physical source line.
-        if edits.is_empty() || matches!(self.format(), Format::Html | Format::Rtf) {
+        if edits.is_empty() || self.format().is_rich_text() {
             return Ok(None);
         }
         for edit in edits {
@@ -7121,7 +7118,7 @@ impl Document {
         let source_lines =
             if self.state().source_hard_lines.len() == self.projection().hard_line_count() {
                 hard_lines.clone()
-            } else if matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
+            } else if self.format().is_markdown() {
                 let provenance = self.projection().provenance_for_region(&old_formatted);
                 let (Some(first), Some(last)) = (provenance.first(), provenance.last()) else {
                     return Ok(None);

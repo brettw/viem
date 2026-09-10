@@ -121,7 +121,7 @@ impl Document {
         unindent: bool,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&range)?;
-        if matches!(self.format(), Format::HtmlSource | Format::MarkdownSource) {
+        if self.format().is_source_view() {
             let visible = Document::from_bytes_with_file_format(
                 self.source_bytes(),
                 self.encoding(),
@@ -150,7 +150,7 @@ impl Document {
             let prepared = visible.prepare_list_indent(start..end, unindent)?;
             return self.prepare_html_source_patches(prepared.summary().source_patches().to_vec());
         }
-        if !matches!(self.format(), Format::Html | Format::Markdown | Format::Rtf) {
+        if !self.format().is_wysiwyg() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
         let blocks = self.projection().blocks();

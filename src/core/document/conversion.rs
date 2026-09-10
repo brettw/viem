@@ -292,7 +292,7 @@ pub(super) fn convert(document: &Document, target: Format) -> Result<Conversion,
         losses.insert(ConversionLoss::SourceOnlyContent);
     }
     let mut output = ConversionWriter::new(&semantic);
-    if matches!(from, Format::Html | Format::Rtf) {
+    if from.is_rich_text() {
         for (offset, text, source) in semantic.source_grapheme_ranges() {
             if text == "\u{fffc}" {
                 if let Some(source) = source {

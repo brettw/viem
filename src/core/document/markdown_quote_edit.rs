@@ -21,7 +21,7 @@ impl Document {
         &self,
         at: usize,
     ) -> Result<Option<(TextEdit, Range<usize>, String)>, DocumentError> {
-        if !matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
+        if !self.format().is_markdown() {
             return Ok(None);
         }
         let Some(block) = self

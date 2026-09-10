@@ -137,7 +137,7 @@ impl CommandInterpreter {
         if text == value.text {
             return Ok(value.clone());
         }
-        if !matches!(document.format(), Format::Html | Format::Rtf)
+        if !document.format().is_rich_text()
             && document.encoding().encode_fragment(&text).is_err()
         {
             // Rich HTML/RTF can escape generated Unicode; raw source and

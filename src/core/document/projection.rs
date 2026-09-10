@@ -39,6 +39,48 @@ impl Format {
             format => format,
         }
     }
+
+    /// Markdown, in either its WYSIWYG or its source view.
+    pub const fn is_markdown(self) -> bool {
+        matches!(self, Self::Markdown | Self::MarkdownSource)
+    }
+
+    /// HTML, in either its WYSIWYG or its source view.
+    pub const fn is_html(self) -> bool {
+        matches!(self, Self::Html | Self::HtmlSource)
+    }
+
+    /// A source view: the format's own markup is visible, editable text.
+    pub const fn is_source_view(self) -> bool {
+        matches!(self, Self::HtmlSource | Self::MarkdownSource)
+    }
+
+    /// A WYSIWYG view: block structure and named styles are presented instead
+    /// of the syntax which spells them. Plain text has no such structure and
+    /// source views deliberately show the syntax, so neither qualifies.
+    pub const fn is_wysiwyg(self) -> bool {
+        matches!(self, Self::Html | Self::Markdown | Self::Rtf)
+    }
+
+    /// A WYSIWYG view whose source persists arbitrary character and paragraph
+    /// declarations. Markdown carries structure but only a fixed inline
+    /// vocabulary, so it is structured without being rich text.
+    pub const fn is_rich_text(self) -> bool {
+        matches!(self, Self::Html | Self::Rtf)
+    }
+
+    /// Backed by rich style markup in either view. Equivalent to
+    /// [`Self::is_rich_text`] on this format's [`Self::wysiwyg`] view.
+    pub const fn has_rich_source(self) -> bool {
+        self.wysiwyg().is_rich_text()
+    }
+
+    /// `Enter` continues an enclosing list structure rather than inserting the
+    /// marker text literally. Markdown Source qualifies because its list
+    /// syntax is still structural, unlike HTML Source's tags.
+    pub const fn has_structural_lists(self) -> bool {
+        self.is_wysiwyg() || matches!(self, Self::MarkdownSource)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2181,7 +2223,7 @@ impl FormattedDocument {
         position_map: &PositionMap,
         next_id: u64,
     ) -> Result<u64, BlockIdentityError> {
-        if !matches!(format, Format::Html | Format::HtmlSource | Format::Rtf) {
+        if !format.has_rich_source() {
             return self.install_reconciled_block_ids(previous, edits, position_map, next_id);
         }
         self.install_reconciled_source_block_ids(previous, edits, position_map, next_id)
@@ -6144,5 +6186,59 @@ mod tests {
         assert_eq!(lines.last().unwrap().index(), LINES - 1);
         assert!(stats.nodes_visited <= 48, "{stats:?}");
         assert_eq!(stats.items_examined, REQUESTED);
+    }
+
+    /// Pin the format vocabulary by membership. Adding a format must be a
+    /// deliberate decision about every predicate, not an inherited default.
+    #[test]
+    fn format_predicates_have_exact_membership() {
+        const ALL: [Format; 6] = [
+            Format::PlainText,
+            Format::Markdown,
+            Format::MarkdownSource,
+            Format::Html,
+            Format::HtmlSource,
+            Format::Rtf,
+        ];
+
+        fn members(predicate: fn(Format) -> bool) -> Vec<Format> {
+            ALL.into_iter().filter(|format| predicate(*format)).collect()
+        }
+
+        assert_eq!(
+            members(Format::is_markdown),
+            [Format::Markdown, Format::MarkdownSource]
+        );
+        assert_eq!(members(Format::is_html), [Format::Html, Format::HtmlSource]);
+        assert_eq!(
+            members(Format::is_source_view),
+            [Format::MarkdownSource, Format::HtmlSource]
+        );
+        assert_eq!(
+            members(Format::is_wysiwyg),
+            [Format::Markdown, Format::Html, Format::Rtf]
+        );
+        assert_eq!(members(Format::is_rich_text), [Format::Html, Format::Rtf]);
+        assert_eq!(
+            members(Format::has_rich_source),
+            [Format::Html, Format::HtmlSource, Format::Rtf]
+        );
+        assert_eq!(
+            members(Format::has_structural_lists),
+            [
+                Format::Markdown,
+                Format::MarkdownSource,
+                Format::Html,
+                Format::Rtf
+            ]
+        );
+
+        // Every format is exactly one of plain, WYSIWYG, or a source view.
+        for format in ALL {
+            let kinds = usize::from(format.is_wysiwyg())
+                + usize::from(format.is_source_view())
+                + usize::from(format == Format::PlainText);
+            assert_eq!(kinds, 1, "{format:?} is not exactly one view kind");
+        }
     }
 }

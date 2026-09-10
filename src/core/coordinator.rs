@@ -1160,10 +1160,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             })
             .collect::<Vec<_>>();
         covered.sort_by_key(|segment| (segment.start, segment.end));
-        let state = if matches!(
-            self.document.format(),
-            Format::Html | Format::HtmlSource | Format::Rtf
-        ) {
+        let state = if self.document.format().has_rich_source() {
             let resolved =
                 DocumentLayoutStyles::resolve_region(self.document.projection(), range.clone())
                     .map_err(LayoutError::from)?;
@@ -2209,10 +2206,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .views
                 .get_mut(&view_id)
                 .ok_or(CoreError::UnknownView(view_id))?;
-            if !matches!(
-                self.document.format(),
-                Format::MarkdownSource | Format::HtmlSource
-            ) {
+            if !self.document.format().is_source_view() {
                 view.layout.set_paragraph_flow(false);
             }
             let document_is_stale = view.layout.snapshot().is_some_and(|snapshot| {
@@ -3975,10 +3969,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             StyleNamespace::Character => sheet.character_style_metadata(style),
         }
         .map(|metadata| metadata.origin);
-        if matches!(
-            self.document.format(),
-            Format::Html | Format::HtmlSource | Format::Rtf
-        ) && origin == Some(crate::document::StyleDefinitionOrigin::SourceBacked)
+        if self.document.format().has_rich_source()
+            && origin == Some(crate::document::StyleDefinitionOrigin::SourceBacked)
         {
             let definition_edit = sheet
                 .prepare_source_field_edit(namespace, style, edit)
@@ -4983,10 +4975,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 })
             }
             CoreEvent::SetParagraphFlow(enabled) => {
-                if !matches!(
-                    self.document.format(),
-                    Format::MarkdownSource | Format::HtmlSource
-                ) {
+                if !self.document.format().is_source_view() {
                     return Err(CoreError::Document(DocumentError::UnsupportedFormatting));
                 }
                 let view = self.views.get_mut(&view_id).expect("view checked");

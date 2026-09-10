@@ -54,7 +54,7 @@ fn conversion_preserves_insert_carets_in_repeated_unicode_content_and_history() 
             for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
                 let markdown = "# Before\n\nA **café & 👩‍💻 العربية** tail.\n\n# Middle\n\nA **café & 👩‍💻 العربية** tail.\n\n# After\n\nA **café & 👩‍💻 العربية** tail.";
                 let html = "<h1>Before</h1>\n<p>A <b>café &amp; 👩‍💻 العربية</b> tail.</p>\n<h1>Middle</h1>\n<p>A <b>café &amp; 👩‍💻 العربية</b> tail.</p>\n<h1>After</h1>\n<p>A <b>café &amp; 👩‍💻 العربية</b> tail.</p>";
-                let source = if matches!(from, Format::Html | Format::HtmlSource) {
+                let source = if from.is_html() {
                     html
                 } else {
                     markdown

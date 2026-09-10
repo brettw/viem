@@ -3163,14 +3163,8 @@ impl CommandInterpreter {
             intent.clone()
         };
         let input = value.text.as_str();
-        let structural_list_enter = list_enter.is_some()
-            && matches!(
-                document.format(),
-                crate::document::Format::Html
-                    | crate::document::Format::Rtf
-                    | crate::document::Format::Markdown
-                    | crate::document::Format::MarkdownSource
-            );
+        let structural_list_enter =
+            list_enter.is_some() && document.format().has_structural_lists();
         if input.is_empty()
             && !structural_list_enter
             && list_enter
@@ -9563,13 +9557,7 @@ impl CommandInterpreter {
                 self.invalidate_replace_restoration();
                 if self.mode == Mode::Insert {
                     if let Some(edit) = document.list_enter_edit(self.cursor)? {
-                        if matches!(
-                            document.format(),
-                            crate::document::Format::Html
-                                | crate::document::Format::Rtf
-                                | crate::document::Format::Markdown
-                                | crate::document::Format::MarkdownSource
-                        ) {
+                        if document.format().has_structural_lists() {
                             self.cursor = continue_list_with_cursor(document, self.cursor)?;
                         } else if edit.range.is_empty() {
                             let value = RegisterValue::characterwise(&edit.replacement);
@@ -9583,13 +9571,7 @@ impl CommandInterpreter {
                         } else {
                             document.replace(edit.range.clone(), &edit.replacement)?;
                         }
-                        if !matches!(
-                            document.format(),
-                            crate::document::Format::Html
-                                | crate::document::Format::Rtf
-                                | crate::document::Format::Markdown
-                                | crate::document::Format::MarkdownSource
-                        ) {
+                        if !document.format().has_structural_lists() {
                             self.cursor = edit.range.start + edit.replacement.len();
                         }
                         if let Some(session) = self.insert_session.as_mut() {
@@ -10417,10 +10399,7 @@ impl CommandInterpreter {
         document: &Document,
         program: &EditSessionProgram,
     ) -> Result<(), DocumentError> {
-        if matches!(
-            document.format(),
-            crate::document::Format::Html | crate::document::Format::Rtf
-        ) {
+        if document.format().is_rich_text() {
             // Rich adapters serialize otherwise unrepresentable scalars as
             // exact character references or Unicode controls. The source
             // transaction validates that escaped representation atomically.

@@ -303,7 +303,7 @@ impl Document {
             .hard_line_snapshot()
             .capture(range.clone())
             .map_err(|_| DocumentError::AmbiguousProjection)?;
-        let is_rich = matches!(self.format(), Format::Markdown | Format::Html | Format::Rtf);
+        let is_rich = self.format().is_wysiwyg();
         let source_bytes = if range == (0..self.text().len()) {
             source.to_vec()
         } else if range.is_empty() {
@@ -575,7 +575,7 @@ impl Document {
         replaced: Range<usize>,
         candidate: &[u8],
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if !matches!(self.format(), Format::Html | Format::Rtf) {
+        if !self.format().is_rich_text() {
             return Ok(prepared);
         }
         let PreparedPublication::State(state) = &prepared.publication else {

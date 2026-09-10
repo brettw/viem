@@ -74,8 +74,6 @@ typedef uint32_t ViemStatus;
 #define VIEM_FORMAT_MARKDOWN 2u
 #define VIEM_FORMAT_HTML 3u
 #define VIEM_FORMAT_RTF 4u
-#define VIEM_FORMAT_HTML 3u
-#define VIEM_FORMAT_RTF 4u
 #define VIEM_FORMAT_MARKDOWN_SOURCE 5u
 #define VIEM_FORMAT_HTML_SOURCE 6u
 

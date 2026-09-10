@@ -143,12 +143,7 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&(at..at))?;
         self.validate_range(&(origin..origin))?;
-        if matches!(
-            self.format(),
-            crate::document::Format::Html
-                | crate::document::Format::Rtf
-                | crate::document::Format::Markdown
-        ) {
+        if self.format().is_wysiwyg() {
             return self.prepare_open_paragraph(at, origin, after);
         }
         if self.format() == crate::document::Format::MarkdownSource

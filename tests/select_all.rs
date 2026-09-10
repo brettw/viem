@@ -68,7 +68,7 @@ fn select_all_reaches_final_wrapped_paragraph_in_every_format_and_line_policy() 
             }
             for flow in [false, true] {
                 let (mut core, view) = opened(&source, format);
-                if matches!(format, Format::MarkdownSource | Format::HtmlSource) {
+                if format.is_source_view() {
                     core.handle(view, CoreEvent::SetParagraphFlow(flow))
                         .unwrap();
                 }
@@ -93,7 +93,7 @@ fn select_all_reaches_final_wrapped_paragraph_in_every_format_and_line_policy() 
                     .unwrap();
                 let output = out.command.unwrap();
                 assert_eq!(output.status, CommandStatus::Complete);
-                let expected = if matches!(format, Format::MarkdownSource | Format::HtmlSource) {
+                let expected = if format.is_source_view() {
                     source.as_str()
                 } else {
                     core.document().text()

@@ -480,7 +480,7 @@ impl TransformationPipelineSnapshot {
             },
             TransformationStageRole::EncodingProjection => match intent {
                 PipelineEditIntent::ReplaceText { replacement } => {
-                    if matches!(self.configuration.format, Format::Html | Format::Rtf) {
+                    if self.configuration.format.is_rich_text() {
                         // The format emits exact Unicode escapes before this
                         // encoding stage sees newly authored syntax.
                         return StageEditDisposition::PassThrough;
@@ -533,13 +533,9 @@ impl TransformationPipelineSnapshot {
                 StageEditDisposition::PassThrough
             }
             PipelineEditIntent::SetSemanticInlineStyle { style, .. } => {
-                if matches!(
-                    self.configuration.format,
-                    Format::Markdown | Format::MarkdownSource
-                ) || (matches!(
-                    self.configuration.format,
-                    Format::Html | Format::HtmlSource | Format::Rtf
-                ) && *style != SemanticInlineStyle::Code)
+                if self.configuration.format.is_markdown()
+                    || (self.configuration.format.has_rich_source()
+                        && *style != SemanticInlineStyle::Code)
                 {
                     StageEditDisposition::Translated
                 } else {
@@ -552,18 +548,13 @@ impl TransformationPipelineSnapshot {
             | PipelineEditIntent::AssignCharacterStyle { .. }
             | PipelineEditIntent::EditBlockStyleDefinition { .. }
             | PipelineEditIntent::EditCharacterStyleDefinition { .. }
-                if matches!(
-                    self.configuration.format,
-                    Format::Html | Format::HtmlSource | Format::Rtf
-                ) =>
+                if self.configuration.format.has_rich_source() =>
             {
                 StageEditDisposition::Translated
             }
             PipelineEditIntent::AssignBlockStyle { style }
-                if matches!(
-                    self.configuration.format,
-                    Format::Markdown | Format::MarkdownSource
-                ) && (matches!(style.0.as_str(), "Paragraph" | "Block quote")
+                if self.configuration.format.is_markdown()
+                    && (matches!(style.0.as_str(), "Paragraph" | "Block quote")
                     || style
                         .0
                         .strip_prefix("Heading")
@@ -573,7 +564,7 @@ impl TransformationPipelineSnapshot {
                 StageEditDisposition::Translated
             }
             PipelineEditIntent::AssignCharacterStyle { style }
-                if matches!(self.configuration.format, Format::Markdown | Format::MarkdownSource)
+                if self.configuration.format.is_markdown()
                     && matches!(style.0.as_str(), "Code" | "Character") => StageEditDisposition::Translated,
             PipelineEditIntent::AssignBlockStyle { .. }
             | PipelineEditIntent::AssignCharacterStyle { .. } => StageEditDisposition::Unsupported(
@@ -585,10 +576,7 @@ impl TransformationPipelineSnapshot {
             ),
             PipelineEditIntent::SetDirectProperty { .. }
             | PipelineEditIntent::ClearDirectProperty { .. }
-                if matches!(
-                    self.configuration.format,
-                    Format::Html | Format::HtmlSource | Format::Rtf
-                ) =>
+                if self.configuration.format.has_rich_source() =>
             {
                 StageEditDisposition::Translated
             }

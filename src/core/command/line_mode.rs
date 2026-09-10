@@ -592,9 +592,9 @@ impl CommandInterpreter {
             return Ok(repetition_too_large(applications));
         }
         if operator == Operator::Yank && register == Some('*') && self.clipboard_copy_as_seen {
-            let value = if let Some(source) = extent.source.as_ref().filter(|_| {
-                !matches!(document.format(), crate::document::Format::Markdown | crate::document::Format::Html | crate::document::Format::Rtf)
-            }) {
+            let value = if let Some(source) =
+                extent.source.as_ref().filter(|_| !document.format().is_wysiwyg())
+            {
                 let bytes = document.source_bytes();
                 RegisterValue::characterwise(document.encoding().decode(&bytes[source.clone()])?.text)
             } else {

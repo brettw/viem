@@ -85,7 +85,7 @@ impl Document {
                 return Ok(Some(patches));
             }
         }
-        if matches!(self.format(), Format::Html | Format::Rtf) {
+        if self.format().is_rich_text() {
             return Ok(None);
         }
         let affinity = payload.and_then(|edit| edit.boundary_affinity);
@@ -251,7 +251,7 @@ impl Document {
         &self,
         edits: &[TextEdit],
     ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
-        if !matches!(self.format(), Format::Html | Format::Rtf | Format::Markdown)
+        if !self.format().is_wysiwyg()
             || edits.len() < 2
             || !edits.iter().any(|edit| {
                 !super::super::edit_boundary::merged_paragraphs(self, &edit.range).is_empty()
@@ -303,7 +303,7 @@ impl Document {
             // These edits are already normalized against the complete batch.
             let patches = match scratch.structural_text_patches(&edit)? {
                 Some(patches) => Some(patches),
-                None if matches!(scratch.format(), Format::Html | Format::Rtf) => Some(
+                None if scratch.format().is_rich_text() => Some(
                     super::super::source_edit::rich_text_patches(&scratch, &edit, None)?,
                 ),
                 None => None,
@@ -386,7 +386,7 @@ impl Document {
                 Ok(None)
             };
         }
-        if !matches!(self.format(), Format::Html | Format::Rtf) {
+        if !self.format().is_rich_text() {
             return Ok(None);
         }
         if super::super::edit_boundary::merged_paragraphs(self, &edit.range).is_empty() {

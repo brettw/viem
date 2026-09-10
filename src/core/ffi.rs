@@ -5269,19 +5269,16 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, ViemStatu
                 metadata.origin,
                 is_base_document || is_base_paragraph,
                 Some(style.role),
-                matches!(
-                    document.format(),
-                    Format::Html | Format::HtmlSource | Format::Rtf
-                ),
+                document.format().has_rich_source(),
             ) | if sheet.has_user_default(&style.id, false)
                 && style.role == BlockRole::Paragraph
-                && (matches!(document.format(), Format::Html | Format::HtmlSource)
+                && (document.format().is_html()
                     || (document.format() == Format::Rtf && style.id.0.starts_with("RtfP")))
             {
                 VIEM_STYLE_CAPABILITY_ASSIGN
             } else {
                 0
-            } | if matches!(document.format(), Format::Markdown | Format::MarkdownSource)
+            } | if document.format().is_markdown()
                 && style.id.0 == "Block quote"
             {
                 VIEM_STYLE_CAPABILITY_ASSIGN
@@ -5357,10 +5354,7 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, ViemStatu
                     metadata.origin,
                     is_base,
                     None,
-                    matches!(
-                        document.format(),
-                        Format::Html | Format::HtmlSource | Format::Rtf
-                    ),
+                    document.format().has_rich_source(),
                 ) | if document.validate_typing_named_style(&style.id).is_ok()
                 {
                     VIEM_STYLE_CAPABILITY_ASSIGN

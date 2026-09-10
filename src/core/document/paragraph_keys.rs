@@ -6,7 +6,7 @@ impl Document {
     /// Paragraph keyboard actions use the formatted boundary, independently
     /// of its source spelling, affinity, or how the caret arrived there.
     fn keyboard_paragraph(&self, at: usize) -> Result<Option<super::super::Block>, DocumentError> {
-        if !matches!(self.format(), Format::Markdown | Format::Html | Format::Rtf) {
+        if !self.format().is_wysiwyg() {
             return Ok(None);
         }
         super::super::edit_boundary::paragraph_at(self, at)
@@ -17,7 +17,7 @@ impl Document {
         at: usize,
         unindent: bool,
     ) -> Result<Option<ModelRequest>, DocumentError> {
-        if matches!(self.format(), Format::HtmlSource | Format::MarkdownSource) {
+        if self.format().is_source_view() {
             self.text_point(at)?;
             let source_blocks = self
                 .projection()
@@ -136,7 +136,7 @@ impl Document {
         affinity: BoundaryAffinity,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.text_point(at)?;
-        if !matches!(self.format(), Format::Markdown | Format::Html | Format::Rtf) {
+        if !self.format().is_wysiwyg() {
             // Plain/source projections author a literal source line ending.
             return self.prepare_text_edits(vec![TextEdit::new(at..at, "\n")]);
         }

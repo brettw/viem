@@ -265,7 +265,7 @@ pub(super) fn insertion(
     protective_spaces: &[usize],
     desired: &CharacterProperties,
 ) -> Result<Option<Insertion>, DocumentError> {
-    if !matches!(document.format(), Format::Html | Format::HtmlSource) || text.is_empty() {
+    if !document.format().is_html() || text.is_empty() {
         return Ok(None);
     }
     if ![desired.bold, desired.underline, desired.strikethrough].contains(&Some(false))

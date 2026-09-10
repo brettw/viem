@@ -90,7 +90,7 @@ impl Document {
             if self.input_style_is_code(&block.style, false) {
                 return Ok(true);
             }
-            if matches!(self.format(), Format::Markdown | Format::MarkdownSource)
+            if self.format().is_markdown()
                 && super::super::markdown_quotes::is_fenced_block(self, &block)?
             {
                 return Ok(true);
@@ -206,7 +206,7 @@ impl Document {
         if !text.contains(['\'', '"']) {
             return Ok(text.to_owned());
         }
-        if matches!(self.format(), Format::HtmlSource | Format::MarkdownSource)
+        if self.format().is_source_view()
             && text.chars().nth(1).is_some()
         {
             let mut preview = self.scratch_document();

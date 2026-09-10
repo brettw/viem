@@ -72,7 +72,7 @@ pub(super) fn insertion(
     text: &str,
     desired: &CharacterProperties,
 ) -> Result<Option<super::super::html_typing::Insertion>, DocumentError> {
-    if !matches!(document.format(), Format::Markdown | Format::MarkdownSource)
+    if !document.format().is_markdown()
         || text.is_empty()
         || text.contains('\n')
         || desired.bold != Some(false) && desired.slant != Some(crate::document::FontSlant::Upright)

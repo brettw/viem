@@ -692,7 +692,7 @@ impl Document {
             .checked_add(1)
             .ok_or_else(|| StyleDefaultsError::Json("style generation exhausted".into()))?;
         sheet.set_configuration_revision(StyleSheetRevision(generation));
-        let mut state = if matches!(self.format(), Format::Html | Format::HtmlSource) {
+        let mut state = if self.format().is_html() {
             self.reproject_html_configuration(&sheet)
                 .map_err(|error| StyleDefaultsError::Json(error.to_string()))?
         } else {
@@ -1524,7 +1524,7 @@ impl Document {
             .text_tree()
             .slice(line.clone())
             .map_err(DocumentError::FormattedTextStorage)?;
-        if matches!(self.format(), Format::Html | Format::Rtf | Format::Markdown) {
+        if self.format().is_wysiwyg() {
             let block = self
                 .projection()
                 .blocks_for_region(&(at..at))
@@ -2332,7 +2332,7 @@ fn build_state_from_decoded_with_configuration(
     };
     Ok(DocumentState {
         revision,
-        include_style_definitions_in_file: matches!(format, Format::Html | Format::HtmlSource)
+        include_style_definitions_in_file: format.is_html()
             && projection.style_sheet().has_html_native_definitions(),
         source,
         projection,

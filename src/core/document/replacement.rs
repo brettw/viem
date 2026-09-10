@@ -287,7 +287,7 @@ impl Document {
             // presentation caret. The next Replace consumes the next original
             // item after those owned delimiters, preserving the generated pair.
             let next_target =
-                if matches!(self.format(), Format::HtmlSource | Format::MarkdownSource) {
+                if self.format().is_source_view() {
                     map_after(&scratch, &prepared, end)?
                 } else {
                     after_cursor
