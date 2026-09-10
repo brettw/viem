@@ -12,8 +12,8 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::document::{Document, DocumentError, DocumentId, Revision, TextEdit};
 use crate::layout::{
-    BoundaryAffinity, CaretPoint, LayoutRevision, LayoutSnapshot, PositionedCaret,
-    PositionedCluster, VisualRow,
+    affinity_rank, nearest_caret, BoundaryAffinity, CaretPoint, LayoutRevision, LayoutSnapshot,
+    PositionedCaret, PositionedCluster, VisualRow,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -531,19 +531,6 @@ fn locate_endpoint(
         .ok_or_else(|| VisualBlockError::EndpointNotInLayout(endpoint.into()))
 }
 
-fn nearest_caret(row: &VisualRow, x: f32) -> Option<&PositionedCaret> {
-    row.carets.iter().min_by(|left, right| {
-        (left.x - x)
-            .abs()
-            .partial_cmp(&(right.x - x).abs())
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| {
-                affinity_rank(left.point.affinity).cmp(&affinity_rank(right.point.affinity))
-            })
-            .then_with(|| left.point.text_offset.cmp(&right.point.text_offset))
-    })
-}
-
 #[derive(Clone, Copy)]
 enum RectangleEdge {
     Left,
@@ -580,13 +567,6 @@ fn edge_interior_rank(row: &VisualRow, caret: &PositionedCaret, edge: RectangleE
         RectangleEdge::Right => center <= caret.x,
     };
     u8::from(!faces_interior)
-}
-
-fn affinity_rank(affinity: BoundaryAffinity) -> u8 {
-    match affinity {
-        BoundaryAffinity::Downstream => 0,
-        BoundaryAffinity::Upstream => 1,
-    }
 }
 
 fn order_visual_edges<'a>(

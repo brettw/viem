@@ -6,11 +6,8 @@ use super::{Block, CharacterProperties, DocumentError, Revision, StyleId, StyleS
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-fn paragraph(name: &str) -> bool {
-    matches!(name, "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
-}
 pub(super) fn structural(name: &str) -> bool {
-    paragraph(name)
+    html::heading_or_paragraph(name)
         || matches!(
             name,
             "html"
@@ -35,25 +32,6 @@ pub(super) fn structural(name: &str) -> bool {
                 | "pre"
         )
 }
-fn void(name: &str) -> bool {
-    matches!(
-        name,
-        "area"
-            | "base"
-            | "br"
-            | "col"
-            | "embed"
-            | "hr"
-            | "img"
-            | "input"
-            | "link"
-            | "meta"
-            | "param"
-            | "source"
-            | "track"
-            | "wbr"
-    )
-}
 pub(super) fn stack_at(tokens: &[Token], at: usize) -> Vec<&Token> {
     let mut open: Vec<&Token> = Vec::new();
     for token in tokens.iter().take_while(|token| token.range.end <= at) {
@@ -67,10 +45,10 @@ pub(super) fn stack_at(tokens: &[Token], at: usize) -> Vec<&Token> {
             {
                 open.truncate(index);
             }
-        } else if !void(&tag.name) {
+        } else if !html::void(&tag.name) {
             if structural(&tag.name) {
                 if let Some(index) = open.iter().rposition(
-                    |token| matches!(&token.kind, TokenKind::Tag(t) if paragraph(&t.name)),
+                    |token| matches!(&token.kind, TokenKind::Tag(t) if html::heading_or_paragraph(&t.name)),
                 ) {
                     open.truncate(index);
                 }
@@ -177,7 +155,7 @@ pub(super) fn enter_patches(
     let current = open
         .iter()
         .rposition(|token| matches!(&token.kind, TokenKind::Tag(tag)
-            if paragraph(&tag.name) || block.style.0 == "Code Block" && tag.name == "pre"));
+            if html::heading_or_paragraph(&tag.name) || block.style.0 == "Code Block" && tag.name == "pre"));
     let original = current.map(|index| {
         let TokenKind::Tag(tag) = &open[index].kind else {
             unreachable!()
@@ -509,7 +487,7 @@ pub(super) fn deletion_patches(
             {
                 continue;
             }
-            if let Some(opening)=open.iter().rev().find(|token|matches!(&token.kind,TokenKind::Tag(tag) if if name=="li"{tag.name=="li"}else{paragraph(&tag.name)})) {
+            if let Some(opening)=open.iter().rev().find(|token|matches!(&token.kind,TokenKind::Tag(tag) if if name=="li"{tag.name=="li"}else{html::heading_or_paragraph(&tag.name)})) {
                 if !owner_tokens.insert(opening.range.start){continue;}
                 let TokenKind::Tag(original)=&opening.kind else {unreachable!()};
                 patches.push(converter.source_range(opening.range.clone()));

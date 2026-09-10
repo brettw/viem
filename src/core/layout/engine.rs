@@ -4374,7 +4374,12 @@ fn validate_response(
     Ok(())
 }
 
-fn fragment_visual_order(clusters: &[ShapedCluster]) -> Vec<usize> {
+/// UAX #9 rule L2 reordering for one shaped fragment.
+///
+/// [`validate_response`] holds every measurement provider to this ordering, so
+/// a provider computing its own `visual_order` must compute it with this
+/// function rather than a parallel implementation of the same rule.
+pub(crate) fn fragment_visual_order(clusters: &[ShapedCluster]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..clusters.len()).collect();
     let max_level = clusters
         .iter()
@@ -5226,11 +5231,34 @@ fn validate_style_runs_for_text(
     Ok(())
 }
 
-fn affinity_rank(affinity: BoundaryAffinity) -> u8 {
+/// Order two caret stops sharing an x so the downstream stop wins. Every
+/// caret-placement path must agree on this, or the same click resolves to a
+/// different boundary depending on which path resolved it.
+pub(crate) fn affinity_rank(affinity: BoundaryAffinity) -> u8 {
     match affinity {
         BoundaryAffinity::Downstream => 0,
         BoundaryAffinity::Upstream => 1,
     }
+}
+
+/// The caret stop in `row` nearest to `x`, breaking ties by affinity and then
+/// by text offset so the choice is total and reproducible.
+///
+/// This is the only definition of "nearest caret" available to callers outside
+/// layout. Cursor placement, layout motions, and Visual Block endpoints all
+/// resolve through it, so a click cannot land differently depending on which
+/// one asked.
+pub(crate) fn nearest_caret(row: &VisualRow, x: f32) -> Option<&PositionedCaret> {
+    row.carets.iter().min_by(|left, right| {
+        (left.x - x)
+            .abs()
+            .partial_cmp(&(right.x - x).abs())
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| {
+                affinity_rank(left.point.affinity).cmp(&affinity_rank(right.point.affinity))
+            })
+            .then_with(|| left.point.text_offset.cmp(&right.point.text_offset))
+    })
 }
 
 fn finite_nonnegative(value: f32) -> f32 {

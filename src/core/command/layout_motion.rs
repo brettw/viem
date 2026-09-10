@@ -7,7 +7,7 @@
 
 use crate::document::{BoundaryAffinity, DocumentId, Revision};
 use crate::layout::{
-    LayoutRevision, LayoutSnapshot, MetricsGeneration, PositionedCaret,
+    nearest_caret, LayoutRevision, LayoutSnapshot, MetricsGeneration, PositionedCaret,
     ViewConfigurationGeneration, VisualRow,
 };
 use std::cmp::Ordering;
@@ -434,19 +434,6 @@ fn locate(
     })
 }
 
-fn nearest_caret(row: &VisualRow, x: f32) -> Option<&PositionedCaret> {
-    row.carets.iter().min_by(|left, right| {
-        (left.x - x)
-            .abs()
-            .partial_cmp(&(right.x - x).abs())
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| {
-                affinity_rank(left.point.affinity).cmp(&affinity_rank(right.point.affinity))
-            })
-            .then_with(|| left.point.text_offset.cmp(&right.point.text_offset))
-    })
-}
-
 fn position_of(caret: &PositionedCaret) -> VisualPosition {
     VisualPosition {
         text_offset: caret.point.text_offset,
@@ -672,13 +659,6 @@ fn validate_viewport(viewport: Viewport) -> Result<(), LayoutMotionError> {
 
 fn positive_count(count: usize) -> isize {
     isize::try_from(count.max(1)).unwrap_or(isize::MAX)
-}
-
-fn affinity_rank(affinity: BoundaryAffinity) -> u8 {
-    match affinity {
-        BoundaryAffinity::Downstream => 0,
-        BoundaryAffinity::Upstream => 1,
-    }
 }
 
 #[cfg(test)]

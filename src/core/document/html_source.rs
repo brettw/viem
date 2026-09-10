@@ -487,11 +487,8 @@ fn structural_flow_paragraphs(
                         protected.pop();
                     }
                     if protected.is_empty() && html::block(&tag.name) {
-                        pending |= content || explicit_owner
-                            || matches!(
-                                tag.name.as_str(),
-                                "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "pre"
-                            );
+                        pending |=
+                            content || explicit_owner || html::paragraph(&tag.name);
                     }
                 } else {
                     if html::block(&tag.name) {
@@ -879,10 +876,7 @@ pub(super) fn independent_fragment(text: &str) -> bool {
                     }
                 } else if !matches!(tag.name.as_str(), "br" | "wbr") {
                     if stack.is_empty() {
-                        if !matches!(
-                            tag.name.as_str(),
-                            "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
-                        ) {
+                        if !html::heading_or_paragraph(&tag.name) {
                             return false;
                         }
                         saw_root = true;

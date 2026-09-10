@@ -2246,7 +2246,7 @@ impl Document {
         validate_source_patches(&mut source_patches)?;
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let new_decoded = self.state().encoding.decode(&source.bytes())?;
-        let mut candidate = build_state_from_decoded_with_configuration(
+        let candidate = build_state_from_decoded_with_configuration(
             source,
             new_decoded,
             Format::Html,
@@ -2291,6 +2291,23 @@ impl Document {
                 }
             }
         }
+        self.finish_semantic_style(revision, actual, candidate, source_patches)
+    }
+
+    /// Publish a verified semantic-style candidate.
+    ///
+    /// The HTML and RTF named-style paths differ only in how they build and
+    /// verify the candidate; everything after that verification — adopting
+    /// unchanged storage and block identities, installing the resolved style
+    /// sheet, and mapping positions across the two snapshots — is identical,
+    /// and lives here so the two cannot drift apart.
+    fn finish_semantic_style(
+        &self,
+        revision: Revision,
+        style_sheet: StyleSheet,
+        mut candidate: DocumentState,
+        source_patches: Vec<SourcePatch>,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         candidate
             .projection
             .install_unchanged_text_storage(self.projection())
@@ -2302,7 +2319,7 @@ impl Document {
         let assignment = candidate.projection.document_style().clone();
         candidate
             .projection
-            .install_configuration_styles(revision, actual, assignment);
+            .install_configuration_styles(revision, style_sheet, assignment);
         let map = PositionMap::for_text_snapshots(
             self.id,
             self.revision(),
@@ -2507,7 +2524,7 @@ impl Document {
         validate_source_patches(&mut source_patches)?;
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let decoded = self.state().encoding.decode(&source.bytes())?;
-        let mut candidate = build_state_from_decoded_with_configuration(
+        let candidate = build_state_from_decoded_with_configuration(
             source,
             decoded,
             Format::Rtf,
@@ -2621,42 +2638,7 @@ impl Document {
                 }
             }
         }
-        candidate
-            .projection
-            .install_unchanged_text_storage(self.projection())
-            .map_err(DocumentError::FormattedTextStorage)?;
-        candidate
-            .projection
-            .install_source_block_ids(self.projection())
-            .map_err(super::block_identity_document_error)?;
-        let assignment = candidate.projection.document_style().clone();
-        candidate
-            .projection
-            .install_configuration_styles(revision, actual, assignment);
-        let map = PositionMap::for_text_snapshots(
-            self.id,
-            self.revision(),
-            revision,
-            self.projection(),
-            &candidate.projection,
-            Vec::new(),
-        )?;
-        let work = ProjectionWorkStatistics::full(&candidate);
-        Ok(self.prepared(
-            revision,
-            ModelChangeSummary {
-                kind: ModelChangeKind::SemanticStyle,
-                source_patches,
-                formatted_splices: Vec::new(),
-                projection_work: work,
-                style_change: None,
-                conversion_warnings: Vec::new(),
-            },
-            map,
-            None,
-            self.next_projected_block_id,
-            PreparedPublication::State(candidate),
-        ))
+        self.finish_semantic_style(revision, actual, candidate, source_patches)
     }
 
     fn prepare_configuration_style_intent(
@@ -3947,6 +3929,46 @@ impl Document {
         self.prepare_markdown_paragraph_style_raw(range, style)
     }
 
+    /// Resolve and decode the source hard line backing one projected hard line.
+    ///
+    /// Markdown's projection hides syntax, so a projected line maps through an
+    /// insertion point rather than by index; every other format keeps them in
+    /// step. Paragraph-style and list-style rewriting both need this and must
+    /// agree on which source line they are about to edit.
+    fn decoded_source_hard_line(
+        &self,
+        line: &Range<usize>,
+        index: usize,
+    ) -> Result<(Range<usize>, super::DecodedText), DocumentError> {
+        let source_index = if self.format().is_markdown() {
+            let source_at = self
+                .projection()
+                .source_insertion_point(line.start, true)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            self.state()
+                .source_hard_lines
+                .line_at_offset(source_at)
+                .ok_or(DocumentError::AmbiguousProjection)?
+        } else {
+            index
+        };
+        let source_line = self
+            .state()
+            .source_hard_lines
+            .get(source_index)
+            .ok_or(DocumentError::VerificationFailed)?;
+        let bytes = self
+            .state()
+            .source
+            .bytes_in(source_line.clone())
+            .ok_or(DocumentError::VerificationFailed)?;
+        let decoded = self
+            .state()
+            .encoding
+            .decode_region(&bytes, source_line.start)?;
+        Ok((source_line, decoded))
+    }
+
     fn prepare_markdown_paragraph_style_raw(
         &self,
         mut range: Range<usize>,
@@ -4025,33 +4047,7 @@ impl Document {
             if index != first && line.start >= range.end {
                 break;
             }
-            let source_index = if self.format().is_markdown()
-            {
-                let source_at = self
-                    .projection()
-                    .source_insertion_point(line.start, true)
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                self.state()
-                    .source_hard_lines
-                    .line_at_offset(source_at)
-                    .ok_or(DocumentError::AmbiguousProjection)?
-            } else {
-                index
-            };
-            let source_line = self
-                .state()
-                .source_hard_lines
-                .get(source_index)
-                .ok_or(DocumentError::VerificationFailed)?;
-            let bytes = self
-                .state()
-                .source
-                .bytes_in(source_line.clone())
-                .ok_or(DocumentError::VerificationFailed)?;
-            let decoded = self
-                .state()
-                .encoding
-                .decode_region(&bytes, source_line.start)?;
+            let (source_line, decoded) = self.decoded_source_hard_line(&line, index)?;
             let (old_prefix, _) =
                 super::projection::markdown_block_prefix(&decoded.text, 0, decoded.text.len());
             let old_prefix =
@@ -4193,33 +4189,7 @@ impl Document {
             if self.format() != Format::Markdown && visible[..remove_visible] == prefix {
                 continue;
             }
-            let source_index = if self.format().is_markdown()
-            {
-                let source_at = self
-                    .projection()
-                    .source_insertion_point(line.start, true)
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                self.state()
-                    .source_hard_lines
-                    .line_at_offset(source_at)
-                    .ok_or(DocumentError::AmbiguousProjection)?
-            } else {
-                index
-            };
-            let source_line = self
-                .state()
-                .source_hard_lines
-                .get(source_index)
-                .ok_or(DocumentError::VerificationFailed)?;
-            let bytes = self
-                .state()
-                .source
-                .bytes_in(source_line.clone())
-                .ok_or(DocumentError::VerificationFailed)?;
-            let decoded = self
-                .state()
-                .encoding
-                .decode_region(&bytes, source_line.start)?;
+            let (source_line, decoded) = self.decoded_source_hard_line(&line, index)?;
             let (source_prefix, source_kind) =
                 super::projection::markdown_block_prefix(&decoded.text, 0, decoded.text.len());
             let complete_marker = super::markdown_blocks::marker_prefix_length(&decoded.text);

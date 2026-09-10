@@ -2325,7 +2325,7 @@ impl CommandInterpreter {
                     return VisualBlockRebindStatus::Cancelled;
                 }
             };
-        let Some(anchor) = nearest_visual_block_caret(&snapshot.rows[anchor_row], block.anchor_x)
+        let Some(anchor) = crate::layout::nearest_caret(&snapshot.rows[anchor_row], block.anchor_x)
         else {
             self.cancel_visual_block_rebind(VisualBlockRebindError::EndpointNotInLayout {
                 endpoint: VisualBlockEndpoint::Anchor,
@@ -2334,7 +2334,7 @@ impl CommandInterpreter {
             });
             return VisualBlockRebindStatus::Cancelled;
         };
-        let Some(active) = nearest_visual_block_caret(&snapshot.rows[active_row], block.active_x)
+        let Some(active) = crate::layout::nearest_caret(&snapshot.rows[active_row], block.active_x)
         else {
             self.cancel_visual_block_rebind(VisualBlockRebindError::EndpointNotInLayout {
                 endpoint: VisualBlockEndpoint::Active,
@@ -6157,7 +6157,7 @@ impl CommandInterpreter {
             .iter()
             .find(|row| row.carets.iter().any(|caret| caret.point == anchor))
             .ok_or_else(|| layout_error(LayoutMotionError::PositionNotInLayout(current)))?;
-        let horizontal_caret = nearest_visual_block_caret(anchor_row, target_x)
+        let horizontal_caret = crate::layout::nearest_caret(anchor_row, target_x)
             .ok_or_else(|| layout_error(LayoutMotionError::PositionNotInLayout(current)))?;
         let horizontal_x = horizontal_caret.x;
         let mut horizontal_selection =
@@ -13609,23 +13609,7 @@ fn appended_block_rows_plan(at: usize, rows: &[String]) -> PlannedFormattedEdit 
 }
 
 fn nearest_layout_caret_offset(row: &crate::layout::VisualRow, x: f32) -> Option<usize> {
-    row.carets
-        .iter()
-        .min_by(|left, right| {
-            (left.x - x)
-                .abs()
-                .partial_cmp(&(right.x - x).abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| {
-                    let rank = |affinity| match affinity {
-                        BoundaryAffinity::Downstream => 0,
-                        BoundaryAffinity::Upstream => 1,
-                    };
-                    rank(left.point.affinity).cmp(&rank(right.point.affinity))
-                })
-                .then_with(|| left.point.text_offset.cmp(&right.point.text_offset))
-        })
-        .map(|caret| caret.point.text_offset)
+    crate::layout::nearest_caret(row, x).map(|caret| caret.point.text_offset)
 }
 
 fn normal_block_insertion_origin(
@@ -13862,26 +13846,6 @@ fn visual_block_anchor_row(
             affinity: anchor.affinity(),
         }),
     }
-}
-
-fn nearest_visual_block_caret(
-    row: &crate::layout::VisualRow,
-    x: f32,
-) -> Option<&crate::layout::PositionedCaret> {
-    row.carets.iter().min_by(|left, right| {
-        (left.x - x)
-            .abs()
-            .partial_cmp(&(right.x - x).abs())
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| {
-                let rank = |affinity| match affinity {
-                    BoundaryAffinity::Downstream => 0,
-                    BoundaryAffinity::Upstream => 1,
-                };
-                rank(left.point.affinity).cmp(&rank(right.point.affinity))
-            })
-            .then_with(|| left.point.text_offset.cmp(&right.point.text_offset))
-    })
 }
 
 fn active_visual_block_from_selection(

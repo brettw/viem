@@ -378,7 +378,7 @@ fn html_patches(
         let TokenKind::Tag(tag) = &token.kind else {
             continue;
         };
-        if !matches!(tag.name.as_str(), "ul" | "ol" | "li") {
+        if !super::super::html::list_element(&tag.name) {
             continue;
         }
         if tag.end {

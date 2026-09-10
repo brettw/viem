@@ -12,7 +12,7 @@ mod style;
 mod zoom;
 
 pub(crate) use composition::capture_range as capture_composition_range;
-pub(crate) use engine::{hard_line_ranges, HardLineLayoutSlice};
+pub(crate) use engine::{affinity_rank, hard_line_ranges, nearest_caret, HardLineLayoutSlice};
 
 pub(crate) use jobs::{flow_paragraph_styles, resolve_flow_paragraph_styles};
 pub(crate) use long_line_cache::LongLineCheckpointCache;

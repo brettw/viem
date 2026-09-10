@@ -197,10 +197,7 @@ fn html_rows(
         if tag.end {
             let Some(open_at) = stack.iter().rposition(|open| matches!(&tokens[*open].kind, TokenKind::Tag(open_tag) if open_tag.name == tag.name)) else { continue; };
             let opening = stack[open_at];
-            if matches!(
-                tag.name.as_str(),
-                "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
-            ) {
+            if super::html::heading_or_paragraph(&tag.name) {
                 // Misnested recovered phrasing and nested paragraph owners are
                 // not guessed. The HTML5 projection remains the authority.
                 if open_at + 1 != stack.len() {
@@ -212,23 +209,7 @@ fn html_rows(
                 ));
             }
             stack.truncate(open_at);
-        } else if !matches!(
-            tag.name.as_str(),
-            "area"
-                | "base"
-                | "br"
-                | "col"
-                | "embed"
-                | "hr"
-                | "img"
-                | "input"
-                | "link"
-                | "meta"
-                | "param"
-                | "source"
-                | "track"
-                | "wbr"
-        ) {
+        } else if !super::html::void(&tag.name) {
             stack.push(index);
         }
     }

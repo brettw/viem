@@ -422,7 +422,7 @@ impl MockTextMeasurementProvider {
             index += count;
         }
 
-        let visual_order = visual_reorder(&clusters);
+        let visual_order = super::engine::fragment_visual_order(&clusters);
         let default_metrics = Self::metrics(request.default_style, request.scale);
         ShapedFragment {
             document_id: request.document_id,
@@ -467,39 +467,6 @@ impl TextMeasurementProvider for MockTextMeasurementProvider {
             .map(|request| self.shape_one(request))
             .collect())
     }
-}
-
-fn visual_reorder(clusters: &[ShapedCluster]) -> Vec<usize> {
-    let mut order: Vec<usize> = (0..clusters.len()).collect();
-    let max_level = clusters
-        .iter()
-        .map(|cluster| cluster.bidi_level)
-        .max()
-        .unwrap_or(0);
-    let Some(min_odd_level) = clusters
-        .iter()
-        .map(|cluster| cluster.bidi_level)
-        .filter(|level| level % 2 == 1)
-        .min()
-    else {
-        return order;
-    };
-
-    for level in (min_odd_level..=max_level).rev() {
-        let mut start = 0;
-        while start < order.len() {
-            while start < order.len() && clusters[order[start]].bidi_level < level {
-                start += 1;
-            }
-            let mut end = start;
-            while end < order.len() && clusters[order[end]].bidi_level >= level {
-                end += 1;
-            }
-            order[start..end].reverse();
-            start = end;
-        }
-    }
-    order
 }
 
 pub(crate) fn is_rtl(character: char) -> bool {

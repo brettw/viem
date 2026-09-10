@@ -2605,23 +2605,7 @@ pub(super) fn paragraph_assignment_patches(
                         ) {
                             open.truncate(index);
                         }
-                    } else if !matches!(
-                        tag.name.as_str(),
-                        "area"
-                            | "base"
-                            | "br"
-                            | "col"
-                            | "embed"
-                            | "hr"
-                            | "img"
-                            | "input"
-                            | "link"
-                            | "meta"
-                            | "param"
-                            | "source"
-                            | "track"
-                            | "wbr"
-                    ) {
+                    } else if !super::html::void(&tag.name) {
                         open.push(token);
                     }
                 }

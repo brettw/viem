@@ -63,11 +63,21 @@ pub(super) fn void(name: &str) -> bool {
             | "wbr"
     )
 }
-fn paragraph(name: &str) -> bool {
-    matches!(
-        name,
-        "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "pre"
-    )
+/// A plain paragraph or a heading: the elements which carry a paragraph style
+/// and nothing else. Deliberately narrower than [`paragraph`], which also
+/// admits list items and preformatted content.
+pub(super) fn heading_or_paragraph(name: &str) -> bool {
+    matches!(name, "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+}
+
+/// Every element which bears a paragraph of its own.
+pub(super) fn paragraph(name: &str) -> bool {
+    heading_or_paragraph(name) || matches!(name, "li" | "pre")
+}
+
+/// The list container and item elements.
+pub(super) fn list_element(name: &str) -> bool {
+    matches!(name, "ul" | "ol" | "li")
 }
 pub(super) fn owns_paragraph(tag: &Tag, sheet: &StyleSheet) -> bool {
     paragraph(&tag.name) || block(&tag.name) && tag.attribute("class")
@@ -650,7 +660,7 @@ pub(super) fn project_tokens_with_configuration(
                     }
                 }
                 let containing_item =
-                    if block(&tag.name) && !matches!(tag.name.as_str(), "li" | "ul" | "ol") {
+                    if block(&tag.name) && !list_element(&tag.name) {
                         stack.iter().rposition(|frame| frame.name == "li")
                     } else {
                         None
