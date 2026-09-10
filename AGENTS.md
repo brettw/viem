@@ -20,6 +20,10 @@ word-processor-quality text surface:
 - visual-row navigation when wrapping is enabled; and
 - responsive editing and scrolling in large documents.
 
+Code is an additional literal-text format with pluggable syntax highlighting,
+bundled Tree-sitter languages, and Vim syntax fallback. Its source remains
+fully visible and editable while optional highlighting is computed separately.
+
 The goal is not source compatibility with Vim, a Vimscript runtime, or a
 pixel-for-pixel gVim clone. "Vim compatible" in this project means that every
 command explicitly listed in this file follows Vim's command grammar and
@@ -125,16 +129,20 @@ Use these terms consistently in code, tests, and documentation:
   instead of the syntax spelling them: Markdown, HTML, and RTF.
 - **Source view**: a format whose own markup is visible, editable text:
   Markdown Source and HTML Source.
+- **Code**: a literal-text format with automatic syntax styles, distinct from
+  the Normal/Insert/Replace command modes and from rich-format Code styles.
+  It has no WYSIWYG counterpart. All pre-existing format-family predicates
+  below are false for Code; `Format::is_code` is true only for Code.
 - **Rich text**: a WYSIWYG view whose source persists arbitrary character and
   paragraph declarations: HTML and RTF. Markdown carries structure but only a
   fixed inline vocabulary, so it is structured without being rich text.
 
   These families are `const fn` predicates on `Format` (`is_wysiwyg`,
   `is_source_view`, `is_rich_text`, `is_markdown`, `is_html`,
-  `has_rich_source`, `has_structural_lists`). Code MUST ask through them rather
-  than spelling a `matches!` set of variants, so that adding a format is a
-  deliberate decision at each predicate instead of a search for every call
-  site. Their membership is pinned by test.
+  `has_rich_source`, `has_structural_lists`, and `is_code`). Implementations
+  MUST ask through these predicates rather than spelling a `matches!` set of
+  variants, so that adding a format is a deliberate decision at each predicate
+  instead of a search for every call site. Their membership is pinned by test.
 - **Buffer**: an editing session for a document plus undo history, registers,
   marks, and buffer-local state. A buffer can be displayed by multiple views.
 - **View**: a presentation of a formatted document with its own viewport, wrap
@@ -595,7 +603,7 @@ retained unless the edit necessarily changes that source region.
 Line-ending interpretation is a reusable pipeline component, not behavior
 reimplemented by each format adapter and not a base class from which adapters
 inherit. A text-like adapter composes a `TextLineEndingProjection` immediately
-after decoding and before its lossless format projection. Plain text, Markdown,
+after decoding and before its lossless format projection. Text, Code, Markdown,
 and HTML use this component. Formats whose source grammar owns all line-break
 semantics may omit it.
 
@@ -615,7 +623,7 @@ inheritance:
 ```text
 DecodedText
     -> TextLineEndingProjection(fileformat/open policy)
-    -> PlainText | Markdown | HTML lossless format projection
+    -> PlainText | Code | Markdown | HTML lossless format projection
 ```
 
 #### Detection and interpretation
@@ -666,7 +674,7 @@ line-ending conversion does not add or remove a final terminator.
 #### Changing `fileformat`
 
 Pipelines containing this component expose `fileformat` as a shared capability,
-regardless of whether their later adapter is plain text, Markdown, or HTML. The
+regardless of whether their later adapter is Text, Code, Markdown, or HTML. The
 commands `:set fileformat?`, `:set fileformat=unix|dos|mac`, their `ff`
 abbreviations, and corresponding `:setlocal` forms query or change it. An
 adapter must delegate these commands to the component rather than implement
@@ -714,6 +722,11 @@ retain byte provenance. The frontend may draw visible control representations,
 but the adapter does not remove or normalize them. Aside from the explicitly
 documented visual-row navigation behavior, plain-text commands operate on the
 same logical lines and content as gVim fixtures.
+
+Code uses this same identity projection and source-editing behavior, with the
+global Code stylesheet and independently scheduled syntax overlay specified in
+"Code format and syntax highlighting". Highlighting is not a prerequisite for
+projection, command execution, or saving.
 
 ### Formatted document model
 
@@ -766,6 +779,8 @@ namespaces:
 
 Style identity is an opaque stable ID, not the user-visible name or an array
 index. Renaming or reordering a style does not invalidate assignments to it.
+Disposable syntax style-name references are resolved separately as specified
+under Code; they are not authored stable-ID assignments.
 Each style has at most one parent in the same namespace. Multiple inheritance
 is forbidden. Every non-root block style ultimately derives from Base Document
 and every non-root character style ultimately derives from Base Character. A
@@ -1758,7 +1773,8 @@ Each adapter has corpus, property, and targeted golden tests. At minimum:
   Rectangular copies retain the exact source fragments for their selected
   segments separately, without including intervening unselected source;
   rectangular paste retains its plain-text editing behavior. Source
-  views copy the original selected source as plain text only. Copy Source
+  views and Code copy the original selected source as plain text only. Code
+  register and clipboard payloads exclude automatic syntax styles. Copy Source
   (`Shift-Command-C`) publishes only plain text containing the source fragment
   corresponding to the selection, including markup in WYSIWYG views. Paste
   and Match Style ignores the private fragment and uses plain text. Malformed
@@ -1773,7 +1789,8 @@ implicitly convert markup, including between Markdown and HTML.
 
 Convert explicitly serializes the current formatted semantics into Text,
 Markdown, or HTML. Source views first use their corresponding WYSIWYG
-projection. This is a best-effort lossy operation: retain representable
+projection. Code uses its literal text, without syntax styles, as Text input
+to conversion. This is a best-effort lossy operation: retain representable
 paragraphs, headings, lists, code, and inline formatting; unsupported formatting
 falls back to ordinary visible text. Unsupported objects use available alternate
 or descendant text, with a readable placeholder when no text is available.
@@ -1793,9 +1810,12 @@ generated list markers while retaining their text.
 
 Each successful operation is one undo unit restoring both source and format.
 Reinterpret and Convert are distinct from encoding conversion. The File menu
-offers only the main Text, Markdown, and HTML targets; choosing a different
-family selects its WYSIWYG display when available. A same-family source/view
-switch elsewhere can still explicitly reinterpret without changing bytes.
+offers Text, Markdown, and HTML conversion targets and additionally Code as a
+reinterpretation target. Selecting Code in the format popup or Reinterpret as
+preserves source bytes and reveals their literal decoded text; Code introduces
+no new serialization or separate Convert to Code action. Choosing a different
+rich/structured family selects its WYSIWYG display when available. A same-family
+source/view switch elsewhere can still reinterpret without changing bytes.
 
 ### Application theme and settings
 
@@ -1803,9 +1823,9 @@ The theme is an application preference, shared across views and independent of
 source-backed named styles. It defines text foreground and canvas background,
 caret and selection colors, status foreground/background and font family/size,
 and top/left/right/bottom document-edge padding. Color values are portable sRGB.
-The macOS Settings window has a category sidebar, including Documents and Theme,
-with a live preview, native color controls, typography controls, edge-padding
-controls, presets, and restore-defaults action.
+The macOS Settings window has a category sidebar, including Documents, Editing,
+Code, and Theme, with a live preview, native color controls, typography controls,
+edge-padding controls, presets, and restore-defaults action.
 
 A missing foreground or canvas color means **Default**, resolved through the
 theme at painting time. Generated base styles leave these colors unspecified.
@@ -1818,17 +1838,17 @@ explicit document-style padding and invalidates only affected view geometry.
 Padding changes preserve viewport anchors and keep large-document layout local.
 
 Application preferences have one versioned JSON authority at
-`~/.viem/config.json`. Theme, Smart Quotes, and status-bar visibility use this
-store; Settings controls write the same values. Valid legacy preferences migrate
-once. Reads validate the complete configuration, writes are atomic, and unknown
-keys survive updates. Invalid or unsupported versions are reported without
+`~/.viem/config.json`. Theme, Smart Quotes, Code preferences, and status-bar
+visibility use this store; Settings controls write the same values. Valid legacy
+preferences migrate once. Reads validate the complete configuration, writes are
+atomic, and unknown keys survive updates. Invalid or unsupported versions are reported without
 overwriting the user's file. `VIEM_CONFIG_DIR` may override the directory for
 isolated development and testing.
 
-Format defaults live beside it in `text_style.json`, `html_style.json`,
-`markdown_style.json`, and `rtf_style.json`. A document loads the matching sparse
-style defaults before source declarations are applied. The cascade is built-in
-styles, user format defaults, source definitions/assignments, then direct
+Per-document format defaults live beside it in `text_style.json`,
+`html_style.json`, `markdown_style.json`, and `rtf_style.json`. A document loads
+the matching sparse style defaults before source declarations are applied. The
+cascade is built-in styles, user format defaults, source definitions/assignments, then direct
 formatting. An inherited default remains unset in source: changing an unrelated
 property must not serialize an inherited font, color, or other declaration.
 Explicit assignment of a custom default style materializes only declarations
@@ -1842,6 +1862,366 @@ Saving defaults exports the current style configuration to the corresponding
 JSON file. Existing open buffers keep their current configuration; subsequently
 opened buffers load the saved defaults.
 
+Code instead uses the live application-wide `code_style.json` authority
+specified below. It is not a copy of per-document format defaults: a global
+Code style change updates existing Code buffers as well as future ones.
+
+
+### Code format and syntax highlighting
+
+#### Literal content and editing
+
+Code is a selectable source format alongside Text, Markdown, and HTML. It
+always displays every decoded content character, including delimiters, tags,
+entities, comments, indentation, and empty lines. Only the shared encoding and
+line-ending projections interpret physical serialization; invalid bytes retain
+their diagnostic projection and original-byte provenance. Code MUST NOT hide,
+collapse, replace, or synthesize content through syntax concealment, folding,
+Markdown/HTML interpretation, or paragraph flow. Soft wrapping remains a view
+option and does not change text. Every interpreted source-line break ends one
+hard line and paragraph, with no invented final newline.
+
+Code unconditionally suppresses smart quotes in every input path, even when
+Smart Quotes is enabled, the language is unknown, or highlighting is missing.
+Typing, Replace, `r`, IME/accessibility commits, paste, and register puts retain
+the supplied quote characters. Existing curly quotes are not converted back.
+HTML tag assistance, Markdown marker escaping, and prose/list continuation do
+not run in Code. Syntax availability never changes editing semantics.
+
+Code has no source-backed formatting, manually assigned character/paragraph
+styles, direct formatting, or pending typing styles. Rich paste takes its plain
+text representation. Syntax styles never enter saved source, rich clipboard
+payloads, registers, semantic format conversion, or document undo history.
+Reinterpreting into or out of Code preserves bytes using the normal transaction
+and anchor-remapping rules; undo restores that format choice.
+
+Explicit format selection takes precedence on open. Existing Markdown, HTML,
+and RTF opening defaults remain unchanged. Otherwise, a recognized code-language
+filename or load-time marker can select Code where opening would use Text;
+unrecognized input remains Text. Once Code is selected, detecting a language
+such as Markdown or HTML does not select its WYSIWYG format. Language and
+source-format selection are separate buffer state.
+
+#### Global Code stylesheet and named syntax runs
+
+There is one application-wide stylesheet named `code`, persisted atomically as
+`~/.viem/code_style.json` beside `config.json`, respecting `VIEM_CONFIG_DIR`.
+It uses the normalized style schema, with built-in defaults plus sparse saved
+overrides, stable definition IDs, validation, and immutable revision identity.
+It is shared live by all Code buffers. Valid changes update every open Code
+view without modifying source, dirty state, or document undo history; undoing
+a document edit does not restore an older global stylesheet.
+
+Core serializes mutations of the global authority and publishes an immutable
+revision to buffer coordinators, without locking all buffers together. Layout
+jobs retain the stylesheet revision independently of their text snapshot and
+validate it on installation; shared style changes never mutate a retained
+projection or install geometry resolved with an obsolete Code sheet.
+
+The sheet contains Base Document, Base Paragraph, Base Character, and named
+syntax character styles. Code's initial Base Document requests the system
+monospace family at 14 layout units; default foreground/background use the
+application theme. Base Paragraph defines line spacing, initially Single
+(`normal`), with zero space before/after and zero paragraph indents. All Code
+paragraphs use this default paragraph style. Syntax providers cannot set
+paragraph geometry.
+
+Providers emit coalesced named character-style runs over immutable input
+ranges, using a `SyntaxStyleName` rather than retaining document offsets or
+authoring style assignments. Tree-sitter names preserve captures such as
+`@keyword` and `@function`; Vim names identify effective highlight groups after
+the compiled, cycle-checked group-link mapping. The original language/group or
+capture identity remains available for inspection. Both providers use the same
+Code stylesheet; they never supply platform colors or native font objects.
+Before stylesheet lookup, resolve overlapping candidates using the backend's
+versioned priority/tie rules and parent/child-region precedence to one effective
+named run at each position. Arrival order of asynchronous jobs never selects
+the winning style. An unknown winning name uses the default appearance; it does
+not expose a lower-priority candidate with a defined style.
+
+Code character-style names are nonempty, case-sensitive, and unique within
+their namespace; duplicate definitions are rejected atomically. Resolve the
+emitted name by exact lookup in the current Code stylesheet. A missing name
+renders with the default Code character appearance inherited from
+its base styles and paragraph, with no additional syntax declaration. It MUST
+NOT raise an editing error, create a style implicitly, retain an earlier color,
+or guess a similarly named or less-specific style. Any group/capture aliasing
+is an explicit versioned provider mapping, applied before this lookup. A
+missing style differs from missing provider coverage: it does not activate Vim
+fallback. Built-in definitions SHOULD cover the standard names emitted by the
+bundled packages; users may add other names for separately loaded syntaxes.
+
+Syntax name references are disposable, unlike authored stable-ID assignments.
+Adding, renaming, or removing a definition invalidates their resolution; names
+left unresolved use the default appearance. Definition children still follow
+the normal acyclic inheritance and deletion/reparenting rules. Syntax output
+does not prevent deleting an otherwise removable definition.
+Persist suppression of deleted or renamed built-in definitions in the saved
+sheet, so defaults do not silently reappear on reload; restoring defaults is an
+explicit settings action. User edits and missing-name resolution survive restart.
+
+Named syntax styles support the normalized character properties, including
+font, size, weight, and slant. Paint-only differences repaint without parsing,
+querying, reshaping, or rewrapping. Font/metrics-affecting differences invalidate
+affected shaping and downstream layout by the existing style-effect rules;
+paragraph line-spacing changes invalidate paragraph layout. Generation changes
+mark broad dependencies lazily, with exact replacement for visible content.
+Syntax styles cannot conceal text or change the logical editing boundary space.
+Provider regex/node boundaries remain internal until mapped to legal display
+ranges; they do not create new grapheme or shaping caret stops.
+
+#### Language detection and Code settings
+
+The Code Settings page MUST provide **Vim syntax directory**, with a directory
+chooser, an editable path, and a restore-default action. The initial macOS
+default is exactly:
+
+```text
+/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/Resources/vim/runtime/syntax
+```
+
+Persist it in `config.json`. Other platforms provide their own optional default
+through the resource resolver. An absent or unreadable directory makes that
+Vim source unavailable, but never prevents opening, editing, or using bundled
+Tree-sitter. Changing it starts a new package generation and reloads affected
+Vim definitions asynchronously. The page reports load diagnostics and provides
+**Edit Code Styles…**, opening the global stylesheet in the existing modeless
+Styles editor. That editor has an explicit global target, distinct from a
+document target; valid edits persist and apply live. Its undo grouping belongs
+to the settings/style-editing session, not to any document. Document-specific
+style/default-saving and content-formatting actions are disabled in Code.
+
+Language detection is portable declarative policy inspired by Vim filename and
+file-content detection, not execution of filetype autocommands. In Automatic
+language selection, precedence is:
+
+1. a supported `ft=` or `filetype=` Vim modeline;
+2. a user filename association, then bundled basename/extension/glob rules;
+3. a shebang when filename detection is unresolved; and
+4. registered bounded content signatures, then unknown language.
+
+An explicit buffer language override, including None, precedes all automatic
+rules. Recognize modeline forms such as `vim: ft=rust` and
+`vim: set filetype=rust:` in the first and last five logical source lines.
+Inspect at most 64 KiB total of decoded content for all load-time detection,
+using bounded head/tail reads and indexes rather than traversing an enormous
+line. A marker truncated by the limit does not match. Shebang detection handles
+direct interpreters and `/usr/bin/env`, including supported `-S`/assignment
+forms. Ambiguous extensions such as `.h` and `.m` use registered bounded
+disambiguators and documented deterministic defaults, with user associations
+taking precedence. Conflicting modelines use the last valid assignment in
+document order. An unknown explicit marker preserves that language selection
+as unavailable instead of silently choosing a conflicting filename result.
+
+Markers are data: read only supported language selectors, never expressions,
+paths, shell commands, arbitrary Vim options, `source`, or autocommands. General
+modeline execution is not enabled. The initial profile does not interpret
+`syn=`/`syntax=` as a second override. The syntax-directory setting locates
+highlighting programs; it does not imply executing sibling `filetype.vim`,
+`scripts.vim`, `ftdetect`, or Vim9 helpers. Bundled and user filename tables and
+package language aliases define the supported detection profile explicitly.
+
+Capture detection inputs and the selected language/reason on load or explicit
+reload/redetection; first entry into Code also detects when no selection exists.
+Ordinary text edits, scrolling, and syntax completion MUST NOT rescan markers
+or silently switch languages. Filename changes may rerun Automatic detection;
+explicit overrides remain. Detection cannot block first display on a full-file
+syntax parse or syntax-program load.
+
+#### Provider contract, selection, and coverage
+
+Portable implementations live under `src/core/document/syntax`; Vim command
+interpretation stays in `command`. A `SyntaxProvider` consumes an immutable
+`SyntaxInputSnapshot`, revision-bound change maps, language-region identity,
+requested ranges, configuration generations, and a budget. It returns immutable
+named runs, coverage, diagnostics, and opaque reusable analysis state. Backends
+declare context needs, coordinate limits, execution/threading requirements,
+and supported capabilities. The interface MUST accommodate both a checkpointed
+Vim scanner and Tree-sitter's whole-region tree plus regional queries.
+
+Syntax input is normalized decoded UTF-8 with physical source-line boundaries,
+before format hiding and paragraph flow. Source-to-syntax and syntax-to-display
+coordinates have explicit snapshot identities and provenance. Read through a
+persistent tree/chunk facade; do not flatten a document or whole long line on
+the highlighting path. A source patch in UTF-16 or a CRLF source is not itself
+a valid parser-coordinate edit. Full decoding/projection fallbacks on ordinary
+Code newline edits violate the large-document requirements below.
+
+The initial preferred Tree-sitter language families are **C, C++, Rust, Swift,
+Objective-C, C#, JavaScript, TypeScript, and Python**. Bundle compatible grammar
+artifacts, scanners, highlight queries, and required query dependencies for all
+nine. The package IDs include `c`, `cpp`, `rust`, `swift`, `objc`, `c_sharp`,
+`javascript`, `typescript`, and `python`; TypeScript also bundles the separate
+`tsx` grammar. JavaScript includes JSX queries. Detection aliases include Vim
+`cs`, `javascriptreact`, and `typescriptreact` without confusing filename,
+language-family, grammar, and query identities.
+
+For each selected language, prefer a registered compatible Tree-sitter package.
+If there is no implementation, it cannot load, required queries are unsupported,
+or current coverage is unavailable/exceeds policy, use the corresponding Vim
+syntax if available; otherwise use default Code styling. Initial Tree-sitter
+parsing may use ready Vim output while it completes. Both backends and fallback
+are budgeted. Do not run both across the entire document simply to blend their
+colors. Additional grammar/query or Vim packages may be loaded separately
+without changing the editor's core command or rendering code.
+
+Coverage is explicitly `Exact`, `Provisional`, or `Missing`. Exact means
+complete/current for the chosen provider and supported configuration, not
+well-formed source: a completed Tree-sitter parse may contain error nodes.
+Provisional uses current text with declared heuristic context. Missing uses
+ready fallback coverage or default styling. A provisional checkpoint or stale
+result cannot establish exact coverage.
+
+Install coverage and runs atomically, validating document, input, format,
+language region, provider, grammar/rules, queries, and configuration identities.
+A completed primary query with no captures replaces old fallback colors with
+default styling. Fallback fills unavailable coverage, never gaps between
+captures or names absent from the Code stylesheet. Stale top-level packages are
+discarded; subresults are reusable only after all content and dependency
+identities are revalidated. Highlight completion changes neither source nor
+text-projection revision and creates no document undo item.
+
+#### Vim syntax compatibility and incremental execution
+
+Separate loading a `.vim` program from executing its rules. A native loader
+supports a documented, versioned declaration/setup subset with file/line
+diagnostics. An import-time compiler may evaluate broader vetted runtime files
+through a pinned Vim and export a structured program. Preserve evaluated rule
+order, case/keyword environment, includes/clusters, and synchronization settings;
+human-readable `:syntax list` output is not the serialization contract. Cache
+programs by compiler version, transitive input hashes, configuration, and bounded
+buffer-sniffing inputs. Compilation/includes are cancellable and memory-bounded.
+The installed MacVim 9.1.1887 files are compatibility fixtures; normative Vim
+behavior remains 9.2. Neither path enables arbitrary Vimscript during editing.
+
+The supported program includes keywords, ordered match/region start/skip/end
+rules, containment/clusters, nextgroup/whitespace behavior, transparency,
+end-control flags, offsets, group links, and sync/display hints. Pin supported
+regex constructs in compatibility tests. Vim syntax patterns are separate from
+Viem Regex v1 search patterns: preserve Vim semantics where supported and reject
+unsupported atoms rather than silently translating them with different meaning.
+A fast regular matcher and a budgeted compatibility VM may share one compiled
+pattern model. External delimiter captures must survive in region state.
+Editor-state-dependent cursor/mark/Visual and absolute-line/virtual-column
+assertions are outside the initial syntax-pattern profile.
+
+Retain structurally shared complete restart states densely near requested
+regions and sparsely elsewhere, with bounded span caches. States include region
+stacks, delimiter captures, pending transitions, and inspected context; hash
+equality alone is not proof of equality. Checkpoints use stable input identities
+and local boundaries. Dirty suffixes lose exact authority through lazy interval
+or generation updates, without visiting every later checkpoint or span.
+
+After an edit, restart before the earliest affected dependency and process until
+complete state and unchanged context converge at a valid boundary. Reuse then
+extends only to the next independently dirty region. Track reads from successful
+and failed pattern attempts, future end/skip searches, and lookaround, or use
+proven conservative bounds. `sync linebreaks` is a hint, not a universal proof
+that earlier highlighting is unaffected.
+
+Bounded `minlines`/`maxlines`, sync patterns, and C-comment recovery may provide
+provisional viewport colors. Exact lineage comes from the beginning or a
+validated exact checkpoint. `fromstart` does not authorize foreground scanning.
+Skip offscreen `display` rules only under the supported semantics that preserve
+continuing state. A private continuation suspended inside a regex is distinct
+from a reusable safe line checkpoint. Long-line chunks are not artificial EOLs.
+Exhaustion leaves unknown/provisional coverage; never clear state and pretend
+the following text is exactly outside a region.
+
+#### Tree-sitter analysis and query compatibility
+
+Keep one mutable worker-owned parser session per active language region and
+immutable completed tree instances for readers. Concurrent readers/workers use
+separate `Tree::clone`/`ts_tree_copy` handles sharing underlying tree structure;
+do not access one native tree handle concurrently. Feed rope chunks directly via
+the parser input callback. Use a private copy of a completed tree, apply exact
+ordered `InputEdit` records, then incrementally parse the new snapshot with that
+edited tree. Published trees and raw node positions are never mutated in place
+or retained as Viem persistent anchors. Share analysis across views.
+
+An initial host parse generally covers the whole language region and runs off
+the UI/coordinator path; viewport highlighting queries are separate jobs.
+Included ranges represent declared embedded-language regions, not arbitrary
+viewport slices that omit necessary language context. A cancelled parse does
+not publish a partial new tree. Resume only with its frozen input, old tree,
+grammar, and included ranges; reset before superseding that continuation.
+Coalesce pending edits. A completed stale tree may seed later parsing only after
+the exact intervening edits are applied, never as current display results.
+
+Do not require a contiguous-source convenience highlighter that reparses from
+scratch; maintain parser/tree/query state explicitly. Invalidation combines
+actual text edits, structural `changed_ranges`, and query dependencies. Text
+predicates, formerly failed matches, ancestor/sibling patterns, local-variable
+scopes, and injections can change results outside structurally changed nodes.
+Maintain conservative dependency indexes and lazy dirty regions; same-shape
+identifier edits must still reevaluate applicable text predicates.
+
+Packages declare an upstream or versioned Neovim query profile. Compile against
+the exact grammar and validate every required capture convention, predicate,
+directive, inheritance/extension, and dependency before activating the package.
+The Neovim profile includes named captures, priority metadata, supported
+equality/membership/text-match predicates, offsets, and injection declarations.
+Implement host handlers in portable Rust. Neovim `match?` uses its specified Vim
+regex semantics; `lua-match?` is a distinct optional Lua-pattern capability.
+Unknown/custom Lua handlers and unsupported directives produce diagnostics;
+they are not silently true or ignored. Optional locals queries require explicit
+scope analysis and invalidation; a highlights-only profile cannot claim them.
+
+Query only requested regions plus required context, evaluate predicates against
+their complete inputs, then clip output to display coverage. Range filters do
+not prove bounded query work. Budget traversal, predicates, captured text,
+pending matches, and output spans separately; match-limit exhaustion is
+incomplete coverage. Query-generation changes preserve valid parse trees;
+stylesheet/theme changes preserve trees, queries, and provider name runs.
+
+Embedded languages form an explicitly owned parent/child region graph. Each
+child records parent analysis/configuration, selected language, included ranges,
+and coordinate mapping, and may select Tree-sitter or Vim independently.
+Changing/removing an injection invalidates its child even if its text survives.
+Prioritize visible children and retain valid offscreen metadata. Combined
+injections couple their ranges as one analysis/dependency group. Bound discovery
+work, recursion, child count, total input, and retained trees. Child precedence
+over parent syntax is explicit and cannot alter authored text or formatting.
+
+#### Platform packages, scheduling, and resource limits
+
+Core owns analysis policy and state; platform services locate packages, load
+native libraries or optional Wasm artifacts, and supply appropriate executors.
+Validate OS/architecture, runtime ABI, grammar/query revisions, and required
+capabilities. Keep package owners alive while parsers, trees, or queries refer
+to them. The frontend ABI exchanges opaque retained handles and bounded batches,
+never exposed tree nodes, mutable parser objects, or platform colors. Additional
+platform providers implement the same snapshot/coverage contract.
+
+Opening/displaying text, committing an edit, drawing, and moving the viewport
+MUST NOT wait for or execute a syntax compiler, parser, regex, or query job.
+Small bounded filename/marker detection and publication are separate from
+provider execution. Essential input/layout work has priority over syntax.
+At most one job runs per mutable provider session, with one coalesced replacement
+request; a bounded pool and fair per-buffer quotas prevent injection/fallback
+work from starving other buffers. Jobs return immutable packages for checked
+coordinator installation, with no provider calls while holding core locks.
+
+Use deterministic work budgets plus cooperative deadline checks, including
+inside Vim matching and query predicates. Account for grammar compilation,
+stacks/captures, continuations, retained trees/snapshots, cached spans, queued
+results, and injection state under explicit configurable byte budgets. Repeated
+failure is keyed by relevant content, entry state, dependencies, program, and
+budget profile; unrelated edits or repaints must not retry the same capped work.
+Eviction does not require reparsing before the next interactive frame.
+
+Exact repair may legitimately reach EOF after a delimiter edit. Time slicing
+and fallback bound responsiveness, not arbitrary total repair work. Native
+Tree-sitter scanners are cooperatively cancellable only after their callbacks
+return. Do not promise hard in-process preemption or strict allocator limits
+for arbitrary native grammars; providers requiring enforceable termination
+use replaceable process workers or another execution mechanism that enforces
+those limits. Worker isolation must also permit continued editing on failure.
+
+Backend coordinate limits are checked before conversion/calls. In particular,
+Tree-sitter's 32-bit byte/point domain cannot represent arbitrary large inputs.
+Oversized inputs use Vim/default styling or independently valid mapped language
+regions; never truncate coordinates or split arbitrary code into false parses.
 
 ### Continuous canvas and paragraph layout
 
@@ -2811,6 +3191,7 @@ The menu hierarchy is:
     - HTML
   - Reinterpret as
     - Text
+    - Code
     - Markdown
     - HTML
   - Text Encoding
@@ -3002,7 +3383,7 @@ within that range; each control chooses the next strictly adjacent stop.
 
 Menu validation comes from current core state and pipeline capabilities.
 Actions that cannot apply to the current selection or adapter are disabled.
-Rich-formatting actions are disabled for plain text; `Convert to` offers an
+Rich-formatting actions are disabled for Text and Code; `Convert to` offers an
 explicit conversion into a format that supports them. Style and
 formatting items show a checkmark, mixed state, or no mark as appropriate.
 Character and Paragraph menus reserve the same mark column for every item,
@@ -3032,6 +3413,11 @@ checkboxes, or `Cancel` and `OK` buttons.
 
 #### Window behavior and ownership
 
+These document-target rules also apply to the explicit global Code stylesheet
+target with the ownership and persistence exceptions in "Code format and
+syntax highlighting". Global Code style editing never retargets implicitly to
+a document and never creates a document source transaction.
+
 - Although it is colloquially a dialog box, the style editor is a modeless
   auxiliary window or panel. It is never an application-modal dialog or a
   document-modal sheet. The user can focus and edit any document while it is
@@ -3044,7 +3430,8 @@ checkboxes, or `Cancel` and `OK` buttons.
 - Exactly one style-editor window exists application-wide. Invoking any
   `Edit Styles…` action while it is closed creates it. Invoking one while it is
   open brings the existing window forward, retargets it to the invoking
-  document, and selects the requested style by stable style ID.
+  document or explicitly requested global Code sheet, and selects the requested
+  style by stable style ID.
 - Merely moving the document caret or selection does not silently retarget an
   open editor. Retargeting occurs through an explicit Edit Style action or the
   editor's Style picker.
@@ -3052,9 +3439,9 @@ checkboxes, or `Cancel` and `OK` buttons.
   **Apply**, **Cancel**, or **OK** button because valid changes are already
   applied. The standard window close command and `Command-W` have the same
   effect when the style editor is key. Closing never rolls changes back.
-- The window coordinator, current target document identity, and selected stable
-  style ID belong to `src/mac`. Style definitions and mutations remain owned by
-  core. The frontend never keeps a private editable copy of a style sheet.
+- The window coordinator, current document/global target identity, and selected
+  stable style ID belong to `src/mac`. Style definitions and mutations remain
+  owned by core. The frontend never keeps a private editable copy of a style sheet.
 
 #### Layout and common controls
 
@@ -3172,6 +3559,8 @@ their supported signed ranges. Held autorepeat is one continuous undo gesture.
   intention against the exact current core snapshot. Successful reverse
   projection commits through the normal verified source transaction path and
   updates every view of the document without waiting for the window to close.
+  For the global Code target, the intention instead updates the application
+  stylesheet authority and all Code views through a checked settings operation.
 - The preview is not a private draft. It renders the currently committed style
   after cascade resolution. A Character style preview shows the style in
   representative surrounding text. A Paragraph style preview shows preceding,
@@ -3204,22 +3593,28 @@ deletion marker in its owned schema. The three distinguished base styles remain
 undeletable. Required tests cover local edits and reopen after deletion, source
 locality, and deeper generated list levels.
 
-The selected style is tracked by document identity and stable style ID, never
-by menu index, name, or stale array position. On every style-sheet update and
-before sending an edit, the window revalidates that identity against the latest
-snapshot.
+The global Code target instead follows the name-reference and persisted
+suppression rules in its section: no source assignments or document history
+are rewritten. All target identity checks below use the global sheet identity
+when appropriate, and closing a document does not close or retarget that editor.
+
+The selected style is tracked by document-or-global target identity and stable
+style ID, never by menu index, name, or stale array position. On every style-sheet
+update and before sending an edit, the window revalidates that identity against
+the latest snapshot.
 
 If the selected style was deleted from another action, reverse projection, or
 history navigation, the editor must not apply a pending callback to the deleted
 ID or to whichever style reused its former list position. It immediately
-selects **Base Paragraph** in the same document, switches the style type and tab
+selects **Base Paragraph** in the same target, switches the style type and tab
 enablement accordingly, and reloads every control and preview from that style.
 Base Paragraph is the guaranteed default paragraph style and is undeletable.
 
-If the target document closes, the editor retargets to Base Paragraph in the
+If a document target closes, the editor retargets to Base Paragraph in the
 current key document when one exists; otherwise it remains open in a disabled
 no-document state or closes according to normal macOS auxiliary-window policy.
 It must never continue editing a closed document through retained UI callbacks.
+An editor targeting the global Code sheet remains valid when a document closes.
 
 Required macOS integration tests cover single-window reuse and retargeting,
 continued document editing while the window is open, live application and undo
@@ -3232,10 +3627,16 @@ to Base Paragraph, stale callback rejection, and target-document closure.
 The following are outside the initial command commitment unless a later change
 adds them here: Vimscript/Vim9script, user mappings and abbreviations, plugins,
 terminal jobs, shell filters and `:!`, tags, quickfix, diff mode, folding,
-spellchecking, code syntax highlighting, Vim tab pages and side-by-side splits,
+spellchecking, Vim tab pages and side-by-side splits,
 sessions/viminfo, remote server commands, and full Vim option/regex parity.
 Architecture must not gratuitously prevent these, but do not build speculative
 subsystems for them now.
+
+The Code syntax-provider system, nine bundled Tree-sitter language families,
+versioned query compatibility, and supported Vim syntax-loading/detection
+profiles specified above are required exceptions. They do not imply general
+Vimscript/Vim9script execution, Neovim Lua plugins, arbitrary runtime
+autocommands, syntax-driven folding/concealment, or a change to Viem Regex v1.
 
 ## Core architecture
 
@@ -3273,6 +3674,7 @@ src/core/
     document/
         source and artifact storage
         encoding, format, and semantic projections
+        Code syntax input, providers, language regions, and highlight snapshots
         formatted block/text tree, styles, and position algebra
         buffer/view editing state, transactions, and undo history
         persistence capabilities and semantic edit intentions
@@ -3559,8 +3961,9 @@ reference to it.
 
 #### Background jobs
 
-Projection, segmentation, shaping, wrapping, and height refinement may run on a
-bounded worker pool. A job captures only immutable inputs, including:
+Projection, syntax analysis/queries, segmentation, shaping, wrapping, and height
+refinement may run on a bounded worker pool. A job captures only immutable inputs,
+including:
 
 - retained source and/or projection snapshots;
 - the bounded source, formatted, or hard-line region requested;
@@ -3575,9 +3978,9 @@ mutate a view, or call frontend UI code directly.
 
 The coordinator validates a returned package before making it observable:
 
-- A projection or positioned layout result is installed only when its complete
-  source/projection revision and every relevant configuration generation match
-  the current target.
+- A projection, syntax coverage, or positioned layout result is installed only
+  when its complete source/projection revision and relevant configuration
+  generations match the current target.
 - A stale top-level result is discarded. A shaped or segmented subresult from a
   stale job may be admitted to a content-keyed cache only after the coordinator
   verifies that its stable projected identities, local revisions, bounded
@@ -3677,6 +4080,10 @@ At minimum, define these narrow directions of dependency:
   rich-text payloads; core owns register semantics.
 - **Clock/scheduler hooks**: allow cancellable background pre-layout without
   making core correctness depend on real time.
+- **Syntax package/execution provider**: locates and retains compatible native,
+  imported Vim, or optional Wasm resources and supplies declared worker
+  mechanisms; core owns language selection, analysis, budgets, coverage, and
+  named-style output. No platform UI dependency enters portable syntax policy.
 
 All interfaces need deterministic fakes in `src/core` tests.
 
@@ -3963,7 +4370,7 @@ Maintain automated fixtures for at least:
 5. two views of one buffer at different widths; and
 6. rapid live resize through many widths followed immediately by an edit.
 
-The source/transform suite additionally includes plain text, Markdown, HTML,
+The source/transform suite additionally includes Text, Code, Markdown, HTML,
 and RTF samples as adapters are implemented, with alternate equivalent syntax,
 comments/trivia, malformed and unknown constructs, legacy encodings, and
 characters that cannot be represented in the original encoding.
@@ -3972,6 +4379,100 @@ Performance tests should instrument source bytes decoded and parsed, formatted
 bytes projected, bytes segmented and shaped, hard lines wrapped, cache hits,
 height-tree operations, and discarded stale tasks. Assert bounded work
 structurally; avoid brittle wall-clock-only tests.
+
+### Code syntax performance and regression gates
+
+Both Vim and Tree-sitter MUST have performance suites, with pinned engine,
+grammar/rule, query, compiler, and fixture revisions. Test the complete Code
+editing/display path as well as isolated providers: a fast highlighter does not
+excuse full-document decoding, projection, styling, or layout on ordinary edits.
+
+Instrument executor identity; detector bytes; syntax input read callbacks,
+bytes supplied and copied; Vim instructions, evaluated lines, checkpoints and
+dependency operations; Tree-sitter progress and reuse metrics where available;
+query traversal, predicates, matches/captures and limit overflow; injection
+jobs; named-style resolution; shaped bytes; queue depth; publication rejections;
+and retained bytes by cache/job/snapshot class. Input bytes supplied are not
+reported as bytes parsed: a parser may consume part of a chunk or reread it.
+
+Required automated fixtures and assertions are:
+
+1. **Cold open:** one million short lines and 100 MiB mixed-length inputs,
+   including UTF-8, UTF-16, legacy encoding, and mixed physical endings. Suspend
+   all providers and assert that initial text display, typing, and scrolling
+   still work. First display must not wait for grammar compilation or a whole
+   Tree-sitter tree. Assert bounded chunk reads without an extra flattened
+   whole-document copy for syntax. Detection reads no more than its 64 KiB
+   allowance plus logarithmic index work, including on a huge first/last line.
+2. **Warm local edits:** generated independent-function/statement fixtures at
+   10,000, 100,000, and 1,000,000 lines for each bundled language, plus pinned
+   representative Vim files. Insert/delete characters and hard-line boundaries
+   at the start, middle, and end. With unchanged downstream context, provider
+   and query work stays under the same explicit per-fixture ceilings as
+   unrelated suffixes grow; tree lookups may grow logarithmically. Commit
+   numeric ceilings with each fixture, justify baseline changes, and reject
+   full projection or eager suffix-offset/cache rewrites.
+3. **Scrolling:** jump from the first viewport to near EOF and repeatedly
+   alternate distant regions, with wrapping on/off and two views. Foreground
+   work includes no provider call/wait or scanning of the intervening prefix.
+   Once a Tree-sitter tree exists, scrolling does not reparse it. Queries and
+   Vim recovery stay budgeted; returning to retained valid coverage performs
+   zero provider evaluation. Repeated scrolling keeps cache/queue memory bounded.
+4. **Long dependency:** remove/restore a comment terminator, multiline string,
+   or heredoc/raw-string delimiter so repair can reach EOF. Lazy invalidation
+   must not enumerate all affected spans/checkpoints. Yield repeatedly while
+   processing input between jobs. Compare completed results to fresh analysis;
+   capped results remain missing/provisional and cannot validate exact state.
+5. **Huge line:** a multi-megabyte line, giant token/delimiter, deep nesting,
+   regex backtracking/lookaround, and dense captures, wrapped and unwrapped.
+   Assert bounded temporary chunks, VM/predicate work and emitted-span budgets;
+   no full-line flattening merely to highlight the visible fragment. Test a
+   controllably blocked native scanner on a worker while foreground operations
+   continue, then release it. Hard-termination providers additionally test
+   worker termination/replacement; do not leave an infinite native test running.
+6. **Dependency correctness:** same-length identifier renames affecting text
+   predicates, previously failed matches becoming successful, ancestor/sibling
+   dependencies, locals, and injection-language changes. Include changes outside
+   the viewport that affect its highlights. Incremental output equals a fresh
+   parse/query; structural changed ranges alone must not pass these tests.
+7. **Cancellation and supersession:** deterministically interleave edits,
+   undo/redo, reload, format/language changes, query/package reload, view close,
+   and suspended parse/query completion. Resume only the captured input; reset
+   abandoned Tree-sitter continuations. Reject stale coverage and bound queued
+   replacement requests and retained revisions. An unrelated edit must not
+   restart identical previously capped work.
+8. **Fallback and limits:** remove a grammar, mismatch its ABI, reject a query
+   handler, exceed regex/query/memory budgets, exhaust captures, and make the
+   Vim directory unavailable. Assert Tree-sitter to ready Vim to default-style
+   behavior without blocking input. Empty completed primary captures clear
+   fallback colors. Simulate input beyond Tree-sitter's 32-bit limits without
+   allocating gigabytes; make zero invalid Tree-sitter calls and no truncating
+   casts. Loading other languages exercises the same bounded provider contract.
+9. **Styles and geometry:** change/add/delete a referenced Code style while
+   several Code buffers are open, including a formerly missing name. Preserve
+   provider runs/trees/queries. Color-only changes make zero shaping calls;
+   font/size/weight changes and Base Paragraph line-spacing changes invalidate
+   the correct layout layers and preserve viewport anchors. Missing styles use
+   the default, never another provider. Cache invalidation remains lazy on the
+   million-line fixture. No source/dirty/document-undo changes occur.
+
+Use deterministic clocks, fuel counters, bounded fake providers, and allocation
+accounting as hard release gates. Assert zero syntax-provider execution/waits
+on the UI and edit-commit paths, at most one active job per mutable session and
+one coalesced replacement, and all configured hard byte limits. Native backend
+allocations that cannot be hard-limited in process need measured accounting and
+declared soft-limit/fallback behavior, or an executor that enforces hard limits.
+Measured soft-limit overruns must trigger that declared cancellation/fallback
+policy; they cannot be ignored because the allocation occurred in native code.
+
+Additionally benchmark p50/p95/p99 first-interaction, input, scroll, highlight
+repair, and fallback latency on recorded reference hardware, both with syntax
+disabled and enabled. Target roughly 2-4 ms cooperative syntax slices and
+publication of ready visible results within one display frame, without
+delaying required input/layout. Record actual maxima and native-scanner
+exceptions. These are measured tuning/regression targets, not a promise that
+arbitrary native callbacks are preemptible; timing tests do not replace the
+structural gates. All cache and worker budgets must have tested finite defaults.
 
 ## Correctness test strategy
 
@@ -3996,7 +4497,7 @@ structurally; avoid brittle wall-clock-only tests.
   edits.
 - **Line-ending tests**: LF, CRLF, CR, mixed endings, literal CR/LF content,
   empty files, and files with and without a final terminator exercise every
-  detected, forced, and defaulted mode. Plain text, Markdown, and HTML use the
+  detected, forced, and defaulted mode. Text, Code, Markdown, and HTML use the
   same conformance suite. No-op saves are byte-identical; inserted breaks use
   `fileformat`; conversions declare every patch and preserve the logical token
   sequence or return the required policy result.
@@ -4011,6 +4512,19 @@ structurally; avoid brittle wall-clock-only tests.
 - **Pipeline tests**: composed provenance and reverse edits match an equivalent
   unfused pipeline; stale, generated, ambiguous, and unsupported edits return
   the required structured result.
+- **Code conformance tests**: byte-exact no-op saves, local edits, reinterpret
+  round-trips, literal markup/entities/whitespace, and all input paths with
+  Smart Quotes both on and off. Syntax styles never affect clipboard/register
+  text, editing boundaries, source serialization, or undo. Test marker/filename
+  precedence, bounded samples, aliases, ambiguous extensions, unavailable
+  languages, and no marker rescanning during typing. Test global stylesheet
+  persistence/live updates independently of document history and default
+  rendering for unresolved names. For supported Vim rules, compare completed
+  exact results to pinned Vim 9.2 and record deliberate heuristic/profile
+  differences; the local 9.1.1887 corpus is an additional fixture. For all nine
+  bundled Tree-sitter families and separately loaded packages, compare
+  incremental trees/captures to fresh evaluation, including errors, injections,
+  Unicode/encoding coordinates, query precedence, and fallback coverage.
 - **Undo tests**: randomized grouped transactions round-trip exact source bytes,
   source metadata, required buffer-local marks, and invoking-view restoration
   positions through undo/redo and alternate branches. Tests cover every undo
@@ -4090,6 +4604,16 @@ Primary references:
 - [Vim undo branches](https://github.com/vim/vim/blob/master/src/undo.c)
 - [Rust `regex` syntax and execution guarantees](https://docs.rs/regex/latest/regex/)
 
+Primary Code syntax references:
+
+- [Vim 9.2 syntax rules and synchronization](https://github.com/vim/vim/blob/v9.2.0000/runtime/doc/syntax.txt)
+- [Vim 9.2 syntax-state cache](https://github.com/vim/vim/blob/v9.2.0000/src/syntax.c)
+- [Tree-sitter rope input and coordinates](https://tree-sitter.github.io/tree-sitter/using-parsers/2-basic-parsing.html)
+- [Tree-sitter incremental parsing and language regions](https://tree-sitter.github.io/tree-sitter/using-parsers/3-advanced-parsing.html)
+- [Tree-sitter predicate and directive contract](https://tree-sitter.github.io/tree-sitter/using-parsers/queries/3-predicates-and-directives.html)
+- [Tree-sitter query limits](https://docs.rs/tree-sitter/latest/tree_sitter/struct.QueryCursor.html)
+- [Neovim queries, captures, and injections](https://neovim.io/doc/user/treesitter/)
+
 Primary source-preservation and transformation references:
 
 - [Roslyn full-fidelity syntax model](https://learn.microsoft.com/en-us/dotnet/csharp/roslyn-sdk/work-with-syntax)
@@ -4119,14 +4643,15 @@ Primary macOS caret references:
 Do not silently settle these while implementing an unrelated feature. Record a
 decision in this file or an architecture decision record first:
 
-- which format adapters beyond plain text ship initially;
+- which additional format adapters beyond those explicitly required here ship;
 - the canonical syntax of any future adapter not specified above;
 - user policy for Unicode edits not representable in the source encoding;
 - exact Unicode word/sentence segmentation tailoring;
 - whether rich system clipboard formats are required for the first release;
 - additional style defaults and visual design choices not fixed above;
 - hyphenation and justification; and
-- concrete latency and memory budgets for supported hardware.
+- hardware-specific latency thresholds and numerical cache defaults not fixed
+  by the bounded-work and Code syntax regression requirements above.
 
 ## Format controls, Markdown authoring, and lists
 
@@ -4134,7 +4659,7 @@ The status bar exposes a native popup for source format, with a small vertical
 triangle and hover highlight. Encoding and line endings appear only in their
 File submenus, not in the status bar. A choice is a checked core transaction
 shared by the buffer's views and reversible with undo. Format
-selection within a format family or to plain text changes interpretation while
+selection within a format family or to Text/Code changes interpretation while
 preserving source bytes. An explicit HTML-to-Markdown or Markdown-to-HTML
 conversion instead translates the formatted text and representable styling to
 new source syntax as one undoable transaction, including source-visible variants.
@@ -4198,9 +4723,10 @@ the frontend refreshes each affected view once and exports only its viewport
 text. Large-document regressions must cover the first switch in both
 directions, rather than relying only on a warmed projection cache.
 
-The built-in Code character style and Code Block paragraph style use the system
-monospace family and dark green (`#006400`). HTML `<code>` and `<pre>` and
-Markdown inline/fenced backticks project to these roles; code whitespace remains
+The rich-format Code character style and Code Block paragraph style are
+independent of the Code format and its global stylesheet. These rich styles
+use the system monospace family and dark green (`#006400`). HTML `<code>` and
+`<pre>` and Markdown inline/fenced backticks project to these roles; code whitespace remains
 editable and preserved. New simple HTML bold and italic formatting uses `<b>`
 and `<i>` where those tags express the requested change. More complex or
 interacting properties use sparse CSS declarations as needed. Existing untouched
@@ -4226,8 +4752,8 @@ and RTF uses `\line`. Markdown uses inline `<br>` where a physical source
 ending would change paragraph structure, such as headings and empty items.
 Bare inline `<br>` and `<br />` project as breaks; escaped tags and code spans
 retain their literal text. Markdown quote/list continuation syntax keeps the break
-inside the same paragraph and item. In preformatted Markdown code and plain
-text, the source line ending itself expresses the break. This is distinct from
+inside the same paragraph and item. In preformatted Markdown code, Text, and
+Code, the source line ending itself expresses the break. This is distinct from
 automatic soft wrapping and from Enter's paragraph-splitting behavior. Source
 views retain literal source-line-ending insertion for Shift-Enter.
 Typing spaces or tabs in an HTML context that already preserves whitespace
@@ -4320,7 +4846,9 @@ document source merely by being toggled. All document text input uses the same
 policy: Insert and Replace typing, Normal and Visual `r`, clipboard and register
 puts, and committed input-method or accessibility replacements transform
 straight quotes in prose. Uncommitted input-method overlays and command prompts
-remain literal. Code character spans and code paragraphs always suppress quote
+remain literal. The entire Code format always suppresses quote conversion,
+regardless of this setting, language detection, syntax coverage, or style name.
+In other formats, Code character spans and code paragraphs always suppress quote
 conversion, including pending Code typing styles and code in pasted rich text.
 Source input also preserves syntax-required quotes in HTML attributes and
 Markdown code/link/tag constructs, including constructs inside an input batch.
