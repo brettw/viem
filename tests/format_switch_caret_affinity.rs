@@ -60,9 +60,15 @@ fn targets(from: Format) -> [Format; 3] {
 
 fn switch_and_check(core: &mut Editor, view: ViewId, target: Format, retained_prefix: &str) {
     let original = core.document().source_bytes();
+    let operation = if core.document().format().wysiwyg() == target.wysiwyg() {
+        viem_core::FormatOperation::Reinterpret
+    } else {
+        viem_core::FormatOperation::Convert
+    };
     core.handle(
         view,
         CoreEvent::SetFormat {
+            operation,
             document: core.document().id(),
             revision: core.document().revision(),
             target,

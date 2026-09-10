@@ -120,6 +120,101 @@ impl ClipboardFragment {
         Ok(Self(Arc::from(json)))
     }
 
+    /// Whether this value follows the compatible rich-source paste path.
+    /// Candidate verification can still reject unsupported imported syntax.
+    pub fn can_insert_rich_source(&self, format: Format, text: &str) -> bool {
+        serde_json::from_str::<Export>(self.json())
+            .is_ok_and(|export| export.can_insert_rich_source(format, text))
+    }
+
+    /// Transform only the fragment's prose and retain its source and resolved
+    /// style image. Clipboard/register values remain immutable.
+    pub fn transform_quotes(
+        &self,
+        previous: Option<char>,
+        mut quote: impl FnMut(char, Option<char>) -> char,
+    ) -> Result<(String, Self), DocumentError> {
+        let original: Export =
+            serde_json::from_str(self.json()).map_err(|_| DocumentError::UnsupportedFormatting)?;
+        if !original.plain_text.contains(['\'', '"']) {
+            return Ok((original.plain_text, self.clone()));
+        }
+        let (format, encoding, file_format) = original.pipeline()?;
+        let mut document = Document::from_bytes_with_file_format(
+            original.source_bytes.clone(),
+            encoding,
+            format,
+            file_format,
+        )?;
+        if document.text() != original.source_plain_text || !original.source_segments.is_empty() {
+            return Err(DocumentError::UnsupportedFormatting);
+        }
+        let (text, edits) = super::input_context::rewrite_quotes(
+            document.text(),
+            previous,
+            |at, _| document.quote_context(at, BoundaryAffinity::Downstream, true),
+            &mut quote,
+        )?;
+        if edits.is_empty() {
+            return Ok((original.plain_text, self.clone()));
+        }
+        let mapped = original
+            .source_plain_text
+            .char_indices()
+            .map(|(at, _)| at)
+            .chain(std::iter::once(original.source_plain_text.len()))
+            .zip(
+                text.char_indices()
+                    .map(|(at, _)| at)
+                    .chain(std::iter::once(text.len())),
+            )
+            .collect::<BTreeMap<_, _>>();
+        document.apply_edits(edits)?;
+        let fragment = document.clipboard_fragment(0..document.text().len())?;
+        let mut transformed: Export =
+            serde_json::from_str(fragment.json()).map_err(|_| DocumentError::UnsupportedFormatting)?;
+        // Configuration-only typography need not occur in copied source.
+        // Retain the original resolved runs while rebasing their text extents.
+        let remap_runs = |runs: Vec<Value>| -> Result<Vec<Value>, DocumentError> {
+            runs.into_iter()
+                .map(|mut run| {
+                    for key in ["start", "end"] {
+                        let at = run[key]
+                            .as_u64()
+                            .and_then(|at| usize::try_from(at).ok())
+                            .ok_or(DocumentError::UnsupportedFormatting)?;
+                        run[key] = json!(mapped
+                            .get(&at)
+                            .ok_or(DocumentError::UnsupportedFormatting)?);
+                    }
+                    Ok(run)
+                })
+                .collect()
+        };
+        transformed.character_runs = remap_runs(original.character_runs)?;
+        transformed.paragraph_runs = remap_runs(original.paragraph_runs)?;
+        transformed.register_kind = original.register_kind;
+        let appended_line_break = original.register_kind == 2
+            && original.plain_text == format!("{}\n", original.source_plain_text);
+        if original.plain_text == original.source_plain_text || appended_line_break {
+            // Source-view yanks use normalized visible text even when the
+            // fragment's persisted source retains CRLF or CR spelling.
+            transformed.plain_text = transformed.source_plain_text.clone();
+        }
+        if appended_line_break {
+            transformed.hard_breaks.push(transformed.plain_text.len());
+            transformed.plain_text.push('\n');
+        }
+        let text = transformed.plain_text.clone();
+        Ok((
+            text,
+            Self(Arc::from(
+                serde_json::to_string(&transformed)
+                    .map_err(|_| DocumentError::UnsupportedFormatting)?,
+            )),
+        ))
+    }
+
     pub(crate) fn register_parts(&self) -> (String, u32, Vec<usize>) {
         let value: Export =
             serde_json::from_str(self.json()).expect("validated clipboard fragment");
@@ -154,6 +249,13 @@ impl ClipboardFragment {
 }
 
 impl Export {
+    fn can_insert_rich_source(&self, format: Format, text: &str) -> bool {
+        self.is_rich
+            && self.pipeline().is_ok_and(|(source, _, _)| source == format)
+            && text == self.source_plain_text
+            && self.source_segments.is_empty()
+    }
+
     fn pipeline(&self) -> Result<(Format, super::super::Encoding, FileFormat), DocumentError> {
         let format = match self.source_format {
             1 => Format::PlainText,
@@ -359,12 +461,8 @@ impl Document {
         self.validate_range(&range)?;
         let export: Export = serde_json::from_str(fragment.json())
             .map_err(|_| DocumentError::UnsupportedFormatting)?;
-        let (format, encoding, _) = export.pipeline()?;
-        if !export.is_rich
-            || format != self.format()
-            || text != export.source_plain_text
-            || !export.source_segments.is_empty()
-        {
+        let (_, encoding, _) = export.pipeline()?;
+        if !export.can_insert_rich_source(self.format(), text) {
             return Ok(None);
         }
         if range != (0..self.text().len()) {

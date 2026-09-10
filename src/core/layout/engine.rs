@@ -1419,6 +1419,7 @@ impl ViewLayout {
         if !style.is_valid() {
             return Err(LayoutError::InvalidStyle);
         }
+        let style = style.with_implicit_kerning();
         if !self.default_style_is_override || self.default_style != style {
             self.default_style = style;
             self.default_style_is_override = true;
@@ -1437,6 +1438,13 @@ impl ViewLayout {
 
     pub fn set_style_runs(&mut self, style_runs: Vec<ShapeStyleRun>) -> Result<(), LayoutError> {
         validate_style_runs_structure(&style_runs)?;
+        let style_runs = style_runs
+            .into_iter()
+            .map(|run| ShapeStyleRun {
+                style: run.style.with_implicit_kerning(),
+                ..run
+            })
+            .collect::<Vec<_>>();
         if !self.style_runs_are_override || self.style_runs != style_runs {
             self.style_runs = style_runs;
             self.style_runs_are_override = true;
@@ -6759,6 +6767,58 @@ mod tests {
     }
 
     #[test]
+    fn implicit_kerning_keeps_large_document_metrics_and_cache_identity() {
+        let document = Document::new("AV tail\n".repeat(2_000));
+        let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
+        let mut view = ViewLayout::new(400.0, 100.0);
+        view.set_default_style(ResolvedTextStyle::default())
+            .unwrap();
+        view.set_style_runs(vec![ShapeStyleRun {
+            text_range: 1..2,
+            style: ResolvedTextStyle::default(),
+        }])
+        .unwrap();
+        let initial = lay_out_regional_line(&mut engine, &document, &view, 0);
+        let advance = initial.lines[0].rows[0].clusters[0].advance;
+        assert_eq!(engine.provider().request_calls(), 1);
+        for value in [0, 1, 9] {
+            let style = ResolvedTextStyle {
+                features: vec![OpenTypeFeature {
+                    tag: *b"kern",
+                    value,
+                }],
+                ..ResolvedTextStyle::default()
+            };
+            view.set_default_style(style.clone()).unwrap();
+            view.set_style_runs(vec![ShapeStyleRun {
+                text_range: 1..2,
+                style,
+            }])
+            .unwrap();
+            let snapshot = lay_out_regional_line(&mut engine, &document, &view, 0);
+            assert_eq!(
+                snapshot.lines[0].rows[0].clusters,
+                initial.lines[0].rows[0].clusters
+            );
+            assert_eq!(engine.provider().request_calls(), 1);
+        }
+        view.set_style_runs(Vec::new()).unwrap();
+        view.set_default_style(ResolvedTextStyle {
+            letter_spacing: 2.0,
+            ..ResolvedTextStyle::default()
+        })
+        .unwrap();
+        let tracked = lay_out_regional_line(&mut engine, &document, &view, 0);
+        assert_eq!(tracked.lines[0].rows[0].clusters[0].advance, advance + 2.0);
+        assert_eq!(engine.provider().request_calls(), 2);
+        engine
+            .provider_mut()
+            .set_metrics_generation(MetricsGeneration(2));
+        lay_out_regional_line(&mut engine, &document, &view, 0);
+        assert_eq!(engine.provider().request_calls(), 3);
+    }
+
+    #[test]
     fn context_style_changes_invalidate_both_sides_of_a_fragment_boundary() {
         let mut text = "x".repeat(MAX_SHAPE_FRAGMENT_BYTES - 1);
         text.push_str("AVtail");
@@ -6776,16 +6836,13 @@ mod tests {
             .unwrap()
             .advance;
 
-        let unkerned_style = ResolvedTextStyle {
-            features: vec![OpenTypeFeature {
-                tag: *b"kern",
-                value: 0,
-            }],
+        let different_weight = ResolvedTextStyle {
+            weight: 500.0,
             ..ResolvedTextStyle::default()
         };
         view.set_style_runs(vec![ShapeStyleRun {
             text_range: MAX_SHAPE_FRAGMENT_BYTES..MAX_SHAPE_FRAGMENT_BYTES + 1,
-            style: unkerned_style.clone(),
+            style: different_weight.clone(),
         }])
         .unwrap();
         engine.relayout(&document, &mut view).unwrap();
@@ -6806,13 +6863,13 @@ mod tests {
             ShapeStyleRun {
                 text_range: a_range,
                 style: ResolvedTextStyle {
-                    weight: 500.0,
+                    weight: 600.0,
                     ..ResolvedTextStyle::default()
                 },
             },
             ShapeStyleRun {
                 text_range: MAX_SHAPE_FRAGMENT_BYTES..MAX_SHAPE_FRAGMENT_BYTES + 1,
-                style: unkerned_style,
+                style: different_weight,
             },
         ])
         .unwrap();

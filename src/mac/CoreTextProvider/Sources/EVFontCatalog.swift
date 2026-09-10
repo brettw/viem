@@ -115,12 +115,12 @@ public enum EVFontCatalog {
     // selectable typographic features rather than script joining machinery.
     let required: Set<String> = [
       "ccmp", "locl", "rlig", "rclt", "curs", "mark", "mkmk", "isol", "init", "medi", "fina",
-      "fin2", "fin3", "med2", "rvrn", "stch",
+      "fin2", "fin3", "med2", "rvrn", "stch", "kern",
     ]
     return tags.subtracting(required).sorted().map {
       EVOpenTypeFeature(
         tag: $0, label: labels[$0] ?? featureLabel($0),
-        defaultValue: ["kern", "liga", "clig", "calt"].contains($0) ? 1 : 0)
+        defaultValue: ["liga", "clig", "calt"].contains($0) ? 1 : 0)
     }
   }
 
@@ -167,7 +167,7 @@ public enum EVFontCatalog {
     return tag
   }
   private static let labels = [
-    "kern": "Kerning", "liga": "Standard Ligatures", "dlig": "Discretionary Ligatures",
+    "liga": "Standard Ligatures", "dlig": "Discretionary Ligatures",
     "hlig": "Historical Ligatures", "clig": "Contextual Ligatures", "calt": "Contextual Alternates",
     "smcp": "Small Capitals", "c2sc": "Capitals to Small Capitals", "pcap": "Petite Capitals",
     "c2pc": "Capitals to Petite Capitals", "case": "Case Sensitive Forms",

@@ -129,9 +129,13 @@ struct EVClipboardFragment: Decodable {
             var attributes: [NSAttributedString.Key: Any] = [
                 .font: font as NSFont,
                 .foregroundColor: run.foregroundIsDefault ? EVThemeStore.shared.theme.foreground.color : run.foreground.native,
-                .kern: run.letterSpacing,
                 .baselineOffset: run.baselineShift,
             ]
+            attributes.merge(letterSpacingAttributes(CGFloat(run.letterSpacing))) { _, value in value }
+            // AppKit's RTF writer drops tracking. Nonzero kern preserves its
+            // spacing in RTF with kerning enabled; tracking takes precedence
+            // when Core Text measures this attributed representation.
+            if run.letterSpacing != 0 { attributes[.kern] = run.letterSpacing }
             if run.weight >= 500 && Double(EVFontCatalog.weight(of: font)) < run.weight { attributes[.strokeWidth] = -3.0 }
             if let background = run.background { attributes[.backgroundColor] = background.native }
             if run.underline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }

@@ -215,7 +215,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       checkbox.state = editingPreferences.smartQuotes ? .on : .off
       checkbox.setAccessibilityLabel("Use smart quotes")
       smartQuotesCheckbox = checkbox
-      let explanation = NSTextField(wrappingLabelWithString: "Use opening and closing typographic quotes in prose. Quotes required by markup keep their original spelling.")
+      let explanation = NSTextField(wrappingLabelWithString: "Use opening and closing typographic quotes for text entered or pasted into prose. Code and markup syntax keep their original quotes.")
       explanation.textColor = .secondaryLabelColor
       explanation.font = .systemFont(ofSize: 12)
       let group = section("Typing assistance", views: [checkbox, explanation])

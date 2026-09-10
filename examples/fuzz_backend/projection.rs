@@ -267,6 +267,7 @@ impl Oracle {
                             enabled: *enabled,
                         },
                         Action::NoOpFormat => ModelRequest::SetFormat {
+                            operation: viem_core::FormatOperation::Reinterpret,
                             document: document.id(),
                             revision,
                             target: document.format(),

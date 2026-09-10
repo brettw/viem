@@ -21,7 +21,7 @@ use crate::document::{
     ArtifactOverwrite, ArtifactPath, ArtifactWriteCompletion, ArtifactWriteCompletionStatus,
     ArtifactWriteIntent, ArtifactWriteScope, ArtifactWriteToken, Association, BoundaryAffinity,
     ConfigurationStyleIntent, DeletionRecovery, Document, DocumentError, DocumentId, Encoding,
-    FileFormat, Format, HardLineSourceRangeError, HistoryError, HistoryLocation,
+    FileFormat, Format, FormatOperation, HardLineSourceRangeError, HistoryError, HistoryLocation,
     HistoryNavigationRequest, HistoryRestoration, HistoryRestorationSnapshot, MappingOutcome,
     ModelRequest, ModelTransactionError, PersistenceError, PositionDomain, PositionError,
     PositionMap, PreparedArtifactWrite, Revision, SemanticInlineStyle, StyleApplication,
@@ -356,6 +356,7 @@ pub enum CoreEvent {
         document: DocumentId,
         revision: Revision,
         target: Format,
+        operation: FormatOperation,
     },
     SetEncoding {
         document: DocumentId,
@@ -718,7 +719,7 @@ fn execute_command_plan(
     };
     let (changed, map) = match prepared {
         Some(prepared) => {
-            if let Err(error) = plan.map_prepared_html_cursor(document, &prepared) {
+            if let Err(error) = plan.map_prepared_cursor(document, &prepared) {
                 plan.publish_failure(interpreter, document.revision());
                 return Err(CoreError::Document(error));
             }
@@ -4567,6 +4568,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 document,
                 revision,
                 target,
+                operation,
             } => {
                 return self.apply_native_model_request(
                     view_id,
@@ -4574,6 +4576,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                         document,
                         revision,
                         target,
+                        operation,
                     },
                 );
             }
@@ -6244,12 +6247,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .commands;
         let typing_properties = invoking_commands.typing_properties().to_vec();
         let typing_named = invoking_commands.typing_named_style().cloned();
-        let request = session.prepare_commit_with_typing_style(
-            &self.document,
-            typing_named.as_ref(),
-            &typing_properties,
-            invoking_commands.insertion_boundary_affinity(),
-        )?;
+        let request = session.prepare_commit_with_input_policy(&self.document, invoking_commands)?;
         let replaced_empty_range = request.edit().range.is_empty();
         let inserted_text = request.edit().replacement.clone();
         let caret_offset = request.caret_offset();
@@ -6311,6 +6309,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 caret_offset,
                 replaced_empty_range,
                 &inserted_text,
+                session.marked_text(),
             )
             .expect("composition preparation validated the committed caret boundary");
         target_commands.restore_typing_style(typing_named, typing_properties);

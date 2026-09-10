@@ -60,7 +60,7 @@ struct EVFontCatalogTests {
     #expect(features == EVFontCatalog.features(for: "Avenir Next"))
     #expect(Set(features.map(\.tag)).count == features.count)
     #expect(features.allSatisfy { $0.tag.utf8.count == 4 && !$0.label.isEmpty })
-    #expect(!features.contains { ["init", "medi", "fina", "mark"].contains($0.tag) })
+    #expect(!features.contains { ["init", "medi", "fina", "mark", "kern"].contains($0.tag) })
   }
   @Test func unavailableItalicRequestsSyntheticTreatment() {
     let font = resolveFont(

@@ -210,7 +210,16 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(revertItem)
 
         menu.addItem(.separator())
-        menu.addItem(coreItem("Document Format…", command: .documentFormat))
+        for (title, commands) in [
+            ("Convert to", [EVMenuCommand.convertToText, .convertToMarkdown, .convertToHTML]),
+            ("Reinterpret as", [EVMenuCommand.reinterpretAsText, .reinterpretAsMarkdown, .reinterpretAsHTML]),
+        ] {
+            let formats = NSMenu(title: title)
+            for (name, command) in zip(["Text", "Markdown", "HTML"], commands) {
+                formats.addItem(coreItem(name, command: command))
+            }
+            menu.addItem(submenuItem(title, submenu: formats))
+        }
         let encodings = NSMenu(title: "Text Encoding")
         encodings.showsStateColumn = true
         encodings.addItem(coreItem("UTF-8", command: .encodingUTF8))
@@ -324,11 +333,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         ligatures.addItem(coreItem("Use All Ligatures", command: .allLigatures))
         ligatures.addItem(coreItem("Use No Ligatures", command: .noLigatures))
         font.addItem(submenuItem("Ligatures", submenu: ligatures))
-
-        let kerning = NSMenu(title: "Kerning")
-        kerning.addItem(coreItem("Use Default Kerning", command: .defaultKerning))
-        kerning.addItem(coreItem("Use No Kerning", command: .noKerning))
-        font.addItem(submenuItem("Kerning", submenu: kerning))
 
         let baseline = NSMenu(title: "Baseline")
         baseline.addItem(coreItem("Superscript", command: .superscript))

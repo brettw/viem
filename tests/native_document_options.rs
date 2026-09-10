@@ -9,7 +9,12 @@ use viem_core::{Core, CoreError, CoreEvent};
 #[test]
 fn switching_into_html_installs_source_styles_and_switching_back_uses_plain_styles() {
     let mut document = Document::new("<p style='font-size: 30pt'>Large</p>");
-    document.set_format(Format::Html).unwrap();
+    document
+        .set_format(
+            Format::Html,
+            viem_core::document::FormatOperation::Reinterpret,
+        )
+        .unwrap();
     assert_eq!(document.text(), "Large");
     assert!(document.projection().style_spans().iter().any(|span|matches!(&span.application,viem_core::document::StyleApplication::Direct(properties)if properties.size==Some(30.0))));
     assert_eq!(
@@ -21,7 +26,12 @@ fn switching_into_html_installs_source_styles_and_switching_back_uses_plain_styl
             .origin,
         viem_core::document::StyleDefinitionOrigin::SourceBacked
     );
-    document.set_format(Format::PlainText).unwrap();
+    document
+        .set_format(
+            Format::PlainText,
+            viem_core::document::FormatOperation::Reinterpret,
+        )
+        .unwrap();
     assert_eq!(document.text(), "<p style='font-size: 30pt'>Large</p>");
     assert_eq!(
         document
@@ -40,14 +50,24 @@ fn switching_into_html_installs_source_styles_and_switching_back_uses_plain_styl
 fn format_switch_with_identical_visible_text_including_empty_is_undoable() {
     for text in ["", "plain text", "__visible__"] {
         let mut document = Document::new(text);
-        document.set_format(Format::MarkdownSource).unwrap();
+        document
+            .set_format(
+                Format::MarkdownSource,
+                viem_core::document::FormatOperation::Reinterpret,
+            )
+            .unwrap();
         assert_eq!(document.text(), text);
         assert_eq!(document.source_bytes(), text.as_bytes());
         assert_eq!(document.format(), Format::MarkdownSource);
         assert!(document.undo());
         assert_eq!(document.format(), Format::PlainText);
         if !text.contains('_') {
-            document.set_format(Format::Markdown).unwrap();
+            document
+                .set_format(
+                    Format::Markdown,
+                    viem_core::document::FormatOperation::Reinterpret,
+                )
+                .unwrap();
             assert_eq!(document.text(), text);
             assert!(document.undo());
         }
@@ -78,6 +98,7 @@ fn format_switch_preserves_source_and_anchors_between_distant_markers() {
             document: document.id(),
             revision: document.revision(),
             target: Format::Markdown,
+            operation: viem_core::document::FormatOperation::Reinterpret,
         })
         .unwrap();
     assert!(prepared.summary().source_patches().is_empty());
@@ -98,7 +119,12 @@ fn format_switch_preserves_source_and_anchors_between_distant_markers() {
     assert_eq!(document.format(), Format::PlainText);
     assert_eq!(document.source_bytes(), original);
     assert!(document.redo());
-    document.set_format(Format::MarkdownSource).unwrap();
+    document
+        .set_format(
+            Format::MarkdownSource,
+            viem_core::document::FormatOperation::Reinterpret,
+        )
+        .unwrap();
     assert_eq!(document.text(), "# Heading\n__bold__ middle *tail*\n");
     assert_eq!(document.source_bytes(), original);
 }
@@ -167,6 +193,7 @@ fn invalid_or_stale_options_leave_source_history_and_identity_unchanged() {
             document: document.id(),
             revision,
             target: Format::Markdown,
+            operation: viem_core::document::FormatOperation::Reinterpret,
         }),
         Err(ModelTransactionError::StaleRevision { .. })
     ));
@@ -187,6 +214,7 @@ fn native_options_relayout_all_views_and_keep_undo_units_separate() {
     core.handle(
         view,
         CoreEvent::SetFormat {
+            operation: viem_core::FormatOperation::Reinterpret,
             document,
             revision,
             target: Format::Markdown,
@@ -289,6 +317,7 @@ fn rejected_native_format_change_keeps_pending_insert_undo_group_open() {
         .handle(
             view,
             CoreEvent::SetFormat {
+                operation: viem_core::FormatOperation::Reinterpret,
                 document: core.document().id(),
                 revision: original_revision,
                 target: Format::Markdown

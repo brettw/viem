@@ -1055,7 +1055,8 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func setFormat(_ format: EVSourceFormat, expected state: ViemDocumentStateV1) throws -> ViemCoreOutcomeV1 {
+    func setFormat(_ format: EVSourceFormat, operation: EVFormatOperation = .reinterpret,
+                   expected state: ViemDocumentStateV1) throws -> ViemCoreOutcomeV1 {
         var request = ViemSetFormatV1()
         request.struct_size = UInt32(MemoryLayout<ViemSetFormatV1>.size)
         request.format = switch format {
@@ -1065,6 +1066,10 @@ final class EVCoreViewSession {
         case .html: UInt32(VIEM_FORMAT_HTML)
         case .htmlSource: UInt32(VIEM_FORMAT_HTML_SOURCE)
         case .rtf: UInt32(VIEM_FORMAT_RTF)
+        }
+        request.operation = switch operation {
+        case .reinterpret: UInt32(VIEM_FORMAT_OPERATION_REINTERPRET)
+        case .convert: UInt32(VIEM_FORMAT_OPERATION_CONVERT)
         }
         request.document_id = state.document_id
         request.document_revision = state.document_revision

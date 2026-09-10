@@ -30,6 +30,17 @@ pub enum Format {
     Rtf,
 }
 
+impl Format {
+    /// The semantic editing view for this persistence format.
+    pub const fn wysiwyg(self) -> Self {
+        match self {
+            Self::MarkdownSource => Self::Markdown,
+            Self::HtmlSource => Self::Html,
+            format => format,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BlockKind {
     Paragraph,

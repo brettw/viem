@@ -347,6 +347,14 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     public func perform(menuCommand: EVMenuCommand, sender: Any?) {
         guard let session else { return }
+        if let change = menuCommand.formatChange {
+            guard presentation(for: menuCommand).isEnabled else { return }
+            let expected = documentState
+            performInput {
+                _ = try session.setFormat(change.format, operation: change.operation, expected: expected)
+            }
+            return
+        }
         switch menuCommand {
         case .heading0, .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
             performHeadingShortcut(level: UInt32(menuCommand.rawValue - EVMenuCommand.heading0.rawValue))
@@ -514,7 +522,12 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     public func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation {
-        switch menuCommand {
+        if let change = menuCommand.formatChange {
+            return EVMenuItemPresentation(
+                isEnabled: session != nil && !backend.sourceFormat.hasSameSerialization(as: change.format)
+            )
+        }
+        return switch menuCommand {
         case .heading0, .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
             headingShortcutPresentation(level: UInt32(menuCommand.rawValue - EVMenuCommand.heading0.rawValue))
         case .bulletedList, .numberedList, .removeList:

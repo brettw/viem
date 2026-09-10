@@ -1595,6 +1595,8 @@ fn native_format_encoding_and_list_requests_validate_exact_identity() {
     let format = ViemSetFormatV1 {
         struct_size: VIEM_SET_FORMAT_V1_SIZE,
         format: VIEM_FORMAT_MARKDOWN,
+        operation: VIEM_FORMAT_OPERATION_REINTERPRET,
+        reserved: 0,
         document_id: state.document_id,
         document_revision: state.document_revision,
     };
@@ -1869,6 +1871,106 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
     );
 
     assert_eq!(viem_core_view_remove(core.handle, view), ViemStatus::Ok);
+}
+
+#[test]
+fn format_operations_validate_policy_and_keep_reinterpretation_byte_exact() {
+    let original = b"<p>First</p><p>Second</p>";
+    for operation in [
+        VIEM_FORMAT_OPERATION_REINTERPRET,
+        VIEM_FORMAT_OPERATION_CONVERT,
+    ] {
+        let core = create_core(
+            original,
+            ViemDocumentOptions {
+                format: VIEM_FORMAT_HTML_SOURCE,
+                ..ViemDocumentOptions::default()
+            },
+        );
+        let mut provider = Box::new(FakeProviderContext::new(core.handle));
+        let (view, _) = add_test_view(&core, provider.as_mut());
+        let before = document_state(&core);
+        let request = ViemSetFormatV1 {
+            struct_size: VIEM_SET_FORMAT_V1_SIZE,
+            format: VIEM_FORMAT_PLAIN_TEXT,
+            operation,
+            reserved: 0,
+            document_id: before.document_id,
+            document_revision: before.document_revision,
+        };
+        let mut outcome = ViemCoreOutcomeV1::default();
+        for invalid in [
+            ViemSetFormatV1 {
+                operation: 99,
+                ..request
+            },
+            ViemSetFormatV1 {
+                reserved: 1,
+                ..request
+            },
+            ViemSetFormatV1 {
+                struct_size: VIEM_SET_FORMAT_V1_SIZE - 1,
+                ..request
+            },
+        ] {
+            assert_eq!(
+                unsafe { test_set_format(core.handle, view, &invalid, &mut outcome) },
+                ViemStatus::InvalidArgument
+            );
+            assert_eq!(document_state(&core), before);
+            assert_eq!(
+                copy_core_bytes(viem_core_copy_source_bytes, &core, before.document_revision),
+                original
+            );
+        }
+        assert_eq!(
+            unsafe { test_set_format(core.handle, view, &request, &mut outcome) },
+            ViemStatus::Ok
+        );
+        let after = document_state(&core);
+        assert_eq!(after.format, VIEM_FORMAT_PLAIN_TEXT);
+        let expected: &[u8] = if operation == VIEM_FORMAT_OPERATION_REINTERPRET {
+            original
+        } else {
+            b"First\n\nSecond"
+        };
+        assert_eq!(
+            copy_core_bytes(viem_core_copy_source_bytes, &core, after.document_revision),
+            expected
+        );
+        assert_eq!(
+            copy_core_bytes(
+                viem_core_copy_formatted_utf8,
+                &core,
+                after.document_revision
+            ),
+            expected
+        );
+        assert_eq!(
+            unsafe { viem_core_view_undo(core.handle, view, &mut outcome) },
+            ViemStatus::Ok
+        );
+        let restored = document_state(&core);
+        assert_eq!(restored.format, before.format);
+        assert_eq!(
+            copy_core_bytes(
+                viem_core_copy_source_bytes,
+                &core,
+                restored.document_revision
+            ),
+            original
+        );
+        assert_eq!(
+            unsafe { viem_core_view_redo(core.handle, view, &mut outcome) },
+            ViemStatus::Ok
+        );
+        let redone = document_state(&core);
+        assert_eq!(redone.format, after.format);
+        assert_eq!(
+            copy_core_bytes(viem_core_copy_source_bytes, &core, redone.document_revision),
+            expected
+        );
+    }
 }
 
 #[test]
@@ -4518,6 +4620,11 @@ fn public_c_header_typechecks_current_layouts_against_rust() {
 #include "viem_core.h"
 #include <stddef.h>
 _Static_assert(VIEM_CORE_ABI_VERSION == {abi}, "ABI version");
+_Static_assert(sizeof(ViemSetFormatV1) == {set_format_size}, "format operation size");
+_Static_assert(offsetof(ViemSetFormatV1, operation) == {set_format_operation}, "format operation offset");
+_Static_assert(offsetof(ViemSetFormatV1, document_id) == {set_format_document}, "format document offset");
+_Static_assert(VIEM_FORMAT_OPERATION_REINTERPRET == {reinterpret}u, "reinterpret operation");
+_Static_assert(VIEM_FORMAT_OPERATION_CONVERT == {convert}u, "convert operation");
 _Static_assert(sizeof(ViemDirectStyleEditV1) == {direct_style_edit}, "direct style size");
 _Static_assert(_Alignof(ViemDirectStyleEditV1) == {direct_style_align}, "direct style alignment");
 _Static_assert(offsetof(ViemDirectStyleEditV1, expected_selection) == {direct_style_selection}, "direct style selection offset");
@@ -5033,6 +5140,11 @@ static void typecheck(void) {{
 }}
 "#,
         abi = VIEM_CORE_ABI_VERSION,
+        set_format_size = std::mem::size_of::<ViemSetFormatV1>(),
+        set_format_operation = std::mem::offset_of!(ViemSetFormatV1, operation),
+        set_format_document = std::mem::offset_of!(ViemSetFormatV1, document_id),
+        reinterpret = VIEM_FORMAT_OPERATION_REINTERPRET,
+        convert = VIEM_FORMAT_OPERATION_CONVERT,
         direct_style_edit = std::mem::size_of::<ViemDirectStyleEditV1>(),
         direct_style_align = std::mem::align_of::<ViemDirectStyleEditV1>(),
         direct_style_selection = std::mem::offset_of!(ViemDirectStyleEditV1, expected_selection),
@@ -6249,6 +6361,8 @@ fn native_format_setter_returns_owned_loss_warning_and_stale_retry_is_inert() {
     let request = ViemSetFormatV1 {
         struct_size: VIEM_SET_FORMAT_V1_SIZE,
         format: VIEM_FORMAT_MARKDOWN,
+        operation: VIEM_FORMAT_OPERATION_CONVERT,
+        reserved: 0,
         document_id: state.document_id,
         document_revision: state.document_revision,
     };

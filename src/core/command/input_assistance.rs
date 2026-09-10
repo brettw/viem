@@ -1,6 +1,6 @@
-//! Portable, caret-local assistance for authored text. Clipboard/register
-//! payloads remain literal; generated HTML is changed only while it is owned by
-//! the most recent insertion and its identity-backed boundaries still resolve.
+//! Portable assistance for document input. Every input payload shares the same
+//! quote policy; format-aware context and rich-fragment remapping belong to the
+//! document layer. Generated HTML remains owned by the most recent insertion.
 
 use super::{
     CommandInterpreter, CommandOutput, EditSessionStep, InputEvent, Key, Mode, RegisterValue,
@@ -12,7 +12,6 @@ use crate::document::{
 use unicode_segmentation::UnicodeSegmentation;
 
 const MAX_TAG_BYTES: usize = 8192;
-const CONTEXT_BYTES: usize = 4096;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct InputAssistance {
@@ -98,56 +97,111 @@ impl CommandInterpreter {
             InputEvent::Text(value) => one_character(value),
             _ => None,
         };
-        (self.input_assistance.smart_quotes && matches!(character, Some('\'' | '"')))
-            || (document.format() == Format::HtmlSource
-                && (self.input_assistance.tag.is_some() || character == Some('<')))
+        document.format() == Format::HtmlSource
+            && (self.input_assistance.tag.is_some() || character == Some('<'))
     }
 
-    pub(crate) fn smart_quotes_input(&self, document: &Document, input: &str) -> String {
-        let Some(quote @ ('\'' | '"')) = one_character(input) else {
-            return input.to_owned();
-        };
-        if !self.input_assistance.smart_quotes || self.mode != Mode::Insert {
-            return input.to_owned();
+    /// Apply the view's quote preference exactly where an input payload is
+    /// placed. Callers resolve counts/ranges first, and keep the original value
+    /// for replay so the next destination gets its own context. The register
+    /// itself is never rewritten.
+    pub(crate) fn assist_input_payload(
+        &self,
+        document: &Document,
+        range: std::ops::Range<usize>,
+        affinity: BoundaryAffinity,
+        value: &RegisterValue,
+    ) -> Result<RegisterValue, DocumentError> {
+        if !self.smart_quotes() || !value.text.contains(['\'', '"']) {
+            return Ok(value.clone());
         }
-        if document.format() == Format::HtmlSource
-            && !document
-                .html_source_prose_at(self.cursor, BoundaryAffinity::Downstream)
-                .unwrap_or(false)
+        let transformed = (|| {
+            if let Some(fragment) = value.clipboard_fragment() {
+                if document.is_code_at(range.start, affinity)? {
+                    return Ok((value.text.clone(), Some(fragment.clone())));
+                }
+                let previous = document.input_prose_previous(range.start, affinity)?;
+                let (text, fragment) = fragment.transform_quotes(previous, smart_quote)?;
+                Ok((text, Some(fragment)))
+            } else {
+                document
+                    .transform_text_input(range, affinity, &value.text, smart_quote)
+                    .map(|text| (text, None))
+            }
+        })();
+        // Assistance is optional: uncertain context must leave input literal,
+        // not prevent an edit. The actual transaction still validates it.
+        let Ok((text, fragment)) = transformed else {
+            return Ok(value.clone());
+        };
+        if text == value.text {
+            return Ok(value.clone());
+        }
+        if !matches!(document.format(), Format::Html | Format::Rtf)
+            && document.encoding().encode_fragment(&text).is_err()
         {
-            return input.to_owned();
+            // Rich HTML/RTF can escape generated Unicode; raw source and
+            // plain/Markdown prose must remain in the document's encoding.
+            return Ok(value.clone());
         }
-        let prefix = if document.format() == Format::HtmlSource {
-            let Ok(Some(prose)) = document.html_source_prose_prefix(self.cursor, CONTEXT_BYTES)
-            else {
-                return input.to_owned();
-            };
-            prose
-        } else {
-            local_prefix(document, self.cursor, CONTEXT_BYTES)
-        };
-        if matches!(document.format(), Format::Markdown | Format::MarkdownSource) {
-            if document
-                .projection()
-                .markdown_replacement_begins_in_code(&(self.cursor..self.cursor))
-                || (document.format() == Format::MarkdownSource
-                    && markdown_syntax_requires_quote(&prefix))
-            {
-                return input.to_owned();
+        // Quote substitutions preserve scalars and line-break meaning, but
+        // change UTF-8 widths. Remap semantic breaks before building a payload.
+        let mut breaks = Vec::with_capacity(value.hard_break_offsets().len());
+        for ((old, _), (new, _)) in value.text.char_indices().zip(text.char_indices()) {
+            if value.is_hard_break(old) {
+                breaks.push(new);
             }
         }
-        let previous = prefix.chars().next_back();
-        let opening = previous.map_or(true, |value| {
-            value.is_whitespace()
-                || matches!(value, '(' | '[' | '{' | '<' | '-' | '–' | '—' | '“' | '‘')
-        });
-        match (quote, opening) {
-            ('"', true) => "“",
-            ('"', false) => "”",
-            ('\'', true) => "‘",
-            _ => "’",
+        let mut assisted = RegisterValue::try_new(text, value.kind, breaks)
+            .expect("quote substitutions preserve hard-break identities");
+        assisted.clipboard_fragment = fragment;
+        Ok(assisted)
+    }
+
+    pub(crate) fn assist_typing_input_payload(
+        &self,
+        document: &Document,
+        range: std::ops::Range<usize>,
+        affinity: BoundaryAffinity,
+        value: &RegisterValue,
+    ) -> Result<RegisterValue, DocumentError> {
+        let applies_typing_style = self.mode == Mode::Replace
+            || !value.clipboard_fragment().is_some_and(|fragment| {
+                fragment.can_insert_rich_source(document.format(), &value.text)
+            });
+        if applies_typing_style
+            && self
+                .typing_style
+                .named
+                .as_ref()
+                .is_some_and(|style| document.character_style_is_code(style))
+        {
+            return Ok(value.clone());
         }
-        .to_owned()
+        self.assist_input_payload(document, range, affinity, value)
+    }
+
+    /// Physical-source puts use source byte ranges rather than formatted
+    /// offsets, but share the same preference and quote-selection rule.
+    pub(super) fn assist_source_input(
+        &self,
+        document: &Document,
+        range: std::ops::Range<usize>,
+        input: &str,
+    ) -> Result<String, DocumentError> {
+        if !self.smart_quotes() || !input.contains(['\'', '"']) {
+            return Ok(input.to_owned());
+        }
+        let transformed = document
+            .transform_source_input(range, input, smart_quote)
+            .unwrap_or_else(|_| input.to_owned());
+        Ok(
+            if document.encoding().encode_fragment(&transformed).is_ok() {
+                transformed
+            } else {
+                input.to_owned()
+            },
+        )
     }
 
     pub(crate) fn try_insert_html_assistance(
@@ -245,7 +299,8 @@ impl CommandInterpreter {
                             if let Some(program) = program {
                                 program.push(EditSessionStep::Backspace);
                             }
-                            if let Some((at, _)) = inserted.text.grapheme_indices(true).next_back() {
+                            if let Some((at, _)) = inserted.text.grapheme_indices(true).next_back()
+                            {
                                 inserted.text.truncate(at);
                             }
                         });
@@ -282,13 +337,18 @@ fn one_character(input: &str) -> Option<char> {
     characters.next().is_none().then_some(first)
 }
 
-fn local_prefix(document: &Document, cursor: usize, limit: usize) -> String {
-    let text = document.projection().text_tree();
-    let mut start = cursor.saturating_sub(limit);
-    while start < cursor && !text.is_char_boundary(start).unwrap_or(false) {
-        start += 1;
+fn smart_quote(quote: char, previous: Option<char>) -> char {
+    let opening = previous.map_or(true, |value| {
+        value.is_whitespace()
+            || matches!(value, '(' | '[' | '{' | '<' | '-' | '–' | '—' | '“' | '‘')
+    });
+    match (quote, opening) {
+        ('"', true) => '“',
+        ('"', false) => '”',
+        ('\'', true) => '‘',
+        ('\'', false) => '’',
+        _ => quote,
     }
-    text.slice(start..cursor).unwrap_or_default()
 }
 
 fn inside_attribute_quote(prefix: &str) -> bool {
@@ -391,38 +451,6 @@ fn automatic_suffix(prefix: &str) -> String {
     }
 }
 
-fn markdown_syntax_requires_quote(prefix: &str) -> bool {
-    let line = prefix.rsplit('\n').next().unwrap_or(prefix);
-    if line
-        .chars()
-        .rev()
-        .take_while(|value| *value == '\\')
-        .count()
-        % 2
-        == 1
-    {
-        return true;
-    }
-    // Inline-code and fences have semantic style coverage. Also guard partial
-    // constructs while their closing delimiter has not yet been authored.
-    if line.chars().filter(|value| *value == '`').count() % 2 == 1 {
-        return true;
-    }
-    if line
-        .rfind("](")
-        .is_some_and(|start| line.rfind(')').map_or(true, |end| start > end))
-    {
-        return true;
-    }
-    line.rfind('<').is_some_and(|start| {
-        line.rfind('>').map_or(true, |end| start > end)
-            && line[start + 1..]
-                .chars()
-                .next()
-                .is_some_and(|value| value.is_ascii_alphabetic() || matches!(value, '/' | '!'))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,42 +480,17 @@ mod tests {
     }
 
     #[test]
-    fn smart_quotes_use_prose_context_and_preserve_explicit_batches() {
-        for (prefix, quote, expected) in [
-            ("", "\"", "“"),
-            ("-", "'", "‘"),
-            ("word", "'", "’"),
-            ("word.", "\"", "”"),
-            ("(", "\"", "“"),
-            ("a ", "'", "‘"),
-            ("a\n", "\"", "“"),
+    fn smart_quotes_choose_opening_and_closing_from_prose_context() {
+        for (previous, quote, expected) in [
+            (None, '"', '“'),
+            (Some('-'), '\'', '‘'),
+            (Some('d'), '\'', '’'),
+            (Some('.'), '"', '”'),
+            (Some('('), '"', '“'),
+            (Some(' '), '\'', '‘'),
+            (Some('\n'), '"', '“'),
         ] {
-            let document = Document::from_bytes(
-                prefix.as_bytes().to_vec(),
-                Encoding::Utf8,
-                Format::PlainText,
-            )
-            .unwrap();
-            let mut commands = CommandInterpreter::new();
-            commands.mode = Mode::Insert;
-            commands.cursor = prefix.len();
-            assert_eq!(commands.smart_quotes_input(&document, quote), quote);
-            commands.set_smart_quotes(true);
-            assert_eq!(commands.smart_quotes_input(&document, quote), expected);
-            assert_eq!(
-                commands.smart_quotes_input(&document, "\"pasted\""),
-                "\"pasted\""
-            );
-        }
-    }
-
-    #[test]
-    fn markdown_partial_syntax_keeps_required_quotes_literal() {
-        for source in ["`code ", "[link](url ", "<span title=", "<img alt=", "\\"] {
-            assert!(markdown_syntax_requires_quote(source), "{source}");
-        }
-        for source in ["prose ", "[link](url) ", "<b>prose ", "`code` prose "] {
-            assert!(!markdown_syntax_requires_quote(source), "{source}");
+            assert_eq!(smart_quote(quote, previous), expected);
         }
     }
 

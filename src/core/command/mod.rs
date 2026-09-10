@@ -18,6 +18,8 @@ mod command_line_completion;
 mod command_line_edit;
 mod filename_candidates;
 mod input_assistance;
+#[cfg(test)]
+mod smart_quote_commands_tests;
 mod line_mode;
 mod registers;
 mod sort;
@@ -869,12 +871,21 @@ impl InsertSession {
     }
 
     fn record_inserted(&mut self, value: &RegisterValue, step: Option<EditSessionStep>) {
+        self.record_inserted_intent(value, value, step);
+    }
+
+    fn record_inserted_intent(
+        &mut self,
+        value: &RegisterValue,
+        intent: &RegisterValue,
+        step: Option<EditSessionStep>,
+    ) {
         self.record_edit(|program, inserted| {
             if let Some(program) = program {
                 if let Some(step) = step {
                     program.push(step);
                 } else {
-                    program.append_text(value);
+                    program.append_text(intent);
                 }
             }
             inserted.append_inserted_payload(value);
@@ -2580,6 +2591,7 @@ impl CommandInterpreter {
         caret_offset: usize,
         replaced_empty_range: bool,
         inserted_text: &str,
+        input_intent: &str,
     ) -> Result<(), DocumentError> {
         document.text_point(caret_offset)?;
         self.cursor = if matches!(self.mode, Mode::Insert | Mode::Replace) {
@@ -2607,7 +2619,7 @@ impl CommandInterpreter {
             }
             if replaced_empty_range && self.mode == Mode::Insert {
                 if let Some(program) = session.repeat_program.as_mut() {
-                    program.append_text(&inserted_value);
+                    program.append_text(&external_text_register_value(document, input_intent));
                 }
                 session
                     .last_inserted
@@ -3137,6 +3149,19 @@ impl CommandInterpreter {
         if matches!(event, InputEvent::Key(Key::Enter)) {
             next.invalidate_replace_restoration();
         }
+        let intent = value;
+        let snapshot = document.hard_line_snapshot();
+        let start = list_enter.as_ref().map_or(self.cursor, |edit| edit.range.start);
+        let end = if self.mode == Mode::Replace {
+            replacement_payload_end(document.text(), &snapshot, start, &intent)
+        } else {
+            list_enter.as_ref().map_or(start, |edit| edit.range.end)
+        };
+        let value = if matches!(event, InputEvent::Text(_) | InputEvent::Key(Key::Char(_))) {
+            self.assist_typing_input_payload(document, start..end, self.insertion_boundary_affinity(), &intent)?
+        } else {
+            intent.clone()
+        };
         let input = value.text.as_str();
         let structural_list_enter = list_enter.is_some()
             && matches!(
@@ -3157,10 +3182,6 @@ impl CommandInterpreter {
             ));
         }
 
-        let snapshot = document.hard_line_snapshot();
-        let start = list_enter
-            .as_ref()
-            .map_or(self.cursor, |edit| edit.range.start);
         let (end, post_commit) = if self.mode == Mode::Insert {
             (
                 list_enter.as_ref().map_or(start, |edit| edit.range.end),
@@ -3200,7 +3221,7 @@ impl CommandInterpreter {
             typing_caret
         };
         if let Some(session) = next.insert_session.as_mut() {
-            session.record_inserted(&value, list_enter.as_ref().map(|_| EditSessionStep::ListEnter));
+            session.record_inserted_intent(&value, &intent, list_enter.as_ref().map(|_| EditSessionStep::ListEnter));
         }
         let mut output = CommandOutput {
             document_changed: true,
@@ -6474,7 +6495,7 @@ impl CommandInterpreter {
         // One structured call is the atomicity boundary for all hit-tested
         // rows, including any semantic line breaks in the register payload.
         let mapped_target = commit_planned_formatted_edits(
-            document,
+            self, document,
             &lines,
             plans,
             if register.kind == RegisterKind::Linewise {
@@ -6784,7 +6805,7 @@ impl CommandInterpreter {
         };
         let before_revision = document.revision();
         let mapped_target =
-            commit_planned_formatted_edits(document, &lines, plans, target_boundary, association)?;
+            commit_planned_formatted_edits(self, document, &lines, plans, target_boundary, association)?;
         let changed = document.revision() != before_revision;
         self.cursor = normalize_normal_cursor(
             document.text(),
@@ -7081,7 +7102,7 @@ impl CommandInterpreter {
             target
         } else {
             commit_planned_formatted_edits(
-                document,
+                self, document,
                 &lines,
                 plans,
                 target,
@@ -9220,12 +9241,17 @@ impl CommandInterpreter {
                 );
             }
         }
-        let replacement_len = replacement.len();
-        let payload = FormattedTextPayload::new(&lines, replacement, hard_break_offsets)
+        let value = RegisterValue::try_new(replacement, RegisterKind::Characterwise, hard_break_offsets)
+            .expect("Visual replacement constructs valid hard-break metadata");
+        let value = self.assist_input_payload(
+            document, extent.range.clone(), BoundaryAffinity::Downstream, &value,
+        )?;
+        let replacement_len = value.text.len();
+        let payload = FormattedTextPayload::new(&lines, value.text.clone(), value.hard_break_offsets().to_vec())
             .expect("Visual replacement constructs valid hard-break metadata");
         let before = document.revision();
         document.replace_with_formatted_payload(extent.range.clone(), payload)?;
-        self.registers.set_last_insert(replacement_value.clone());
+        self.registers.set_last_insert(inserted_input_unit(&value, &replacement_value.text));
         self.cursor = normalize_normal_cursor(
             document.text(),
             &document.hard_line_snapshot(),
@@ -9295,32 +9321,47 @@ impl CommandInterpreter {
                 },
             ),
         };
+        let value = if fragment.text == register.text
+            && fragment.hard_break_offsets == register.hard_break_offsets()
+        {
+            register
+        } else {
+            RegisterValue::try_new(
+                fragment.text, RegisterKind::Characterwise, fragment.hard_break_offsets,
+            ).expect("Visual put constructs valid semantic-break offsets")
+        };
+        let register = self.assist_input_payload(
+            document, extent.range.clone(), BoundaryAffinity::Downstream, &value,
+        )?;
+        let fragment = StructuredFragment::from_register(&register);
         let inserted_payload = FormattedTextPayload::new(
             &lines,
             fragment.text.clone(),
             fragment.hard_break_offsets.clone(),
         )
         .expect("Visual put carries validated semantic-break offsets");
-        let inserted_len = document
-            .normalize_typing_payload(FormattedPayloadEdit::new(
-                extent.range.clone(),
-                inserted_payload,
-            ))?
-            .payload()
-            .text()
-            .len();
+        let edit = document.normalize_typing_payload(FormattedPayloadEdit::new(
+            extent.range.clone(), inserted_payload,
+        ))?;
+        let mut inserted_len = edit.payload().text().len();
         let before_revision = document.revision();
         let private = register.clipboard_fragment().map(|payload|
             document.prepare_clipboard_fragment(extent.range.clone(), payload, &fragment.text)
         ).transpose().map_err(command_document_error)?.flatten();
-        let mapped_start = if let Some(prepared) = private {
-            document.commit_model_transaction(prepared).map_err(command_document_error)?;
-            extent.range.start
-        } else { commit_planned_formatted_edits(
-            document, &lines,
-            vec![PlannedFormattedEdit { range: extent.range.clone(), fragment }],
-            extent.range.start, Association::BeforeInsertion,
-        )? };
+        let prepared = match private {
+            Some(prepared) => prepared,
+            None => document.prepare_formatted_payload_request(FormattedPayloadEditRequest::new(
+                document.id(), document.revision(), vec![edit.clone()],
+            )).map_err(command_document_error)?,
+        };
+        let mapped_start = prepared_cursor(
+            document, &prepared, extent.range.start, Association::BeforeInsertion,
+        )?;
+        if document.format() == crate::document::Format::MarkdownSource {
+            inserted_len = prepared_payload_caret(document, &prepared, &edit)?
+                .saturating_sub(mapped_start);
+        }
+        document.commit_model_transaction(prepared).map_err(command_document_error)?;
         self.last_visual = remembered.map(|remembered| {
             Self::visual_memory_for_result_range(
                 document,
@@ -9466,17 +9507,17 @@ impl CommandInterpreter {
                 Err(output) => return Ok(output),
             };
             let snapshot = document.hard_line_snapshot();
-            let payload = FormattedTextPayload::new(
-                &snapshot,
-                value.text.clone(),
-                value.hard_break_offsets().to_vec(),
-            )
-            .expect("register values carry validated semantic-break offsets");
             let edit_end = if self.mode == Mode::Replace {
                 replacement_payload_end(document.text(), &snapshot, self.cursor, &value)
             } else {
                 self.cursor
             };
+            let assisted = self.assist_typing_input_payload(
+                document, self.cursor..edit_end, self.insertion_boundary_affinity(), &value,
+            )?;
+            let payload = FormattedTextPayload::new(
+                &snapshot, assisted.text.clone(), assisted.hard_break_offsets().to_vec(),
+            ).expect("register values carry validated semantic-break offsets");
             let request = FormattedPayloadEditRequest::new(
                 document.id(),
                 document.revision(),
@@ -9489,7 +9530,7 @@ impl CommandInterpreter {
             // before closing the surrounding typed-text unit so rejection
             // cannot introduce an otherwise invisible undo boundary.
             let private = if self.mode == Mode::Insert {
-                value.clipboard_fragment().map(|fragment| document.prepare_clipboard_fragment(self.cursor..edit_end, fragment, &value.text))
+                assisted.clipboard_fragment().map(|fragment| document.prepare_clipboard_fragment(self.cursor..edit_end, fragment, &assisted.text))
                     .transpose().map_err(command_document_error)?.flatten()
             } else { None };
             if private.is_none() {
@@ -9819,6 +9860,18 @@ impl CommandInterpreter {
                 block_session_replacement_edits(&session.rows, &payload)
             }
         };
+        let edits = edits.into_iter().map(|edit| {
+            let value = RegisterValue::try_new(edit.replacement, RegisterKind::Characterwise, Vec::new())
+                .expect("deferred block input is literal text");
+            let value = self.assist_input_payload(
+                document, edit.range.clone(), BoundaryAffinity::Downstream, &value,
+            )?;
+            Ok(TextEdit::new(edit.range, value.text))
+        }).collect::<Result<Vec<_>, DocumentError>>()?;
+        let inserted = edits.iter().find(|edit| !edit.replacement.is_empty())
+            .map(|edit| inserted_input_unit(
+                &RegisterValue::characterwise(&edit.replacement), &session.payload,
+            ));
         let before = document.revision();
         // Deferred collection commits once, here, regardless of row count.
         apply_block_edits(document, edits)?;
@@ -9860,9 +9913,10 @@ impl CommandInterpreter {
                 }))
             };
         }
-        if changed && !session.payload.is_empty() {
-            self.registers
-                .set_last_insert(RegisterValue::characterwise(session.payload.clone()));
+        if changed {
+            if let Some(inserted) = inserted {
+                self.registers.set_last_insert(inserted);
+            }
         }
         self.clear_pending();
         Ok(CommandOutput {
@@ -9944,7 +9998,6 @@ impl CommandInterpreter {
         if let Some(output) = self.try_insert_html_assistance(document, input)? {
             return Ok(output);
         }
-        let input = self.smart_quotes_input(document, input);
         let value = RegisterValue::characterwise(input);
         self.insert_register_payload(document, &value)
     }
@@ -9957,8 +10010,7 @@ impl CommandInterpreter {
         if let Some(output) = self.try_insert_html_assistance(document, input)? {
             return Ok(output);
         }
-        let input = self.smart_quotes_input(document, input);
-        let value = external_text_register_value(document, &input);
+        let value = external_text_register_value(document, input);
         self.insert_register_payload(document, &value)
     }
 
@@ -9967,6 +10019,10 @@ impl CommandInterpreter {
         document: &mut Document,
         value: &RegisterValue,
     ) -> Result<CommandOutput, DocumentError> {
+        let intent = value;
+        let value = self.assist_typing_input_payload(
+            document, self.cursor..self.cursor, self.insertion_boundary_affinity(), intent,
+        )?;
         let input = value.text.as_str();
         if input.is_empty() {
             return Ok(CommandOutput::complete());
@@ -9996,7 +10052,7 @@ impl CommandInterpreter {
         }
         self.finish_typing_caret(document)?;
         if let Some(session) = self.insert_session.as_mut() {
-            session.record_inserted(value, None);
+            session.record_inserted_intent(&value, intent, None);
         }
         Ok(CommandOutput {
             document_changed: true,
@@ -10072,6 +10128,17 @@ impl CommandInterpreter {
         document: &mut Document,
         value: &RegisterValue,
     ) -> Result<CommandOutput, DocumentError> {
+        let intent = value;
+        let previous = self.insert_session.as_ref()
+            .and_then(|session| session.replace_journal.last());
+        let target = previous.filter(|entry| entry.frontier() == Some(self.cursor))
+            .and_then(|entry| entry.source_record.as_ref())
+            .map_or(self.cursor, |record| record.next_target);
+        let lines = document.hard_line_snapshot();
+        let end = replacement_payload_end(document.text(), &lines, target, intent);
+        let value = self.assist_typing_input_payload(
+            document, target..end, self.insertion_boundary_affinity(), intent,
+        )?;
         let input = value.text.as_str();
         if input.is_empty() {
             return Ok(CommandOutput::complete());
@@ -10127,7 +10194,7 @@ impl CommandInterpreter {
                         original: record.original.clone(),
                         source_record: Some(record),
                     }));
-                session.record_inserted(value, None);
+                session.record_inserted_intent(&value, intent, None);
             }
             return Ok(CommandOutput {
                 document_changed: changed,
@@ -10147,7 +10214,7 @@ impl CommandInterpreter {
         // paste event.
         let start = self.cursor;
         let lines = document.hard_line_snapshot();
-        let (end, journal_entries) = replacement_payload_targets(document, &lines, start, value, journalable);
+        let (end, journal_entries) = replacement_payload_targets(document, &lines, start, &value, journalable);
         let before = document.revision();
         let payload = FormattedTextPayload::new(&lines, input, value.hard_break_offsets().to_vec())
             .expect("replacement register payload has validated semantic breaks");
@@ -10168,7 +10235,7 @@ impl CommandInterpreter {
         }
         self.finish_typing_caret(document)?;
         if let Some(session) = self.insert_session.as_mut() {
-            session.record_inserted(value, None);
+            session.record_inserted_intent(&value, intent, None);
             if journalable {
                 let continues_frontier = session.replace_journal.last().map_or(true, |entry| {
                     entry.start.checked_add(entry.inserted.len()) == Some(start)
@@ -10716,6 +10783,9 @@ impl CommandInterpreter {
             Ok(repeated) => repeated,
             Err(error) => return Ok(error.into_command_output()),
         };
+        let repeated = self.assist_input_payload(
+            document, start..end, BoundaryAffinity::Downstream, &repeated,
+        )?;
         let text = repeated.text.clone();
         let lines = document.hard_line_snapshot();
         let payload =
@@ -10739,9 +10809,7 @@ impl CommandInterpreter {
             document.commit_model_transaction(prepared).map_err(command_document_error)?;
             cursor
         } else {
-            let cursor = edit.range().start + edit.payload().text().len();
-            document.apply_formatted_payload_edits(vec![edit])?;
-            cursor
+            commit_typing_payload(document, edit)?
         };
         let new_lines = document.hard_line_snapshot();
         self.cursor = if is_single_semantic_hard_break(replacement) {
@@ -10758,7 +10826,7 @@ impl CommandInterpreter {
                 count,
                 value: replacement.clone(),
             });
-            self.registers.set_last_insert(replacement.clone());
+            self.registers.set_last_insert(inserted_input_unit(&repeated, &replacement.text));
         }
         Ok(CommandOutput {
             document_changed: true,
@@ -10822,6 +10890,9 @@ impl CommandInterpreter {
                 ));
             }
         };
+        repeated = self.assist_input_payload(
+            document, position..position, BoundaryAffinity::Downstream, &repeated,
+        )?;
         let payload = FormattedTextPayload::new(
             &lines,
             repeated.text.clone(),
@@ -10832,14 +10903,15 @@ impl CommandInterpreter {
             position..position,
             payload,
         ))?;
-        let insertion_end = edit.range().start + edit.payload().text().len();
-        if let Some(prepared) = repeated.clipboard_fragment().map(|fragment|
+        let insertion_end = if let Some(prepared) = repeated.clipboard_fragment().map(|fragment|
             document.prepare_clipboard_fragment(position..position, fragment, &repeated.text)
         ).transpose().map_err(command_document_error)?.flatten() {
+            let cursor = prepared_payload_caret(document, &prepared, &edit)?;
             document.commit_model_transaction(prepared).map_err(command_document_error)?;
+            cursor
         } else {
-            document.apply_formatted_payload_edits(vec![edit])?;
-        }
+            commit_typing_payload(document, edit)?
+        };
         let target = if follow {
             insertion_end
         } else {
@@ -13208,11 +13280,18 @@ impl CommandPlan {
     /// Supporting HTML whitespace edits can change the UTF-8 length before a
     /// deletion boundary or a newly split paragraph. Resolve those cursors
     /// through the prepared transaction before publishing the controller.
-    pub(crate) fn map_prepared_html_cursor(
+    pub(crate) fn map_prepared_cursor(
         &mut self,
         document: &Document,
         prepared: &PreparedModelTransaction,
     ) -> Result<(), DocumentError> {
+        if document.format() == crate::document::Format::MarkdownSource {
+            if let Some(CommandModelRequest::FormattedPayload(request)) = self.model.as_ref() {
+                if let [edit] = request.edits() {
+                    self.success_controller.cursor = prepared_payload_caret(document, prepared, edit)?;
+                }
+            }
+        }
         if document.format() != crate::document::Format::Html {
             return Ok(());
         }
@@ -13616,6 +13695,7 @@ fn normal_block_insertion_origin(
 }
 
 fn commit_planned_formatted_edits(
+    commands: &CommandInterpreter,
     document: &mut Document,
     snapshot: &HardLineSnapshot,
     plans: Vec<PlannedFormattedEdit>,
@@ -13657,15 +13737,19 @@ fn commit_planned_formatted_edits(
     let edits = normalized
         .into_iter()
         .map(|plan| {
+            let value = RegisterValue::try_new(
+                plan.fragment.text, RegisterKind::Characterwise, plan.fragment.hard_break_offsets,
+            ).expect("command payload plans contain validated break markers");
+            let value = commands.assist_input_payload(
+                document, plan.range.clone(), BoundaryAffinity::Downstream, &value,
+            )?;
             let payload = FormattedTextPayload::new(
-                snapshot,
-                plan.fragment.text,
-                plan.fragment.hard_break_offsets,
+                snapshot, value.text.clone(), value.hard_break_offsets().to_vec(),
             )
             .expect("command payload plans contain validated break markers");
-            FormattedPayloadEdit::new(plan.range, payload)
+            Ok(FormattedPayloadEdit::new(plan.range, payload))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, DocumentError>>()?;
     let (result, map) =
         document.capture_position_maps(|document| document.apply_formatted_payload_edits(edits));
     result?;
@@ -14408,6 +14492,22 @@ fn delete_with_cursor(document: &mut Document, range: Range<usize>) -> Result<us
     )
 }
 
+fn prepared_payload_caret(
+    document: &Document,
+    prepared: &PreparedModelTransaction,
+    edit: &FormattedPayloadEdit,
+) -> Result<usize, DocumentError> {
+    let exact_splice = matches!(prepared.summary().formatted_splices(), [splice]
+        if splice.old_range() == edit.range() && splice.inserted_len() == edit.payload().text().len());
+    if document.format() == crate::document::Format::MarkdownSource
+        && !prepared.is_no_op() && !exact_splice
+    {
+        prepared_cursor(document, prepared, edit.range().end, Association::AfterInsertion)
+    } else {
+        Ok(edit.range().start + edit.payload().text().len())
+    }
+}
+
 fn commit_typing_payload(
     document: &mut Document,
     edit: FormattedPayloadEdit,
@@ -14415,11 +14515,11 @@ fn commit_typing_payload(
     // This is the authored insertion boundary, before grapheme normalization.
     // A grapheme-closed map can also include unchanged suffix characters (for
     // example regional indicators), so mapping its endpoint would skip them.
-    let caret = edit.range().start + edit.payload().text().len();
-    let request = FormattedPayloadEditRequest::new(document.id(), document.revision(), vec![edit]);
+    let request = FormattedPayloadEditRequest::new(document.id(), document.revision(), vec![edit.clone()]);
     let prepared = document
         .prepare_formatted_payload_request(request)
         .map_err(command_document_error)?;
+    let caret = prepared_payload_caret(document, &prepared, &edit)?;
     document
         .commit_model_transaction(prepared)
         .map_err(command_document_error)?;
@@ -14710,6 +14810,17 @@ fn is_single_semantic_hard_break(value: &RegisterValue) -> bool {
     value.kind == RegisterKind::Characterwise
         && value.text == "\n"
         && value.hard_break_offsets() == [0]
+}
+
+/// Retain the last-insert register's original one-input-unit convention even
+/// when a counted command expanded and assisted that unit at its destination.
+fn inserted_input_unit(inserted: &RegisterValue, input: &str) -> RegisterValue {
+    let end = inserted.text.grapheme_indices(true)
+        .nth(input.graphemes(true).count())
+        .map_or(inserted.text.len(), |(at, _)| at);
+    let mut unit = inserted.clone();
+    unit.truncate_inserted_payload(end);
+    unit
 }
 
 fn checked_register_repetition(

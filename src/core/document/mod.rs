@@ -7,7 +7,7 @@
 mod conversion;
 mod checkpoint;
 pub(crate) use checkpoint::DocumentCommandCheckpoint;
-pub use conversion::{ConversionLoss, ConversionWarning};
+pub use conversion::{ConversionLoss, ConversionWarning, FormatOperation};
 mod encoding;
 mod edit_boundary;
 mod formatted_text;
@@ -1970,12 +1970,17 @@ impl Document {
         })
     }
 
-    /// Reproject the existing source through another format as one undo unit.
-    pub fn set_format(&mut self, target: Format) -> Result<(), DocumentError> {
+    /// Reinterpret source or convert its semantics as one explicit undo unit.
+    pub fn set_format(
+        &mut self,
+        target: Format,
+        operation: FormatOperation,
+    ) -> Result<(), DocumentError> {
         self.execute_compat_request(ModelRequest::SetFormat {
             document: self.id,
             revision: self.revision(),
             target,
+            operation,
         })
     }
 

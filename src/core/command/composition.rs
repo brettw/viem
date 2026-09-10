@@ -146,6 +146,10 @@ impl CompositionSession {
         self.generation
     }
 
+    pub(crate) fn marked_text(&self) -> &str {
+        &self.marked_text
+    }
+
     /// Replace the temporary marked payload and return the exact overlay to
     /// display. Validation is completed before session state changes.
     pub fn update(
@@ -275,7 +279,33 @@ impl CompositionSession {
     /// Preserve the invoking caret's pending character declarations when a
     /// native IME commits its marked overlay. Preparation remains read-only;
     /// text and formatting share the same exact map and atomic publication.
-    pub(crate) fn prepare_commit_with_typing_style(
+    pub(crate) fn prepare_commit_with_input_policy(
+        &self,
+        document: &Document,
+        commands: &super::CommandInterpreter,
+    ) -> Result<CompositionCommitRequest, CompositionError> {
+        self.validate_document(document)?;
+        let value = super::external_text_register_value(document, &self.marked_text);
+        let value = commands.assist_typing_input_payload(
+            document,
+            self.replacement_range(),
+            commands.insertion_boundary_affinity(),
+            &value,
+        )
+        .map_err(CompositionError::Document)?;
+        // Assistance affects only the committed payload. The live IME overlay
+        // and its selection/generation remain owned by the input method.
+        let mut assisted = self.clone();
+        assisted.marked_text = value.text;
+        assisted.prepare_commit_with_typing_style(
+            document,
+            commands.typing_named_style(),
+            commands.typing_properties(),
+            commands.insertion_boundary_affinity(),
+        )
+    }
+
+    fn prepare_commit_with_typing_style(
         &self,
         document: &Document,
         named: Option<&crate::document::StyleId>,

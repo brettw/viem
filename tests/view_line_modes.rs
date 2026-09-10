@@ -227,6 +227,7 @@ fn physical_columns_indent_and_format_switch_policy() {
     core.handle(
         view,
         CoreEvent::SetFormat {
+            operation: viem_core::FormatOperation::Reinterpret,
             document: core.document().id(),
             revision: core.document().revision(),
             target: Format::Rtf,

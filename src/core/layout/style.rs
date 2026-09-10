@@ -751,7 +751,8 @@ fn shaping_style(
             WritingDirection::RightToLeft => TextDirection::RightToLeft,
         },
         features,
-    })
+    }
+    .with_implicit_kerning())
 }
 
 fn paint_style(character: &ResolvedCharacterStyle) -> ResolvedTextPaint {

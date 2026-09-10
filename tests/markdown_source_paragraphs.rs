@@ -90,6 +90,7 @@ fn source_empty_list_exit_then_typing_makes_a_plain_paragraph_in_both_views() {
             core.handle(
                 view,
                 CoreEvent::SetFormat {
+                    operation: viem_core::FormatOperation::Reinterpret,
                     document: core.document().id(),
                     revision: core.document().revision(),
                     target: Format::Markdown,

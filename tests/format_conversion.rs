@@ -1,5 +1,5 @@
 use viem_core::document::{
-    ConversionWarning, Document, Encoding, Format, ModelRequest, ProjectionWorkScope,
+    ConversionWarning, Document, Encoding, Format, FormatOperation, ModelRequest, ProjectionWorkScope,
     StyleApplication, TextEdit,
 };
 fn open(source: &str, format: Format) -> Document {
@@ -11,6 +11,7 @@ fn convert(document: &mut Document, target: Format) -> Vec<ConversionWarning> {
             document: document.id(),
             revision: document.revision(),
             target,
+            operation: viem_core::document::FormatOperation::Convert,
         })
         .unwrap();
     let warnings = prepared.summary().conversion_warnings().to_vec();
@@ -27,6 +28,7 @@ fn html_markdown_conversion_is_semantic_explicit_and_undoable() {
             document: document.id(),
             revision: document.revision(),
             target: Format::Markdown,
+            operation: viem_core::document::FormatOperation::Convert,
         })
         .unwrap();
     assert_eq!(prepared.summary().source_patches().len(), 1);
@@ -52,17 +54,23 @@ fn html_markdown_conversion_is_semantic_explicit_and_undoable() {
         .contains("<b>bold</b>"));
 }
 #[test]
-fn source_mode_cross_conversion_uses_semantics_but_plain_and_same_family_keep_bytes() {
+fn reinterpretation_keeps_source_bytes_and_conversion_uses_semantics() {
     let original = "<p><b>Bold</b></p><!-- comment -->";
     let mut document = open(original, Format::HtmlSource);
     convert(&mut document, Format::Html);
     assert_eq!(document.source_bytes(), original.as_bytes());
-    convert(&mut document, Format::PlainText);
+    document
+        .set_format(Format::PlainText, FormatOperation::Reinterpret)
+        .unwrap();
     assert_eq!(document.text(), original);
-    convert(&mut document, Format::HtmlSource);
+    document
+        .set_format(Format::HtmlSource, FormatOperation::Reinterpret)
+        .unwrap();
     let warnings = convert(&mut document, Format::MarkdownSource);
     assert!(!warnings.is_empty());
-    assert_eq!(document.text(), "**Bold**");
+    assert_eq!(document.format(), Format::Markdown);
+    assert_eq!(document.text(), "Bold");
+    assert_eq!(document.source_bytes(), b"**Bold**");
 }
 #[test]
 fn explicit_latin1_conversion_reports_count_and_undo_restores_unicode() {
@@ -259,6 +267,7 @@ fn native_conversions_deliver_loss_warning_as_readonly_output_message() {
         .handle(
             view,
             CoreEvent::SetFormat {
+                operation: viem_core::FormatOperation::Convert,
                 document: core.document().id(),
                 revision: core.document().revision(),
                 target: Format::Markdown,
@@ -377,5 +386,413 @@ fn conversion_preserves_first_words_when_list_labels_are_decorations() {
             document.projection().list_structure().lists[0].items.len(),
             2
         );
+    }
+}
+
+#[test]
+fn text_paragraphs_and_hard_breaks_convert_to_html_and_back() {
+    let original = "One line\ncontinued\n\n# literal & <tag>\n\nLast";
+    let mut document = open(original, Format::PlainText);
+    assert!(convert(&mut document, Format::HtmlSource).is_empty());
+    assert_eq!(document.format(), Format::Html);
+    assert_eq!(
+        document.source_bytes(),
+        b"<p>One line<br>continued</p>\n<p># literal &amp; &lt;tag&gt;</p>\n<p>Last</p>"
+    );
+    assert_eq!(
+        document.text(),
+        "One line\ncontinued\n# literal & <tag>\nLast"
+    );
+    convert(&mut document, Format::PlainText);
+    assert_eq!(document.source_bytes(), original.as_bytes());
+    assert!(document.undo());
+    assert_eq!(document.format(), Format::Html);
+    assert!(document.undo());
+    assert_eq!(document.format(), Format::PlainText);
+    assert_eq!(document.source_bytes(), original.as_bytes());
+    assert!(document.redo());
+    assert_eq!(document.format(), Format::Html);
+}
+
+#[test]
+fn text_to_markdown_preserves_literal_syntax_and_paragraph_hard_breaks() {
+    let original =
+        "# literal\nsecond line\n\n- ordinary\n\n1. ordinary\n\n> ordinary\n\n*literal* and <br>";
+    let mut document = open(original, Format::PlainText);
+    convert(&mut document, Format::MarkdownSource);
+    assert_eq!(document.format(), Format::Markdown);
+    assert_eq!(
+        document.text(),
+        "# literal\nsecond line\n- ordinary\n1. ordinary\n> ordinary\n*literal* and <br>"
+    );
+    assert!(document
+        .projection()
+        .blocks()
+        .iter()
+        .all(|block| block.kind == viem_core::document::BlockKind::Paragraph));
+    assert!(String::from_utf8(document.source_bytes())
+        .unwrap()
+        .contains("literal<br>second"));
+    convert(&mut document, Format::PlainText);
+    assert_eq!(document.text(), original);
+}
+
+#[test]
+fn rich_text_conversion_flattens_styles_and_keeps_ordinary_visible_content() {
+    for format in [Format::Html, Format::HtmlSource] {
+        let original = "<h2>Heading</h2><p><a href='https://example.com'><span style='font-size:30pt;text-decoration:underline'>Visible</span></a> text</p><ul><li>First</li><li>Second</li></ul><pre>  code\n  next</pre><!--opaque-->";
+        let mut document = open(original, format);
+        assert!(!convert(&mut document, Format::PlainText).is_empty());
+        assert_eq!(
+            document.source_bytes(),
+            b"Heading\n\nVisible text\n\nFirst\n\nSecond\n\n  code\n  next"
+        );
+        assert_eq!(document.format(), Format::PlainText);
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), original.as_bytes());
+        assert_eq!(document.format(), format);
+    }
+}
+
+#[test]
+fn rtf_source_can_convert_to_each_supported_destination() {
+    for target in [Format::PlainText, Format::Markdown, Format::Html] {
+        let original = "{\\rtf1\\ansi One \\b bold\\b0\\par Next}";
+        let mut document = open(original, Format::Rtf);
+        convert(&mut document, target);
+        assert_eq!(document.format(), target);
+        assert_eq!(
+            document.text(),
+            if target == Format::PlainText {
+                "One bold\n\nNext"
+            } else {
+                "One bold\nNext"
+            }
+        );
+        if target == Format::Markdown {
+            assert!(String::from_utf8(document.source_bytes())
+                .unwrap()
+                .contains("**bold**"));
+        }
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), original.as_bytes());
+        assert_eq!(document.format(), Format::Rtf);
+    }
+}
+
+#[test]
+fn quotes_and_supported_markup_convert_semantically_in_both_directions() {
+    let original = "> Quoted *words*\n\n## Heading\n\n- First\n- Second";
+    let mut document = open(original, Format::MarkdownSource);
+    convert(&mut document, Format::Html);
+    let html = String::from_utf8(document.source_bytes()).unwrap();
+    assert!(
+        html.contains("<blockquote><p>Quoted <i>words</i></p></blockquote>"),
+        "{html}"
+    );
+    assert!(html.contains("<h2>Heading</h2>"));
+    assert!(html.contains("<ul><li>First</li><li>Second</li></ul>"));
+    let visible = document.text().to_owned();
+    convert(&mut document, Format::Markdown);
+    assert_eq!(document.text(), visible);
+    assert_eq!(document.projection().blocks()[0].style.0, "Block quote");
+}
+
+#[test]
+fn reinterpretation_is_byte_exact_even_across_markup_families_and_bad_decoding() {
+    let original = b"<h1># Raw</h1>\r\n<!--keep-->\xff";
+    let mut document =
+        Document::from_bytes(original.to_vec(), Encoding::Utf8, Format::Html).unwrap();
+    for target in [Format::Markdown, Format::PlainText, Format::HtmlSource] {
+        let prepared = document
+            .prepare_model_request(ModelRequest::SetFormat {
+                document: document.id(),
+                revision: document.revision(),
+                target,
+                operation: FormatOperation::Reinterpret,
+            })
+            .unwrap();
+        assert!(prepared.summary().source_patches().is_empty());
+        assert!(prepared.summary().conversion_warnings().is_empty());
+        document.commit_model_transaction(prepared).unwrap();
+        assert_eq!(document.source_bytes(), original);
+        assert_eq!(document.format(), target);
+    }
+    for _ in 0..3 {
+        assert!(document.undo());
+    }
+    assert_eq!(document.format(), Format::Html);
+    assert_eq!(document.source_bytes(), original);
+}
+
+#[test]
+fn adjacent_code_paragraphs_keep_boundaries_separate_from_internal_hard_breaks() {
+    for (source, from) in [
+        ("<pre>one\ninside</pre><pre>two</pre>", Format::Html),
+        ("```\none\ninside\n```\n```\ntwo\n```", Format::Markdown),
+    ] {
+        for target in [
+            Format::PlainText,
+            if from == Format::Html {
+                Format::Markdown
+            } else {
+                Format::Html
+            },
+        ] {
+            let mut document = open(source, from);
+            assert_eq!(document.projection().blocks().len(), 2);
+            convert(&mut document, target);
+            if target == Format::PlainText {
+                assert_eq!(document.text(), "one\ninside\n\ntwo");
+            } else {
+                assert_eq!(document.text(), "one\ninside\ntwo");
+                assert_eq!(document.projection().blocks().len(), 2);
+                assert!(document
+                    .projection()
+                    .blocks()
+                    .iter()
+                    .all(|block| block.style.0 == "Code Block"));
+            }
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn embedded_html_conversion_keeps_alt_and_descendant_text_with_surrounding_content() {
+    for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
+        for format in [Format::Html, Format::HtmlSource] {
+            for target in [Format::PlainText, Format::Markdown] {
+                for (body, expected) in [
+                    (
+                        "<img src='unloaded' alt='A &amp; &lt;br&gt; *cat*'>",
+                        "A & <br> *cat*",
+                    ),
+                    (
+                        "<object><p>Fallback &amp; one</p><p>next</p></object>",
+                        "Fallback & one\nnext",
+                    ),
+                    (
+                        "<table><tr><td>Cell one</td><td>Cell two</td></tr></table>",
+                        "Cell one\nCell two",
+                    ),
+                    (
+                        "<table title='Summary'><tr><td>Cell text</td></tr></table>",
+                        "Cell text",
+                    ),
+                    (
+                        "<object title='Summary'><p>Visible text</p></object>",
+                        "Visible text",
+                    ),
+                    ("<img alt=''>", ""),
+                    ("<svg></svg>", "[Object]"),
+                ] {
+                    let source = format!("<p>Before {body} after</p>");
+                    let bytes = match encoding {
+                        Encoding::Utf8 => source.as_bytes().to_vec(),
+                        Encoding::Utf16Le => [0xff, 0xfe]
+                            .into_iter()
+                            .chain(source.encode_utf16().flat_map(u16::to_le_bytes))
+                            .collect(),
+                        Encoding::Utf16Be => [0xfe, 0xff]
+                            .into_iter()
+                            .chain(source.encode_utf16().flat_map(u16::to_be_bytes))
+                            .collect(),
+                        _ => unreachable!(),
+                    };
+                    let mut document =
+                        Document::from_bytes(bytes.clone(), encoding, format).unwrap();
+                    assert!(!convert(&mut document, target).is_empty());
+                    assert_eq!(
+                        document.text(),
+                        format!("Before {expected} after"),
+                        "{source} -> {target:?}"
+                    );
+                    let converted = document.source_bytes();
+                    let reopened =
+                        Document::from_bytes(converted.clone(), encoding, target).unwrap();
+                    assert_eq!(reopened.text(), document.text());
+                    assert!(document.undo());
+                    assert_eq!(document.source_bytes(), bytes);
+                    assert!(document.redo());
+                    assert_eq!(document.source_bytes(), converted);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn source_backed_named_styles_convert_the_same_from_source_and_rich_views() {
+    use viem_core::document::{
+        CharacterProperties, CharacterStyle, PersistedStyleIntent, StyleDefinitionEdit,
+        StyleDefinitionMetadata, StyleDefinitionOrigin, StyleModelIntent, StyleModelRequest,
+        StyleNamespace,
+    };
+    let mut authored = open("<p>Word</p>", Format::Html);
+    authored
+        .apply_style_request(StyleModelRequest::new(
+            authored.id(),
+            authored.revision(),
+            StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
+                origin: StyleDefinitionOrigin::SourceBacked,
+                edit: StyleDefinitionEdit::InsertCharacter {
+                    style: CharacterStyle {
+                        id: "Accent".into(),
+                        based_on: Some(authored.projection().style_sheet().base_character.clone()),
+                        properties: CharacterProperties {
+                            weight: Some(700),
+                            ..Default::default()
+                        },
+                    },
+                    metadata: StyleDefinitionMetadata {
+                        display_name: "Accent".into(),
+                        origin: StyleDefinitionOrigin::SourceBacked,
+                    },
+                },
+            }),
+        ))
+        .unwrap();
+    authored
+        .apply_model_request(ModelRequest::AssignNamedStyle {
+            document: authored.id(),
+            revision: authored.revision(),
+            range: 0..4,
+            namespace: StyleNamespace::Character,
+            style: "Accent".into(),
+        })
+        .unwrap();
+    for format in [Format::Html, Format::HtmlSource] {
+        let mut document =
+            Document::from_bytes(authored.source_bytes(), Encoding::Utf8, format).unwrap();
+        convert(&mut document, Format::Markdown);
+        assert_eq!(document.source_bytes(), b"**Word**");
+        assert_eq!(document.text(), "Word");
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), authored.source_bytes());
+        assert_eq!(document.format(), format);
+    }
+}
+
+#[test]
+fn literal_text_padding_and_whitespace_reference_spellings_stay_visible() {
+    for target in [Format::Html, Format::Markdown] {
+        let original = "  leading  space\tend  \n next\n\n&#32; & plain";
+        let mut document = open(original, Format::PlainText);
+        convert(&mut document, target);
+        assert_eq!(
+            document.text(),
+            "  leading  space\tend  \n next\n&#32; & plain",
+            "{target:?}: {}",
+            String::from_utf8(document.source_bytes()).unwrap()
+        );
+        convert(&mut document, Format::PlainText);
+        assert_eq!(document.text(), original);
+    }
+}
+
+#[test]
+fn paired_text_breaks_preserve_empty_paragraphs_and_unpaired_hard_breaks() {
+    for text in [
+        "A\n\nB",
+        "A\n\n\nB",
+        "A\n\n\n\nB",
+        "\n\nA\n\n",
+        "A\n\n\n\n\nB",
+    ] {
+        let mut document = open(text, Format::PlainText);
+        convert(&mut document, Format::Html);
+        let html = document.source_bytes();
+        assert_eq!(
+            document.projection().blocks().len(),
+            text.matches("\n\n").count() + 1
+        );
+        convert(&mut document, Format::PlainText);
+        assert_eq!(
+            document.text(),
+            text,
+            "{}",
+            String::from_utf8(html).unwrap()
+        );
+        assert!(document.undo());
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), text.as_bytes());
+    }
+}
+
+#[test]
+fn text_conversion_to_markdown_retains_surplus_paragraph_delimiters() {
+    let mut document = open("A\n\n\n\nB", Format::PlainText);
+    let warnings = convert(&mut document, Format::Markdown);
+    assert_eq!(document.source_bytes(), b"A\n\n\n\nB");
+    assert_eq!(document.projection().blocks().len(), 3, "{warnings:?}");
+    convert(&mut document, Format::PlainText);
+    assert_eq!(document.text(), "A\n\n\n\nB");
+}
+
+#[test]
+fn opaque_rtf_conversion_has_readable_placeholders_and_no_rtf_authoring() {
+    let source = "{\\rtf1 Before {\\pict 0000} after}";
+    for target in [Format::PlainText, Format::Markdown, Format::Html] {
+        let mut document = open(source, Format::Rtf);
+        assert!(!convert(&mut document, target).is_empty());
+        assert_eq!(document.text(), "Before [Object] after");
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+    let mut document = open("Literal", Format::PlainText);
+    assert!(document
+        .set_format(Format::Rtf, FormatOperation::Convert)
+        .is_err());
+    assert_eq!(document.format(), Format::PlainText);
+    assert_eq!(document.source_bytes(), b"Literal");
+}
+
+#[test]
+fn quoted_literal_block_markers_remain_visible_when_converting_to_markdown() {
+    for text in [
+        "- literal",
+        "+ literal",
+        "1. literal",
+        "2) literal",
+        "# literal",
+        "---",
+    ] {
+        let source = format!("<blockquote><p>{text}</p></blockquote>");
+        let mut document = open(&source, Format::Html);
+        convert(&mut document, Format::Markdown);
+        assert_eq!(document.text(), text);
+        assert_eq!(document.projection().blocks().len(), 1);
+        assert_eq!(document.projection().blocks()[0].style.0, "Block quote");
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn object_fallback_text_cannot_close_surrounding_markdown_code_delimiters() {
+    for (source, expected) in [
+        ("<p><code><img alt='`literal`'></code></p>", "`literal`"),
+        (
+            "<p><code><img alt='before`literal`after'></code></p>",
+            "before`literal`after",
+        ),
+        ("<p><code><img alt=' `literal` '></code></p>", " `literal` "),
+        (
+            "<pre><img alt='```\ninside\n```'></pre>",
+            "```\ninside\n```",
+        ),
+    ] {
+        let mut document = open(source, Format::Html);
+        convert(&mut document, Format::Markdown);
+        assert_eq!(
+            document.text(),
+            expected,
+            "{}",
+            String::from_utf8(document.source_bytes()).unwrap()
+        );
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
     }
 }

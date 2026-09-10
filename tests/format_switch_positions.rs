@@ -6,9 +6,15 @@ use viem_core::{Core, CoreEvent, Document, ViewId};
 type Editor = Core<MockTextMeasurementProvider>;
 
 fn switch(core: &mut Editor, view: ViewId, target: Format) {
+    let operation = if core.document().format().wysiwyg() == target.wysiwyg() {
+        viem_core::FormatOperation::Reinterpret
+    } else {
+        viem_core::FormatOperation::Convert
+    };
     core.handle(
         view,
         CoreEvent::SetFormat {
+            operation,
             document: core.document().id(),
             revision: core.document().revision(),
             target,

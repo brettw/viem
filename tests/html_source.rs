@@ -400,8 +400,16 @@ fn wysiwyg_tail_heading_assignment_preserves_intervening_raw_elements() {
     let source="<h1>Heading</h1>\n<p title=\"example\" data-key=\"kept\">Body <b>bold</b> &amp; entities.</p>\n<script>const quote = \"raw\";</script>\n<style>.lead { color: red; }</style>\n<p>Tail paragraph.</p>\n";
     let mut doc =
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    doc.set_format(Format::HtmlSource).unwrap();
-    doc.set_format(Format::Html).unwrap();
+    doc.set_format(
+        Format::HtmlSource,
+        viem_core::document::FormatOperation::Reinterpret,
+    )
+    .unwrap();
+    doc.set_format(
+        Format::Html,
+        viem_core::document::FormatOperation::Reinterpret,
+    )
+    .unwrap();
     let at = doc.text().find("Tail").unwrap();
     doc.set_paragraph_style(at..at, "Heading1".into()).unwrap();
     assert!(String::from_utf8(doc.source_bytes())

@@ -103,6 +103,14 @@ impl Default for ResolvedTextStyle {
 }
 
 impl ResolvedTextStyle {
+    /// Kerning is an implicit shaping policy, never a style switch. Keep any
+    /// source declaration in the document, but omit it from shaping and cache
+    /// identity so an imported `kern=0` cannot disable normal font spacing.
+    pub(crate) fn with_implicit_kerning(mut self) -> Self {
+        self.features.retain(|feature| feature.tag != *b"kern");
+        self
+    }
+
     pub(crate) fn is_valid(&self) -> bool {
         self.size.is_finite()
             && self.size > 0.0
@@ -326,6 +334,9 @@ pub enum MeasurementError {
 /// assembled from adjacent responses. Providers decline with
 /// [`MeasurementError::UnstableShapingContext`] rather than returning a result
 /// whose dependence exceeds the bounded request context.
+/// Font kerning is always enabled; letter spacing is independent tracking in
+/// layout units. Providers must not interpret zero letter spacing as a request
+/// to disable kerning, or honor a `kern` feature as an editing preference.
 pub trait TextMeasurementProvider {
     /// Identifies the compatibility domain for measurements and render handles.
     /// This value MUST remain stable for the provider's lifetime.

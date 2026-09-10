@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define VIEM_CORE_ABI_VERSION 4u
+#define VIEM_CORE_ABI_VERSION 5u
 #define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2 2u
 #define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION \
   VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2
@@ -1513,10 +1513,16 @@ typedef struct ViemSetIncludeStyleDefinitionsV1 {
 #define VIEM_SET_INCLUDE_STYLE_DEFINITIONS_V1_SIZE \
   ((uint32_t)sizeof(ViemSetIncludeStyleDefinitionsV1))
 
-/* Source interpretation and lossless transcoding, with exact identity. */
+#define VIEM_FORMAT_OPERATION_REINTERPRET 0u
+#define VIEM_FORMAT_OPERATION_CONVERT 1u
+
+/* Reinterpret preserves source bytes; Convert serializes formatted content.
+ * Both use exact document identity. reserved must be zero. */
 typedef struct ViemSetFormatV1 {
   uint32_t struct_size;
   uint32_t format;
+  uint32_t operation;
+  uint32_t reserved;
   uint64_t document_id;
   uint64_t document_revision;
 } ViemSetFormatV1;

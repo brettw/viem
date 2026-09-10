@@ -858,7 +858,6 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         for command in [
             EVMenuCommand.showFonts,
             .showColors,
-            .documentFormat,
             .bold,
             .italic,
             .printDocument,

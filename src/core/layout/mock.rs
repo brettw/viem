@@ -139,10 +139,7 @@ impl MockTextMeasurementProvider {
         let Some((next, next_style)) = next else {
             return 0.0;
         };
-        if style != next_style
-            || !Self::feature_enabled(style, *b"kern", true)
-            || !Self::feature_enabled(next_style, *b"kern", true)
-        {
+        if style != next_style {
             return 0.0;
         }
         let pair = current.chars().last().zip(next.chars().next());
@@ -293,6 +290,21 @@ impl MockTextMeasurementProvider {
     }
 
     fn shape_one(&self, request: &ShapeRequest<'_>) -> ShapedFragment {
+        let default_style = request.default_style.clone().with_implicit_kerning();
+        let style_runs = request
+            .style_runs
+            .iter()
+            .cloned()
+            .map(|run| ShapeStyleRun {
+                style: run.style.with_implicit_kerning(),
+                ..run
+            })
+            .collect::<Vec<_>>();
+        let request = &ShapeRequest {
+            default_style: &default_style,
+            style_runs: &style_runs,
+            ..request.clone()
+        };
         let context_start = request
             .text_range
             .start
@@ -680,7 +692,7 @@ mod tests {
             ],
             ..base.clone()
         };
-        let unkerned = provider
+        let still_kerned = provider
             .shape_batch(&[request(
                 "AV",
                 &features_off,
@@ -688,7 +700,27 @@ mod tests {
             )])
             .unwrap()
             .remove(0);
-        assert_eq!(unkerned.clusters[0].advance, isolated.clusters[0].advance);
+        assert_eq!(still_kerned.clusters[0].advance, pair.clusters[0].advance);
+
+        let ignored_kerning = ResolvedTextStyle {
+            features: vec![OpenTypeFeature {
+                tag: *b"kern",
+                value: 0,
+            }],
+            ..base.clone()
+        };
+        assert_eq!(
+            provider
+                .shape_batch(&[request(
+                    "AV",
+                    &ignored_kerning,
+                    ShapePurpose::MetricsAndRenderData
+                )])
+                .unwrap()
+                .remove(0),
+            pair,
+            "implicit kerning also preserves the render identity",
+        );
 
         let ligature = provider
             .shape_batch(&[request("ffi", &base, ShapePurpose::MetricsAndRenderData)])

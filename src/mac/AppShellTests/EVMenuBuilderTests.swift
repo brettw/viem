@@ -60,6 +60,26 @@ final class EVMenuBuilderTests: XCTestCase {
         )
     }
 
+    func testFormatMenusRouteEachTargetAndOperationThroughTheResponderChain() throws {
+        let owner = Owner()
+        let main = EVMenuBuilder(owner: owner).buildMainMenu(for: NSApplication.shared)
+        let file = try submenu("File", of: main)
+        for (title, commands, operation) in [
+            ("Convert to", [EVMenuCommand.convertToText, .convertToMarkdown, .convertToHTML], EVFormatOperation.convert),
+            ("Reinterpret as", [EVMenuCommand.reinterpretAsText, .reinterpretAsMarkdown, .reinterpretAsHTML], EVFormatOperation.reinterpret),
+        ] {
+            let menu = try submenu(title, of: file)
+            XCTAssertEqual(tokens(in: menu), ["Text", "Markdown", "HTML"])
+            for (item, expected) in zip(menu.items, zip(commands, [EVSourceFormat.plainText, .markdown, .html])) {
+                XCTAssertEqual(item.tag, expected.0.rawValue)
+                XCTAssertEqual(item.action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
+                XCTAssertNil(item.target)
+                XCTAssertEqual(expected.0.formatChange?.format, expected.1)
+                XCTAssertEqual(expected.0.formatChange?.operation, operation)
+            }
+        }
+    }
+
     func testRequiredDirectMenuHierarchy() throws {
         let owner = Owner()
         let builder = EVMenuBuilder(owner: owner)
@@ -71,7 +91,7 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
         XCTAssertEqual(try titles(in: submenu("File", of: menu)), [
             "New", "Open…", "Open Recent", "Close", "Save", "Save As…", "Duplicate",
-            "Rename…", "Move To…", "Revert To", "Document Format…", "Text Encoding",
+            "Rename…", "Move To…", "Revert To", "Convert to", "Reinterpret as", "Text Encoding",
             "Line Endings", "Page Setup…", "Print…",
         ])
         XCTAssertEqual(try titles(in: submenu("Edit", of: menu)), [
@@ -80,7 +100,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Emoji & Symbols",
         ])
         XCTAssertEqual(try titles(in: submenu("Format", of: menu)), [
-            "Show Fonts", "Bold", "Italic", "Underline", "Strikethrough", "Bigger", "Smaller", "Ligatures", "Kerning", "Baseline", "OpenType Features",
+            "Show Fonts", "Bold", "Italic", "Underline", "Strikethrough", "Bigger", "Smaller", "Ligatures", "Baseline", "OpenType Features",
             "Show Colors", "Text Color…", "Highlight Color…", "Style", "Paragraph", "Copy Style", "Paste Style", "Clear Direct Character Formatting",
             "Clear Direct Paragraph Formatting", "Clear All Direct Formatting",
         ])
@@ -111,7 +131,7 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertEqual(tokens(in: try submenu("File", of: main)), [
             "New", "Open…", "Open Recent", "-", "Close", "Save", "Save As…",
             "Duplicate", "Rename…", "Move To…", "Revert To", "-",
-            "Document Format…", "Text Encoding", "Line Endings", "-",
+            "Convert to", "Reinterpret as", "Text Encoding", "Line Endings", "-",
             "Page Setup…", "Print…",
         ])
         XCTAssertEqual(tokens(in: try submenu("Edit", of: main)), [
@@ -120,7 +140,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Transformations", "-", "Start Dictation…", "Emoji & Symbols",
         ])
         XCTAssertEqual(tokens(in: try submenu("Format", of: main)), [
-            "Show Fonts", "-", "Bold", "Italic", "Underline", "Strikethrough", "-", "Bigger", "Smaller", "-", "Ligatures", "Kerning", "Baseline", "OpenType Features", "-",
+            "Show Fonts", "-", "Bold", "Italic", "Underline", "Strikethrough", "-", "Bigger", "Smaller", "-", "Ligatures", "Baseline", "OpenType Features", "-",
             "Show Colors", "Text Color…", "Highlight Color…", "-", "Style", "-", "Paragraph", "-", "Copy Style", "Paste Style",
             "Clear Direct Character Formatting", "Clear Direct Paragraph Formatting",
             "Clear All Direct Formatting",
@@ -162,16 +182,13 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
 
         let font = format
-        XCTAssertEqual(Array(tokens(in: font).prefix(14)), [
+        XCTAssertEqual(Array(tokens(in: font).prefix(13)), [
             "Show Fonts", "-", "Bold", "Italic", "Underline", "Strikethrough", "-",
-            "Bigger", "Smaller", "-", "Ligatures", "Kerning", "Baseline",
+            "Bigger", "Smaller", "-", "Ligatures", "Baseline",
             "OpenType Features",
         ])
         XCTAssertEqual(tokens(in: try submenu("Ligatures", of: font)), [
             "Use Default Ligatures", "Use All Ligatures", "Use No Ligatures",
-        ])
-        XCTAssertEqual(tokens(in: try submenu("Kerning", of: font)), [
-            "Use Default Kerning", "Use No Kerning",
         ])
         XCTAssertEqual(tokens(in: try submenu("Baseline", of: font)), [
             "Superscript", "Subscript", "Raise", "Lower",
@@ -495,15 +512,12 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
 
         let font = format
-        XCTAssertEqual(Array(titles(in: font).prefix(11)), [
+        XCTAssertEqual(Array(titles(in: font).prefix(10)), [
             "Show Fonts", "Bold", "Italic", "Underline", "Strikethrough", "Bigger", "Smaller",
-            "Ligatures", "Kerning", "Baseline", "OpenType Features",
+            "Ligatures", "Baseline", "OpenType Features",
         ])
         XCTAssertEqual(try titles(in: submenu("Ligatures", of: font)), [
             "Use Default Ligatures", "Use All Ligatures", "Use No Ligatures",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Kerning", of: font)), [
-            "Use Default Kerning", "Use No Kerning",
         ])
         XCTAssertEqual(try titles(in: submenu("Baseline", of: font)), [
             "Superscript", "Subscript", "Raise", "Lower",

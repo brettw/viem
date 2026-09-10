@@ -9,6 +9,63 @@ import Testing
 
 @Suite("Core Text measurement provider")
 struct CoreTextMeasurementProviderTests {
+  @Test("Tracking preserves default ligatures and explicit font feature choices")
+  func trackingPreservesLigatures() throws {
+    let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 84)
+    for spacing: Float in [0, 2, -0.5] {
+      let implicit = try shape(provider: provider, text: "fi", globalStart: 0,
+        fontFamily: "Avenir Next", letterSpacing: spacing)
+      #expect(implicit.clusters.count == 1)
+      for enabled: UInt32 in [0, 1] {
+        let explicit = try shape(provider: provider, text: "fi", globalStart: 0,
+          openTypeFeature: (tag: (108, 105, 103, 97), value: enabled),
+          fontFamily: "Avenir Next", letterSpacing: spacing)
+        #expect(explicit.clusters.count == (enabled == 1 ? 1 : 2))
+      }
+    }
+  }
+
+  @Test("Pair kerning is implicit and tracking preserves native caret metrics at every scale")
+  func implicitKerningAndTracking() throws {
+    let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 83)
+    for scale: Float in [1, 2] {
+      let font = resolveFont(
+        families: ["Times New Roman"], size: CGFloat(24 * scale),
+        cssWeight: 400, slant: UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [])
+      let native = CTLineCreateWithAttributedString(
+        NSAttributedString(string: "AV", attributes: [.font: font]))
+      let disabled = CTLineCreateWithAttributedString(
+        NSAttributedString(string: "AV", attributes: [.font: font, .kern: 0]))
+      #expect(
+        CTLineGetTypographicBounds(native, nil, nil, nil)
+          < CTLineGetTypographicBounds(disabled, nil, nil, nil))
+      for spacing: Float in [0, 2, -0.5] {
+        let reference = CTLineCreateWithAttributedString(
+          NSAttributedString(
+            string: "AV",
+            attributes: [.font: font, .tracking: CGFloat(spacing * scale)]))
+        // Tracking's final space lies beyond Core Text's terminal caret. The
+        // editor uses the native caret extent for placement and block geometry.
+        let expected = CTLineGetOffsetForStringIndex(reference, 2, nil)
+        let measured = try shape(
+          provider: provider, text: "AV", globalStart: 0,
+          fontFamily: "Times New Roman", fontSize: 24, letterSpacing: spacing, scale: scale)
+        let rendered = try shape(
+          provider: provider, text: "AV", globalStart: 0,
+          purpose: UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
+          openTypeFeature: (tag: (107, 101, 114, 110), value: 0),
+          fontFamily: "Times New Roman", fontSize: 24, letterSpacing: spacing, scale: scale)
+        #expect(abs(measured.clusters.reduce(0.0) { $0 + Double($1.advance) } - expected) < 0.001)
+        #expect(measured.clusters.map(\.advance) == rendered.clusters.map(\.advance))
+        #expect(rendered.clusters.allSatisfy { $0.hasRenderRun == 1 })
+        let contextual = try shape(
+          provider: provider, text: "A", globalStart: 0, contextAfter: "V",
+          fontFamily: "Times New Roman", fontSize: 24, letterSpacing: spacing, scale: scale)
+        #expect(contextual.clusters[0].advance == measured.clusters[0].advance)
+      }
+    }
+  }
+
   @Test("Arabic and mixed bidi cluster advances equal the native shaped line")
   func arabicClusterMetricsMatchNativeLine() throws {
     let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 81)
@@ -23,8 +80,7 @@ struct CoreTextMeasurementProviderTests {
       let attributed = NSAttributedString(
         string: text,
         attributes: [
-          NSAttributedString.Key(kCTFontAttributeName as String): font,
-          NSAttributedString.Key(kCTKernAttributeName as String): CGFloat(0),
+          NSAttributedString.Key(kCTFontAttributeName as String): font
         ])
       let native = CTLineCreateWithAttributedString(attributed)
       let width = CTLineGetTypographicBounds(native, nil, nil, nil)
@@ -398,6 +454,10 @@ private func shape(
   purpose: UInt32 = UInt32(VIEM_SHAPE_PURPOSE_METRICS_ONLY),
   styleRun: (range: Range<UInt64>, size: Float)? = nil,
   openTypeFeature: (tag: (UInt8, UInt8, UInt8, UInt8), value: UInt32)? = nil,
+  fontFamily: String = "SF Pro",
+  fontSize: Float = 14,
+  letterSpacing: Float = 0,
+  scale: Float = 1,
   expectedStatus: UInt32? = 0
 ) throws -> ShapeResult {
   let table = provider.makeProviderTable()
@@ -405,7 +465,7 @@ private func shape(
   let textBytes = Array(text.utf8)
   let beforeBytes = Array(contextBefore.utf8)
   let afterBytes = Array(contextAfter.utf8)
-  let familyBytes = Array("SF Pro".utf8)
+  let familyBytes = Array(fontFamily.utf8)
   var featureValues: [ViemOpenTypeFeatureV1] = []
   if let openTypeFeature {
     var feature = ViemOpenTypeFeatureV1()
@@ -428,8 +488,9 @@ private func shape(
             style.struct_size = UInt32(MemoryLayout<ViemResolvedTextStyleV1>.size)
             style.slant = UInt32(VIEM_FONT_SLANT_UPRIGHT)
             style.direction = UInt32(VIEM_TEXT_DIRECTION_AUTO)
-            style.size = 14
+            style.size = fontSize
             style.weight = 400
+            style.letter_spacing = letterSpacing
             style.font_family_count = 1
             style.font_families = withUnsafePointer(to: &family) { $0 }
             style.features = featureBuffer.baseAddress
@@ -451,7 +512,7 @@ private func shape(
             request.context_after.data = afterBuffer.baseAddress
             request.context_after.length = UInt64(afterBuffer.count)
             request.default_style = style
-            request.scale = 1
+            request.scale = scale
             request.paragraph_base_direction = UInt32(VIEM_TEXT_DIRECTION_AUTO)
             if purpose == UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA) {
               request.has_render_run_policy = 1

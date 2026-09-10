@@ -9,7 +9,6 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case moveDocument
     case revertLastSaved
     case browseVersions
-    case documentFormat
     case lineEndingUnix = 109
     case lineEndingWindows
     case lineEndingClassicMac
@@ -20,6 +19,13 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case encodingLatin1
     case encodingUTF16LE
     case encodingUTF16BE
+
+    case convertToText = 130
+    case convertToMarkdown
+    case convertToHTML
+    case reinterpretAsText
+    case reinterpretAsMarkdown
+    case reinterpretAsHTML
 
     case undo = 200
     case redo
@@ -56,9 +62,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case defaultLigatures
     case allLigatures
     case noLigatures
-    case defaultKerning
-    case noKerning
-    case superscript
+    case superscript = 312
     case subscriptBaseline
     case raiseBaseline
     case lowerBaseline
@@ -111,6 +115,18 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case actualSize
     case newWindowForDocument
     case flowParagraphs
+
+    public var formatChange: (format: EVSourceFormat, operation: EVFormatOperation)? {
+        switch self {
+        case .convertToText: (.plainText, .convert)
+        case .convertToMarkdown: (.markdown, .convert)
+        case .convertToHTML: (.html, .convert)
+        case .reinterpretAsText: (.plainText, .reinterpret)
+        case .reinterpretAsMarkdown: (.markdown, .reinterpret)
+        case .reinterpretAsHTML: (.html, .reinterpret)
+        default: nil
+        }
+    }
 
     /// Standard text actions must reach native field editors first. The custom
     /// document view implements the same selectors using core intentions.

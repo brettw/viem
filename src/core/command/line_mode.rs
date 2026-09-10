@@ -914,6 +914,7 @@ impl CommandInterpreter {
             } else {
                 0
             };
+        repeated.text = self.assist_source_input(document, at..at, &repeated.text)?;
         document.replace_physical_source(at..at, repeated.text.clone())?;
         let source = if follow {
             at + document

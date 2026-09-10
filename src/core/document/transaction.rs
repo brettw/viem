@@ -42,6 +42,8 @@ mod paragraph_keys;
 mod edit_translation;
 #[path = "typing.rs"]
 mod typing;
+#[path = "input_context.rs"]
+mod input_context;
 pub use fragments::{FragmentEdit, ReplacementFragment};
 pub(crate) use replacement::RecordedReplacement;
 
@@ -299,12 +301,12 @@ pub enum ModelRequest {
         revision: Revision,
         enabled: bool,
     },
-    /// Switch interpretation losslessly within a family or to plain text;
-    /// explicitly convert formatted semantics between HTML and Markdown.
+    /// Explicitly reinterpret unchanged source or convert formatted semantics.
     SetFormat {
         document: DocumentId,
         revision: Revision,
         target: Format,
+        operation: super::FormatOperation,
     },
     /// Explicitly transcode the source, preserving decoded syntax and content.
     SetEncoding {
@@ -1167,7 +1169,7 @@ impl Document {
             ModelRequest::SetIncludeStyleDefinitionsInFile { enabled, .. } => {
                 self.prepare_html_style_definitions(enabled)
             }
-            ModelRequest::SetFormat { target, .. } => self.prepare_format(target),
+            ModelRequest::SetFormat { target, operation, .. } => self.prepare_format(target, operation),
             ModelRequest::SetEncoding { target, .. } => self.prepare_encoding(target),
             ModelRequest::ReorderHardLines {
                 source_lines,
@@ -2997,12 +2999,7 @@ impl Document {
         }
         validate_source_patches(&mut source_patches)?;
 
-        if translate_source
-            && self.format() == Format::MarkdownSource
-            && self
-                .line_local_projection_region(&edits, &source_patches)?
-                .is_none()
-        {
+        if translate_source && self.source_edit_requires_reprojection(&edits, &source_patches)? {
             // Source-mode delimiters are editable syntax. Changing a fence
             // can make formerly literal blank lines become paired paragraph
             // separators, so the new projection need not be a flat splice of
@@ -3314,6 +3311,18 @@ impl Document {
         Ok(escaped)
     }
 
+    /// Source fence edits may reinterpret later paragraph separators. Both
+    /// literal and structured payload edits publish the same parsed source
+    /// result instead of imposing a pre-edit paragraph/break partition.
+    fn source_edit_requires_reprojection(
+        &self,
+        edits: &[TextEdit],
+        patches: &[SourcePatch],
+    ) -> Result<bool, ModelTransactionError> {
+        Ok(self.format() == Format::MarkdownSource
+            && self.line_local_projection_region(edits, patches)?.is_none())
+    }
+
     fn prepare_formatted_payload_edits(
         &self,
         mut edits: Vec<FormattedPayloadEdit>,
@@ -3406,6 +3415,14 @@ impl Document {
             &mut source_patches,
         )?;
         validate_source_patches(&mut source_patches)?;
+        // A literal CR can combine with a following bare LF under DOS.
+        // Source grammar may reshape paragraphs, but must not silently consume
+        // an explicitly requested character through line-ending normalization.
+        if edits.iter().all(|edit| !edit.payload.text().contains('\r'))
+            && self.source_edit_requires_reprojection(&text_edits, &source_patches)?
+        {
+            return self.prepare_reprojected_source_patches(source_patches);
+        }
 
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let after_revision = Revision(self.next_revision);
@@ -5482,7 +5499,16 @@ impl Document {
     fn prepare_format(
         &self,
         target: Format,
+        operation: super::FormatOperation,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        let target = if operation == super::FormatOperation::Convert {
+            target.wysiwyg()
+        } else {
+            target
+        };
+        if operation == super::FormatOperation::Convert && target == Format::Rtf {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
         if target == self.state().format {
             return Ok(self.no_op_prepared());
         }
@@ -5490,59 +5516,60 @@ impl Document {
         let mut conversion_warnings = Vec::new();
         let mut conversion_correspondence = None;
         let source_patches;
-        let (source, decoded) = if super::conversion::crosses_markup_family(self.format(), target) {
-            let conversion = super::conversion::convert(self, target)?;
-            conversion_correspondence = Some(encoded_conversion_correspondence(
-                &conversion.source,
-                &conversion.source_correspondence,
-                self.encoding(),
-                self.file_format(),
-                if self.state().has_bom {
-                    self.encoding().bom_bytes().len()
+        let (source, decoded) =
+            if operation == super::FormatOperation::Convert && self.format().wysiwyg() != target {
+                let conversion = super::conversion::convert(self, target)?;
+                conversion_correspondence = Some(encoded_conversion_correspondence(
+                    &conversion.source,
+                    &conversion.source_correspondence,
+                    self.encoding(),
+                    self.file_format(),
+                    if self.state().has_bom {
+                        self.encoding().bom_bytes().len()
+                    } else {
+                        0
+                    },
+                ));
+                conversion_warnings = conversion.warnings;
+                let spelling = conversion
+                    .source
+                    .replace('\n', self.file_format().spelling());
+                let mut bytes = if self.state().has_bom {
+                    self.encoding().bom_bytes().to_vec()
                 } else {
-                    0
-                },
-            ));
-            conversion_warnings = conversion.warnings;
-            let spelling = conversion
-                .source
-                .replace('\n', self.file_format().spelling());
-            let mut bytes = if self.state().has_bom {
-                self.encoding().bom_bytes().to_vec()
+                    Vec::new()
+                };
+                let authored = if self.encoding() == super::Encoding::Latin1 {
+                    let count = spelling.chars().filter(|c| *c as u32 > 255).count();
+                    if count > 0 {
+                        conversion_warnings.push(super::ConversionWarning::UnrepresentableCharacters {
+                            encoding: self.encoding(),
+                            count,
+                        });
+                    }
+                    spelling
+                        .chars()
+                        .map(|c| if c as u32 > 255 { '?' } else { c })
+                        .collect::<String>()
+                } else {
+                    spelling
+                };
+                bytes.extend(self.encoding().encode_fragment(&authored)?);
+                source_patches = vec![SourcePatch::primary(
+                    0..self.state().source.len(),
+                    bytes.clone(),
+                )];
+                (
+                    apply_source_patches(&self.state().source, &source_patches)?,
+                    self.encoding().decode(&bytes)?,
+                )
             } else {
-                Vec::new()
+                source_patches = Vec::new();
+                (
+                    self.state().source.clone(),
+                    self.state().encoding.decode(&self.state().source.bytes())?,
+                )
             };
-            let authored = if self.encoding() == super::Encoding::Latin1 {
-                let count = spelling.chars().filter(|c| *c as u32 > 255).count();
-                if count > 0 {
-                    conversion_warnings.push(super::ConversionWarning::UnrepresentableCharacters {
-                        encoding: self.encoding(),
-                        count,
-                    });
-                }
-                spelling
-                    .chars()
-                    .map(|c| if c as u32 > 255 { '?' } else { c })
-                    .collect::<String>()
-            } else {
-                spelling
-            };
-            bytes.extend(self.encoding().encode_fragment(&authored)?);
-            source_patches = vec![SourcePatch::primary(
-                0..self.state().source.len(),
-                bytes.clone(),
-            )];
-            (
-                apply_source_patches(&self.state().source, &source_patches)?,
-                self.encoding().decode(&bytes)?,
-            )
-        } else {
-            source_patches = Vec::new();
-            (
-                self.state().source.clone(),
-                self.state().encoding.decode(&self.state().source.bytes())?,
-            )
-        };
         let mut candidate = build_state_from_decoded_with_configuration(
             source,
             decoded,
@@ -8183,6 +8210,7 @@ mod prepared_group_reuse_tests {
             document: document.id(),
             revision: document.revision(),
             target: Format::Markdown,
+            operation: super::super::FormatOperation::Reinterpret,
         }
     }
 

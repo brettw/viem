@@ -94,6 +94,7 @@ fn literal_tag_typing_and_html_conversion_keep_visible_text() {
             document: converted.id(),
             revision: converted.revision(),
             target: Format::Markdown,
+            operation: viem_core::document::FormatOperation::Convert,
         })
         .unwrap();
     assert_eq!(converted.text(), "<br>");

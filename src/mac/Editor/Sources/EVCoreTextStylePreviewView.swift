@@ -234,7 +234,7 @@ final class EVCoreTextStylePreviewView: NSView {
             ]
         }
         if case let .float(value)? = values[.characterLetterSpacing] {
-            attributes[NSAttributedString.Key(kCTKernAttributeName as String)] = CGFloat(value)
+            attributes.merge(letterSpacingAttributes(CGFloat(value))) { _, value in value }
         }
         if case let .float(value)? = values[.characterBaselineShift] {
             attributes[NSAttributedString.Key(kCTBaselineOffsetAttributeName as String)] = CGFloat(value)

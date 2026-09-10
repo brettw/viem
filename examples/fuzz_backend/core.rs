@@ -529,6 +529,7 @@ pub fn run(
                 Action::Format { view, format: kind } => (
                     *view,
                     Some(CoreEvent::SetFormat {
+                        operation: viem_core::FormatOperation::Reinterpret,
                         document: core.document().id(),
                         revision: core.document().revision(),
                         target: format(kind)?,

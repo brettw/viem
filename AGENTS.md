@@ -1724,6 +1724,11 @@ Each adapter has corpus, property, and targeted golden tests. At minimum:
   reverse-projected and committed as undoable source transactions.
 - Shaping MUST support proportional advances, kerning, ligatures, combining
   marks, emoji sequences, font fallback, and mixed font sizes on one row.
+- Font kerning is always implicitly enabled in shaping, layout, and rendering,
+  including typography previews. It is not an editable or serialized style
+  property and has no menu control. An existing source OpenType `kern`
+  declaration is preserved but cannot disable kerning in Viem. Letter spacing
+  is independent tracking; a zero value MUST NOT suppress font kerning.
 - Unicode bidirectional text MUST be shaped and drawn correctly. Logical
   formatted-text order remains the basis of search, registers, and semantic
   edit intentions; hit testing and left/right visual movement use resolved
@@ -1744,6 +1749,39 @@ Each adapter has corpus, property, and targeted golden tests. At minimum:
   corresponding to the selection, including markup in WYSIWYG views. Paste
   and Match Style ignores the private fragment and uses plain text. Malformed
   external private data cannot prevent ordinary commands or plain-text paste.
+
+### Format interpretation and conversion
+
+Format changes carry an explicit operation in the portable core. Reinterpret
+changes only the adapter applied to the current source artifact: every source
+byte, encoding, BOM, and line-ending spelling remains unchanged. It must never
+implicitly convert markup, including between Markdown and HTML.
+
+Convert explicitly serializes the current formatted semantics into Text,
+Markdown, or HTML. Source views first use their corresponding WYSIWYG
+projection. This is a best-effort lossy operation: retain representable
+paragraphs, headings, lists, code, and inline formatting; unsupported formatting
+falls back to ordinary visible text. Unsupported objects use available alternate
+or descendant text, with a readable placeholder when no text is available.
+This explicit whole-document operation may replace all source bytes. It uses
+the shared transaction, source correspondence,
+anchor remapping, reprojection, and undo machinery rather than a frontend
+serializer. Existing conversion-loss messages remain available.
+
+For conversion, blank physical lines delimit Text paragraphs. A single newline
+inside a Text paragraph remains a hard line break, represented by an HTML `br`
+or a Markdown hard break. Each pair of breaks separates paragraphs; surplus
+pairs create empty paragraphs and an unmatched break remains internal. Preserve
+these empty paragraphs where the destination can represent them.
+Conversion to Text places a blank line between
+paragraph blocks, preserves internal hard breaks, and removes formatting and
+generated list markers while retaining their text.
+
+Each successful operation is one undo unit restoring both source and format.
+Reinterpret and Convert are distinct from encoding conversion. The File menu
+offers only the main Text, Markdown, and HTML targets; choosing a different
+family selects its WYSIWYG display when available. A same-family source/view
+switch elsewhere can still explicitly reinterpret without changing bytes.
 
 ### Application theme and settings
 
@@ -2753,7 +2791,14 @@ The menu hierarchy is:
     - Last Saved Version
     - Browse All Versions…
   - separator
-  - Document Format…
+  - Convert to
+    - Text
+    - Markdown
+    - HTML
+  - Reinterpret as
+    - Text
+    - Markdown
+    - HTML
   - Text Encoding
     - UTF-8
     - Latin-1
@@ -2812,9 +2857,6 @@ The menu hierarchy is:
     - Use Default Ligatures
     - Use All Ligatures
     - Use No Ligatures
-  - Kerning
-    - Use Default Kerning
-    - Use No Kerning
   - Baseline
     - Superscript
     - Subscript
@@ -2925,6 +2967,12 @@ conversion rules in "Changing `fileformat`". `Text Encoding` is a File submenu
 with the four supported encodings; the current encoding is checked and choosing
 another encoding performs the same verified, undoable conversion as the core API.
 
+`Convert to` and `Reinterpret as` dispatch the distinct portable format
+operations above. Both disable the current source family, including its Source
+display variant, and all targets are disabled without an attached document.
+Read-only buffers retain these in-memory operations; their external write
+restriction remains unchanged.
+
 `Flow Source Paragraphs` is a portable per-view option, initially off, available
 in Markdown Source and HTML Source. It suppresses nonstructural physical line
 breaks in layout while retaining source characters, editing coordinates, and
@@ -2940,8 +2988,8 @@ within that range; each control chooses the next strictly adjacent stop.
 
 Menu validation comes from current core state and pipeline capabilities.
 Actions that cannot apply to the current selection or adapter are disabled.
-Rich-formatting actions are disabled for plain text; `Document Format…` may
-offer an explicit conversion when an appropriate adapter exists. Style and
+Rich-formatting actions are disabled for plain text; `Convert to` offers an
+explicit conversion into a format that supports them. Style and
 formatting items show a checkmark, mixed state, or no mark as appropriate.
 Character and Paragraph menus reserve the same mark column for every item,
 so labels align whether or not the item is checked. Active named styles remain
@@ -4254,9 +4302,18 @@ Insert undo group; counted insertion, dot, and macros retain its input intent.
 
 Settings includes an **Editing** category with **Smart quotes**, initially off.
 This application preference is propagated to every view and never changes
-document source merely by being toggled. It transforms individually authored
-straight quotes in prose, not pasted text, registers, command prompts, or
-syntax-required quotes in HTML Source and Markdown code/link/tag constructs.
+document source merely by being toggled. All document text input uses the same
+policy: Insert and Replace typing, Normal and Visual `r`, clipboard and register
+puts, and committed input-method or accessibility replacements transform
+straight quotes in prose. Uncommitted input-method overlays and command prompts
+remain literal. Code character spans and code paragraphs always suppress quote
+conversion, including pending Code typing styles and code in pasted rich text.
+Source input also preserves syntax-required quotes in HTML attributes and
+Markdown code/link/tag constructs, including constructs inside an input batch.
+Existing curly quotes are preserved as supplied. Quote conversion and its text
+edit form one transaction; undo restores the original source exactly.
+If a generated quote cannot be represented in the current encoding or through
+a supported format escape, preserve the entered straight quote.
 Beginning of text or a logical line, whitespace, opening brackets, opening
 quotes, and hyphen/en-dash/em-dash favor opening `‘` or `“`. Letters, digits,
 closing punctuation, and other preceding content favor closing `’` or `”`;

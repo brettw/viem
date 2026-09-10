@@ -34,8 +34,9 @@ use crate::command::{
 use crate::document::{
     BlockProperties, BlockRole, BoundaryAffinity, CharacterProperties, Color, Document,
     DocumentError, DocumentId, DocumentStyleAssignment, Encoding, FileFormat, FileFormatOrigin,
-    FontSlant, Format, FormattedTextError, HardLineQueryError, HistorySemanticChangeKind,
-    HistorySemanticSummary, LineSpacing, ModelTransactionError, ParagraphAlignment, Revision,
+    FontSlant, Format, FormatOperation, FormattedTextError, HardLineQueryError,
+    HistorySemanticChangeKind, HistorySemanticSummary, LineSpacing, ModelTransactionError,
+    ParagraphAlignment, Revision,
     SemanticInlineStyle, SourceArtifactDigest, StyleContribution, StyleContributionOrigin,
     StyleDefinitionFieldEdit, StyleDefinitionOrigin, StyleDependency, StyleError, StyleId,
     StyleNamespace, StyleProperty, StylePropertyValue, StyleSheetRevision, StyleTransactionError,
@@ -62,7 +63,7 @@ use std::str;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Version of the C ABI implemented by this library.
-pub const VIEM_CORE_ABI_VERSION: u32 = 4;
+pub const VIEM_CORE_ABI_VERSION: u32 = 5;
 
 /// Adds paragraph base direction in the request's fixed-layout extension slot
 /// and the context-owned cluster contract: shape the concatenated context and
@@ -1966,12 +1967,17 @@ impl Default for ViemSetIncludeStyleDefinitionsV1 {
     }
 }
 
-/// Source-format interpretation change bound to one exact document snapshot.
+pub const VIEM_FORMAT_OPERATION_REINTERPRET: u32 = 0;
+pub const VIEM_FORMAT_OPERATION_CONVERT: u32 = 1;
+
+/// Explicit format operation bound to one exact document snapshot.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ViemSetFormatV1 {
     pub struct_size: u32,
     pub format: u32,
+    pub operation: u32,
+    pub reserved: u32,
     pub document_id: u64,
     pub document_revision: u64,
 }
@@ -13033,7 +13039,7 @@ pub unsafe extern "C" fn viem_core_view_set_format_with_effects(
         ];
         validate_disjoint_regions(&regions)?;
         let request = unsafe { request.read() };
-        if request.struct_size < VIEM_SET_FORMAT_V1_SIZE {
+        if request.struct_size < VIEM_SET_FORMAT_V1_SIZE || request.reserved != 0 {
             return Err(ViemStatus::InvalidArgument);
         }
         unsafe {
@@ -13041,6 +13047,11 @@ pub unsafe extern "C" fn viem_core_view_set_format_with_effects(
             out_effects.write(0);
         }
         let target = parse_format(request.format)?;
+        let operation = match request.operation {
+            VIEM_FORMAT_OPERATION_REINTERPRET => FormatOperation::Reinterpret,
+            VIEM_FORMAT_OPERATION_CONVERT => FormatOperation::Convert,
+            _ => return Err(ViemStatus::InvalidArgument),
+        };
         let reservation = reserve_effect_batch()?;
         let (summary, effects) = with_core_mut(handle, |core| {
             let view = ViewId(view);
@@ -13051,6 +13062,7 @@ pub unsafe extern "C" fn viem_core_view_set_format_with_effects(
                         document: DocumentId(request.document_id),
                         revision: Revision(request.document_revision),
                         target,
+                        operation,
                     },
                 )
                 .map_err(core_status)?;

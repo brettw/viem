@@ -27,4 +27,4 @@ pub use coordinator::{
     StyleEditGroup, StyleEditGroupError, StyleEditGroupId, ViewCompositionChange,
     ViewCompositionOutcome, ViewId, ViewRemovalOutcome, ViewportState,
 };
-pub use document::{Document, DocumentError, Encoding, Format, Revision};
+pub use document::{Document, DocumentError, Encoding, Format, FormatOperation, Revision};

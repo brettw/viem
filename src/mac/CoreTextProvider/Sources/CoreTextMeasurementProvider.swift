@@ -521,9 +521,9 @@ private struct ResolvedStyle {
   var attributes: [NSAttributedString.Key: Any] {
     var result: [NSAttributedString.Key: Any] = [
       NSAttributedString.Key(kCTFontAttributeName as String): font,
-      NSAttributedString.Key(kCTKernAttributeName as String): letterSpacing,
       NSAttributedString.Key(kCTBaselineOffsetAttributeName as String): baselineShift,
     ]
+    result.merge(letterSpacingAttributes(letterSpacing)) { _, value in value }
     if syntheticBold {
       result[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] = -3.0
     }
@@ -621,6 +621,15 @@ private func makeAttributedString(
   return attributed
 }
 
+/// Tracking adds points after shaping while retaining the font's pair kerning.
+/// `kCTKernAttributeName = 0` explicitly disables kerning and must not represent
+/// the ordinary zero letter-spacing value.
+public func letterSpacingAttributes(_ spacing: CGFloat) -> [NSAttributedString.Key: Any] {
+  // Tracking otherwise suppresses standard ligatures, including an explicit
+  // font `liga=1`. Restore the normal attribute policy; font `liga=0` still wins.
+  spacing == 0 ? [:] : [.tracking: spacing, .ligature: 1]
+}
+
 public func resolveFont(
   families: [String],
   size: CGFloat,
@@ -629,6 +638,9 @@ public func resolveFont(
   features: [(String, UInt32)],
   relativeBold: Bool = false
 ) -> CTFont {
+  // This also covers previews and clipboard fonts that do not pass through
+  // the portable layout resolver. Kerning always follows the font's default.
+  let features = features.filter { $0.0 != "kern" }
   let requested = families.first ?? CoreTextMeasurementProvider.defaultFontFamily
   let base = EVFontCatalog.baseFont(named: requested, size: size)
   let faces = EVFontCatalog.faces(for: requested)

@@ -1,6 +1,11 @@
 import AppKit
 import UniformTypeIdentifiers
 
+public enum EVFormatOperation: Equatable, Sendable {
+    case reinterpret
+    case convert
+}
+
 public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
     case plainText
     case markdown

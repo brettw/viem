@@ -14,6 +14,7 @@ fn open(source: &str, initial_format: Format) -> (Core<MockTextMeasurementProvid
         core.handle(
             view,
             CoreEvent::SetFormat {
+                operation: viem_core::FormatOperation::Reinterpret,
                 document: core.document().id(),
                 revision: core.document().revision(),
                 target: Format::Html,

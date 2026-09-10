@@ -57,7 +57,12 @@ fn source_authored_canonical_whitespace_span_survives_switching_to_wysiwyg() {
         .unwrap();
         let wrapper = format!("<span style=\"white-space: pre-wrap\">{content}</span>");
         document.insert(9, &wrapper).unwrap();
-        document.set_format(Format::Html).unwrap();
+        document
+            .set_format(
+                Format::Html,
+                viem_core::document::FormatOperation::Reinterpret,
+            )
+            .unwrap();
         assert_reopens(&document, "Hello, ");
         document.insert(7, "world!").unwrap();
 
