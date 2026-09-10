@@ -7,13 +7,11 @@
 extern "C" {
 #endif
 
-#define VIEM_CORE_ABI_VERSION 3u
-#define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V1 1u
+#define VIEM_CORE_ABI_VERSION 4u
 #define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2 2u
 #define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION \
   VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2
 
-typedef uint64_t ViemDocumentHandle;
 typedef uint64_t ViemCoreHandle;
 /* Owned immutable command-turn effects; zero means no effects. */
 typedef uint64_t ViemEffectBatchHandle;
@@ -39,7 +37,6 @@ typedef uint32_t ViemStatus;
 #define VIEM_STATUS_RESOURCE_EXHAUSTED 16u
 #define VIEM_STATUS_VERIFICATION_FAILED 17u
 #define VIEM_STATUS_LENGTH_OVERFLOW 18u
-#define VIEM_STATUS_DOCUMENT_BUSY 19u
 #define VIEM_STATUS_CORE_BUSY 20u
 #define VIEM_STATUS_INVALID_VIEW 21u
 #define VIEM_STATUS_INVALID_PROVIDER 22u
@@ -47,7 +44,6 @@ typedef uint32_t ViemStatus;
 #define VIEM_STATUS_INVALID_KEY 24u
 #define VIEM_STATUS_CORE_FAILURE 25u
 #define VIEM_STATUS_UNSTABLE_SHAPING_CONTEXT 26u
-#define VIEM_STATUS_VERTICAL_VIEWPORT_ORIGIN_UNSUPPORTED 27u
 #define VIEM_STATUS_LAYOUT_UNAVAILABLE 28u
 #define VIEM_STATUS_OUTSIDE_LAYOUT_COVERAGE 29u
 #define VIEM_STATUS_UNKNOWN_STYLE 30u
@@ -97,7 +93,6 @@ typedef uint32_t ViemStatus;
 #define VIEM_HISTORY_ACTION_CATEGORY_STYLE 2u
 #define VIEM_HISTORY_ACTION_CATEGORY_FILE_FORMAT 3u
 #define VIEM_HISTORY_ACTION_CATEGORY_HARD_LINE_TRANSFER 4u
-#define VIEM_HISTORY_ACTION_CATEGORY_HARD_LINE_SOURCE_RESTORATION 5u
 #define VIEM_HISTORY_ACTION_CATEGORY_SOURCE_METADATA 6u
 #define VIEM_HISTORY_ACTION_CATEGORY_MIXED 7u
 
@@ -332,31 +327,7 @@ typedef struct ViemUtf8Slice {
   uint64_t length;
 } ViemUtf8Slice;
 
-/* One target snapshot/capability captured immediately before one input turn. */
-typedef struct ViemClipboardTurnEntryV1 {
-  uint32_t struct_size;
-  uint32_t flags;
-  uint32_t target;
-  uint32_t reserved;
-  uint64_t generation;
-  ViemUtf8Slice plain_text;
-} ViemClipboardTurnEntryV1;
-
-#define VIEM_CLIPBOARD_TURN_ENTRY_V1_SIZE \
-  ((uint32_t)sizeof(ViemClipboardTurnEntryV1))
-
-/* Clipboard and Primary may each occur at most once. */
-typedef struct ViemCommandTurnContextV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
-  const ViemClipboardTurnEntryV1 *clipboards;
-  uint64_t clipboard_count;
-} ViemCommandTurnContextV1;
-
-#define VIEM_COMMAND_TURN_CONTEXT_V1_SIZE \
-  ((uint32_t)sizeof(ViemCommandTurnContextV1))
-
-/* Optional private UTF-8 JSON clipboard image. V1 records remain unchanged. */
+/* One snapshot/capability per clipboard target, with optional private JSON. */
 typedef struct ViemClipboardTurnEntryV2 {
   uint32_t struct_size;
   uint32_t flags;
@@ -573,7 +544,7 @@ typedef struct ViemShapeStyleRunV1 {
  * a native pointer for core to dereference. The provider keeps the token valid
  * for owner/threading while metrics_generation remains current and the owning
  * view remains attached. It may retire the token when that generation becomes
- * stale or when the view is removed/core is destroyed. ABI v1 has no
+ * stale or when the view is removed/core is destroyed. The ABI has no
  * retain/release transfer; a caller must not retain a stale or detached token.
  */
 typedef struct ViemRenderRunHandleV1 {
@@ -640,22 +611,14 @@ typedef struct ViemShapeRequestV1 {
   uint64_t render_run_owner;
   uint32_t render_run_threading;
   /*
-   * ABI v2 supplies the containing paragraph's VIEM_TEXT_DIRECTION_* value.
-   * It also defines text_start..text_end as a stable ownership interior:
+   * The containing paragraph's VIEM_TEXT_DIRECTION_* value. The provider
+   * treats text_start..text_end as a stable ownership interior:
    * shape context_before + text + context_after, then return every whole
    * cluster whose logical start lies in the interior. Such a cluster may end
    * in context_after; omit one whose start lies in context_before. The context
    * slices contain immediately adjacent complete grapheme sequences.
-   *
-   * ABI v1 providers see zero in this fixed-layout slot and may continue to
-   * address it as reserved. Their legacy exact-interior responses remain
-   * accepted. The anonymous union preserves source and binary compatibility
-   * without changing request-array stride.
    */
-  union {
-    uint32_t paragraph_base_direction;
-    uint32_t reserved;
-  };
+  uint32_t paragraph_base_direction;
 } ViemShapeRequestV1;
 
 #define VIEM_SHAPE_REQUEST_V1_SIZE ((uint32_t)sizeof(ViemShapeRequestV1))
@@ -692,9 +655,9 @@ typedef uint32_t (*ViemShapeBatchCallback)(
     ViemShapeResponseV1 *responses, uint64_t response_capacity);
 
 /*
- * The provider table is copied by viem_core_view_add. Provider ABI v1 and v2
- * are accepted; v1 receives Auto in paragraph_base_direction. Context and
- * callback functions must remain valid until the view is removed or its core is
+ * The provider table is copied by viem_core_view_add. Only the current
+ * provider ABI version is accepted. Context and callback functions remain
+ * valid until the view is removed or its core is
  * successfully destroyed. VIEM_STATUS_CORE_BUSY means destruction did not
  * occur and does not end these lifetimes. Every response pointer returned by
  * shape_batch must remain readable until the next provider callback for that
@@ -1512,7 +1475,6 @@ typedef struct ViemDirectStyleEditV1 {
 } ViemDirectStyleEditV1;
 #define VIEM_DIRECT_STYLE_EDIT_V1_SIZE ((uint32_t)sizeof(ViemDirectStyleEditV1))
 
-
 #define VIEM_SET_SEMANTIC_STYLE_V1_SIZE \
   ((uint32_t)sizeof(ViemSetSemanticStyleV1))
 
@@ -1755,52 +1717,10 @@ typedef struct ViemCoreOutcomeV1 {
 uint32_t viem_core_abi_version(void);
 
 /*
- * All strings and byte sequences are length-delimited and are never assumed
- * or written to be NUL-terminated. A null data pointer is permitted only for
- * a zero-length input or a zero-capacity length query.
+ * All byte sequences are length-delimited; calls do not append a NUL
+ * terminator. A null data pointer is permitted only for a zero-length input
+ * or capacity query.
  *
- * Document handles are opaque, process-local, nonzero tokens. They are never
- * reused. Calls are thread-safe. A document is checked out for one serial
- * operation without retaining a registry lock; a concurrent operation on the
- * same document returns VIEM_STATUS_DOCUMENT_BUSY instead of blocking.
- * Destroying a checked-out document also returns VIEM_STATUS_DOCUMENT_BUSY,
- * retains the handle, and must be retried after the operation returns.
- */
-ViemStatus viem_document_create(const uint8_t *source,
-                                uint64_t source_length,
-                                const ViemDocumentOptions *options,
-                                ViemDocumentHandle *out_document,
-                                uint64_t *out_revision);
-
-ViemStatus viem_document_destroy(ViemDocumentHandle document);
-
-ViemStatus viem_document_revision(ViemDocumentHandle document,
-                                  uint64_t *out_revision);
-
-/*
- * For either copy function, pass output=NULL and output_capacity=0 to query
- * the required byte count. A nonempty value then returns
- * VIEM_STATUS_BUFFER_TOO_SMALL and always populates out_required.
- */
-ViemStatus viem_document_copy_source_bytes(ViemDocumentHandle document,
-                                           uint64_t expected_revision,
-                                           uint8_t *output,
-                                           uint64_t output_capacity,
-                                           uint64_t *out_required);
-
-ViemStatus viem_document_copy_formatted_utf8(ViemDocumentHandle document,
-                                             uint64_t expected_revision,
-                                             uint8_t *output,
-                                             uint64_t output_capacity,
-                                             uint64_t *out_required);
-
-/* start and end are half-open byte offsets in the formatted UTF-8 snapshot. */
-ViemStatus viem_document_replace_formatted_utf8(
-    ViemDocumentHandle document, uint64_t expected_revision, uint64_t start,
-    uint64_t end, const uint8_t *replacement, uint64_t replacement_length,
-    uint64_t *out_revision);
-
-/*
  * Core handles own a document, command/controller state, and attached views.
  * They are opaque, process-local, nonzero, and never reused. The core registry
  * lock is never held while invoking a provider callback. Reentrant access to
@@ -1990,27 +1910,18 @@ ViemStatus viem_core_view_reveal_selection(
     ViemCoreHandle core, ViemViewId view,
     ViemCoreOutcomeV1 *out_outcome);
 
-ViemStatus viem_core_view_send_key(ViemCoreHandle core, ViemViewId view,
-                                   const ViemKeyInputV1 *input,
-                                   ViemCoreOutcomeV1 *out_outcome);
-ViemStatus viem_core_view_send_text(ViemCoreHandle core, ViemViewId view,
-                                    const uint8_t *text, uint64_t text_length,
-                                    ViemCoreOutcomeV1 *out_outcome);
-
 /*
  * Host-context turns consume immutable per-turn clipboard snapshots and
  * writable capabilities. On success, out_effect_batch is zero or an owned
  * handle which must be released. The effect batch survives core destruction.
  */
-ViemStatus viem_core_view_send_key_with_host_context(
-    ViemCoreHandle core, ViemViewId view, const ViemKeyInputV1 *input,
-    const ViemCommandTurnContextV1 *context,
-    ViemCoreOutcomeV1 *out_outcome,
+ViemStatus viem_core_view_send_key_with_host_context_v2(
+    ViemCoreHandle handle, ViemViewId view, const ViemKeyInputV1 *input,
+    const ViemCommandTurnContextV2 *context, ViemCoreOutcomeV1 *out_outcome,
     ViemEffectBatchHandle *out_effect_batch);
-ViemStatus viem_core_view_send_text_with_host_context(
-    ViemCoreHandle core, ViemViewId view, const uint8_t *text,
-    uint64_t text_length, const ViemCommandTurnContextV1 *context,
-    ViemCoreOutcomeV1 *out_outcome,
+ViemStatus viem_core_view_send_text_with_host_context_v2(
+    ViemCoreHandle handle, ViemViewId view, const uint8_t *text, uint64_t text_length,
+    const ViemCommandTurnContextV2 *context, ViemCoreOutcomeV1 *out_outcome,
     ViemEffectBatchHandle *out_effect_batch);
 
 ViemStatus viem_effect_batch_info(ViemEffectBatchHandle batch,
@@ -2162,12 +2073,7 @@ ViemStatus viem_core_view_set_include_style_definitions(
     ViemCoreHandle core, ViemViewId view,
     const ViemSetIncludeStyleDefinitionsV1 *request,
     ViemCoreOutcomeV1 *out_outcome);
-ViemStatus viem_core_view_set_format(
-    ViemCoreHandle core, ViemViewId view,
-    const ViemSetFormatV1 *request, ViemCoreOutcomeV1 *out_outcome);
-ViemStatus viem_core_view_set_encoding(
-    ViemCoreHandle core, ViemViewId view,
-    const ViemSetEncodingV1 *request, ViemCoreOutcomeV1 *out_outcome);
+
 ViemStatus viem_core_view_list_selection(
     ViemCoreHandle core, ViemViewId view,
     ViemLogicalSelectionIdentityV1 *out_selection);
@@ -2322,14 +2228,6 @@ ViemStatus viem_core_copy_clipboard_json(
 ViemStatus viem_effect_batch_copy_clipboard_json(
     ViemEffectBatchHandle batch, uint64_t clipboard_index,
     uint8_t *output, uint64_t output_capacity, uint64_t *out_required);
-ViemStatus viem_core_view_send_key_with_host_context_v2(
-    ViemCoreHandle handle, ViemViewId view, const ViemKeyInputV1 *input,
-    const ViemCommandTurnContextV2 *context, ViemCoreOutcomeV1 *out_outcome,
-    ViemEffectBatchHandle *out_effect_batch);
-ViemStatus viem_core_view_send_text_with_host_context_v2(
-    ViemCoreHandle handle, ViemViewId view, const uint8_t *text, uint64_t text_length,
-    const ViemCommandTurnContextV2 *context, ViemCoreOutcomeV1 *out_outcome,
-    ViemEffectBatchHandle *out_effect_batch);
 
 #ifdef __cplusplus
 }

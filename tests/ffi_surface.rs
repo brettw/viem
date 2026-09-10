@@ -1,7 +1,7 @@
 use viem_core::ffi::{
-    viem_core_abi_version, viem_document_copy_formatted_utf8, viem_document_copy_source_bytes,
-    viem_document_create, viem_document_destroy, viem_document_replace_formatted_utf8,
-    viem_document_revision, ViemDocumentHandle, ViemDocumentOptions, ViemStatus,
+    viem_core_abi_version, viem_core_copy_formatted_utf8, viem_core_copy_source_bytes,
+    viem_core_create, viem_core_destroy,
+    viem_core_revision, ViemCoreHandle, ViemDocumentOptions, ViemStatus,
     VIEM_CORE_ABI_VERSION, VIEM_DOCUMENT_OPTIONS_SIZE, VIEM_ENCODING_DETECT, VIEM_ENCODING_LATIN1,
     VIEM_ENCODING_UTF16_BE, VIEM_ENCODING_UTF16_LE, VIEM_ENCODING_UTF8, VIEM_FILE_FORMAT_DETECT,
     VIEM_FILE_FORMAT_DOS, VIEM_FILE_FORMAT_MAC, VIEM_FILE_FORMAT_UNIX, VIEM_FORMAT_MARKDOWN,
@@ -9,26 +9,26 @@ use viem_core::ffi::{
 };
 use std::ptr;
 
-struct TestDocument {
-    handle: ViemDocumentHandle,
+struct TestCore {
+    handle: ViemCoreHandle,
     revision: u64,
 }
 
-impl Drop for TestDocument {
+impl Drop for TestCore {
     fn drop(&mut self) {
         if self.handle != 0 {
-            let _ = viem_document_destroy(self.handle);
+            let _ = viem_core_destroy(self.handle);
         }
     }
 }
 
-fn create(source: &[u8], options: ViemDocumentOptions) -> TestDocument {
+fn create(source: &[u8], options: ViemDocumentOptions) -> TestCore {
     let mut handle = 0;
     let mut revision = u64::MAX;
     // SAFETY: Every pointer is derived from a live Rust allocation/value and
     // remains valid for the complete synchronous call. Outputs are distinct.
     let status = unsafe {
-        viem_document_create(
+        viem_core_create(
             source.as_ptr(),
             source.len() as u64,
             &options,
@@ -38,13 +38,13 @@ fn create(source: &[u8], options: ViemDocumentOptions) -> TestDocument {
     };
     assert_eq!(status, ViemStatus::Ok);
     assert_ne!(handle, 0);
-    TestDocument { handle, revision }
+    TestCore { handle, revision }
 }
 
 type CopyFunction =
-    unsafe extern "C" fn(ViemDocumentHandle, u64, *mut u8, u64, *mut u64) -> ViemStatus;
+    unsafe extern "C" fn(ViemCoreHandle, u64, *mut u8, u64, *mut u64) -> ViemStatus;
 
-fn copy_bytes(function: CopyFunction, document: &TestDocument, revision: u64) -> Vec<u8> {
+fn copy_bytes(function: CopyFunction, document: &TestCore, revision: u64) -> Vec<u8> {
     let mut required = u64::MAX;
     // SAFETY: `out_required` is writable. A null/zero destination is the
     // documented length-query form.
@@ -79,35 +79,12 @@ fn copy_bytes(function: CopyFunction, document: &TestDocument, revision: u64) ->
     result
 }
 
-fn source_bytes(document: &TestDocument, revision: u64) -> Vec<u8> {
-    copy_bytes(viem_document_copy_source_bytes, document, revision)
+fn source_bytes(document: &TestCore, revision: u64) -> Vec<u8> {
+    copy_bytes(viem_core_copy_source_bytes, document, revision)
 }
 
-fn formatted_utf8(document: &TestDocument, revision: u64) -> Vec<u8> {
-    copy_bytes(viem_document_copy_formatted_utf8, document, revision)
-}
-
-fn replace(
-    document: &TestDocument,
-    revision: u64,
-    range: std::ops::Range<u64>,
-    replacement: &[u8],
-) -> (ViemStatus, u64) {
-    let mut new_revision = u64::MAX;
-    // SAFETY: The replacement slice is readable for its declared length and
-    // the revision output is a distinct writable value.
-    let status = unsafe {
-        viem_document_replace_formatted_utf8(
-            document.handle,
-            revision,
-            range.start,
-            range.end,
-            replacement.as_ptr(),
-            replacement.len() as u64,
-            &mut new_revision,
-        )
-    };
-    (status, new_revision)
+fn formatted_utf8(document: &TestCore, revision: u64) -> Vec<u8> {
+    copy_bytes(viem_core_copy_formatted_utf8, document, revision)
 }
 
 #[test]
@@ -121,14 +98,15 @@ fn abi_create_validates_pointers_and_every_option_domain() {
     // SAFETY: Options and outputs are valid; null with nonzero input length is
     // intentional and must be rejected before dereferencing.
     let status =
-        unsafe { viem_document_create(ptr::null(), 1, &options, &mut handle, &mut revision) };
+        unsafe { viem_core_create(ptr::null(), 1, &options, &mut handle, &mut revision) };
     assert_eq!(status, ViemStatus::NullPointer);
-    assert_eq!((handle, revision), (0, 0));
+    // Invalid pointer relations are rejected before touching caller outputs.
+    assert_eq!((handle, revision), (99, 99));
 
     // SAFETY: Outputs are live; the null options pointer is intentionally
     // invalid and must be checked before it is read.
     let status =
-        unsafe { viem_document_create(ptr::null(), 0, ptr::null(), &mut handle, &mut revision) };
+        unsafe { viem_core_create(ptr::null(), 0, ptr::null(), &mut handle, &mut revision) };
     assert_eq!(status, ViemStatus::NullPointer);
 
     for (mut invalid, expected) in [
@@ -169,7 +147,7 @@ fn abi_create_validates_pointers_and_every_option_domain() {
         // SAFETY: All pointers refer to live values. Each options value is
         // structurally readable but contains one intentionally invalid field.
         let status = unsafe {
-            viem_document_create(ptr::null(), 0, options_pointer, &mut handle, &mut revision)
+            viem_core_create(ptr::null(), 0, options_pointer, &mut handle, &mut revision)
         };
         assert_eq!(status, expected);
         assert_eq!((handle, revision), (0, 0));
@@ -215,7 +193,7 @@ fn snapshot_copy_is_revision_tagged_two_pass_and_length_delimited() {
     // SAFETY: `short` and `required` are distinct writable regions. The
     // deliberately short capacity must be reported without a partial copy.
     let status = unsafe {
-        viem_document_copy_source_bytes(
+        viem_core_copy_source_bytes(
             document.handle,
             document.revision,
             short.as_mut_ptr(),
@@ -235,7 +213,7 @@ fn snapshot_copy_is_revision_tagged_two_pass_and_length_delimited() {
     // SAFETY: The destination has one byte more capacity than the source and
     // is distinct from the required-length output.
     let status = unsafe {
-        viem_document_copy_source_bytes(
+        viem_core_copy_source_bytes(
             document.handle,
             0,
             oversized.as_mut_ptr(),
@@ -251,7 +229,7 @@ fn snapshot_copy_is_revision_tagged_two_pass_and_length_delimited() {
     // SAFETY: This is a valid length query with a deliberately stale
     // revision. The required-length output remains writable.
     let status = unsafe {
-        viem_document_copy_formatted_utf8(document.handle, 41, ptr::null_mut(), 0, &mut required)
+        viem_core_copy_formatted_utf8(document.handle, 41, ptr::null_mut(), 0, &mut required)
     };
     assert_eq!(status, ViemStatus::StaleRevision);
     assert_eq!(required, 0);
@@ -259,69 +237,16 @@ fn snapshot_copy_is_revision_tagged_two_pass_and_length_delimited() {
     // SAFETY: Null with a positive output capacity is intentionally invalid;
     // the required-length pointer is valid and distinct.
     let status = unsafe {
-        viem_document_copy_source_bytes(document.handle, 0, ptr::null_mut(), 1, &mut required)
+        viem_core_copy_source_bytes(document.handle, 0, ptr::null_mut(), 1, &mut required)
     };
     assert_eq!(status, ViemStatus::NullPointer);
 
     // SAFETY: This intentionally omits the required-length output, which must
     // be rejected before any output write.
     let status = unsafe {
-        viem_document_copy_source_bytes(document.handle, 0, ptr::null_mut(), 0, ptr::null_mut())
+        viem_core_copy_source_bytes(document.handle, 0, ptr::null_mut(), 0, ptr::null_mut())
     };
     assert_eq!(status, ViemStatus::NullPointer);
-}
-
-#[test]
-fn replacement_rejects_stale_revisions_invalid_utf8_and_grapheme_splits() {
-    let document = create(b"ae\xcc\x81z", ViemDocumentOptions::default());
-    assert_eq!(formatted_utf8(&document, 0), "ae\u{301}z".as_bytes());
-
-    let (status, revision) = replace(&document, 0, 2..2, b"x");
-    assert_eq!(status, ViemStatus::NotGraphemeBoundary);
-    assert_eq!(revision, 0);
-
-    let inverted_start = 4;
-    let inverted_end = 1;
-    let (status, revision) = replace(&document, 0, inverted_start..inverted_end, b"x");
-    assert_eq!(status, ViemStatus::InvalidRange);
-    assert_eq!(revision, 0);
-
-    let (status, revision) = replace(&document, 0, 1..4, &[0xff]);
-    assert_eq!(status, ViemStatus::InvalidUtf8);
-    assert_eq!(revision, 0);
-
-    let mut null_input_revision = 99;
-    // SAFETY: Null with a nonzero replacement length is intentionally invalid;
-    // the revision output itself is live and writable.
-    let status = unsafe {
-        viem_document_replace_formatted_utf8(
-            document.handle,
-            0,
-            1,
-            4,
-            ptr::null(),
-            1,
-            &mut null_input_revision,
-        )
-    };
-    assert_eq!(status, ViemStatus::NullPointer);
-    assert_eq!(null_input_revision, 0);
-
-    let (status, revision) = replace(&document, 0, 1..4, "ø".as_bytes());
-    assert_eq!(status, ViemStatus::Ok);
-    assert_eq!(revision, 1);
-    assert_eq!(source_bytes(&document, revision), "aøz".as_bytes());
-
-    let (status, returned_revision) = replace(&document, 0, 1..1, b"stale");
-    assert_eq!(status, ViemStatus::StaleRevision);
-    assert_eq!(returned_revision, 0);
-    assert_eq!(source_bytes(&document, revision), "aøz".as_bytes());
-
-    let mut queried_revision = 99;
-    // SAFETY: The output points to a live writable value.
-    let status = unsafe { viem_document_revision(document.handle, &mut queried_revision) };
-    assert_eq!(status, ViemStatus::Ok);
-    assert_eq!(queried_revision, revision);
 }
 
 #[test]
@@ -390,31 +315,28 @@ fn latin1_utf16_and_markdown_sources_round_trip_exactly() {
 }
 
 #[test]
-fn malformed_source_utf8_remains_opaque_while_replacement_utf8_is_strict() {
+fn malformed_source_utf8_remains_opaque_on_the_core_surface() {
     let source = [b'a', 0xff, b'b'];
     let document = create(&source, ViemDocumentOptions::default());
     assert_eq!(source_bytes(&document, 0), source);
     assert_eq!(formatted_utf8(&document, 0), "a\u{fffd}b".as_bytes());
 
-    let (status, revision) = replace(&document, 0, 1..4, &[0xff]);
-    assert_eq!(status, ViemStatus::InvalidUtf8);
-    assert_eq!(revision, 0);
-    assert_eq!(source_bytes(&document, 0), source);
+
 }
 
 #[test]
 fn destroying_a_handle_is_final_and_detected_by_every_operation() {
     let mut document = create(b"text", ViemDocumentOptions::default());
     let handle = document.handle;
-    assert_eq!(viem_document_destroy(handle), ViemStatus::Ok);
+    assert_eq!(viem_core_destroy(handle), ViemStatus::Ok);
     document.handle = 0;
-    assert_eq!(viem_document_destroy(handle), ViemStatus::InvalidHandle);
-    assert_eq!(viem_document_destroy(0), ViemStatus::InvalidHandle);
+    assert_eq!(viem_core_destroy(handle), ViemStatus::InvalidHandle);
+    assert_eq!(viem_core_destroy(0), ViemStatus::InvalidHandle);
 
     let mut revision = 99;
     // SAFETY: The output is valid; the destroyed handle is intentionally
     // invalid and must be rejected without accessing freed document state.
-    let status = unsafe { viem_document_revision(handle, &mut revision) };
+    let status = unsafe { viem_core_revision(handle, &mut revision) };
     assert_eq!(status, ViemStatus::InvalidHandle);
     assert_eq!(revision, 0);
 
@@ -422,65 +344,11 @@ fn destroying_a_handle_is_final_and_detected_by_every_operation() {
     // SAFETY: This is a valid length query against an intentionally destroyed
     // handle. The output remains writable.
     let status =
-        unsafe { viem_document_copy_source_bytes(handle, 0, ptr::null_mut(), 0, &mut required) };
+        unsafe { viem_core_copy_source_bytes(handle, 0, ptr::null_mut(), 0, &mut required) };
     assert_eq!(status, ViemStatus::InvalidHandle);
     assert_eq!(required, 0);
 
-    let mut new_revision = 99;
-    // SAFETY: Empty replacement input requires no readable pointer. The
-    // revision output is live; only the handle is intentionally invalid.
-    let status = unsafe {
-        viem_document_replace_formatted_utf8(handle, 0, 0, 0, ptr::null(), 0, &mut new_revision)
-    };
-    assert_eq!(status, ViemStatus::InvalidHandle);
-    assert_eq!(new_revision, 0);
-}
 
-#[test]
-fn concurrent_writers_get_one_serial_turn_without_holding_a_model_lock() {
-    let mut document = create(b"x", ViemDocumentOptions::default());
-    let handle = document.handle;
-    let first = std::thread::spawn(move || {
-        let mut revision = 99;
-        // SAFETY: The static replacement byte and stack output remain valid
-        // for the synchronous call. `handle` is a copyable opaque token.
-        let status = unsafe {
-            viem_document_replace_formatted_utf8(handle, 0, 0, 1, b"a".as_ptr(), 1, &mut revision)
-        };
-        (status, revision)
-    });
-    let second = std::thread::spawn(move || {
-        let mut revision = 99;
-        // SAFETY: The static replacement byte and stack output remain valid
-        // for the synchronous call. `handle` is a copyable opaque token.
-        let status = unsafe {
-            viem_document_replace_formatted_utf8(handle, 0, 0, 1, b"b".as_ptr(), 1, &mut revision)
-        };
-        (status, revision)
-    });
-
-    let outcomes = [first.join().unwrap(), second.join().unwrap()];
-    assert_eq!(
-        outcomes
-            .iter()
-            .filter(|(status, _)| *status == ViemStatus::Ok)
-            .count(),
-        1
-    );
-    assert_eq!(
-        outcomes
-            .iter()
-            .filter(|(status, revision)| {
-                matches!(status, ViemStatus::StaleRevision | ViemStatus::DocumentBusy)
-                    && *revision == 0
-            })
-            .count(),
-        1
-    );
-
-    document.revision = 1;
-    let content = formatted_utf8(&document, 1);
-    assert!(content == b"a" || content == b"b");
 }
 
 #[test]

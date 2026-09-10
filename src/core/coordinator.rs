@@ -584,7 +584,6 @@ pub enum CoreError {
     LayoutInstall(LayoutJobInstallRejection),
     /// Retained for Rust-facing compatibility with the original placeholder
     /// protocol. `SetViewportOrigin` no longer produces this error.
-    VerticalViewportOriginUnsupported,
     Composition(CompositionError),
     Persistence(PersistenceError),
     HardLineSourceRange(HardLineSourceRangeError),
@@ -6261,12 +6260,6 @@ impl<P: TextMeasurementProvider> Core<P> {
             .prepared_model_transaction()
             .text_position_map()
             .clone();
-        let line_undo_candidate = self
-            .views
-            .get(&view_id)
-            .expect("view existence checked by handle")
-            .commands
-            .capture_line_undo_for_external_edit(&self.document, request.edit().range.clone());
         let anchors = self
             .views
             .iter()
@@ -6321,11 +6314,6 @@ impl<P: TextMeasurementProvider> Core<P> {
             )
             .expect("composition preparation validated the committed caret boundary");
         target_commands.restore_typing_style(typing_named, typing_properties);
-        target_commands.update_line_undo_after_external_edit(
-            &self.document,
-            line_undo_candidate,
-            changed,
-        );
         for (id, commands) in next_commands {
             self.views
                 .get_mut(&id)
@@ -7718,22 +7706,7 @@ mod tests {
     }
 
     #[test]
-    fn line_undo_and_composition_rebased_marks_use_buffer_state() {
-        let mut core = Core::new(Document::new("abc"));
-        let first = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
-        let second = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
-        for character in ['A', '!', '\u{1b}', '0', 'x'] {
-            let event = if character == '\u{1b}' {
-                CoreEvent::Input(InputEvent::Key(Key::Escape))
-            } else {
-                key(character)
-            };
-            core.handle(first, event).unwrap();
-        }
-        assert_eq!(core.document().text(), "bc!");
-        core.handle(second, key('U')).unwrap();
-        assert_eq!(core.document().text(), "abc");
-
+    fn composition_rebased_marks_use_buffer_state() {
         let mut core = Core::new(Document::new("abc"));
         let first = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
         let second = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
@@ -7758,7 +7731,7 @@ mod tests {
     }
 
     #[test]
-    fn composition_updates_the_shared_exact_line_undo_baseline() {
+    fn composition_commits_use_shared_ordinary_undo_and_redo() {
         let mut core = Core::new(Document::new("abc\ndef"));
         let writer = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
         let reader = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
@@ -7780,31 +7753,12 @@ mod tests {
         assert_eq!(core.document().text(), "aXY\ndef");
 
         core.handle(reader, key('j')).unwrap();
-        core.handle(reader, key('U')).unwrap();
+        core.handle(reader, key('2')).unwrap();
+        core.handle(reader, key('u')).unwrap();
         assert_eq!(core.document().text(), "abc\ndef");
-        assert_eq!(
-            core.command_state(reader).unwrap().cursor(),
-            0,
-            "the shared U target is independent of the invoking view's cursor"
-        );
-
-        core.handle(writer, begin_composition(&core, 4..5)).unwrap();
-        core.handle(
-            writer,
-            CoreEvent::Composition(CompositionEvent::Update(CompositionUpdate {
-                marked_text: "D".to_owned(),
-                selected_range: 1..1,
-            })),
-        )
-        .unwrap();
-        core.handle(writer, CoreEvent::Composition(CompositionEvent::Commit))
-            .unwrap();
-        assert_eq!(core.document().text(), "abc\nDef");
-
-        core.handle(reader, key('0')).unwrap();
-        core.handle(reader, key('U')).unwrap();
-        assert_eq!(core.document().text(), "abc\ndef");
-        assert_eq!(core.command_state(reader).unwrap().cursor(), 4);
+        core.handle(writer, key('2')).unwrap();
+        core.handle(writer, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r')))).unwrap();
+        assert_eq!(core.document().text(), "aXY\ndef");
     }
 
     #[test]

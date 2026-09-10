@@ -17,6 +17,12 @@ pub(super) struct Rule {
     version: u8,
 }
 
+impl Rule {
+    fn selector<'a>(&self, text: &'a str) -> &'a str {
+        text[self.range.clone()].split_once(" {\n").unwrap().0
+    }
+}
+
 pub(super) struct OwnedSheet {
     pub sheet: StyleSheet,
     pub rules: Vec<Rule>,
@@ -692,18 +698,23 @@ pub(super) fn read_with_semantics(text: &str, semantic_tokens: &[html::Token]) -
     // Only the exact declared grammar is adopted. Unknown declarations/whitespace
     // remain opaque and never become targets for rule replacement.
     rules.retain(|rule| {
-        let writer = if rule.version == 1 {
-            write_rule
+        let id = rule.definition.style_id();
+        let character = !rule.definition.is_block();
+        let canonical = if rule.version == 1 {
+            canonical_v1_spelling(&sheet, id, character)
         } else {
-            write_rule_v2
+            write_rule_for_selector(&sheet, id, character, rule.selector(text))
         };
-        writer(
-            &sheet,
-            rule.definition.style_id(),
-            !rule.definition.is_block(),
-        )
-        .as_deref()
-            == Some(&text[rule.range.clone()])
+        canonical.as_deref() == Some(&text[rule.range.clone()])
+            // Early v2 tombstones inherited the body font. Retain that exact
+            // import spelling; all subsequent authoring uses Paragraph CSS.
+            || (rule.version == 2
+                && matches!(rule.definition, StyleDefinitionEdit::DeleteBlock(_))
+                && native_style_selector(&sheet, id, false).as_deref() == Some(rule.selector(text))
+                && text[rule.range.clone()] == format!(
+                    "{} {{\n  --viem-style-deleted: \"true\";\n  font: inherit;\n  margin: 0;\n}}\n",
+                    rule.selector(text),
+                ))
     });
     let definitions = rules
         .iter()
@@ -851,12 +862,14 @@ pub(super) fn block_css(properties: &BlockProperties) -> String {
     out
 }
 
-pub(super) fn write_rule(sheet: &StyleSheet, id: &StyleId, character: bool) -> Option<String> {
+// Import validation only: the frozen v1 grammar includes its exact fallback CSS.
+// All authored definitions use write_rule and are emitted as v2.
+fn canonical_v1_spelling(sheet: &StyleSheet, id: &StyleId, character: bool) -> Option<String> {
     if !character && StyleSheet::builtin_block(id) && sheet.block_style(id).is_none() {
         // An additive v1 rule persists deletion of an otherwise implicit
         // heading definition. Its ordinary CSS presents hN as the default
         // paragraph in passive readers as well as in the editable projection.
-        let paragraph = write_rule(sheet, &sheet.base_paragraph, false)?;
+        let paragraph = canonical_v1_spelling(sheet, &sheet.base_paragraph, false)?;
         let (_, body) = paragraph.split_once(" {\n")?;
         let mut out = format!("{} {{\n  --viem-style-id: {};\n  --viem-style-deleted: \"true\";\n  font: inherit;\n  margin: 0;\n",
             selector(sheet, id, false), quote(&id.0));
@@ -913,31 +926,7 @@ pub(super) fn write_rule(sheet: &StyleSheet, id: &StyleId, character: bool) -> O
     for (key, value) in properties(&own_character, &own_block) {
         out.push_str(&format!("  --viem-prop-{key}: {};\n", quote(&value)));
     }
-    let (effective_character, mut effective_block) = if character {
-        (character_chain(sheet, id), BlockProperties::default())
-    } else {
-        let mut chain = Vec::new();
-        let mut current = Some(id);
-        while let Some(id) = current {
-            let style = sheet.block_style(id)?;
-            chain.push(style);
-            current = style.based_on.as_ref();
-        }
-        let mut c = CharacterProperties::default();
-        let mut b = BlockProperties::default();
-        for style in chain.into_iter().rev() {
-            overlay_character(&mut c, &style.character);
-            overlay_block(&mut b, &style.block);
-        }
-        (c, b)
-    };
-    if role != "document" {
-        effective_block.background = None;
-        effective_block.padding_top = None;
-        effective_block.padding_right = None;
-        effective_block.padding_bottom = None;
-        effective_block.padding_left = None;
-    }
+    let (effective_character, effective_block) = effective_style_properties(sheet, id, character)?;
     let css = format!(
         "{}; {}",
         html::character_css(&effective_character),
@@ -984,6 +973,7 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
         }
     }
     let native = native_definition(selector);
+    let native_selector = native.is_some();
     let (id, character, mut parent, mut next, mut name, mut c, mut b) =
         if let Some((sheet, id, character)) = native {
             if character {
@@ -1016,7 +1006,7 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
                 "character" => true,
                 _ => return None,
             };
-            if selector != selector_v2(&StyleSheet::default(), &id, character) {
+            if selector != format!(".{}", class_name(&id, character)) {
                 return None;
             }
             (
@@ -1046,7 +1036,7 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
         next = (!value.is_empty()).then_some(StyleId(value));
     }
     v2_css_properties(body, &mut c, &mut b);
-    if let Some(level) = list_style_level(&id) {
+    if let Some(level) = native_selector.then(|| list_style_level(&id)).flatten() {
         if html::declarations(body)
             .iter()
             .any(|(key, _)| *key == "margin-inline-start")
@@ -1125,32 +1115,51 @@ fn block_chain(sheet: &StyleSheet, id: &StyleId) -> Option<(CharacterProperties,
     Some((c, b))
 }
 
+fn effective_style_properties(
+    sheet: &StyleSheet,
+    id: &StyleId,
+    character: bool,
+) -> Option<(CharacterProperties, BlockProperties)> {
+    let (c, mut b) = if character {
+        (character_chain(sheet, id), BlockProperties::default())
+    } else {
+        block_chain(sheet, id)?
+    };
+    if character || id != &sheet.base_document {
+        b.background = None;
+        b.padding_top = None;
+        b.padding_right = None;
+        b.padding_bottom = None;
+        b.padding_left = None;
+    }
+    Some((c, b))
+}
+
 fn list_style_level(id: &StyleId) -> Option<u16> {
     id.list_family_level()
         .map(|(_, level)| u16::from(level))
         .or_else(|| id.legacy_list_level())
 }
 
-fn minimal_style_css(sheet: &StyleSheet, id: &StyleId, character: bool) -> Option<String> {
+fn minimal_style_css(
+    sheet: &StyleSheet,
+    id: &StyleId,
+    character: bool,
+    native_selector: bool,
+) -> Option<String> {
     let document = !character && id == &sheet.base_document;
-    let list_level = (!character && is_native_style(sheet, id, false))
+    let list_level = (!character && native_selector)
         .then(|| list_style_level(id))
         .flatten();
-    let previous_list = list_level
-        .filter(|level| *level > 1)
-        .and_then(|level| {
-            let previous = if let Some((ordered, _)) = id.list_family_level() {
-                sheet.list_style_id(ordered, (level - 2) as u8)
-            } else {
-                StyleId(format!("List{}", level - 1))
-            };
-            block_chain(sheet, &previous)
-        });
-    let (mut c, mut b) = if character {
-        (character_chain(sheet, id), BlockProperties::default())
-    } else {
-        block_chain(sheet, id)?
-    };
+    let previous_list = list_level.filter(|level| *level > 1).and_then(|level| {
+        let previous = if let Some((ordered, _)) = id.list_family_level() {
+            sheet.list_style_id(ordered, (level - 2) as u8)
+        } else {
+            StyleId(format!("List{}", level - 1))
+        };
+        block_chain(sheet, &previous)
+    });
+    let (mut c, mut b) = effective_style_properties(sheet, id, character)?;
     let mut inherited = if document || character {
         CharacterProperties {
             weight: Some(400),
@@ -1169,7 +1178,7 @@ fn minimal_style_css(sheet: &StyleSheet, id: &StyleId, character: bool) -> Optio
     if let Some((previous, _)) = &previous_list {
         inherited = previous.clone();
     }
-    if !character {
+    if !character && native_selector {
         if let Some(level) = builtin_heading(id) {
             inherited.weight = Some(700);
             // Browser heading sizes are intrinsic, not inherited from body.
@@ -1178,7 +1187,7 @@ fn minimal_style_css(sheet: &StyleSheet, id: &StyleId, character: bool) -> Optio
                 .map(|size| size * [2.0, 1.5, 1.17, 1.0, 0.83, 0.67][usize::from(level - 1)]);
         }
     }
-    if id.0 == "Code" || id.0 == "Code Block" {
+    if native_selector && (id.0 == "Code" || id.0 == "Code Block") {
         inherited.font_families = Some(vec!["monospace".into()]);
     }
     macro_rules! inherited { ($($field:ident),*) => {$(if c.$field == inherited.$field { c.$field = None; })*}; }
@@ -1199,13 +1208,6 @@ fn minimal_style_css(sheet: &StyleSheet, id: &StyleId, character: bool) -> Optio
     // A relative emphasis needs its base weight even when that base is inherited.
     if c.bold.is_some() && c.weight.is_none() {
         c.weight = inherited.weight;
-    }
-    if !document {
-        b.background = None;
-        b.padding_top = None;
-        b.padding_right = None;
-        b.padding_bottom = None;
-        b.padding_left = None;
     }
     if let Some(level) = list_level {
         // Container indentation is already supplied by ul/ol; this declaration
@@ -1235,7 +1237,7 @@ fn minimal_style_css(sheet: &StyleSheet, id: &StyleId, character: bool) -> Optio
         padding_bottom,
         padding_left
     );
-    if list_style_level(id).is_some() {
+    if list_level.is_some() {
         zero!(spacing_before, spacing_after);
     }
     if b.line_spacing == Some(LineSpacing::Normal)
@@ -1257,7 +1259,11 @@ fn minimal_style_css(sheet: &StyleSheet, id: &StyleId, character: bool) -> Optio
     if b.base_direction == Some(WritingDirection::Natural) {
         b.base_direction = None;
     }
-    let css = format!("{}; {}", html::character_css(&c), block_css(&b));
+    Some(style_css(&c, &b))
+}
+
+fn style_css(c: &CharacterProperties, b: &BlockProperties) -> String {
+    let css = format!("{}; {}", html::character_css(c), block_css(b));
     let mut result = String::new();
     for (key, value) in html::declarations(&css) {
         if !key.starts_with("--viem-") {
@@ -1273,13 +1279,34 @@ fn minimal_style_css(sheet: &StyleSheet, id: &StyleId, character: bool) -> Optio
             result.push_str(&format!("  {key}: {value};\n"));
         }
     }
-    Some(result)
+    result
 }
 
-pub(super) fn write_rule_v2(sheet: &StyleSheet, id: &StyleId, character: bool) -> Option<String> {
-    let selector = selector_v2(sheet, id, character);
+pub(super) fn write_rule(sheet: &StyleSheet, id: &StyleId, character: bool) -> Option<String> {
+    write_rule_for_selector(sheet, id, character, &selector_v2(sheet, id, character))
+}
+
+// Native class assignments imported from v1 keep their selectors. A class has
+// no native HTML defaults: the same v2 grammar emits its full necessary CSS.
+fn write_rule_for_selector(
+    sheet: &StyleSheet,
+    id: &StyleId,
+    character: bool,
+    selector: &str,
+) -> Option<String> {
+    let native = native_definition(selector);
     if !character && StyleSheet::builtin_block(id) && sheet.block_style(id).is_none() {
-        return Some(format!("{selector} {{\n  --viem-style-deleted: \"true\";\n  font: inherit;\n  margin: 0;\n}}\n"));
+        let identity = if native.is_none() {
+            format!(
+                "  --viem-style-id: {};\n  --viem-style-role: \"paragraph\";\n",
+                quote(&id.0)
+            )
+        } else {
+            String::new()
+        };
+        let (c, b) = effective_style_properties(sheet, &sheet.base_paragraph, false)?;
+        let fallback = style_css(&c, &b);
+        return Some(format!("{selector} {{\n{identity}  --viem-style-deleted: \"true\";\n  font: inherit;\n  margin: 0;\n{fallback}}}\n"));
     }
     let (name, parent, next, c, b) = if character {
         let style = sheet.character_style(id)?;
@@ -1304,7 +1331,7 @@ pub(super) fn write_rule_v2(sheet: &StyleSheet, id: &StyleId, character: bool) -
         )
     };
     let mut metadata = String::new();
-    if let Some((baseline, _, _)) = native_definition(&selector) {
+    if let Some((baseline, _, _)) = &native {
         let (base_name, base_parent, base_next) = if character {
             let style = baseline.character_style(id)?;
             (
@@ -1355,7 +1382,7 @@ pub(super) fn write_rule_v2(sheet: &StyleSheet, id: &StyleId, character: bool) -
             metadata.push_str(&format!("  --viem-next-style: {};\n", quote(&next.0)));
         }
     }
-    let css = minimal_style_css(sheet, id, character)?;
+    let css = minimal_style_css(sheet, id, character, native.is_some())?;
     let provisional = format!("{selector} {{\n{metadata}{css}}}\n");
     // Generate only the residual that CSS cannot round-trip. This deliberately
     // avoids parallel, duplicate copies of ordinary font/spacing declarations.
@@ -1389,9 +1416,9 @@ pub(super) fn write_rule_v2(sheet: &StyleSheet, id: &StyleId, character: bool) -
 
 pub(super) fn definition_patches_with_policy(
     text: &str,
-    _before: &StyleSheet,
     after: &StyleSheet,
     include_builtin_definitions: bool,
+    file_format: FileFormat,
 ) -> Result<Vec<(Range<usize>, String)>, DocumentError> {
     // Application settings are deliberately absent from the canonical source
     // grammar when native style export is disabled. In particular a saved
@@ -1446,26 +1473,18 @@ pub(super) fn definition_patches_with_policy(
             rule.definition.is_block(),
             rule.definition.style_id().clone(),
         );
-        old.insert(key.clone());
+        let selector = rule.selector(text);
+        old.insert((key.0, key.1.clone(), selector.to_owned()));
         if !include_builtin_definitions && is_native_style(after, &key.1, !key.0) {
             patches.push((rule.range.clone(), String::new()));
             continue;
         }
-        if rule.version == 1 {
-            // An unchanged legacy rule is byte-exact. Changed definitions move
-            // to a v2 sheet rather than changing the version-one contract.
-            if write_rule(after, &key.1, !key.0).as_deref() != Some(&text[rule.range.clone()]) {
-                patches.push((rule.range.clone(), String::new()));
-                append.push_str(&write_rule_v2(after, &key.1, !key.0).unwrap_or_default());
-            }
-        } else {
-            let mut next = write_rule_v2(after, &key.1, !key.0).unwrap_or_default();
-            if next.ends_with(" {\n}\n") {
-                next.clear();
-            }
-            if next != text[rule.range.clone()] {
-                patches.push((rule.range.clone(), next));
-            }
+        let mut next = write_rule_for_selector(after, &key.1, !key.0, selector).unwrap_or_default();
+        if next.ends_with(" {\n}\n") {
+            next.clear();
+        }
+        if rule.version == 1 || next != text[rule.range.clone()] {
+            patches.push((rule.range.clone(), next));
         }
     }
     for (character, id) in after
@@ -1495,10 +1514,10 @@ pub(super) fn definition_patches_with_policy(
         }
         if (include_builtin_definitions && native
             || metadata.is_some_and(|m| m.origin == StyleDefinitionOrigin::SourceBacked))
-            && !old.contains(&(!character, id.clone()))
+            && !old.contains(&(!character, id.clone(), selector_v2(after, id, character)))
         {
             let rule =
-                write_rule_v2(after, id, character).ok_or(DocumentError::UnsupportedFormatting)?;
+                write_rule(after, id, character).ok_or(DocumentError::UnsupportedFormatting)?;
             if !rule.ends_with(" {\n}\n") {
                 append.push_str(&rule);
             }
@@ -1508,9 +1527,9 @@ pub(super) fn definition_patches_with_policy(
         if !include_builtin_definitions && is_native_style(after, id, false) {
             continue;
         }
-        if !old.contains(&(true, id.clone())) {
+        if !old.contains(&(true, id.clone(), selector_v2(after, id, false))) {
             append.push_str(
-                &write_rule_v2(after, id, false).ok_or(DocumentError::UnsupportedFormatting)?,
+                &write_rule(after, id, false).ok_or(DocumentError::UnsupportedFormatting)?,
             );
         }
     }
@@ -1528,8 +1547,7 @@ pub(super) fn definition_patches_with_policy(
         .chain(after.character_styles().map(|style| (true, &style.id)))
         .any(|(character, id)| {
             native_style_selector(after, id, character).is_some()
-                && write_rule_v2(after, id, character)
-                    .is_some_and(|rule| !rule.ends_with(" {\n}\n"))
+                && write_rule(after, id, character).is_some_and(|rule| !rule.ends_with(" {\n}\n"))
         })
         || after.deleted_source_blocks().next().is_some();
     if include_builtin_definitions && !has_native_output && !owned.empty_v2_marker {
@@ -1584,6 +1602,9 @@ pub(super) fn definition_patches_with_policy(
             continue;
         };
         let body = token.range.end..end.range.start;
+        if &text[token.range.clone()] == OPEN {
+            migrate_legacy_sheet(text, token.range.clone(), end.range.clone(), &mut patches);
+        }
         let mut changes = patches
             .iter()
             .filter(|(range, _)| body.start <= range.start && range.end <= body.end)
@@ -1607,7 +1628,74 @@ pub(super) fn definition_patches_with_policy(
             patches.push((token.range.start..end.range.end, String::new()));
         }
     }
+    // Generated CSS follows the document's physical line endings. Mixing LF
+    // into a DOS file can change detection on reopen and invalidate old rules.
+    for (_, replacement) in &mut patches {
+        *replacement = replacement.replace('\n', file_format.spelling());
+    }
     Ok(patches)
+}
+
+/// Change only adopted rules in their original cascade positions. An entirely
+/// owned sheet needs one version-token edit. Opaque gaps retain v1 wrappers;
+/// adjacent authored runs get v2 wrappers without moving across those gaps.
+fn migrate_legacy_sheet(
+    text: &str,
+    opening: Range<usize>,
+    closing: Range<usize>,
+    patches: &mut Vec<(Range<usize>, String)>,
+) {
+    let body = opening.end..closing.start;
+    let (mut changes, other): (Vec<_>, Vec<_>) = std::mem::take(patches)
+        .into_iter()
+        .partition(|(range, _)| body.start <= range.start && range.end <= body.end);
+    *patches = other;
+    changes.sort_by_key(|(range, _)| (range.start, range.end));
+    let mut runs: Vec<(Range<usize>, String)> = Vec::new();
+    for (range, replacement) in changes {
+        if let Some((previous, output)) = runs
+            .last_mut()
+            .filter(|(previous, _)| text[previous.end..range.start].trim().is_empty())
+        {
+            output.push_str(&text[previous.end..range.start]);
+            output.push_str(&replacement);
+            previous.end = range.end;
+        } else {
+            runs.push((range, replacement));
+        }
+    }
+    if runs.len() == 1
+        && text[body.start..runs[0].0.start].trim().is_empty()
+        && text[runs[0].0.end..body.end].trim().is_empty()
+    {
+        if !runs[0].1.trim().is_empty() {
+            patches.push((opening, OPEN_V2.into()));
+        }
+        patches.extend(runs);
+        return;
+    }
+    for (mut range, replacement) in runs {
+        if replacement.trim().is_empty() {
+            patches.push((range, replacement));
+            continue;
+        }
+        let mut output = if text[body.start..range.start].trim().is_empty() {
+            let prefix = format!("{OPEN_V2}{}", &text[body.start..range.start]);
+            range.start = opening.start;
+            prefix
+        } else {
+            format!("</style>{OPEN_V2}\n")
+        };
+        output.push_str(&replacement);
+        if text[range.end..body.end].trim().is_empty() {
+            output.push_str(&text[range.end..body.end]);
+            output.push_str(&text[closing.clone()]);
+            range.end = closing.end;
+        } else {
+            output.push_str(&format!("</style>{OPEN}"));
+        }
+        patches.push((range, output));
+    }
 }
 
 fn html_attribute(value: &str) -> String {
@@ -1624,7 +1712,7 @@ fn html_attribute(value: &str) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn canonical_owned_sheet_writer_reader_golden_roundtrip() {
+    fn legacy_import_preserves_the_frozen_style_graph() {
         let mut sheet = StyleSheet::default();
         sheet.mark_html_base_styles_source_backed();
         let style = BlockStyle {
@@ -1643,7 +1731,7 @@ mod tests {
             origin: StyleDefinitionOrigin::SourceBacked,
         };
         sheet.insert_block_style(style, metadata).unwrap();
-        // Freeze the complete old reader/writer contract independently of the
+        // Freeze the complete legacy import contract independently of the
         // current export policy and v2 writer.
         let rules = sheet
             .block_styles()
@@ -1652,7 +1740,7 @@ mod tests {
                     .block_style_metadata(&style.id)
                     .is_some_and(|m| m.origin == StyleDefinitionOrigin::SourceBacked)
             })
-            .map(|style| write_rule(&sheet, &style.id, false).unwrap())
+            .map(|style| canonical_v1_spelling(&sheet, &style.id, false).unwrap())
             .collect::<String>();
         let text = format!("{OPEN}\n{rules}</style>");
         let parsed = read(&text);
@@ -1666,6 +1754,349 @@ mod tests {
                 parsed.sheet.block_style_metadata(&style.id),
                 sheet.block_style_metadata(&style.id),
                 "source={text}"
+            );
+        }
+    }
+
+    #[test]
+    fn migration_preserves_unchanged_custom_styles_and_legacy_native_definitions() {
+        let mut sheet = StyleSheet::for_format(Format::Html);
+        sheet.mark_html_export_definitions_source_backed();
+        sheet
+            .insert_block_style(
+                BlockStyle {
+                    id: "First".into(),
+                    based_on: Some("Heading1".into()),
+                    next_paragraph_style: Some("Paragraph".into()),
+                    role: BlockRole::Paragraph,
+                    character: CharacterProperties {
+                        size: Some(18.0),
+                        ..Default::default()
+                    },
+                    block: Default::default(),
+                },
+                StyleDefinitionMetadata {
+                    display_name: "First".into(),
+                    origin: StyleDefinitionOrigin::SourceBacked,
+                },
+            )
+            .unwrap();
+        let rules = sheet
+            .block_styles()
+            .map(|style| canonical_v1_spelling(&sheet, &style.id, false).unwrap())
+            .collect::<String>();
+        let body = "<h1>Head</h1><p class='viem-p-4669727374'>Words</p><!--keep-->";
+        let source = format!("{OPEN}\n{rules}</style>{body}");
+        let mut document =
+            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+        assert!(document.include_style_definitions_in_file());
+        let before = document.projection().style_sheet().clone();
+        document
+            .apply_style_request(StyleModelRequest::new(
+                document.id(),
+                document.revision(),
+                StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
+                    origin: StyleDefinitionOrigin::SourceBacked,
+                    edit: StyleDefinitionEdit::InsertCharacter {
+                        style: CharacterStyle {
+                            id: "Added".into(),
+                            based_on: Some("Character".into()),
+                            properties: CharacterProperties {
+                                slant: Some(FontSlant::Italic),
+                                ..Default::default()
+                            },
+                        },
+                        metadata: StyleDefinitionMetadata {
+                            display_name: "Added".into(),
+                            origin: StyleDefinitionOrigin::SourceBacked,
+                        },
+                    },
+                }),
+            ))
+            .unwrap();
+        let saved = String::from_utf8(document.source_bytes()).unwrap();
+        assert!(!saved.contains(OPEN), "{saved}");
+        assert!(saved.ends_with(body));
+        let reopened = Document::from_bytes(saved.into_bytes(), Encoding::Utf8, Format::Html).unwrap();
+        assert_eq!(reopened.text(), "Head\nWords");
+        assert_eq!(
+            reopened.projection().blocks()[1].style,
+            StyleId::from("First")
+        );
+        for style in before.block_styles() {
+            assert_eq!(
+                reopened.projection().style_sheet().block_style(&style.id),
+                Some(style)
+            );
+        }
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+
+    #[test]
+    fn migrated_native_classes_and_new_native_assignments_share_one_v2_definition() {
+        let mut sheet = StyleSheet::for_format(Format::Html);
+        sheet.ensure_list_level(1);
+        sheet.mark_html_export_definitions_source_backed();
+        let rules = sheet
+            .block_styles()
+            .map(|style| canonical_v1_spelling(&sheet, &style.id, false).unwrap())
+            .chain(
+                sheet
+                    .character_styles()
+                    .map(|style| canonical_v1_spelling(&sheet, &style.id, true).unwrap()),
+            )
+            .collect::<String>();
+        let code_class = class_name(&"Code Block".into(), false);
+        let quote_class = class_name(&"Block quote".into(), false);
+        let list_class = class_name(&"List1".into(), false);
+        let inline_class = class_name(&"Code".into(), true);
+        let body = format!("<p class='{code_class} keep' data-keep='yes'>Old  words</p><p class='{quote_class}'>Quote</p><div class='{list_class}'>List</div><p><span class='{inline_class}'>Inline</span></p><p>New</p>");
+        let source = format!("{OPEN}\n{rules}</style>{body}");
+        let mut document =
+            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+        let before_text = document.text().to_owned();
+        let before_blocks = document
+            .projection()
+            .blocks()
+            .iter()
+            .map(|block| (block.kind.clone(), block.style.clone()))
+            .collect::<Vec<_>>();
+        for size in [20.0, 24.0] {
+            let mut style = document
+                .projection()
+                .style_sheet()
+                .block_style(&"Code Block".into())
+                .unwrap()
+                .clone();
+            style.character.size = Some(size);
+            document
+                .apply_style_request(StyleModelRequest::new(
+                    document.id(),
+                    document.revision(),
+                    StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
+                        origin: StyleDefinitionOrigin::SourceBacked,
+                        edit: StyleDefinitionEdit::UpdateBlock(style),
+                    }),
+                ))
+                .unwrap();
+            let saved = String::from_utf8(document.source_bytes()).unwrap();
+            assert!(!saved.contains(OPEN), "{saved}");
+            assert!(saved.ends_with(&body));
+            assert_eq!(document.text(), before_text);
+            assert_eq!(
+                document
+                    .projection()
+                    .blocks()
+                    .iter()
+                    .map(|block| (block.kind.clone(), block.style.clone()))
+                    .collect::<Vec<_>>(),
+                before_blocks
+            );
+            let parsed = read(&saved);
+            let css = |selector: &str| {
+                let rule = parsed
+                    .rules
+                    .iter()
+                    .find(|rule| rule.selector(&saved) == selector)
+                    .unwrap();
+                &saved[rule.range.clone()]
+            };
+            assert!(css(&format!(".{code_class}")).contains("font-family: monospace;"));
+            assert!(css(&format!(".{code_class}")).contains(&format!("font-size: {size}pt;")));
+            assert!(css("pre").contains(&format!("font-size: {size}pt;")));
+            assert!(css(&format!(".{inline_class}")).contains("font-family: monospace;"));
+            assert!(css(&format!(".{quote_class}")).contains("margin-inline-start: 32pt;"));
+            assert!(css(&format!(".{list_class}")).contains("margin-inline-start: 32pt;"));
+            let reopened =
+                Document::from_bytes(saved.into_bytes(), Encoding::Utf8, Format::Html).unwrap();
+            assert_eq!(reopened.text(), before_text);
+            assert_eq!(
+                reopened
+                    .projection()
+                    .style_sheet()
+                    .block_style(&"Code Block".into())
+                    .unwrap()
+                    .character
+                    .size,
+                Some(size)
+            );
+        }
+        let range = TextRange::new(
+            document.text_point(before_text.len() - 3).unwrap(),
+            document.text_point(before_text.len()).unwrap(),
+        )
+        .unwrap();
+        document
+            .apply_style_request(StyleModelRequest::new(
+                document.id(),
+                document.revision(),
+                StyleModelIntent::Persisted(PersistedStyleIntent::AssignBlockStyle {
+                    target: StyleBlockTarget::Paragraphs(range),
+                    style: "Code Block".into(),
+                }),
+            ))
+            .unwrap();
+        let saved = String::from_utf8(document.source_bytes()).unwrap();
+        assert!(saved.ends_with("<pre>New</pre>"), "{saved}");
+        assert_eq!(document.text(), before_text);
+        assert_eq!(
+            document.projection().blocks().last().unwrap().style,
+            StyleId::from("Code Block")
+        );
+        assert!(document.undo());
+        assert!(document.undo());
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+
+    #[test]
+    fn deleted_native_rules_migrate_and_follow_full_paragraph_fallback() {
+        let mut sheet = StyleSheet::for_format(Format::Html);
+        sheet.mark_html_base_styles_source_backed();
+        let mut body = sheet.block_style(&sheet.base_document).unwrap().clone();
+        body.character.letter_spacing = Some(2.0);
+        let mut paragraph = sheet.block_style(&sheet.base_paragraph).unwrap().clone();
+        paragraph.character.size = Some(20.0);
+        paragraph.character.letter_spacing = Some(0.0);
+        paragraph.block.spacing_before = Some(12.0);
+        paragraph.block.spacing_after = Some(8.0);
+        for edit in [
+            StyleDefinitionEdit::UpdateBlock(body),
+            StyleDefinitionEdit::UpdateBlock(paragraph.clone()),
+            StyleDefinitionEdit::DeleteBlock("Heading1".into()),
+        ] {
+            sheet
+                .apply_source_edit(&edit, StyleSheetRevision(sheet.revision.0 + 1), false)
+                .unwrap();
+        }
+        let old_v2 = "h1 {\n  --viem-style-deleted: \"true\";\n  font: inherit;\n  margin: 0;\n}\n";
+        let content = "<h1 data-keep='yes'>Head</h1><p>Tail</p><!--keep-->";
+        for (opening, version_one) in [(OPEN, true), (OPEN_V2, false)] {
+            let writer = if version_one {
+                canonical_v1_spelling
+            } else {
+                write_rule
+            };
+            let rules = [&sheet.base_document, &sheet.base_paragraph]
+                .into_iter()
+                .map(|id| writer(&sheet, id, false).unwrap())
+                .collect::<String>();
+            let deletion = if version_one {
+                canonical_v1_spelling(&sheet, &"Heading1".into(), false).unwrap()
+            } else {
+                old_v2.to_owned()
+            };
+            let source = format!("<style>h1 {{ text-align: center; margin-inline-start: 16pt }}</style>{opening}\n{rules}{deletion}</style>{content}");
+            for format in [Format::Html, Format::HtmlSource] {
+                let mut document =
+                    Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+                assert_eq!(document.source_bytes(), source.as_bytes());
+                assert!(document
+                    .projection()
+                    .style_sheet()
+                    .block_style(&"Heading1".into())
+                    .is_none());
+                let apply = |document: &mut Document, edit| {
+                    document
+                        .apply_style_request(StyleModelRequest::new(
+                            document.id(),
+                            document.revision(),
+                            StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
+                                origin: StyleDefinitionOrigin::SourceBacked,
+                                edit,
+                            }),
+                        ))
+                        .unwrap()
+                };
+                let unchanged = apply(
+                    &mut document,
+                    StyleDefinitionEdit::UpdateBlock(paragraph.clone()),
+                );
+                assert_eq!(unchanged.summary().kind(), ModelChangeKind::NoOp);
+                assert_eq!(document.source_bytes(), source.as_bytes());
+                let mut changed = paragraph.clone();
+                changed.character.size = Some(22.0);
+                for (size, edit) in [
+                    (
+                        20.0,
+                        StyleDefinitionEdit::UpdateMetadata {
+                            namespace: StyleNamespace::Block,
+                            id: "Paragraph".into(),
+                            metadata: StyleDefinitionMetadata {
+                                display_name: "Body copy".into(),
+                                origin: StyleDefinitionOrigin::SourceBacked,
+                            },
+                        },
+                    ),
+                    (22.0, StyleDefinitionEdit::UpdateBlock(changed)),
+                ] {
+                    apply(&mut document, edit);
+                    let saved = String::from_utf8(document.source_bytes()).unwrap();
+                    assert!(saved.ends_with(content));
+                    assert!(!saved.contains(OPEN));
+                    let parsed = read(&saved);
+                    let rule = parsed.rules.iter().find(|rule| matches!(&rule.definition, StyleDefinitionEdit::DeleteBlock(id) if id.0 == "Heading1")).unwrap();
+                    let css = &saved[rule.range.clone()];
+                    for declaration in [
+                        format!("font-size: {size}pt;"),
+                        "margin-block-start: 12pt;".into(),
+                        "margin-block-end: 8pt;".into(),
+                        "text-align: start;".into(),
+                        "margin-inline-start: 0pt;".into(),
+                        "letter-spacing: 0pt;".into(),
+                    ] {
+                        assert!(css.contains(&declaration), "{css}");
+                    }
+                    assert!(!css.contains("padding-"));
+                    let reopened =
+                        Document::from_bytes(saved.into_bytes(), Encoding::Utf8, Format::Html).unwrap();
+                    assert_eq!(reopened.text(), "Head\nTail");
+                    let resolved = crate::layout::DocumentLayoutStyles::semantic_character_at(
+                        reopened.projection(), 0, false,
+                    ).unwrap();
+                    assert_eq!(resolved.size, size);
+                    assert_eq!(resolved.letter_spacing, 0.0);
+                    assert_eq!(
+                        reopened.projection().blocks()[0].style,
+                        StyleId::from("Paragraph")
+                    );
+                    assert_eq!(
+                        reopened
+                            .projection()
+                            .style_sheet()
+                            .block_style(&"Paragraph".into())
+                            .unwrap()
+                            .character
+                            .size,
+                        Some(size)
+                    );
+                }
+                assert!(document.undo());
+                assert!(document.undo());
+                assert_eq!(document.source_bytes(), source.as_bytes());
+            }
+        }
+    }
+
+    #[test]
+    fn old_v2_deletion_import_rejects_unknown_declarations_and_spelling() {
+        let old = "h1 {\n  --viem-style-deleted: \"true\";\n  font: inherit;\n  margin: 0;\n}\n";
+        for rule in [
+            old.replace("  margin: 0;", "  margin: 0;\n  color: red;"),
+            old.replace("font: inherit", "font:  inherit"),
+            old.replace("h1 {", "h01 {"),
+        ] {
+            let source = format!("{OPEN_V2}\n{rule}</style><h1>Head</h1>");
+            let parsed = read(&source);
+            assert!(parsed.rules.is_empty());
+            assert!(parsed.sheet.block_style(&"Heading1".into()).is_some());
+            let document =
+                Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            assert_eq!(
+                document.projection().blocks()[0].style,
+                StyleId::from("Heading1")
             );
         }
     }
@@ -1691,7 +2122,7 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(write_rule(&sheet,&StyleId::from("A"),true).unwrap(),
+        assert_eq!(canonical_v1_spelling(&sheet,&StyleId::from("A"),true).unwrap(),
             ".viem-c-41 {\n  --viem-style-id: \"A\";\n  --viem-style-name: \"A \\22 name\\22 \";\n  --viem-style-role: \"character\";\n  --viem-based-on: \"Character\";\n  --viem-prop-character-weight: \"400\";\n  --viem-prop-character-underline: \"false\";\n  --viem-prop-character-letter-spacing: \"0\";\n  font-weight: 400;\n  text-decoration-line: none;\n  letter-spacing: 0pt;\n}\n");
     }
 
@@ -1700,20 +2131,20 @@ mod tests {
         let mut sheet = StyleSheet::for_format(Format::Html);
         sheet.ensure_list_level(3);
         assert_eq!(
-            write_rule_v2(&sheet, &sheet.base_document, false).unwrap(),
+            write_rule(&sheet, &sheet.base_document, false).unwrap(),
             "body {\n  font-family: 'SF Pro';\n  font-size: 14pt;\n}\n"
         );
         assert_eq!(
-            write_rule_v2(&sheet, &"List1".into(), false).unwrap(),
+            write_rule(&sheet, &"List1".into(), false).unwrap(),
             "li {\n}\n"
         );
         let rules = sheet
             .block_styles()
-            .map(|s| write_rule_v2(&sheet, &s.id, false).unwrap())
+            .map(|s| write_rule(&sheet, &s.id, false).unwrap())
             .chain(
                 sheet
                     .character_styles()
-                    .map(|s| write_rule_v2(&sheet, &s.id, true).unwrap()),
+                    .map(|s| write_rule(&sheet, &s.id, true).unwrap()),
             )
             .collect::<String>();
         assert!(!rules.contains("text-indent:"), "{rules}");
@@ -1754,7 +2185,7 @@ mod tests {
                 },
             }])
             .unwrap();
-        let rule = write_rule_v2(&sheet, &style.id, false).unwrap();
+        let rule = write_rule(&sheet, &style.id, false).unwrap();
         assert!(rule.contains("margin-inline-start: 16pt;"), "{rule}");
         assert!(rule.contains("font-size: 18pt;"), "{rule}");
         assert!(rule.contains("letter-spacing: 1.25pt;"), "{rule}");
@@ -1775,7 +2206,7 @@ mod tests {
                 },
             }])
             .unwrap();
-        let rule = write_rule_v2(&sheet, &paragraph.id, false).unwrap();
+        let rule = write_rule(&sheet, &paragraph.id, false).unwrap();
         let parsed = read(&format!("{OPEN_V2}\n{rule}</style>"));
         assert_eq!(
             parsed.sheet.block_style(&paragraph.id),
@@ -1807,13 +2238,13 @@ mod tests {
                 },
             }])
             .unwrap();
-        let first = write_rule_v2(&sheet, &"List1".into(), false).unwrap();
-        let second = write_rule_v2(&sheet, &"List2".into(), false).unwrap();
+        let first = write_rule(&sheet, &"List1".into(), false).unwrap();
+        let second = write_rule(&sheet, &"List2".into(), false).unwrap();
         assert!(second.contains("font-size: 14pt;"), "{second}");
         assert!(second.contains("margin-inline-start: 0pt;"), "{second}");
         assert!(second.contains("text-indent: 0pt;"), "{second}");
         assert!(!second.contains("letter-spacing:"), "{second}");
-        let third = write_rule_v2(&sheet, &"List3".into(), false).unwrap();
+        let third = write_rule(&sheet, &"List3".into(), false).unwrap();
         assert_eq!(third, "li li li {\n}\n");
         let parsed = read(&format!("{OPEN_V2}\n{first}{second}{third}</style>"));
         assert_eq!(parsed.rules.len(), 3);
@@ -1858,7 +2289,7 @@ mod tests {
         let original = "<!--keep--><p>Words</p><style>.unknown { color: red }</style>";
         let source = patched(
             original,
-            definition_patches_with_policy(original, &read(original).sheet, &sheet, false).unwrap(),
+            definition_patches_with_policy(original, &sheet, false, FileFormat::Unix).unwrap(),
         );
         assert!(source.ends_with(original), "{source}");
         assert!(!source.contains("body {"), "{source}");
@@ -1866,27 +2297,29 @@ mod tests {
         assert!(source.contains(".viem-p-43616c6c6f7574 {"), "{source}");
         let enabled = patched(
             &source,
-            definition_patches_with_policy(&source, &sheet, &sheet, true).unwrap(),
+            definition_patches_with_policy(&source, &sheet, true, FileFormat::Unix).unwrap(),
         );
         assert!(read(&enabled).has_native_rules());
         let disabled = patched(
             &enabled,
-            definition_patches_with_policy(&enabled, &sheet, &sheet, false).unwrap(),
+            definition_patches_with_policy(&enabled, &sheet, false, FileFormat::Unix).unwrap(),
         );
         assert_eq!(disabled, source);
 
         let legacy = format!(
             "{OPEN}\n{}</style>{original}",
-            write_rule(&sheet, &sheet.base_paragraph, false).unwrap()
+            canonical_v1_spelling(&sheet, &sheet.base_paragraph, false).unwrap()
         );
-        let unchanged = definition_patches_with_policy(&legacy, &sheet, &sheet, true).unwrap();
-        assert!(
-            unchanged.iter().all(|(range, _)| range.is_empty()),
-            "{unchanged:?}"
+        let migrated = patched(
+            &legacy,
+            definition_patches_with_policy(&legacy, &sheet, true, FileFormat::Unix).unwrap(),
         );
+        assert!(!migrated.contains(OPEN), "{migrated}");
+        assert!(migrated.contains(OPEN_V2), "{migrated}");
+        assert!(migrated.ends_with(original));
         let removed = patched(
             &legacy,
-            definition_patches_with_policy(&legacy, &sheet, &sheet, false).unwrap(),
+            definition_patches_with_policy(&legacy, &sheet, false, FileFormat::Unix).unwrap(),
         );
         assert!(!removed.contains("data-viem-version=\"1\""), "{removed}");
         assert!(removed.ends_with(original));

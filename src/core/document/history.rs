@@ -114,7 +114,6 @@ pub enum HistorySemanticChangeKind {
     Style,
     FileFormat,
     HardLineTransfer,
-    HardLineSourceRestoration,
     SourceMetadata,
 }
 

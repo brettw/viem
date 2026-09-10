@@ -722,21 +722,53 @@ fn counted_macro_replay_is_one_history_segment_separate_from_recording() {
 }
 
 #[test]
-fn line_undo_toggles_the_changed_line_as_independent_history_units() {
-    let (mut core, view) = new_core("abc");
+fn unsupported_normal_u_preserves_history_registers_counts_and_dot() {
+    let (mut core, view) = new_core("abcde");
+    let initial_revision = core.document().revision();
+    assert!(matches!(
+        press(&mut core, view, Key::Char('U')),
+        CommandStatus::Unsupported(_)
+    ));
+    assert_eq!(core.document().revision(), initial_revision);
+
     keys(&mut core, view, "A");
     type_text(&mut core, view, "!");
     escape(&mut core, view);
     keys(&mut core, view, "0x");
-    assert_normal_state(&core, view, "bc!", 0);
+    let edited_revision = core.document().revision();
+    keys(&mut core, view, "\"b3");
+    assert!(matches!(
+        press(&mut core, view, Key::Char('U')),
+        CommandStatus::Unsupported(_)
+    ));
+    assert_normal_state(&core, view, "bcde!", 0);
+    assert_eq!(core.document().revision(), edited_revision);
+    assert_register(&core, view, '"', RegisterKind::Characterwise, "a");
+    assert_register_absent(&core, view, 'b');
 
-    keys(&mut core, view, "U");
-    assert_normal_state(&core, view, "abc", 2);
-    keys(&mut core, view, "U");
-    assert_normal_state(&core, view, "bc!", 0);
-
-    keys(&mut core, view, "u");
-    assert_normal_state(&core, view, "abc", 2);
+    // The rejected command consumes its own count/register, preserving the
+    // previous successful change as dot's recipe and adding no undo unit.
+    keys(&mut core, view, ".");
+    assert_normal_state(&core, view, "cde!", 0);
+    assert_register_absent(&core, view, 'b');
+    keys(&mut core, view, "3u");
+    assert_eq!(core.document().text(), "abcde");
+    keys(&mut core, view, "3");
     press(&mut core, view, Key::Ctrl('r'));
-    assert_normal_state(&core, view, "bc!", 2);
+    assert_eq!(core.document().text(), "cde!");
+}
+
+#[test]
+fn visual_u_and_g_uppercase_remain_undoable() {
+    let (mut core, view) = new_core("one two");
+    keys(&mut core, view, "vllU");
+    assert_eq!(core.document().text(), "ONE two");
+    keys(&mut core, view, "u");
+    assert_eq!(core.document().text(), "one two");
+    keys(&mut core, view, "0gU2w");
+    assert_eq!(core.document().text(), "ONE TWO");
+    keys(&mut core, view, "u");
+    assert_eq!(core.document().text(), "one two");
+    press(&mut core, view, Key::Ctrl('r'));
+    assert_eq!(core.document().text(), "ONE TWO");
 }

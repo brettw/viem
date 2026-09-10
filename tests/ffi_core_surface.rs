@@ -5,6 +5,83 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Exercise the sole input route even when a test has no clipboard or host.
+/// The effect-aware tests below inspect the batches instead of discarding them.
+fn discard_test_effects(status: ViemStatus, effects: ViemEffectBatchHandle) -> ViemStatus {
+    if effects != 0 {
+        assert_eq!(viem_effect_batch_release(effects), ViemStatus::Ok);
+    }
+    status
+}
+
+unsafe fn test_send_key(
+    core: ViemCoreHandle,
+    view: ViemViewId,
+    input: *const ViemKeyInputV1,
+    outcome: *mut ViemCoreOutcomeV1,
+) -> ViemStatus {
+    let mut effects = 0;
+    let status = unsafe {
+        viem_core_view_send_key_with_host_context_v2(
+            core,
+            view,
+            input,
+            &ViemCommandTurnContextV2::default(),
+            outcome,
+            &mut effects,
+        )
+    };
+    discard_test_effects(status, effects)
+}
+
+unsafe fn test_send_text(
+    core: ViemCoreHandle,
+    view: ViemViewId,
+    text: *const u8,
+    length: u64,
+    outcome: *mut ViemCoreOutcomeV1,
+) -> ViemStatus {
+    let mut effects = 0;
+    let status = unsafe {
+        viem_core_view_send_text_with_host_context_v2(
+            core,
+            view,
+            text,
+            length,
+            &ViemCommandTurnContextV2::default(),
+            outcome,
+            &mut effects,
+        )
+    };
+    discard_test_effects(status, effects)
+}
+
+unsafe fn test_set_format(
+    core: ViemCoreHandle,
+    view: ViemViewId,
+    request: *const ViemSetFormatV1,
+    outcome: *mut ViemCoreOutcomeV1,
+) -> ViemStatus {
+    let mut effects = 0;
+    let status = unsafe {
+        viem_core_view_set_format_with_effects(core, view, request, outcome, &mut effects)
+    };
+    discard_test_effects(status, effects)
+}
+
+unsafe fn test_set_encoding(
+    core: ViemCoreHandle,
+    view: ViemViewId,
+    request: *const ViemSetEncodingV1,
+    outcome: *mut ViemCoreOutcomeV1,
+) -> ViemStatus {
+    let mut effects = 0;
+    let status = unsafe {
+        viem_core_view_set_encoding_with_effects(core, view, request, outcome, &mut effects)
+    };
+    discard_test_effects(status, effects)
+}
+
 const FAKE_FONT: &[u8] = b"FFI Fake Sans";
 
 struct FakeResponseStorage {
@@ -657,21 +734,21 @@ fn host_key(
     core: &TestCore,
     view: ViemViewId,
     input: ViemKeyInputV1,
-    entries: &[ViemClipboardTurnEntryV1],
+    entries: &[ViemClipboardTurnEntryV2],
 ) -> (ViemStatus, ViemCoreOutcomeV1, ViemEffectBatchHandle) {
-    let context = ViemCommandTurnContextV1 {
+    let context = ViemCommandTurnContextV2 {
         clipboards: if entries.is_empty() {
             ptr::null()
         } else {
             entries.as_ptr()
         },
         clipboard_count: entries.len() as u64,
-        ..ViemCommandTurnContextV1::default()
+        ..ViemCommandTurnContextV2::default()
     };
     let mut outcome = ViemCoreOutcomeV1::default();
     let mut effects = 0;
     let status = unsafe {
-        viem_core_view_send_key_with_host_context(
+        viem_core_view_send_key_with_host_context_v2(
             core.handle,
             view,
             &input,
@@ -688,11 +765,11 @@ fn host_text(
     view: ViemViewId,
     text: &str,
 ) -> (ViemStatus, ViemCoreOutcomeV1, ViemEffectBatchHandle) {
-    let context = ViemCommandTurnContextV1::default();
+    let context = ViemCommandTurnContextV2::default();
     let mut outcome = ViemCoreOutcomeV1::default();
     let mut effects = 0;
     let status = unsafe {
-        viem_core_view_send_text_with_host_context(
+        viem_core_view_send_text_with_host_context_v2(
             core.handle,
             view,
             text.as_ptr(),
@@ -742,26 +819,26 @@ fn host_context_turns_exchange_clipboards_and_own_raw_ex_effects() {
     let (view, _) = add_test_view(&core, &mut *provider_context);
 
     let invalid = [0xff_u8];
-    let bad_entry = ViemClipboardTurnEntryV1 {
+    let bad_entry = ViemClipboardTurnEntryV2 {
         flags: VIEM_CLIPBOARD_TURN_HAS_READ,
         target: VIEM_CLIPBOARD_TARGET_CLIPBOARD,
         generation: 4,
         plain_text: utf8_slice(&invalid),
-        ..ViemClipboardTurnEntryV1::default()
+        ..ViemClipboardTurnEntryV2::default()
     };
     let mut rejected_outcome = ViemCoreOutcomeV1 {
         flags: u32::MAX,
         ..ViemCoreOutcomeV1::default()
     };
     let mut rejected_effect = u64::MAX;
-    let bad_context = ViemCommandTurnContextV1 {
+    let bad_context = ViemCommandTurnContextV2 {
         clipboards: &bad_entry,
         clipboard_count: 1,
-        ..ViemCommandTurnContextV1::default()
+        ..ViemCommandTurnContextV2::default()
     };
     assert_eq!(
         unsafe {
-            viem_core_view_send_key_with_host_context(
+            viem_core_view_send_key_with_host_context_v2(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, u32::from('x')),
@@ -778,12 +855,12 @@ fn host_context_turns_exchange_clipboards_and_own_raw_ex_effects() {
 
     host_chars(&core, view, "\"+");
     let pasted = "世界👋";
-    let read_entry = ViemClipboardTurnEntryV1 {
+    let read_entry = ViemClipboardTurnEntryV2 {
         flags: VIEM_CLIPBOARD_TURN_HAS_READ,
         target: VIEM_CLIPBOARD_TARGET_CLIPBOARD,
         generation: 77,
         plain_text: utf8_slice(pasted.as_bytes()),
-        ..ViemClipboardTurnEntryV1::default()
+        ..ViemClipboardTurnEntryV2::default()
     };
     let (status, paste_outcome, paste_effects) = host_key(
         &core,
@@ -801,10 +878,10 @@ fn host_context_turns_exchange_clipboards_and_own_raw_ex_effects() {
     );
 
     host_chars(&core, view, "\"+y");
-    let writable = ViemClipboardTurnEntryV1 {
+    let writable = ViemClipboardTurnEntryV2 {
         flags: VIEM_CLIPBOARD_TURN_WRITABLE,
         target: VIEM_CLIPBOARD_TARGET_CLIPBOARD,
-        ..ViemClipboardTurnEntryV1::default()
+        ..ViemClipboardTurnEntryV2::default()
     };
     let (status, yank_outcome, yank_effects) = host_key(
         &core,
@@ -979,7 +1056,7 @@ fn callback_backed_core_round_trips_controller_view_and_exact_source() {
 
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, 'i' as u32),
@@ -993,7 +1070,7 @@ fn callback_backed_core_round_trips_controller_view_and_exact_source() {
     assert_ne!(outcome.flags & VIEM_OUTCOME_MODE_CHANGED, 0);
 
     assert_eq!(
-        unsafe { viem_core_view_send_text(core.handle, view, b"!".as_ptr(), 1, &mut outcome) },
+        unsafe { test_send_text(core.handle, view, b"!".as_ptr(), 1, &mut outcome) },
         ViemStatus::Ok
     );
     assert_eq!(outcome.document_revision, 1);
@@ -1396,7 +1473,7 @@ fn native_named_style_assignment_checks_selection_sheet_and_preserves_history() 
     for character in ['v', 'l'] {
         assert_eq!(
             unsafe {
-                viem_core_view_send_key(
+                test_send_key(
                     core.handle,
                     view,
                     &key(VIEM_KEY_CHARACTER, character as u32),
@@ -1420,7 +1497,7 @@ fn native_named_style_assignment_checks_selection_sheet_and_preserves_history() 
     };
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(core.handle, view, &key(VIEM_KEY_RIGHT, 0), &mut outcome)
+            test_send_key(core.handle, view, &key(VIEM_KEY_RIGHT, 0), &mut outcome)
         },
         ViemStatus::Ok
     );
@@ -1522,7 +1599,7 @@ fn native_format_encoding_and_list_requests_validate_exact_identity() {
         document_revision: state.document_revision,
     };
     assert_eq!(
-        unsafe { viem_core_view_set_format(core.handle, view, &format, &mut outcome) },
+        unsafe { test_set_format(core.handle, view, &format, &mut outcome) },
         ViemStatus::Ok
     );
     let changed = document_state(&core);
@@ -1544,7 +1621,7 @@ fn native_format_encoding_and_list_requests_validate_exact_identity() {
         b"alpha\nbeta"
     );
     assert_eq!(
-        unsafe { viem_core_view_set_format(core.handle, view, &format, &mut outcome) },
+        unsafe { test_set_format(core.handle, view, &format, &mut outcome) },
         ViemStatus::StaleRevision
     );
     let encoding = ViemSetEncodingV1 {
@@ -1554,7 +1631,7 @@ fn native_format_encoding_and_list_requests_validate_exact_identity() {
         document_revision: changed.document_revision,
     };
     assert_eq!(
-        unsafe { viem_core_view_set_encoding(core.handle, view, &encoding, &mut outcome) },
+        unsafe { test_set_encoding(core.handle, view, &encoding, &mut outcome) },
         ViemStatus::Ok
     );
     let changed = document_state(&core);
@@ -1579,7 +1656,7 @@ fn native_format_encoding_and_list_requests_validate_exact_identity() {
         ViemStatus::StaleRevision
     );
     assert_eq!(
-        unsafe { viem_core_view_set_format(core.handle, view, ptr::null(), &mut outcome) },
+        unsafe { test_set_format(core.handle, view, ptr::null(), &mut outcome) },
         ViemStatus::NullPointer
     );
 }
@@ -1629,7 +1706,7 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
     let (view, mut outcome) = add_test_view(&core, &mut *context);
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, 'i' as u32),
@@ -1639,12 +1716,12 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
         ViemStatus::Ok
     );
     assert_eq!(
-        unsafe { viem_core_view_send_text(core.handle, view, b"x".as_ptr(), 1, &mut outcome) },
+        unsafe { test_send_text(core.handle, view, b"x".as_ptr(), 1, &mut outcome) },
         ViemStatus::Ok
     );
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
+            test_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
         },
         ViemStatus::Ok
     );
@@ -1735,7 +1812,7 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
     };
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, 'i' as u32),
@@ -1745,7 +1822,7 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
         ViemStatus::Ok
     );
     assert_eq!(
-        unsafe { viem_core_view_send_text(core.handle, view, b"y".as_ptr(), 1, &mut outcome) },
+        unsafe { test_send_text(core.handle, view, b"y".as_ptr(), 1, &mut outcome) },
         ViemStatus::Ok
     );
     assert_eq!(
@@ -1753,12 +1830,12 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
         ViemStatus::StaleRevision
     );
     assert_eq!(
-        unsafe { viem_core_view_send_text(core.handle, view, b"z".as_ptr(), 1, &mut outcome) },
+        unsafe { test_send_text(core.handle, view, b"z".as_ptr(), 1, &mut outcome) },
         ViemStatus::Ok
     );
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
+            test_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
         },
         ViemStatus::Ok
     );
@@ -2378,7 +2455,7 @@ fn layout_snapshot_export_geometry_hit_testing_and_pointer_placement_are_revisio
 
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, 'v' as u32),
@@ -2581,7 +2658,7 @@ fn command_line_export_is_exact_kind_cursor_and_utf8_state() {
 
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, ':' as u32),
@@ -2593,7 +2670,7 @@ fn command_line_export_is_exact_kind_cursor_and_utf8_state() {
     let command = "set cafés";
     assert_eq!(
         unsafe {
-            viem_core_view_send_text(
+            test_send_text(
                 core.handle,
                 view,
                 command.as_ptr(),
@@ -2644,7 +2721,7 @@ fn command_line_export_is_exact_kind_cursor_and_utf8_state() {
 
     let stale = info.identity;
     assert_eq!(
-        unsafe { viem_core_view_send_key(core.handle, view, &key(VIEM_KEY_LEFT, 0), &mut outcome) },
+        unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_LEFT, 0), &mut outcome) },
         ViemStatus::Ok
     );
     assert_eq!(
@@ -2669,13 +2746,13 @@ fn command_line_export_is_exact_kind_cursor_and_utf8_state() {
     ] {
         assert_eq!(
             unsafe {
-                viem_core_view_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
+                test_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
             },
             ViemStatus::Ok
         );
         assert_eq!(
             unsafe {
-                viem_core_view_send_key(
+                test_send_key(
                     core.handle,
                     view,
                     &key(VIEM_KEY_CHARACTER, prefix as u32),
@@ -2759,7 +2836,7 @@ fn visual_line_export_uses_wrapped_or_flowed_rows_and_the_physical_line_policy()
             );
             assert_eq!(
                 unsafe {
-                    viem_core_view_send_key(
+                    test_send_key(
                         core.handle,
                         view,
                         &key(VIEM_KEY_CHARACTER, 'V' as u32),
@@ -2800,7 +2877,7 @@ fn visual_line_export_uses_wrapped_or_flowed_rows_and_the_physical_line_policy()
             );
             assert_eq!(
                 unsafe {
-                    viem_core_view_send_key(
+                    test_send_key(
                         core.handle,
                         view,
                         &key(VIEM_KEY_ESCAPE, 0),
@@ -2819,7 +2896,7 @@ fn visual_line_export_uses_wrapped_or_flowed_rows_and_the_physical_line_policy()
             (VIEM_KEY_DOCUMENT_START, 0),
         ] {
             assert_eq!(
-                unsafe { viem_core_view_send_key(core.handle, view, &key(kind, 0), &mut outcome) },
+                unsafe { test_send_key(core.handle, view, &key(kind, 0), &mut outcome) },
                 ViemStatus::Ok
             );
             assert_eq!(
@@ -2850,7 +2927,7 @@ fn visual_selection_export_preserves_character_line_and_block_semantics() {
     for character in ['v', 'l'] {
         assert_eq!(
             unsafe {
-                viem_core_view_send_key(
+                test_send_key(
                     core.handle,
                     view,
                     &key(VIEM_KEY_CHARACTER, character as u32),
@@ -2897,13 +2974,13 @@ fn visual_selection_export_preserves_character_line_and_block_semantics() {
 
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
+            test_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
         },
         ViemStatus::Ok
     );
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, 'V' as u32),
@@ -2948,13 +3025,13 @@ fn visual_selection_export_preserves_character_line_and_block_semantics() {
 
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
+            test_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
         },
         ViemStatus::Ok
     );
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, '0' as u32),
@@ -2969,7 +3046,7 @@ fn visual_selection_export_preserves_character_line_and_block_semantics() {
         key(VIEM_KEY_CHARACTER, 'j' as u32),
     ] {
         assert_eq!(
-            unsafe { viem_core_view_send_key(core.handle, view, &input, &mut outcome) },
+            unsafe { test_send_key(core.handle, view, &input, &mut outcome) },
             ViemStatus::Ok
         );
     }
@@ -3060,7 +3137,7 @@ fn visual_selection_export_preserves_character_line_and_block_semantics() {
     let stale_selection = info.identity;
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, 'h' as u32),
@@ -3135,7 +3212,7 @@ fn native_find_selection_is_exact_literal_and_reveal_requires_visual_state() {
         key(VIEM_KEY_CHARACTER, 'l' as u32),
     ] {
         assert_eq!(
-            unsafe { viem_core_view_send_key(core.handle, view, &input, &mut outcome) },
+            unsafe { test_send_key(core.handle, view, &input, &mut outcome) },
             ViemStatus::Ok
         );
     }
@@ -3166,7 +3243,7 @@ fn native_find_selection_is_exact_literal_and_reveal_requires_visual_state() {
     let stale = selection.identity;
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, 'h' as u32),
@@ -3191,7 +3268,7 @@ fn native_find_selection_is_exact_literal_and_reveal_requires_visual_state() {
         key(VIEM_KEY_CHARACTER, 'n' as u32),
     ] {
         assert_eq!(
-            unsafe { viem_core_view_send_key(core.handle, view, &input, &mut outcome) },
+            unsafe { test_send_key(core.handle, view, &input, &mut outcome) },
             ViemStatus::Ok
         );
     }
@@ -3219,7 +3296,7 @@ fn visual_selection_reports_outside_partial_layout_coverage() {
     for character in ['V', 'G'] {
         assert_eq!(
             unsafe {
-                viem_core_view_send_key(
+                test_send_key(
                     core.handle,
                     view,
                     &key(VIEM_KEY_CHARACTER, character as u32),
@@ -3247,7 +3324,7 @@ fn native_ffi_history_is_mode_independent_and_finalizes_insert_grouping() {
 
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, 'i' as u32),
@@ -3260,7 +3337,7 @@ fn native_ffi_history_is_mode_independent_and_finalizes_insert_grouping() {
     for byte in [b"x".as_slice(), b"y".as_slice()] {
         assert_eq!(
             unsafe {
-                viem_core_view_send_text(
+                test_send_text(
                     core.handle,
                     view,
                     byte.as_ptr(),
@@ -3315,7 +3392,7 @@ fn native_ffi_history_is_mode_independent_and_finalizes_insert_grouping() {
 
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, 'v' as u32),
@@ -3678,19 +3755,22 @@ fn provider_key_utf8_pointer_and_enum_failures_are_rejected_without_state_change
     assert_eq!(view, 0);
 
     invalid_provider = provider(context_pointer, fake_shape_batch);
-    invalid_provider.abi_version = VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION + 1;
-    assert_eq!(
-        unsafe {
-            viem_core_view_add(
-                core.handle,
-                &options,
-                &invalid_provider,
-                &mut view,
-                &mut outcome,
-            )
-        },
-        ViemStatus::InvalidProvider
-    );
+    for version in [0, 1, VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION + 1] {
+        invalid_provider.abi_version = version;
+        assert_eq!(
+            unsafe {
+                viem_core_view_add(
+                    core.handle,
+                    &options,
+                    &invalid_provider,
+                    &mut view,
+                    &mut outcome,
+                )
+            },
+            ViemStatus::InvalidProvider
+        );
+
+    }
 
     invalid_provider = provider(context_pointer, fake_shape_batch);
     invalid_provider.threading = 99;
@@ -3726,7 +3806,7 @@ fn provider_key_utf8_pointer_and_enum_failures_are_rejected_without_state_change
 
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_ESCAPE, 'x' as u32),
@@ -3738,7 +3818,7 @@ fn provider_key_utf8_pointer_and_enum_failures_are_rejected_without_state_change
     assert_eq!(outcome.mode, 0);
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, 0x11_0000),
@@ -3748,7 +3828,7 @@ fn provider_key_utf8_pointer_and_enum_failures_are_rejected_without_state_change
         ViemStatus::InvalidKey
     );
     assert_eq!(
-        unsafe { viem_core_view_send_text(core.handle, view, [0xff].as_ptr(), 1, &mut outcome) },
+        unsafe { test_send_text(core.handle, view, [0xff].as_ptr(), 1, &mut outcome) },
         ViemStatus::InvalidUtf8
     );
     assert_eq!(
@@ -3760,33 +3840,13 @@ fn provider_key_utf8_pointer_and_enum_failures_are_rejected_without_state_change
         ViemStatus::InvalidArgument
     );
     assert_eq!(
-        unsafe { viem_core_view_send_text(core.handle, view, ptr::null(), 1, &mut outcome) },
+        unsafe { test_send_text(core.handle, view, ptr::null(), 1, &mut outcome) },
         ViemStatus::NullPointer
     );
     assert_eq!(
         unsafe { viem_core_view_state(core.handle, view, ptr::null_mut()) },
         ViemStatus::NullPointer
     );
-}
-
-#[test]
-fn legacy_v1_measurement_provider_remains_accepted() {
-    let core = create_core(b"text", ViemDocumentOptions::default());
-    let mut context = Box::new(FakeProviderContext::new(core.handle));
-    let context_pointer = (&mut *context as *mut FakeProviderContext).cast();
-    let options = ViemViewOptionsV1::default();
-    let mut legacy = provider(context_pointer, fake_shape_batch);
-    legacy.abi_version = VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V1;
-    let mut view = 0;
-    let mut outcome = ViemCoreOutcomeV1::default();
-
-    assert_eq!(
-        unsafe { viem_core_view_add(core.handle, &options, &legacy, &mut view, &mut outcome,) },
-        ViemStatus::Ok
-    );
-    assert_ne!(view, 0);
-    assert!(context.saw_complete_request);
-    assert_eq!(viem_core_view_remove(core.handle, view), ViemStatus::Ok);
 }
 
 #[test]
@@ -3835,6 +3895,13 @@ fn core_handles_are_final_and_never_reused() {
         ViemStatus::InvalidHandle
     );
     assert_eq!(revision, 0);
+    let mut outcome = ViemCoreOutcomeV1 { flags: u32::MAX, ..Default::default() };
+    assert_eq!(
+        unsafe { test_send_text(first_handle, 1, b"x".as_ptr(), 1, &mut outcome) },
+        ViemStatus::InvalidHandle,
+        "input cannot revive a destroyed core"
+    );
+    assert_eq!(outcome, ViemCoreOutcomeV1::default());
 }
 
 #[test]
@@ -3908,7 +3975,7 @@ fn native_composition_commit_is_one_exact_undo_unit() {
 
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, 'i' as u32),
@@ -3918,7 +3985,7 @@ fn native_composition_commit_is_one_exact_undo_unit() {
         ViemStatus::Ok
     );
     assert_eq!(
-        unsafe { viem_core_view_send_text(core.handle, view, b"a".as_ptr(), 1, &mut outcome) },
+        unsafe { test_send_text(core.handle, view, b"a".as_ptr(), 1, &mut outcome) },
         ViemStatus::Ok
     );
     assert_eq!(outcome.document_revision, 1);
@@ -3975,13 +4042,13 @@ fn native_composition_commit_is_one_exact_undo_unit() {
 
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
+            test_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
         },
         ViemStatus::Ok
     );
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, 'u' as u32),
@@ -4000,7 +4067,7 @@ fn native_composition_commit_is_one_exact_undo_unit() {
     );
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, 'u' as u32),
@@ -4348,7 +4415,7 @@ fn composition_cancel_and_invalid_or_stale_updates_are_source_atomic() {
     let (writer, _) = add_test_view(&core, context_pointer);
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 writer,
                 &key(VIEM_KEY_CHARACTER, 'i' as u32),
@@ -4358,7 +4425,7 @@ fn composition_cancel_and_invalid_or_stale_updates_are_source_atomic() {
         ViemStatus::Ok
     );
     assert_eq!(
-        unsafe { viem_core_view_send_text(core.handle, writer, b"X".as_ptr(), 1, &mut outcome) },
+        unsafe { test_send_text(core.handle, writer, b"X".as_ptr(), 1, &mut outcome) },
         ViemStatus::Ok
     );
     assert_eq!(outcome.document_revision, 1);
@@ -4438,7 +4505,7 @@ fn latin1_unrepresentable_composition_commit_is_typed_and_non_destructive() {
 }
 
 #[test]
-fn public_c_header_typechecks_every_v3_layout_against_rust() {
+fn public_c_header_typechecks_current_layouts_against_rust() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let unique = format!(
         "viem_ffi_header_{}_{}.c",
@@ -4458,16 +4525,12 @@ _Static_assert(offsetof(ViemDirectStyleEditV1, value) == {direct_style_value}, "
 static ViemStatus (*direct_style)(ViemCoreHandle, ViemViewId, const ViemDirectStyleEditV1 *, ViemCoreOutcomeV1 *) = viem_core_view_edit_direct_style;
 static ViemStatus (*decoration_state)(ViemCoreHandle, ViemViewId, uint32_t, uint32_t *) = viem_core_view_decoration_state;
 _Static_assert(VIEM_ENCODING_DETECT == 0u, "automatic encoding choice");
-_Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V1 == 1u,
-    "provider ABI v1");
 _Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2 == 2u,
     "provider ABI v2");
 _Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION ==
     VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2, "current provider ABI");
 _Static_assert(VIEM_STATUS_UNSTABLE_SHAPING_CONTEXT == 26u,
     "bounded-context refusal status");
-_Static_assert(VIEM_STATUS_VERTICAL_VIEWPORT_ORIGIN_UNSUPPORTED == 27u,
-    "vertical viewport limitation status");
 _Static_assert(VIEM_STATUS_LAYOUT_UNAVAILABLE == 28u,
     "layout unavailable status");
 _Static_assert(VIEM_STATUS_OUTSIDE_LAYOUT_COVERAGE == 29u,
@@ -4509,8 +4572,6 @@ _Static_assert(VIEM_HISTORY_ACTION_CATEGORY_FILE_FORMAT == 3u,
     "file-format history action category");
 _Static_assert(VIEM_HISTORY_ACTION_CATEGORY_HARD_LINE_TRANSFER == 4u,
     "hard-line transfer history action category");
-_Static_assert(VIEM_HISTORY_ACTION_CATEGORY_HARD_LINE_SOURCE_RESTORATION == 5u,
-    "hard-line restoration history action category");
 _Static_assert(VIEM_HISTORY_ACTION_CATEGORY_SOURCE_METADATA == 6u,
     "source-metadata history action category");
 _Static_assert(VIEM_HISTORY_ACTION_CATEGORY_MIXED == 7u,
@@ -4610,16 +4671,16 @@ _Static_assert(VIEM_FORMATTED_POINT_INFO_V1_SIZE ==
     sizeof(ViemFormattedPointInfoV1), "formatted point info size macro");
 _Static_assert(offsetof(ViemFormattedPointInfoV1, grapheme_column) ==
     {formatted_point_column}, "formatted point column offset");
-_Static_assert(sizeof(ViemClipboardTurnEntryV1) == {clipboard_turn_entry},
+_Static_assert(sizeof(ViemClipboardTurnEntryV2) == {clipboard_turn_entry},
     "clipboard turn entry");
-_Static_assert(VIEM_CLIPBOARD_TURN_ENTRY_V1_SIZE ==
-    sizeof(ViemClipboardTurnEntryV1), "clipboard turn entry size macro");
-_Static_assert(offsetof(ViemClipboardTurnEntryV1, plain_text) ==
+_Static_assert(VIEM_CLIPBOARD_TURN_ENTRY_V2_SIZE ==
+    sizeof(ViemClipboardTurnEntryV2), "clipboard turn entry size macro");
+_Static_assert(offsetof(ViemClipboardTurnEntryV2, plain_text) ==
     {clipboard_turn_text}, "clipboard turn text offset");
-_Static_assert(sizeof(ViemCommandTurnContextV1) == {command_turn_context},
+_Static_assert(sizeof(ViemCommandTurnContextV2) == {command_turn_context},
     "command turn context");
-_Static_assert(VIEM_COMMAND_TURN_CONTEXT_V1_SIZE ==
-    sizeof(ViemCommandTurnContextV1), "command turn context size macro");
+_Static_assert(VIEM_COMMAND_TURN_CONTEXT_V2_SIZE ==
+    sizeof(ViemCommandTurnContextV2), "command turn context size macro");
 _Static_assert(sizeof(ViemEffectBytesRefV1) == {effect_bytes_ref},
     "effect byte reference");
 _Static_assert(sizeof(ViemClipboardWriteV1) == {clipboard_write},
@@ -4794,7 +4855,6 @@ _Static_assert(VIEM_COMPOSITION_OVERLAY_UTF8_RANGE_V1_SIZE ==
 _Static_assert(sizeof(ViemCoreOutcomeV1) == {outcome}, "outcome");
 static void typecheck(void) {{
   ViemShapeRequestV1 request = {{0}};
-  request.reserved = 0;
   request.paragraph_base_direction = VIEM_TEXT_DIRECTION_AUTO;
   ViemStatus (*create_core)(const uint8_t *, uint64_t,
       const ViemDocumentOptions *, ViemCoreHandle *, uint64_t *) = viem_core_create;
@@ -4896,18 +4956,14 @@ static void typecheck(void) {{
       ViemCoreOutcomeV1 *) = viem_core_view_edit_style_in_group;
   ViemStatus (*end_style_group)(ViemCoreHandle, ViemViewId,
       const ViemStyleEditGroupV1 *) = viem_core_view_end_style_edit_group;
-  ViemStatus (*send_key)(ViemCoreHandle, ViemViewId,
-      const ViemKeyInputV1 *, ViemCoreOutcomeV1 *) = viem_core_view_send_key;
-  ViemStatus (*send_text)(ViemCoreHandle, ViemViewId, const uint8_t *,
-      uint64_t, ViemCoreOutcomeV1 *) = viem_core_view_send_text;
   ViemStatus (*send_key_with_host_context)(ViemCoreHandle, ViemViewId,
-      const ViemKeyInputV1 *, const ViemCommandTurnContextV1 *,
+      const ViemKeyInputV1 *, const ViemCommandTurnContextV2 *,
       ViemCoreOutcomeV1 *, ViemEffectBatchHandle *) =
-      viem_core_view_send_key_with_host_context;
+      viem_core_view_send_key_with_host_context_v2;
   ViemStatus (*send_text_with_host_context)(ViemCoreHandle, ViemViewId,
-      const uint8_t *, uint64_t, const ViemCommandTurnContextV1 *,
+      const uint8_t *, uint64_t, const ViemCommandTurnContextV2 *,
       ViemCoreOutcomeV1 *, ViemEffectBatchHandle *) =
-      viem_core_view_send_text_with_host_context;
+      viem_core_view_send_text_with_host_context_v2;
   ViemStatus (*effect_info)(ViemEffectBatchHandle,
       ViemEffectBatchInfoV1 *) = viem_effect_batch_info;
   ViemStatus (*effect_copy)(ViemEffectBatchHandle,
@@ -4966,8 +5022,8 @@ static void typecheck(void) {{
   (void)assign_style;
   (void)create_style; (void)delete_style;
   (void)end_style_group;
-  (void)send_key;
-  (void)send_text; (void)send_key_with_host_context;
+
+  (void)send_key_with_host_context;
   (void)send_text_with_host_context; (void)effect_info;
   (void)effect_copy; (void)effect_release;
   (void)place_cursor; (void)undo; (void)redo;
@@ -4992,9 +5048,9 @@ static void typecheck(void) {{
         formatted_range_start = std::mem::offset_of!(ViemFormattedUtf8RangeV1, utf8_start),
         formatted_point = std::mem::size_of::<ViemFormattedPointInfoV1>(),
         formatted_point_column = std::mem::offset_of!(ViemFormattedPointInfoV1, grapheme_column),
-        clipboard_turn_entry = std::mem::size_of::<ViemClipboardTurnEntryV1>(),
-        clipboard_turn_text = std::mem::offset_of!(ViemClipboardTurnEntryV1, plain_text),
-        command_turn_context = std::mem::size_of::<ViemCommandTurnContextV1>(),
+        clipboard_turn_entry = std::mem::size_of::<ViemClipboardTurnEntryV2>(),
+        clipboard_turn_text = std::mem::offset_of!(ViemClipboardTurnEntryV2, plain_text),
+        command_turn_context = std::mem::size_of::<ViemCommandTurnContextV2>(),
         effect_bytes_ref = std::mem::size_of::<ViemEffectBytesRefV1>(),
         clipboard_write = std::mem::size_of::<ViemClipboardWriteV1>(),
         ex_option = std::mem::size_of::<ViemExOptionDisplayV1>(),
@@ -5175,7 +5231,7 @@ fn native_direct_properties_and_decoration_queries_are_typed_exact_and_undoable(
         for character in ['v', 'l'] {
             assert_eq!(
                 unsafe {
-                    viem_core_view_send_key(
+                    test_send_key(
                         core.handle,
                         view,
                         &key(VIEM_KEY_CHARACTER, character as u32),
@@ -5194,7 +5250,7 @@ fn native_direct_properties_and_decoration_queries_are_typed_exact_and_undoable(
         };
         assert_eq!(
             unsafe {
-                viem_core_view_send_key(core.handle, view, &key(VIEM_KEY_RIGHT, 0), &mut outcome)
+                test_send_key(core.handle, view, &key(VIEM_KEY_RIGHT, 0), &mut outcome)
             },
             ViemStatus::Ok
         );
@@ -5209,7 +5265,7 @@ fn native_direct_properties_and_decoration_queries_are_typed_exact_and_undoable(
         ] {
             assert_eq!(
                 unsafe {
-                    viem_core_view_send_key(
+                    test_send_key(
                         core.handle,
                         view,
                         &key(VIEM_KEY_ESCAPE, 0),
@@ -5221,7 +5277,7 @@ fn native_direct_properties_and_decoration_queries_are_typed_exact_and_undoable(
             for character in ['0', 'v', 'l', 'l'] {
                 assert_eq!(
                     unsafe {
-                        viem_core_view_send_key(
+                        test_send_key(
                             core.handle,
                             view,
                             &key(VIEM_KEY_CHARACTER, character as u32),
@@ -5254,7 +5310,7 @@ fn native_direct_properties_and_decoration_queries_are_typed_exact_and_undoable(
             assert_eq!(state, VIEM_SEMANTIC_STYLE_STATE_ON);
             assert_eq!(
                 unsafe {
-                    viem_core_view_send_key(
+                    test_send_key(
                         core.handle,
                         view,
                         &key(VIEM_KEY_RIGHT, 0),
@@ -5276,7 +5332,7 @@ fn native_direct_properties_and_decoration_queries_are_typed_exact_and_undoable(
             );
             assert_eq!(
                 unsafe {
-                    viem_core_view_send_key(core.handle, view, &key(VIEM_KEY_LEFT, 0), &mut outcome)
+                    test_send_key(core.handle, view, &key(VIEM_KEY_LEFT, 0), &mut outcome)
                 },
                 ViemStatus::Ok
             );
@@ -5300,7 +5356,7 @@ fn native_direct_properties_and_decoration_queries_are_typed_exact_and_undoable(
             for character in ['0', 'v', 'l', 'l'] {
                 assert_eq!(
                     unsafe {
-                        viem_core_view_send_key(
+                        test_send_key(
                             core.handle,
                             view,
                             &key(VIEM_KEY_CHARACTER, character as u32),
@@ -5366,7 +5422,7 @@ fn rich_bold_and_italic_toggle_states_include_default_gaps() {
         for character in ['v', 'l'] {
             assert_eq!(
                 unsafe {
-                    viem_core_view_send_key(
+                    test_send_key(
                         core.handle,
                         view,
                         &key(VIEM_KEY_CHARACTER, character as u32),
@@ -5412,7 +5468,7 @@ fn native_select_all_nested_html_decoration_round_trips_query_state() {
     for character in ['g', 'g', 'V', 'G'] {
         assert_eq!(
             unsafe {
-                viem_core_view_send_key(
+                test_send_key(
                     core.handle,
                     view,
                     &key(VIEM_KEY_CHARACTER, character as u32),
@@ -5477,7 +5533,7 @@ fn rich_decoration_state_remains_on_after_select_all_linewise_toggle() {
         for character in ['g', 'g', 'V', 'G'] {
             assert_eq!(
                 unsafe {
-                    viem_core_view_send_key(
+                    test_send_key(
                         core.handle,
                         view,
                         &key(VIEM_KEY_CHARACTER, character as u32),
@@ -5535,7 +5591,7 @@ fn native_scalar_visual_change_keeps_the_entire_html_inline_style() {
         let text = character.to_string();
         assert_eq!(
             unsafe {
-                viem_core_view_send_text(
+                test_send_text(
                     core.handle,
                     view,
                     text.as_ptr(),
@@ -5548,7 +5604,7 @@ fn native_scalar_visual_change_keeps_the_entire_html_inline_style() {
     }
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
+            test_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
         },
         ViemStatus::Ok
     );
@@ -5589,12 +5645,12 @@ fn native_scalar_typing_after_html_heading_enter_uses_the_new_paragraph() {
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, mut outcome) = add_test_view(&core, provider.as_mut());
     assert_eq!(
-        unsafe { viem_core_view_send_text(core.handle, view, b"A".as_ptr(), 1, &mut outcome) },
+        unsafe { test_send_text(core.handle, view, b"A".as_ptr(), 1, &mut outcome) },
         ViemStatus::Ok
     );
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(core.handle, view, &key(VIEM_KEY_ENTER, 0), &mut outcome)
+            test_send_key(core.handle, view, &key(VIEM_KEY_ENTER, 0), &mut outcome)
         },
         ViemStatus::Ok
     );
@@ -5602,7 +5658,7 @@ fn native_scalar_typing_after_html_heading_enter_uses_the_new_paragraph() {
         let text = character.to_string();
         assert_eq!(
             unsafe {
-                viem_core_view_send_text(
+                test_send_text(
                     core.handle,
                     view,
                     text.as_ptr(),
@@ -5615,7 +5671,7 @@ fn native_scalar_typing_after_html_heading_enter_uses_the_new_paragraph() {
     }
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
+            test_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
         },
         ViemStatus::Ok
     );
@@ -5722,7 +5778,7 @@ fn typography_export_is_exact_batched_stale_checked_and_includes_mixed_default_g
     for character in ['v', 'l'] {
         assert_eq!(
             unsafe {
-                viem_core_view_send_key(
+                test_send_key(
                     core.handle,
                     view,
                     &key(VIEM_KEY_CHARACTER, character as u32),
@@ -5819,7 +5875,7 @@ fn direct_character_batch_is_atomic_and_rejects_duplicate_stale_or_overlapping_r
     for character in ['v', 'e'] {
         assert_eq!(
             unsafe {
-                viem_core_view_send_key(
+                test_send_key(
                     core.handle,
                     view,
                     &key(VIEM_KEY_CHARACTER, character as u32),
@@ -5945,13 +6001,13 @@ fn direct_character_batch_is_atomic_and_rejects_duplicate_stale_or_overlapping_r
     assert_eq!((info.base_weight, info.weight, info.size), (200, 500, 24.0));
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
+            test_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
         },
         ViemStatus::Ok
     );
     assert_eq!(
         unsafe {
-            viem_core_view_send_key(
+            test_send_key(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, 'u' as u32),
@@ -6233,4 +6289,182 @@ fn native_format_setter_returns_owned_loss_warning_and_stale_retry_is_inert() {
     );
     assert_eq!(effects, 0);
     assert_eq!(document_state(&core), committed);
+}
+
+#[test]
+fn current_core_replacement_checks_graphemes_and_payloads_before_mutating_source() {
+    let source = "ae\u{301}z";
+    let core = create_core(source.as_bytes(), ViemDocumentOptions::default());
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, mut outcome) = add_test_view(&core, provider.as_mut());
+    let begin = ViemCompositionBeginV1 {
+        struct_size: VIEM_COMPOSITION_BEGIN_V1_SIZE,
+        reserved: 0,
+        document_revision: 0,
+        replacement_start: 1,
+        replacement_end: 4,
+    };
+    for (start, end, expected) in [
+        (2, 2, ViemStatus::NotGraphemeBoundary),
+        (4, 1, ViemStatus::InvalidRange),
+    ] {
+        let invalid = ViemCompositionBeginV1 {
+            replacement_start: start,
+            replacement_end: end,
+            ..begin
+        };
+        assert_eq!(
+            unsafe { viem_core_view_composition_begin(core.handle, view, &invalid, &mut outcome) },
+            expected
+        );
+        assert_eq!(
+            copy_core_bytes(viem_core_copy_source_bytes, &core, 0),
+            source.as_bytes()
+        );
+    }
+    assert_eq!(
+        unsafe { viem_core_view_composition_begin(core.handle, view, &begin, &mut outcome) },
+        ViemStatus::Ok
+    );
+    for (text, expected) in [
+        (utf8_slice(&[0xff]), ViemStatus::InvalidUtf8),
+        (
+            ViemUtf8Slice {
+                data: ptr::null(),
+                length: 1,
+            },
+            ViemStatus::NullPointer,
+        ),
+    ] {
+        let invalid = ViemCompositionCommitV1 {
+            struct_size: VIEM_COMPOSITION_COMMIT_V1_SIZE,
+            reserved: 0,
+            document_revision: 0,
+            committed_text: text,
+        };
+        assert_eq!(
+            unsafe { viem_core_view_composition_commit(core.handle, view, &invalid, &mut outcome) },
+            expected
+        );
+        assert_eq!(
+            copy_core_bytes(viem_core_copy_source_bytes, &core, 0),
+            source.as_bytes()
+        );
+    }
+    let valid = ViemCompositionCommitV1 {
+        struct_size: VIEM_COMPOSITION_COMMIT_V1_SIZE,
+        reserved: 0,
+        document_revision: 0,
+        committed_text: utf8_slice("ø".as_bytes()),
+    };
+    assert_eq!(
+        unsafe { viem_core_view_composition_commit(core.handle, view, &valid, &mut outcome) },
+        ViemStatus::Ok
+    );
+    assert_eq!(outcome.document_revision, 1);
+    assert_eq!(
+        copy_core_bytes(viem_core_copy_source_bytes, &core, 1),
+        "aøz".as_bytes()
+    );
+    assert_eq!(
+        unsafe { viem_core_view_composition_begin(core.handle, view, &begin, &mut outcome) },
+        ViemStatus::StaleRevision
+    );
+    assert_eq!(
+        copy_core_bytes(viem_core_copy_source_bytes, &core, 1),
+        "aøz".as_bytes()
+    );
+    assert_eq!(viem_core_view_remove(core.handle, view), ViemStatus::Ok);
+}
+
+#[test]
+fn current_host_context_checks_targets_counts_and_nested_output_aliases() {
+    let core = create_core(b"text", ViemDocumentOptions::default());
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, _) = add_test_view(&core, provider.as_mut());
+    let entry = ViemClipboardTurnEntryV2 {
+        target: VIEM_CLIPBOARD_TARGET_CLIPBOARD,
+        flags: VIEM_CLIPBOARD_TURN_HAS_READ,
+        generation: 1,
+        plain_text: utf8_slice(b"clipboard"),
+        ..ViemClipboardTurnEntryV2::default()
+    };
+    let (status, _, effects) = host_key(
+        &core,
+        view,
+        key(VIEM_KEY_CHARACTER, 'x' as u32),
+        &[entry, entry],
+    );
+    assert_eq!(status, ViemStatus::InvalidArgument);
+    assert_eq!(effects, 0);
+    for count in [3, u64::MAX] {
+        // Invalid counts must be rejected before following the null array.
+        let context = ViemCommandTurnContextV2 {
+            clipboard_count: count,
+            ..ViemCommandTurnContextV2::default()
+        };
+        let mut outcome = ViemCoreOutcomeV1::default();
+        let mut effects = u64::MAX;
+        assert_eq!(
+            unsafe {
+                viem_core_view_send_text_with_host_context_v2(
+                    core.handle,
+                    view,
+                    b"x".as_ptr(),
+                    1,
+                    &context,
+                    &mut outcome,
+                    &mut effects,
+                )
+            },
+            ViemStatus::InvalidArgument
+        );
+        assert_eq!(effects, 0);
+    }
+    for alias_fragment in [false, true] {
+        let mut outcome = ViemCoreOutcomeV1::default();
+        let alias = ViemUtf8Slice {
+            data: (&outcome as *const ViemCoreOutcomeV1).cast(),
+            length: 1,
+        };
+        let entry = if alias_fragment {
+            ViemClipboardTurnEntryV2 {
+                fragment_json: alias,
+                ..entry
+            }
+        } else {
+            ViemClipboardTurnEntryV2 {
+                plain_text: alias,
+                ..entry
+            }
+        };
+        let context = ViemCommandTurnContextV2 {
+            clipboards: &entry,
+            clipboard_count: 1,
+            ..ViemCommandTurnContextV2::default()
+        };
+        let mut effects = 0;
+        // Deliberately overlap a nested readable field with writable output;
+        // the ABI validates the relation before interpreting its bytes.
+        assert_eq!(
+            unsafe {
+                viem_core_view_send_key_with_host_context_v2(
+                    core.handle,
+                    view,
+                    &key(VIEM_KEY_CHARACTER, 'x' as u32),
+                    &context,
+                    &mut outcome,
+                    &mut effects,
+                )
+            },
+            ViemStatus::InvalidArgument
+        );
+        assert_eq!(effects, 0);
+    }
+    assert_eq!(document_state(&core).document_revision, 0);
+    assert_eq!(
+        copy_core_bytes(viem_core_copy_source_bytes, &core, 0),
+        b"text"
+    );
+    assert_eq!(viem_core_view_remove(core.handle, view), ViemStatus::Ok);
 }

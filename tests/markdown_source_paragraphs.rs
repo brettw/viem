@@ -240,13 +240,13 @@ fn source_enter_starts_a_paragraph_then_keeps_intentional_empty_paragraphs_edita
 }
 
 #[test]
-fn source_line_undo_restores_only_its_line_in_a_grouped_paragraph() {
+fn undo_restores_an_edit_in_a_grouped_source_paragraph() {
     let source = "First\nsecond\n\nTail";
     let mut core = Core::new(open(source));
     let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 250.0);
     assert_eq!(core.document().projection().blocks().len(), 2);
     assert_eq!(core.document().projection().hard_line_count(), 3);
-    keys(&mut core, view, "jxU");
+    keys(&mut core, view, "jxu");
     assert_eq!(core.document().source_bytes(), source.as_bytes());
 }
 

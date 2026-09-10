@@ -34,7 +34,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::document::{
     Association, BoundaryAffinity, DeletionRecovery, Document, DocumentError, DocumentId,
     FileFormat, FormattedPayloadEdit, FormattedPayloadEditRequest, FormattedTextPayload,
-    HardLineSnapshot, HardLineSourceImage, HistoryNavigationRequest, HistoryRestorationSnapshot,
+    HardLineSnapshot, HistoryNavigationRequest, HistoryRestorationSnapshot,
     MappingOutcome, ModelRequest, ModelTransactionError, PositionError, PositionMap,
     PreparedModelTransaction, Revision, TextAnchor, TextEdit, UnresolvableAnchor,
 };
@@ -367,7 +367,6 @@ pub struct CommandPlan {
     model: Option<CommandModelRequest>,
     success_controller: Box<CommandInterpreter>,
     failure_controller: Box<CommandInterpreter>,
-    line_undo: PlannedLineUndoEffect,
     post_commit: PlannedPostCommit,
     output: CommandOutput,
     replay: Option<ReplayPlan>,
@@ -417,16 +416,6 @@ enum PlannedPostCommit {
     ReplaceJournal(Vec<ReplaceJournalEntry>),
     NormalizeNormalCursor,
     NormalizeTypingCursor,
-}
-
-#[derive(Clone, Debug)]
-enum PlannedLineUndoEffect {
-    /// History traversal and non-mutating plans do not redefine Vim's `U`
-    /// baseline.
-    Preserve,
-    /// A text edit either installs its captured pre-edit line image or clears
-    /// the slot when the edit cannot be attributed to one stable hard line.
-    Update(Option<LineUndoState>),
 }
 
 /// Exact, short-lived layout state supplied by the core coordinator for one
@@ -1031,23 +1020,6 @@ struct OperatorTarget {
     jump_destination: Option<usize>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LineUndoState {
-    /// Current zero-based ordinal. Stable identity remains authoritative; the
-    /// ordinal is retained so `U` never guesses among structurally changed
-    /// lines.
-    line: usize,
-    hard_line_id: u64,
-    hard_line_count: usize,
-    /// Normal-mode cursor associated with the saved line image. Vim swaps
-    /// this column together with the line: an Insert caret at line end is
-    /// normalized onto the preceding grapheme, while an `a` insertion point
-    /// remains on the following grapheme boundary. Retaining it is what makes
-    /// repeated `U` toggle both the line and its original cursor exactly.
-    cursor: usize,
-    image: HardLineSourceImage,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ExNormalTarget {
     pub(crate) anchor: TextAnchor,
@@ -1140,7 +1112,6 @@ enum RepeatAction {
         count: usize,
         register: char,
     },
-    LineUndo,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1173,7 +1144,6 @@ pub(crate) struct BufferCommandState {
     search_options: regex_v1::SearchOptions,
     last_search: Option<(SearchDirection, String)>,
     last_repeat: Option<RepeatAction>,
-    line_undo: Option<LineUndoState>,
     recording: Option<(char, Vec<InputEvent>)>,
     last_macro: Option<char>,
 }
@@ -1221,7 +1191,6 @@ pub struct CommandInterpreter {
     search_options: regex_v1::SearchOptions,
     last_search: Option<(SearchDirection, String)>,
     last_repeat: Option<RepeatAction>,
-    line_undo: Option<LineUndoState>,
     insert_session: Option<InsertSession>,
     typing_style: typing_style::TypingStyle,
     input_assistance: input_assistance::InputAssistance,
@@ -1245,11 +1214,6 @@ pub struct CommandInterpreter {
     /// Set for the publication turn only when Ctrl-O completion reopens the
     /// surrounding edit group after its Normal command has finished.
     reopened_group_after_insert_normal_once: bool,
-    /// One-turn cursor override for the history edge created by Normal `U`.
-    /// The command immediately swaps to the cursor stored with the old line,
-    /// while Vim records the invoking cursor in the undo header and restores
-    /// that position on a later redo of this `U` transaction.
-    line_undo_history_cursor: Option<usize>,
     /// One-turn external register inputs. Never exported as buffer state.
     clipboard_context: ClipboardCommandContext,
     /// Effects accumulated by low-level register policy until the enclosing
@@ -1332,7 +1296,6 @@ impl CommandInterpreter {
             search_options: regex_v1::SearchOptions::default(),
             last_search: None,
             last_repeat: None,
-            line_undo: None,
             insert_session: None,
             typing_style: Default::default(),
             input_assistance: Default::default(),
@@ -1351,7 +1314,6 @@ impl CommandInterpreter {
             insert_normal_once: None,
             ctrl_o_just_started: false,
             reopened_group_after_insert_normal_once: false,
-            line_undo_history_cursor: None,
             clipboard_context: ClipboardCommandContext::default(),
             pending_clipboard_writes: Vec::new(),
         }
@@ -1373,7 +1335,6 @@ impl CommandInterpreter {
             search_options: self.search_options,
             last_search: self.last_search.clone(),
             last_repeat: self.last_repeat.clone(),
-            line_undo: self.line_undo.clone(),
             recording: self.recording.clone(),
             last_macro: self.last_macro,
         }
@@ -1389,7 +1350,6 @@ impl CommandInterpreter {
         self.search_options = state.search_options;
         self.last_search.clone_from(&state.last_search);
         self.last_repeat.clone_from(&state.last_repeat);
-        self.line_undo.clone_from(&state.line_undo);
         self.recording.clone_from(&state.recording);
         self.last_macro = state.last_macro;
     }
@@ -2182,17 +2142,7 @@ impl CommandInterpreter {
         &self,
         document: &Document,
     ) -> Result<HistoryRestorationSnapshot, DocumentError> {
-        let Some(cursor) = self.line_undo_history_cursor else {
-            return Ok(self.capture_position_anchors(document)?.history_snapshot());
-        };
-        let mut history_state = self.clone();
-        history_state.cursor = normalize_normal_cursor_snapshot(
-            &document.hard_line_snapshot(),
-            cursor.min(document.text().len()),
-        );
-        Ok(history_state
-            .capture_position_anchors(document)?
-            .history_snapshot())
+        Ok(self.capture_position_anchors(document)?.history_snapshot())
     }
 
     /// Apply history-owned state to the invoking view while deliberately
@@ -2239,8 +2189,6 @@ impl CommandInterpreter {
         self.visual_block_insert = None;
         self.insert_normal_once = None;
         self.ctrl_o_just_started = false;
-        self.line_undo_history_cursor = None;
-        self.line_undo = None;
         self.marks = marks;
         self.clear_pending();
         self.position_revision = Some(document.revision());
@@ -2698,9 +2646,6 @@ impl CommandInterpreter {
             self.input_assistance.clear_tag();
         }
         let edit_group_depth = document.edit_group_depth();
-        let before_lines = document.hard_line_snapshot();
-        let line_undo_candidate = self.capture_line_undo_at_cursor(document);
-        let tracked_event = event.clone();
         self.record_event(&event);
         match self.dispatch_event(document, event) {
             Ok(mut output) => {
@@ -2708,17 +2653,6 @@ impl CommandInterpreter {
                 self.finish_insert_normal_once(document, &mut output);
                 self.finish_explicit_register_prefix(&output);
                 self.position_revision = Some(document.revision());
-                if output.document_changed {
-                    let after_lines = document.hard_line_snapshot();
-                    self.update_line_undo_after_event(
-                        &checkpoint,
-                        &tracked_event,
-                        &output,
-                        line_undo_candidate,
-                        (before_lines.text(), &before_lines),
-                        (after_lines.text(), &after_lines),
-                    );
-                }
                 self.finish_clipboard_writes(&mut output);
                 document.commit_command_checkpoint(model_checkpoint);
                 Ok(output)
@@ -2759,9 +2693,6 @@ impl CommandInterpreter {
         let model_checkpoint = document.begin_command_checkpoint();
         let checkpoint = self.clone();
         let edit_group_depth = document.edit_group_depth();
-        let before_lines = document.hard_line_snapshot();
-        let line_undo_candidate = self.capture_line_undo_at_cursor(document);
-        let tracked_event = event.clone();
         let viewport = context.viewport;
         self.line_layout = Some(context.snapshot.clone());
         let result = self.handle_with_layout_inner(document, event, context);
@@ -2776,17 +2707,6 @@ impl CommandInterpreter {
                 }
                 self.finish_explicit_register_prefix(&output);
                 self.position_revision = Some(document.revision());
-                if output.document_changed {
-                    let after_lines = document.hard_line_snapshot();
-                    self.update_line_undo_after_event(
-                        &checkpoint,
-                        &tracked_event,
-                        &output,
-                        line_undo_candidate,
-                        (before_lines.text(), &before_lines),
-                        (after_lines.text(), &after_lines),
-                    );
-                }
                 self.finish_clipboard_writes(&mut output);
                 document.commit_command_checkpoint(model_checkpoint);
                 Ok(output)
@@ -3044,7 +2964,6 @@ impl CommandInterpreter {
             })),
             success_controller: Box::new(next),
             failure_controller: Box::new(failure_controller),
-            line_undo: PlannedLineUndoEffect::Preserve,
             post_commit: PlannedPostCommit::None,
             output,
             replay: None,
@@ -3545,7 +3464,6 @@ impl CommandInterpreter {
             model: Some(model),
             success_controller: Box::new(next),
             failure_controller: Box::new(self.failed_plan_controller(document.revision())),
-            line_undo: PlannedLineUndoEffect::Update(self.capture_line_undo_at_cursor(document)),
             post_commit,
             output,
             replay: None,
@@ -3609,7 +3527,6 @@ impl CommandInterpreter {
             model: None,
             success_controller: Box::new(self),
             failure_controller: Box::new(failure),
-            line_undo: PlannedLineUndoEffect::Preserve,
             post_commit: PlannedPostCommit::None,
             output,
             replay: None,
@@ -3824,181 +3741,8 @@ impl CommandInterpreter {
         }
     }
 
-    fn update_line_undo_after_event(
-        &mut self,
-        checkpoint: &Self,
-        event: &InputEvent,
-        output: &CommandOutput,
-        candidate: Option<LineUndoState>,
-        before: (&str, &HardLineSnapshot),
-        after: (&str, &HardLineSnapshot),
-    ) {
-        let (before, before_lines) = before;
-        let (after, after_lines) = after;
-        let is_bare_normal_key = checkpoint.mode == Mode::Normal
-            && checkpoint.pending == Pending::None
-            && !checkpoint.register_pending;
-        let is_history_navigation = is_bare_normal_key
-            && matches!(
-                event,
-                InputEvent::Key(Key::Char('u') | Key::Ctrl('r' | 'R'))
-            );
-        let is_line_undo = is_bare_normal_key
-            && (matches!(event, InputEvent::Key(Key::Char('U')))
-                || (matches!(event, InputEvent::Key(Key::Char('.')))
-                    && matches!(checkpoint.last_repeat, Some(RepeatAction::LineUndo))));
-        let ex_history_navigation = output.ex_outcome.as_ref().is_some_and(|outcome| {
-            matches!(outcome.navigation, Some(ExNavigation::HistoryRestoration))
-        });
-        if !is_history_navigation && !is_line_undo && !ex_history_navigation {
-            self.record_line_change(candidate, before, before_lines, after, after_lines);
-        }
-    }
-
-    fn capture_line_undo_at_cursor(&self, document: &Document) -> Option<LineUndoState> {
-        let line = document.hard_line_at_offset(self.cursor)?;
-        self.capture_line_undo_line(document, line)
-    }
-
-    fn capture_line_undo_line(&self, document: &Document, line: usize) -> Option<LineUndoState> {
-        let lines = document.hard_line_snapshot();
-        let image = document.capture_hard_line_source_image(line).ok()?;
-        Some(LineUndoState {
-            line,
-            hard_line_id: image.hard_line_id(),
-            hard_line_count: document.line_count(),
-            cursor: normalize_normal_cursor(document.text(), &lines, self.cursor),
-            image,
-        })
-    }
-
-    /// Capture the exact source baseline for a non-keyboard edit which has
-    /// already resolved its formatted replacement range. Composition uses
-    /// this before committing; a cross-line target is deliberately ineligible
-    /// for line undo even if its replacement later happens to preserve the
-    /// number of hard lines.
-    pub(crate) fn capture_line_undo_for_external_edit(
-        &self,
-        document: &Document,
-        range: Range<usize>,
-    ) -> Option<LineUndoState> {
-        let lines = document.hard_line_snapshot();
-        let start = lines.line_at_offset(range.start).ok()?.index();
-        let end_offset = if range.is_empty() {
-            range.start
-        } else {
-            previous_grapheme_boundary(document.text(), range.end)?
-        };
-        let end = lines.line_at_offset(end_offset).ok()?.index();
-        (start == end)
-            .then(|| self.capture_line_undo_line(document, start))
-            .flatten()
-    }
-
-    /// Publish a successfully committed external edit into the buffer-owned
-    /// line-undo slot. The caller supplies a pre-commit source image; current
-    /// ordinal, topology, and stable identity are revalidated after commit.
-    pub(crate) fn update_line_undo_after_external_edit(
-        &mut self,
-        document: &Document,
-        candidate: Option<LineUndoState>,
-        changed: bool,
-    ) {
-        if changed {
-            self.install_line_undo_candidate(document, candidate);
-        }
-    }
-
-    fn record_line_change(
-        &mut self,
-        candidate: Option<LineUndoState>,
-        before: &str,
-        before_lines: &HardLineSnapshot,
-        after: &str,
-        after_lines: &HardLineSnapshot,
-    ) {
-        let Some((old_range, new_range)) = changed_grapheme_ranges(before, after) else {
-            // A source/style-only transaction cannot be attributed to one
-            // formatted hard line without an explicit transaction target.
-            self.line_undo = None;
-            return;
-        };
-        let Some(candidate) = candidate else {
-            self.line_undo = None;
-            return;
-        };
-        let Ok(old_start_line) = before_lines.line_at_offset(old_range.start) else {
-            self.line_undo = None;
-            return;
-        };
-        let Ok(old_end_line) = before_lines.line_at_offset(old_range.end.min(before.len())) else {
-            self.line_undo = None;
-            return;
-        };
-        let Ok(new_start_line) = after_lines.line_at_offset(new_range.start) else {
-            self.line_undo = None;
-            return;
-        };
-        let Ok(new_end_line) = after_lines.line_at_offset(new_range.end.min(after.len())) else {
-            self.line_undo = None;
-            return;
-        };
-        if old_start_line.index() != old_end_line.index()
-            || new_start_line.index() != new_end_line.index()
-            || old_start_line.index() != candidate.line
-            || new_start_line.index() != candidate.line
-            || old_start_line.id() != candidate.hard_line_id
-        {
-            self.line_undo = None;
-            return;
-        }
-        self.install_line_undo_candidate_from_snapshot(after_lines, candidate);
-    }
-
-    fn install_line_undo_candidate(
-        &mut self,
-        document: &Document,
-        candidate: Option<LineUndoState>,
-    ) {
-        let lines = document.hard_line_snapshot();
-        self.install_line_undo_candidate_from_snapshot(
-            &lines,
-            match candidate {
-                Some(candidate) => candidate,
-                None => {
-                    self.line_undo = None;
-                    return;
-                }
-            },
-        );
-    }
-
-    fn install_line_undo_candidate_from_snapshot(
-        &mut self,
-        lines: &HardLineSnapshot,
-        candidate: LineUndoState,
-    ) {
-        let still_same_line = lines.line_count() == candidate.hard_line_count
-            && lines
-                .line(candidate.line)
-                .is_some_and(|line| line.id() == candidate.hard_line_id);
-        if !still_same_line {
-            self.line_undo = None;
-            return;
-        }
-        if self
-            .line_undo
-            .as_ref()
-            .is_some_and(|slot| slot.hard_line_id == candidate.hard_line_id)
-        {
-            return;
-        }
-        self.line_undo = Some(candidate);
-    }
-
     fn record_event(&mut self, event: &InputEvent) {
         self.reopened_group_after_insert_normal_once = false;
-        self.line_undo_history_cursor = None;
         let stops_recording = self.recording.is_some()
             && self.mode == Mode::Normal
             && self.pending == Pending::None
@@ -8275,7 +8019,6 @@ impl CommandInterpreter {
         match key {
             Key::Char('.') => self.repeat_last_change(document, explicit_count),
             Key::Char('u') => Ok(self.history(document, false, count)),
-            Key::Char('U') => self.undo_current_line(document),
             Key::Ctrl('r' | 'R') => Ok(self.history(document, true, count)),
             Key::Char('i') => Ok(self.enter_insert(document, InsertPlacement::Before, count)),
             Key::Char('I') => Ok(self.enter_insert(document, InsertPlacement::LineStart, count)),
@@ -11443,7 +11186,6 @@ impl CommandInterpreter {
                     self.paste(document, before, count)
                 }
             }
-            RepeatAction::LineUndo => self.undo_current_line(document),
         }
     }
 
@@ -11643,66 +11385,6 @@ impl CommandInterpreter {
             output.merge(self.finish_insert(document)?);
         }
         Ok(output)
-    }
-
-    fn undo_current_line(
-        &mut self,
-        document: &mut Document,
-    ) -> Result<CommandOutput, DocumentError> {
-        let Some(slot) = self.line_undo.clone() else {
-            return Ok(CommandOutput {
-                status: CommandStatus::Error("no line changes to undo".into()),
-                ..CommandOutput::complete()
-            });
-        };
-        let lines = document.hard_line_snapshot();
-        let target = lines.line(slot.line);
-        if lines.line_count() != slot.hard_line_count
-            || target
-                .as_ref()
-                .map_or(true, |line| line.id() != slot.hard_line_id)
-        {
-            self.line_undo = None;
-            return Ok(CommandOutput {
-                status: CommandStatus::Error(
-                    "line undo target changed identity or hard-line topology".into(),
-                ),
-                ..CommandOutput::complete()
-            });
-        }
-        let current = document.capture_hard_line_source_image(slot.line)?;
-        let before_revision = document.revision();
-        let old_cursor = self.cursor;
-        document.restore_hard_line_source_image(slot.line, slot.image)?;
-        if document.revision() == before_revision {
-            return Ok(CommandOutput::complete());
-        }
-        self.line_undo = Some(LineUndoState {
-            line: slot.line,
-            hard_line_id: current.hard_line_id(),
-            hard_line_count: document.line_count(),
-            cursor: old_cursor,
-            image: current,
-        });
-        self.line_undo_history_cursor = Some(old_cursor);
-        let restored_lines = document.hard_line_snapshot();
-        let restored_line = restored_lines
-            .line(slot.line)
-            .expect("line-source restoration preserves hard-line topology");
-        let restored_range = restored_line.content_range();
-        self.cursor = normalize_normal_cursor(
-            document.text(),
-            &restored_lines,
-            slot.cursor.clamp(restored_range.start, restored_range.end),
-        );
-        if !self.replaying {
-            self.last_repeat = Some(RepeatAction::LineUndo);
-        }
-        Ok(CommandOutput {
-            document_changed: true,
-            cursor_moved: self.cursor != old_cursor,
-            ..CommandOutput::complete()
-        })
     }
 
     fn history(&mut self, document: &mut Document, redo: bool, count: usize) -> CommandOutput {
@@ -13622,12 +13304,6 @@ impl CommandPlan {
                     .expect("committed typing ends at a valid UTF-8 boundary");
             }
         }
-        match self.line_undo {
-            PlannedLineUndoEffect::Preserve => {}
-            PlannedLineUndoEffect::Update(candidate) => {
-                next.update_line_undo_after_external_edit(document, candidate, document_changed);
-            }
-        }
         let mut output = self.output;
         output.document_changed = document_changed;
         *interpreter = next;
@@ -15118,43 +14794,6 @@ fn linewise_register_at_eof(
 
 fn repetition_too_large(count: usize) -> CommandOutput {
     TextRepetitionError::new(count).into_command_output()
-}
-
-fn changed_grapheme_ranges(before: &str, after: &str) -> Option<(Range<usize>, Range<usize>)> {
-    if before == after {
-        return None;
-    }
-    let before_graphemes: Vec<_> = before.grapheme_indices(true).collect();
-    let after_graphemes: Vec<_> = after.grapheme_indices(true).collect();
-    let prefix = before_graphemes
-        .iter()
-        .zip(&after_graphemes)
-        .take_while(|((_, before), (_, after))| before == after)
-        .count();
-    let before_start = before_graphemes
-        .get(prefix)
-        .map_or(before.len(), |(offset, _)| *offset);
-    let after_start = after_graphemes
-        .get(prefix)
-        .map_or(after.len(), |(offset, _)| *offset);
-    let available_suffix = before_graphemes
-        .len()
-        .saturating_sub(prefix)
-        .min(after_graphemes.len().saturating_sub(prefix));
-    let suffix = before_graphemes
-        .iter()
-        .rev()
-        .zip(after_graphemes.iter().rev())
-        .take(available_suffix)
-        .take_while(|((_, before), (_, after))| before == after)
-        .count();
-    let before_end = before_graphemes
-        .get(before_graphemes.len().saturating_sub(suffix))
-        .map_or(before.len(), |(offset, _)| *offset);
-    let after_end = after_graphemes
-        .get(after_graphemes.len().saturating_sub(suffix))
-        .map_or(after.len(), |(offset, _)| *offset);
-    Some((before_start..before_end, after_start..after_end))
 }
 
 fn mapped_anchor(map: &PositionMap, anchor: TextAnchor) -> Result<Option<usize>, PositionError> {
@@ -20271,123 +19910,36 @@ mod tests {
     }
 
     #[test]
-    fn normal_u_toggles_the_current_line_baseline_as_a_new_undo_unit() {
-        let mut document = Document::new("abc");
-        let mut commands = CommandInterpreter::new();
-
-        keys(&mut commands, &mut document, "A!");
-        key(&mut commands, &mut document, Key::Escape);
-        keys(&mut commands, &mut document, "0x");
-        assert_eq!(document.text(), "bc!");
-
-        keys(&mut commands, &mut document, "U");
-        assert_eq!(document.text(), "abc");
-        keys(&mut commands, &mut document, "U");
-        assert_eq!(document.text(), "bc!");
-
-        keys(&mut commands, &mut document, "u");
-        assert_eq!(document.text(), "abc", "each U is its own undo unit");
-    }
-
-    #[test]
-    fn normal_u_targets_the_latest_changed_line_after_cursor_motion() {
-        let mut document = Document::new("one\ntwo");
-        let mut commands = CommandInterpreter::new();
-
-        keys(&mut commands, &mut document, "A!");
-        key(&mut commands, &mut document, Key::Escape);
-        keys(&mut commands, &mut document, "j0x");
-        assert_eq!(document.text(), "one!\nwo");
-
-        keys(&mut commands, &mut document, "ggU");
-        assert_eq!(document.text(), "one!\ntwo");
-        assert_eq!(
-            commands.cursor(),
-            "one!\n".len(),
-            "U jumps to the latest changed line rather than using the cursor line"
-        );
-
-        keys(&mut commands, &mut document, "U");
-        assert_eq!(document.text(), "one!\nwo");
-    }
-
-    #[test]
-    fn normal_u_invalidates_on_hard_line_topology_changes() {
-        let mut document = Document::new("one\ntwo");
-        let mut commands = CommandInterpreter::new();
-
-        keys(&mut commands, &mut document, "A!");
-        key(&mut commands, &mut document, Key::Escape);
-        keys(&mut commands, &mut document, "J");
-        assert_eq!(document.text(), "one! two");
-        let revision = document.revision();
-
-        let output = keys(&mut commands, &mut document, "U");
-        assert!(matches!(output.status, CommandStatus::Error(_)));
-        assert_eq!(document.text(), "one! two");
-        assert_eq!(document.revision(), revision);
-    }
-
-    #[test]
-    fn normal_u_restores_exact_markdown_and_encoded_source_images() {
-        let fixtures = [
-            (
-                b"__bold__".to_vec(),
-                Encoding::Utf8,
-                Format::Markdown,
-                "bold",
-            ),
-            (
-                b"caf\xe9".to_vec(),
-                Encoding::Latin1,
-                Format::PlainText,
-                "café",
-            ),
+    fn unsupported_normal_u_keeps_encoded_history_and_visual_uppercase() {
+        for (source, encoding, format) in [
+            (b"__bold__".to_vec(), Encoding::Utf8, Format::Markdown),
+            (b"caf\xe9".to_vec(), Encoding::Latin1, Format::PlainText),
             (
                 vec![0xff, 0xfe, b'a', 0, b'b', 0],
                 Encoding::Utf16Le,
                 Format::PlainText,
-                "ab",
             ),
-        ];
-
-        for (source, encoding, format, formatted) in fixtures {
+        ] {
             let mut document = Document::from_bytes(source.clone(), encoding, format).unwrap();
-            assert_eq!(document.text(), formatted);
             let mut commands = CommandInterpreter::new();
             keys(&mut commands, &mut document, "rX");
-            let edited_source = document.source_bytes();
-            assert_ne!(edited_source, source);
-
-            keys(&mut commands, &mut document, "U");
-            assert_eq!(document.source_bytes(), source);
-            assert_eq!(document.text(), formatted);
-
-            keys(&mut commands, &mut document, ".");
-            assert_eq!(
-                document.source_bytes(),
-                edited_source,
-                "dot repeats the source-image swap for {encoding:?}/{format:?}"
-            );
+            let edited = document.source_bytes();
+            let revision = document.revision();
+            let output = key(&mut commands, &mut document, Key::Char('U'));
+            assert!(matches!(output.status, CommandStatus::Unsupported(_)));
+            assert_eq!(document.revision(), revision);
+            assert_eq!(document.source_bytes(), edited);
             keys(&mut commands, &mut document, "u");
             assert_eq!(document.source_bytes(), source);
             key(&mut commands, &mut document, Key::Ctrl('r'));
-            assert_eq!(document.source_bytes(), edited_source);
+            assert_eq!(document.source_bytes(), edited);
         }
-    }
-
-    #[test]
-    fn normal_u_without_a_baseline_is_non_destructive() {
-        let mut document = Document::new("unchanged");
+        let mut document = Document::new("one two");
         let mut commands = CommandInterpreter::new();
-        let revision = document.revision();
-
-        let output = keys(&mut commands, &mut document, "U");
-
-        assert!(matches!(output.status, CommandStatus::Error(_)));
-        assert_eq!(document.text(), "unchanged");
-        assert_eq!(document.revision(), revision);
-        assert!(!document.undo());
+        keys(&mut commands, &mut document, "vllU");
+        assert_eq!(document.text(), "ONE two");
+        keys(&mut commands, &mut document, "u");
+        assert_eq!(document.text(), "one two");
     }
 
     #[test]

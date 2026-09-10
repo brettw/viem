@@ -13,6 +13,15 @@
       ]
     },
     {
+      "id": "normal-line-undo",
+      "status": "intentional-difference",
+      "decision": "Normal-mode U is retired. Ordinary u/Ctrl-R history remains; Visual U and gU still uppercase text. There is no separate saved-line undo state.",
+      "tests": [
+        "src/core/command/mod.rs",
+        "tests/vim_exact_conformance.rs"
+      ]
+    },
+    {
       "id": "macro-repeat",
       "status": "partial",
       "decision": "Named/uppercase-append registers, counted/nested playback, event identity, recursion/work limits, semantic dot and :normal! are implemented. Expression/runtime and cross-file replay facilities are not adopted.",

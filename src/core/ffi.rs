@@ -1,9 +1,8 @@
-//! Stable, ownership-safe C entry points for portable document and controller
-//! state.
+//! Ownership-safe C entry points for the portable core and its views.
 //!
 //! The ABI deliberately exposes integer tokens rather than Rust pointers.
 //! Tokens are process-local, nonzero, and never reused. Registry locks are
-//! held only long enough to check a document or controller out for one serial
+//! held only long enough to check a core out for one serial
 //! turn; model work, frontend callbacks, and caller-buffer copies happen after
 //! the corresponding lock has been released. Concurrent access to the same
 //! token receives a busy result instead of blocking. Destruction is likewise
@@ -63,25 +62,16 @@ use std::str;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Version of the C ABI implemented by this library.
-pub const VIEM_CORE_ABI_VERSION: u32 = 3;
+pub const VIEM_CORE_ABI_VERSION: u32 = 4;
 
-/// First version of the injected text-measurement provider vtable.
-pub const VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V1: u32 = 1;
 /// Adds paragraph base direction in the request's fixed-layout extension slot
 /// and the context-owned cluster contract: shape the concatenated context and
 /// interior, then return whole clusters whose logical start is in the stable
-/// interior. Version 1 providers remain accepted with their exact-interior
-/// response behavior.
+/// interior.
 pub const VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2: u32 = 2;
 /// Current version of the injected text-measurement provider vtable.
 pub const VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION: u32 =
     VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2;
-
-/// Opaque process-local document token.
-///
-/// Zero is always invalid. Values have no relationship to a Rust or source
-/// address and must not be inspected or synthesized by a caller.
-pub type ViemDocumentHandle = u64;
 
 /// Opaque process-local controller/core token. Zero is always invalid.
 pub type ViemCoreHandle = u64;
@@ -125,7 +115,6 @@ pub const VIEM_HISTORY_ACTION_CATEGORY_TEXT: u32 = 1;
 pub const VIEM_HISTORY_ACTION_CATEGORY_STYLE: u32 = 2;
 pub const VIEM_HISTORY_ACTION_CATEGORY_FILE_FORMAT: u32 = 3;
 pub const VIEM_HISTORY_ACTION_CATEGORY_HARD_LINE_TRANSFER: u32 = 4;
-pub const VIEM_HISTORY_ACTION_CATEGORY_HARD_LINE_SOURCE_RESTORATION: u32 = 5;
 pub const VIEM_HISTORY_ACTION_CATEGORY_SOURCE_METADATA: u32 = 6;
 pub const VIEM_HISTORY_ACTION_CATEGORY_MIXED: u32 = 7;
 
@@ -246,8 +235,7 @@ pub const VIEM_FORMATTED_POINT_INFO_V1_SIZE: u32 = size_of::<ViemFormattedPointI
 
 /// Status returned by every fallible ABI operation.
 ///
-/// The discriminants are part of ABI version 1 and therefore must not be
-/// reordered or reused.
+/// Discriminants match the constants published in `include/viem_core.h`.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ViemStatus {
@@ -270,7 +258,6 @@ pub enum ViemStatus {
     ResourceExhausted = 16,
     VerificationFailed = 17,
     LengthOverflow = 18,
-    DocumentBusy = 19,
     CoreBusy = 20,
     InvalidView = 21,
     InvalidProvider = 22,
@@ -280,9 +267,6 @@ pub enum ViemStatus {
     /// The shaping provider cannot guarantee a stable interior from the
     /// bounded context supplied by core. No partial layout is installed.
     UnstableShapingContext = 26,
-    /// Reserved legacy value from ABI v3. Current vertical viewport requests
-    /// use the identity-bound regional-layout protocol and do not return it.
-    VerticalViewportOriginUnsupported = 27,
     /// No immutable layout snapshot matches the view's current document,
     /// configuration, measurement environment, and metrics generations.
     LayoutUnavailable = 28,
@@ -311,11 +295,9 @@ pub enum ViemStatus {
     Panic = 255,
 }
 
-/// Versioned options for [`viem_document_create`].
+/// Options for [`viem_core_create`].
 ///
-/// `struct_size` must be at least [`VIEM_DOCUMENT_OPTIONS_SIZE`]. A larger
-/// value is accepted so future callers can append fields while retaining an
-/// ABI-v1 prefix.
+/// `struct_size` must be at least [`VIEM_DOCUMENT_OPTIONS_SIZE`].
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ViemDocumentOptions {
@@ -489,61 +471,8 @@ impl Default for ViemUtf8Slice {
     }
 }
 
-/// One clipboard target captured immediately before a command turn.
-///
-/// `HAS_READ` supplies a generation-tagged immutable plain-text snapshot;
-/// `WRITABLE` independently authorizes core to emit a write for the target.
-/// A target may occur at most once in a turn context.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct ViemClipboardTurnEntryV1 {
-    pub struct_size: u32,
-    pub flags: u32,
-    pub target: u32,
-    pub reserved: u32,
-    pub generation: u64,
-    pub plain_text: ViemUtf8Slice,
-}
-
-pub const VIEM_CLIPBOARD_TURN_ENTRY_V1_SIZE: u32 = size_of::<ViemClipboardTurnEntryV1>() as u32;
-
-impl Default for ViemClipboardTurnEntryV1 {
-    fn default() -> Self {
-        Self {
-            struct_size: VIEM_CLIPBOARD_TURN_ENTRY_V1_SIZE,
-            flags: 0,
-            target: 0,
-            reserved: 0,
-            generation: 0,
-            plain_text: ViemUtf8Slice::default(),
-        }
-    }
-}
-
-/// Immutable host capabilities and snapshots for exactly one input turn.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct ViemCommandTurnContextV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
-    pub clipboards: *const ViemClipboardTurnEntryV1,
-    pub clipboard_count: u64,
-}
-
-pub const VIEM_COMMAND_TURN_CONTEXT_V1_SIZE: u32 = size_of::<ViemCommandTurnContextV1>() as u32;
-
-impl Default for ViemCommandTurnContextV1 {
-    fn default() -> Self {
-        Self {
-            struct_size: VIEM_COMMAND_TURN_CONTEXT_V1_SIZE,
-            reserved: 0,
-            clipboards: std::ptr::null(),
-            clipboard_count: 0,
-        }
-    }
-}
-
-/// V2 adds an optional validated Viem fragment JSON image. V1 remains unchanged.
+/// One clipboard snapshot/capability for an input turn, including an optional
+/// validated Viem fragment JSON image. Each target may occur at most once.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct ViemClipboardTurnEntryV2 {
@@ -565,6 +494,31 @@ pub struct ViemCommandTurnContextV2 {
     pub clipboard_count: u64,
 }
 pub const VIEM_COMMAND_TURN_CONTEXT_V2_SIZE: u32 = size_of::<ViemCommandTurnContextV2>() as u32;
+
+impl Default for ViemClipboardTurnEntryV2 {
+    fn default() -> Self {
+        Self {
+            struct_size: VIEM_CLIPBOARD_TURN_ENTRY_V2_SIZE,
+            flags: 0,
+            target: 0,
+            reserved: 0,
+            generation: 0,
+            plain_text: ViemUtf8Slice::default(),
+            fragment_json: ViemUtf8Slice::default(),
+        }
+    }
+}
+
+impl Default for ViemCommandTurnContextV2 {
+    fn default() -> Self {
+        Self {
+            struct_size: VIEM_COMMAND_TURN_CONTEXT_V2_SIZE,
+            reserved: 0,
+            clipboards: std::ptr::null(),
+            clipboard_count: 0,
+        }
+    }
+}
 
 /// Offset and length inside an effect batch's copied byte arena. Unless a field
 /// explicitly documents otherwise, referenced bytes are valid UTF-8.
@@ -796,7 +750,7 @@ pub const VIEM_SHAPE_STYLE_RUN_V1_SIZE: u32 = size_of::<ViemShapeStyleRunV1>() a
 /// provider MUST keep it valid for its declared owner and threading rule while
 /// `metrics_generation` remains current and the owning view remains attached.
 /// It MAY retire the token as soon as either condition stops being true. No
-/// retain or release crosses ABI v1; callers MUST NOT retain a token after its
+/// retain or release crosses the ABI; callers MUST NOT retain a token after its
 /// generation becomes stale or its view is removed/core is destroyed.
 pub struct ViemRenderRunHandleV1 {
     pub owner: u64,
@@ -848,7 +802,7 @@ pub struct ViemShapingDiagnosticV1 {
 pub const VIEM_SHAPING_DIAGNOSTIC_V1_SIZE: u32 = size_of::<ViemShapingDiagnosticV1>() as u32;
 
 /// One immutable shaping request. Every pointer is borrowed only for the
-/// synchronous `shape_batch` callback. For provider ABI v2, `text_start` and
+/// synchronous `shape_batch` callback. `text_start` and
 /// `text_end` delimit the stable ownership interior represented by `text`.
 /// Shape `context_before + text + context_after`, and return each whole cluster
 /// whose logical start lies in that interior. Such a cluster may end in the
@@ -874,8 +828,7 @@ pub struct ViemShapeRequestV1 {
     pub has_render_run_policy: u32,
     pub render_run_owner: u64,
     pub render_run_threading: u32,
-    /// `VIEM_TEXT_DIRECTION_*` for provider ABI v2. Core writes zero (Auto)
-    /// for a v1 provider, where this fixed-layout slot was reserved.
+    /// The containing paragraph's `VIEM_TEXT_DIRECTION_*` value.
     pub paragraph_base_direction: u32,
 }
 
@@ -945,7 +898,7 @@ pub type ViemShapeBatchCallback = unsafe extern "C" fn(
 /// destroy call returning [`ViemStatus::CoreBusy`] has not destroyed the core
 /// and does not end that lifetime. Render-run tokens have the separate
 /// generation-scoped lifetime documented on [`ViemRenderRunHandleV1`]. A
-/// successful ABI-v2 callback affirms stable ownership interiors. A provider
+/// successful callback affirms stable ownership interiors. A provider
 /// unable to make that bounded-context guarantee returns
 /// [`ViemStatus::UnstableShapingContext`]; core caches and installs none of that
 /// batch.
@@ -2291,75 +2244,6 @@ impl Default for ViemCoreOutcomeV1 {
     }
 }
 
-struct Registry {
-    next_handle: ViemDocumentHandle,
-    documents: HashMap<ViemDocumentHandle, RegistryEntry>,
-}
-
-enum RegistryEntry {
-    Ready(Document),
-    Busy,
-}
-
-/// Exclusive, nonblocking coordinator-style turn for one document.
-///
-/// Dropping the lease returns the model to its handle. Destruction observes the
-/// busy marker and fails without removing it. This also runs during unwinding,
-/// before the outer ABI panic boundary returns, so a contained panic cannot
-/// strand a live handle in the busy state.
-struct DocumentLease {
-    handle: ViemDocumentHandle,
-    document: Option<Document>,
-}
-
-impl DocumentLease {
-    fn document(&self) -> &Document {
-        self.document
-            .as_ref()
-            .expect("a live document lease owns its model")
-    }
-
-    fn document_mut(&mut self) -> &mut Document {
-        self.document
-            .as_mut()
-            .expect("a live document lease owns its model")
-    }
-}
-
-impl Drop for DocumentLease {
-    fn drop(&mut self) {
-        let Some(document) = self.document.take() else {
-            return;
-        };
-        let Ok(mut registry) = registry().lock() else {
-            // A poisoned process-global registry cannot safely publish the
-            // model again. The handle remains unusable rather than exposing a
-            // potentially incoherent state across the ABI.
-            return;
-        };
-        if let Some(entry @ RegistryEntry::Busy) = registry.documents.get_mut(&self.handle) {
-            *entry = RegistryEntry::Ready(document);
-        }
-        // Absence is only possible after registry corruption: destroy retains
-        // a Busy entry and callers cannot otherwise remove entries.
-    }
-}
-
-impl Registry {
-    fn new() -> Self {
-        Self {
-            next_handle: 1,
-            documents: HashMap::new(),
-        }
-    }
-}
-
-static DOCUMENTS: OnceLock<Mutex<Registry>> = OnceLock::new();
-
-fn registry() -> &'static Mutex<Registry> {
-    DOCUMENTS.get_or_init(|| Mutex::new(Registry::new()))
-}
-
 fn ffi_boundary(operation: impl FnOnce() -> Result<(), ViemStatus>) -> ViemStatus {
     match catch_unwind(AssertUnwindSafe(operation)) {
         Ok(Ok(())) => ViemStatus::Ok,
@@ -2448,9 +2332,6 @@ fn history_change_to_ffi(change: HistorySemanticChangeKind) -> u32 {
         HistorySemanticChangeKind::FileFormat => VIEM_HISTORY_ACTION_CATEGORY_FILE_FORMAT,
         HistorySemanticChangeKind::HardLineTransfer => {
             VIEM_HISTORY_ACTION_CATEGORY_HARD_LINE_TRANSFER
-        }
-        HistorySemanticChangeKind::HardLineSourceRestoration => {
-            VIEM_HISTORY_ACTION_CATEGORY_HARD_LINE_SOURCE_RESTORATION
         }
         HistorySemanticChangeKind::SourceMetadata => VIEM_HISTORY_ACTION_CATEGORY_SOURCE_METADATA,
     }
@@ -2541,62 +2422,6 @@ unsafe fn read_options(
     Ok(options)
 }
 
-fn register_document(document: Document) -> Result<ViemDocumentHandle, ViemStatus> {
-    let mut registry = registry().lock().map_err(|_| ViemStatus::InternalError)?;
-    let handle = registry.next_handle;
-    if handle == 0 {
-        return Err(ViemStatus::ResourceExhausted);
-    }
-    if registry.documents.contains_key(&handle) {
-        return Err(ViemStatus::InternalError);
-    }
-    registry.next_handle = handle.checked_add(1).unwrap_or(0);
-    registry
-        .documents
-        .insert(handle, RegistryEntry::Ready(document));
-    Ok(handle)
-}
-
-fn checkout_document(handle: ViemDocumentHandle) -> Result<DocumentLease, ViemStatus> {
-    if handle == 0 {
-        return Err(ViemStatus::InvalidHandle);
-    }
-    // Move the model out while holding the registry lock. No document method,
-    // parsing, projection, callback, allocation-heavy work, or output copy is
-    // performed while this process-global lock is held.
-    let mut registry = registry().lock().map_err(|_| ViemStatus::InternalError)?;
-    let entry = registry
-        .documents
-        .get_mut(&handle)
-        .ok_or(ViemStatus::InvalidHandle)?;
-    let RegistryEntry::Ready(_) = entry else {
-        return Err(ViemStatus::DocumentBusy);
-    };
-    let RegistryEntry::Ready(document) = std::mem::replace(entry, RegistryEntry::Busy) else {
-        unreachable!("the ready entry was matched above")
-    };
-    Ok(DocumentLease {
-        handle,
-        document: Some(document),
-    })
-}
-
-fn with_document<R>(
-    handle: ViemDocumentHandle,
-    operation: impl FnOnce(&Document) -> Result<R, ViemStatus>,
-) -> Result<R, ViemStatus> {
-    let document = checkout_document(handle)?;
-    operation(document.document())
-}
-
-fn with_document_mut<R>(
-    handle: ViemDocumentHandle,
-    operation: impl FnOnce(&mut Document) -> Result<R, ViemStatus>,
-) -> Result<R, ViemStatus> {
-    let mut document = checkout_document(handle)?;
-    operation(document.document_mut())
-}
-
 fn validate_revision(document: &Document, expected: u64) -> Result<(), ViemStatus> {
     if document.revision() == Revision(expected) {
         Ok(())
@@ -2678,10 +2503,7 @@ fn document_status(error: DocumentError) -> ViemStatus {
         DocumentError::AmbiguousProjection => ViemStatus::AmbiguousProjection,
         DocumentError::VerificationFailed
         | DocumentError::FormattedPayloadCannotReproject
-        | DocumentError::HardLineTransferProjectionMismatch
-        | DocumentError::HardLineSourceImageTopologyChanged { .. }
-        | DocumentError::HardLineSourceImageTerminatorShapeChanged { .. }
-        | DocumentError::HardLineSourceImageProjectionMismatch => ViemStatus::VerificationFailed,
+        | DocumentError::HardLineTransferProjectionMismatch => ViemStatus::VerificationFailed,
         DocumentError::LineEndingConversionWouldReinterpretContent
         | DocumentError::UnrepresentableFormattedCharacter { .. } => ViemStatus::PolicyRequired,
         DocumentError::UnsupportedFormatting | DocumentError::OpaqueDecodingConflict { .. } => {
@@ -2694,33 +2516,14 @@ fn document_status(error: DocumentError) -> ViemStatus {
         | DocumentError::OverlappingFormatting
         | DocumentError::InvalidHardLineTransferRange { .. }
         | DocumentError::InvalidHardLineTransferDestination { .. }
-        | DocumentError::HardLineTransferDestinationInsideSource { .. }
-        | DocumentError::InvalidHardLineSourceImageTarget { .. }
-        | DocumentError::StaleHardLineSourceImage { .. }
-        | DocumentError::IncompatibleHardLineSourceImage => ViemStatus::InvalidArgument,
+        | DocumentError::HardLineTransferDestinationInsideSource { .. } => ViemStatus::InvalidArgument,
         DocumentError::FormattedTextStorage(_) => ViemStatus::InternalError,
     }
-}
-
-fn snapshot_bytes(
-    handle: ViemDocumentHandle,
-    expected_revision: u64,
-    source: bool,
-) -> Result<Vec<u8>, ViemStatus> {
-    with_document(handle, |document| {
-        validate_revision(document, expected_revision)?;
-        Ok(if source {
-            document.source_bytes()
-        } else {
-            document.text().as_bytes().to_vec()
-        })
-    })
 }
 
 #[derive(Clone, Copy)]
 struct CTextMeasurementProvider {
     context: usize,
-    abi_version: u32,
     measurement_environment_id: MeasurementEnvironmentId,
     threading: ProviderThreading,
     render_run_policy: Option<RenderRunPolicy>,
@@ -2729,7 +2532,7 @@ struct CTextMeasurementProvider {
 }
 
 impl CTextMeasurementProvider {
-    /// Copy and validate the v1 provider prefix. The frontend retains ownership
+    /// Copy and validate the current provider table. The frontend retains ownership
     /// of the context and every resource referenced by callbacks.
     unsafe fn from_ffi(provider: *const ViemTextMeasurementProviderV1) -> Result<Self, ViemStatus> {
         if provider.is_null() {
@@ -2738,13 +2541,11 @@ impl CTextMeasurementProvider {
         if (provider as usize) % align_of::<ViemTextMeasurementProviderV1>() != 0 {
             return Err(ViemStatus::InvalidArgument);
         }
-        // SAFETY: The API contract requires a readable aligned v1 prefix. Null
+        // SAFETY: The API contract requires a readable aligned provider table. Null
         // and alignment were checked before making the field-for-field copy.
         let provider = unsafe { provider.read() };
         if provider.struct_size < VIEM_TEXT_MEASUREMENT_PROVIDER_V1_SIZE
-            || !(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V1
-                ..=VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION)
-                .contains(&provider.abi_version)
+            || provider.abi_version != VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION
             || provider.reserved != 0
         {
             return Err(ViemStatus::InvalidProvider);
@@ -2765,7 +2566,6 @@ impl CTextMeasurementProvider {
         let shape_batch_callback = provider.shape_batch.ok_or(ViemStatus::InvalidProvider)?;
         Ok(Self {
             context: provider.context as usize,
-            abi_version: provider.abi_version,
             measurement_environment_id: MeasurementEnvironmentId(
                 provider.measurement_environment_id,
             ),
@@ -2875,7 +2675,7 @@ impl MarshalledRequest {
         }
     }
 
-    fn request(&self, request: &ShapeRequest<'_>, provider_abi_version: u32) -> ViemShapeRequestV1 {
+    fn request(&self, request: &ShapeRequest<'_>) -> ViemShapeRequestV1 {
         let (has_render_run_policy, render_run_owner, render_run_threading) =
             request.render_run_policy.map_or((0, 0, 0), |policy| {
                 (1, policy.owner.0, ffi_render_threading(policy.threading))
@@ -2902,16 +2702,10 @@ impl MarshalledRequest {
             has_render_run_policy,
             render_run_owner,
             render_run_threading,
-            paragraph_base_direction: if provider_abi_version
-                >= VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2
-            {
-                match request.paragraph_base_direction {
-                    TextDirection::Auto => VIEM_TEXT_DIRECTION_AUTO,
-                    TextDirection::LeftToRight => VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT,
-                    TextDirection::RightToLeft => VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT,
-                }
-            } else {
-                VIEM_TEXT_DIRECTION_AUTO
+            paragraph_base_direction: match request.paragraph_base_direction {
+                TextDirection::Auto => VIEM_TEXT_DIRECTION_AUTO,
+                TextDirection::LeftToRight => VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT,
+                TextDirection::RightToLeft => VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT,
             },
         }
     }
@@ -2945,7 +2739,7 @@ impl TextMeasurementProvider for CTextMeasurementProvider {
         let ffi_requests: Vec<_> = requests
             .iter()
             .zip(&storage)
-            .map(|(request, storage)| storage.request(request, self.abi_version))
+            .map(|(request, storage)| storage.request(request))
             .collect();
         let mut ffi_responses = vec![ViemShapeResponseV1::default(); requests.len()];
         // SAFETY: All request pointers refer to storage retained across this
@@ -4118,284 +3912,6 @@ pub extern "C" fn viem_core_abi_version() -> u32 {
     catch_unwind(|| VIEM_CORE_ABI_VERSION).unwrap_or(0)
 }
 
-/// Create a document from an exact length-delimited source byte sequence.
-///
-/// On success, `out_document` receives a new nonzero token and `out_revision`
-/// receives its initial revision (currently zero). Both outputs are cleared
-/// before validation so a failed call cannot leave a plausible handle behind.
-///
-/// # Safety
-///
-/// - `options` must point to a readable, aligned options prefix.
-/// - When `source_length` is nonzero, `source` must point to that many readable
-///   bytes.
-/// - `out_document` and `out_revision` must point to distinct, properly
-///   aligned writable values.
-/// - Readable inputs must not overlap the writable outputs, and all pointed-to
-///   storage must remain valid for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn viem_document_create(
-    source: *const u8,
-    source_length: u64,
-    options: *const ViemDocumentOptions,
-    out_document: *mut ViemDocumentHandle,
-    out_revision: *mut u64,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        if out_document.is_null() || out_revision.is_null() {
-            return Err(ViemStatus::NullPointer);
-        }
-        // SAFETY: The function contract requires writable outputs and both
-        // pointers were checked for null above.
-        unsafe {
-            out_document.write(0);
-            out_revision.write(0);
-        }
-
-        // SAFETY: Forwarded directly from this function's pointer contracts.
-        let options = unsafe { read_options(options)? };
-        // SAFETY: Forwarded directly from this function's pointer contracts.
-        let bytes = unsafe { input_bytes(source, source_length)? }.to_vec();
-        let document = create_document_from_source(bytes, options)?;
-        let revision = document.revision().0;
-        let handle = register_document(document)?;
-
-        // SAFETY: The output pointers satisfy the function contract and stay
-        // valid until this call returns.
-        unsafe {
-            out_document.write(handle);
-            out_revision.write(revision);
-        }
-        Ok(())
-    })
-}
-
-/// Destroy one document token.
-///
-/// If an operation has checked out the document, this returns
-/// [`ViemStatus::DocumentBusy`] without removing the token. The caller may retry
-/// after that operation returns. A successful call makes the token invalid;
-/// tokens are never reused, so a stale token can never address a later
-/// document.
-#[no_mangle]
-pub extern "C" fn viem_document_destroy(handle: ViemDocumentHandle) -> ViemStatus {
-    ffi_boundary(|| {
-        if handle == 0 {
-            return Err(ViemStatus::InvalidHandle);
-        }
-        let document = {
-            let mut registry = registry().lock().map_err(|_| ViemStatus::InternalError)?;
-            match registry.documents.get(&handle) {
-                None => return Err(ViemStatus::InvalidHandle),
-                Some(RegistryEntry::Busy) => return Err(ViemStatus::DocumentBusy),
-                Some(RegistryEntry::Ready(_)) => registry
-                    .documents
-                    .remove(&handle)
-                    .ok_or(ViemStatus::InternalError)?,
-            }
-        };
-        // Keep potentially allocation-heavy model destruction outside the
-        // process-global registry lock.
-        drop(document);
-        Ok(())
-    })
-}
-
-/// Query the current document revision.
-///
-/// # Safety
-///
-/// `out_revision` must point to a properly aligned writable `u64` which
-/// remains valid for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn viem_document_revision(
-    handle: ViemDocumentHandle,
-    out_revision: *mut u64,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        if out_revision.is_null() {
-            return Err(ViemStatus::NullPointer);
-        }
-        // SAFETY: The function contract requires a writable output and the
-        // pointer was checked for null above.
-        unsafe { out_revision.write(0) };
-        let revision = with_document(handle, |document| Ok(document.revision().0))?;
-        // SAFETY: The output remains valid until this call returns.
-        unsafe { out_revision.write(revision) };
-        Ok(())
-    })
-}
-
-/// Copy the exact authoritative source bytes for `expected_revision`.
-///
-/// Pass a null `output` and zero `output_capacity` to query the required byte
-/// count. A non-empty result then returns [`ViemStatus::BufferTooSmall`], with
-/// `out_required` populated. No NUL terminator is written.
-///
-/// # Safety
-///
-/// - `out_required` must point to a properly aligned writable `u64`.
-/// - When `output_capacity` is nonzero, `output` must point to that many
-///   writable bytes.
-/// - The two writable regions must not overlap and must remain valid for the
-///   duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn viem_document_copy_source_bytes(
-    handle: ViemDocumentHandle,
-    expected_revision: u64,
-    output: *mut u8,
-    output_capacity: u64,
-    out_required: *mut u64,
-) -> ViemStatus {
-    // SAFETY: This function exposes the same pointer contract as the shared
-    // implementation and simply selects authoritative source bytes.
-    unsafe {
-        copy_snapshot_bytes(
-            handle,
-            expected_revision,
-            true,
-            output,
-            output_capacity,
-            out_required,
-        )
-    }
-}
-
-/// Copy the formatted snapshot's valid UTF-8 bytes for `expected_revision`.
-///
-/// This has the same two-pass and no-NUL semantics as
-/// [`viem_document_copy_source_bytes`].
-///
-/// # Safety
-///
-/// - `out_required` must point to a properly aligned writable `u64`.
-/// - When `output_capacity` is nonzero, `output` must point to that many
-///   writable bytes.
-/// - The two writable regions must not overlap and must remain valid for the
-///   duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn viem_document_copy_formatted_utf8(
-    handle: ViemDocumentHandle,
-    expected_revision: u64,
-    output: *mut u8,
-    output_capacity: u64,
-    out_required: *mut u64,
-) -> ViemStatus {
-    // SAFETY: This function exposes the same pointer contract as the shared
-    // implementation and simply selects formatted UTF-8 bytes.
-    unsafe {
-        copy_snapshot_bytes(
-            handle,
-            expected_revision,
-            false,
-            output,
-            output_capacity,
-            out_required,
-        )
-    }
-}
-
-/// Shared two-pass snapshot copy implementation.
-///
-/// # Safety
-///
-/// `out_required` must be properly aligned and writable. `output` may be null
-/// only when capacity is zero; otherwise it must identify `output_capacity`
-/// writable bytes. Writable regions must not overlap.
-unsafe fn copy_snapshot_bytes(
-    handle: ViemDocumentHandle,
-    expected_revision: u64,
-    source: bool,
-    output: *mut u8,
-    output_capacity: u64,
-    out_required: *mut u64,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        if out_required.is_null() {
-            return Err(ViemStatus::NullPointer);
-        }
-        // SAFETY: The caller contract requires a writable result pointer and
-        // the null case was rejected above.
-        unsafe { out_required.write(0) };
-        let capacity = checked_length(output_capacity)?;
-        if output.is_null() && capacity != 0 {
-            return Err(ViemStatus::NullPointer);
-        }
-
-        let bytes = snapshot_bytes(handle, expected_revision, source)?;
-        let required = u64::try_from(bytes.len()).map_err(|_| ViemStatus::LengthOverflow)?;
-        // SAFETY: `out_required` remains writable for the complete call.
-        unsafe { out_required.write(required) };
-
-        if capacity < bytes.len() {
-            return Err(ViemStatus::BufferTooSmall);
-        }
-        if bytes.is_empty() {
-            return Ok(());
-        }
-        if output.is_null() {
-            return Err(ViemStatus::NullPointer);
-        }
-        // SAFETY: Capacity was checked against `bytes.len()`; the caller owns
-        // the writable destination and its non-overlap with `out_required` is
-        // part of the function contract.
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len()) };
-        Ok(())
-    })
-}
-
-/// Replace one grapheme-aligned half-open range in an exact formatted
-/// snapshot.
-///
-/// `replacement` is length-delimited UTF-8. On success, `out_revision`
-/// receives the newly current revision. No range is clamped and no stale
-/// ordinal is interpreted in a newer snapshot.
-///
-/// # Safety
-///
-/// - When `replacement_length` is nonzero, `replacement` must point to that
-///   many readable bytes which remain immutable for the duration of the call.
-/// - `out_revision` must point to a properly aligned writable `u64` which does
-///   not overlap the replacement bytes.
-#[no_mangle]
-pub unsafe extern "C" fn viem_document_replace_formatted_utf8(
-    handle: ViemDocumentHandle,
-    expected_revision: u64,
-    start: u64,
-    end: u64,
-    replacement: *const u8,
-    replacement_length: u64,
-    out_revision: *mut u64,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        if out_revision.is_null() {
-            return Err(ViemStatus::NullPointer);
-        }
-        // SAFETY: The function contract requires a writable output and the
-        // null case was rejected above.
-        unsafe { out_revision.write(0) };
-        let start = checked_length(start)?;
-        let end = checked_length(end)?;
-        // SAFETY: Forwarded directly from this function's pointer contract.
-        let replacement = unsafe { input_bytes(replacement, replacement_length)? };
-        let replacement = str::from_utf8(replacement).map_err(|_| ViemStatus::InvalidUtf8)?;
-
-        let revision = with_document_mut(handle, |document| {
-            validate_revision(document, expected_revision)?;
-            let start = document.text_point(start).map_err(document_status)?;
-            let end = document.text_point(end).map_err(document_status)?;
-            document
-                .replace_points(start, end, replacement)
-                .map_err(document_status)?;
-            Ok(document.revision().0)
-        })?;
-
-        // SAFETY: The caller-provided output remains valid until return.
-        unsafe { out_revision.write(revision) };
-        Ok(())
-    })
-}
-
 fn create_document_from_source(
     bytes: Vec<u8>,
     options: ViemDocumentOptions,
@@ -4584,9 +4100,6 @@ fn core_status(error: CoreError) -> ViemStatus {
     match error {
         CoreError::UnknownView(_) => ViemStatus::InvalidView,
         CoreError::IdentifierExhausted(_) => ViemStatus::ResourceExhausted,
-        CoreError::VerticalViewportOriginUnsupported => {
-            ViemStatus::VerticalViewportOriginUnsupported
-        }
         CoreError::Document(error) => document_status(error),
         CoreError::ModelTransaction(error) => model_transaction_status(error),
         CoreError::StaleStyleSheet { .. } => ViemStatus::StaleRevision,
@@ -6641,88 +6154,6 @@ fn parse_clipboard_target(value: u32) -> Result<ClipboardTarget, ViemStatus> {
     }
 }
 
-unsafe fn read_command_turn_context(
-    pointer: *const ViemCommandTurnContextV1,
-    forbidden_outputs: &[(usize, usize)],
-) -> Result<ClipboardCommandContext, ViemStatus> {
-    let context_region = typed_pointer_region(pointer, 1)?;
-    if forbidden_outputs
-        .iter()
-        .any(|output| regions_overlap(context_region, *output))
-    {
-        return Err(ViemStatus::InvalidArgument);
-    }
-    let context = unsafe { pointer.read() };
-    if context.struct_size < VIEM_COMMAND_TURN_CONTEXT_V1_SIZE || context.reserved != 0 {
-        return Err(ViemStatus::InvalidArgument);
-    }
-    // There are exactly two distinct targets in ABI v3. Bound the caller-
-    // supplied count before constructing a slice or allocating a copy; larger
-    // values cannot be valid even if they would eventually fail duplicate-
-    // target validation.
-    if context.clipboard_count > 2 {
-        return Err(ViemStatus::InvalidArgument);
-    }
-    let entries_region = typed_pointer_region(context.clipboards, context.clipboard_count)?;
-    if forbidden_outputs
-        .iter()
-        .any(|output| regions_overlap(entries_region, *output))
-    {
-        return Err(ViemStatus::InvalidArgument);
-    }
-    let entry_count = checked_length(context.clipboard_count)?;
-    let entries = if entry_count == 0 {
-        Vec::new()
-    } else {
-        unsafe { slice::from_raw_parts(context.clipboards, entry_count) }.to_vec()
-    };
-    let mut seen_clipboard = false;
-    let mut seen_primary = false;
-    let mut result = ClipboardCommandContext::new();
-    for entry in entries {
-        if entry.struct_size < VIEM_CLIPBOARD_TURN_ENTRY_V1_SIZE
-            || entry.reserved != 0
-            || entry.flags & !(VIEM_CLIPBOARD_TURN_HAS_READ | VIEM_CLIPBOARD_TURN_WRITABLE) != 0
-        {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        let target = parse_clipboard_target(entry.target)?;
-        let seen = match target {
-            ClipboardTarget::Clipboard => &mut seen_clipboard,
-            ClipboardTarget::Primary => &mut seen_primary,
-        };
-        if *seen {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        *seen = true;
-
-        let text_region = typed_pointer_region(entry.plain_text.data, entry.plain_text.length)?;
-        if forbidden_outputs
-            .iter()
-            .any(|output| regions_overlap(text_region, *output))
-        {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        if entry.flags & VIEM_CLIPBOARD_TURN_HAS_READ != 0 {
-            let bytes = unsafe { input_bytes(entry.plain_text.data, entry.plain_text.length)? };
-            let text = str::from_utf8(bytes)
-                .map_err(|_| ViemStatus::InvalidUtf8)?
-                .to_owned();
-            result = result.with_read(ClipboardSnapshot::new(
-                target,
-                ClipboardGeneration(entry.generation),
-                ClipboardContent::from_plain_text(text),
-            ));
-        } else if entry.generation != 0 || entry.plain_text.length != 0 {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        if entry.flags & VIEM_CLIPBOARD_TURN_WRITABLE != 0 {
-            result = result.with_write(target);
-        }
-    }
-    Ok(result)
-}
-
 unsafe fn read_layout_identity(
     pointer: *const ViemLayoutSnapshotIdentityV1,
 ) -> Result<ViemLayoutSnapshotIdentityV1, ViemStatus> {
@@ -8708,208 +8139,12 @@ pub unsafe extern "C" fn viem_core_view_reveal_selection(
     })
 }
 
-/// Deliver one normalized key to a view's command interpreter.
-///
-/// # Safety
-///
-/// `input` must identify an aligned readable key prefix and `out_outcome` one
-/// aligned writable outcome.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_view_send_key(
-    handle: ViemCoreHandle,
-    view: ViemViewId,
-    input: *const ViemKeyInputV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        if input.is_null() || out_outcome.is_null() {
-            return Err(ViemStatus::NullPointer);
-        }
-        if (input as usize) % align_of::<ViemKeyInputV1>() != 0
-            || (out_outcome as usize) % align_of::<ViemCoreOutcomeV1>() != 0
-            || pointer_ranges_overlap(
-                input.cast(),
-                size_of::<ViemKeyInputV1>(),
-                out_outcome.cast(),
-                size_of::<ViemCoreOutcomeV1>(),
-            )
-        {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        unsafe { clear_outcome(out_outcome)? };
-        let key = parse_key(unsafe { input.read() })?;
-        let outcome = with_core_mut(handle, |core| {
-            dispatch_event(core, view, CoreEvent::Input(InputEvent::Key(key)))
-        })?;
-        unsafe { out_outcome.write(outcome) };
-        Ok(())
-    })
-}
-
-/// Deliver one length-delimited valid UTF-8 text input event.
-///
-/// # Safety
-///
-/// Nonempty text must identify its declared readable bytes; `out_outcome`
-/// must identify one aligned writable outcome.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_view_send_text(
-    handle: ViemCoreHandle,
-    view: ViemViewId,
-    text: *const u8,
-    text_length: u64,
-    out_outcome: *mut ViemCoreOutcomeV1,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        if out_outcome.is_null() {
-            return Err(ViemStatus::NullPointer);
-        }
-        let text_length = checked_length(text_length)?;
-        if text.is_null() && text_length != 0 {
-            return Err(ViemStatus::NullPointer);
-        }
-        if (out_outcome as usize) % align_of::<ViemCoreOutcomeV1>() != 0
-            || pointer_ranges_overlap(
-                text,
-                text_length,
-                out_outcome.cast(),
-                size_of::<ViemCoreOutcomeV1>(),
-            )
-        {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        unsafe { clear_outcome(out_outcome)? };
-        let text = unsafe { input_bytes(text, text_length as u64)? };
-        let text = str::from_utf8(text)
-            .map_err(|_| ViemStatus::InvalidUtf8)?
-            .to_owned();
-        let outcome = with_core_mut(handle, |core| {
-            dispatch_event(core, view, CoreEvent::Input(InputEvent::Text(text)))
-        })?;
-        unsafe { out_outcome.write(outcome) };
-        Ok(())
-    })
-}
-
 /// Deliver one normalized key with immutable clipboard snapshots and writable
 /// capabilities captured by the host for this exact command turn.
 ///
 /// On success `out_effect_batch` receives either zero (no host effects) or an
-/// owned immutable batch which the caller must release. The legacy outcome is
-/// still returned independently so existing presentation handling does not
-/// depend on the effect export format.
-///
-/// # Safety
-///
-/// `input` and `context` (including every nested UTF-8 slice) must remain
-/// readable for this call. The two aligned writable outputs must be distinct
-/// from all inputs and from each other.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_view_send_key_with_host_context(
-    handle: ViemCoreHandle,
-    view: ViemViewId,
-    input: *const ViemKeyInputV1,
-    context: *const ViemCommandTurnContextV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
-    out_effect_batch: *mut ViemEffectBatchHandle,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        let input_region = typed_pointer_region(input, 1)?;
-        let outcome_region = typed_pointer_region(out_outcome, 1)?;
-        let effect_region = typed_pointer_region(out_effect_batch, 1)?;
-        if regions_overlap(input_region, outcome_region)
-            || regions_overlap(input_region, effect_region)
-            || regions_overlap(outcome_region, effect_region)
-        {
-            return Err(ViemStatus::InvalidArgument);
-        }
-
-        // Copy every caller-owned input before clearing either output. This
-        // makes semantic validation failure deterministic without permitting
-        // an aliased nested clipboard string to be corrupted by output setup.
-        let raw_key = unsafe { input.read() };
-        let parsed_context =
-            unsafe { read_command_turn_context(context, &[outcome_region, effect_region]) };
-        unsafe {
-            clear_outcome(out_outcome)?;
-            out_effect_batch.write(0);
-        }
-        let clipboard = parsed_context?;
-        let key = parse_key(raw_key)?;
-        let reservation = reserve_effect_batch()?;
-        let (outcome, effect_batch) =
-            publish_input_turn(handle, view, InputEvent::Key(key), clipboard, reservation)?;
-        unsafe {
-            out_outcome.write(outcome);
-            out_effect_batch.write(effect_batch);
-        }
-        Ok(())
-    })
-}
-
-/// Deliver one length-delimited UTF-8 text input event with host clipboard
-/// state captured for this exact command turn.
-///
-/// # Safety
-///
-/// Nonempty text and all `context` inputs must remain readable for this call.
-/// The two aligned writable outputs must be distinct from all inputs and from
-/// each other. A successful nonzero effect handle is caller-owned.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_view_send_text_with_host_context(
-    handle: ViemCoreHandle,
-    view: ViemViewId,
-    text: *const u8,
-    text_length: u64,
-    context: *const ViemCommandTurnContextV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
-    out_effect_batch: *mut ViemEffectBatchHandle,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        let text_region = typed_pointer_region(text, text_length)?;
-        let outcome_region = typed_pointer_region(out_outcome, 1)?;
-        let effect_region = typed_pointer_region(out_effect_batch, 1)?;
-        if regions_overlap(text_region, outcome_region)
-            || regions_overlap(text_region, effect_region)
-            || regions_overlap(outcome_region, effect_region)
-        {
-            return Err(ViemStatus::InvalidArgument);
-        }
-
-        let text_bytes = if text_length == 0 {
-            Vec::new()
-        } else {
-            let length = checked_length(text_length)?;
-            unsafe { slice::from_raw_parts(text, length) }.to_vec()
-        };
-        let parsed_context =
-            unsafe { read_command_turn_context(context, &[outcome_region, effect_region]) };
-        unsafe {
-            clear_outcome(out_outcome)?;
-            out_effect_batch.write(0);
-        }
-        let clipboard = parsed_context?;
-        let text = str::from_utf8(&text_bytes)
-            .map_err(|_| ViemStatus::InvalidUtf8)?
-            .to_owned();
-        let reservation = reserve_effect_batch()?;
-        let (outcome, effect_batch) =
-            publish_input_turn(handle, view, InputEvent::Text(text), clipboard, reservation)?;
-        unsafe {
-            out_outcome.write(outcome);
-            out_effect_batch.write(effect_batch);
-        }
-        Ok(())
-    })
-}
-
-/// Deliver one normalized key with immutable clipboard snapshots and writable
-/// capabilities captured by the host for this exact command turn.
-///
-/// On success `out_effect_batch` receives either zero (no host effects) or an
-/// owned immutable batch which the caller must release. The legacy outcome is
-/// still returned independently so existing presentation handling does not
-/// depend on the effect export format.
+/// owned immutable batch which the caller must release. Presentation outcomes
+/// and host effects are returned independently.
 ///
 /// # Safety
 ///
@@ -8941,7 +8176,7 @@ pub unsafe extern "C" fn viem_core_view_send_key_with_host_context_v2(
         // an aliased nested clipboard string to be corrupted by output setup.
         let raw_key = unsafe { input.read() };
         let parsed_context =
-            unsafe { read_command_turn_context_v2(context, &[outcome_region, effect_region]) };
+            unsafe { read_command_turn_context(context, &[outcome_region, effect_region]) };
         unsafe {
             clear_outcome(out_outcome)?;
             out_effect_batch.write(0);
@@ -8995,7 +8230,7 @@ pub unsafe extern "C" fn viem_core_view_send_text_with_host_context_v2(
             unsafe { slice::from_raw_parts(text, length) }.to_vec()
         };
         let parsed_context =
-            unsafe { read_command_turn_context_v2(context, &[outcome_region, effect_region]) };
+            unsafe { read_command_turn_context(context, &[outcome_region, effect_region]) };
         unsafe {
             clear_outcome(out_outcome)?;
             out_effect_batch.write(0);
@@ -9819,76 +9054,6 @@ pub unsafe extern "C" fn viem_core_view_set_include_style_definitions(
                     document: DocumentId(request.document_id),
                     revision: Revision(request.document_revision),
                     enabled,
-                },
-            )
-        })?;
-        unsafe { out_outcome.write(outcome) };
-        Ok(())
-    })
-}
-
-/// Change format using the document conversion policy. Native callers should
-/// use the with-effects variant to present conversion-loss diagnostics.
-///
-/// # Safety
-/// Request and outcome must be distinct aligned readable/writable values.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_view_set_format(
-    handle: ViemCoreHandle,
-    view: ViemViewId,
-    request: *const ViemSetFormatV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_SET_FORMAT_V1_SIZE {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        unsafe { clear_outcome(out_outcome)? };
-        let target = parse_format(request.format)?;
-        let outcome = with_core_mut(handle, |core| {
-            dispatch_event(
-                core,
-                view,
-                CoreEvent::SetFormat {
-                    document: DocumentId(request.document_id),
-                    revision: Revision(request.document_revision),
-                    target,
-                },
-            )
-        })?;
-        unsafe { out_outcome.write(outcome) };
-        Ok(())
-    })
-}
-
-/// Explicitly transcode source syntax. Latin-1 conversion may substitute
-/// unrepresentable scalars; the effects variant also returns the warning.
-///
-/// # Safety
-/// Request and outcome must be distinct aligned readable/writable values.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_view_set_encoding(
-    handle: ViemCoreHandle,
-    view: ViemViewId,
-    request: *const ViemSetEncodingV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_SET_ENCODING_V1_SIZE {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        unsafe { clear_outcome(out_outcome)? };
-        let target = parse_encoding(request.encoding)?.ok_or(ViemStatus::InvalidEncoding)?;
-        let outcome = with_core_mut(handle, |core| {
-            dispatch_event(
-                core,
-                view,
-                CoreEvent::SetEncoding {
-                    document: DocumentId(request.document_id),
-                    revision: Revision(request.document_revision),
-                    target,
                 },
             )
         })?;
@@ -10784,12 +9949,12 @@ pub unsafe extern "C" fn viem_core_copy_formatted_utf8(
 #[cfg(test)]
 mod tests {
     use super::{
-        checkout_core, checkout_document, viem_core_copy_formatted_utf8_range,
+        checkout_core, viem_core_copy_formatted_utf8_range,
         viem_core_copy_style_sheet, viem_core_destroy, viem_core_formatted_point_info,
         viem_core_formatted_snapshot_info, viem_core_map_formatted_utf16_to_utf8,
         viem_core_map_formatted_utf8_to_utf16, viem_core_style_sheet_info,
-        viem_core_view_copy_layout_paint, viem_core_view_layout_paint_info, viem_document_destroy,
-        export_style_sheet, ffi_boundary, register_core, register_document,
+        viem_core_view_copy_layout_paint, viem_core_view_layout_paint_info,
+        export_style_sheet, ffi_boundary, register_core,
         summarize_document_state, CTextMeasurementProvider, ViemClusterCaretStopV1,
         ViemCoreOutcomeV1, ViemFormattedPointInfoV1, ViemFormattedSnapshotInfoV1,
         ViemFormattedUtf8RangeV1, ViemLayoutPaintInfoV1, ViemPaintStyleRunV1,
@@ -10800,9 +9965,8 @@ mod tests {
         VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, VIEM_BOUNDARY_AFFINITY_UPSTREAM,
         VIEM_HISTORY_ACTION_CATEGORY_MIXED, VIEM_LAYOUT_PAINT_INFO_V1_SIZE,
         VIEM_PAINT_STYLE_RUN_V1_SIZE, VIEM_SHAPED_CLUSTER_V1_SIZE,
-        VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA, VIEM_TEXT_DIRECTION_AUTO,
-        VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT, VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V1,
-        VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2, VIEM_TEXT_PAINT_HAS_BACKGROUND,
+        VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA,
+        VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT, VIEM_TEXT_PAINT_HAS_BACKGROUND,
         VIEM_TEXT_PAINT_STRIKETHROUGH, VIEM_TEXT_PAINT_UNDERLINE, VIEM_TEXT_PAINT_V1_SIZE,
     };
     use crate::command::{InputEvent, Key};
@@ -12068,7 +11232,6 @@ mod tests {
     ) -> CTextMeasurementProvider {
         CTextMeasurementProvider {
             context: (storage as *mut PaintTestProviderStorage) as usize,
-            abi_version: VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V1,
             measurement_environment_id: MeasurementEnvironmentId(environment),
             threading: ProviderThreading::AnyWorker,
             render_run_policy: Some(RenderRunPolicy {
@@ -13152,38 +12315,7 @@ mod tests {
     }
 
     #[test]
-    fn document_turns_never_hold_the_registry_lock_during_model_work() {
-        let handle = register_document(Document::new("text")).unwrap();
-        let lease = checkout_document(handle).unwrap();
-        assert!(matches!(
-            checkout_document(handle),
-            Err(ViemStatus::DocumentBusy)
-        ));
-        drop(lease);
-        drop(checkout_document(handle).unwrap());
-        assert_eq!(viem_document_destroy(handle), ViemStatus::Ok);
-    }
-
-    #[test]
     fn panic_returns_checked_out_handles_and_busy_destroy_is_retryable() {
-        let handle = register_document(Document::new("text")).unwrap();
-        let status = ffi_boundary(|| -> Result<(), ViemStatus> {
-            let _lease = checkout_document(handle)?;
-            assert_eq!(
-                viem_document_destroy(handle),
-                ViemStatus::DocumentBusy,
-                "destroy must retain a checked-out document"
-            );
-            panic!("panic while a document turn is checked out")
-        });
-        assert_eq!(status, ViemStatus::Panic);
-        drop(checkout_document(handle).unwrap());
-        assert_eq!(viem_document_destroy(handle), ViemStatus::Ok);
-        assert!(matches!(
-            checkout_document(handle),
-            Err(ViemStatus::InvalidHandle)
-        ));
-
         let core_handle = register_core(Core::new(Document::new("text"))).unwrap();
         let status = ffi_boundary(|| -> Result<(), ViemStatus> {
             let _lease = checkout_core(core_handle)?;
@@ -13286,7 +12418,6 @@ mod tests {
         let mut provider_storage = PaintTestProviderStorage::default();
         let provider = CTextMeasurementProvider {
             context: (&mut provider_storage as *mut PaintTestProviderStorage) as usize,
-            abi_version: VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V1,
             measurement_environment_id: MeasurementEnvironmentId(41),
             threading: ProviderThreading::AnyWorker,
             render_run_policy: Some(RenderRunPolicy {
@@ -13394,7 +12525,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_request_versions_preserve_v1_and_supply_v2_paragraph_direction() {
+    fn provider_request_supplies_paragraph_direction() {
         let style = ResolvedTextStyle::default();
         let request = ShapeRequest {
             document_id: crate::document::DocumentId(1),
@@ -13415,15 +12546,7 @@ mod tests {
         let storage = MarshalledRequest::new(&request);
 
         assert_eq!(
-            storage
-                .request(&request, VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V1)
-                .paragraph_base_direction,
-            VIEM_TEXT_DIRECTION_AUTO
-        );
-        assert_eq!(
-            storage
-                .request(&request, VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2)
-                .paragraph_base_direction,
+            storage.request(&request).paragraph_base_direction,
             VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT
         );
     }
@@ -14073,7 +13196,7 @@ pub unsafe extern "C" fn viem_core_copy_hard_line_source_bytes(
     })
 }
 
-unsafe fn read_command_turn_context_v2(
+unsafe fn read_command_turn_context(
     pointer: *const ViemCommandTurnContextV2,
     forbidden_outputs: &[(usize, usize)],
 ) -> Result<ClipboardCommandContext, ViemStatus> {

@@ -57,8 +57,23 @@ and terminal frontends, but those frontends are not part of the current scope.
 - Implement the macOS frontend under `src/mac` in Swift using AppKit, not
   SwiftUI.
 - A future native Windows frontend will use C# and WinUI 3.
-- Connect frontends to the Rust core through a narrow, stable C ABI. Keep
+- Connect frontends to the Rust core through a narrow C ABI. Keep
   ownership explicit and make performance-sensitive exchanges batch-oriented.
+
+### API evolution
+
+All consumers of Viem's Rust APIs and C ABI are in this repository. API and ABI
+backward compatibility is **not required**. Implementations MAY remove or change
+functions, types, layouts, and versioned entry points whenever this simplifies
+the design, provided all in-repository callers, providers, declarations, and
+tests are updated together. Do not retain adapters, aliases, or old versions
+solely for compatibility with earlier builds. Core and frontend artifacts must
+be rebuilt together after an ABI change.
+
+This policy does not relax ownership, pointer validation, snapshot identity,
+threading, or atomicity requirements. It also does not authorize changes to
+persisted document formats or user-visible editing behavior; those remain
+governed by their explicit requirements below.
 
 ### macOS build and packaging
 
@@ -1466,10 +1481,17 @@ do not require per-paragraph or per-character metadata classes.
 New owned definitions use the exact marker
 `<style id="viem-styles" data-viem-version="2">`. A style element without a
 recognized marker, or content outside the supported grammar inside a marked
-element, is never silently adopted or rewritten. Version 1 remains readable;
-untouched version-one rules remain byte-exact, while explicitly changed owned
-rules may migrate to a version-two element. Multiple recognized owned elements
-may coexist so migration does not rewrite neighboring opaque CSS.
+element, is never silently adopted or rewritten. Version 1 remains readable as
+an import format; all authoring uses version 2. The next explicit persisted
+stylesheet operation, such as editing a definition or changing Include Style
+Definitions, migrates recognized version-one rules to version two in the same
+verified source transaction and undo unit. This migration may update recognized
+owned rules beyond the individual definition being edited, but preserves
+unrelated CSS, comments, unknown rules, and body content. Ordinary text editing
+and no-edit open/save do not trigger migration. Rules retain their source order:
+fully recognized elements change version in place, while mixed elements split
+into adjacent owned and opaque runs without moving rules across intervening CSS.
+Multiple recognized owned elements may coexist for this purpose.
 
 An owned style element is inserted near the beginning of `head`, after an
 encoding declaration whose placement is constrained. If a full document lacks
@@ -1478,13 +1500,24 @@ HTML fragment, it inserts the element at the fragment's beginning. No element
 is inserted for a native style assignment while inclusion is off.
 
 Canonical version-two selectors are `body`, `p`, `h1` through `h6`, `li` and
-its repeated descendant forms, `pre`, `code`, `.viem-p-<stable-id>` for custom
-Paragraph styles, and `.viem-c-<stable-id>` for custom Character styles. Stable
-class-ID suffixes are lowercase hexadecimal UTF-8, independent of display names.
+its repeated descendant forms, `pre`, `code`, `.viem-p-<stable-id>` for Paragraph
+styles, and `.viem-c-<stable-id>` for Character styles. Classes ordinarily name
+custom styles; imported legacy classes may also retain native style IDs so
+existing body elements and assignments remain intact. Stable class-ID suffixes
+are lowercase hexadecimal UTF-8, independent of display names.
 Native selectors supply their built-in identity, role, and default links;
 ordinary sparse CSS carries browser-representable properties. Empty native
-rules are omitted. Custom class rules additionally carry required stable ID,
-name, role, and optional parent and next-style links as namespaced metadata.
+rules are omitted. Class rules additionally carry required stable ID, name,
+role, and optional parent and next-style links as namespaced metadata. Their CSS
+is computed for class context rather than assuming native heading, list, or code
+element defaults. When a native style retains a legacy class, authoring keeps
+its class and native rules synchronized so newly assigned native elements use
+the same definition.
+
+A deleted native block definition emits the effective Paragraph CSS after
+resetting its defaults, so passive readers match its paragraph fallback.
+The exact earlier version-two deletion rule containing only `font: inherit`
+and `margin: 0` remains readable; subsequent stylesheet authoring updates it.
 
 Only normalized distinctions that CSS cannot recover exactly need residual
 `--viem-prop-<schema-key>` declarations. These include relative bold and
@@ -1503,10 +1536,11 @@ double-quoted strings; control characters, quote, backslash, and `<`, `>`, `{`,
 in these legacy rules is derived interoperability output. The legacy reader
 validates exact canonical spelling rather than guessing another interpretation.
 
-Editing a definition patches only its owned rule and the necessary dependent
-rules. Creating, renaming, rebasing, or deleting a custom style preserves
-unrelated stylesheets and assignments. Reopening with the same saved defaults
-reconstructs the same normalized assignments and effective formatting.
+After migration, editing a definition patches only its owned rule and the
+necessary dependent rules. Creating, renaming, rebasing, or deleting a custom
+style preserves unrelated stylesheets and assignments. Reopening with the same
+saved defaults reconstructs the same normalized assignments and effective
+formatting.
 
 A custom Paragraph style class is attached to its paragraph-bearing element,
 including `li` for a list item. A custom Character style class is attached to a
@@ -2321,20 +2355,14 @@ Backspace retains its leftward motion and Forward Delete retains `x` behavior.
   as a key event. Overwriting a named macro register with text removes its
   event program; uppercase append preserves an existing program and appends
   the text payload as normalized character or semantic-break events.
-- Required commands: `u`, `Ctrl-R`, `U`, `.`, `q{a-z}`/`q`, `@{a-z}`, and
+- Required commands: `u`, `Ctrl-R`, `.`, `q{a-z}`/`q`, `@{a-z}`, and
   `@@`.
 - Explicit `"*c` copies using the `*` clipboard register: in Visual mode it
   yanks the selection, and in Normal mode it accepts the same motion/count
   grammar as `"*y`. Other uses of `c` retain their change semantics.
-- `U` restores the hard line on which the latest eligible change was made,
-  even if the cursor subsequently moved to another line. Its baseline is an
-  exact source-backed line image identified by stable projected identity, not
-  a flattened formatted string or retained numeric offset. Repeated eligible
-  changes to that same line retain the original baseline; a change on another
-  line replaces it. A topology change which makes the identity ambiguous
-  invalidates the slot explicitly. `U` swaps the current and retained images,
-  is itself one ordinary source transaction, and participates in branching
-  undo/redo and dot repeat.
+- Normal-mode `U` is intentionally unsupported. There is no separate saved-line
+  undo state; use `u` and `Ctrl-R` for undo and redo. Visual-mode `U` and the
+  `gU` operator retain their uppercase-conversion behavior.
 - Undo history follows the branching transaction model below. It is not a pair
   of linear command stacks.
 - Dot repeat records a semantic change action with its inserted payload and
@@ -2491,18 +2519,6 @@ the file identity are not restored and redo does not replay their original
 side effects. Register and repeat updates caused by an ordinary edit still
 commit atomically with that edit: if the edit fails, those side effects do not
 occur. This atomicity does not make them part of the later undo payload.
-
-`U` is a change command, not history navigation. The buffer retains a line-undo
-slot containing the stable hard-line identity and exact source-backed baseline
-from before the current consecutive run of changes confined to that line.
-Further changes confined to the same hard line keep the baseline; a change
-involving another line or a hard-line boundary replaces or clears the slot as
-applicable. `U` issues a typed line-baseline restoration, from which the adapter
-produces the minimal patches needed to restore the saved source slices and then
-verifies the projected line. It creates a new undo unit. After it commits, the
-replaced line becomes the new baseline so another `U` can reverse the previous
-`U` in Vim-compatible fashion. Adapters report a non-destructive error if the
-saved baseline can no longer be restored unambiguously.
 
 #### Save points, retention, and persistence
 
@@ -3343,10 +3359,10 @@ snapshots and returns revision-tagged candidates to the coordinator.
 #### Public surface and tests
 
 `src/core/lib.rs` exposes task-oriented facade operations and opaque handles,
-not the complete public surface of every internal module. The stable C ABI wraps
-this facade. Rust module types may evolve internally without expanding the ABI;
-positions, edits, queries, and layout data crossing the ABI remain explicit,
-revision-tagged, ownership-safe, and batch-oriented.
+not the complete public surface of every internal module. The C ABI wraps this
+facade and evolves together with its in-repository callers under the API
+evolution policy above. Positions, edits, queries, and layout data crossing the
+ABI remain explicit, revision-tagged, ownership-safe, and batch-oriented.
 
 Testing follows the same boundary:
 
@@ -3538,7 +3554,7 @@ so already committed text remains one complete undo unit. It does not disturb
 other views' jobs or presentation state.
 
 View and layout-job identities are monotonically allocated and never reused,
-including after view removal. Exhaustion is a typed failure; compatibility APIs
+including after view removal. Exhaustion is a typed failure; convenience APIs
 that cannot return it may fail explicitly rather than wrap. When an exact visual-
 row command reaches partial snapshot coverage, its non-mutating result carries
 a typed, revision- and generation-bound layout demand. That demand identifies
@@ -3937,7 +3953,7 @@ structurally; avoid brittle wall-clock-only tests.
   source metadata, required buffer-local marks, and invoking-view restoration
   positions through undo/redo and alternate branches. Tests cover every undo
   break, edit-after-undo branch creation, preferred-child selection, multi-view
-  anchor remapping, saved/dirty transitions, history pruning, line undo, and
+  anchor remapping, saved/dirty transitions, history pruning, and
   the rule that registers and other non-history command state are not replayed
   or restored. Redo from a stored snapshot must equal the original committed
   result without invoking reverse projection again.

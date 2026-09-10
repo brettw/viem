@@ -51,12 +51,12 @@ use super::projection::{escape_markdown_insert, project, splice_line_local_proje
 use super::source_line_index::SourceHardLineSpliceStats;
 use super::transfer::{self, HardLineTransfer};
 use super::{
-    build_state_from_decoded_with_configuration, hard_line_source_image_from_state, ranges_overlap,
+    build_state_from_decoded_with_configuration, ranges_overlap,
     spell_logical_breaks, Association, BlockProperties, BoundaryAffinity, CharacterProperties,
     ConfigurationStyleIntent, DeletionRecovery, Document, DocumentError, DocumentId, DocumentState,
     DocumentStyleAssignment, FileFormat, FileFormatOrigin, Format, FormattedDocument,
     FormattedPayloadEdit, FormattedPayloadEditRequest, FormattedTextPayload, FormattedTextTree,
-    HardLineSourceImage, HistoryChangeNumber, HistoryError, HistoryLocation, HistoryNavigation,
+    HistoryChangeNumber, HistoryError, HistoryLocation, HistoryNavigation,
     HistoryNodeId, HistoryRestoration, HistoryRestorationSnapshot, HistorySemanticChangeKind,
     HistorySourcePatch, HistoryTransactionSummary, MappingOutcome, PipelineCapabilityDecision,
     PipelineEditIntent, PipelinePolicyRequest, PositionError, PositionMap, Revision,
@@ -330,14 +330,6 @@ pub enum ModelRequest {
         /// are `0..=line_count`.
         destination: usize,
     },
-    RestoreHardLineSource {
-        document: DocumentId,
-        revision: Revision,
-        /// Current zero-based ordinal of the stable hard line named by the
-        /// retained image. Cursor location is deliberately irrelevant.
-        target_line: usize,
-        image: HardLineSourceImage,
-    },
     NavigateHistory {
         document: DocumentId,
         revision: Revision,
@@ -370,7 +362,6 @@ impl ModelRequest {
             | Self::SetEncoding { document, .. }
             | Self::ReorderHardLines { document, .. }
             | Self::TransferHardLines { document, .. }
-            | Self::RestoreHardLineSource { document, .. }
             | Self::NavigateHistory { document, .. } => *document,
         }
     }
@@ -399,7 +390,6 @@ impl ModelRequest {
             | Self::SetEncoding { revision, .. }
             | Self::ReorderHardLines { revision, .. }
             | Self::TransferHardLines { revision, .. }
-            | Self::RestoreHardLineSource { revision, .. }
             | Self::NavigateHistory { revision, .. } => *revision,
         }
     }
@@ -413,7 +403,6 @@ pub enum ModelChangeKind {
     ConfigurationStyle,
     FileFormat,
     HardLineTransfer,
-    HardLineSourceRestoration,
     SourceMetadata,
     HistoryNavigation,
     NoOp,
@@ -739,9 +728,6 @@ fn history_semantic_kind(kind: ModelChangeKind) -> Option<HistorySemanticChangeK
         ModelChangeKind::ConfigurationStyle => Some(HistorySemanticChangeKind::Style),
         ModelChangeKind::FileFormat => Some(HistorySemanticChangeKind::FileFormat),
         ModelChangeKind::HardLineTransfer => Some(HistorySemanticChangeKind::HardLineTransfer),
-        ModelChangeKind::HardLineSourceRestoration => {
-            Some(HistorySemanticChangeKind::HardLineSourceRestoration)
-        }
         ModelChangeKind::SourceMetadata => Some(HistorySemanticChangeKind::SourceMetadata),
         ModelChangeKind::HistoryNavigation | ModelChangeKind::NoOp => None,
     }
@@ -1197,9 +1183,6 @@ impl Document {
                 destination,
                 ..
             } => self.prepare_hard_line_transfer(operation, source_lines, destination),
-            ModelRequest::RestoreHardLineSource {
-                target_line, image, ..
-            } => self.prepare_hard_line_source_restoration(target_line, image),
             ModelRequest::NavigateHistory { navigation, .. } => {
                 self.prepare_history_navigation(navigation)
             }
@@ -1920,9 +1903,9 @@ impl Document {
         let converter = super::rich_text::Builder::new(&normalized, revision);
         let patches = super::html_styles::definition_patches_with_policy(
             &normalized.text,
-            self.projection().style_sheet(),
             &expected,
             enabled,
+            self.file_format(),
         )?
         .into_iter()
         .map(|(range, text)| {
@@ -2069,6 +2052,14 @@ impl Document {
                 self.include_style_definitions_in_file(),
             );
         }
+        if self.include_style_definitions_in_file()
+            && (default_assignment.is_some()
+                || matches!(&intent, PersistedStyleIntent::EditStyleDefinition { .. }))
+        {
+            // Authoring v2 makes the exported native defaults explicit, even
+            // when a legacy sheet had persisted only some native definitions.
+            expected.mark_html_export_definitions_source_backed();
+        }
         let syntax = match &intent {
             PersistedStyleIntent::EditStyleDefinition { edit, .. } => {
                 let deleting = matches!(
@@ -2087,9 +2078,9 @@ impl Document {
                 }
                 let mut patches = super::html_styles::definition_patches_with_policy(
                     &normalized.text,
-                    before,
                     &expected,
                     self.include_style_definitions_in_file(),
+                    self.file_format(),
                 )?
                 .into_iter()
                 .map(|(range, text)| (converter.source_range(range), text))
@@ -2221,9 +2212,9 @@ impl Document {
             syntax.extend(
                 super::html_styles::definition_patches_with_policy(
                     &normalized.text,
-                    before,
                     &expected,
                     self.include_style_definitions_in_file(),
+                    self.file_format(),
                 )?
                 .into_iter()
                 .map(|(range, text)| (converter.source_range(range), text)),
@@ -3591,168 +3582,6 @@ impl Document {
             after_revision,
             ModelChangeSummary {
                 kind: ModelChangeKind::HardLineTransfer,
-                source_patches,
-                formatted_splices,
-                projection_work,
-                style_change: None,
-                conversion_warnings: Vec::new(),
-            },
-            text_position_map,
-            None,
-            next_projected_block_id,
-            PreparedPublication::State(candidate),
-        ))
-    }
-
-    fn prepare_hard_line_source_restoration(
-        &self,
-        target_line: usize,
-        image: HardLineSourceImage,
-    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if image.document != self.id {
-            return Err(DocumentError::WrongDocument.into());
-        }
-        if image.encoding != self.state().encoding
-            || image.format != self.state().format
-            || image.file_format != self.state().file_format
-        {
-            return Err(DocumentError::IncompatibleHardLineSourceImage.into());
-        }
-        let current_line_count = self.projection().hard_line_count();
-        if image.hard_line_count != current_line_count {
-            return Err(DocumentError::HardLineSourceImageTopologyChanged {
-                captured_line_count: image.hard_line_count,
-                current_line_count,
-            }
-            .into());
-        }
-
-        let current = hard_line_source_image_from_state(self.id, self.state(), target_line)?;
-        if current.hard_line_id != image.hard_line_id {
-            return Err(DocumentError::StaleHardLineSourceImage {
-                target_line,
-                expected_id: image.hard_line_id,
-                actual_id: current.hard_line_id,
-            }
-            .into());
-        }
-        if current.terminated != image.terminated {
-            return Err(DocumentError::HardLineSourceImageTerminatorShapeChanged {
-                captured_terminated: image.terminated,
-                current_terminated: current.terminated,
-            }
-            .into());
-        }
-        if current.source_bytes == image.source_bytes {
-            return Ok(self.no_op_prepared());
-        }
-
-        let source_range = super::hard_line_source_range_from_state(self.state(), target_line)
-            .ok_or(DocumentError::HardLineSourceImageProjectionMismatch)?;
-        let mut source_patches = hard_line_byte_difference(
-            &current.source_bytes,
-            &image.source_bytes,
-            self.state().encoding,
-        );
-        for patch in &mut source_patches {
-            patch.range = source_range
-                .start
-                .checked_add(patch.range.start)
-                .ok_or(PositionError::ArithmeticOverflow)?
-                ..source_range
-                    .start
-                    .checked_add(patch.range.end)
-                    .ok_or(PositionError::ArithmeticOverflow)?;
-        }
-        validate_source_patches(&mut source_patches)?;
-        let source = apply_source_patches(&self.state().source, &source_patches)?;
-
-        let formatted_range = self
-            .projection()
-            .hard_line_range(target_line)
-            .ok_or(DocumentError::HardLineSourceImageProjectionMismatch)?;
-        let text_edit = TextEdit::new(formatted_range.clone(), image.formatted_text.clone());
-        let formatted_changed = self
-            .projection()
-            .text_tree()
-            .slice(formatted_range.clone())
-            .map_err(DocumentError::FormattedTextStorage)?
-            != image.formatted_text;
-        let target_text = self
-            .projection()
-            .text_tree()
-            .splice_prevalidated_batch(&[(formatted_range.clone(), image.formatted_text.as_str())])
-            .map_err(DocumentError::FormattedTextStorage)?;
-        let expected_text = target_text.flatten();
-        let expected_hard_breaks = hard_breaks_after_line_replacement(
-            &self.projection().hard_break_offsets(),
-            &formatted_range,
-            image.formatted_text.len(),
-        )?;
-        let after_revision = Revision(self.next_revision);
-        let mut candidate = self.build_verified_candidate(
-            source,
-            self.state().file_format,
-            self.state().file_format_origin,
-            after_revision,
-            CandidateVerification {
-                expected_text: expected_text.clone(),
-                expected_hard_breaks: Some(&expected_hard_breaks),
-                mismatch_error: DocumentError::HardLineSourceImageProjectionMismatch,
-            },
-        )?;
-
-        let map_splices = if formatted_changed {
-            grapheme_closed_snapshot_map_splices(
-                self.projection(),
-                &candidate.projection,
-                std::slice::from_ref(&text_edit),
-            )?
-        } else {
-            Vec::new()
-        };
-        let text_position_map = PositionMap::for_text_snapshots(
-            self.id,
-            self.revision(),
-            after_revision,
-            self.projection(),
-            &candidate.projection,
-            map_splices,
-        )?;
-        let next_projected_block_id = if formatted_changed {
-            candidate
-                .projection
-                .install_persistent_text_edits(self.projection(), std::slice::from_ref(&text_edit))
-                .map_err(DocumentError::FormattedTextStorage)?;
-            candidate
-                .projection
-                .install_reconciled_format_block_ids(
-                    self.format(),
-                    self.projection(),
-                    std::slice::from_ref(&text_edit),
-                    &text_position_map,
-                    self.next_projected_block_id,
-                )
-                .map_err(super::block_identity_document_error)?
-        } else {
-            self.next_projected_block_id
-        };
-
-        let restored = hard_line_source_image_from_state(self.id, &candidate, target_line)?;
-        if !restored.same_restorable_content(&image) {
-            return Err(DocumentError::HardLineSourceImageProjectionMismatch.into());
-        }
-
-        let formatted_splices = if formatted_changed {
-            vec![Splice::new(formatted_range, image.formatted_text.len())?]
-        } else {
-            Vec::new()
-        };
-        let projection_work = ProjectionWorkStatistics::full(&candidate);
-        Ok(self.prepared(
-            after_revision,
-            ModelChangeSummary {
-                kind: ModelChangeKind::HardLineSourceRestoration,
                 source_patches,
                 formatted_splices,
                 projection_work,
@@ -7786,28 +7615,6 @@ fn semantic_style_edit_was_exactly_projected(
     })
 }
 
-fn hard_breaks_after_line_replacement(
-    current: &[usize],
-    range: &Range<usize>,
-    replacement_len: usize,
-) -> Result<Vec<usize>, ModelTransactionError> {
-    current
-        .iter()
-        .map(|&offset| {
-            if range.start < offset && offset < range.end {
-                return Err(DocumentError::HardLineSourceImageProjectionMismatch.into());
-            }
-            if offset < range.end {
-                return Ok(offset);
-            }
-            offset
-                .checked_sub(range.len())
-                .and_then(|value| value.checked_add(replacement_len))
-                .ok_or_else(|| PositionError::ArithmeticOverflow.into())
-        })
-        .collect()
-}
-
 fn rebase_source_boundary(
     boundary: usize,
     patches: &[SourcePatch],
@@ -8150,60 +7957,6 @@ fn byte_difference(before: &[u8], after: &[u8]) -> Vec<SourcePatch> {
         .zip(after[prefix..].iter().rev())
         .take_while(|(left, right)| left == right)
         .count();
-    vec![SourcePatch::primary(
-        prefix..before.len() - suffix,
-        after[prefix..after.len() - suffix].to_vec(),
-    )]
-}
-
-/// Minimal contiguous physical change for one source line, widened only as
-/// needed to avoid cutting a UTF-8 sequence or UTF-16 code unit. Untouched
-/// prefixes, suffixes, and the unchanged line terminator remain outside the
-/// declared patch.
-fn hard_line_byte_difference(
-    before: &[u8],
-    after: &[u8],
-    encoding: super::Encoding,
-) -> Vec<SourcePatch> {
-    if before == after {
-        return Vec::new();
-    }
-    let mut prefix = before
-        .iter()
-        .zip(after)
-        .take_while(|(left, right)| left == right)
-        .count();
-    let mut suffix = before[prefix..]
-        .iter()
-        .rev()
-        .zip(after[prefix..].iter().rev())
-        .take_while(|(left, right)| left == right)
-        .count();
-
-    match encoding {
-        super::Encoding::Utf16Le | super::Encoding::Utf16Be => {
-            prefix -= prefix % 2;
-            suffix -= suffix % 2;
-        }
-        super::Encoding::Utf8 => {
-            while prefix > 0
-                && ((prefix < before.len() && before[prefix] & 0xc0 == 0x80)
-                    || (prefix < after.len() && after[prefix] & 0xc0 == 0x80))
-            {
-                prefix -= 1;
-            }
-            while suffix > 0 {
-                let before_start = before.len() - suffix;
-                let after_start = after.len() - suffix;
-                if before[before_start] & 0xc0 != 0x80 && after[after_start] & 0xc0 != 0x80 {
-                    break;
-                }
-                suffix -= 1;
-            }
-        }
-        super::Encoding::Latin1 => {}
-    }
-
     vec![SourcePatch::primary(
         prefix..before.len() - suffix,
         after[prefix..after.len() - suffix].to_vec(),

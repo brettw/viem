@@ -5,6 +5,13 @@ The native frontend is an AppKit application backed by the Rust core through
 their tests; the helper script assembles the executable and resources into a
 locally signed application bundle.
 
+The Rust APIs and C ABI are internal to this repository and have no backward
+compatibility requirement. Change the core, C declarations, Swift callers,
+providers, and tests together; remove obsolete entry points rather than keeping
+compatibility wrappers. Rebuild both core and frontend after an ABI change.
+Persisted document formats and editing behavior have separate requirements in
+`AGENTS.md` and are not covered by this API policy.
+
 Requirements:
 
 - macOS 26 or later;

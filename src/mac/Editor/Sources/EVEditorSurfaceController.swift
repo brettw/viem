@@ -1067,7 +1067,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case UInt32(VIEM_HISTORY_ACTION_CATEGORY_STYLE): "Style Change"
         case UInt32(VIEM_HISTORY_ACTION_CATEGORY_FILE_FORMAT): "Line Endings"
         case UInt32(VIEM_HISTORY_ACTION_CATEGORY_HARD_LINE_TRANSFER): "Move Lines"
-        case UInt32(VIEM_HISTORY_ACTION_CATEGORY_HARD_LINE_SOURCE_RESTORATION): "Restore Lines"
         case UInt32(VIEM_HISTORY_ACTION_CATEGORY_SOURCE_METADATA): "Source Metadata"
         case UInt32(VIEM_HISTORY_ACTION_CATEGORY_MIXED): "Changes"
         default: ""

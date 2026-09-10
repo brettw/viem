@@ -285,112 +285,6 @@ impl TextEdit {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct HardLineStyleImage {
-    range: Range<usize>,
-    style: SemanticInlineStyle,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct HardLineDiagnosticImage {
-    kind: DecodingDiagnosticKind,
-    formatted_range: Range<usize>,
-    source_range: Range<usize>,
-}
-
-/// Opaque, revision-bound copy of one source-backed hard line.
-///
-/// The image retains the exact authoritative bytes, including an existing
-/// line terminator, together with enough projected semantics to verify a
-/// later restoration. It is intentionally not a general clipboard payload:
-/// it can only be restored into the same document, pipeline, and stable hard
-/// line identity. This is the document-side primitive needed by Vim's `U`
-/// command.
-#[derive(Clone, Eq, PartialEq)]
-pub struct HardLineSourceImage {
-    document: DocumentId,
-    revision: Revision,
-    captured_line: usize,
-    hard_line_count: usize,
-    hard_line_id: u64,
-    encoding: Encoding,
-    format: Format,
-    file_format: FileFormat,
-    terminated: bool,
-    source_bytes: Vec<u8>,
-    formatted_text: String,
-    block_kind: BlockKind,
-    block_style: StyleId,
-    styles: Vec<HardLineStyleImage>,
-    diagnostics: Vec<HardLineDiagnosticImage>,
-}
-
-impl fmt::Debug for HardLineSourceImage {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("HardLineSourceImage")
-            .field("document", &self.document)
-            .field("revision", &self.revision)
-            .field("captured_line", &self.captured_line)
-            .field("hard_line_count", &self.hard_line_count)
-            .field("hard_line_id", &self.hard_line_id)
-            .field("encoding", &self.encoding)
-            .field("format", &self.format)
-            .field("file_format", &self.file_format)
-            .field("terminated", &self.terminated)
-            .field("source_byte_len", &self.source_bytes.len())
-            .field("formatted_text", &self.formatted_text)
-            .field("block_kind", &self.block_kind)
-            .field("block_style", &self.block_style)
-            .field("styles", &self.styles)
-            .field("diagnostics", &self.diagnostics)
-            .finish()
-    }
-}
-
-impl HardLineSourceImage {
-    pub fn document(&self) -> DocumentId {
-        self.document
-    }
-
-    pub fn revision(&self) -> Revision {
-        self.revision
-    }
-
-    /// Ordinal at capture time. Callers retain the stable ID as authority and
-    /// may supply a different current ordinal after an explicitly tracked
-    /// move.
-    pub fn captured_line(&self) -> usize {
-        self.captured_line
-    }
-
-    pub fn hard_line_id(&self) -> u64 {
-        self.hard_line_id
-    }
-
-    pub fn is_terminated(&self) -> bool {
-        self.terminated
-    }
-
-    pub fn source_byte_len(&self) -> usize {
-        self.source_bytes.len()
-    }
-
-    fn same_restorable_content(&self, other: &Self) -> bool {
-        self.hard_line_id == other.hard_line_id
-            && self.encoding == other.encoding
-            && self.format == other.format
-            && self.file_format == other.file_format
-            && self.terminated == other.terminated
-            && self.source_bytes == other.source_bytes
-            && self.formatted_text == other.formatted_text
-            && self.block_kind == other.block_kind
-            && self.block_style == other.block_style
-            && self.styles == other.styles
-            && self.diagnostics == other.diagnostics
-    }
-}
-
 /// One replacement in formatted snapshot coordinates whose inserted content
 /// explicitly distinguishes semantic hard-break items from literal U+000A.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -519,28 +413,6 @@ pub enum DocumentError {
         source: Range<usize>,
     },
     HardLineTransferProjectionMismatch,
-    InvalidHardLineSourceImageTarget {
-        line: usize,
-        line_count: usize,
-    },
-    /// The requested ordinal no longer names the stable hard line captured by
-    /// the image. This normally means a topology-changing operation made a
-    /// retained Vim `U` slot stale.
-    StaleHardLineSourceImage {
-        target_line: usize,
-        expected_id: u64,
-        actual_id: u64,
-    },
-    IncompatibleHardLineSourceImage,
-    HardLineSourceImageTopologyChanged {
-        captured_line_count: usize,
-        current_line_count: usize,
-    },
-    HardLineSourceImageTerminatorShapeChanged {
-        captured_terminated: bool,
-        current_terminated: bool,
-    },
-    HardLineSourceImageProjectionMismatch,
     UnsupportedFormatting,
     OverlappingFormatting,
     /// A reverse projection selected only part of an opaque malformed source
@@ -632,38 +504,6 @@ impl fmt::Display for DocumentError {
             ),
             Self::HardLineTransferProjectionMismatch => formatter.write_str(
                 "source-backed hard-line transfer did not reproduce the requested structure",
-            ),
-            Self::InvalidHardLineSourceImageTarget { line, line_count } => write!(
-                formatter,
-                "hard-line source image target {line} is invalid for {line_count} lines"
-            ),
-            Self::StaleHardLineSourceImage {
-                target_line,
-                expected_id,
-                actual_id,
-            } => write!(
-                formatter,
-                "hard-line source image targets stable line {expected_id}, but current line {target_line} has identity {actual_id}"
-            ),
-            Self::IncompatibleHardLineSourceImage => formatter.write_str(
-                "hard-line source image belongs to an incompatible document pipeline",
-            ),
-            Self::HardLineSourceImageTopologyChanged {
-                captured_line_count,
-                current_line_count,
-            } => write!(
-                formatter,
-                "hard-line topology changed from {captured_line_count} to {current_line_count} lines"
-            ),
-            Self::HardLineSourceImageTerminatorShapeChanged {
-                captured_terminated,
-                current_terminated,
-            } => write!(
-                formatter,
-                "hard-line terminator shape changed from terminated={captured_terminated} to terminated={current_terminated}"
-            ),
-            Self::HardLineSourceImageProjectionMismatch => formatter.write_str(
-                "restored source bytes did not reproduce the captured hard-line semantics",
             ),
             Self::UnsupportedFormatting => {
                 formatter.write_str("the source format cannot represent that formatting edit")
@@ -1834,22 +1674,6 @@ impl Document {
         })
     }
 
-    /// Restore an exact source-backed hard-line image as one atomic history
-    /// change. `target_line` is resolved in the current revision and must
-    /// still carry the image's stable hard-line identity.
-    pub fn restore_hard_line_source_image(
-        &mut self,
-        target_line: usize,
-        image: HardLineSourceImage,
-    ) -> Result<(), DocumentError> {
-        self.execute_compat_request(ModelRequest::RestoreHardLineSource {
-            document: self.id,
-            revision: self.revision(),
-            target_line,
-            image,
-        })
-    }
-
     /// Begin or nest an edit group. Commits made before the matching
     /// `end_edit_group` share one undo node.
     pub fn begin_edit_group(&mut self) {
@@ -2201,16 +2025,6 @@ impl Document {
         self.projection().hard_line_snapshot(self.id)
     }
 
-    /// Capture one current hard line as exact source bytes plus a semantic
-    /// projection witness. The returned image remains immutable after later
-    /// revisions and can be retained by the command layer for Vim `U`.
-    pub fn capture_hard_line_source_image(
-        &self,
-        line: usize,
-    ) -> Result<HardLineSourceImage, DocumentError> {
-        hard_line_source_image_from_state(self.id, self.state(), line)
-    }
-
     /// Map a non-empty, half-open span of formatted hard-line ordinals to its
     /// exact contiguous byte extent in the authoritative primary source part.
     ///
@@ -2525,134 +2339,6 @@ fn build_state_from_decoded_with_configuration(
         file_format_origin,
         line_ending_evidence,
         has_bom: decoded.bom_len != 0,
-    })
-}
-
-fn hard_line_source_range_from_state(state: &DocumentState, line: usize) -> Option<Range<usize>> {
-    let projection = &state.projection;
-    if matches!(state.format, Format::Markdown | Format::MarkdownSource) {
-        let formatted = projection.hard_line_range(line)?;
-        let end = formatted.end + usize::from(line + 1 < projection.hard_line_count());
-        let spans = projection.provenance_for_region(&(formatted.start..end));
-        let start = spans
-            .first()
-            .map(|span| span.source.start)
-            .or_else(|| projection.source_insertion_point(formatted.start, true))?;
-        let end = spans
-            .last()
-            .map(|span| span.source.end)
-            .or_else(|| projection.source_insertion_point(formatted.end, true))?;
-        let first = state.source_hard_lines.line_at_offset(start)?;
-        let last = state
-            .source_hard_lines
-            .line_at_offset(end.saturating_sub(1).max(start))?;
-        return Some(
-            state.source_hard_lines.get(first)?.start..state.source_hard_lines.get(last)?.end,
-        );
-    }
-    if state.source_hard_lines.len() != projection.hard_line_count() {
-        return None;
-    }
-    state.source_hard_lines.get(line)
-}
-
-fn hard_line_source_image_from_state(
-    document: DocumentId,
-    state: &DocumentState,
-    line: usize,
-) -> Result<HardLineSourceImage, DocumentError> {
-    let line_count = state.projection.hard_line_count();
-    if line >= line_count {
-        return Err(DocumentError::InvalidHardLineSourceImageTarget { line, line_count });
-    }
-    if state.format != Format::MarkdownSource && state.projection.blocks().len() != line_count {
-        return Err(DocumentError::HardLineSourceImageProjectionMismatch);
-    }
-
-    let formatted_range = state
-        .projection
-        .hard_line_range(line)
-        .ok_or(DocumentError::HardLineSourceImageProjectionMismatch)?;
-    let hard_line_id = state
-        .projection
-        .hard_line_id(line)
-        .ok_or(DocumentError::HardLineSourceImageProjectionMismatch)?;
-    let block = state
-        .projection
-        .blocks_for_region(&formatted_range)
-        .into_iter()
-        .find(|block| {
-            block.range.start <= formatted_range.start && formatted_range.end <= block.range.end
-        })
-        .ok_or(DocumentError::HardLineSourceImageProjectionMismatch)?;
-    if state.format != Format::MarkdownSource
-        && (block.id != hard_line_id || block.range != formatted_range)
-    {
-        return Err(DocumentError::HardLineSourceImageProjectionMismatch);
-    }
-    let source_range = hard_line_source_range_from_state(state, line)
-        .ok_or(DocumentError::HardLineSourceImageProjectionMismatch)?;
-    let source_bytes = state
-        .source
-        .bytes_in(source_range.clone())
-        .ok_or(DocumentError::HardLineSourceImageProjectionMismatch)?;
-    let formatted_text = state
-        .projection
-        .text_tree()
-        .slice(formatted_range.clone())
-        .map_err(DocumentError::FormattedTextStorage)?;
-
-    let mut styles = Vec::new();
-    for span in state.projection.style_spans_for_region(&formatted_range) {
-        if span.range.start < formatted_range.start || span.range.end > formatted_range.end {
-            return Err(DocumentError::HardLineSourceImageProjectionMismatch);
-        }
-        if let StyleApplication::Semantic(style) = span.application {
-            styles.push(HardLineStyleImage {
-                range: span.range.start - formatted_range.start
-                    ..span.range.end - formatted_range.start,
-                style,
-            });
-        }
-    }
-
-    let mut diagnostics = Vec::new();
-    for diagnostic in state
-        .projection
-        .decoding_diagnostics_for_region(&formatted_range)
-    {
-        if diagnostic.formatted_range.start < formatted_range.start
-            || diagnostic.formatted_range.end > formatted_range.end
-            || diagnostic.source_range.start < source_range.start
-            || diagnostic.source_range.end > source_range.end
-        {
-            return Err(DocumentError::HardLineSourceImageProjectionMismatch);
-        }
-        diagnostics.push(HardLineDiagnosticImage {
-            kind: diagnostic.kind,
-            formatted_range: diagnostic.formatted_range.start - formatted_range.start
-                ..diagnostic.formatted_range.end - formatted_range.start,
-            source_range: diagnostic.source_range.start - source_range.start
-                ..diagnostic.source_range.end - source_range.start,
-        });
-    }
-
-    Ok(HardLineSourceImage {
-        document,
-        revision: state.revision,
-        captured_line: line,
-        hard_line_count: line_count,
-        hard_line_id,
-        encoding: state.encoding,
-        format: state.format,
-        file_format: state.file_format,
-        terminated: line + 1 < line_count,
-        source_bytes,
-        formatted_text,
-        block_kind: block.kind.clone(),
-        block_style: block.style.clone(),
-        styles,
-        diagnostics,
     })
 }
 
