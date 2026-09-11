@@ -76,6 +76,7 @@ typedef uint32_t ViemStatus;
 #define VIEM_FORMAT_RTF 4u
 #define VIEM_FORMAT_MARKDOWN_SOURCE 5u
 #define VIEM_FORMAT_HTML_SOURCE 6u
+#define VIEM_FORMAT_CODE 7u
 
 #define VIEM_FILE_FORMAT_DETECT 0u
 #define VIEM_FILE_FORMAT_UNIX 1u
@@ -2232,6 +2233,30 @@ ViemStatus viem_core_copy_clipboard_json(
 ViemStatus viem_effect_batch_copy_clipboard_json(
     ViemEffectBatchHandle batch, uint64_t clipboard_index,
     uint8_t *output, uint64_t output_capacity, uint64_t *out_required);
+
+/* Application-wide Code stylesheet. Its identity has document/revision zero.
+ * Changes never create a buffer transaction. UTF-8/typed output arrays use
+ * the same exact-capacity and disjoint-pointer rules as document styles. */
+ViemStatus viem_code_style_sheet_info(ViemStyleSheetInfoV1 *output);
+ViemStatus viem_code_copy_style_sheet(const ViemStyleSheetIdentityV1 *expected,
+    ViemStyleDefinitionV1 *definitions, uint64_t definition_capacity,
+    ViemStylePropertyV1 *properties, uint64_t property_capacity,
+    ViemStyleValueItemV1 *value_items, uint64_t value_item_capacity,
+    ViemStyleDependencyV1 *dependencies, uint64_t dependency_capacity,
+    uint8_t *string_bytes, uint64_t string_capacity, ViemStyleSheetInfoV1 *out_info);
+ViemStatus viem_code_edit_style(const ViemStyleEditV1 *request, ViemStyleSheetInfoV1 *output);
+ViemStatus viem_code_create_style(const ViemCreateStyleV1 *request, ViemStyleSheetInfoV1 *output);
+ViemStatus viem_code_delete_style(const ViemDeleteStyleV1 *request, ViemStyleSheetInfoV1 *output);
+ViemStatus viem_code_replace_style_json(const uint8_t *input, uint64_t length);
+ViemStatus viem_code_export_style_json(uint8_t *output, uint64_t capacity, uint64_t *required);
+ViemStatus viem_core_initialize_code_detection(ViemCoreHandle core, const uint8_t *filename, uint64_t length, uint8_t allow_auto_code);
+ViemStatus viem_core_configure_syntax(ViemCoreHandle core, const uint8_t *vim_directory, uint64_t length);
+ViemStatus viem_core_set_code_filename_associations_json(ViemCoreHandle core, const uint8_t *json, uint64_t length);
+/* selection: Automatic=0, None=1, Language=2. Only Language takes a nonempty name. */
+ViemStatus viem_core_set_code_language(ViemCoreHandle core, uint32_t selection, const uint8_t *language, uint64_t length);
+ViemStatus viem_core_redetect_code_language(ViemCoreHandle core, const uint8_t *filename, uint64_t length);
+ViemStatus viem_core_poll_syntax(ViemCoreHandle core, uint8_t *changed);
+ViemStatus viem_core_copy_syntax_diagnostics(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
 
 #ifdef __cplusplus
 }

@@ -14,6 +14,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
   }
 
   public func currentStyleMenuCatalogue() -> EVStyleMenuCatalogue? {
+    guard backend.sourceFormat != .code else { return nil }
     guard let snapshot = try? backend.styleSheetSnapshot() else { return nil }
     let selection = try? session?.listSelection()
     let selectedStyles = try? session?.selectedNamedStyles()
@@ -87,6 +88,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
   }
 
   func perform(styleMenuAction action: EVStyleMenuAction, sender: Any?) {
+    guard backend.sourceFormat != .code else { return }
     if action.kind == .assign {
       guard let session,
         let snapshot = try? backend.styleSheetSnapshot(),

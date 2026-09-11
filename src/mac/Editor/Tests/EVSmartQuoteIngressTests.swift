@@ -45,6 +45,7 @@ final class EVSmartQuoteIngressTests: XCTestCase {
 
     func testCodeSpansAndParagraphsKeepLiteralQuotesAcrossNativeIngress() throws {
         for (source, type) in [
+            ("X", EVDocument.codeType),
             ("<p><code>X</code></p>", EVDocument.htmlType),
             ("<pre>X</pre>", EVDocument.htmlType),
             ("`X`", EVDocument.markdownType),
@@ -70,6 +71,7 @@ final class EVSmartQuoteIngressTests: XCTestCase {
     func testNormalReplaceAndItsMarkedTextOperandUseTheSameQuotePolicy() throws {
         for (source, type, expected) in [
             ("X", EVDocument.plainTextType, "“"),
+            ("X", EVDocument.codeType, "\""),
             ("<p><code>X</code></p>", EVDocument.htmlType, "\""),
             ("<pre>X</pre>", EVDocument.htmlType, "\""),
             ("`X`", EVDocument.markdownType, "\""),
@@ -95,6 +97,7 @@ final class EVSmartQuoteIngressTests: XCTestCase {
     func testExplicitNativeReplacementUsesTheReplacedContentCodeContext() throws {
         for (source, type, replacement) in [
             ("X", EVDocument.plainTextType, "“word”"),
+            ("X", EVDocument.codeType, "\"word\""),
             ("<p><code>X</code></p>", EVDocument.htmlType, "\"word\""),
             ("`X`", EVDocument.markdownType, "\"word\""),
             ("<p><code>X</code></p>", EVDocument.htmlSourceType, "\"word\""),
@@ -115,6 +118,7 @@ final class EVSmartQuoteIngressTests: XCTestCase {
     func testNativeReplaceModeCurvesProseAndKeepsCodeLiteral() throws {
         for (source, type, expected) in [
             ("XXXXXX", EVDocument.plainTextType, "“word”"),
+            ("XXXXXX", EVDocument.codeType, "\"word\""),
             ("<p><code>XXXXXX</code></p>", EVDocument.htmlType, "\"word\""),
             ("```\nXXXXXX\n```", EVDocument.markdownType, "\"word\""),
         ] {
@@ -131,6 +135,7 @@ final class EVSmartQuoteIngressTests: XCTestCase {
     func testAccessibilityWholeValueReplacementUsesSmartQuotesInNormalMode() throws {
         for (source, type, expected) in [
             ("X", EVDocument.plainTextType, "“word”"),
+            ("X", EVDocument.codeType, "\"word\""),
             ("<pre>X</pre>", EVDocument.htmlType, "\"word\""),
         ] {
             let (backend, surface, _) = try makeSurface(source, type: type)

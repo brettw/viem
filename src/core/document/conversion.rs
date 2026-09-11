@@ -198,14 +198,18 @@ impl ConversionWriter {
 }
 pub(super) fn convert(document: &Document, target: Format) -> Result<Conversion, DocumentError> {
     let target = target.wysiwyg();
-    if target == Format::Rtf {
+    if target == Format::Rtf || target.is_code() {
         return Err(DocumentError::UnsupportedFormatting);
     }
     let source_bytes = document.source_bytes();
     let decoded = document.encoding().decode(&source_bytes)?;
     let input = super::line_endings::normalize(&decoded, document.file_format());
     let from = document.format().wysiwyg();
-    let semantic = if from == document.format() {
+    let semantic = if from.is_code() {
+        let mut projection = document.projection().clone();
+        projection.install_code_styles(std::sync::Arc::new(super::StyleSheet::default()), &[]);
+        projection
+    } else if from == document.format() {
         document.projection().clone()
     } else {
         let mut projected = if from == Format::Html {
@@ -304,7 +308,7 @@ pub(super) fn convert(document: &Document, target: Format) -> Result<Conversion,
         }
     }
     let plain_blocks;
-    let blocks = if from == Format::PlainText {
+    let blocks = if from.is_literal() {
         plain_blocks = plain_paragraphs(&semantic);
         plain_blocks.as_slice()
     } else {

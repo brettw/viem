@@ -1697,10 +1697,10 @@ fn line_start_after_deletion(
     let target = hard_lines
         .line(target_line)
         .ok_or(ExExecuteError::AddressOverflow)?;
+    let target_range=target.content_range();
+    let target_offset=super::first_nonblank_document(document,&hard_lines,target_range.start)-target_range.start;
     rebased_start
-        .checked_add(first_nonblank_relative(
-            &document.text()[target.content_range()],
-        ))
+        .checked_add(target_offset)
         .ok_or(ExExecuteError::AddressOverflow)
 }
 
@@ -1749,10 +1749,7 @@ fn hard_line_first_nonblank_offset(
         .line(line_index)
         .ok_or(ExExecuteError::AddressOverflow)?;
     let range = line.content_range();
-    range
-        .start
-        .checked_add(first_nonblank_relative(&document.text()[range]))
-        .ok_or(ExExecuteError::AddressOverflow)
+    Ok(super::first_nonblank_document(document,&hard_lines,range.start))
 }
 
 fn first_nonblank_relative(text: &str) -> usize {
@@ -1818,15 +1815,9 @@ fn plan_join(
         let following_range = following.content_range();
         let following_start = following_range.start;
         let following_end = following_range.end;
-        let indentation = document.text()[following_start..following_end]
-            .char_indices()
-            .take_while(|(_, ch)| ch.is_whitespace())
-            .map(|(offset, ch)| offset + ch.len_utf8())
-            .last()
-            .unwrap_or(0);
-        let end = following_start + indentation;
-        let before = document.text()[current.content_range()].chars().next_back();
-        let after = document.text()[end..following_end].chars().next();
+        let end = super::document_prefix_end(document,following_start..following_end,char::is_whitespace);
+        let before = (!current.content_range().is_empty()).then(||super::document_char_before(document,current.content_range().end)).flatten();
+        let after = (end<following_end).then(||super::document_char_at(document,end)).flatten();
         let separator = if before.is_none()
             || after.is_none()
             || before.is_some_and(char::is_whitespace)

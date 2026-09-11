@@ -76,6 +76,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     private(set) var core: ViemCoreHandle = 0
     private var source = Data()
     private var typeName = "public.plain-text"
+    private var openingFilename = ""
+    private var allowAutomaticCode = false
     private var recoveryInterpretation: EVRecoverySnapshot?
     private(set) var currentDocumentState = ViemDocumentStateV1()
     private(set) var formattedAccessCounters = EVFormattedAccessCounters()
@@ -85,6 +87,10 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     let configuration: EVConfigurationStore
     public private(set) var configurationWarning: String?
+    private var codeObservers: [NSObjectProtocol] = []
+    private var syntaxTimer: Timer?
+    private let syntaxDiagnosticSource = UUID().uuidString
+    private var lastSyntaxDiagnosticRefresh: TimeInterval = -.infinity
 
     public init(configuration: EVConfigurationStore? = nil) {
         let configuration = configuration ?? .shared
@@ -94,9 +100,28 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         } catch {
             assertionFailure("Unable to create the initial Viem core: \(error)")
         }
+        for name in [Notification.Name.viemCodePreferencesDidChange, .viemGlobalCodeStyleDidChange] {
+            codeObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if notification.name == .viemCodePreferencesDidChange { self.configureSyntax() }
+                    else if self.sourceFormat == .code { self.configurationWarning = self.configuration.lastError }
+                    self.pollSyntax()
+                    self.refreshSyntaxDiagnostics()
+                }
+            })
+        }
+        syntaxTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pollSyntax() }
+        }
+        if let syntaxTimer { RunLoop.main.add(syntaxTimer, forMode: .common) }
     }
 
     deinit {
+        let source = syntaxDiagnosticSource
+        Task { @MainActor in EVCodePreferences.shared.reportLoadDiagnostics([], source: source) }
+        syntaxTimer?.invalidate()
+        for observer in codeObservers { NotificationCenter.default.removeObserver(observer) }
         if core != 0 {
             _ = viem_core_destroy(core)
         }
@@ -115,6 +140,12 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     }
 
     public func read(source: Data, typeName: String) throws {
+        try read(source: source, typeName: typeName, filename: "", allowAutomaticCode: false)
+    }
+
+    public func read(source: Data, typeName: String, filename: String, allowAutomaticCode: Bool) throws {
+        openingFilename = filename
+        self.allowAutomaticCode = allowAutomaticCode
         self.source = source
         self.typeName = typeName
         for surface in surfaces.compactMap(\.value) {
@@ -143,7 +174,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     public func restoreRecovery(_ snapshot: EVRecoverySnapshot) throws {
         recoveryInterpretation = snapshot
         defer { recoveryInterpretation = nil }
-        try read(source: snapshot.source, typeName: snapshot.format == .markdownSource ? EVDocument.markdownSourceType : (snapshot.format == .htmlSource ? EVDocument.htmlSourceType : EVDocument.typeName(for: snapshot.format)))
+        try read(source: snapshot.source, typeName: Self.openingType(for: snapshot.format))
         let state = try documentState()
         try checked(viem_core_mark_recovered(core, state.document_id, state.document_revision), operation: "Restore unsaved recovery state")
         _ = try documentState()
@@ -373,13 +404,16 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     }
 
     private func createCore() throws {
+        configurationWarning = configuration.lastError
+        do { try EVCodeStyleSession.initialize(configuration: configuration) }
+        catch { configurationWarning = error.localizedDescription }
         var options = ViemDocumentOptions()
         options.struct_size = UInt32(MemoryLayout<ViemDocumentOptions>.size)
         // Opening policy belongs to the portable encoding projection. The
         // frontend identifies the format container but never decodes or scans
         // authoritative source bytes itself.
         options.encoding = recoveryInterpretation?.encoding ?? UInt32(VIEM_ENCODING_DETECT)
-        options.format = Self.formatOption(typeName: recoveryInterpretation.map { $0.format == .markdownSource ? EVDocument.markdownSourceType : ($0.format == .htmlSource ? EVDocument.htmlSourceType : EVDocument.typeName(for: $0.format)) } ?? typeName)
+        options.format = Self.formatOption(typeName: recoveryInterpretation.map { Self.openingType(for: $0.format) } ?? typeName)
         options.file_format = recoveryInterpretation?.fileFormat ?? UInt32(VIEM_FILE_FORMAT_DETECT)
         var handle: ViemCoreHandle = 0
         var revision: UInt64 = 0
@@ -396,9 +430,20 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         core = handle
         source.removeAll(keepingCapacity: false)
         _ = try documentState()
-        configurationWarning = configuration.lastError
+        configureSyntax()
+        let associations = try configuration.codeFilenameAssociationsJSON()
+        let configuredAssociations = associations.withUnsafeBytes {
+            viem_core_set_code_filename_associations_json(core, $0.bindMemory(to: UInt8.self).baseAddress, UInt64($0.count))
+        }
+        try checked(configuredAssociations, operation: "Load Code filename associations")
+        let filename = Array(openingFilename.utf8)
+        let detected = filename.withUnsafeBufferPointer {
+            viem_core_initialize_code_detection(core, $0.baseAddress, UInt64($0.count), allowAutomaticCode ? 1 : 0)
+        }
+        try checked(detected, operation: "Detect code language")
+        _ = try documentState()
         do {
-            if let defaults = try configuration.styleDefaults(named: sourceFormat.defaultStyleName) {
+            if sourceFormat != .code, let defaults = try configuration.styleDefaults(named: sourceFormat.defaultStyleName) {
                 let result = defaults.withUnsafeBytes { raw in
                     viem_core_initialize_style_defaults(core, currentDocumentState.document_revision,
                         raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count))
@@ -406,6 +451,56 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
                 try checked(result, operation: "Load default style")
             }
         } catch { configurationWarning = error.localizedDescription }
+        refreshSyntaxDiagnostics()
+    }
+
+    private static func openingType(for format: EVSourceFormat) -> String {
+        switch format {
+        case .code: EVDocument.codeType
+        case .markdownSource: EVDocument.markdownSourceType
+        case .htmlSource: EVDocument.htmlSourceType
+        default: EVDocument.typeName(for: format)
+        }
+    }
+
+    private func configureSyntax() {
+        guard core != 0 else { return }
+        let bytes = Array((configuration.vimSyntaxDirectory as NSString).expandingTildeInPath.utf8)
+        let status = bytes.withUnsafeBufferPointer {
+            viem_core_configure_syntax(core, $0.baseAddress, UInt64($0.count))
+        }
+        if status != Status.ok { configurationWarning = "Unable to configure syntax highlighting (\(status))." }
+    }
+
+    func pollSyntax(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard core != 0, sourceFormat == .code else { return }
+        var changed: UInt8 = 0
+        guard viem_core_poll_syntax(core, &changed) == Status.ok else { return }
+        if changed != 0 {
+            // Presentation generations may change; no source transaction or document undo occurs.
+            for surface in surfaces.compactMap(\.value) { surface.refreshPresentation() }
+        }
+        // Providers can report a diagnostic without publishing different styles.
+        // Bound text export to four times per second independently of frame polling.
+        if now - lastSyntaxDiagnosticRefresh >= 0.25 { refreshSyntaxDiagnostics(now: now) }
+    }
+
+    private func refreshSyntaxDiagnostics(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard core != 0 else { return }
+        lastSyntaxDiagnosticRefresh = now
+        var diagnostics = configurationWarning.map { [$0] } ?? []
+        if sourceFormat == .code {
+            var required: UInt64 = 0
+            let queried = viem_core_copy_syntax_diagnostics(core, nil, 0, &required)
+            if (queried == Status.ok || queried == Status.bufferTooSmall), required <= 256 * 1024, required > 0 {
+                var bytes = [UInt8](repeating: 0, count: Int(required))
+                let copied = bytes.withUnsafeMutableBufferPointer {
+                    viem_core_copy_syntax_diagnostics(core, $0.baseAddress, UInt64($0.count), &required)
+                }
+                if copied == Status.ok { diagnostics += String(decoding: bytes, as: UTF8.self).split(separator: "\n").map(String.init) }
+            }
+        }
+        EVCodePreferences.shared.reportLoadDiagnostics(diagnostics, source: syntaxDiagnosticSource)
     }
 
     func saveDefaultStyle() throws -> URL {
@@ -610,6 +705,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         case UInt32(VIEM_FORMAT_HTML): .html
         case UInt32(VIEM_FORMAT_HTML_SOURCE): .htmlSource
         case UInt32(VIEM_FORMAT_RTF): .rtf
+        case UInt32(VIEM_FORMAT_CODE): .code
         default: .plainText
         }
     }
@@ -626,6 +722,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             UInt32(VIEM_FORMAT_HTML_SOURCE)
         case .rtf:
             UInt32(VIEM_FORMAT_RTF)
+        case .code:
+            UInt32(VIEM_FORMAT_CODE)
         case .plainText, nil:
             UInt32(VIEM_FORMAT_PLAIN_TEXT)
         }
@@ -1066,6 +1164,7 @@ final class EVCoreViewSession {
         case .html: UInt32(VIEM_FORMAT_HTML)
         case .htmlSource: UInt32(VIEM_FORMAT_HTML_SOURCE)
         case .rtf: UInt32(VIEM_FORMAT_RTF)
+        case .code: UInt32(VIEM_FORMAT_CODE)
         }
         request.operation = switch operation {
         case .reinterpret: UInt32(VIEM_FORMAT_OPERATION_REINTERPRET)

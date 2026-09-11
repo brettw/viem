@@ -1,5 +1,6 @@
 mod defaults;
 pub use defaults::StyleDefaultsError;
+pub mod code;
 
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -339,7 +339,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     /// Quote classification and source-aware insertion remain entirely in core.
     private func synchronizeEditingPreferences() {
         guard let session = surface?.session else { return }
-        let enabled = editingPreferences.smartQuotes
+        let enabled = editingPreferences.smartQuotes && surface?.backend.sourceFormat != .code
         guard configuredEditingSession !== session || configuredSmartQuotes != enabled else { return }
         do {
             try session.setSmartQuotes(enabled)

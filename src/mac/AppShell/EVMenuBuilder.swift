@@ -212,10 +212,11 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         for (title, commands) in [
             ("Convert to", [EVMenuCommand.convertToText, .convertToMarkdown, .convertToHTML]),
-            ("Reinterpret as", [EVMenuCommand.reinterpretAsText, .reinterpretAsMarkdown, .reinterpretAsHTML]),
+            ("Reinterpret as", [EVMenuCommand.reinterpretAsText, .reinterpretAsCode, .reinterpretAsMarkdown, .reinterpretAsHTML]),
         ] {
             let formats = NSMenu(title: title)
-            for (name, command) in zip(["Text", "Markdown", "HTML"], commands) {
+            let names = title == "Reinterpret as" ? ["Text", "Code", "Markdown", "HTML"] : ["Text", "Markdown", "HTML"]
+            for (name, command) in zip(names, commands) {
                 formats.addItem(coreItem(name, command: command))
             }
             menu.addItem(submenuItem(title, submenu: formats))

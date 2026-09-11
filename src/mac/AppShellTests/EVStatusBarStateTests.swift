@@ -22,7 +22,7 @@ final class EVStatusBarStateTests: XCTestCase {
         XCTAssertEqual(pickers.count, 1)
         let format = try XCTUnwrap(pickers.first)
         XCTAssertEqual(format.title, "Markdown WYSIWYG")
-        XCTAssertEqual(format.itemTitles, ["Plain Text", "Markdown Source", "Markdown WYSIWYG", "HTML Source", "HTML WYSIWYG", "RTF"])
+        XCTAssertEqual(format.itemTitles, ["Plain Text", "Code", "Markdown Source", "Markdown WYSIWYG", "HTML Source", "HTML WYSIWYG", "RTF"])
         let labels = controls.compactMap { ($0 as? NSTextField)?.stringValue }
         XCTAssertTrue(labels.contains("INSERT"))
         XCTAssertTrue(labels.contains("Saved"))

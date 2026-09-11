@@ -66,11 +66,12 @@ final class EVMenuBuilderTests: XCTestCase {
         let file = try submenu("File", of: main)
         for (title, commands, operation) in [
             ("Convert to", [EVMenuCommand.convertToText, .convertToMarkdown, .convertToHTML], EVFormatOperation.convert),
-            ("Reinterpret as", [EVMenuCommand.reinterpretAsText, .reinterpretAsMarkdown, .reinterpretAsHTML], EVFormatOperation.reinterpret),
+            ("Reinterpret as", [EVMenuCommand.reinterpretAsText, .reinterpretAsCode, .reinterpretAsMarkdown, .reinterpretAsHTML], EVFormatOperation.reinterpret),
         ] {
             let menu = try submenu(title, of: file)
-            XCTAssertEqual(tokens(in: menu), ["Text", "Markdown", "HTML"])
-            for (item, expected) in zip(menu.items, zip(commands, [EVSourceFormat.plainText, .markdown, .html])) {
+            let formats: [EVSourceFormat] = operation == .reinterpret ? [.plainText, .code, .markdown, .html] : [.plainText, .markdown, .html]
+            XCTAssertEqual(tokens(in: menu), operation == .reinterpret ? ["Text", "Code", "Markdown", "HTML"] : ["Text", "Markdown", "HTML"])
+            for (item, expected) in zip(menu.items, zip(commands, formats)) {
                 XCTAssertEqual(item.tag, expected.0.rawValue)
                 XCTAssertEqual(item.action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
                 XCTAssertNil(item.target)

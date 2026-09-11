@@ -742,7 +742,7 @@ fn execute_command_plan(
                 document.id(),
                 PositionDomain::FormattedText,
                 document.revision(),
-                document.text().len(),
+                document.projection().text_tree().byte_len(),
             ),
         ),
     };
@@ -827,8 +827,11 @@ fn allocate_style_edit_group_id() -> Option<StyleEditGroupId> {
 }
 
 /// Serial composition root for one buffer and its attached views.
+mod syntax;
+
 pub struct Core<P: TextMeasurementProvider> {
     document: Document,
+    syntax: syntax::CoreSyntax,
     buffer_commands: BufferCommandState,
     views: BTreeMap<ViewId, View<P>>,
     next_view: Option<u64>,
@@ -966,6 +969,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let buffer_commands = CommandInterpreter::new().export_buffer_state();
         Self {
             document,
+            syntax: syntax::CoreSyntax::default(),
             buffer_commands,
             views: BTreeMap::new(),
             next_view: Some(1),
@@ -1984,6 +1988,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         region: LayoutJobRegion,
         cancellation: LayoutCancellationToken,
     ) -> Result<crate::layout::LayoutJobRequest, CoreError> {
+        self.poll_syntax();
         if !self.views.contains_key(&view_id) {
             return Err(CoreError::UnknownView(view_id));
         }
@@ -2114,6 +2119,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         candidate: LayoutJobCandidate,
     ) -> Result<InstalledLayoutJob, CoreError> {
+        self.poll_syntax();
         let job_id = candidate.job_id();
         let checkpoint = candidate.next_long_line_checkpoint().cloned();
         let view = self
@@ -2173,6 +2179,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         intent: ImmediateLayoutIntent,
     ) -> Result<(), CoreError> {
+        self.poll_syntax();
         // Font registration may advance metrics synchronously during shaping.
         // Retry only disposable layout work, never the input/source transaction.
         for attempt in 0..3 {
@@ -2501,7 +2508,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .document
                 .projection()
                 .presentation_line_range(line, flow)
-                .ok_or(LayoutError::InvalidTextOffset(self.document.text().len()))?;
+                .ok_or(LayoutError::InvalidTextOffset(self.document.projection().text_tree().byte_len()))?;
             let long = staged_layout.wrap() && range.len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES;
             let mut checkpoint = if long {
                 let view = self.views.get_mut(&view_id).expect("view was validated");

@@ -7,7 +7,7 @@ extension EVEditorSurfaceController: EVOpenTypeMenuProviding {
   public func populateOpenTypeFeatureMenu(_ menu: NSMenu) {
     menu.removeAllItems()
     menu.autoenablesItems = false
-    guard let session, let typography = try? session.selectedTypography(),
+    guard backend.sourceFormat != .code, let session, let typography = try? session.selectedTypography(),
       let selection = try? session.listSelection()
     else { return }
     let features = EVFontCatalog.features(for: typography.fontFamily)
@@ -65,7 +65,7 @@ private final class EVOpenTypeMenuAction: NSObject {
     self.enabled = enabled
   }
   @objc func applyFeature(_ sender: Any?) {
-    guard let surface, let session = surface.session else { return }
+    guard let surface, surface.backend.sourceFormat != .code, let session = surface.session else { return }
     var features = current
     if let tag {
       features.removeAll { $0.tag == tag }

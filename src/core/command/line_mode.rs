@@ -32,7 +32,7 @@ impl CommandInterpreter {
         self.cursor = if matches!(self.mode, Mode::Insert | Mode::Replace) {
             at
         } else {
-            normalize_normal_cursor(document.text(), &document.hard_line_snapshot(), at)
+            normalize_normal_cursor_document(document, &document.hard_line_snapshot(), at)
         };
         self.clear_pending();
         self.typing_style = Default::default();

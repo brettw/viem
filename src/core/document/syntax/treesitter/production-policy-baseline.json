@@ -1,0 +1,31 @@
+{
+  "build": "release",
+  "cold_provider_ms": 448.37733299999996,
+  "diagnostics": [
+    "Tree-sitter: Limit(\"native edit preflight budget\")"
+  ],
+  "edited_coverage": "Missing",
+  "engine": "tree-sitter 0.25.10",
+  "fallback_repair_ms": 0.020208999999999998,
+  "fixture": "200000 independent C declarations; one-byte edit near BOF",
+  "fixture_revision": 1,
+  "gate": "production bounded fallback policy",
+  "gate_passed": true,
+  "initial_coverage": "Exact",
+  "input_bytes": 2200000,
+  "max_edit_root_children": 16384,
+  "max_edit_tree_nodes": 500000,
+  "reference_hardware": {
+    "cpu": "Apple M1 Ultra",
+    "memory_bytes": 137438953472,
+    "model": "Mac13,2"
+  },
+  "repaint_retries": 0,
+  "separate_exact_native_diagnostic": "performance-baseline.json records known failing native-work ceilings",
+  "timing_note": "Single policy regression observation, not a latency percentile or hard native deadline claim",
+  "timing_samples": 1,
+  "unrelated_edit_retries": 0,
+  "warm_callback_limit": 4096,
+  "warm_progress_callbacks": 0,
+  "warm_worker_slices": 0
+}

@@ -41,7 +41,7 @@ public final class EVStatusBarView: NSView {
 
     formatSelect.configure(
       label: "Format",
-      options: [EVSourceFormat.plainText, .markdownSource, .markdown, .htmlSource, .html, .rtf].map {
+      options: [EVSourceFormat.plainText, .code, .markdownSource, .markdown, .htmlSource, .html, .rtf].map {
         ($0.displayName, .format($0))
       }
     )

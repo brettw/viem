@@ -79,12 +79,9 @@ final class EVApplicationDelegate: NSObject,
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        panel.allowedContentTypes = [
-            .plainText,
-            .html,
-            .rtf,
-            UTType(filenameExtension: "md") ?? .plainText,
-        ]
+        // Code commonly has unknown or extensionless UTIs. The portable
+        // decoder and detection profile decide how to present the bytes.
+        panel.allowsOtherFileTypes = true
         panel.begin { [weak self] response in
             guard response == .OK else { return }
             var openedAny = false

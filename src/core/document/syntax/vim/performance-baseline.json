@@ -1,0 +1,403 @@
+{
+  "architecture": "aarch64",
+  "build": "release",
+  "ceilings": {
+    "accounted_retained_bytes": 67108864,
+    "cold_prime_instructions": 20200000,
+    "compiled_program_bytes": 33554432,
+    "continuation_bytes": 16777216,
+    "local_checkpoint_visits": 4096,
+    "local_input_bytes": 131072,
+    "local_instructions": 2200000,
+    "local_line_entries": 4096,
+    "slice_instructions": 200000
+  },
+  "compiler": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "engine": "native Vim profile 1",
+  "fixture_revision": 1,
+  "hardware": {
+    "cpu": "Apple M1 Ultra",
+    "model": "Mac13,2",
+    "physical_memory": "128 GB"
+  },
+  "hostile_fallback_slices": {
+    "maximum_ms": 0.114875,
+    "p50_ms": 0.098625,
+    "p95_ms": 0.111625,
+    "p99_ms": 0.111958,
+    "samples": 132
+  },
+  "hostile_fallback_total": {
+    "maximum_ms": 1.09525,
+    "p50_ms": 1.022583,
+    "p95_ms": 1.091084,
+    "p99_ms": 1.091084,
+    "samples": 12
+  },
+  "notes": "All work loops are finite. A 2 ms cooperative deadline is a target, not a hard maximum; actual maxima are recorded. Incomplete exact cold priming is followed by the real provisional viewport policy. Accounted syntax bytes exclude shared input storage and allocator/RSS overhead. Timings do not establish whole-editor latency.",
+  "os": "26.6.2",
+  "provider_only": true,
+  "rows": [
+    {
+      "cached_repaint": {
+        "maximum_ms": 0.000375,
+        "p50_ms": 0.00029099999999999997,
+        "p95_ms": 0.000375,
+        "p99_ms": 0.000375,
+        "samples": 12
+      },
+      "cold_prime_instructions": 7690000,
+      "cold_prime_ms": 165.11304199999998,
+      "cold_prime_slices": {
+        "maximum_ms": 2.0027500000000003,
+        "p50_ms": 2.0001670000000003,
+        "p95_ms": 2.0009580000000002,
+        "p99_ms": 2.002708,
+        "samples": 83
+      },
+      "compile_ms": 1.095167,
+      "edit_repair_slices": {
+        "maximum_ms": 0.5956670000000001,
+        "p50_ms": 0.078083,
+        "p95_ms": 0.591417,
+        "p99_ms": 0.591417,
+        "samples": 12
+      },
+      "edit_repair_total": {
+        "maximum_ms": 0.597042,
+        "p50_ms": 0.08904200000000001,
+        "p95_ms": 0.592958,
+        "p99_ms": 0.592958,
+        "samples": 12
+      },
+      "exact_cold_prime_complete": true,
+      "exact_repairs": 8,
+      "exact_warm_viewports": 3,
+      "fixture": "conf",
+      "lines": 10000,
+      "maximum_accounted_retained_bytes": 47544,
+      "maximum_checkpoint_visits": 200,
+      "maximum_edit_input_bytes": 2887,
+      "maximum_edit_instructions": 27751,
+      "maximum_edit_line_entries": 37,
+      "program_generation": 13430696290563152690,
+      "provisional_repairs": 4,
+      "source_bytes": 142500,
+      "viewport_exact_prime": {
+        "maximum_ms": 160.127209,
+        "p50_ms": 82.803334,
+        "p95_ms": 82.803334,
+        "p99_ms": 82.803334,
+        "samples": 3
+      },
+      "viewport_initial_or_fallback": {
+        "maximum_ms": 0.0006670000000000001,
+        "p50_ms": 0.000625,
+        "p95_ms": 0.000625,
+        "p99_ms": 0.000625,
+        "samples": 3
+      }
+    },
+    {
+      "cached_repaint": {
+        "maximum_ms": 0.000375,
+        "p50_ms": 0.000292,
+        "p95_ms": 0.000375,
+        "p99_ms": 0.000375,
+        "samples": 12
+      },
+      "cold_prime_instructions": 20043570,
+      "cold_prime_ms": 438.07925,
+      "cold_prime_slices": {
+        "maximum_ms": 2.001875,
+        "p50_ms": 2.0001670000000003,
+        "p95_ms": 2.000833,
+        "p99_ms": 2.0017080000000003,
+        "samples": 219
+      },
+      "compile_ms": 1.095167,
+      "edit_repair_slices": {
+        "maximum_ms": 0.6661250000000001,
+        "p50_ms": 0.077166,
+        "p95_ms": 0.648625,
+        "p99_ms": 0.648625,
+        "samples": 12
+      },
+      "edit_repair_total": {
+        "maximum_ms": 0.666709,
+        "p50_ms": 0.088792,
+        "p95_ms": 0.649208,
+        "p99_ms": 0.649208,
+        "samples": 12
+      },
+      "exact_cold_prime_complete": false,
+      "exact_repairs": 8,
+      "exact_warm_viewports": 2,
+      "fixture": "conf",
+      "lines": 100000,
+      "maximum_accounted_retained_bytes": 47544,
+      "maximum_checkpoint_visits": 122,
+      "maximum_edit_input_bytes": 2887,
+      "maximum_edit_instructions": 27751,
+      "maximum_edit_line_entries": 37,
+      "program_generation": 13430696290563152690,
+      "provisional_repairs": 4,
+      "source_bytes": 1425000,
+      "viewport_exact_prime": {
+        "maximum_ms": 438.112917,
+        "p50_ms": 409.778584,
+        "p95_ms": 409.778584,
+        "p99_ms": 409.778584,
+        "samples": 3
+      },
+      "viewport_initial_or_fallback": {
+        "maximum_ms": 0.659417,
+        "p50_ms": 0.000583,
+        "p95_ms": 0.000583,
+        "p99_ms": 0.000583,
+        "samples": 3
+      }
+    },
+    {
+      "cached_repaint": {
+        "maximum_ms": 0.000583,
+        "p50_ms": 0.00033299999999999996,
+        "p95_ms": 0.000542,
+        "p99_ms": 0.000542,
+        "samples": 12
+      },
+      "cold_prime_instructions": 20060803,
+      "cold_prime_ms": 446.106958,
+      "cold_prime_slices": {
+        "maximum_ms": 2.0040829999999996,
+        "p50_ms": 2.0001670000000003,
+        "p95_ms": 2.000833,
+        "p99_ms": 2.0025,
+        "samples": 223
+      },
+      "compile_ms": 1.095167,
+      "edit_repair_slices": {
+        "maximum_ms": 0.654042,
+        "p50_ms": 0.620834,
+        "p95_ms": 0.646166,
+        "p99_ms": 0.646166,
+        "samples": 12
+      },
+      "edit_repair_total": {
+        "maximum_ms": 0.654458,
+        "p50_ms": 0.62125,
+        "p95_ms": 0.6497090000000001,
+        "p99_ms": 0.6497090000000001,
+        "samples": 12
+      },
+      "exact_cold_prime_complete": false,
+      "exact_repairs": 4,
+      "exact_warm_viewports": 1,
+      "fixture": "conf",
+      "lines": 1000000,
+      "maximum_accounted_retained_bytes": 47544,
+      "maximum_checkpoint_visits": 122,
+      "maximum_edit_input_bytes": 2887,
+      "maximum_edit_instructions": 27751,
+      "maximum_edit_line_entries": 37,
+      "program_generation": 13430696290563152690,
+      "provisional_repairs": 8,
+      "source_bytes": 14250000,
+      "viewport_exact_prime": {
+        "maximum_ms": 450.104042,
+        "p50_ms": 446.151542,
+        "p95_ms": 446.151542,
+        "p99_ms": 446.151542,
+        "samples": 3
+      },
+      "viewport_initial_or_fallback": {
+        "maximum_ms": 0.6556249999999999,
+        "p50_ms": 0.6285000000000001,
+        "p95_ms": 0.6285000000000001,
+        "p99_ms": 0.6285000000000001,
+        "samples": 3
+      }
+    },
+    {
+      "cached_repaint": {
+        "maximum_ms": 0.007291,
+        "p50_ms": 0.000542,
+        "p95_ms": 0.00075,
+        "p99_ms": 0.00075,
+        "samples": 12
+      },
+      "cold_prime_instructions": 5522418,
+      "cold_prime_ms": 137.836916,
+      "cold_prime_slices": {
+        "maximum_ms": 2.003417,
+        "p50_ms": 2.000292,
+        "p95_ms": 2.001833,
+        "p99_ms": 2.002417,
+        "samples": 69
+      },
+      "compile_ms": 0.363666,
+      "edit_repair_slices": {
+        "maximum_ms": 0.513959,
+        "p50_ms": 0.069583,
+        "p95_ms": 0.500916,
+        "p99_ms": 0.500916,
+        "samples": 12
+      },
+      "edit_repair_total": {
+        "maximum_ms": 0.5151659999999999,
+        "p50_ms": 0.07050000000000001,
+        "p95_ms": 0.502209,
+        "p99_ms": 0.502209,
+        "samples": 12
+      },
+      "exact_cold_prime_complete": true,
+      "exact_repairs": 8,
+      "exact_warm_viewports": 3,
+      "fixture": "dosini",
+      "lines": 10000,
+      "maximum_accounted_retained_bytes": 382602,
+      "maximum_checkpoint_visits": 142,
+      "maximum_edit_input_bytes": 1663,
+      "maximum_edit_instructions": 19991,
+      "maximum_edit_line_entries": 45,
+      "program_generation": 2397392153693740543,
+      "provisional_repairs": 4,
+      "source_bytes": 102500,
+      "viewport_exact_prime": {
+        "maximum_ms": 133.601917,
+        "p50_ms": 69.299209,
+        "p95_ms": 69.299209,
+        "p99_ms": 69.299209,
+        "samples": 3
+      },
+      "viewport_initial_or_fallback": {
+        "maximum_ms": 0.00075,
+        "p50_ms": 0.000709,
+        "p95_ms": 0.000709,
+        "p99_ms": 0.000709,
+        "samples": 3
+      }
+    },
+    {
+      "cached_repaint": {
+        "maximum_ms": 0.0006670000000000001,
+        "p50_ms": 0.000542,
+        "p95_ms": 0.000625,
+        "p99_ms": 0.000625,
+        "samples": 12
+      },
+      "cold_prime_instructions": 20075327,
+      "cold_prime_ms": 506.161041,
+      "cold_prime_slices": {
+        "maximum_ms": 2.0040829999999996,
+        "p50_ms": 2.000292,
+        "p95_ms": 2.001833,
+        "p99_ms": 2.002666,
+        "samples": 253
+      },
+      "compile_ms": 0.363666,
+      "edit_repair_slices": {
+        "maximum_ms": 0.535709,
+        "p50_ms": 0.06754099999999999,
+        "p95_ms": 0.5289999999999999,
+        "p99_ms": 0.5289999999999999,
+        "samples": 12
+      },
+      "edit_repair_total": {
+        "maximum_ms": 0.5362910000000001,
+        "p50_ms": 0.068958,
+        "p95_ms": 0.5296660000000001,
+        "p99_ms": 0.5296660000000001,
+        "samples": 12
+      },
+      "exact_cold_prime_complete": false,
+      "exact_repairs": 8,
+      "exact_warm_viewports": 2,
+      "fixture": "dosini",
+      "lines": 100000,
+      "maximum_accounted_retained_bytes": 420706,
+      "maximum_checkpoint_visits": 90,
+      "maximum_edit_input_bytes": 1663,
+      "maximum_edit_instructions": 19991,
+      "maximum_edit_line_entries": 45,
+      "program_generation": 2397392153693740543,
+      "provisional_repairs": 4,
+      "source_bytes": 1025000,
+      "viewport_exact_prime": {
+        "maximum_ms": 516.171875,
+        "p50_ms": 197.12312500000002,
+        "p95_ms": 197.12312500000002,
+        "p99_ms": 197.12312500000002,
+        "samples": 3
+      },
+      "viewport_initial_or_fallback": {
+        "maximum_ms": 0.541458,
+        "p50_ms": 0.000916,
+        "p95_ms": 0.000916,
+        "p99_ms": 0.000916,
+        "samples": 3
+      }
+    },
+    {
+      "cached_repaint": {
+        "maximum_ms": 0.0007080000000000001,
+        "p50_ms": 0.000542,
+        "p95_ms": 0.0006670000000000001,
+        "p99_ms": 0.0006670000000000001,
+        "samples": 12
+      },
+      "cold_prime_instructions": 20003217,
+      "cold_prime_ms": 520.17925,
+      "cold_prime_slices": {
+        "maximum_ms": 2.0092090000000002,
+        "p50_ms": 2.000333,
+        "p95_ms": 2.001916,
+        "p99_ms": 2.002625,
+        "samples": 260
+      },
+      "compile_ms": 0.363666,
+      "edit_repair_slices": {
+        "maximum_ms": 0.530958,
+        "p50_ms": 0.516084,
+        "p95_ms": 0.526208,
+        "p99_ms": 0.526208,
+        "samples": 12
+      },
+      "edit_repair_total": {
+        "maximum_ms": 0.531542,
+        "p50_ms": 0.5167499999999999,
+        "p95_ms": 0.526708,
+        "p99_ms": 0.526708,
+        "samples": 12
+      },
+      "exact_cold_prime_complete": false,
+      "exact_repairs": 4,
+      "exact_warm_viewports": 1,
+      "fixture": "dosini",
+      "lines": 1000000,
+      "maximum_accounted_retained_bytes": 491718,
+      "maximum_checkpoint_visits": 89,
+      "maximum_edit_input_bytes": 1663,
+      "maximum_edit_instructions": 19991,
+      "maximum_edit_line_entries": 45,
+      "program_generation": 2397392153693740543,
+      "provisional_repairs": 8,
+      "source_bytes": 10250000,
+      "viewport_exact_prime": {
+        "maximum_ms": 522.196416,
+        "p50_ms": 522.164583,
+        "p95_ms": 522.164583,
+        "p99_ms": 522.164583,
+        "samples": 3
+      },
+      "viewport_initial_or_fallback": {
+        "maximum_ms": 0.532833,
+        "p50_ms": 0.5171250000000001,
+        "p95_ms": 0.5171250000000001,
+        "p99_ms": 0.5171250000000001,
+        "samples": 3
+      }
+    }
+  ],
+  "runtime_fixture_version": "MacVim 9.1.1887; unmodified conf.vim and dosini.vim"
+}

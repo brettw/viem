@@ -131,6 +131,7 @@ import XCTest
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
         for (source, sourceType, formattedType) in [
+            ("let café = \"👩‍💻\";", EVDocument.codeType, EVDocument.codeType),
             ("<p><b>café 👩‍💻</b></p>", EVDocument.htmlSourceType, EVDocument.htmlType),
             ("# Title\n\n__café 👩‍💻__", EVDocument.markdownSourceType, EVDocument.markdownType),
         ] {
@@ -202,6 +203,23 @@ import XCTest
             XCTAssertNotEqual(saved, Data(source.utf8))
             XCTAssertNil(targetView.commandOutput)
         }
+    }
+
+    func testCodePastesRichClipboardAsExactPlainQuotesAndCopiesWithoutTypography() throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let (_, donor, donorSession) = try surface("<p><b>\"quoted\"</b> &amp; <i>'literal'</i></p>", type: EVDocument.htmlType, pasteboard: pasteboard)
+        try selectAll(session: donorSession, surface: donor)
+        donor.perform(menuCommand: .copy, sender: nil)
+        XCTAssertNotNil(pasteboard.data(forType: fragmentType))
+        let (backend, target, session) = try surface("", type: EVDocument.codeType, pasteboard: pasteboard)
+        target.perform(menuCommand: .paste, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), Data("\"quoted\" & 'literal'".utf8))
+        try selectAll(session: session, surface: target)
+        target.perform(menuCommand: .copy, sender: nil)
+        XCTAssertEqual(pasteboard.string(forType: .string), "\"quoted\" & 'literal'")
+        XCTAssertNil(pasteboard.data(forType: fragmentType))
+        XCTAssertNil(pasteboard.data(forType: .rtf))
     }
 
     func testSelectAllCutThenPastePreservesRichSourceAndHistory() throws {

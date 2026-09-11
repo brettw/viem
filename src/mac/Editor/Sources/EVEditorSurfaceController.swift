@@ -355,6 +355,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             }
             return
         }
+        if backend.sourceFormat == .code, (300..<400).contains(menuCommand.rawValue) { return }
         switch menuCommand {
         case .heading0, .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
             performHeadingShortcut(level: UInt32(menuCommand.rawValue - EVMenuCommand.heading0.rawValue))
@@ -524,8 +525,13 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     public func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation {
         if let change = menuCommand.formatChange {
             return EVMenuItemPresentation(
-                isEnabled: session != nil && !backend.sourceFormat.hasSameSerialization(as: change.format)
+                isEnabled: session != nil && ((backend.sourceFormat == .code || change.format == .code)
+                    ? backend.sourceFormat != change.format
+                    : !backend.sourceFormat.hasSameSerialization(as: change.format))
             )
+        }
+        if backend.sourceFormat == .code, (300..<400).contains(menuCommand.rawValue) {
+            return .disabled
         }
         return switch menuCommand {
         case .heading0, .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
@@ -627,9 +633,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             EVMenuItemPresentation(isEnabled: [.html, .htmlSource, .rtf].contains(backend.sourceFormat)
                 && (try? session?.listSelection()) != nil)
         case .saveDefaultStyle:
-            EVMenuItemPresentation(isEnabled: true, title: "Save as default \(backend.sourceFormat.defaultStyleName) style")
+            EVMenuItemPresentation(isEnabled: backend.sourceFormat != .code, title: "Save as default \(backend.sourceFormat.defaultStyleName) style")
         case .editCharacterStyles, .editParagraphStyles, .editDocumentStyles:
-            .enabled
+            EVMenuItemPresentation(isEnabled: backend.sourceFormat != .code)
         case .printDocument:
             .disabled
         default:
@@ -1166,7 +1172,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 extension EVEditorSurfaceController: EVCommandTurnHost {
     func clipboardSnapshotsForCommandTurn() -> [EVClipboardTurnSnapshot] {
         let text = pasteboard.viemString()
-        let fragment = pasteMatchesStyle ? nil : pasteboard.viemData(forType: EVClipboardRepresentations.fragmentType)
+        let fragment = pasteMatchesStyle || backend.sourceFormat == .code ? nil : pasteboard.viemData(forType: EVClipboardRepresentations.fragmentType)
         let generation = text == nil ? 0 : pasteboard.viemGeneration
         let writable = pasteboard.viemIsWritable
         return [

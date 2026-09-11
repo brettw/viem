@@ -112,7 +112,7 @@ impl CommandInterpreter {
         affinity: BoundaryAffinity,
         value: &RegisterValue,
     ) -> Result<RegisterValue, DocumentError> {
-        if !self.smart_quotes() || !value.text.contains(['\'', '"']) {
+        if document.format().is_code() || !self.smart_quotes() || !value.text.contains(['\'', '"']) {
             return Ok(value.clone());
         }
         let transformed = (|| {
@@ -189,7 +189,7 @@ impl CommandInterpreter {
         range: std::ops::Range<usize>,
         input: &str,
     ) -> Result<String, DocumentError> {
-        if !self.smart_quotes() || !input.contains(['\'', '"']) {
+        if document.format().is_code() || !self.smart_quotes() || !input.contains(['\'', '"']) {
             return Ok(input.to_owned());
         }
         let transformed = document

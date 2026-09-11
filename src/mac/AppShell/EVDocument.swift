@@ -13,6 +13,7 @@ public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
     case html
     case htmlSource
     case rtf
+    case code
 
     public var displayName: String {
         switch self {
@@ -22,11 +23,13 @@ public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
         case .html: "HTML WYSIWYG"
         case .htmlSource: "HTML Source"
         case .rtf: "RTF"
+        case .code: "Code"
         }
     }
 
     public func hasSameSerialization(as other: Self) -> Bool {
-        self == other || ([Self.markdown, .markdownSource].contains(self)
+        self == other || ([Self.plainText, .code].contains(self)
+            && [Self.plainText, .code].contains(other)) || ([Self.markdown, .markdownSource].contains(self)
             && [Self.markdown, .markdownSource].contains(other))
             || ([Self.html, .htmlSource].contains(self) && [Self.html, .htmlSource].contains(other))
     }
@@ -62,6 +65,7 @@ public final class EVDocument: NSDocument {
     public static let htmlSourceType = "com.viem.html-source"
     public static let htmlType = UTType.html.identifier
     public static let rtfType = UTType.rtf.identifier
+    public static let codeType = "com.viem.code"
 
     nonisolated(unsafe) public let editorBackend: any EVDocumentBackend
     private struct ActiveSave {
@@ -161,7 +165,8 @@ public final class EVDocument: NSDocument {
                 try self.editorBackend.restoreRecovery(snapshot)
                 recovered = true
             case .readOnly, .editAnyway:
-                try self.editorBackend.read(source: original.get(), typeName: typeName)
+                try self.editorBackend.read(source: original.get(), typeName: typeName,
+                    filename: target.lastPathComponent, allowAutomaticCode: Self.sourceFormat(forTypeName: typeName) == .plainText)
                 recovered = false
             case .cancel: return
             }
@@ -344,6 +349,7 @@ public final class EVDocument: NSDocument {
         case .markdown, .markdownSource: markdownType
         case .html, .htmlSource: htmlType
         case .rtf: rtfType
+        case .code: plainTextType
         }
     }
 
@@ -562,6 +568,7 @@ public final class EVDocument: NSDocument {
 
     public static func sourceFormat(forTypeName typeName: String) -> EVSourceFormat? {
         let lowered = typeName.lowercased()
+        if lowered == codeType { return .code }
         if lowered == markdownSourceType { return .markdownSource }
         if lowered == htmlSourceType { return .htmlSource }
         if [".html", ".htm", htmlType].contains(lowered) || lowered.hasSuffix(".html") {

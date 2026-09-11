@@ -100,6 +100,7 @@ pub const VIEM_FORMAT_HTML: u32 = 3;
 pub const VIEM_FORMAT_RTF: u32 = 4;
 pub const VIEM_FORMAT_MARKDOWN_SOURCE: u32 = 5;
 pub const VIEM_FORMAT_HTML_SOURCE: u32 = 6;
+pub const VIEM_FORMAT_CODE: u32 = 7;
 
 /// Detect the line-ending interpretation through the core's shared open
 /// policy.
@@ -2278,6 +2279,7 @@ fn parse_format(raw: u32) -> Result<Format, ViemStatus> {
         VIEM_FORMAT_RTF => Ok(Format::Rtf),
         VIEM_FORMAT_MARKDOWN_SOURCE => Ok(Format::MarkdownSource),
         VIEM_FORMAT_HTML_SOURCE => Ok(Format::HtmlSource),
+        VIEM_FORMAT_CODE => Ok(Format::Code),
         _ => Err(ViemStatus::InvalidFormat),
     }
 }
@@ -2313,6 +2315,7 @@ fn format_to_ffi(format: Format) -> u32 {
         Format::Rtf => VIEM_FORMAT_RTF,
         Format::MarkdownSource => VIEM_FORMAT_MARKDOWN_SOURCE,
         Format::HtmlSource => VIEM_FORMAT_HTML_SOURCE,
+        Format::Code => VIEM_FORMAT_CODE,
     }
 }
 
@@ -4631,6 +4634,107 @@ fn style_sheet_identity(document: &Document) -> ViemStyleSheetIdentityV1 {
     }
 }
 
+fn code_style_identity(sheet: &crate::document::StyleSheet) -> ViemStyleSheetIdentityV1 {
+    ViemStyleSheetIdentityV1 { struct_size: VIEM_STYLE_SHEET_IDENTITY_V1_SIZE, reserved:0, document_id:0, document_revision:0, style_sheet_revision:sheet.revision.0 }
+}
+fn validate_code_style_identity(expected: ViemStyleSheetIdentityV1, sheet: &crate::document::StyleSheet) -> Result<(), ViemStatus> {
+    if expected.struct_size < VIEM_STYLE_SHEET_IDENTITY_V1_SIZE || expected.reserved != 0 { return Err(ViemStatus::InvalidArgument); }
+    if expected.document_id != 0 || expected.document_revision != 0 || expected.style_sheet_revision != sheet.revision.0 { return Err(ViemStatus::StaleRevision); }
+    Ok(())
+}
+fn export_code_style_snapshot(sheet: &crate::document::StyleSheet) -> Result<StyleSheetExport, ViemStatus> {
+    export_style_sheet_snapshot(sheet, code_style_identity(sheet), Format::Code)
+}
+fn export_code_style_sheet() -> Result<StyleSheetExport, ViemStatus> { export_code_style_snapshot(&crate::document::code_style::snapshot()) }
+
+/// # Safety
+/// Output must be one writable aligned style-info record.
+#[no_mangle]
+pub unsafe extern "C" fn viem_code_style_sheet_info(output: *mut ViemStyleSheetInfoV1) -> ViemStatus {
+    unsafe { viem_core_style_sheet_info(0, output) }
+}
+
+/// # Safety
+/// Same bounded, disjoint output-array contract as viem_core_copy_style_sheet.
+#[no_mangle]
+pub unsafe extern "C" fn viem_code_copy_style_sheet(expected: *const ViemStyleSheetIdentityV1, definitions: *mut ViemStyleDefinitionV1, definition_capacity:u64, properties:*mut ViemStylePropertyV1, property_capacity:u64, value_items:*mut ViemStyleValueItemV1, value_item_capacity:u64, dependencies:*mut ViemStyleDependencyV1, dependency_capacity:u64, string_bytes:*mut u8, string_capacity:u64, out_info:*mut ViemStyleSheetInfoV1) -> ViemStatus {
+    unsafe { viem_core_copy_style_sheet(0,expected,definitions,definition_capacity,properties,property_capacity,value_items,value_item_capacity,dependencies,dependency_capacity,string_bytes,string_capacity,out_info) }
+}
+
+/// # Safety
+/// Request and nested slices must be valid and disjoint from the output.
+#[no_mangle]
+pub unsafe extern "C" fn viem_code_edit_style(request:*const ViemStyleEditV1, output:*mut ViemStyleSheetInfoV1) -> ViemStatus {
+    ffi_boundary(|| {
+        let request = unsafe { parse_style_edit_request(request, output)? };
+        let sheet = crate::document::code_style::snapshot();
+        validate_code_style_identity(request.identity, &sheet)?;
+        let edit = sheet.prepare_generated_field_edit(request.namespace,&request.style,&request.edit).map_err(style_error_status)?;
+        let sheet = crate::document::code_style::edit(sheet.revision,edit).map_err(|_| ViemStatus::InvalidArgument)?;
+        unsafe { output.write(export_code_style_snapshot(&sheet)?.info); }
+        Ok(())
+    })
+}
+
+/// # Safety
+/// Request and all nested slices must be readable and disjoint from output.
+#[no_mangle]
+pub unsafe extern "C" fn viem_code_create_style(request:*const ViemCreateStyleV1, output:*mut ViemStyleSheetInfoV1) -> ViemStatus {
+    ffi_boundary(|| {
+        let request = unsafe { read_core_request(request,output)? };
+        if request.struct_size < VIEM_CREATE_STYLE_V1_SIZE || request.namespace != VIEM_STYLE_NAMESPACE_CHARACTER || request.next_style_id.length != 0 { return Err(ViemStatus::InvalidArgument); }
+        let id = unsafe { composition_utf8(request.style_id,output)? };
+        let name = unsafe { composition_utf8(request.display_name,output)? };
+        let parent = unsafe { composition_utf8(request.parent_id,output)? };
+        let sheet = crate::document::code_style::snapshot();
+        validate_code_style_identity(request.identity,&sheet)?;
+        let edit = crate::document::StyleDefinitionEdit::InsertCharacter {
+            style: crate::document::CharacterStyle {id:StyleId(id),based_on:Some(if parent.is_empty() {sheet.base_character.clone()} else {StyleId(parent)}),properties:Default::default()},
+            metadata:crate::document::StyleDefinitionMetadata::generated(name),
+        };
+        let sheet = crate::document::code_style::edit(sheet.revision,edit).map_err(|_| ViemStatus::InvalidArgument)?;
+        unsafe { output.write(export_code_style_snapshot(&sheet)?.info); }
+        Ok(())
+    })
+}
+
+/// # Safety
+/// Request and nested slices must be readable and disjoint from output.
+#[no_mangle]
+pub unsafe extern "C" fn viem_code_delete_style(request:*const ViemDeleteStyleV1, output:*mut ViemStyleSheetInfoV1) -> ViemStatus {
+    ffi_boundary(|| {
+        let request = unsafe { read_core_request(request,output)? };
+        if request.struct_size < VIEM_DELETE_STYLE_V1_SIZE || request.namespace != VIEM_STYLE_NAMESPACE_CHARACTER { return Err(ViemStatus::InvalidArgument); }
+        let id = unsafe { composition_utf8(request.style_id,output)? };
+        let sheet = crate::document::code_style::snapshot();
+        validate_code_style_identity(request.identity,&sheet)?;
+        let sheet = crate::document::code_style::edit(sheet.revision,crate::document::StyleDefinitionEdit::DeleteCharacter(StyleId(id))).map_err(|_| ViemStatus::InvalidArgument)?;
+        unsafe { output.write(export_code_style_snapshot(&sheet)?.info); }
+        Ok(())
+    })
+}
+
+/// # Safety
+/// The input slice must remain readable during this call. Empty resets defaults.
+#[no_mangle]
+pub unsafe extern "C" fn viem_code_replace_style_json(input:*const u8, length:u64) -> ViemStatus {
+    ffi_boundary(|| { let bytes = unsafe { input_bytes(input,length)? }; crate::document::code_style::replace_json(bytes).map_err(|_| ViemStatus::InvalidArgument)?; Ok(()) })
+}
+
+/// # Safety
+/// Uses the standard disjoint two-pass byte-buffer contract.
+#[no_mangle]
+pub unsafe extern "C" fn viem_code_export_style_json(output:*mut u8, capacity:u64, required:*mut u64) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[typed_pointer_region(output,capacity)?,typed_pointer_region(required,1)?])?;
+        let bytes = crate::document::code_style::export_json().map_err(|_| ViemStatus::CoreFailure)?;
+        unsafe { required.write(bytes.len() as u64); }
+        if capacity < bytes.len() as u64 { return Err(ViemStatus::BufferTooSmall); }
+        unsafe { copy_output(&bytes,output); }
+        Ok(())
+    })
+}
+
 fn validate_style_sheet_identity(
     expected: ViemStyleSheetIdentityV1,
     document: &Document,
@@ -5121,7 +5225,10 @@ fn generated_style_capabilities(
 }
 
 fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, ViemStatus> {
-    let sheet = document.projection().style_sheet();
+    export_style_sheet_snapshot(document.projection().style_sheet(), style_sheet_identity(document), document.format())
+}
+
+fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: ViemStyleSheetIdentityV1, format: Format) -> Result<StyleSheetExport, ViemStatus> {
     let assignment = DocumentStyleAssignment::new(sheet.base_document.clone());
     let mut definitions = Vec::new();
     let mut properties = Vec::new();
@@ -5233,26 +5340,26 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, ViemStatu
             namespace: VIEM_STYLE_NAMESPACE_BLOCK,
             role: style_role_to_ffi(style.role),
             origin: style_origin_to_ffi(metadata.origin),
-            capabilities: generated_style_capabilities(
+            capabilities: (generated_style_capabilities(
                 metadata.origin,
                 is_base_document || is_base_paragraph,
                 Some(style.role),
-                document.format().has_rich_source(),
-            ) | if sheet.has_user_default(&style.id, false)
+                format.has_rich_source(),
+            ) & if format.is_code() { !VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE } else { u32::MAX }) | if sheet.has_user_default(&style.id, false)
                 && style.role == BlockRole::Paragraph
-                && (document.format().is_html()
-                    || (document.format() == Format::Rtf && style.id.0.starts_with("RtfP")))
+                && (format.is_html()
+                    || (format == Format::Rtf && style.id.0.starts_with("RtfP")))
             {
                 VIEM_STYLE_CAPABILITY_ASSIGN
             } else {
                 0
-            } | if document.format().is_markdown()
+            } | if format.is_markdown()
                 && style.id.0 == "Block quote"
             {
                 VIEM_STYLE_CAPABILITY_ASSIGN
             } else {
                 0
-            } | if document.format() == Format::Rtf
+            } | if format == Format::Rtf
                 && style.id.0.starts_with("List")
                 && crate::document::StyleSheet::builtin_block(&style.id)
             {
@@ -5322,8 +5429,8 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, ViemStatu
                     metadata.origin,
                     is_base,
                     None,
-                    document.format().has_rich_source(),
-                ) | if document.validate_typing_named_style(&style.id).is_ok()
+                    format.has_rich_source(),
+                ) | if format.has_rich_source() || format.is_markdown() && matches!(style.id.0.as_str(), "Character" | "Code")
                 {
                     VIEM_STYLE_CAPABILITY_ASSIGN
                 } else {
@@ -5342,7 +5449,7 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, ViemStatu
     let info = ViemStyleSheetInfoV1 {
         struct_size: VIEM_STYLE_SHEET_INFO_V1_SIZE,
         reserved: 0,
-        identity: style_sheet_identity(document),
+        identity,
         definition_count: checked_export_count(definitions.len())?,
         property_count: checked_export_count(properties.len())?,
         value_item_count: checked_export_count(value_items.len())?,
@@ -6223,20 +6330,20 @@ unsafe fn clear_outcome(output: *mut ViemCoreOutcomeV1) -> Result<(), ViemStatus
 ///
 /// `request` and `out_outcome` must satisfy the public function's readable and
 /// writable pointer contracts respectively.
-unsafe fn read_core_request<T: Copy>(
+unsafe fn read_core_request<T: Copy, O>(
     request: *const T,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut O,
 ) -> Result<T, ViemStatus> {
     if request.is_null() || out_outcome.is_null() {
         return Err(ViemStatus::NullPointer);
     }
     if (request as usize) % align_of::<T>() != 0
-        || (out_outcome as usize) % align_of::<ViemCoreOutcomeV1>() != 0
+        || (out_outcome as usize) % align_of::<O>() != 0
         || pointer_ranges_overlap(
             request.cast(),
             size_of::<T>(),
             out_outcome.cast(),
-            size_of::<ViemCoreOutcomeV1>(),
+            size_of::<O>(),
         )
     {
         return Err(ViemStatus::InvalidArgument);
@@ -6251,9 +6358,9 @@ unsafe fn read_core_request<T: Copy>(
 ///
 /// Nonempty `value` must identify immutable readable bytes. `out_outcome` must
 /// satisfy the public function's writable pointer contract.
-unsafe fn composition_utf8(
+unsafe fn composition_utf8<O>(
     value: ViemUtf8Slice,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut O,
 ) -> Result<String, ViemStatus> {
     let length = checked_length(value.length)?;
     if value.data.is_null() && length != 0 {
@@ -6263,7 +6370,7 @@ unsafe fn composition_utf8(
         value.data,
         length,
         out_outcome.cast(),
-        size_of::<ViemCoreOutcomeV1>(),
+        size_of::<O>(),
     ) {
         return Err(ViemStatus::InvalidArgument);
     }
@@ -6342,9 +6449,9 @@ fn style_edit_value_has_no_text(value: &ViemStyleEditValueV1) -> Result<(), Viem
     }
 }
 
-unsafe fn parse_style_edit_items(
+unsafe fn parse_style_edit_items<O>(
     value: &ViemStyleEditValueV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut O,
 ) -> Result<Vec<(u32, String, u32)>, ViemStatus> {
     let region = typed_pointer_region(value.items, value.item_count)?;
     let output_region = typed_pointer_region(out_outcome, 1)?;
@@ -6373,10 +6480,10 @@ unsafe fn parse_style_edit_items(
     Ok(parsed)
 }
 
-unsafe fn parse_style_property_value(
+unsafe fn parse_style_property_value<O>(
     property: StyleProperty,
     value: &ViemStyleEditValueV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut O,
 ) -> Result<StylePropertyValue, ViemStatus> {
     if value.struct_size < VIEM_STYLE_EDIT_VALUE_V1_SIZE
         || value.reserved != 0
@@ -6542,9 +6649,9 @@ unsafe fn parse_style_property_value(
     }
 }
 
-unsafe fn parse_style_edit_request(
+unsafe fn parse_style_edit_request<O>(
     request: *const ViemStyleEditV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut O,
 ) -> Result<ParsedStyleEdit, ViemStatus> {
     let request = unsafe { read_core_request(request, out_outcome)? };
     if request.struct_size < VIEM_STYLE_EDIT_V1_SIZE
@@ -7337,7 +7444,7 @@ pub unsafe extern "C" fn viem_core_style_sheet_info(
     ffi_boundary(|| {
         typed_pointer_region(out_info, 1)?;
         unsafe { out_info.write(ViemStyleSheetInfoV1::default()) };
-        let info = with_core(handle, |core| Ok(export_style_sheet(core.document())?.info))?;
+        let info = if handle == 0 { export_code_style_sheet()?.info } else { with_core(handle, |core| Ok(export_style_sheet(core.document())?.info))? };
         unsafe { out_info.write(info) };
         Ok(())
     })
@@ -7383,10 +7490,14 @@ pub unsafe extern "C" fn viem_core_copy_style_sheet(
         validate_disjoint_regions(&regions)?;
         let expected = unsafe { read_style_sheet_identity(expected)? };
         unsafe { out_info.write(ViemStyleSheetInfoV1::default()) };
-        let export = with_core(handle, |core| {
+        let export = if handle == 0 {
+            let sheet = crate::document::code_style::snapshot();
+            validate_code_style_identity(expected, &sheet)?;
+            export_code_style_snapshot(&sheet)?
+        } else { with_core(handle, |core| {
             validate_style_sheet_identity(expected, core.document())?;
             export_style_sheet(core.document())
-        })?;
+        })? };
         unsafe { out_info.write(export.info) };
         let fits = definition_capacity >= export.info.definition_count
             && property_capacity >= export.info.property_count
@@ -12813,6 +12924,97 @@ pub unsafe extern "C" fn viem_core_initialize_style_defaults(
             core.initialize_style_defaults(bytes)
                 .map_err(|_| ViemStatus::InvalidArgument)
         })
+    })
+}
+
+/// # Safety
+/// filename is a readable UTF-8 slice for this call; detection is bounded.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_initialize_code_detection(handle:ViemCoreHandle, filename:*const u8, length:u64, allow_auto_code:u8)->ViemStatus {
+    ffi_boundary(|| {
+        if allow_auto_code>1 || length>16*1024 {return Err(ViemStatus::InvalidArgument);}
+        let name=str::from_utf8(unsafe{input_bytes(filename,length)?}).map_err(|_|ViemStatus::InvalidUtf8)?;
+        if name.contains('\0') {return Err(ViemStatus::InvalidArgument);}
+        with_core_mut(handle,|core|core.initialize_code_detection(name,allow_auto_code!=0).map_err(|_|ViemStatus::InvalidArgument))
+    })
+}
+
+/// # Safety
+/// The directory is a readable UTF-8 slice. This records configuration only;
+/// package loading never takes place on this call's thread.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_configure_syntax(handle:ViemCoreHandle,directory:*const u8,length:u64)->ViemStatus {
+    ffi_boundary(|| {
+        if length>16*1024 {return Err(ViemStatus::InvalidArgument);}
+        let path=str::from_utf8(unsafe{input_bytes(directory,length)?}).map_err(|_|ViemStatus::InvalidUtf8)?;
+        if path.contains('\0') {return Err(ViemStatus::InvalidArgument);}
+        with_core_mut(handle,|core|{core.configure_syntax(path);Ok(())})
+    })
+}
+
+/// # Safety
+/// JSON is a readable byte slice for this call. Empty input clears the table.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_set_code_filename_associations_json(handle:ViemCoreHandle,json:*const u8,length:u64)->ViemStatus {
+    ffi_boundary(|| {
+        if length>128*1024 {return Err(ViemStatus::InvalidArgument);}
+        let bytes=unsafe{input_bytes(json,length)?};
+        let associations=if bytes.is_empty(){Vec::new()}else{serde_json::from_slice::<Vec<crate::document::syntax::detection::FilenameAssociation>>(bytes).map_err(|_|ViemStatus::InvalidArgument)?};
+        with_core_mut(handle,|core|core.set_code_filename_associations(associations).map_err(|_|ViemStatus::InvalidArgument))
+    })
+}
+
+/// # Safety
+/// selection is Automatic=0, None=1, or Language=2. Language is bounded UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_set_code_language(handle:ViemCoreHandle,selection:u32,language:*const u8,length:u64)->ViemStatus {
+    ffi_boundary(|| {
+        use crate::document::syntax::detection::LanguageSelection;
+        if length>128 {return Err(ViemStatus::InvalidArgument);}
+        let value=str::from_utf8(unsafe{input_bytes(language,length)?}).map_err(|_|ViemStatus::InvalidUtf8)?;
+        let selection=match selection {
+            0 if value.is_empty()=>LanguageSelection::Automatic,
+            1 if value.is_empty()=>LanguageSelection::None,
+            2 if !value.is_empty() && value.bytes().all(|b|b.is_ascii_alphanumeric() || b"_+.#-".contains(&b))=>LanguageSelection::Language(value.to_owned()),
+            _=>return Err(ViemStatus::InvalidArgument),
+        };
+        with_core_mut(handle,|core|{core.set_code_language(selection);Ok(())})
+    })
+}
+
+/// # Safety
+/// filename is bounded UTF-8; empty input preserves the existing filename.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_redetect_code_language(handle:ViemCoreHandle,filename:*const u8,length:u64)->ViemStatus {
+    ffi_boundary(|| {
+        if length>16*1024 {return Err(ViemStatus::InvalidArgument);}
+        let name=str::from_utf8(unsafe{input_bytes(filename,length)?}).map_err(|_|ViemStatus::InvalidUtf8)?;
+        if name.contains('\0') {return Err(ViemStatus::InvalidArgument);}
+        with_core_mut(handle,|core|{core.redetect_code_language((!name.is_empty()).then_some(name));Ok(())})
+    })
+}
+
+/// # Safety
+/// changed points to one writable byte. Does no provider work and never waits.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_poll_syntax(handle:ViemCoreHandle,changed:*mut u8)->ViemStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(changed,1)?;
+        let value=with_core_mut(handle,|core|Ok(core.poll_syntax()))?;
+        unsafe{changed.write(u8::from(value));} Ok(())
+    })
+}
+
+/// # Safety
+/// Standard two-pass UTF-8 output, disjoint from the required-length record.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_copy_syntax_diagnostics(handle:ViemCoreHandle,output:*mut u8,capacity:u64,required:*mut u64)->ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[typed_pointer_region(output,capacity)?,typed_pointer_region(required,1)?])?;
+        let text=with_core(handle,|core|Ok(core.syntax_diagnostics()))?;
+        unsafe{required.write(text.len() as u64);}
+        if capacity < text.len() as u64 {return Err(ViemStatus::BufferTooSmall);}
+        unsafe{copy_output(text.as_bytes(),output);} Ok(())
     })
 }
 

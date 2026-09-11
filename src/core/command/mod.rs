@@ -20,6 +20,8 @@ mod filename_candidates;
 mod input_assistance;
 #[cfg(test)]
 mod smart_quote_commands_tests;
+#[cfg(test)]
+mod code_performance_tests;
 mod line_mode;
 mod registers;
 mod sort;
@@ -1829,15 +1831,11 @@ impl CommandInterpreter {
                     // map behavior used for cross-line selections, whose
                     // deleted endpoints collapse to the surviving boundary.
                     let lines = document.hard_line_snapshot();
-                    memory.anchor = normalize_normal_cursor(
-                        document.text(),
-                        &lines,
-                        memory.anchor.min(document.text().len()),
+                    memory.anchor = normalize_normal_cursor_document(document, &lines,
+                        memory.anchor.min(document.projection().text_tree().byte_len()),
                     );
-                    memory.active = normalize_normal_cursor(
-                        document.text(),
-                        &lines,
-                        memory.active.min(document.text().len()),
+                    memory.active = normalize_normal_cursor_document(document, &lines,
+                        memory.active.min(document.projection().text_tree().byte_len()),
                     );
                 } else {
                     let (Some(mapped_anchor), Some(active)) = (
@@ -2187,7 +2185,7 @@ impl CommandInterpreter {
         self.typing_style = Default::default();
         self.input_assistance.clear_tag();
         self.mode = Mode::Normal;
-        self.cursor = normalize_normal_cursor_snapshot(&document.hard_line_snapshot(), cursor);
+        self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(), cursor);
         self.boundary_affinity = restoration.cursor().affinity();
         self.visual_position = None;
         self.desired_x = None;
@@ -2484,7 +2482,7 @@ impl CommandInterpreter {
             self.typing_style = Default::default();
             self.input_assistance.clear_tag();
             self.invalidate_replace_restoration();
-            self.cursor = normalize_normal_cursor_snapshot(&lines, offset);
+            self.cursor = normalize_normal_cursor_document(document, &lines, offset);
             self.position_revision = Some(document.revision());
             self.boundary_affinity = BoundaryAffinity::Downstream;
             self.visual_position = None;
@@ -2538,7 +2536,7 @@ impl CommandInterpreter {
         let (cursor, affinity) = if matches!(self.mode, Mode::Insert | Mode::Replace) {
             (offset, affinity)
         } else {
-            let cursor = normalize_normal_cursor_snapshot(&lines, offset);
+            let cursor = normalize_normal_cursor_document(document, &lines, offset);
             // A hit-test at the trailing edge of a non-empty hard line returns
             // its end boundary with upstream affinity. Normal-mode storage
             // addresses the associated grapheme by its start boundary, so the
@@ -2598,7 +2596,7 @@ impl CommandInterpreter {
             caret_offset
         } else {
             let lines = document.hard_line_snapshot();
-            normalize_normal_cursor_snapshot(&lines, caret_offset)
+            normalize_normal_cursor_document(document, &lines, caret_offset)
         };
         self.position_revision = Some(document.revision());
         self.boundary_affinity = BoundaryAffinity::Downstream;
@@ -3153,7 +3151,7 @@ impl CommandInterpreter {
         let snapshot = document.hard_line_snapshot();
         let start = list_enter.as_ref().map_or(self.cursor, |edit| edit.range.start);
         let end = if self.mode == Mode::Replace {
-            replacement_payload_end(document.text(), &snapshot, start, &intent)
+            replacement_payload_end(&snapshot, start, &intent)
         } else {
             list_enter.as_ref().map_or(start, |edit| edit.range.end)
         };
@@ -3380,7 +3378,7 @@ impl CommandInterpreter {
         else {
             return Ok(next.non_mutating_plan(document, CommandOutput::complete()));
         };
-        let removed = document.text()[start..self.cursor].to_owned();
+        let removed = document.hard_line_snapshot().slice_utf8(start..self.cursor).expect("validated backspace range");
         next.cursor = start;
         if let Some(session) = next.insert_session.as_mut() {
             session.record_deleted(document.format(), &removed, EditSessionStep::Backspace);
@@ -3427,7 +3425,7 @@ impl CommandInterpreter {
         if range.is_empty() {
             return Ok(next.non_mutating_plan(document, CommandOutput::complete()));
         }
-        let removed = document.text()[range.clone()].to_owned();
+        let removed = document.hard_line_snapshot().slice_utf8(range.clone()).expect("validated deletion motion range");
         next.cursor = range.start;
         if let Some(session) = next.insert_session.as_mut() {
             session.unit_floor = session.unit_floor.min(next.cursor);
@@ -5061,7 +5059,7 @@ impl CommandInterpreter {
         key: Key,
         count: usize,
     ) -> Result<MotionExtent, LayoutMotionError> {
-        let origin = self.cursor.min(document.text().len());
+        let origin = self.cursor.min(document.projection().text_tree().byte_len());
         let current = self.current_visual_position(context.snapshot)?;
         let destination = match key {
             Key::Char('j') => {
@@ -5120,7 +5118,7 @@ impl CommandInterpreter {
             count,
         )?;
         let lines = document.hard_line_snapshot();
-        let origin = self.cursor.min(document.text().len());
+        let origin = self.cursor.min(document.projection().text_tree().byte_len());
         let origin_line = lines
             .line_at_offset(origin)
             .map_err(|_| LayoutMotionError::TextDoesNotMatchLayout)?
@@ -6441,7 +6439,7 @@ impl CommandInterpreter {
                     }
                     if additional.len() > available {
                         plans.push(appended_block_rows_plan(
-                            document.text().len(),
+                            document.projection().text_tree().byte_len(),
                             &additional[available..],
                         ));
                     }
@@ -6469,7 +6467,7 @@ impl CommandInterpreter {
                         .end
                 };
                 let mut content_start = 0;
-                if !preserve_unnamed && insertion == document.text().len() {
+                if !preserve_unnamed && insertion == document.projection().text_tree().byte_len() {
                     repeated = match linewise_register_at_eof(repeated, count) {
                         Ok(repeated) => repeated,
                         Err(error) => return Ok(error.into_command_output()),
@@ -6521,17 +6519,15 @@ impl CommandInterpreter {
         }
         let new_lines = document.hard_line_snapshot();
         let cursor_target = if let Some(relative) = linewise_cursor_offset {
-            first_non_blank(
-                document.text(),
-                &new_lines,
+            first_nonblank_document(document, &new_lines,
                 mapped_target
                     .saturating_add(relative)
-                    .min(document.text().len()),
+                    .min(document.projection().text_tree().byte_len()),
             )
         } else {
             mapped_target
         };
-        self.cursor = normalize_normal_cursor(document.text(), &new_lines, cursor_target);
+        self.cursor = normalize_normal_cursor_document(document, &new_lines, cursor_target);
         if !self.replaying {
             // Visual p repeats as a selection-shaped delete in Vim. P routes
             // that delete through the black-hole register so replay preserves
@@ -6780,7 +6776,7 @@ impl CommandInterpreter {
         }
         if register_rows.len() > available {
             let remaining = &register_rows[available..];
-            let at = document.text().len();
+            let at = document.projection().text_tree().byte_len();
             insertion_boundaries.extend(std::iter::repeat(at).take(remaining.len()));
             plans.push(appended_block_rows_plan(at, remaining));
         }
@@ -6801,10 +6797,8 @@ impl CommandInterpreter {
         let mapped_target =
             commit_planned_formatted_edits(self, document, &lines, plans, target_boundary, association)?;
         let changed = document.revision() != before_revision;
-        self.cursor = normalize_normal_cursor(
-            document.text(),
-            &document.hard_line_snapshot(),
-            mapped_target.min(document.text().len()),
+        self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+            mapped_target.min(document.projection().text_tree().byte_len()),
         );
         self.boundary_affinity = BoundaryAffinity::Downstream;
         self.visual_position = None;
@@ -6923,16 +6917,12 @@ impl CommandInterpreter {
         apply_block_edits(document, edits)?;
         let changed = document.revision() != before;
         self.cursor = if operator == Operator::Reindent {
-            first_non_blank(
-                document.text(),
-                &document.hard_line_snapshot(),
-                target.min(document.text().len()),
+            first_nonblank_document(document, &document.hard_line_snapshot(),
+                target.min(document.projection().text_tree().byte_len()),
             )
         } else {
-            normalize_normal_cursor(
-                document.text(),
-                &document.hard_line_snapshot(),
-                target.min(document.text().len()),
+            normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+                target.min(document.projection().text_tree().byte_len()),
             )
         };
         if !self.replaying {
@@ -7011,10 +7001,8 @@ impl CommandInterpreter {
             Operator::Yank => self.yank_register(register, selected),
             _ => {}
         }
-        self.cursor = normalize_normal_cursor(
-            document.text(),
-            &document.hard_line_snapshot(),
-            target.min(document.text().len()),
+        self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+            target.min(document.projection().text_tree().byte_len()),
         );
         if !self.replaying && operator != Operator::Yank {
             self.last_repeat = Some(RepeatAction::VisualBlock(VisualBlockRepeat {
@@ -7103,10 +7091,8 @@ impl CommandInterpreter {
                 Association::BeforeInsertion,
             )?
         };
-        self.cursor = normalize_normal_cursor(
-            document.text(),
-            &document.hard_line_snapshot(),
-            mapped_target.min(document.text().len()),
+        self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+            mapped_target.min(document.projection().text_tree().byte_len()),
         );
         let changed = document.revision() != before;
         if !self.replaying {
@@ -7232,15 +7218,11 @@ impl CommandInterpreter {
         if memory.mode != Mode::VisualBlock {
             self.mode = memory.mode;
             self.visual_to_line_end = memory.to_line_end;
-            self.visual_anchor = Some(normalize_normal_cursor(
-                document.text(),
-                &document.hard_line_snapshot(),
-                memory.anchor.min(document.text().len()),
+            self.visual_anchor = Some(normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+                memory.anchor.min(document.projection().text_tree().byte_len()),
             ));
-            self.cursor = normalize_normal_cursor(
-                document.text(),
-                &document.hard_line_snapshot(),
-                memory.active.min(document.text().len()),
+            self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+                memory.active.min(document.projection().text_tree().byte_len()),
             );
             self.visual_block = None;
             self.active_visual_block = None;
@@ -7543,7 +7525,7 @@ impl CommandInterpreter {
         let old_preferred_column = self.preferred_column;
         if count_explicit {
             let lines = document.hard_line_snapshot();
-            self.cursor = first_non_blank(document.text(), &lines, nth_line_start(&lines, count));
+            self.cursor = first_nonblank_document(document, &lines, nth_line_start(&lines, count));
             self.boundary_affinity = BoundaryAffinity::Downstream;
             self.visual_position = None;
             self.desired_x = None;
@@ -7642,12 +7624,10 @@ impl CommandInterpreter {
         } else if position.affinity == BoundaryAffinity::Upstream
             && !is_empty_row_at_position(snapshot, position)
         {
-            previous_grapheme_boundary(document.text(), position.text_offset)
+            document.hard_line_snapshot().previous_grapheme_boundary(position.text_offset)
                 .unwrap_or(position.text_offset)
         } else {
-            normalize_normal_cursor(
-                document.text(),
-                &document.hard_line_snapshot(),
+            normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
                 position.text_offset,
             )
         };
@@ -8526,7 +8506,7 @@ impl CommandInterpreter {
                 }
                 if extent.kind == MotionKind::Linewise
                     && operator == Operator::Change
-                    && edit_range.end < document.text().len()
+                    && edit_range.end < document.projection().text_tree().byte_len()
                 {
                     replacement = "\n";
                 }
@@ -8548,7 +8528,7 @@ impl CommandInterpreter {
                     return Err(error);
                 }
                 self.delete_register(register, value, deletion_class);
-                self.cursor = edit_range.start.min(document.text().len());
+                self.cursor = edit_range.start.min(document.projection().text_tree().byte_len());
                 let mut output = CommandOutput {
                     document_changed: true,
                     cursor_moved: true,
@@ -8570,9 +8550,7 @@ impl CommandInterpreter {
                     });
                     output.mode_changed = true;
                 } else {
-                    self.cursor = normalize_normal_cursor(
-                        document.text(),
-                        &document.hard_line_snapshot(),
+                    self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
                         self.cursor,
                     );
                 }
@@ -8594,9 +8572,7 @@ impl CommandInterpreter {
                 }
                 document.validate_hard_line_snapshot(&lines)?;
                 document.apply_edits(edits)?;
-                self.cursor = first_non_blank(
-                    document.text(),
-                    &document.hard_line_snapshot(),
+                self.cursor = first_nonblank_document(document, &document.hard_line_snapshot(),
                     extent.range.start,
                 );
                 Ok(CommandOutput {
@@ -8612,9 +8588,7 @@ impl CommandInterpreter {
                     return Ok(CommandOutput::complete());
                 }
                 document.replace(extent.range.clone(), &replacement)?;
-                self.cursor = normalize_normal_cursor(
-                    document.text(),
-                    &document.hard_line_snapshot(),
+                self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
                     extent.range.start,
                 );
                 Ok(CommandOutput {
@@ -9098,7 +9072,7 @@ impl CommandInterpreter {
         self.mode = Mode::VisualCharacter;
         self.visual_to_line_end = false;
         self.visual_anchor = Some(range.start);
-        self.cursor = previous_grapheme_boundary(document.text(), range.end).unwrap_or(range.start);
+        self.cursor = document.hard_line_snapshot().previous_grapheme_boundary(range.end).unwrap_or(range.start);
         self.boundary_affinity = BoundaryAffinity::Downstream;
         self.visual_position = None;
         CommandOutput {
@@ -9246,9 +9220,7 @@ impl CommandInterpreter {
         let before = document.revision();
         document.replace_with_formatted_payload(extent.range.clone(), payload)?;
         self.registers.set_last_insert(inserted_input_unit(&value, &replacement_value.text));
-        self.cursor = normalize_normal_cursor(
-            document.text(),
-            &document.hard_line_snapshot(),
+        self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
             extent.range.start,
         );
         Ok((
@@ -9369,12 +9341,10 @@ impl CommandInterpreter {
         let new_lines = document.hard_line_snapshot();
         let cursor_target = match cursor_policy {
             VisualPasteCursor::Start => mapped_start,
-            VisualPasteCursor::FirstNonBlank { relative } => first_non_blank(
-                document.text(),
-                &new_lines,
+            VisualPasteCursor::FirstNonBlank { relative } => first_nonblank_document(document, &new_lines,
                 mapped_start
                     .saturating_add(relative)
-                    .min(document.text().len()),
+                    .min(document.projection().text_tree().byte_len()),
             ),
             VisualPasteCursor::LastInsertedGrapheme => previous_grapheme_boundary(
                 document.text(),
@@ -9382,7 +9352,7 @@ impl CommandInterpreter {
             )
             .unwrap_or(mapped_start),
         };
-        self.cursor = normalize_normal_cursor(document.text(), &new_lines, cursor_target);
+        self.cursor = normalize_normal_cursor_document(document, &new_lines, cursor_target);
         self.visual_anchor = None;
         self.leave_visual();
         let changed = document.revision() != before_revision;
@@ -9502,7 +9472,7 @@ impl CommandInterpreter {
             };
             let snapshot = document.hard_line_snapshot();
             let edit_end = if self.mode == Mode::Replace {
-                replacement_payload_end(document.text(), &snapshot, self.cursor, &value)
+                replacement_payload_end(&snapshot, self.cursor, &value)
             } else {
                 self.cursor
             };
@@ -9622,9 +9592,7 @@ impl CommandInterpreter {
                 }
                 let return_mode = self.mode;
                 self.mode = Mode::Normal;
-                self.cursor = normalize_normal_cursor(
-                    document.text(),
-                    &document.hard_line_snapshot(),
+                self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
                     self.cursor,
                 );
                 self.insert_normal_once = Some(return_mode);
@@ -9869,10 +9837,8 @@ impl CommandInterpreter {
         }
         self.mode = Mode::Normal;
         self.insert_session = None;
-        self.cursor = normalize_normal_cursor(
-            document.text(),
-            &document.hard_line_snapshot(),
-            session.cursor_target.min(document.text().len()),
+        self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+            session.cursor_target.min(document.projection().text_tree().byte_len()),
         );
         self.boundary_affinity = BoundaryAffinity::Downstream;
         self.visual_position = None;
@@ -10117,7 +10083,7 @@ impl CommandInterpreter {
             .and_then(|entry| entry.source_record.as_ref())
             .map_or(self.cursor, |record| record.next_target);
         let lines = document.hard_line_snapshot();
-        let end = replacement_payload_end(document.text(), &lines, target, intent);
+        let end = replacement_payload_end(&lines, target, intent);
         let value = self.assist_typing_input_payload(
             document, target..end, self.insertion_boundary_affinity(), intent,
         )?;
@@ -10298,7 +10264,7 @@ impl CommandInterpreter {
         else {
             return Ok(CommandOutput::complete());
         };
-        let removed = document.text()[start..self.cursor].to_owned();
+        let removed = document.hard_line_snapshot().slice_utf8(start..self.cursor).expect("validated backspace range");
         self.cursor = delete_with_cursor(document, start..self.cursor)?;
         if let Some(session) = self.insert_session.as_mut() {
             session.record_deleted(document.format(), &removed, EditSessionStep::Backspace);
@@ -10349,7 +10315,6 @@ impl CommandInterpreter {
             self.typing_style = Default::default();
         }
         self.input_assistance.clear_tag();
-        let text = document.text();
         let lines = document.hard_line_snapshot();
         self.cursor = match placement {
             InsertPlacement::Before => self.cursor,
@@ -10359,7 +10324,7 @@ impl CommandInterpreter {
                 .map_or(self.cursor, |range| range.end),
             InsertPlacement::LineStart => self
                 .mode_line_insertion(document, false, true)
-                .unwrap_or_else(|| first_non_blank(text, &lines, self.cursor)),
+                .unwrap_or_else(|| first_nonblank_document(document, &lines, self.cursor)),
             InsertPlacement::LineEnd => self
                 .mode_line_insertion(document, true, false)
                 .unwrap_or_else(|| line_end(&lines, self.cursor)),
@@ -10609,11 +10574,9 @@ impl CommandInterpreter {
         let lines = document.hard_line_snapshot();
         let current_line_start = line_start(&lines, self.cursor);
         if self.cursor > current_line_start {
-            self.cursor = previous_grapheme_boundary(document.text(), self.cursor)
-                .unwrap_or(current_line_start);
+            self.cursor = lines.previous_grapheme_boundary(self.cursor).unwrap_or(current_line_start);
         }
-        self.cursor =
-            normalize_normal_cursor(document.text(), &document.hard_line_snapshot(), self.cursor);
+        self.cursor = normalize_normal_cursor_document(document, &lines, self.cursor);
         self.clear_pending();
         Ok(CommandOutput {
             mode_changed: true,
@@ -10709,7 +10672,7 @@ impl CommandInterpreter {
         let cursor = delete_with_cursor(document, range)?;
         self.delete_register(register, value, DeletionClass::Small);
         self.cursor =
-            normalize_normal_cursor(document.text(), &document.hard_line_snapshot(), cursor);
+            normalize_normal_cursor_document(document, &document.hard_line_snapshot(), cursor);
         if !self.replaying {
             self.last_repeat = Some(if backward {
                 RepeatAction::DeleteBackward { count }
@@ -10854,7 +10817,7 @@ impl CommandInterpreter {
             RegisterKind::Linewise if before => line_start(&lines, self.cursor),
             RegisterKind::Linewise => {
                 let at = line_range(&lines, self.cursor).end;
-                if at == document.text().len() {
+                if at == document.projection().text_tree().byte_len() {
                     repeated = match linewise_register_at_eof(repeated, count) {
                         Ok(repeated) => repeated,
                         Err(error) => return Ok(error.into_command_output()),
@@ -10896,18 +10859,16 @@ impl CommandInterpreter {
         } else {
             match value.kind {
                 RegisterKind::Characterwise => {
-                    previous_grapheme_boundary(document.text(), insertion_end).unwrap_or(position)
+                    document.hard_line_snapshot().previous_grapheme_boundary(insertion_end).unwrap_or(position)
                 }
-                RegisterKind::Linewise => first_non_blank(
-                    document.text(),
-                    &document.hard_line_snapshot(),
+                RegisterKind::Linewise => first_nonblank_document(document, &document.hard_line_snapshot(),
                     position + content_start_offset,
                 ),
                 RegisterKind::Blockwise => unreachable!("blockwise paste returned above"),
             }
         };
         self.cursor =
-            normalize_normal_cursor(document.text(), &document.hard_line_snapshot(), target);
+            normalize_normal_cursor_document(document, &document.hard_line_snapshot(), target);
         if !self.replaying {
             self.last_repeat = Some(RepeatAction::Paste {
                 before,
@@ -11060,8 +11021,9 @@ impl CommandInterpreter {
             .saturating_sub(1)
             .min(lines.line_count().saturating_sub(current.index() + 1));
         let start = current.content_range().start;
-        let mut joined = document.text()[current.content_range()].to_owned();
-        let mut last_join_offset = joined.len();
+        let mut joined_len = current.content_range().len();
+        let mut joined_last = (joined_len>0).then(||document_char_before(document,current.content_range().end)).flatten();
+        let mut last_join_offset = joined_len;
         let mut edits = Vec::with_capacity(joins);
         let mut actual = 0;
         for index in current.index() + 1..current.index() + 1 + joins {
@@ -11073,28 +11035,29 @@ impl CommandInterpreter {
                 .and_then(|line| line.separator_range())
                 .expect("adjacent hard lines have one projected separator");
             let next_range = next_line.content_range();
-            let next = &document.text()[next_range.clone()];
-            last_join_offset = joined.len();
+            last_join_offset = joined_len;
             if insert_space {
                 // Vim removes line indentation, not arbitrary Unicode white
                 // space. In particular, NBSP remains document content.
-                let trimmed = next.trim_start_matches(|character| matches!(character, ' ' | '\t'));
-                let insert_separator = !joined.is_empty()
-                    && !joined.ends_with(|character| matches!(character, ' ' | '\t'))
-                    && !trimmed.is_empty()
-                    && !trimmed.starts_with(')');
-                let leading_len = next.len() - trimmed.len();
+                let trimmed_start = document_prefix_end(document,next_range.clone(),|c|matches!(c,' '| '\t'));
+                let trimmed_len=next_range.end-trimmed_start;
+                let insert_separator = joined_len>0
+                    && !joined_last.is_some_and(|character| matches!(character, ' ' | '\t'))
+                    && trimmed_len>0
+                    && document_char_at(document,trimmed_start)!=Some(')');
                 edits.push(TextEdit::new(
-                    separator.start..next_range.start + leading_len,
+                    separator.start..trimmed_start,
                     if insert_separator { " " } else { "" },
                 ));
                 if insert_separator {
-                    joined.push(' ');
+                    joined_len+=1;joined_last=Some(' ');
                 }
-                joined.push_str(trimmed);
+                joined_len+=trimmed_len;
+                if trimmed_len>0{joined_last=document_char_before(document,next_range.end);}
             } else {
                 edits.push(TextEdit::new(separator, ""));
-                joined.push_str(next);
+                joined_len+=next_range.len();
+                if !next_range.is_empty(){joined_last=document_char_before(document,next_range.end);}
             }
             actual += 1;
         }
@@ -11103,9 +11066,7 @@ impl CommandInterpreter {
         }
         document.validate_hard_line_snapshot(&lines)?;
         document.apply_edits(edits)?;
-        self.cursor = normalize_normal_cursor(
-            document.text(),
-            &document.hard_line_snapshot(),
+        self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
             start + last_join_offset,
         );
         if !self.replaying {
@@ -11376,7 +11337,7 @@ impl CommandInterpreter {
                         document.text(),
                         &document.hard_line_snapshot(),
                         self.cursor,
-                        marked.min(document.text().len()),
+                        marked.min(document.projection().text_tree().byte_len()),
                         *linewise,
                     )
                     .0,
@@ -11450,10 +11411,8 @@ impl CommandInterpreter {
         match navigation {
             Ok(_) => {
                 let old_cursor = self.cursor;
-                self.cursor = normalize_normal_cursor(
-                    document.text(),
-                    &document.hard_line_snapshot(),
-                    self.cursor.min(document.text().len()),
+                self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+                    self.cursor.min(document.projection().text_tree().byte_len()),
                 );
                 CommandOutput {
                     document_changed: true,
@@ -11889,7 +11848,7 @@ impl CommandInterpreter {
         let jump_origin = jump_origin.flatten();
         let context = ExExecutionContext {
             current_line: document
-                .hard_line_at_offset(self.cursor.min(document.text().len()))
+                .hard_line_at_offset(self.cursor.min(document.projection().text_tree().byte_len()))
                 .expect("a command cursor resolves to one hard line"),
             wrap: self.wrap,
             fileformats: self.fileformats.clone(),
@@ -12010,26 +11969,20 @@ impl CommandInterpreter {
             );
         match outcome.navigation {
             Some(ExNavigation::TextOffset(offset)) => {
-                self.cursor = normalize_normal_cursor(
-                    document.text(),
-                    &document.hard_line_snapshot(),
+                self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
                     offset,
                 );
                 self.boundary_affinity = BoundaryAffinity::Downstream;
             }
             Some(ExNavigation::HistoryRestoration) => {
-                self.cursor = normalize_normal_cursor(
-                    document.text(),
-                    &document.hard_line_snapshot(),
-                    self.cursor.min(document.text().len()),
+                self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+                    self.cursor.min(document.projection().text_tree().byte_len()),
                 );
             }
             None => {
                 if outcome.document_changed {
-                    self.cursor = normalize_normal_cursor(
-                        document.text(),
-                        &document.hard_line_snapshot(),
-                        self.cursor.min(document.text().len()),
+                    self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+                        self.cursor.min(document.projection().text_tree().byte_len()),
                     );
                 }
             }
@@ -12167,7 +12120,7 @@ impl CommandInterpreter {
 
     pub(crate) fn prepare_ex_normal_line(&mut self, document: &Document, position: usize) {
         self.mode = Mode::Normal;
-        debug_assert!(position <= document.text().len());
+        debug_assert!(position <= document.projection().text_tree().byte_len());
         self.cursor = position;
         self.boundary_affinity = BoundaryAffinity::Downstream;
         self.visual_position = None;
@@ -12484,7 +12437,7 @@ impl CommandInterpreter {
             document.text(),
             &document.hard_line_snapshot(),
             self.cursor,
-            marked.min(document.text().len()),
+            marked.min(document.projection().text_tree().byte_len()),
             linewise,
         );
         let count = match effective_operator_count(pending) {
@@ -12721,9 +12674,9 @@ impl CommandInterpreter {
         };
         let lines = document.hard_line_snapshot();
         let target = if linewise {
-            first_non_blank(document.text(), &lines, marked.min(document.text().len()))
+            first_nonblank_document(document, &lines, marked.min(document.projection().text_tree().byte_len()))
         } else {
-            normalize_normal_cursor(document.text(), &lines, marked.min(document.text().len()))
+            normalize_normal_cursor_document(document, &lines, marked.min(document.projection().text_tree().byte_len()))
         };
         let origin = self.cursor;
         let moved = origin != target;
@@ -12811,10 +12764,8 @@ impl CommandInterpreter {
                 self.jump_index -= 1;
             }
         }
-        self.cursor = normalize_normal_cursor(
-            document.text(),
-            &document.hard_line_snapshot(),
-            self.jumps[self.jump_index].min(document.text().len()),
+        self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+            self.jumps[self.jump_index].min(document.projection().text_tree().byte_len()),
         );
         CommandOutput {
             status: if self.jump_index == old_index {
@@ -12943,15 +12894,11 @@ impl CommandInterpreter {
         }
         self.mode = memory.mode;
         self.visual_to_line_end = memory.to_line_end;
-        self.visual_anchor = Some(normalize_normal_cursor(
-            document.text(),
-            &document.hard_line_snapshot(),
-            memory.anchor.min(document.text().len()),
+        self.visual_anchor = Some(normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+            memory.anchor.min(document.projection().text_tree().byte_len()),
         ));
-        self.cursor = normalize_normal_cursor(
-            document.text(),
-            &document.hard_line_snapshot(),
-            memory.active.min(document.text().len()),
+        self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+            memory.active.min(document.projection().text_tree().byte_len()),
         );
         CommandOutput {
             mode_changed: true,
@@ -12984,15 +12931,11 @@ impl CommandInterpreter {
         let lines = document.hard_line_snapshot();
         self.mode = previous.mode;
         self.visual_to_line_end = previous.to_line_end;
-        self.visual_anchor = Some(normalize_normal_cursor(
-            document.text(),
-            &lines,
-            previous.anchor.min(document.text().len()),
+        self.visual_anchor = Some(normalize_normal_cursor_document(document, &lines,
+            previous.anchor.min(document.projection().text_tree().byte_len()),
         ));
-        self.cursor = normalize_normal_cursor(
-            document.text(),
-            &lines,
-            previous.active.min(document.text().len()),
+        self.cursor = normalize_normal_cursor_document(document, &lines,
+            previous.active.min(document.projection().text_tree().byte_len()),
         );
         self.last_visual = Some(current);
         self.boundary_affinity = BoundaryAffinity::Downstream;
@@ -13185,7 +13128,7 @@ impl CommandInterpreter {
     fn goto_line(&mut self, document: &Document, one_based: usize) -> CommandOutput {
         let old = self.cursor;
         let lines = document.hard_line_snapshot();
-        self.cursor = first_non_blank(document.text(), &lines, nth_line_start(&lines, one_based));
+        self.cursor = first_nonblank_document(document, &lines, nth_line_start(&lines, one_based));
         self.preferred_column = None;
         let output = CommandOutput {
             cursor_moved: old != self.cursor,
@@ -13355,7 +13298,7 @@ impl CommandPlan {
             }
             PlannedPostCommit::NormalizeNormalCursor => {
                 next.cursor =
-                    normalize_normal_cursor_snapshot(&document.hard_line_snapshot(), next.cursor);
+                    normalize_normal_cursor_document(document, &document.hard_line_snapshot(), next.cursor);
             }
             PlannedPostCommit::NormalizeTypingCursor => {
                 next.finish_typing_caret(document)
@@ -13766,6 +13709,84 @@ fn merge_same_boundary_insertions(edits: Vec<TextEdit>) -> Vec<TextEdit> {
             .map(|(at, replacement)| TextEdit::new(at..at, replacement)),
     );
     merged
+}
+
+fn document_char_at(document: &Document, at: usize) -> Option<char> {
+    std::str::from_utf8(document.projection().text_tree().byte_chunk_at(at))
+        .ok()?
+        .chars()
+        .next()
+}
+
+fn document_char_before(document: &Document, at: usize) -> Option<char> {
+    if at == 0 {
+        return None;
+    }
+    let tree = document.projection().text_tree();
+    let mut start = at - 1;
+    while start > 0
+        && tree.byte_chunk_at(start).first().is_some_and(|b| b & 0xc0 == 0x80)
+    {
+        start -= 1;
+    }
+    tree.slice(start..at).ok()?.chars().next()
+}
+
+fn document_prefix_end(
+    document: &Document,
+    range: Range<usize>,
+    predicate: impl Fn(char) -> bool,
+) -> usize {
+    let tree = document.projection().text_tree();
+    let mut at = range.start;
+    while at < range.end {
+        let chunk = tree.byte_chunk_at(at);
+        let chunk = &chunk[..chunk.len().min(range.end - at)];
+        let text = std::str::from_utf8(chunk).expect("scalar-aligned formatted leaf");
+        for c in text.chars() {
+            if !predicate(c) {
+                return at;
+            }
+            at += c.len_utf8();
+        }
+    }
+    at
+}
+
+fn first_nonblank_document(document: &Document, lines: &HardLineSnapshot, at: usize) -> usize {
+    let start = line_start(lines, at);
+    let end = line_end(lines, at);
+    let position = document_prefix_end(document, start..end, char::is_whitespace);
+    if position == end {
+        start
+    } else if lines.is_grapheme_boundary(position) {
+        position
+    } else {
+        lines.previous_grapheme_boundary(position).unwrap_or(start)
+    }
+}
+
+/// A few command-local cursor calculations, including direct history replay,
+/// refer to a byte ordinal from before the text changed. Preserve the old
+/// Normal-mode flooring behavior without copying the document to a string.
+fn normalize_normal_cursor_document(
+    document: &Document,
+    lines: &HardLineSnapshot,
+    offset: usize,
+) -> usize {
+    let mut offset = offset.min(lines.text_length());
+    if !lines.is_grapheme_boundary(offset) {
+        while offset > 0
+            && document.projection().text_tree().byte_chunk_at(offset)
+                .first().is_some_and(|byte| byte & 0xc0 == 0x80)
+        {
+            offset -= 1;
+        }
+        if !lines.is_grapheme_boundary(offset) {
+            offset = lines.previous_grapheme_boundary(offset).unwrap_or(0);
+        }
+    }
+    normalize_normal_cursor_snapshot(lines, offset)
 }
 
 fn is_empty_row_at_position(snapshot: &LayoutSnapshot, position: VisualPosition) -> bool {
@@ -14269,7 +14290,6 @@ fn replacement_payload_targets(
 }
 
 fn replacement_payload_end(
-    text: &str,
     lines: &HardLineSnapshot,
     start: usize,
     value: &RegisterValue,
@@ -14281,7 +14301,7 @@ fn replacement_payload_end(
         if semantic_break {
             continue;
         }
-        let Some(range) = grapheme_range_at(text, end) else {
+        let Some(range) = lines.grapheme_range_at(end) else {
             continue;
         };
         if !is_hard_line_separator(lines, &range) {
@@ -14484,11 +14504,9 @@ fn external_text_register_value(document: &Document, text: &str) -> RegisterValu
 }
 
 fn register_value(document: &Document, lines: &HardLineSnapshot, extent: &MotionExtent, requested: Option<char>) -> RegisterValue {
-    let text = document.text();
     let captured = lines
         .capture(extent.range.clone())
         .expect("a resolved operator extent uses valid grapheme boundaries");
-    debug_assert_eq!(captured.text(), &text[extent.range.clone()]);
     let mut contents = captured.text().to_owned();
     let mut hard_break_offsets = captured.break_offsets().to_vec();
     let mut result = if extent.kind == MotionKind::Linewise {
@@ -20482,7 +20500,7 @@ mod tests {
             assert!(commands.set_cursor(&document, 0));
             let output = keys(&mut commands, &mut document, &format!("{maximum}{motion}"));
             assert_eq!(output.status, CommandStatus::Complete, "{motion}");
-            assert!(commands.cursor() <= document.text().len(), "{motion}");
+            assert!(commands.cursor() <= document.projection().text_tree().byte_len(), "{motion}");
         }
 
         let mut document = Document::new("one two three");
@@ -21917,7 +21935,7 @@ mod tests {
         assert_eq!(found.status, CommandStatus::Complete);
         assert_eq!(commands.cursor(), "one\n".len());
 
-        assert!(commands.set_cursor(&document, document.text().len()));
+        assert!(commands.set_cursor(&document, document.projection().text_tree().byte_len()));
         keys(&mut commands, &mut document, "?^two");
         let backward = key(&mut commands, &mut document, Key::Enter);
         assert_eq!(backward.status, CommandStatus::Complete);

@@ -53,6 +53,7 @@ impl Document {
 
     pub fn is_code_at(&self, at: usize, affinity: BoundaryAffinity) -> Result<bool, DocumentError> {
         self.text_point(at)?;
+        if self.format().is_code() { return Ok(true); }
         let projection = self.projection();
         let line = projection
             .hard_line_at_offset(at)
@@ -203,7 +204,7 @@ impl Document {
         mut quote: impl FnMut(char, Option<char>) -> char,
     ) -> Result<String, DocumentError> {
         self.validate_range(&range)?;
-        if !text.contains(['\'', '"']) {
+        if self.format().is_code() || !text.contains(['\'', '"']) {
             return Ok(text.to_owned());
         }
         if self.format().is_source_view()
@@ -296,7 +297,7 @@ impl Document {
         logical_breaks: bool,
         quote: &mut impl FnMut(char, Option<char>) -> char,
     ) -> Result<String, DocumentError> {
-        if !text.contains(['\'', '"']) {
+        if self.format().is_code() || !text.contains(['\'', '"']) {
             return Ok(text.to_owned());
         }
         let source_format = match self.format().wysiwyg() {

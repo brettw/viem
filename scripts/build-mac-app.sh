@@ -23,6 +23,9 @@ module_cache_dir="$project_dir/.build/clang-module-cache"
 mkdir -p "$module_cache_dir"
 export CLANG_MODULE_CACHE_PATH="$module_cache_dir"
 export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache_dir"
+# Keep C dependencies (including bundled syntax parsers) at the same minimum
+# macOS version as the Swift package, regardless of the build host's version.
+export MACOSX_DEPLOYMENT_TARGET=26.0
 
 if [ -n "$cargo_args" ]; then
     cargo build "$cargo_args"

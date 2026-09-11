@@ -639,6 +639,7 @@ impl Document {
                 TransformationIdentity {
                     name: match self.format() {
                         Format::PlainText => "builtin.plain-text",
+                        Format::Code => "builtin.code",
                         Format::Markdown => "builtin.markdown",
                         Format::MarkdownSource => "builtin.markdown-source",
                         Format::HtmlSource => "builtin.html-source",

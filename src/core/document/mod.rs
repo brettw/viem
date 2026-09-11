@@ -5,6 +5,7 @@
 //! verified before a source transaction is committed.
 
 mod conversion;
+pub mod syntax;
 mod checkpoint;
 pub(crate) use checkpoint::DocumentCommandCheckpoint;
 pub use conversion::{ConversionLoss, ConversionWarning, FormatOperation};
@@ -57,6 +58,7 @@ mod transfer;
 
 pub use encoding::{BomPolicy, DecodingDiagnostic, DecodingDiagnosticKind, Encoding};
 pub use formatted_text::{
+    FormattedTextDiffStats,
     FormattedBufferId, FormattedLeafId, FormattedLeafInfo, FormattedLeafLocation,
     FormattedLeafRevision, FormattedTextError, FormattedTextTree, LeafBoundarySide,
     FORMATTED_TEXT_LEAF_BYTES,
@@ -97,6 +99,7 @@ pub use projection::{
     ProvenanceSpan, SourceBoundaryRelation, SourceToTextError, StyleSpan,
 };
 pub use source::SourceArtifactDigest;
+pub use style::code as code_style;
 pub use style::{
     BlockProperties, BlockRole, BlockStyle, CharacterProperties, CharacterStyle, Color,
     ConfigurationStyleIntent, DocumentStyleAssignment, FontSlant, LineSpacing, ParagraphAlignment,
@@ -673,6 +676,8 @@ pub struct Document {
     last_successful_save_sequence: u64,
     read_only: bool,
     recovered_dirty: bool,
+    /// Disposable presentation cache; never retained by document history.
+    code_presentation: Option<FormattedDocument>,
 }
 
 impl Default for Document {
@@ -682,6 +687,17 @@ impl Default for Document {
 }
 
 impl Document {
+    /// Filename selection runs before first display and changes only the
+    /// identity projection's format metadata. No second decoding pass.
+    pub fn initialize_code_format(&mut self) -> Result<(), StyleDefaultsError> {
+        if self.revision().0 != 0 || self.history_status().node_count != 1 || !self.format().is_literal() { return Err(StyleDefaultsError::NotPristine); }
+        let mut state = self.state().clone();
+        state.format = Format::Code;
+        state.projection.install_code_styles(code_style::snapshot(), &[]);
+        self.history.initialize_projection(state);
+        Ok(())
+    }
+
     /// Install immutable user defaults before the first view/edit. Source bytes,
     /// projection identity, savepoint, and undo depth remain unchanged.
     pub fn initialize_style_defaults(&mut self, json: &[u8]) -> Result<(), StyleDefaultsError> {
@@ -829,6 +845,7 @@ impl Document {
             last_successful_save_sequence: 0,
             read_only: false,
             recovered_dirty: false,
+            code_presentation: None,
         }
     }
 
@@ -987,6 +1004,7 @@ impl Document {
             last_successful_save_sequence: 0,
             read_only: false,
             recovered_dirty: false,
+            code_presentation: None,
         })
     }
 
@@ -1045,7 +1063,15 @@ impl Document {
     }
 
     pub fn projection(&self) -> &FormattedDocument {
-        &self.state().projection
+        self.code_presentation.as_ref().filter(|p| self.format().is_code() && p.revision() == self.revision()).unwrap_or(&self.state().projection)
+    }
+
+    pub fn install_code_presentation(&mut self, sheet: std::sync::Arc<StyleSheet>, runs: &[syntax::SyntaxRun]) -> bool {
+        if !self.format().is_code() { self.code_presentation = None; return false; }
+        let mut projection = self.state().projection.clone();
+        projection.install_code_styles(sheet, runs);
+        self.code_presentation = Some(projection);
+        true
     }
 
     /// Run one serial controller operation while composing every committed
@@ -2250,7 +2276,7 @@ impl Document {
                 self.id,
                 PositionDomain::FormattedText,
                 self.revision(),
-                self.text().len(),
+                self.projection().text_tree().byte_len(),
             ),
         )
     }

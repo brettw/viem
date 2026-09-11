@@ -1,0 +1,471 @@
+use viem_core::command::clipboard::{
+    ClipboardCommandContext, ClipboardContent, ClipboardGeneration, ClipboardSnapshot,
+    ClipboardTarget,
+};
+use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
+use viem_core::command::{CommandInterpreter, CommandStatus, InputEvent, Key};
+use viem_core::document::{
+    Encoding, FileFormat, Format, FormatOperation, ModelRequest, ProjectionWorkScope,
+    SemanticInlineStyle, TextEdit,
+};
+use viem_core::layout::MockTextMeasurementProvider;
+use viem_core::{Core, CoreEvent, Document, ViewId};
+
+fn encoded(text: &str, encoding: Encoding) -> Vec<u8> {
+    match encoding {
+        Encoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+        Encoding::Utf16Be => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+        _ => text.as_bytes().to_vec(),
+    }
+}
+
+fn key(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, key: Key) {
+    let output = core
+        .handle(view, CoreEvent::Input(InputEvent::Key(key)))
+        .unwrap();
+    let status = output.command.unwrap().status;
+    assert!(
+        matches!(status, CommandStatus::Complete | CommandStatus::Pending)
+            || key == Key::Escape && status == CommandStatus::Cancelled,
+        "{key:?}: {status:?}"
+    );
+}
+
+#[test]
+fn code_is_literal_and_reinterpretation_preserves_bytes_and_history() {
+    for encoding in [
+        Encoding::Utf8,
+        Encoding::Utf16Le,
+        Encoding::Utf16Be,
+        Encoding::Latin1,
+    ] {
+        let text = "# Heading\r\n<b title=\"yes\">&amp;</b>\r\n  // comment\r\n\r\n";
+        let bytes = encoded(text, encoding);
+        let mut document = Document::from_bytes_with_file_format(
+            bytes.clone(),
+            encoding,
+            Format::Code,
+            FileFormat::Dos,
+        )
+        .unwrap();
+        assert_eq!(document.text(), text.replace("\r\n", "\n"));
+        assert_eq!(document.source_bytes(), bytes);
+        assert_eq!(document.projection().hard_line_count(), 5);
+        assert_eq!(document.projection().blocks().len(), 5);
+        assert!(!document.is_dirty());
+        assert!(document.projection().style_spans().is_empty());
+        let initial_revision = document.revision();
+        assert!(document
+            .set_semantic_style(0..1, SemanticInlineStyle::Strong, true)
+            .is_err());
+        assert_eq!(document.revision(), initial_revision);
+        document
+            .set_format(Format::Markdown, FormatOperation::Reinterpret)
+            .unwrap();
+        assert_eq!(document.source_bytes(), bytes);
+        assert!(document.undo());
+        assert_eq!(document.format(), Format::Code);
+        assert_eq!(document.source_bytes(), bytes);
+        document
+            .set_format(Format::PlainText, FormatOperation::Reinterpret)
+            .unwrap();
+        assert_eq!(document.text(), text.replace("\r\n", "\n"));
+        assert!(document.undo());
+        assert_eq!(document.format(), Format::Code);
+    }
+}
+
+#[test]
+fn code_keeps_quotes_and_syntax_literal_in_insert_replace_and_counted_replace() {
+    for (command, input, expected) in [
+        (
+            "i",
+            "\"word\" isn't 'x'\n<b>\n- item\n# title\n",
+            "\"word\" isn't 'x'\n<b>\n- item\n# title\nxxxxxx",
+        ),
+        ("r", "\"", "\"xxxxx"),
+        ("3r", "\"", "\"\"\"xxx"),
+        ("R", "\"a\"", "\"a\"xxx"),
+    ] {
+        let mut core = Core::new(
+            Document::from_bytes(b"xxxxxx".to_vec(), Encoding::Utf8, Format::Code).unwrap(),
+        );
+        let view = core.add_view(MockTextMeasurementProvider::new(), 320.0, 120.0);
+        core.handle(view, CoreEvent::SetSmartQuotes(true)).unwrap();
+        for ch in command.chars() {
+            key(&mut core, view, Key::Char(ch));
+        }
+        core.handle(view, CoreEvent::Input(InputEvent::text(input)))
+            .unwrap();
+        assert_eq!(core.document().text(), expected, "{command}");
+        key(&mut core, view, Key::Escape);
+        key(&mut core, view, Key::Char('u'));
+        assert_eq!(core.document().source_bytes(), b"xxxxxx", "{command}");
+        key(&mut core, view, Key::Ctrl('r'));
+        assert_eq!(
+            core.document().source_bytes(),
+            expected.as_bytes(),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn code_composition_commits_supplied_quotes_as_one_undo_unit() {
+    let mut core =
+        Core::new(Document::from_bytes(b"xxxxxx".to_vec(), Encoding::Utf8, Format::Code).unwrap());
+    let view = core.add_view(MockTextMeasurementProvider::new(), 320.0, 120.0);
+    core.handle(view, CoreEvent::SetSmartQuotes(true)).unwrap();
+    key(&mut core, view, Key::Char('i'));
+    let target = CompositionTarget::at_offsets(core.document(), 0..6).unwrap();
+    core.handle(
+        view,
+        CoreEvent::Composition(CompositionEvent::Begin(target)),
+    )
+    .unwrap();
+    core.handle(
+        view,
+        CoreEvent::Composition(CompositionEvent::Update(CompositionUpdate::new(
+            "\"a\"",
+            3..3,
+        ))),
+    )
+    .unwrap();
+    assert_eq!(core.document().source_bytes(), b"xxxxxx");
+    core.handle(view, CoreEvent::Composition(CompositionEvent::Commit))
+        .unwrap();
+    assert_eq!(core.document().source_bytes(), b"\"a\"");
+    key(&mut core, view, Key::Escape);
+    key(&mut core, view, Key::Char('u'));
+    assert_eq!(core.document().source_bytes(), b"xxxxxx");
+}
+
+#[test]
+fn code_pastes_rich_clipboard_as_literal_plain_text_without_syntax_assignments() {
+    let mut donor = Document::from_bytes(
+        b"<p><b>\"word\"</b></p>".to_vec(),
+        Encoding::Utf8,
+        Format::Html,
+    )
+    .unwrap();
+    let mut commands = CommandInterpreter::new();
+    let context = ClipboardCommandContext::new().with_write(ClipboardTarget::Clipboard);
+    let mut copied: Option<ClipboardContent> = None;
+    for ch in "v$\"+y".chars() {
+        let result = commands
+            .handle_with_clipboard_context(&mut donor, InputEvent::key(ch), &context)
+            .unwrap();
+        if let Some(write) = result.clipboard_writes.first() {
+            copied = Some(write.content().clone());
+        }
+    }
+    let content = copied.unwrap();
+    assert_eq!(content.plain_text(), "\"word\"");
+    assert!(content
+        .portable_register()
+        .unwrap()
+        .clipboard_fragment()
+        .is_some());
+    let context = ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(
+        ClipboardTarget::Clipboard,
+        ClipboardGeneration(1),
+        content,
+    ));
+    for enter in ['i', 'R'] {
+        let mut target = Document::from_bytes(b"X".to_vec(), Encoding::Utf8, Format::Code).unwrap();
+        let mut commands = CommandInterpreter::new();
+        commands.set_smart_quotes(true);
+        for input in [
+            InputEvent::key(enter),
+            InputEvent::Key(Key::Ctrl('r')),
+            InputEvent::key('+'),
+            InputEvent::Key(Key::Escape),
+        ] {
+            let result = commands
+                .handle_with_clipboard_context(&mut target, input, &context)
+                .unwrap();
+            assert!(
+                matches!(
+                    result.status,
+                    CommandStatus::Complete | CommandStatus::Pending
+                ),
+                "{:?}",
+                result.status
+            );
+        }
+        assert_eq!(
+            target.text(),
+            if enter == 'i' {
+                "\"word\"X"
+            } else {
+                "\"word\""
+            }
+        );
+        assert!(target.projection().style_spans().is_empty());
+        assert_eq!(target.source_bytes(), target.text().as_bytes());
+        assert!(target.undo());
+        assert_eq!(target.source_bytes(), b"X");
+    }
+}
+
+#[test]
+fn million_line_code_newline_edits_keep_projection_work_regional_in_utf8_and_utf16_crlf() {
+    for (encoding, file_format, ending) in [
+        (Encoding::Utf8, FileFormat::Unix, "\n"),
+        (Encoding::Utf16Le, FileFormat::Dos, "\r\n"),
+    ] {
+        let mut prior_work = None;
+        for lines in [10_000, 1_000_000] {
+            let source = format!("x{ending}").repeat(lines);
+            let mut document = Document::from_bytes_with_file_format(
+                encoded(&source, encoding),
+                encoding,
+                Format::Code,
+                file_format,
+            )
+            .unwrap();
+            let at = document
+                .projection()
+                .hard_line_range(lines / 2)
+                .unwrap()
+                .start
+                + 1;
+            let stable_suffix = document.projection().blocks()[lines - 10].id;
+            let prepared = document
+                .prepare_model_request(ModelRequest::ApplyTextEdits {
+                    document: document.id(),
+                    revision: document.revision(),
+                    edits: vec![TextEdit::new(at..at, "\n")],
+                })
+                .unwrap();
+            let work = prepared.summary().projection_work();
+            assert_eq!(
+                work.scope(),
+                ProjectionWorkScope::RegionalHardLines,
+                "{encoding:?} {lines}: {work:?}"
+            );
+            assert_eq!(work.full_text_bytes_materialized(), 0);
+            assert!(work.decoded_source_bytes() < 128, "{work:?}");
+            assert!(work.projected_hard_lines() <= 4, "{work:?}");
+            assert!(work.persistent_records_copied() < 4096, "{work:?}");
+            if let Some(prior_nodes) = prior_work {
+                assert!(
+                    work.persistent_nodes_visited() < prior_nodes + 2048,
+                    "{work:?}"
+                );
+            }
+            prior_work = Some(work.persistent_nodes_visited());
+            document.commit_model_transaction(prepared).unwrap();
+            assert_eq!(document.projection().hard_line_count(), lines + 2);
+            assert_eq!(document.projection().blocks()[lines - 9].id, stable_suffix);
+            let prepared = document
+                .prepare_model_request(ModelRequest::ApplyTextEdits {
+                    document: document.id(),
+                    revision: document.revision(),
+                    edits: vec![TextEdit::new(at..at + 1, "")],
+                })
+                .unwrap();
+            let work = prepared.summary().projection_work();
+            assert_eq!(work.scope(), ProjectionWorkScope::RegionalHardLines);
+            assert!(work.decoded_source_bytes() < 128, "{work:?}");
+            assert_eq!(work.full_text_bytes_materialized(), 0);
+            document.commit_model_transaction(prepared).unwrap();
+            assert_eq!(document.projection().hard_line_count(), lines + 1);
+            assert_eq!(document.projection().blocks()[lines - 10].id, stable_suffix);
+        }
+    }
+}
+
+#[test]
+fn code_newline_edges_unicode_and_existing_highlights_match_a_fresh_projection() {
+    use std::sync::Arc;
+    use viem_core::document::{
+        code_style,
+        syntax::{SyntaxRun, SyntaxStyleName},
+    };
+    for (encoding, ending) in [(Encoding::Utf8, "\n"), (Encoding::Utf16Le, "\r\n")] {
+        for logical in ["", "a", "a\n", "\na", "a\nb", "a\u{301}\n😀\n"] {
+            let original = encoded(&logical.replace('\n', ending), encoding);
+            let fixture =
+                || Document::from_bytes(original.clone(), encoding, Format::Code).unwrap();
+            let points = (0..=logical.len())
+                .filter(|at| fixture().text_point(*at).is_ok())
+                .collect::<Vec<_>>();
+            let mut edits = points
+                .into_iter()
+                .map(|at| TextEdit::new(at..at, "\n"))
+                .collect::<Vec<_>>();
+            edits.extend(
+                logical
+                    .match_indices('\n')
+                    .map(|(at, _)| TextEdit::new(at..at + 1, "")),
+            );
+            for edit in edits {
+                let mut document = fixture();
+                document.install_code_presentation(
+                    Arc::new(code_style::default_sheet()),
+                    &[SyntaxRun {
+                        range: 0..logical.len(),
+                        name: SyntaxStyleName("@keyword".into()),
+                        origin: "test".into(),
+                        priority: 0,
+                    }],
+                );
+                let mut expected = logical.to_owned();
+                expected.replace_range(edit.range.clone(), &edit.replacement);
+                let prepared = document
+                    .prepare_model_request(ModelRequest::ApplyTextEdits {
+                        document: document.id(),
+                        revision: document.revision(),
+                        edits: vec![edit.clone()],
+                    })
+                    .unwrap_or_else(|error| panic!("{encoding:?} {logical:?} {edit:?}: {error:?}"));
+                assert_eq!(
+                    prepared.summary().projection_work().scope(),
+                    ProjectionWorkScope::RegionalHardLines,
+                    "{logical:?} {edit:?}"
+                );
+                assert_eq!(
+                    prepared
+                        .summary()
+                        .projection_work()
+                        .full_text_bytes_materialized(),
+                    0
+                );
+                document.commit_model_transaction(prepared).unwrap();
+                assert_eq!(
+                    document.text(),
+                    expected,
+                    "{encoding:?} {logical:?} {edit:?}"
+                );
+                assert!(
+                    document.projection().style_spans().is_empty(),
+                    "Old automatic spans cannot enter the authoritative edited projection"
+                );
+                let fresh =
+                    Document::from_bytes(document.source_bytes(), encoding, Format::Code).unwrap();
+                assert_eq!(document.text(), fresh.text());
+                assert_eq!(
+                    document.projection().provenance(),
+                    fresh.projection().provenance()
+                );
+                assert!(document.undo());
+                assert_eq!(document.source_bytes(), original);
+            }
+        }
+    }
+}
+
+#[test]
+fn disjoint_code_batches_keep_work_local_and_adjacent_grapheme_edits_atomic() {
+    use viem_core::document::{Association, BoundaryAffinity, DeletionRecovery};
+    for encoding in [Encoding::Utf8, Encoding::Utf16Le] {
+        let logical = format!("a\n{}z", "middle\n".repeat(100_000));
+        let physical = if encoding == Encoding::Utf16Le {
+            logical.replace('\n', "\r\n")
+        } else {
+            logical.clone()
+        };
+        let original = encoded(&physical, encoding);
+        let mut document = Document::from_bytes(original.clone(), encoding, Format::Code).unwrap();
+        let anchor = document
+            .text_anchor(
+                document.text_point(500).unwrap(),
+                Association::AfterInsertion,
+                BoundaryAffinity::Downstream,
+                DeletionRecovery::PreferFollowingThenPreceding,
+            )
+            .unwrap();
+        let end = logical.len();
+        let prepared = document
+            .prepare_model_request(ModelRequest::ApplyTextEdits {
+                document: document.id(),
+                revision: document.revision(),
+                edits: vec![
+                    TextEdit::new(0..1, "😀"),
+                    TextEdit::new(1..1, "\u{301}\n"),
+                    TextEdit::new(end - 1..end, "last\n"),
+                ],
+            })
+            .unwrap();
+        let work = prepared.summary().projection_work();
+        assert_eq!(work.scope(), ProjectionWorkScope::RegionalHardLines);
+        assert!(work.decoded_source_bytes() < 256, "{encoding:?}: {work:?}");
+        assert_eq!(work.full_text_bytes_materialized(), 0);
+        assert!(work.projected_hard_lines() <= 8, "{work:?}");
+        assert!(work.persistent_records_copied() < 4096, "{work:?}");
+        document.commit_model_transaction(prepared).unwrap();
+        assert_eq!(
+            document.text(),
+            format!("😀\u{301}\n\n{}last\n", "middle\n".repeat(100_000))
+        );
+        assert!(document
+            .resolve_text_anchor(anchor)
+            .unwrap()
+            .value()
+            .is_some());
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), original);
+        assert!(!document.undo(), "One batch is one document undo step");
+    }
+}
+
+#[test]
+fn syntax_winning_unknown_names_and_grapheme_start_ownership_remain_presentation_only() {
+    use std::sync::Arc;
+    use viem_core::document::{
+        code_style,
+        syntax::{SyntaxRun, SyntaxStyleName},
+    };
+    use viem_core::layout::DocumentLayoutStyles;
+    let mut document = Document::from_bytes(
+        "a\u{301}😀x".as_bytes().to_vec(),
+        Encoding::Utf8,
+        Format::Code,
+    )
+    .unwrap();
+    let original_revision = document.revision();
+    let run = |range, name: &str| SyntaxRun {
+        range,
+        name: SyntaxStyleName(name.into()),
+        origin: "test".into(),
+        priority: 0,
+    };
+    let sheet = Arc::new(code_style::default_sheet());
+    document.install_code_presentation(
+        sheet.clone(),
+        &[
+            run(0..1, "@keyword"),
+            run(1..3, "@string"),
+            run(3..7, "@missing"),
+        ],
+    );
+    let spans = document.projection().style_spans();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(
+        spans[0].range,
+        0..3,
+        "The style at the grapheme start owns the whole combining cluster"
+    );
+    assert!(
+        !DocumentLayoutStyles::character_at(document.projection(), 0, false)
+            .unwrap()
+            .foreground_is_default
+    );
+    assert!(
+        DocumentLayoutStyles::character_at(document.projection(), 3, false)
+            .unwrap()
+            .foreground_is_default
+    );
+    document.install_code_presentation(sheet, &[run(0..3, "@missing")]);
+    assert!(
+        DocumentLayoutStyles::character_at(document.projection(), 0, false)
+            .unwrap()
+            .foreground_is_default,
+        "An unknown winning style clears the prior color"
+    );
+    assert_eq!(document.revision(), original_revision);
+    assert!(!document.is_dirty());
+    assert_eq!(document.source_bytes(), "a\u{301}😀x".as_bytes());
+    assert!(!document.undo());
+}

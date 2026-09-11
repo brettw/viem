@@ -1,0 +1,207 @@
+{
+  "compiler": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "fixture_revision": 1,
+  "hardware": "unavailable",
+  "provider_condition": "all worker callbacks controllably suspended; no foreground provider execution or waits",
+  "results": [
+    {
+      "encoding": "Utf8",
+      "first_display_ms": 748.059416,
+      "hard_lines": 1000001,
+      "history_budget_bytes": 767538119,
+      "input_insert_newline_undo": {
+        "maximum_ms": 4.44775,
+        "p50_ms": 3.337708,
+        "p95_ms": 3.7245,
+        "p99_ms": 3.7245,
+        "samples": 20
+      },
+      "maximum_pending": 1,
+      "provider_publications": 0,
+      "source_bytes": 2000000,
+      "syntax_enabled": false,
+      "two_view_distant_scroll_wrap_toggle": {
+        "maximum_ms": 0.32529199999999997,
+        "p50_ms": 0.292916,
+        "p95_ms": 0.311625,
+        "p99_ms": 0.311625,
+        "samples": 20
+      }
+    },
+    {
+      "encoding": "Utf8",
+      "first_display_ms": 10173.776833,
+      "hard_lines": 600897,
+      "history_budget_bytes": 15739838127,
+      "input_insert_newline_undo": {
+        "maximum_ms": 9.365333,
+        "p50_ms": 5.056917,
+        "p95_ms": 9.19175,
+        "p99_ms": 9.19175,
+        "samples": 20
+      },
+      "maximum_pending": 1,
+      "provider_publications": 0,
+      "source_bytes": 104857600,
+      "syntax_enabled": false,
+      "two_view_distant_scroll_wrap_toggle": {
+        "maximum_ms": 7.3159160000000005,
+        "p50_ms": 4.7004589999999995,
+        "p95_ms": 5.111833,
+        "p99_ms": 5.111833,
+        "samples": 20
+      }
+    },
+    {
+      "encoding": "Utf16Le",
+      "first_display_ms": 4786.0533749999995,
+      "hard_lines": 302177,
+      "history_budget_bytes": 7992711349,
+      "input_insert_newline_undo": {
+        "maximum_ms": 8.502374999999999,
+        "p50_ms": 4.402959,
+        "p95_ms": 8.216042,
+        "p99_ms": 8.216042,
+        "samples": 20
+      },
+      "maximum_pending": 1,
+      "provider_publications": 0,
+      "source_bytes": 104857600,
+      "syntax_enabled": false,
+      "two_view_distant_scroll_wrap_toggle": {
+        "maximum_ms": 6.165291,
+        "p50_ms": 4.476459,
+        "p95_ms": 4.92425,
+        "p99_ms": 4.92425,
+        "samples": 20
+      }
+    },
+    {
+      "encoding": "Latin1",
+      "first_display_ms": 9426.713917000001,
+      "hard_lines": 604353,
+      "history_budget_bytes": 15813316787,
+      "input_insert_newline_undo": {
+        "maximum_ms": 10.832457999999999,
+        "p50_ms": 4.8855,
+        "p95_ms": 10.719,
+        "p99_ms": 10.719,
+        "samples": 20
+      },
+      "maximum_pending": 1,
+      "provider_publications": 0,
+      "source_bytes": 104857600,
+      "syntax_enabled": false,
+      "two_view_distant_scroll_wrap_toggle": {
+        "maximum_ms": 8.160916,
+        "p50_ms": 5.425707999999999,
+        "p95_ms": 5.518333,
+        "p99_ms": 5.518333,
+        "samples": 20
+      }
+    },
+    {
+      "encoding": "Utf8",
+      "first_display_ms": 596.2492080000001,
+      "hard_lines": 1000001,
+      "history_budget_bytes": 767538119,
+      "input_insert_newline_undo": {
+        "maximum_ms": 3.671792,
+        "p50_ms": 3.337375,
+        "p95_ms": 3.5774589999999997,
+        "p99_ms": 3.5774589999999997,
+        "samples": 20
+      },
+      "maximum_pending": 1,
+      "provider_publications": 0,
+      "source_bytes": 2000000,
+      "syntax_enabled": true,
+      "two_view_distant_scroll_wrap_toggle": {
+        "maximum_ms": 0.317083,
+        "p50_ms": 0.270291,
+        "p95_ms": 0.310334,
+        "p99_ms": 0.310334,
+        "samples": 20
+      }
+    },
+    {
+      "encoding": "Utf8",
+      "first_display_ms": 9159.217,
+      "hard_lines": 600897,
+      "history_budget_bytes": 15739838127,
+      "input_insert_newline_undo": {
+        "maximum_ms": 9.2525,
+        "p50_ms": 5.313542,
+        "p95_ms": 9.226041,
+        "p99_ms": 9.226041,
+        "samples": 20
+      },
+      "maximum_pending": 1,
+      "provider_publications": 0,
+      "source_bytes": 104857600,
+      "syntax_enabled": true,
+      "two_view_distant_scroll_wrap_toggle": {
+        "maximum_ms": 6.655708,
+        "p50_ms": 4.627375000000001,
+        "p95_ms": 5.082875,
+        "p99_ms": 5.082875,
+        "samples": 20
+      }
+    },
+    {
+      "encoding": "Utf16Le",
+      "first_display_ms": 4276.651625,
+      "hard_lines": 302177,
+      "history_budget_bytes": 7992711349,
+      "input_insert_newline_undo": {
+        "maximum_ms": 8.711459,
+        "p50_ms": 4.444708,
+        "p95_ms": 8.583125,
+        "p99_ms": 8.583125,
+        "samples": 20
+      },
+      "maximum_pending": 1,
+      "provider_publications": 0,
+      "source_bytes": 104857600,
+      "syntax_enabled": true,
+      "two_view_distant_scroll_wrap_toggle": {
+        "maximum_ms": 7.092958,
+        "p50_ms": 4.784417,
+        "p95_ms": 4.9544999999999995,
+        "p99_ms": 4.9544999999999995,
+        "samples": 20
+      }
+    },
+    {
+      "encoding": "Latin1",
+      "first_display_ms": 7592.921625,
+      "hard_lines": 604353,
+      "history_budget_bytes": 15813316787,
+      "input_insert_newline_undo": {
+        "maximum_ms": 11.540292,
+        "p50_ms": 5.322042,
+        "p95_ms": 11.473625,
+        "p99_ms": 11.473625,
+        "samples": 20
+      },
+      "maximum_pending": 1,
+      "provider_publications": 0,
+      "source_bytes": 104857600,
+      "syntax_enabled": true,
+      "two_view_distant_scroll_wrap_toggle": {
+        "maximum_ms": 8.093041000000001,
+        "p50_ms": 5.761666,
+        "p95_ms": 6.088417,
+        "p99_ms": 6.088417,
+        "samples": 20
+      }
+    }
+  ],
+  "reference_hardware": {
+    "model": "Mac13,2",
+    "cpu": "Apple M1 Ultra",
+    "memory_bytes": 137438953472,
+    "verification": "sysctl queried separately; benchmark subprocess metadata was sandbox restricted"
+  },
+  "scope": "Core coordinator with mock shaping, real decoding/projection/commands and all syntax workers suspended; not an AppKit frame benchmark"
+}

@@ -64,7 +64,7 @@ pub(super) fn plan(
     };
     let source = document.source_bytes();
     let mut source_patches = match document.format() {
-        Format::PlainText | Format::MarkdownSource | Format::HtmlSource => {
+        Format::PlainText | Format::Code | Format::MarkdownSource | Format::HtmlSource => {
             let physical = transfer::physical_hard_lines(document, count)?;
             let mut replacement = Vec::new();
             for (slot, index) in order.iter().enumerate() {

@@ -11,7 +11,7 @@ final class EVDocumentFormatMenuTests: XCTestCase {
     private let html = "<h1>Heading</h1><p><strong>bold</strong></p>"
     private let commands: [EVMenuCommand] = [
         .convertToText, .convertToMarkdown, .convertToHTML,
-        .reinterpretAsText, .reinterpretAsMarkdown, .reinterpretAsHTML,
+        .reinterpretAsText, .reinterpretAsCode, .reinterpretAsMarkdown, .reinterpretAsHTML,
     ]
 
     func testCurrentFormatFamilyIsDisabledInBothMenusIncludingSourceViews() throws {
@@ -22,7 +22,7 @@ final class EVDocumentFormatMenuTests: XCTestCase {
             let bytes = try serializedSource(backend)
             for command in commands {
                 let change = try XCTUnwrap(command.formatChange)
-                let enabled = !format.hasSameSerialization(as: change.format)
+                let enabled = format == .code || change.format == .code ? format != change.format : !format.hasSameSerialization(as: change.format)
                 XCTAssertEqual(surface.presentation(for: command).isEnabled, enabled, "\(format): \(command)")
                 if !enabled {
                     surface.perform(menuCommand: command, sender: nil)
@@ -56,6 +56,7 @@ final class EVDocumentFormatMenuTests: XCTestCase {
             (.reinterpretAsText, .markdown, markdown, markdown),
             (.reinterpretAsMarkdown, .plainText, markdown, "Heading\nbold"),
             (.reinterpretAsHTML, .plainText, html, "Heading\nbold"),
+            (.reinterpretAsCode, .markdown, markdown, markdown),
         ]
         for (command, originalFormat, source, expectedText) in fixtures {
             let (backend, surface) = try makeSurface(source, format: originalFormat)
@@ -125,6 +126,7 @@ final class EVDocumentFormatMenuTests: XCTestCase {
         case .html: EVDocument.htmlType
         case .htmlSource: EVDocument.htmlSourceType
         case .rtf: EVDocument.rtfType
+        case .code: EVDocument.codeType
         }
     }
 }

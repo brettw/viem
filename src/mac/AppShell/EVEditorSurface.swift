@@ -244,6 +244,7 @@ public protocol EVDocumentBackend: AnyObject {
 
   func makeEditorSurface() -> any EVEditorSurface
   func read(source: Data, typeName: String) throws
+  func read(source: Data, typeName: String, filename: String?, allowAutomaticCode: Bool) throws
   func serializedSource(typeName: String) throws -> Data
   func nativeSaveSnapshot(typeName: String) throws -> EVDocumentSaveSnapshot
   func nativeSaveSnapshot(typeName: String, hardLineRange: ClosedRange<UInt64>) throws -> EVDocumentSaveSnapshot
@@ -254,6 +255,9 @@ public protocol EVDocumentBackend: AnyObject {
 }
 
 extension EVDocumentBackend {
+  public func read(source: Data, typeName: String, filename: String?, allowAutomaticCode: Bool) throws {
+    try read(source: source, typeName: typeName)
+  }
   public func nativeSaveSnapshot(typeName: String, hardLineRange: ClosedRange<UInt64>) throws -> EVDocumentSaveSnapshot { throw EVDocumentHostError.preparedWriteUnavailable }
   public func recoverySnapshot() throws -> EVRecoverySnapshot {
     throw EVRecoveryError.backendUnavailable

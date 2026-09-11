@@ -1698,6 +1698,12 @@ impl ViewLayout {
         self.regional_cache = RegionalLayoutCache::default();
     }
 
+    /// A syntax/settings presentation revision is independent of text. Retain
+    /// immutable old geometry until replacement; generation rejects stale jobs.
+    pub fn invalidate_syntax_presentation(&mut self, metrics_changed: bool) {
+        self.bump_configuration(metrics_changed);
+    }
+
     /// Prepare the compact height index for a newly observed document shape
     /// before a regional request chooses its y-derived hard-line interval.
     /// Existing estimates are retained; exact entries are invalidated when

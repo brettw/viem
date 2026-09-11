@@ -48,6 +48,12 @@ pub(crate) struct SourceSnapshot {
     root: Option<Arc<Node>>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SourceDiffStats {
+    pub nodes_visited: usize,
+    pub bytes_compared: usize,
+}
+
 #[derive(Debug)]
 enum Node {
     Leaf(Piece),
@@ -115,6 +121,26 @@ impl SourceSnapshot {
             root.append_to(&mut result);
         }
         result
+    }
+
+    /// Compare persistent artifacts without serializing their unchanged
+    /// prefixes/suffixes. Split pieces retain their backing-buffer identity.
+    pub(crate) fn changed_extent(&self,next:&Self)->Option<(Range<usize>,Range<usize>)> {
+        self.changed_extent_with_stats(next).0
+    }
+
+    pub(crate) fn changed_extent_with_stats(
+        &self,
+        next: &Self,
+    ) -> (Option<(Range<usize>, Range<usize>)>, SourceDiffStats) {
+        let mut stats = SourceDiffStats::default();
+        let prefix = shared_source_edge(self, next, false, &mut stats);
+        if prefix == self.len() && prefix == next.len() {
+            return (None, stats);
+        }
+        let suffix = shared_source_edge(self, next, true, &mut stats)
+            .min(self.len().min(next.len()) - prefix);
+        (Some((prefix..self.len() - suffix, prefix..next.len() - suffix)), stats)
     }
 
     /// Materialize only one validated byte range. Splitting a persistent rope
@@ -275,6 +301,41 @@ impl SourceSnapshot {
     fn height(&self) -> u8 {
         self.root.as_deref().map(Node::height).unwrap_or(0)
     }
+}
+
+fn shared_source_edge(a:&SourceSnapshot,b:&SourceSnapshot,reverse:bool,stats:&mut SourceDiffStats)->usize {
+    fn expand<'a>(stack:&mut Vec<(&'a Node,usize)>,reverse:bool)->bool {
+        let Some((Node::Branch{left,right,..},_))=stack.last() else {return false;};
+        let (left,right)=(left.as_ref(),right.as_ref());stack.pop();
+        if reverse {stack.push((left,0));stack.push((right,0));}
+        else {stack.push((right,0));stack.push((left,0));}
+        true
+    }
+    let mut left=a.root.as_deref().map(|n|vec![(n,0)]).unwrap_or_default();
+    let mut right=b.root.as_deref().map(|n|vec![(n,0)]).unwrap_or_default();
+    let mut count=0;
+    while let (Some(&(l,lo)),Some(&(r,ro)))=(left.last(),right.last()) {
+        stats.nodes_visited += 1;
+        if lo==0 && ro==0 && std::ptr::eq(l,r) {count+=l.len();left.pop();right.pop();continue;}
+        match(l,r) {
+            (Node::Branch{..},Node::Branch{..})=>{if l.len()>=r.len() {expand(&mut left,reverse);} else {expand(&mut right,reverse);}continue;}
+            (Node::Branch{..},_)=>{expand(&mut left,reverse);continue;}
+            (_,Node::Branch{..})=>{expand(&mut right,reverse);continue;}
+            (Node::Leaf(l),Node::Leaf(r))=>{
+                let n=(l.len-lo).min(r.len-ro);
+                let (lb,rb)=if reverse {(l.start+l.len-lo,r.start+r.len-ro)} else {(l.start+lo,r.start+ro)};
+                // Byte equality across unshared buffers does not establish
+                // continuing identity. Repeated separately allocated pieces
+                // could otherwise turn a local edit into a full suffix scan.
+                // The reported change is deliberately conservative.
+                if !Arc::ptr_eq(&l.bytes,&r.bytes) || lb!=rb {return count;}
+                count+=n;
+                if lo+n==l.len {left.pop();} else {left.last_mut().unwrap().1+=n;}
+                if ro+n==r.len {right.pop();} else {right.last_mut().unwrap().1+=n;}
+            }
+        }
+    }
+    count
 }
 
 impl Node {
@@ -962,5 +1023,152 @@ mod tests {
             assert_eq!(source.bytes(), reference);
         }
         assert!(source.height() < 40, "rope height was {}", source.height());
+    }
+
+    fn assert_diff_reconstructs(old: &SourceSnapshot, new: &SourceSnapshot) {
+        let old_bytes = old.bytes();
+        let new_bytes = new.bytes();
+        match old.changed_extent(new) {
+            None => assert_eq!(old_bytes, new_bytes),
+            Some((removed, inserted)) => {
+                assert_eq!(removed.start, inserted.start);
+                assert!(removed.start <= removed.end && removed.end <= old.len());
+                assert!(inserted.start <= inserted.end && inserted.end <= new.len());
+                assert_eq!(old_bytes[..removed.start], new_bytes[..inserted.start]);
+                assert_eq!(old_bytes[removed.end..], new_bytes[inserted.end..]);
+                let mut repaired = old_bytes;
+                repaired.splice(removed, new.bytes_in(inserted).unwrap());
+                assert_eq!(repaired, new_bytes);
+            }
+        }
+    }
+
+    #[test]
+    fn source_diff_reconstructs_random_edits_and_history_branches() {
+        let mut source = SourceSnapshot::new((0..4096).map(|i| (i % 251) as u8).collect());
+        let mut history = vec![source.clone()];
+        let mut random = 0x61e7_c24b_u64;
+        for step in 0..1200 {
+            random = random.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let at = random as usize % (source.len() + 1);
+            let end = (at + step % 19).min(source.len());
+            let replacement = if step % 7 == 0 {
+                // Equal bytes in a distinct allocation are a valid no-op.
+                source.bytes_in(at..end).unwrap()
+            } else {
+                (0..step % 23).map(|i| random.rotate_right(i as u32) as u8).collect()
+            };
+            let next = source.replace(at, end, replacement).unwrap();
+            assert_diff_reconstructs(&source, &next);
+            assert_diff_reconstructs(&next, &source);
+            let ancestor = history[random as usize % history.len()].clone();
+            assert_diff_reconstructs(&ancestor, &next);
+            assert_diff_reconstructs(&next, &ancestor);
+            if step % 31 == 0 {
+                history.push(next.clone());
+            }
+            source = if step % 47 == 0 { ancestor } else { next };
+        }
+        let empty = SourceSnapshot::new(Vec::new());
+        assert_diff_reconstructs(&source, &empty);
+        assert_diff_reconstructs(&empty, &source);
+        // A source patch may start inside a UTF-8 scalar: this is a raw byte
+        // artifact, and applying the complete patch must reproduce its bytes.
+        let accented = SourceSnapshot::new("é".as_bytes().to_vec());
+        let changed = accented.replace(1, 2, vec![0xaa]).unwrap();
+        assert_eq!(accented.changed_extent(&changed), Some((1..2, 1..2)));
+        assert_diff_reconstructs(&accented, &changed);
+    }
+
+    #[test]
+    fn source_diff_skips_repeated_million_line_buffers_and_shared_piece_paths() {
+        for line_count in [10_000, 1_000_000] {
+            let row = b"same repeated line\n";
+            let original = SourceSnapshot::new(row.repeat(line_count));
+            for at in [0, row.len() * (line_count / 2), original.len() - row.len()] {
+                for (removed, inserted) in [(0, row.as_slice()), (row.len(), &[][..]), (1, b"S".as_slice())] {
+                    let next = original.replace(at, at + removed, inserted.to_vec()).unwrap();
+                    for (old, new) in [(&original, &next), (&next, &original)] {
+                        let (extent, stats) = old.changed_extent_with_stats(new);
+                        let (removed, inserted) = extent.expect("the edit changes artifact length or bytes");
+                        assert!(removed.len() <= row.len() * 2, "{removed:?}");
+                        assert!(inserted.len() <= row.len() * 2, "{inserted:?}");
+                        assert!(stats.nodes_visited < 40, "{line_count}: {stats:?}");
+                        assert!(stats.bytes_compared <= row.len() * 2, "{line_count}: {stats:?}");
+                        assert_eq!(new.bytes_in(inserted.clone()).unwrap().len(), inserted.len());
+                    }
+                    let mut original_buffers = std::collections::HashMap::new();
+                    original.visit_retained_buffers(&mut |id, len| { original_buffers.insert(id, len); });
+                    let mut next_buffers = std::collections::HashMap::new();
+                    next.visit_retained_buffers(&mut |id, len| { next_buffers.insert(id, len); });
+                    assert!(original_buffers.iter().all(|(id, len)| next_buffers.get(id) == Some(len)));
+                }
+            }
+        }
+        for piece_count in [1024, 16_384] {
+            let mut original = SourceSnapshot::new(Vec::new());
+            for _ in 0..piece_count {
+                original = original.replace(original.len(), original.len(), b"same\n".to_vec()).unwrap();
+            }
+            for at in [0, original.len() / 2, original.len() - 13] {
+                let next = original.replace(at, at + 10, b"same\n".to_vec()).unwrap();
+                for (old, new) in [(&original, &next), (&next, &original)] {
+                    let (_, stats) = old.changed_extent_with_stats(new);
+                    assert!(stats.nodes_visited < 256, "{piece_count}: {stats:?}");
+                    assert!(stats.bytes_compared < 40, "{piece_count}: {stats:?}");
+                    assert_diff_reconstructs(old, new);
+                }
+            }
+            let (extent, stats) = original.changed_extent_with_stats(&original.clone());
+            assert!(extent.is_none());
+            assert_eq!(stats, SourceDiffStats { nodes_visited: 1, bytes_compared: 0 });
+        }
+    }
+
+    #[test]
+    fn code_history_navigation_materializes_only_the_changed_source_range() {
+        use crate::document::{Document, Encoding, Format, HistoryNavigationRequest, ModelRequest};
+
+        let mut document = Document::from_bytes(
+            b"same repeated line\n".repeat(10_000), Encoding::Utf8, Format::Code,
+        ).unwrap();
+        document.replace(0..0, "x").unwrap();
+        let baseline = document.state().source.clone();
+        let baseline_text = document.projection().clone();
+        for at in [1, 19 * 5000 + 1, document.source_byte_len() - 1] {
+            document.replace(at..at, "λ\n").unwrap();
+            let edited = document.state().source.clone();
+            let edited_text = document.projection().clone();
+            for (navigation, target) in [
+                (HistoryNavigationRequest::Undo, &baseline),
+                (HistoryNavigationRequest::Redo, &edited),
+                (HistoryNavigationRequest::Undo, &baseline),
+            ] {
+                let before = document.state().source.clone();
+                let before_text = document.projection().clone();
+                let prepared = document.prepare_model_request(ModelRequest::NavigateHistory {
+                    document: document.id(), revision: document.revision(), navigation,
+                }).unwrap();
+                let patches = prepared.summary().source_patches();
+                assert_eq!(patches.len(), 1);
+                assert!(patches[0].range().len() <= 3);
+                assert!(patches[0].replacement().len() <= 3);
+                let reconstructed = before.replace(
+                    patches[0].range().start, patches[0].range().end,
+                    patches[0].replacement().to_vec(),
+                ).unwrap();
+                assert_eq!(reconstructed.bytes(), target.bytes());
+                let changes = prepared.summary().formatted_splices();
+                assert_eq!(changes.len(), 1);
+                assert!(changes[0].old_range().len() <= 3);
+                assert!(changes[0].inserted_len() <= 3);
+                assert!(!before_text.compatibility_text_is_materialized());
+                document.commit_model_transaction(prepared).unwrap();
+                assert!(!document.projection().compatibility_text_is_materialized());
+                assert_eq!(document.state().source.identity(), target.identity());
+            }
+            assert!(!baseline_text.compatibility_text_is_materialized());
+            assert!(!edited_text.compatibility_text_is_materialized());
+        }
     }
 }

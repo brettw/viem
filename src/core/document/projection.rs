@@ -28,9 +28,15 @@ pub enum Format {
     Html,
     HtmlSource,
     Rtf,
+    /// Literal source text with disposable, asynchronously computed syntax styles.
+    Code,
 }
 
 impl Format {
+    pub const fn is_code(self) -> bool { matches!(self, Self::Code) }
+
+    /// Formats with identity semantics after decoding and physical line endings.
+    pub const fn is_literal(self) -> bool { matches!(self, Self::PlainText | Self::Code) }
     /// The semantic editing view for this persistence format.
     pub const fn wysiwyg(self) -> Self {
         match self {
@@ -2934,6 +2940,25 @@ impl FormattedDocument {
         self.document_style = document_style;
     }
 
+    pub(crate) fn install_code_styles(&mut self, sheet: Arc<StyleSheet>, runs: &[super::syntax::SyntaxRun]) {
+        self.document_style = DocumentStyleAssignment::new(sheet.base_document.clone());
+        let names=sheet.character_styles().filter_map(|style|sheet.character_style_metadata(&style.id).map(|metadata|(metadata.display_name.as_str(),&style.id))).collect::<std::collections::BTreeMap<_,_>>();
+        self.styles = IntervalRangeStore::new(runs.iter().filter_map(|run| {
+            if run.range.start >= run.range.end || run.range.end > self.text.byte_len() { return None; }
+            let ceil = |at| {
+                if self.is_logical_grapheme_boundary(at).ok()? { Some(at) }
+                else { self.next_logical_grapheme_boundary(at).ok()? }
+            };
+            // A cluster's first character owns its appearance. A later
+            // capture beginning inside it starts at the following cluster.
+            let range = ceil(run.range.start)?..ceil(run.range.end)?;
+            if range.is_empty() { return None; }
+            let id = names.get(run.name.0.as_str())?;
+            Some(StyleSpan { range, application: StyleApplication::Automatic((*id).clone()) })
+        }).collect());
+        self.style_sheet = sheet;
+    }
+
     pub(crate) fn has_block_style_assignment(&self, style: &StyleId) -> bool {
         self.document_style.style == *style || self.blocks.iter().any(|block| block.style == *style)
     }
@@ -3587,6 +3612,11 @@ pub(crate) fn project(
             source_content_start,
             source_content_end,
         ),
+        Format::Code => {
+            let mut projection = project_plain(normalized, revision, source_content_start, source_content_end);
+            projection.install_code_styles(super::code_style::snapshot(), &[]);
+            projection
+        }
         Format::Markdown => project_markdown(
             normalized,
             revision,
@@ -3669,6 +3699,7 @@ pub(crate) fn splice_line_local_projection(
     target_text: FormattedTextTree,
     new_source_content_end: usize,
     source_paragraphs: bool,
+    literal_topology: bool,
     edits: &[TextEdit],
     next_projected_block_id: &mut u64,
 ) -> Result<(FormattedDocument, ProjectionSpliceStatistics), BlockIdentityError> {
@@ -3724,7 +3755,7 @@ pub(crate) fn splice_line_local_projection(
         return Err(BlockIdentityError::InvalidProjection);
     }
     let mut regional_blocks = regional.blocks.to_vec();
-    if !source_paragraphs && regional_blocks.len() != previous_region_blocks.len() {
+    if !source_paragraphs && !literal_topology && regional_blocks.len() != previous_region_blocks.len() {
         return Err(BlockIdentityError::InvalidProjection);
     }
 
@@ -3748,7 +3779,22 @@ pub(crate) fn splice_line_local_projection(
         return Err(BlockIdentityError::InvalidProjection);
     }
 
-    if source_paragraphs {
+    if literal_topology {
+        for block in &mut regional_blocks {
+            block.range = shift_region_range(&block.range, old_formatted.start)?;
+            block.id = 0;
+        }
+        let mappings = build_edit_mappings(previous.text.byte_len(), target_text.byte_len(), edits)?;
+        for old in &previous_region_blocks {
+            let mapped = first_surviving_byte(&old.range, &mappings)
+                .map(|at| map_surviving_byte(at, &mappings))
+                .unwrap_or_else(|| map_old_boundary_before(old.range.start, &mappings));
+            let Ok(at) = mapped else { continue; };
+            let index = regional_blocks.partition_point(|block| block.range.start <= at).saturating_sub(1);
+            if let Some(block) = regional_blocks.get_mut(index).filter(|block| block.id == 0 && at <= block.range.end) { block.id = old.id; }
+        }
+        *next_projected_block_id = allocate_unassigned_block_ids(&mut regional_blocks, *next_projected_block_id)?;
+    } else if source_paragraphs {
         let regional_lines = regional.hard_lines.as_slice();
         let mut used = std::collections::BTreeSet::new();
         let last = regional_blocks.len().saturating_sub(1);
@@ -3830,10 +3876,18 @@ pub(crate) fn splice_line_local_projection(
         .get_range(&old_hard_lines)
         .ok_or(BlockIdentityError::InvalidProjection)?;
     let regional_lines = regional.hard_lines.to_vec();
-    if regional_lines.len() != old_lines.len() {
+    if !literal_topology && regional_lines.len() != old_lines.len() {
         return Err(BlockIdentityError::InvalidProjection);
     }
-    let regional_hard_lines = regional_lines
+    let regional_hard_lines = if literal_topology {
+        regional_lines.iter().enumerate().map(|(index, line)| {
+            Ok(HardLine {
+                id: regional_blocks[index].id,
+                range: shift_region_range(&line.range, old_formatted.start)?,
+                separator_length: if index + 1 == regional_lines.len() { old_lines.last().unwrap().separator_length } else { line.separator_length },
+            })
+        }).collect::<Result<Vec<_>, BlockIdentityError>>()?
+    } else { regional_lines
         .iter()
         .zip(&old_lines)
         .map(|(line, old)| {
@@ -3843,7 +3897,7 @@ pub(crate) fn splice_line_local_projection(
                 separator_length: old.separator_length,
             })
         })
-        .collect::<Result<Vec<_>, BlockIdentityError>>()?;
+        .collect::<Result<Vec<_>, BlockIdentityError>>()? };
     let hard_lines = previous
         .hard_lines
         .splice(
@@ -6192,13 +6246,14 @@ mod tests {
     /// deliberate decision about every predicate, not an inherited default.
     #[test]
     fn format_predicates_have_exact_membership() {
-        const ALL: [Format; 6] = [
+        const ALL: [Format; 7] = [
             Format::PlainText,
             Format::Markdown,
             Format::MarkdownSource,
             Format::Html,
             Format::HtmlSource,
             Format::Rtf,
+            Format::Code,
         ];
 
         fn members(predicate: fn(Format) -> bool) -> Vec<Format> {
@@ -6233,11 +6288,13 @@ mod tests {
             ]
         );
 
-        // Every format is exactly one of plain, WYSIWYG, or a source view.
+        assert_eq!(members(Format::is_code), [Format::Code]);
+        assert_eq!(members(Format::is_literal), [Format::PlainText, Format::Code]);
+        // Every format is exactly one of literal, WYSIWYG, or source view.
         for format in ALL {
             let kinds = usize::from(format.is_wysiwyg())
                 + usize::from(format.is_source_view())
-                + usize::from(format == Format::PlainText);
+                + usize::from(format.is_literal());
             assert_eq!(kinds, 1, "{format:?} is not exactly one view kind");
         }
     }

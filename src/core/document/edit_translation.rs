@@ -136,7 +136,7 @@ impl Document {
         } else {
             let syntax = match self.format() {
                 Format::MarkdownSource => self.markdown_source_replacement(edit)?,
-                Format::PlainText | Format::HtmlSource => edit.replacement.clone(),
+                Format::PlainText | Format::Code | Format::HtmlSource => edit.replacement.clone(),
                 Format::Markdown if in_code && !edit.replacement.contains('`') => {
                     edit.replacement.clone()
                 }

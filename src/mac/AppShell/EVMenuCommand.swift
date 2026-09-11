@@ -26,6 +26,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case reinterpretAsText
     case reinterpretAsMarkdown
     case reinterpretAsHTML
+    case reinterpretAsCode
 
     case undo = 200
     case redo
@@ -124,6 +125,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
         case .reinterpretAsText: (.plainText, .reinterpret)
         case .reinterpretAsMarkdown: (.markdown, .reinterpret)
         case .reinterpretAsHTML: (.html, .reinterpret)
+        case .reinterpretAsCode: (.code, .reinterpret)
         default: nil
         }
     }

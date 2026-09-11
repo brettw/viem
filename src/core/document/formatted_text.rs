@@ -20,6 +20,12 @@ use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 /// can always honor this bound.
 pub const FORMATTED_TEXT_LEAF_BYTES: usize = 4 * 1024;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FormattedTextDiffStats {
+    pub nodes_visited: usize,
+    pub bytes_compared: usize,
+}
+
 static NEXT_LEAF_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_BUFFER_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -638,6 +644,34 @@ impl FormattedTextTree {
         let root = self.root.as_ref().expect("non-edge offset has a root");
         let (leaf, start) = leaf_at_or_after(root, offset, 0);
         Ok(leaf.text().is_char_boundary(offset - start))
+    }
+
+    /// Borrow the remainder of one immutable leaf, without allocating or
+    /// flattening a line. Parser byte callbacks may start inside a UTF-8 scalar.
+    pub fn byte_chunk_at(&self, offset: usize) -> &[u8] {
+        if offset >= self.byte_len() { return &[]; }
+        let (leaf, start) = leaf_at_or_after(self.root.as_ref().unwrap(), offset, 0);
+        &leaf.text().as_bytes()[offset - start..]
+    }
+
+    /// Conservative scalar-aligned splice between persistent snapshots. Shared
+    /// subtrees are skipped by identity; an ordinary local splice examines
+    /// only its paths and boundary leaves, not an unchanged document suffix.
+    pub fn changed_extent(&self, next: &Self) -> Option<(Range<usize>, Range<usize>)> {
+        self.changed_extent_with_stats(next).0
+    }
+
+    pub fn changed_extent_with_stats(&self, next: &Self) -> (Option<(Range<usize>, Range<usize>)>, FormattedTextDiffStats) {
+        let mut stats=FormattedTextDiffStats::default();
+        if self.shares_root_with(next) { return (None,stats); }
+        let prefix = shared_edge_bytes(self, next, false,&mut stats);
+        if prefix == self.byte_len() && prefix == next.byte_len() { return (None,stats); }
+        let suffix = shared_edge_bytes(self, next, true,&mut stats).min(self.byte_len().min(next.byte_len()) - prefix);
+        let mut start = prefix;
+        while start > 0 && (!self.is_char_boundary(start).unwrap_or(false) || !next.is_char_boundary(start).unwrap_or(false)) { start -= 1; }
+        let (mut end, mut next_end) = (self.byte_len()-suffix, next.byte_len()-suffix);
+        while end < self.byte_len() && !self.is_char_boundary(end).unwrap_or(false) { end+=1;next_end+=1; }
+        (Some((start..end, start..next_end)),stats)
     }
 
     /// Resolve an extended-grapheme boundary without flattening the rope.
@@ -1500,6 +1534,46 @@ fn byte_offset_for_utf16(
     }
 }
 
+fn shared_edge_bytes(a: &FormattedTextTree, b: &FormattedTextTree, reverse: bool, stats:&mut FormattedTextDiffStats) -> usize {
+    fn expand<'a>(stack: &mut Vec<(&'a Node, usize)>, reverse: bool) -> bool {
+        let Some((node, _)) = stack.last() else { return false; };
+        let Node::Branch(branch) = node else { return false; };
+        stack.pop();
+        if reverse { stack.push((&branch.left,0)); stack.push((&branch.right,0)); }
+        else { stack.push((&branch.right,0)); stack.push((&branch.left,0)); }
+        true
+    }
+    let mut left = a.root.as_deref().map(|n|vec![(n,0)]).unwrap_or_default();
+    let mut right = b.root.as_deref().map(|n|vec![(n,0)]).unwrap_or_default();
+    let mut count = 0;
+    while let (Some(&(l,lo)),Some(&(r,ro))) = (left.last(),right.last()) {
+        stats.nodes_visited+=1;
+        if lo == 0 && ro == 0 && std::ptr::eq(l,r) { count+=l.aggregate().bytes;left.pop();right.pop();continue; }
+        match (l,r) {
+            (Node::Branch(_),Node::Branch(_)) => {
+                if l.aggregate().bytes >= r.aggregate().bytes { expand(&mut left,reverse); }
+                else { expand(&mut right,reverse); }
+                continue;
+            }
+            (Node::Branch(_),_) => { expand(&mut left,reverse);continue; }
+            (_,Node::Branch(_)) => { expand(&mut right,reverse);continue; }
+            (Node::Leaf(l),Node::Leaf(r)) => {
+                let n=(l.byte_len()-lo).min(r.byte_len()-ro);
+                let (li,ri)=if reverse {(l.range.end-lo,r.range.end-ro)} else {(l.range.start+lo,r.range.start+ro)};
+                // Treat any loss of backing identity as the conservative
+                // boundary, including equal text in separately allocated
+                // leaves. Searching for byte equality can scan an entire
+                // repeated suffix after a one-leaf insertion or deletion.
+                if !Arc::ptr_eq(&l.buffer,&r.buffer) || li!=ri {return count;}
+                count+=n;
+                if lo+n==l.byte_len() {left.pop();} else {left.last_mut().unwrap().1+=n;}
+                if ro+n==r.byte_len() {right.pop();} else {right.last_mut().unwrap().1+=n;}
+            }
+        }
+    }
+    count
+}
+
 fn leaf_at_or_after(node: &Node, offset: usize, start: usize) -> (&Leaf, usize) {
     match node {
         Node::Leaf(leaf) => (leaf, start),
@@ -1676,6 +1750,147 @@ fn count_line_breaks_before(node: &Node, offset: usize) -> usize {
 mod tests {
     use super::*;
     use unicode_segmentation::UnicodeSegmentation;
+
+    fn assert_diff_reconstructs(old: &FormattedTextTree, new: &FormattedTextTree) {
+        let old_text = old.flatten();
+        let new_text = new.flatten();
+        match old.changed_extent(new) {
+            None => assert_eq!(old_text, new_text),
+            Some((removed, inserted)) => {
+                assert_eq!(removed.start, inserted.start);
+                assert!(old_text.is_char_boundary(removed.start));
+                assert!(old_text.is_char_boundary(removed.end));
+                assert!(new_text.is_char_boundary(inserted.start));
+                assert!(new_text.is_char_boundary(inserted.end));
+                assert_eq!(old_text[..removed.start], new_text[..inserted.start]);
+                assert_eq!(old_text[removed.end..], new_text[inserted.end..]);
+                let mut repaired = old_text;
+                repaired.replace_range(removed, &new_text[inserted]);
+                assert_eq!(repaired, new_text);
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_text_diff_preserves_locality_in_million_line_and_giant_line_trees() {
+        for (unit, count) in [("é🙂x\n", 1_000_000), ("x", 8 * 1024 * 1024)] {
+            let original = FormattedTextTree::try_from_text(unit.repeat(count)).unwrap();
+            for at in [0, unit.len() * (count / 2), original.byte_len() - unit.len()] {
+                for (remove, insert) in [(0, unit), (unit.len(), ""), (unit.len(), "λ")] {
+                    let next = original.splice(at..at + remove, insert).unwrap();
+                    for (old, new) in [(&original, &next), (&next, &original)] {
+                        let (extent, stats) = old.changed_extent_with_stats(new);
+                        let (removed, inserted) = extent.expect("length or content changed");
+                        assert!(removed.len() <= unit.len() * 2 + 4, "{removed:?}");
+                        assert!(inserted.len() <= unit.len() * 2 + 4, "{inserted:?}");
+                        assert!(old.is_char_boundary(removed.start).unwrap());
+                        assert!(old.is_char_boundary(removed.end).unwrap());
+                        assert!(new.is_char_boundary(inserted.start).unwrap());
+                        assert!(new.is_char_boundary(inserted.end).unwrap());
+                        assert!(stats.nodes_visited < 200, "{count}: {stats:?}");
+                        assert!(stats.bytes_compared <= FORMATTED_TEXT_LEAF_BYTES * 4, "{count}: {stats:?}");
+                    }
+                    let retained = next.leaves().into_iter().map(|leaf| (leaf.id, leaf.revision)).collect::<std::collections::BTreeSet<_>>();
+                    let shared = original.leaves().into_iter().filter(|leaf| retained.contains(&(leaf.id, leaf.revision))).count();
+                    assert!(shared >= original.leaf_count().saturating_sub(2));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_independent_leaf_buffers_do_not_turn_local_diff_into_a_suffix_scan() {
+        for count in [1024, 16_384] {
+            let mut original = FormattedTextTree::default();
+            for _ in 0..count {
+                original = original.splice(original.byte_len()..original.byte_len(), "same\n").unwrap();
+            }
+            for at in [0, original.byte_len() / 2, original.byte_len() - 10] {
+                let next = original.splice(at..at + 10, "same\n").unwrap();
+                for (old, new) in [(&original, &next), (&next, &original)] {
+                    let (extent, stats) = old.changed_extent_with_stats(new);
+                    let (removed, inserted) = extent.unwrap();
+                    assert!(removed.len() <= 10 && inserted.len() <= 10);
+                    assert!(stats.nodes_visited < 256, "{count}: {stats:?}");
+                    assert!(stats.bytes_compared < 80, "{count}: {stats:?}");
+                    assert_diff_reconstructs(old, new);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn utf8_diff_reconstructs_history_branches_and_scalar_prefix_suffix_overlaps() {
+        for (old, new) in [("é", "ê"), ("🙂", "🙃"), ("é🙂é", "ê🙃ê"), ("e\u{301}", "e\u{302}"), ("", "🙂"), ("🙂", "")] {
+            let original = FormattedTextTree::try_from_text(old).unwrap();
+            let next = original.splice(0..old.len(), new).unwrap();
+            assert_diff_reconstructs(&original, &next);
+            assert_diff_reconstructs(&next, &original);
+        }
+        let mut text = "a🙂λe\u{301}\n".repeat(1000);
+        let mut tree = FormattedTextTree::try_from_text(text.as_str()).unwrap();
+        let mut history = vec![(tree.clone(), text.clone())];
+        let inserts = ["λ", "🙂", "e\u{301}", "\n", "", "\u{301}", "a\nλ"];
+        let mut random = 0x837b_d06f_u64;
+        for step in 0..600 {
+            random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let boundaries = text.grapheme_indices(true).map(|(at, _)| at).chain(std::iter::once(text.len())).collect::<Vec<_>>();
+            let index = random as usize % boundaries.len();
+            let start = boundaries[index];
+            let end = boundaries[(index + step % 5).min(boundaries.len() - 1)];
+            let next = tree.splice(start..end, inserts[step % inserts.len()]).unwrap();
+            let mut next_text = text.clone();
+            next_text.replace_range(start..end, inserts[step % inserts.len()]);
+            assert_eq!(next.flatten(), next_text);
+            assert_diff_reconstructs(&tree, &next);
+            assert_diff_reconstructs(&next, &tree);
+            let ancestor = history[random as usize % history.len()].clone();
+            assert_diff_reconstructs(&ancestor.0, &next);
+            assert_diff_reconstructs(&next, &ancestor.0);
+            if step % 31 == 0 { history.push((next.clone(), next_text.clone())); }
+            (tree, text) = if step % 47 == 0 { ancestor } else { (next, next_text) };
+        }
+    }
+
+    #[test]
+    fn syntax_diff_is_scalar_aligned_and_skips_unchanged_subtrees() {
+        for lines in [10_000,100_000,1_000_000] {
+            let old=FormattedTextTree::try_from_text("fn x(){}\n".repeat(lines)).unwrap();
+            for at in [0,old.byte_len()/2,old.byte_len()] {
+                let new=old.splice(at..at,"λ\n").unwrap();
+                let (change,stats)=old.changed_extent_with_stats(&new);
+                assert_eq!(change,Some((at..at,at..at+3)));
+                assert!(stats.nodes_visited<160,"{lines}: {stats:?}");
+                assert!(stats.bytes_compared<=FORMATTED_TEXT_LEAF_BYTES*4,"{lines}: {stats:?}");
+            }
+        }
+        let mut flat="a🙂λe\u{301}\n".repeat(1000);
+        let mut tree=FormattedTextTree::try_from_text(flat.as_str()).unwrap();
+        let replacements=["λ","🙂","e\u{301}","\n","","\u{301}","a\nλ"];
+        let mut seed=123u64;
+        for iteration in 0..500 {
+            seed=seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let boundaries=flat.grapheme_indices(true).map(|(at,_)|at).chain(std::iter::once(flat.len())).collect::<Vec<_>>();
+            let index=seed as usize%boundaries.len();
+            let start=boundaries[index];
+            let end=boundaries[(index+iteration%4).min(boundaries.len()-1)];
+            let replacement=replacements[iteration%replacements.len()];
+            let next=tree.splice(start..end,replacement).unwrap();
+            let mut expected=flat.clone();expected.replace_range(start..end,replacement);
+            match tree.changed_extent(&next) {
+                None=>assert_eq!(flat,expected),
+                Some((old,new))=>{
+                    assert!(flat.is_char_boundary(old.start)&&flat.is_char_boundary(old.end));
+                    assert!(expected.is_char_boundary(new.start)&&expected.is_char_boundary(new.end));
+                    assert_eq!(old.start,new.start);
+                    assert_eq!(&flat[..old.start],&expected[..new.start]);
+                    assert_eq!(&flat[old.end..],&expected[new.end..]);
+                    let mut repaired=flat.clone();repaired.replace_range(old,&expected[new]);assert_eq!(repaired,expected);
+                }
+            }
+            tree=next;flat=expected;
+        }
+    }
 
     fn assert_invariants(tree: &FormattedTextTree) {
         fn visit(node: &Node) -> Aggregate {

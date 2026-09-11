@@ -264,6 +264,7 @@ impl Export {
             4 => Format::Rtf,
             5 => Format::MarkdownSource,
             6 => Format::HtmlSource,
+            7 => Format::Code,
             _ => return Err(DocumentError::UnsupportedFormatting),
         };
         let encoding = match self.encoding {
@@ -355,6 +356,7 @@ impl Document {
                 Format::Rtf => 4,
                 Format::MarkdownSource => 5,
                 Format::HtmlSource => 6,
+                Format::Code => 7,
             },
             encoding: match self.encoding() {
                 super::super::Encoding::Utf8 => 1,

@@ -501,7 +501,7 @@ extension EVCoreViewSession {
     }
 }
 
-private enum EVCoreStyleBridge {
+enum EVCoreStyleBridge {
     static func beginGroup(
         core: ViemCoreHandle,
         view: ViemViewId,
@@ -523,10 +523,11 @@ private enum EVCoreStyleBridge {
         try check(viem_core_view_end_style_edit_group(core, view, &value))
     }
 
-    static func copyStyleSheet(core: ViemCoreHandle) throws -> EVStyleSheetSnapshot {
+    static func copyStyleSheet(core: ViemCoreHandle?) throws -> EVStyleSheetSnapshot {
         var info = ViemStyleSheetInfoV1()
         info.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
-        try check(viem_core_style_sheet_info(core, &info))
+        if let core { try check(viem_core_style_sheet_info(core, &info)) }
+        else { try check(viem_code_style_sheet_info(&info)) }
 
         guard info.definition_count <= UInt64(Int.max),
               info.property_count <= UInt64(Int.max),
@@ -549,7 +550,7 @@ private enum EVCoreStyleBridge {
                 items.withUnsafeMutableBufferPointer { itemsBuffer in
                     dependencies.withUnsafeMutableBufferPointer { dependenciesBuffer in
                         strings.withUnsafeMutableBufferPointer { stringsBuffer in
-                            viem_core_copy_style_sheet(
+                            if let core { return viem_core_copy_style_sheet(
                                 core,
                                 &expected,
                                 definitionsBuffer.baseAddress,
@@ -562,6 +563,15 @@ private enum EVCoreStyleBridge {
                                 UInt64(dependenciesBuffer.count),
                                 stringsBuffer.baseAddress,
                                 UInt64(stringsBuffer.count),
+                                &copiedInfo
+                            ) }
+                            return viem_code_copy_style_sheet(
+                                &expected,
+                                definitionsBuffer.baseAddress, UInt64(definitionsBuffer.count),
+                                propertiesBuffer.baseAddress, UInt64(propertiesBuffer.count),
+                                itemsBuffer.baseAddress, UInt64(itemsBuffer.count),
+                                dependenciesBuffer.baseAddress, UInt64(dependenciesBuffer.count),
+                                stringsBuffer.baseAddress, UInt64(stringsBuffer.count),
                                 &copiedInfo
                             )
                         }
@@ -606,6 +616,48 @@ private enum EVCoreStyleBridge {
                 try check(viem_core_view_edit_style(core, view, &request, &outcome))
             }
             return outcome
+        }
+    }
+
+    static func applyCodeStyle(key: EVStyleKey, expected: EVStyleSheetIdentity, mutation: EVStyleMutation) throws {
+        let encoded = EncodedMutation(key: key, expected: expected, mutation: mutation)
+        try encoded.withRequest { request in
+            var request = request
+            var info = ViemStyleSheetInfoV1()
+            info.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
+            try check(viem_code_edit_style(&request, &info))
+        }
+    }
+
+    static func createCodeStyle(key: EVStyleKey, name: String, expected: EVStyleSheetIdentity) throws {
+        var request = ViemCreateStyleV1()
+        request.struct_size = UInt32(MemoryLayout<ViemCreateStyleV1>.size)
+        request.namespace = key.namespace.rawValue
+        request.identity = expected.abiValue
+        var info = ViemStyleSheetInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
+        try Array(key.id.rawValue.utf8).withUnsafeBufferPointer { id in
+            try Array(name.utf8).withUnsafeBufferPointer { name in
+                request.style_id.data = id.baseAddress
+                request.style_id.length = UInt64(id.count)
+                request.display_name.data = name.baseAddress
+                request.display_name.length = UInt64(name.count)
+                try check(viem_code_create_style(&request, &info))
+            }
+        }
+    }
+
+    static func deleteCodeStyle(key: EVStyleKey, expected: EVStyleSheetIdentity) throws {
+        var request = ViemDeleteStyleV1()
+        request.struct_size = UInt32(MemoryLayout<ViemDeleteStyleV1>.size)
+        request.namespace = key.namespace.rawValue
+        request.identity = expected.abiValue
+        var info = ViemStyleSheetInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
+        try Array(key.id.rawValue.utf8).withUnsafeBufferPointer { id in
+            request.style_id.data = id.baseAddress
+            request.style_id.length = UInt64(id.count)
+            try check(viem_code_delete_style(&request, &info))
         }
     }
 

@@ -629,6 +629,21 @@ impl ProjectionWorkStatistics {
     pub fn full_text_bytes_materialized(self) -> usize {
         self.full_text_bytes_materialized
     }
+
+    fn accumulate(&mut self, other: Self) {
+        self.scope = match (self.scope, other.scope) {
+            (ProjectionWorkScope::FullDocument, _) | (_, ProjectionWorkScope::FullDocument) => ProjectionWorkScope::FullDocument,
+            (ProjectionWorkScope::RegionalHardLines, _) | (_, ProjectionWorkScope::RegionalHardLines) => ProjectionWorkScope::RegionalHardLines,
+            _ => ProjectionWorkScope::None,
+        };
+        macro_rules! sum { ($($field:ident),+ $(,)?) => { $(self.$field = self.$field.saturating_add(other.$field);)+ }; }
+        sum!(source_decode_passes, decoded_source_bytes, projected_formatted_bytes,
+            projected_hard_lines, source_hard_line_records_rebuilt, formatted_text_nodes_visited,
+            formatted_text_nodes_copied, formatted_text_leaves_copied, range_index_nodes_visited,
+            range_index_nodes_copied, range_index_leaves_copied, range_index_records_copied,
+            source_hard_line_nodes_visited, source_hard_line_nodes_copied,
+            source_hard_line_leaves_copied, source_hard_line_records_copied, full_text_bytes_materialized);
+    }
 }
 
 /// One exact patch in the pre-transaction primary source part.
@@ -987,6 +1002,7 @@ impl Document {
             last_successful_save_sequence: 0,
             read_only: false,
             recovered_dirty: false,
+            code_presentation: None,
         }
     }
 
@@ -1199,6 +1215,7 @@ impl Document {
         &self,
         request: StyleModelRequest,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if self.format().is_code() { return Err(DocumentError::UnsupportedFormatting.into()); }
         if request.document != self.id {
             return Err(ModelTransactionError::WrongDocument {
                 expected: self.id,
@@ -2878,7 +2895,7 @@ impl Document {
         } else if self.file_format() == FileFormat::Mac
             && matches!(
                 self.format(),
-                Format::PlainText | Format::Markdown | Format::MarkdownSource | Format::HtmlSource
+                Format::PlainText | Format::Code | Format::Markdown | Format::MarkdownSource | Format::HtmlSource
             )
             && text.contains('\r')
         {
@@ -3355,6 +3372,17 @@ impl Document {
             scratch.prepare_formatted_payload_edits(rebound)
         })? {
             return Ok(prepared);
+        }
+
+        // Literal Code payloads with ordinary logical newlines have the same
+        // graph as a text splice. Keep typing, IME and paste on the persistent
+        // regional path; rich-payload verification must not flatten/reproject
+        // an entire Code buffer for every inserted character or newline.
+        if self.format().is_code() && edits.iter().all(|edit|
+            edit.payload.break_offsets().iter().copied().eq(edit.payload.text().match_indices('\n').map(|(at,_)|at)))
+        {
+            let patches=self.translate_source_edits(logical_edits.iter().zip(&edits).map(|(text,payload)|(text,Some(payload))))?;
+            return self.prepare_text_edits_with_patches(logical_edits,Some(patches));
         }
 
         if self.format().is_rich_text()
@@ -5366,7 +5394,7 @@ impl Document {
         // Identity text projections use the existing line-local incremental
         // path. Source syntax edits in rich/cooked formats may reinterpret
         // following grammar and therefore require authoritative reprojection.
-        if matches!(self.format(), Format::PlainText | Format::HtmlSource) {
+        if matches!(self.format(), Format::PlainText | Format::Code | Format::HtmlSource) {
             let start = self
                 .projection()
                 .map_source_boundary(self.revision(), range.start, BoundaryAffinity::Downstream)
@@ -5818,29 +5846,29 @@ impl Document {
             .history
             .state_at_node(target.node)
             .expect("resolved history locations have states");
-        let old_text = self.text();
-        let new_text = candidate.projection.text();
-        let formatted_splices = if old_text == new_text {
-            Vec::new()
-        } else {
-            // This summary is a conservative invalidation range. Persistent
-            // positions use the exact composed history-edge map below, so
-            // unchanged content inside this range retains identity.
-            vec![Splice::new(0..old_text.len(), new_text.len())?]
+        let old_text = self.projection().text_tree();
+        let new_text = candidate.projection.text_tree();
+        // History restores persistent snapshots. Only their changed boundary
+        // paths need comparison; neither source nor text is flattened for undo.
+        let formatted_splices = match old_text.changed_extent(new_text) {
+            None=>Vec::new(),
+            Some((old,new))=>vec![Splice::new(old,new.len())?],
         };
         let identity = PositionMap::identity(
             self.id,
             super::PositionDomain::FormattedText,
             self.revision(),
-            old_text.len(),
+            old_text.byte_len(),
         );
         let text_position_map = self
             .history
             .map_between(current.node, target.node, identity)?;
         debug_assert_eq!(text_position_map.target_revision(), candidate.revision);
-        debug_assert_eq!(text_position_map.target_len(), new_text.len());
-        let source_patches =
-            byte_difference(&self.state().source.bytes(), &candidate.source.bytes());
+        debug_assert_eq!(text_position_map.target_len(), new_text.byte_len());
+        let source_patches = match self.state().source.changed_extent(&candidate.source) {
+            None=>Vec::new(),
+            Some((old,new))=>vec![SourcePatch::primary(old,candidate.source.bytes_in(new).expect("validated source difference"))],
+        };
         let navigation = HistoryNavigation {
             from: current,
             to: target,
@@ -5924,6 +5952,78 @@ impl Document {
         Ok(candidate)
     }
 
+    /// Independently changed Code lines must not turn into one document-sized
+    /// projection window. Adjacent edits stay together so simultaneous changes
+    /// can create graphemes across their boundaries without an invalid interim
+    /// caret. Separated groups are verified in reverse source order, then the
+    /// outer transaction supplies the one history entry and original batch map.
+    fn build_disjoint_code_edit_candidate(
+        &self,
+        source: &super::source::SourceSnapshot,
+        revision: Revision,
+        target_text: &FormattedTextTree,
+        text_splice_work: FormattedTextSpliceStats,
+        edits: &[TextEdit],
+        source_patches: &[SourcePatch],
+    ) -> Result<Option<TextEditCandidate>, ModelTransactionError> {
+        if !self.format().is_code() || edits.len() < 2 || source_patches.len() != edits.len() {
+            return Ok(None);
+        }
+        let mut groups = Vec::new();
+        let mut first = 0;
+        let mut previous_last_line: usize = 0;
+        for (index, edit) in edits.iter().enumerate() {
+            let start_line = self.projection().hard_line_at_offset(edit.range.start)
+                .ok_or(DocumentError::VerificationFailed)?;
+            let end_line = self.projection().hard_line_at_offset(edit.range.end)
+                .ok_or(DocumentError::VerificationFailed)?;
+            if index > first && start_line > previous_last_line.saturating_add(1) {
+                groups.push(first..index);
+                first = index;
+            }
+            previous_last_line = end_line;
+        }
+        groups.push(first..edits.len());
+        if groups.len() < 2 { return Ok(None); }
+        // Literal Code uses monotonic one-patch translations. Keep uncommon
+        // supporting patch sets on the existing fully verified path.
+        for group in &groups {
+            if self.line_local_projection_region(&edits[group.clone()], &source_patches[group.clone()])?.is_none() {
+                return Ok(None);
+            }
+        }
+        let mut scratch = self.scratch_document();
+        let mut work = ProjectionWorkStatistics::none();
+        // The caller already constructed the simultaneous target rope; count
+        // that work as well as each regional candidate's persistent updates.
+        work.formatted_text_nodes_visited = text_splice_work.nodes_visited;
+        work.formatted_text_nodes_copied = text_splice_work.nodes_copied;
+        work.formatted_text_leaves_copied = text_splice_work.leaves_copied;
+        for group in groups.iter().rev() {
+            let prepared = scratch.prepare_text_edits_with_patches(
+                edits[group.clone()].to_vec(), Some(source_patches[group.clone()].to_vec()),
+            )?;
+            work.accumulate(prepared.summary.projection_work);
+            scratch.commit_model_transaction(prepared)?;
+        }
+        let mut state = scratch.state().clone();
+        if state.projection.text_tree().byte_len() != target_text.byte_len()
+            || state.source.len() != source.len() {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        // Regional verification plus reverse-ordered, separated source patches
+        // proves the complete batch without flattening either full snapshot.
+        state.source = source.clone();
+        state.revision = revision;
+        let sheet = state.projection.style_sheet().clone();
+        let assignment = state.projection.document_style().clone();
+        state.projection.install_configuration_styles(revision, sheet, assignment);
+        Ok(Some(TextEditCandidate {
+            state, work, block_ids_already_reconciled: true,
+            next_projected_block_id: scratch.next_projected_block_id,
+        }))
+    }
+
     fn build_verified_text_edit_candidate(
         &self,
         source: super::source::SourceSnapshot,
@@ -5933,6 +6033,11 @@ impl Document {
         edits: &[TextEdit],
         source_patches: &[SourcePatch],
     ) -> Result<TextEditCandidate, ModelTransactionError> {
+        if let Some(candidate) = self.build_disjoint_code_edit_candidate(
+            &source, revision, target_text, text_splice_work, edits, source_patches,
+        )? {
+            return Ok(candidate);
+        }
         if let Some(candidate) = self.build_rich_local_text_edit_candidate(
             &source,
             revision,
@@ -5973,7 +6078,7 @@ impl Document {
                     .endings
                     .last()
                     .is_some_and(|ending| ending.source.end == new_source.end);
-            if self.format() != Format::Markdown
+            if self.format() != Format::Markdown && !self.format().is_code()
                 && normalized.endings.len() + usize::from(!unowned_terminal_row)
                     != region.source_lines.len()
             {
@@ -6079,25 +6184,37 @@ impl Document {
             let projected_hard_lines = regional_projection.hard_line_count();
             let mut next_projected_block_id = self.next_projected_block_id;
             let (projection, splice_work) = splice_line_local_projection(
-                self.projection(),
+                if self.format().is_code() { &self.state().projection } else { self.projection() },
                 regional_projection,
                 revision,
                 region.hard_lines.clone(),
                 region.old_formatted,
                 region.old_source,
-                new_source,
+                new_source.clone(),
                 target_text.clone(),
                 source.len(),
                 self.format() == Format::MarkdownSource,
+                self.format().is_code(),
                 edits,
                 &mut next_projected_block_id,
             )
             .map_err(super::block_identity_document_error)?;
-            if projection.hard_line_count() != self.projection().hard_line_count() {
+            if !self.format().is_code() && projection.hard_line_count() != self.projection().hard_line_count() {
                 return Err(DocumentError::VerificationFailed.into());
             }
 
-            let source_hard_lines = region
+            let source_hard_lines = if self.format().is_code() {
+                let mut start = new_source.start;
+                let mut ranges = Vec::with_capacity(normalized.endings.len() + 1);
+                for ending in &normalized.endings {
+                    ranges.push(start..ending.source.end);
+                    start = ending.source.end;
+                }
+                let trailing = self.state().source_hard_lines.get(region.source_lines.end - 1).unwrap();
+                let end = rebase_source_boundary(trailing.end, source_patches, Association::AfterInsertion)?;
+                ranges.push(start..end);
+                ranges
+            } else { region
                 .source_lines
                 .clone()
                 .map(|line| {
@@ -6119,7 +6236,7 @@ impl Document {
                     let end = rebase_source_boundary(old.end, source_patches, end_association)?;
                     Ok(start..end)
                 })
-                .collect::<Result<Vec<_>, ModelTransactionError>>()?;
+                .collect::<Result<Vec<_>, ModelTransactionError>>()? };
             let (source_hard_lines, source_line_work) = self
                 .state()
                 .source_hard_lines
@@ -6812,6 +6929,7 @@ impl Document {
             target_text.clone(),
             source.len(),
             false,
+            false,
             edits,
             &mut next_projected_block_id,
         ) {
@@ -6982,10 +7100,10 @@ impl Document {
                 .text_tree()
                 .slice(edit.range.clone())
                 .map_err(DocumentError::FormattedTextStorage)?;
-            if edit.replacement.contains('\r')
+            if !self.format().is_code() && (edit.replacement.contains('\r')
                 || edit.replacement.contains('\n')
                 || replaced.contains('\r')
-                || replaced.contains('\n')
+                || replaced.contains('\n'))
             {
                 // Edits that change hard-line topology require the whole pipeline.
                 return Ok(None);
@@ -7001,11 +7119,13 @@ impl Document {
             let Some(line_range) = self.projection().hard_line_range(line) else {
                 return Ok(None);
             };
-            if edit.range.start < line_range.start || edit.range.end > line_range.end {
+            if edit.range.start < line_range.start || (!self.format().is_code() && edit.range.end > line_range.end) {
                 return Ok(None);
             }
             first_line = first_line.min(line);
-            last_line = last_line.max(line);
+            last_line = last_line.max(if self.format().is_code() {
+                self.projection().hard_line_at_offset(edit.range.end).unwrap_or(line)
+            } else { line });
         }
         if self.format() == Format::MarkdownSource {
             let start = self

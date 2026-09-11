@@ -1,6 +1,15 @@
 import Foundation
 import CoreFoundation
 
+public struct EVCodeFilenameAssociation: Codable, Equatable, Sendable {
+  public var pattern: String
+  public var language: String
+  public init(pattern: String, language: String) {
+    self.pattern = pattern
+    self.language = language
+  }
+}
+
 /// One application-wide settings authority. Unknown keys are retained so older
 /// versions do not erase newer preferences. File I/O is the native mechanism;
 /// document style validation and cascades live in the portable core.
@@ -60,6 +69,17 @@ public final class EVConfigurationStore {
   }
   public var smartQuotes: Bool { (root["editing"] as? [String: Any])?["smartQuotes"] as? Bool ?? false }
   public var showStatusBar: Bool { (root["appearance"] as? [String: Any])?["showStatusBar"] as? Bool ?? true }
+  public var vimSyntaxDirectory: String {
+    (root["code"] as? [String: Any])?["vimSyntaxDirectory"] as? String ?? EVCodePreferences.defaultVimSyntaxDirectory
+  }
+  public var codeFilenameAssociations: [EVCodeFilenameAssociation] {
+    guard let entries = (root["code"] as? [String: Any])?["filenameAssociations"] as? [[String: Any]] else { return [] }
+    return entries.compactMap { entry in
+      guard let pattern = entry["pattern"] as? String, let language = entry["language"] as? String else { return nil }
+      return EVCodeFilenameAssociation(pattern: pattern, language: language)
+    }
+  }
+  public func codeFilenameAssociationsJSON() throws -> Data { try JSONEncoder().encode(codeFilenameAssociations) }
 
   public func setTheme(_ theme: EVTheme) throws {
     guard theme.isValid else { throw invalid("Invalid theme values") }
@@ -68,6 +88,26 @@ public final class EVConfigurationStore {
   }
   public func setSmartQuotes(_ enabled: Bool) throws { try update(section: "editing", values: ["smartQuotes": enabled]) }
   public func setShowStatusBar(_ enabled: Bool) throws { try update(section: "appearance", values: ["showStatusBar": enabled]) }
+  public func setVimSyntaxDirectory(_ path: String) throws {
+    try update(section: "code", values: ["vimSyntaxDirectory": path])
+  }
+  public func setCodeFilenameAssociations(_ entries: [EVCodeFilenameAssociation]) throws {
+    try update(section: "code", values: ["filenameAssociations": entries.map { ["pattern": $0.pattern, "language": $0.language] }])
+  }
+
+  public func codeStyleSheet() throws -> Data? { try styleDefaults(named: "code") }
+  public func saveCodeStyleSheet(_ data: Data, replacingInvalidFile: Bool = false) throws {
+    let url = try styleURL("code")
+    let object = try Self.readObject(data)
+    try Self.validateVersion(object)
+    if !replacingInvalidFile, manager.fileExists(atPath: url.path) {
+      try Self.validateVersion(Self.readObject(Data(contentsOf: url)))
+    }
+    // The core exports the complete sparse authority, including explicit
+    // suppression of built-ins. Merging removed declarations from an older
+    // export would undo the user's Clear, Rename, Delete, or Undo action.
+    try write(object, to: url)
+  }
 
   public func styleDefaults(named name: String) throws -> Data? {
     let url = try styleURL(name)
@@ -92,7 +132,7 @@ public final class EVConfigurationStore {
   }
 
   private func styleURL(_ name: String) throws -> URL {
-    guard ["text", "html", "markdown", "rtf"].contains(name) else { throw invalid("Unknown style format") }
+    guard ["text", "html", "markdown", "rtf", "code"].contains(name) else { throw invalid("Unknown style format") }
     return directory.appendingPathComponent("\(name)_style.json")
   }
   private func update(section: String, values: [String: Any]) throws {
@@ -141,6 +181,31 @@ public final class EVConfigurationStore {
         }
       }
     }
+    if let raw = object["code"] {
+      guard let fields = raw as? [String: Any] else { throw invalid("Invalid Code settings") }
+      if let rawPath = fields["vimSyntaxDirectory"] {
+        guard let path = rawPath as? String, !path.contains("\0"), path.utf8.count <= 16_384 else {
+          throw invalid("Vim syntax directory must be a path of at most 16 KiB")
+        }
+      }
+      if let rawAssociations = fields["filenameAssociations"] {
+        guard let entries = rawAssociations as? [[String: Any]], entries.count <= 256 else {
+          throw invalid("Code filename associations must be an array of at most 256 entries")
+        }
+        var normalized: [EVCodeFilenameAssociation] = []
+        for entry in entries {
+          guard let pattern = entry["pattern"] as? String, !pattern.isEmpty, pattern.utf8.count <= 256, !pattern.contains("\0"),
+                let language = entry["language"] as? String, !language.isEmpty, language.utf8.count <= 128,
+                language.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [95, 43, 46, 35, 45].contains($0) }) else {
+            throw invalid("Each Code filename association requires a pattern of 1–256 bytes and a language name of 1–128 ASCII letters, digits, or _+.#- characters")
+          }
+          normalized.append(EVCodeFilenameAssociation(pattern: pattern, language: language))
+        }
+        guard try JSONEncoder().encode(normalized).count <= 128 * 1024 else {
+          throw invalid("Encoded Code filename associations must fit within 128 KiB")
+        }
+      }
+    }
   }
   private static func mergePreservingUnknown(_ old: [String: Any], _ new: [String: Any]) -> [String: Any] {
     var result = old
@@ -166,6 +231,7 @@ extension EVSourceFormat {
     case .markdown, .markdownSource: "markdown"
     case .html, .htmlSource: "html"
     case .rtf: "rtf"
+    case .code: "code"
     }
   }
 }
