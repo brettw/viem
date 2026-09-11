@@ -4380,6 +4380,213 @@ bytes projected, bytes segmented and shaped, hard lines wrapped, cache hits,
 height-tree operations, and discarded stale tasks. Assert bounded work
 structurally; avoid brittle wall-clock-only tests.
 
+### TODO: Compact document projections and measure large-file memory
+
+**Open performance defect; high priority for large-file support.** Replace the
+eager, character-granularity decoding/provenance representation with compact
+shared mappings and bounded projection work. The Code highlighting workers are
+independent of foreground editing, but the underlying document projection still
+has excessive retained storage and expensive cold construction. Passing the
+syntax-worker responsiveness tests does not close this TODO or demonstrate that
+the complete editor has acceptable large-file memory use. This is shared
+document infrastructure, initially exercised through Code and Text; retain the
+portable ownership boundaries and the lossless behavior of every format.
+
+#### Recorded evidence and measurement limits
+
+The baseline in [code-pipeline-performance.json](docs/code-pipeline-performance.json)
+uses fixture revision 1, Rust 1.98.1 release builds, an Apple M1 Ultra
+(Mac13,2), and 128 GiB physical RAM. See also
+[the validation notes](docs/code-syntax-validation.md) and
+`pinned_code_pipeline_performance` in
+`src/core/coordinator/syntax/tests.rs`.
+
+The benchmark reads `history_status().retained_memory_bytes` immediately after
+document construction, before creating views, running syntax providers, or
+accumulating edits. The recorded `history_budget_bytes` adds 64 MiB of explicit
+headroom to that value. Subtract that headroom to recover the original estimate:
+
+| Source fixture | Estimated retained document/history state at open |
+| --- | ---: |
+| 100 MiB UTF-8, mixed line lengths/endings | 15,672,729,263 bytes (15.67 GB / 14.60 GiB) |
+| 100 MiB UTF-16LE, mixed line lengths/endings | 7,925,602,485 bytes (7.93 GB / 7.38 GiB) |
+| 100 MiB Latin-1, mixed line lengths/endings | 15,746,207,923 bytes (15.75 GB / 14.66 GiB) |
+| 1,000,000 short UTF-8 lines, 2,000,000 source bytes | 700,429,255 bytes (about 668 MiB) |
+
+These are **conservative retained-heap accounting charges, not measured process
+RAM, resident-set size, peak allocation, or OS physical footprint**. The
+estimate includes source storage, the formatted projection, source hard-line
+indexes, history metadata, and the accounting ledger itself. The ledger uses
+allocation capacities and conservative allocator/alignment/hash-table
+allowances; it deduplicates shared Arc/Vec allocations by identity. The audit
+found no obvious large shared-subtree double count, but the estimate still
+needs independent allocation and process-memory validation. It excludes
+subsequently created view/layout and native syntax state, and it does not
+measure transient allocation peaks during opening. Do not present the table as
+an observed 8–16 GB resident-memory reading.
+
+The large estimates occur with syntax both disabled and enabled. Both syntax
+workers are deliberately suspended throughout this fixture. UTF-16LE has fewer
+decoded characters than the mostly ASCII UTF-8/Latin-1 fixtures at the same
+physical byte size; its lower estimate is not evidence of an inherently more
+efficient UTF-16 projection implementation.
+
+First display in these core/mock-shaper runs takes about 4.3–10.2 seconds for
+the 100 MiB fixtures, and about 0.60–0.75 seconds for the million-short-line
+fixture. The measured typing/newline/undo and distant two-view scroll paths are
+regional, but cold construction remains eager. These timings are neither
+native AppKit frame measurements nor proof of bounded peak memory.
+
+#### Known sources of amplification
+
+- `encoding.rs` builds `DecodedText` with a `DecodedSpan` for each decoded
+  Unicode scalar, including each ordinary ASCII character in valid UTF-8.
+  `push_valid_utf8` therefore stores individual source/decoded ranges even when
+  a whole source range has an identity mapping.
+- `line_endings.rs` builds a normalized text representation and `LogicalUnit`
+  records. `projection.rs::project_plain`, also used by Code's literal format
+  projection, creates a `ProvenanceSpan` for each unit. The source-to-display
+  relationship is thus represented at character granularity even for long
+  unchanged text runs.
+- `projection.rs::source_text_boundaries` creates forward/backward-affinity
+  boundary records from each provenance span for reverse lookup. Together with
+  the provenance index, these retain multiple range/position records per
+  character. On the current 64-bit target a `ProvenanceSpan` alone contains two
+  16-byte ranges, before reverse indexes, tree nodes, and bookkeeping. A mostly
+  ASCII 100 MiB file can contain roughly 100 million characters.
+- Hard-line/block records, paragraph/style metadata, persistent range-tree
+  nodes, and retained-allocation ledger entries add further overhead. The
+  million-short-line result warrants measuring these separately even after
+  character-granularity mappings are removed.
+- Opening constructs decoded and normalized strings, temporary per-character
+  vectors, provenance and reverse-index collections, and final persistent
+  structures. Some coexist during construction. Lazy compatibility accessors
+  can also materialize flat copies of persistent text or range stores. Audit
+  these lifetimes and callers; a small final retained representation alone
+  would not prove a small opening peak.
+
+The estimate's components have not yet been independently attributed with a
+complete allocation/RSS profile. Treat the items above as inspected storage
+mechanisms, not a measured percentage breakdown or proof that one optimization
+alone accounts for the entire amplification.
+
+#### Required design and implementation work
+
+1. **Measure before changing the baseline.** Add a reproducible per-component
+   allocation breakdown for source buffers, decoded/normalized text, provenance,
+   reverse indexes, hard-line/block/style records, compatibility copies,
+   history nodes/maps, ledger overhead, view/layout caches, and syntax state.
+   Record current and peak owned bytes, allocation counts, and independently
+   sampled process footprint/RSS where available. Label each metric and its
+   exclusions; account for allocator caching and macOS memory compression when
+   comparing it with the history estimate. Use a separate process per memory
+   fixture so an earlier case's allocator high-water mark cannot contaminate
+   later RSS/peak measurements. Preserve the old report for comparison rather
+   than replacing its numbers without explanation.
+2. **Compress common mappings.** Represent valid unchanged UTF-8 runs with
+   identity/constant-offset mappings over immutable source pieces or shared
+   text leaves. Use compact stride/run encodings or bounded checkpoints for
+   UTF-16 and legacy conversion where appropriate. Record exceptions for BOMs,
+   CRLF/CR interpretation, differing encoded widths, invalid-byte diagnostics,
+   and other actual transformations. Ordinary ASCII, valid UTF-8, and regular
+   UTF-16 text MUST NOT require persistent heap records for every scalar.
+   Source pieces, transformation exceptions, and compact line metadata should
+   determine common-case mapping size. Dense exceptional input still needs
+   finite chunk sizes and measured worst-case bounds.
+3. **Support both mapping directions without expanding runs.** Provide indexed
+   source-to-text and text-to-source queries over the compact representation.
+   Resolve local encoding/Unicode details within bounded chunks/checkpoints.
+   Do not replace the forward per-character table with an equally large reverse
+   table, or expand a run to individual records during lookup, editing, or undo.
+   Adjacent source/text boundaries retain their explicit insertion association
+   and boundary affinity; numeric offset coincidence is not identity.
+4. **Construct and retain only necessary projection data.** Stream or fuse
+   decoding, line-ending interpretation, and literal projection while retaining
+   their observable contracts. Avoid simultaneous whole-file intermediate
+   strings/vectors and reuse immutable buffers when their encoding permits it.
+   Make expensive derived metadata lazy or incrementally materialized; preserve
+   logarithmic navigation with compact aggregates/checkpoints. Define partial
+   materialization and snapshot validity explicitly, so missing work cannot be
+   mistaken for an exact mapping. Initial display/input MUST NOT wait for
+   unrelated offscreen projection work. Do not substitute a whole-line
+   temporary buffer for a whole-file buffer: huge lines are required fixtures.
+5. **Keep edits and retained snapshots compact.** Local edits split/coalesce
+   mapping runs and update persistent paths, preserving unchanged identities.
+   Undo, redo, branches, multiple views, background jobs, save, and recovery
+   share unchanged storage. Audit paragraph/style IDs and per-line allocations
+   for opportunities to pack or share metadata. Compatibility flat copies must
+   be explicitly bounded/evictable or removed from large-file hot paths; they
+   must not silently double retained storage after a read API is called.
+6. **Preserve all source and editing guarantees.** Keep byte-exact no-op saves,
+   patch locality, original encodings/BOMs/mixed endings, malformed-byte
+   preservation, checked snapshot/domain identities, grapheme-safe edits,
+   anchor remapping, and exact reverse-edit translation. Rich formats retain
+   relational provenance, hidden syntax, indivisible entities, and structured
+   ambiguous/synthetic/unresolvable results. An identity fast path for Code/Text
+   must not incorrectly assume those properties for Markdown, HTML, or RTF.
+7. **Resolve the undo-budget consequence explicitly.** The default 256 MiB
+   history policy currently charges the live document state as well as retained
+   history. At the recorded sizes, ordinary edits can therefore lose undo
+   history as retention attempts to meet a budget smaller than the live state.
+   The benchmark used 128 history nodes and live-state estimate plus 64 MiB;
+   this was a disclosed test override, not normal product behavior. Verify
+   useful undo under the shipped policy after compaction, and decide explicitly
+   how unavoidable live-state cost relates to prunable history cost. Raising
+   the benchmark budget, undercounting mappings, or disabling retention is not
+   a fix for the underlying storage amplification. Excluding current projection
+   or cache costs from the history budget would change the existing retention
+   specification and requires an explicit product-policy decision; do not make
+   that change implicitly as an accounting optimization.
+8. **Avoid wide undo-summary copies.** Ordinary local undo now uses persistent
+   source/text differences. A history unit with distant disjoint edits still
+   produces one conservative source replacement hull, whose construction can
+   copy all intervening bytes. Replace that summary path with sparse changes
+   or a lazy retained replacement representation while preserving the exact
+   independent history/anchor map. Include large macros or grouped edits near
+   opposite ends of a file; local-undo tests do not cover this case.
+
+#### Completion criteria and regression fixtures
+
+Keep this TODO open until measured evidence and structural tests establish the
+new bounds. Choose and commit explicit retained/peak byte and metadata-count
+ceilings for each fixture after validating the measurement method. They must
+demonstrate that ordinary text no longer has tens of bytes of persistent
+mapping overhead per character, and that opening does not recreate the old
+per-character tables transiently. Do not invent an unmeasured universal memory
+multiplier for arbitrary encodings or rich documents.
+
+- Run the same 100 MiB UTF-8, UTF-16LE, and Latin-1 and million-short-line
+  fixtures with syntax disabled and with both providers suspended. Include
+  UTF-16BE, mixed endings, BOMs, ASCII/non-ASCII runs, supplementary scalars,
+  combining sequences, and invalid/truncated encoded input.
+- Add a multi-megabyte single line and cases dense with conversion exceptions.
+  Assert bounded temporary buffers and distinguish expected exceptional-data
+  cost from ordinary identity/stride-run cost. Measure at several file sizes
+  so a favorable small-file result cannot hide per-character heap growth.
+- Compare every compact mapping/reverse edit against a simple trusted oracle
+  on small randomized documents. Exercise exact boundaries, interior queries
+  requiring rejection, line endings split across chunks, edits at mapping-run
+  edges, same-text replacements, deletion, and old-snapshot/anchor resolution.
+- Measure current and peak allocation during cold construction, after first
+  display, after distant scrolling/wrap/zoom, after local and disjoint edits,
+  after undo/redo/branch retention, and after view/job/snapshot release. Verify
+  reclamation as well as sharing. Repeated operations must not grow hidden flat
+  caches or the allocation ledger without bound. Updating allocation accounting
+  after a local edit must visit newly retained paths, not rescan unchanged
+  subtrees or every retained snapshot.
+- Re-run large-file editing with the normal history policy and report actual
+  undo availability alongside memory. Any separate stress-test override must
+  remain visible in its report. Test color-only Code style changes and multiple
+  views without duplicating document mappings or altering saved source.
+- Record cold first-interaction latency and p50/p95/p99 input/scroll latency
+  together with allocation statistics on identified hardware/builds. Keep the
+  existing no-full-projection, bounded-chunk, stale-result, and source-fidelity
+  tests. Confirm the real frontend remains responsive while background metadata
+  construction proceeds; a mock-shaper result alone does not establish that.
+
+This TODO records unfinished work and does not relax the existing performance,
+source-preservation, position, or history requirements.
+
 ### Code syntax performance and regression gates
 
 Both Vim and Tree-sitter MUST have performance suites, with pinned engine,
