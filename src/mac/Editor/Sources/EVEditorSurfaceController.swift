@@ -319,8 +319,24 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         refreshPresentation()
     }
 
+    /// Font registration can retire core geometry without a native input turn.
+    /// Validate cheaply before deriving a scroll target from cached geometry;
+    /// copy a new presentation only when geometry was rebuilt or is missing.
+    func refreshGeometryBeforeScrolling() -> Bool {
+        guard let session else { return false }
+        do {
+            let rebuilt = try session.refreshLayoutIfNeeded()
+            if rebuilt || layoutSnapshot == nil { refreshPresentation() }
+            return layoutSnapshot != nil
+        } catch {
+            report(error)
+            return false
+        }
+    }
+
     func requestVerticalViewport(top: CGFloat) {
         guard let session else { return }
+        guard refreshGeometryBeforeScrolling() else { return }
         do {
             _ = try session.setViewportOrigin(
                 left: CGFloat(viewportState.left),
@@ -355,7 +371,20 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             }
             return
         }
-        if backend.sourceFormat == .code, (300..<400).contains(menuCommand.rawValue) { return }
+        if backend.sourceFormat == .code {
+            let style: EVStyleKey? = switch menuCommand {
+            case .editCharacterStyles: .baseCharacter
+            case .editParagraphStyles: .baseParagraph
+            case .editDocumentStyles: .baseDocument
+            default: nil
+            }
+            if let style {
+                EVStyleEditorCoordinator.shared.showCode(
+                    configuration: backend.configuration, preferredStyle: style, sender: sender)
+                return
+            }
+            if (300..<400).contains(menuCommand.rawValue) { return }
+        }
         switch menuCommand {
         case .heading0, .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
             performHeadingShortcut(level: UInt32(menuCommand.rawValue - EVMenuCommand.heading0.rawValue))
@@ -531,6 +560,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             )
         }
         if backend.sourceFormat == .code, (300..<400).contains(menuCommand.rawValue) {
+            if [.editCharacterStyles, .editParagraphStyles, .editDocumentStyles].contains(menuCommand) {
+                return .enabled
+            }
             return .disabled
         }
         return switch menuCommand {

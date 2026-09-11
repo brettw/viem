@@ -1,7 +1,7 @@
 import AppKit
 import CViemCore
-import ViemAppShell
 import XCTest
+@testable import ViemAppShell
 @testable import ViemEditor
 
 @MainActor
@@ -10,6 +10,78 @@ final class EVCodeOpeningTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-code-open-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         return EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory, legacyDefaults: nil))
+    }
+
+    private func assertRustKeywordIsHighlighted(
+        backend: EVCoreDocumentBackend,
+        surface: EVEditorSurfaceController,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        // Exercise the same worker publication and paint refresh as the timer.
+        // The fixture starts with `fn`; a Code format flag alone is insufficient.
+        for _ in 0..<200 {
+            backend.pollSyntax()
+            if surface.layoutPaint?.runs.contains(where: {
+                $0.text_start == 0 && $0.text_end >= 2
+                    && $0.paint.flags & UInt32(VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) == 0
+            }) == true { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("Rust's fn keyword did not acquire syntax paint: \(EVCodePreferences.shared.loadDiagnostics)",
+                file: file, line: line)
+    }
+
+    func testProtocolReadPreservesFilenameForAutomaticCodeAndRustPaint() async throws {
+        let concrete = backend()
+        let backend: any EVDocumentBackend = concrete
+        let source = Data("fn main() {\n    let answer = 42;\n}\n".utf8)
+        try backend.read(source: source, typeName: EVDocument.plainTextType,
+                         filename: "main.rs", allowAutomaticCode: true)
+        XCTAssertEqual(backend.sourceFormat, .code)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        try await assertRustKeywordIsHighlighted(backend: concrete, surface: surface)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), source)
+        XCTAssertFalse(backend.persistenceState.isDirty)
+        XCTAssertFalse(surface.canUndo)
+    }
+
+    func testProtocolReadRetainsRustFilenameWhenTextIsReinterpretedAsCode() async throws {
+        let concrete = backend()
+        let backend: any EVDocumentBackend = concrete
+        let source = Data("fn main() {\n    let answer = 42;\n}\n".utf8)
+        try backend.read(source: source, typeName: EVDocument.plainTextType,
+                         filename: "main.rs", allowAutomaticCode: false)
+        XCTAssertEqual(backend.sourceFormat, .plainText)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        surface.perform(menuCommand: .reinterpretAsCode, sender: nil)
+        XCTAssertEqual(backend.sourceFormat, .code)
+        try await assertRustKeywordIsHighlighted(backend: concrete, surface: surface)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), source)
+        XCTAssertFalse(backend.persistenceState.isDirty)
+    }
+
+    func testDocumentURLReadDetectsRustAndPublishesSyntaxPaint() async throws {
+        let backend = backend()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-rust-document-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("main.rs")
+        let source = Data("fn main() {\n    let answer = 42;\n}\n".utf8)
+        try source.write(to: url)
+        let document = EVDocument(editorBackend: backend)
+        defer { document.close() }
+        try document.read(from: url, ofType: EVDocument.plainTextType)
+        XCTAssertEqual(backend.sourceFormat, .code)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        try await assertRustKeywordIsHighlighted(backend: backend, surface: surface)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), source)
+        XCTAssertFalse(backend.persistenceState.isDirty)
+        XCTAssertFalse(document.isDocumentEdited)
+        XCTAssertNil(document.recoveryFailure)
     }
 
     func testFilenameAndLoadMarkersSelectCodeBeforeViewsExistAndKeepSourceClean() throws {
@@ -113,12 +185,19 @@ final class EVCodeOpeningTests: XCTestCase {
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let before = try backend.recoverySnapshot()
+        let globalStyleCommands: Set<EVMenuCommand> = [.editCharacterStyles, .editParagraphStyles, .editDocumentStyles]
         for command in EVMenuCommand.allCases where (300..<400).contains(command.rawValue) {
+            if globalStyleCommands.contains(command) {
+                XCTAssertTrue(surface.presentation(for: command).isEnabled, "\(command)")
+                continue
+            }
             XCTAssertFalse(surface.presentation(for: command).isEnabled, "\(command)")
             surface.perform(menuCommand: command, sender: nil)
         }
         XCTAssertEqual(try backend.recoverySnapshot(), before)
-        XCTAssertNil(surface.currentStyleMenuCatalogue())
+        let styles = try XCTUnwrap(surface.currentStyleMenuCatalogue())
+        XCTAssertTrue(styles.canEditStyles)
+        XCTAssertTrue(styles.entries.allSatisfy { $0.actionKind != .assign })
         XCTAssertFalse(surface.canUndo)
         surface.perform(menuCommand: .reinterpretAsText, sender: nil)
         XCTAssertEqual(backend.sourceFormat, .plainText)

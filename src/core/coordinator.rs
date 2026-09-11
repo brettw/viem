@@ -2119,7 +2119,10 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         candidate: LayoutJobCandidate,
     ) -> Result<InstalledLayoutJob, CoreError> {
-        self.poll_syntax();
+        // Validate against already-published presentation state. Publishing a
+        // newly completed syntax result here would cancel this very candidate
+        // during synchronous shaping. Syntax is published before preparation
+        // or by an explicit host poll; either boundary still retires stale jobs.
         let job_id = candidate.job_id();
         let checkpoint = candidate.next_long_line_checkpoint().cloned();
         let view = self
@@ -2605,6 +2608,46 @@ impl<P: TextMeasurementProvider> Core<P> {
         left: f32,
         requested_top: f32,
     ) -> Result<(), CoreError> {
+        // Keep the content location resolved from the caller's geometry even
+        // if a retry retires exact heights and replaces them with estimates.
+        // None is the explicit end-of-document refinement intent.
+        let target_hit = self
+            .views
+            .get(&view_id)
+            .ok_or(CoreError::UnknownView(view_id))?
+            .layout
+            .hard_line_at_y(f64::from(requested_top.max(0.0)))
+            .map_err(LayoutError::from)?;
+        // Resolving newly exposed text can register a fallback font and retire
+        // metrics while the disposable viewport is being shaped. Rebuild only
+        // that staged viewport; the scroll has not been published, so neither
+        // axis, anchors, nor command/source state is applied twice. Persistent
+        // invalidation and unrelated provider failures must still terminate.
+        for attempt in 0..3 {
+            let before = self.layout_provider_requirements(view_id)?;
+            let result =
+                self.materialize_requested_viewport_once(view_id, left, requested_top, target_hit);
+            if result.is_ok() || attempt == 2 {
+                return result;
+            }
+            let after = self.layout_provider_requirements(view_id)?;
+            if before.metrics_generation == after.metrics_generation
+                || before.measurement_environment_id != after.measurement_environment_id
+                || before.threading != after.threading
+            {
+                return result;
+            }
+        }
+        unreachable!("bounded viewport retry always returns")
+    }
+
+    fn materialize_requested_viewport_once(
+        &mut self,
+        view_id: ViewId,
+        left: f32,
+        requested_top: f32,
+        target_hit: Option<crate::layout::HardLineHeightHit>,
+    ) -> Result<(), CoreError> {
         const MIN_OVERSCAN_LINES: usize = 8;
 
         let flow = self.presentation_flow(view_id);
@@ -2640,9 +2683,6 @@ impl<P: TextMeasurementProvider> Core<P> {
 
         let viewport_height = staged_layout.height().max(f32::EPSILON);
         let requested_top = requested_top.max(0.0);
-        let target_hit = staged_layout
-            .hard_line_at_y(f64::from(requested_top))
-            .map_err(LayoutError::from)?;
         let target_line = target_hit.map_or(hard_line_count - 1, |hit| hit.hard_line());
         let target_line_top = match target_hit {
             Some(hit) => hit.line_top(),
@@ -2662,8 +2702,25 @@ impl<P: TextMeasurementProvider> Core<P> {
                 immediate_layout_context,
             )?;
         } else {
+            let estimated_line_top = staged_layout
+                .hard_line_prefix_height(target_line)
+                .map_err(LayoutError::from)?
+                .height();
+            let estimated_target_top = (estimated_line_top + offset_from_target_line)
+                .min(f64::from(f32::MAX)) as f32;
+            // A metric retry can replace a tall wrapped line with a short
+            // estimate. Its retained within-line offset still belongs to that
+            // line, not to hundreds of later estimated lines. Bound only the
+            // interval estimate; shaping retains the full requested offset.
+            let estimated_line_height = staged_layout
+                .hard_line_range_height(target_line..target_line + 1)
+                .map_err(LayoutError::from)?
+                .height();
+            let estimated_visible_bottom = estimated_line_top
+                + offset_from_target_line.min(estimated_line_height)
+                + f64::from(viewport_height);
             let visible_end = staged_layout
-                .hard_line_at_y(f64::from(requested_top) + f64::from(viewport_height))
+                .hard_line_at_y(estimated_visible_bottom)
                 .map_err(LayoutError::from)?
                 .map_or(hard_line_count, |hit| hit.hard_line().saturating_add(1));
             let visible_start = target_line;
@@ -2671,7 +2728,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             let overscan = (visible_end - visible_start).max(MIN_OVERSCAN_LINES);
             let mut start = visible_start.saturating_sub(overscan);
             let mut end = visible_end.saturating_add(overscan).min(hard_line_count);
-            let mut next_requested_top = requested_top;
+            let mut next_requested_top = estimated_target_top;
 
             loop {
                 let region = LayoutJobRegion::Viewport(ViewportLayoutRegion::new(
@@ -7071,6 +7128,7 @@ mod tests {
         inner: MockTextMeasurementProvider,
         fail_next: Arc<AtomicBool>,
         invalidate_during_shape: Arc<AtomicBool>,
+        metric_changes_after_shape: Arc<AtomicUsize>,
         shape_calls: Arc<AtomicUsize>,
         generation: Arc<AtomicU64>,
     }
@@ -7090,6 +7148,7 @@ mod tests {
                     inner: MockTextMeasurementProvider::new(),
                     fail_next: Arc::clone(&fail_next),
                     invalidate_during_shape: Arc::new(AtomicBool::new(false)),
+                    metric_changes_after_shape: Arc::new(AtomicUsize::new(0)),
                     shape_calls: Arc::clone(&shape_calls),
                     generation: Arc::clone(&generation),
                 },
@@ -7131,7 +7190,17 @@ mod tests {
             }
             let generation = self.metrics_generation();
             self.inner.set_metrics_generation(generation);
-            self.inner.shape_batch(requests)
+            let result = self.inner.shape_batch(requests);
+            if self
+                .metric_changes_after_shape
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                self.generation.fetch_add(1, Ordering::AcqRel);
+            }
+            result
         }
     }
 
@@ -8410,6 +8479,205 @@ mod tests {
                 .and_then(|view| view.active_layout_work.as_ref())
                 .map(|work| work.job_id),
             Some(active_job)
+        );
+    }
+
+    #[test]
+    fn vertical_scroll_recovers_font_registration_without_replaying_the_request() {
+        for fails_during_shape in [true, false] {
+            let (provider, _, calls, generation) = ControlledFailureProvider::new_counted();
+            let during_shape = Arc::clone(&provider.invalidate_during_shape);
+            let after_shape = Arc::clone(&provider.metric_changes_after_shape);
+            let source = (0..10_000)
+                .map(|line| format!("line {line}: {}\n", "text ".repeat(20)))
+                .collect::<String>();
+            let mut core = Core::new(Document::new(&source));
+            let view = core.add_view(provider, 300.0, 100.0);
+            core.handle(view, CoreEvent::SetWrap(false)).unwrap();
+            let before_calls = calls.load(Ordering::Acquire);
+            let before_cursor = core.command_state(view).unwrap().cursor();
+            let target_line = core
+                .layout(view)
+                .unwrap()
+                .hard_line_at_y(100_000.0)
+                .unwrap()
+                .unwrap()
+                .hard_line();
+            if fails_during_shape {
+                during_shape.store(true, Ordering::Release);
+            } else {
+                // Font notifications can arrive after a successful callback,
+                // before the staged viewport is checked for publication.
+                after_shape.store(1, Ordering::Release);
+            }
+
+            let outcome = core
+                .handle(
+                    view,
+                    CoreEvent::SetViewportOrigin {
+                        left: 25.0,
+                        top: Some(100_000.0),
+                    },
+                )
+                .unwrap();
+            assert!(outcome.layout_changed);
+            assert!(!outcome.document_changed);
+            let viewport = core.viewport_state(view).unwrap();
+            assert_eq!(viewport.left(), 25.0);
+            assert_eq!(
+                core.layout(view)
+                    .unwrap()
+                    .hard_line_at_y(f64::from(viewport.top()))
+                    .unwrap()
+                    .unwrap()
+                    .hard_line(),
+                target_line,
+                "metric retry must preserve the requested text location"
+            );
+            let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+            assert_eq!(snapshot.metrics_generation, MetricsGeneration(2));
+            assert_eq!(generation.load(Ordering::Acquire), 2);
+            assert!(snapshot.rows.len() < 100, "retry must keep shaping local");
+            assert!(calls.load(Ordering::Acquire) - before_calls <= 3);
+            assert_eq!(core.command_state(view).unwrap().cursor(), before_cursor);
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            assert_eq!(core.document().revision(), Revision(0));
+            assert!(!core.document.undo());
+        }
+    }
+
+    #[test]
+    fn vertical_scroll_metric_retry_is_bounded_and_keeps_failed_install_atomic() {
+        let (provider, _, calls, generation) = ControlledFailureProvider::new_counted();
+        let changes = Arc::clone(&provider.metric_changes_after_shape);
+        let source = (0..10_000)
+            .map(|line| format!("line {line}: {}\n", "text ".repeat(20)))
+            .collect::<String>();
+        let mut core = Core::new(Document::new(source));
+        let view = core.add_view(provider, 300.0, 100.0);
+        core.handle(view, CoreEvent::SetWrap(false)).unwrap();
+        let before_layout = core.layout(view).unwrap().clone();
+        let before_anchor = core.views.get(&view).unwrap().viewport_anchor;
+        let before_cursor = core.command_state(view).unwrap().cursor();
+        let before_calls = calls.load(Ordering::Acquire);
+        changes.store(10, Ordering::Release);
+
+        assert!(core
+            .handle(
+                view,
+                CoreEvent::SetViewportOrigin {
+                    left: 25.0,
+                    top: Some(100_000.0),
+                },
+            )
+            .is_err());
+        assert_eq!(calls.load(Ordering::Acquire) - before_calls, 3);
+        assert_eq!(generation.load(Ordering::Acquire), 4);
+        assert_eq!(core.layout(view).unwrap(), &before_layout);
+        assert_eq!(core.views.get(&view).unwrap().viewport_anchor, before_anchor);
+        assert_eq!(core.command_state(view).unwrap().cursor(), before_cursor);
+        assert_eq!(core.document().revision(), Revision(0));
+        assert!(!core.document.undo());
+    }
+
+    #[test]
+    fn vertical_scroll_metric_retry_preserves_wrapped_target_and_local_offset() {
+        let (provider, _, _, generation) = ControlledFailureProvider::new_counted();
+        let changes = Arc::clone(&provider.metric_changes_after_shape);
+        let source = (0..10_000)
+            .map(|line| format!("line {line}: {}\n", "wrapped text ".repeat(20)))
+            .collect::<String>();
+        let mut core = Core::new(Document::new(source));
+        let view = core.add_view(provider, 300.0, 100.0);
+        let before = core.layout(view).unwrap();
+        assert!(before.wrap());
+        assert!(
+            before.hard_line_range_height(0..1).unwrap().height() > 32.0,
+            "the exact wrapped prefix must differ substantially from estimates"
+        );
+        let target_line = 4_000;
+        let requested_top =
+            before.hard_line_prefix_height(target_line).unwrap().height() as f32 + 5.0;
+        let original_hit = before
+            .hard_line_at_y(f64::from(requested_top))
+            .unwrap()
+            .unwrap();
+        assert_eq!(original_hit.hard_line(), target_line);
+        let original_offset = f64::from(requested_top) - original_hit.line_top();
+        changes.store(1, Ordering::Release);
+
+        core.handle(
+            view,
+            CoreEvent::SetViewportOrigin {
+                left: 0.0,
+                top: Some(requested_top),
+            },
+        )
+        .unwrap();
+
+        let after = core.layout(view).unwrap();
+        let actual_hit = after
+            .hard_line_at_y(f64::from(after.viewport_top()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(generation.load(Ordering::Acquire), 2);
+        assert_eq!(actual_hit.hard_line(), target_line);
+        assert!(
+            (f64::from(after.viewport_top()) - actual_hit.line_top() - original_offset).abs()
+                < 0.01,
+            "retry must retain the offset within the originally requested hard line"
+        );
+        assert!(after.snapshot().unwrap().coverage.hard_lines().len() < 100);
+    }
+
+    #[test]
+    fn vertical_scroll_metric_retry_keeps_a_deep_wrapped_offset_local() {
+        let (provider, _, _, generation) = ControlledFailureProvider::new_counted();
+        let changes = Arc::clone(&provider.metric_changes_after_shape);
+        let source = format!(
+            "{}\n{}",
+            "wrapped word ".repeat(1_000),
+            "short line\n".repeat(10_000)
+        );
+        let mut core = Core::new(Document::new(source));
+        let view = core.add_view(provider, 300.0, 100.0);
+        let before = core.layout(view).unwrap();
+        let wrapped_height = before.hard_line_range_height(0..1).unwrap().height();
+        assert!(wrapped_height > 1_000.0);
+        let requested_top = (wrapped_height * 0.75).floor() as f32 + 5.0;
+        assert_eq!(
+            before
+                .hard_line_at_y(f64::from(requested_top))
+                .unwrap()
+                .unwrap()
+                .hard_line(),
+            0
+        );
+        // Cached shapes can be evicted while the view's exact height remains.
+        core.views.get_mut(&view).unwrap().engine.clear_caches();
+        changes.store(1, Ordering::Release);
+
+        core.handle(
+            view,
+            CoreEvent::SetViewportOrigin {
+                left: 0.0,
+                top: Some(requested_top),
+            },
+        )
+        .unwrap();
+
+        let after = core.layout(view).unwrap();
+        let actual_hit = after
+            .hard_line_at_y(f64::from(after.viewport_top()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(generation.load(Ordering::Acquire), 2);
+        assert_eq!(actual_hit.hard_line(), 0);
+        assert!((after.viewport_top() - requested_top).abs() < 0.01);
+        let coverage = after.snapshot().unwrap().coverage.hard_lines();
+        assert!(
+            coverage.len() < 100,
+            "a deep offset in one wrapped line must not expand into unrelated hard lines: {coverage:?}"
         );
     }
 

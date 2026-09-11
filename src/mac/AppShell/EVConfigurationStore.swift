@@ -99,9 +99,9 @@ public final class EVConfigurationStore {
   public func saveCodeStyleSheet(_ data: Data, replacingInvalidFile: Bool = false) throws {
     let url = try styleURL("code")
     let object = try Self.readObject(data)
-    try Self.validateVersion(object)
+    try Self.validateStyleVersion(object, named: "code")
     if !replacingInvalidFile, manager.fileExists(atPath: url.path) {
-      try Self.validateVersion(Self.readObject(Data(contentsOf: url)))
+      try Self.validateStyleVersion(Self.readObject(Data(contentsOf: url)), named: "code")
     }
     // The core exports the complete sparse authority, including explicit
     // suppression of built-ins. Merging removed declarations from an older
@@ -115,11 +115,15 @@ public final class EVConfigurationStore {
     let data = try Data(contentsOf: url)
     guard data.count <= 4 * 1024 * 1024 else { throw invalid("Style defaults exceed 4 MiB") }
     let object = try Self.readObject(data)
-    try Self.validateVersion(object)
+    try Self.validateStyleVersion(object, named: name)
     return data
   }
 
   public func saveStyleDefaults(_ data: Data, named name: String) throws {
+    if name == "code" {
+      try saveCodeStyleSheet(data)
+      return
+    }
     let url = try styleURL(name)
     var object = try Self.readObject(data)
     try Self.validateVersion(object)
@@ -165,6 +169,16 @@ public final class EVConfigurationStore {
   private static func validateVersion(_ object: [String: Any]) throws {
     guard let version = object["version"] as? NSNumber, CFGetTypeID(version) != CFBooleanGetTypeID(), version.intValue == 1,
           version.doubleValue == 1 else { throw invalid("Unsupported configuration version; expected 1") }
+  }
+  private static func validateStyleVersion(_ object: [String: Any], named name: String) throws {
+    guard name == "code" else { try validateVersion(object); return }
+    // The core migrates Code's copied version-1 declarations to the linked
+    // version-2 stylesheet. Other settings and format defaults remain at 1.
+    guard let version = object["version"] as? NSNumber,
+          CFGetTypeID(version) != CFBooleanGetTypeID(),
+          [1, 2].contains(version.intValue),
+          version.doubleValue == Double(version.intValue)
+    else { throw invalid("Unsupported Code stylesheet version; expected 1 or 2") }
   }
   private static func validate(_ object: [String: Any]) throws {
     try validateVersion(object)

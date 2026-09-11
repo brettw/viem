@@ -1175,7 +1175,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func scrollDocument(axis: EVDocumentScrollbars.Axis, fraction: Double) {
-        guard let surface, let snapshot = surface.layoutSnapshot, let session = surface.session else { return }
+        guard let surface, surface.refreshGeometryBeforeScrolling(),
+              let snapshot = surface.layoutSnapshot, let session = surface.session else { return }
         let value = min(max(fraction, 0), 1)
         beginTextInputGeometryUpdate()
         defer {
@@ -1578,6 +1579,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
+        guard surface.refreshGeometryBeforeScrolling() else { return }
         guard let snapshot = surface.layoutSnapshot else { return }
         documentScrollbars.noteScrollActivity()
         let phases = event.phase.union(event.momentumPhase)
@@ -2516,6 +2518,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     @discardableResult
     func performDragAutoscrollStep() -> Bool {
         guard let surface else { return false }
+        guard surface.refreshGeometryBeforeScrolling() else { return false }
         guard let location = dragAutoscrollLocation,
               let session = surface.session
         else { return false }

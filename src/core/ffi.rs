@@ -13018,6 +13018,36 @@ pub unsafe extern "C" fn viem_core_copy_syntax_diagnostics(handle:ViemCoreHandle
     })
 }
 
+/// Read-only two-pass JSON array of unique, sorted names from accepted syntax
+/// runs, including names without Code stylesheet definitions. No parsing,
+/// publication, or document-wide text scan occurs during this query.
+///
+/// # Safety
+/// Output storage and the required-length record must be aligned and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_copy_syntax_style_names(
+    handle: ViemCoreHandle,
+    output: *mut u8,
+    capacity: u64,
+    required: *mut u64,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[
+            typed_pointer_region(output, capacity)?,
+            typed_pointer_region(required, 1)?,
+        ])?;
+        let bytes = with_core(handle, |core| {
+            serde_json::to_vec(core.syntax_style_names()).map_err(|_| ViemStatus::CoreFailure)
+        })?;
+        unsafe { required.write(bytes.len() as u64) };
+        if capacity < bytes.len() as u64 {
+            return Err(ViemStatus::BufferTooSmall);
+        }
+        unsafe { copy_output(&bytes, output) };
+        Ok(())
+    })
+}
+
 /// Two-pass JSON export of sparse defaults plus explicit document declarations.
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_export_style_defaults(

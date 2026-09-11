@@ -2257,6 +2257,9 @@ ViemStatus viem_core_set_code_language(ViemCoreHandle core, uint32_t selection, 
 ViemStatus viem_core_redetect_code_language(ViemCoreHandle core, const uint8_t *filename, uint64_t length);
 ViemStatus viem_core_poll_syntax(ViemCoreHandle core, uint8_t *changed);
 ViemStatus viem_core_copy_syntax_diagnostics(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
+/* Read-only two-pass UTF-8 JSON array of unique sorted names in accepted syntax
+   runs, including undefined names. Does not parse, publish, or scan source. */
+ViemStatus viem_core_copy_syntax_style_names(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
 
 #ifdef __cplusplus
 }

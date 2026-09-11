@@ -171,7 +171,7 @@ public enum EVStyleMenuRole: UInt32, CaseIterable, Sendable {
 
 /// A single definition in the current core-owned style catalogue.
 ///
-/// `presentation` describes assignment at the current selection. It can be
+/// `presentation` describes the action at the current selection. It can be
 /// disabled when the active format adapter cannot translate that semantic
 /// edit, even though the definition remains available in Edit Styles.
 public struct EVStyleMenuEntry: Equatable, Sendable {
@@ -180,19 +180,25 @@ public struct EVStyleMenuEntry: Equatable, Sendable {
     public let displayName: String
     public let isBase: Bool
     public let presentation: EVMenuItemPresentation
+    public let actionKind: EVStyleMenuActionKind
+    public let syntaxName: String?
 
     public init(
         role: EVStyleMenuRole,
         stableID: String,
         displayName: String,
         isBase: Bool,
-        presentation: EVMenuItemPresentation
+        presentation: EVMenuItemPresentation,
+        actionKind: EVStyleMenuActionKind = .assign,
+        syntaxName: String? = nil
     ) {
         self.role = role
         self.stableID = stableID
         self.displayName = displayName
         self.isBase = isBase
         self.presentation = presentation
+        self.actionKind = actionKind
+        self.syntaxName = syntaxName
     }
 }
 
@@ -223,6 +229,9 @@ public struct EVStyleMenuCatalogue: Equatable, Sendable {
 public enum EVStyleMenuActionKind: UInt32, Sendable {
     case assign = 1
     case edit = 2
+    /// Explicit creation of an unresolved automatic syntax name. No definition
+    /// or stable ID exists until the user invokes this action.
+    case defineSyntax = 3
 }
 
 /// Typed payload carried by style menu items. Keeping both the role and stable
@@ -235,6 +244,7 @@ public final class EVStyleMenuAction: NSObject, @unchecked Sendable {
     public let documentID: UInt64
     public let documentRevision: UInt64
     public let styleSheetRevision: UInt64
+    public let syntaxName: String?
 
     public init(
         kind: EVStyleMenuActionKind,
@@ -242,7 +252,8 @@ public final class EVStyleMenuAction: NSObject, @unchecked Sendable {
         stableID: String,
         documentID: UInt64,
         documentRevision: UInt64,
-        styleSheetRevision: UInt64
+        styleSheetRevision: UInt64,
+        syntaxName: String? = nil
     ) {
         self.kind = kind
         self.role = role
@@ -250,6 +261,7 @@ public final class EVStyleMenuAction: NSObject, @unchecked Sendable {
         self.documentID = documentID
         self.documentRevision = documentRevision
         self.styleSheetRevision = styleSheetRevision
+        self.syntaxName = syntaxName
     }
 }
 

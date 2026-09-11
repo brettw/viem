@@ -1951,6 +1951,49 @@ missing style differs from missing provider coverage: it does not activate Vim
 fallback. Built-in definitions SHOULD cover the standard names emitted by the
 bundled packages; users may add other names for separately loaded syntaxes.
 
+Built-in syntax definitions MUST use explicit ordinary character-style
+inheritance to share appearance across providers. For example,
+`@comment.documentation` is based on `@comment`, which is based on `Comment`;
+`@keyword.function` is based on `@keyword`, then `Keyword`, then `Statement`.
+Declared capture variants use their nearest declared capture ancestor where
+applicable; root captures link to corresponding Vim groups. Shared groups own
+the default paint, and descendants start with no redundant local declarations.
+Editing a parent changes every inheriting property, including font metrics;
+individual descendants may override properties or choose another valid parent.
+This is a hierarchy of real definitions shown in the style editor, not a
+fallback lookup for missing names. Existing default resolved colors are retained.
+
+Code stylesheet storage version 2 records these linked defaults and sparse
+overrides. Version 1 remains readable: compare its full saved definitions with
+the old defaults, migrate unchanged default parents and copied default paint,
+and retain custom declarations, stable IDs, renames, and suppressions. An
+explicit custom parent (including no parent) retains its declarations. A
+declaration equal to the old copied default cannot be distinguished from that
+default in version 1 and is treated as inherited when its parent is unchanged.
+Do not resurrect a deleted parent or introduce a cycle with an authored link;
+repair only a newly introduced default edge, retaining the previous local
+appearance when that edge cannot be used. Loading does not rewrite the saved
+file or add settings undo history; the next settings edit saves version 2.
+Version 2 reloads preserve explicit overrides even when equal to default values.
+
+In Code, the Character menu MUST expose the global Code character definitions
+and syntax names referenced by accepted, retained highlighting results for the
+current buffer. Inspecting or opening this menu MUST NOT parse unvisited text,
+wait for a provider, create definitions, or change source. Choosing a defined
+style opens that definition in the global Styles editor instead of assigning it
+to the selection. A referenced name without a definition appears as an explicit
+**Define <name>…** action; only choosing that action creates an empty inherited
+definition and opens it for editing. Its appearance stays at the Code default
+until the user supplies declarations. Merely resolving a missing name still
+never creates a definition. The menu uses the actual case-sensitive syntax name
+and preserves normal menu tracking while highlighting changes asynchronously.
+
+Character > Edit Styles… opens the global Code character styles; Paragraph >
+Edit Styles… and Format > Document Style > Edit Styles… open the global base
+paragraph and document definitions. These are settings edits shared live by
+Code buffers, with the style editor's own undo history. Selection formatting
+and manually assigning named styles to Code text remain unavailable.
+
 Syntax name references are disposable, unlike authored stable-ID assignments.
 Adding, renaming, or removing a definition invalidates their resolution; names
 left unresolved use the default appearance. Definition children still follow
@@ -1966,6 +2009,17 @@ querying, reshaping, or rewrapping. Font/metrics-affecting differences invalidat
 affected shaping and downstream layout by the existing style-effect rules;
 paragraph line-spacing changes invalidate paragraph layout. Generation changes
 mark broad dependencies lazily, with exact replacement for visible content.
+This applies both when a user edits a definition and when asynchronous syntax
+coverage introduces or removes a run using a different font, size, weight, or
+slant. Unrelated paint-only coverage MUST NOT discard valid height estimates
+merely because another syntax definition has font properties. Preserve the
+viewport's text anchor when styled row heights change and reject layout work
+whose already-published style dependencies have become stale.
+
+The vertical scrollbar need not predict the final styled height of unvisited
+content. Unknown heights MAY use estimates from the default Code font and
+paragraph spacing, refined as nearby content is styled and laid out. Obtaining
+an exact scrollbar MUST NOT force whole-document highlighting or layout.
 Syntax styles cannot conceal text or change the logical editing boundary space.
 Provider regex/node boundaries remain internal until mapped to legal display
 ranges; they do not create new grapheme or shaping caret stops.
@@ -3453,7 +3507,9 @@ From top to bottom, the content is:
    - **Name**, an editable text field;
    - **Style type**, a read-only value showing Document, Paragraph, or
      Character; and
-   - **Based on**, a pop-up for the style's parent;
+   - **Based on**, a pop-up for the style's parent with a trailing **↗** button;
+   - **Next paragraph**, a pop-up for paragraph styles with a trailing **↗**
+     button;
 2. a native macOS tab row immediately below the name/base-style section, with
    **Character** and **Paragraph** tabs;
 3. the controls for the selected tab;
@@ -3470,6 +3526,17 @@ cycle. Base Character and Base Document have no editable parent; Base
 Paragraph's parent is fixed to Base Document. The distinguished base styles
 remain editable where their declarations permit it, but cannot be deleted or
 have their role changed.
+
+Each **↗** button selects the referenced style in this same editor by stable
+ID, allowing the user to traverse the hierarchy. Navigation commits any valid
+pending property edit through the normal editing path, but does not change the
+relationship or create a source/settings edit merely by selecting a style. A
+fixed parent can still be visited. Disable the button when there is no distinct
+applicable target, including Next paragraph's Same Style choice. Give the
+buttons accessible action names and tooltips identifying their destinations.
+Top-section labels MUST be vertically centered with their fields and pop-ups,
+including rows with auxiliary buttons, at supported window sizes and in light
+and dark appearances.
 
 Every property control must distinguish **Inherited** (no declaration at this
 style layer) from an explicit value, including explicit normal weight, no
@@ -3521,7 +3588,9 @@ Source adapters preserve this distinction through their owned style metadata,
 with conventional interoperable bold fallback where necessary.
 
 Font-family fallback order requires an ordered editor rather than a single-font
-field. Native font and color panels may be used as transient choosers, but they
+field. Primary and fallback font-name dropdowns request 20 visible font rows;
+native AppKit may constrain their height to available screen space. Native font
+and color panels may be used as transient choosers, but they
 must update the same selected style and must not become alternate persistence
 or undo authorities.
 
@@ -4662,6 +4731,14 @@ Required automated fixtures and assertions are:
    the correct layout layers and preserve viewport anchors. Missing styles use
    the default, never another provider. Cache invalidation remains lazy on the
    million-line fixture. No source/dirty/document-undo changes occur.
+   Exercise the Character menu with defined and missing provider names: listing
+   is read-only, editing targets the shared Code definition, and only explicit
+   Define creates a missing definition. Test asynchronous publication of mixed
+   font sizes, weight, and slant in newly exposed rows; repaint and reflow use
+   current identities and preserve text anchors across multiple Code buffers.
+   Paint-only publications preserve unrelated exact heights even when another
+   syntax style has metric declarations. Estimated scrollbar height remains
+   usable without styling the unvisited prefix or the gap between distant views.
 
 Use deterministic clocks, fuel counters, bounded fake providers, and allocation
 accounting as hard release gates. Assert zero syntax-provider execution/waits

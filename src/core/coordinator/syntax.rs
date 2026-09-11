@@ -9,6 +9,8 @@ use crate::document::{
 };
 use std::sync::Arc;
 
+mod metrics;
+
 pub(super) struct CoreSyntax {
     service: SyntaxService,
     selection: LanguageSelection,
@@ -18,6 +20,7 @@ pub(super) struct CoreSyntax {
     detection_profile: Arc<detection::DetectionProfile>,
     filename: String,
     published: Option<(SyntaxInputIdentity, u64)>,
+    referenced_names: Vec<String>,
     sheet: Arc<crate::document::StyleSheet>,
 }
 impl Default for CoreSyntax {
@@ -31,6 +34,7 @@ impl Default for CoreSyntax {
             detection_profile: detection::bundled_profile(),
             filename: String::new(),
             published: None,
+            referenced_names: Vec::new(),
             sheet: code_style::snapshot(),
         }
     }
@@ -156,6 +160,17 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.syntax.service.statistics
     }
 
+    /// Names in the accepted, bounded syntax cache, including unresolved names.
+    /// Menu inspection never runs a provider or scans unhighlighted document text.
+    pub fn syntax_style_names(&self) -> &[String] {
+        let current = (self.syntax_input().identity(), self.syntax.service.configuration.generation);
+        if self.document.format().is_code() && self.syntax.published == Some(current) {
+            &self.syntax.referenced_names
+        } else {
+            &[]
+        }
+    }
+
     /// Bounded publication and immutable request capture only. No provider
     /// function, parsing, or wait occurs under the coordinator's serial lock.
     pub fn poll_syntax(&mut self) -> bool {
@@ -240,17 +255,27 @@ impl<P: TextMeasurementProvider> Core<P> {
             return false;
         }
         let runs = self.syntax.service.runs(input.identity());
-        let metrics_changed = code_metrics_changed(&self.syntax.sheet, &sheet)
-            || (completed
-                && sheet.character_styles().any(|s| {
-                    s.properties.declared_properties().iter().any(|p| {
-                        p.invalidation_effect() != crate::document::StyleInvalidationEffect::Paint
-                    })
-                }));
-        self.document
-            .install_code_presentation(sheet.clone(), &runs);
-        self.syntax.sheet = sheet;
+        self.syntax.referenced_names = runs
+            .iter()
+            .map(|run| run.name.0.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        self.publish_code_presentation(sheet, &runs);
         self.syntax.published = Some(publication);
+        true
+    }
+
+    fn publish_code_presentation(
+        &mut self,
+        sheet: Arc<crate::document::StyleSheet>,
+        runs: &[crate::document::syntax::SyntaxRun],
+    ) {
+        let previous = self.document.projection().clone();
+        self.document.install_code_presentation(sheet.clone(), runs);
+        let metrics_changed = code_metrics_changed(&self.syntax.sheet, &sheet)
+            || metrics::runs_change_metrics(&previous, self.document.projection());
+        self.syntax.sheet = sheet;
         for view in self.views.values_mut() {
             cancel_active_layout_work(view);
             view.layout.invalidate_syntax_presentation(metrics_changed);
@@ -258,7 +283,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                 view.long_line_checkpoints = LongLineCheckpointCache::default();
             }
         }
-        true
     }
 }
 

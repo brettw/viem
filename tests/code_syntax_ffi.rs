@@ -37,6 +37,42 @@ impl Drop for Core {
 }
 
 #[test]
+fn syntax_style_name_export_is_read_only_and_checks_output_storage() {
+    let core = Core::new();
+    let before = core.state();
+    let mut required = 0;
+    unsafe {
+        assert_eq!(
+            viem_core_copy_syntax_style_names(core.0, ptr::null_mut(), 0, &mut required),
+            ViemStatus::BufferTooSmall
+        );
+        assert_eq!(required, 2);
+        let mut bytes = [0u8; 2];
+        assert_eq!(
+            viem_core_copy_syntax_style_names(core.0, bytes.as_mut_ptr(), 2, &mut required),
+            ViemStatus::Ok
+        );
+        assert_eq!(&bytes, b"[]");
+        assert_eq!(
+            viem_core_copy_syntax_style_names(core.0, ptr::null_mut(), 0, ptr::null_mut()),
+            ViemStatus::NullPointer
+        );
+        let mut aliased = 99u64;
+        let alias = &mut aliased as *mut u64;
+        assert_eq!(
+            viem_core_copy_syntax_style_names(core.0, alias.cast(), 8, alias),
+            ViemStatus::InvalidArgument
+        );
+        assert_eq!(aliased, 99);
+        assert_eq!(
+            viem_core_copy_syntax_style_names(0, ptr::null_mut(), 0, &mut required),
+            ViemStatus::InvalidHandle
+        );
+    }
+    assert_eq!(core.state(), before);
+}
+
+#[test]
 fn code_detection_abi_preserves_source_and_clean_history() {
     let core = Core::new();
     let before = core.state();

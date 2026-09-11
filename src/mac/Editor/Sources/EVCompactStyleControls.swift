@@ -40,6 +40,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     override init() {
         super.init()
         family.addItems(withObjectValues: NSFontManager.shared.availableFontFamilies.sorted())
+        family.numberOfVisibleItems = 20
         family.completes = true
         family.usesDataSource = false
         family.delegate = self
@@ -518,6 +519,7 @@ final class EVFallbackFontsController: NSViewController, NSTableViewDataSource, 
         scroll.borderType = .bezelBorder
         scroll.heightAnchor.constraint(equalToConstant: 106).isActive = true
         entry.addItems(withObjectValues: NSFontManager.shared.availableFontFamilies.sorted())
+        entry.numberOfVisibleItems = 20
         entry.completes = true
         entry.usesDataSource = false
         entry.placeholderString = "Font family"

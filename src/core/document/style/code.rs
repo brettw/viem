@@ -16,6 +16,12 @@ pub fn snapshot() -> Arc<StyleSheet> {
 }
 
 pub fn default_sheet() -> StyleSheet {
+    default_sheet_with_links(true)
+}
+
+/// Version 1 copied each family's paint onto every syntax name. Keep that
+/// exact baseline available to distinguish stored overrides during migration.
+fn default_sheet_with_links(linked: bool) -> StyleSheet {
     let mut sheet = StyleSheet::default();
     sheet
         .block_styles
@@ -37,7 +43,7 @@ pub fn default_sheet() -> StyleSheet {
         .font_families = Some(vec!["monospace".into()]);
     let families: &[(&str, &[&str], (u8, u8, u8))] = &[
         (
-            "keyword",
+            "Statement",
             &[
                 "@keyword",
                 "@keyword.function",
@@ -66,7 +72,7 @@ pub fn default_sheet() -> StyleSheet {
             (170, 65, 153),
         ),
         (
-            "string",
+            "String",
             &[
                 "@string",
                 "@string.special",
@@ -83,12 +89,12 @@ pub fn default_sheet() -> StyleSheet {
             (38, 132, 77),
         ),
         (
-            "comment",
+            "Comment",
             &["@comment", "@comment.documentation", "Comment", "Todo"],
             (115, 123, 130),
         ),
         (
-            "function",
+            "Function",
             &[
                 "@function",
                 "@function.builtin",
@@ -105,7 +111,7 @@ pub fn default_sheet() -> StyleSheet {
             (45, 110, 180),
         ),
         (
-            "type",
+            "Type",
             &[
                 "@type",
                 "@type.builtin",
@@ -122,7 +128,7 @@ pub fn default_sheet() -> StyleSheet {
             (154, 102, 42),
         ),
         (
-            "constant",
+            "Constant",
             &[
                 "@constant",
                 "@constant.builtin",
@@ -139,7 +145,7 @@ pub fn default_sheet() -> StyleSheet {
             (155, 95, 190),
         ),
         (
-            "special",
+            "Special",
             &[
                 "@operator",
                 "@punctuation.delimiter",
@@ -159,7 +165,7 @@ pub fn default_sheet() -> StyleSheet {
             (75, 125, 145),
         ),
         (
-            "identifier",
+            "Identifier",
             &[
                 "@variable",
                 "@variable.parameter",
@@ -174,16 +180,21 @@ pub fn default_sheet() -> StyleSheet {
             (80, 100, 140),
         ),
     ];
-    for (_, names, (red, green, blue)) in families {
+    for (root, names, (red, green, blue)) in families {
         for name in *names {
             let id = StyleId(format!("syntax:{name}"));
+            let parent = if linked && name != root {
+                StyleId(format!("syntax:{}", default_parent(name, root, names)))
+            } else {
+                sheet.base_character.clone()
+            };
             sheet.character_styles.insert(
                 id.clone(),
                 CharacterStyle {
                     id: id.clone(),
-                    based_on: Some(sheet.base_character.clone()),
+                    based_on: Some(parent),
                     properties: CharacterProperties {
-                        foreground: Some(Color {
+                        foreground: (!linked || name == root).then_some(Color {
                             red: *red as f32 / 255.,
                             green: *green as f32 / 255.,
                             blue: *blue as f32 / 255.,
@@ -213,6 +224,42 @@ pub fn default_sheet() -> StyleSheet {
             .insert(id, StyleDefinitionMetadata::generated(name));
     }
     sheet
+}
+
+/// These are explicit definition relationships, not a fuzzy lookup rule for
+/// unknown provider names. Existing capture prefixes form the nearer parent;
+/// root captures link to the corresponding Vim group where one exists.
+fn default_parent<'a>(name: &'a str, root: &'a str, names: &[&str]) -> &'a str {
+    let mut prefix = name;
+    while let Some((parent, _)) = prefix.rsplit_once('.') {
+        if names.contains(&parent) {
+            return parent;
+        }
+        prefix = parent;
+    }
+    match name {
+        "@keyword" => "Keyword",
+        "@conditional" => "Conditional",
+        "@repeat" => "Repeat",
+        "@label" => "Label",
+        "@exception" => "Exception",
+        "@include" => "Include",
+        "@preproc" => "PreProc",
+        "Include" | "Define" | "Macro" | "PreCondit" => "PreProc",
+        "@character" => "Character",
+        "@escape" => "SpecialChar",
+        "@storageclass" => "StorageClass",
+        "@number" => "Number",
+        "@boolean" => "Boolean",
+        "@float" => "Float",
+        "Float" => "Number",
+        "@operator" => "Operator",
+        "@delimiter"
+        | "@punctuation.delimiter"
+        | "@punctuation.bracket"
+        | "@punctuation.special" => "Delimiter",
+        _ => root,
+    }
 }
 
 pub fn resolve_name<'a>(sheet: &'a StyleSheet, name: &str) -> Option<&'a StyleId> {
@@ -304,7 +351,7 @@ pub fn export_snapshot(sheet: &StyleSheet) -> Result<Vec<u8>, String> {
         .cloned()
         .collect();
     let file = File {
-        version: 1,
+        version: 2,
         block_styles: sheet
             .block_styles
             .values()
@@ -339,10 +386,15 @@ pub fn parse_json(bytes: &[u8]) -> Result<StyleSheet, String> {
         return Err("Code stylesheet exceeds 4 MiB".into());
     }
     let mut sheet = default_sheet();
+    let mut legacy = false;
     if !bytes.is_empty() {
         let file: File = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-        if file.version != 1 || file.character_styles.len() > 4096 {
+        if ![1, 2].contains(&file.version) || file.character_styles.len() > 4096 {
             return Err("Unsupported Code stylesheet".into());
+        }
+        legacy = file.version == 1;
+        if legacy {
+            sheet = default_sheet_with_links(false);
         }
         for id in file.suppressed_character_ids {
             sheet.character_styles.remove(&id);
@@ -375,7 +427,88 @@ pub fn parse_json(bytes: &[u8]) -> Result<StyleSheet, String> {
         }
     }
     validate(&sheet)?;
+    if legacy {
+        sheet = migrate_legacy_links(sheet);
+        validate(&sheet)?;
+    }
     Ok(sheet)
+}
+
+fn migrate_legacy_links(legacy: StyleSheet) -> StyleSheet {
+    let old_defaults = default_sheet_with_links(false);
+    let new_defaults = default_sheet();
+    let mut sheet = legacy.clone();
+    let mut introduced = BTreeSet::new();
+    for (id, style) in &mut sheet.character_styles {
+        let (Some(old), Some(new)) = (
+            old_defaults.character_styles.get(id),
+            new_defaults.character_styles.get(id),
+        ) else {
+            continue;
+        };
+        // A saved entry contains the whole old definition, even for a size-only
+        // edit. Only its unchanged default parent and copied default paint move
+        // to the new inheritance model. A custom parent retains its complete
+        // appearance, including an old-default-equivalent local color.
+        if style.based_on == old.based_on {
+            style.based_on = new.based_on.clone();
+            if style.properties.foreground == old.properties.foreground {
+                style.properties.foreground = new.properties.foreground;
+            }
+            if old.based_on != new.based_on {
+                introduced.insert(id.clone());
+            }
+        }
+    }
+    // Deleted groups stay deleted. Follow only the known default ancestry to
+    // find an existing parent, retaining the legacy appearance when a new link
+    // cannot be used. Never repair an explicitly authored dangling reference.
+    for id in &introduced {
+        let original_parent = sheet.character_styles[id].based_on.clone();
+        let mut parent = original_parent.clone();
+        while let Some(missing) = parent
+            .as_ref()
+            .filter(|p| !sheet.character_styles.contains_key(*p))
+        {
+            parent = new_defaults
+                .character_styles
+                .get(missing)
+                .and_then(|s| s.based_on.clone());
+        }
+        if parent != original_parent {
+            let style = sheet.character_styles.get_mut(id).unwrap();
+            style.based_on = parent;
+            style.properties.foreground = legacy.character_styles[id].properties.foreground;
+        }
+    }
+    // Valid legacy user relationships can conflict with a new default edge
+    // (e.g. Comment already based on @comment). Retire only an introduced edge
+    // in each such cycle, never the user's relationship or declaration.
+    for id in introduced {
+        let mut seen = BTreeSet::new();
+        let mut parent = sheet.character_styles[&id].based_on.as_ref();
+        let mut cyclic = false;
+        while let Some(current) = parent {
+            if current == &id {
+                cyclic = true;
+                break;
+            }
+            if !seen.insert(current) {
+                break;
+            }
+            parent = sheet
+                .character_styles
+                .get(current)
+                .and_then(|s| s.based_on.as_ref());
+        }
+        if cyclic {
+            let original = &legacy.character_styles[&id];
+            let style = sheet.character_styles.get_mut(&id).unwrap();
+            style.based_on = original.based_on.clone();
+            style.properties.foreground = original.properties.foreground;
+        }
+    }
+    sheet
 }
 
 pub fn replace_json(bytes: &[u8]) -> Result<Arc<StyleSheet>, String> {
@@ -391,6 +524,9 @@ pub fn replace_json(bytes: &[u8]) -> Result<Arc<StyleSheet>, String> {
     *guard = Arc::new(sheet);
     Ok(guard.clone())
 }
+
+#[cfg(test)]
+mod linking_tests;
 
 #[cfg(test)]
 mod tests {
@@ -447,12 +583,12 @@ mod tests {
         let mut sheet = default_sheet();
         let id = resolve_name(&sheet, "@keyword").unwrap().clone();
         sheet.character_metadata.get_mut(&id).unwrap().display_name = "Custom keyword".into();
-        let removed = resolve_name(&sheet, "Comment").unwrap().clone();
+        let removed = resolve_name(&sheet, "Todo").unwrap().clone();
         sheet.remove_character_style(&removed, false).unwrap();
         let encoded = export_snapshot(&sheet).unwrap();
         let restored = parse_json(&encoded).unwrap();
         assert!(resolve_name(&restored, "@keyword").is_none());
-        assert!(resolve_name(&restored, "Comment").is_none());
+        assert!(resolve_name(&restored, "Todo").is_none());
         assert_eq!(resolve_name(&restored, "Custom keyword"), Some(&id));
         assert!(resolve_name(&restored, "custom keyword").is_none());
         let mut duplicate = serde_json::from_slice::<serde_json::Value>(&encoded).unwrap();

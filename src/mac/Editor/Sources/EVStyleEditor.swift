@@ -77,7 +77,12 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         present(sender: sender, center: isNewWindow)
     }
 
-    func showCode(configuration: EVConfigurationStore, sender: Any?) {
+    func showCode(
+        configuration: EVConfigurationStore,
+        preferredStyle: EVStyleKey = .baseDocument,
+        definingSyntaxName: String? = nil,
+        sender: Any?
+    ) {
         do {
             let session: EVCodeStyleSession
             if let current = globalSession, current.configuration.directory.standardizedFileURL == configuration.directory.standardizedFileURL {
@@ -86,12 +91,27 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
                 session = try EVCodeStyleSession(configuration: configuration)
                 globalSession = session
             }
+            var selectedStyle = preferredStyle
+            if let name = definingSyntaxName {
+                // Explicit creation is its own settings undo action, even when
+                // invoked while another style control has an open edit group.
+                session.endGroup()
+                let latest = try session.snapshot()
+                if let existing = latest.definitions.first(where: { $0.kind == .character && $0.name == name }) {
+                    selectedStyle = existing.key
+                } else {
+                    let key = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: UUID().uuidString.lowercased()))
+                    try session.create(key: key, name: name, expected: latest.identity)
+                    selectedStyle = key
+                }
+            }
             target = nil
             stopObservingTargetWindow()
             let isNewWindow = prepareWindow()
             (controller?.window as? EVStyleEditorPanel)?.settingsUndoManager = session.undoManager
             controller?.window?.title = "Code Styles"
             contentController?.retarget(codeSession: session)
+            contentController?.selectStyle(selectedStyle)
             present(sender: sender, center: isNewWindow)
         } catch {
             EVCodePreferences.shared.reportLoadDiagnostics([error.localizedDescription])
@@ -236,6 +256,8 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private let nameField = NSTextField()
     private let typeLabel = NSTextField(labelWithString: "")
     private let basedOnPopup = NSPopUpButton()
+    private let editParentButton = NSButton()
+    private let editNextStyleButton = NSButton()
     private let availabilityLabel = NSTextField(wrappingLabelWithString: "")
     private let tabs = NSSegmentedControl(
         labels: ["Character", "Paragraph"],
@@ -321,6 +343,8 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         deleteStyleButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         let stylePicker = NSStackView(views: [stylePopup, newStylePopup, deleteStyleButton])
         stylePicker.orientation = .horizontal
+        stylePicker.alignment = .centerY
+        stylePicker.distribution = .fill
         stylePicker.spacing = 6
         nameField.placeholderString = "Style name"
         nameField.delegate = self
@@ -330,13 +354,15 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         basedOnPopup.target = self
         basedOnPopup.action = #selector(basedOnChanged(_:))
         basedOnPopup.setAccessibilityLabel("Based on style")
+        configureNavigationButton(editParentButton, label: "Edit based on style", action: #selector(editParentStyle(_:)))
+        configureNavigationButton(editNextStyleButton, label: "Edit next paragraph style", action: #selector(editNextStyle(_:)))
 
         let propertiesGrid = NSGridView(views: [
             [label("Style"), stylePicker],
             [label("Name"), nameField],
             [label("Style type"), typeLabel],
-            [label("Based on"), basedOnPopup],
-            [label("Next paragraph"), nextStyleRow.popupForCompactLayout],
+            [label("Based on"), navigationRow(popup: basedOnPopup, button: editParentButton)],
+            [label("Next paragraph"), navigationRow(popup: nextStyleRow.popupForCompactLayout, button: editNextStyleButton)],
         ])
         configurePropertiesGrid(propertiesGrid)
         let propertiesContainer = centeredContainer(
@@ -769,6 +795,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             choices: snapshot.compatibleFollowingStyles(for: definition),
             editable: codeSession == nil && definition.capabilities.contains(.nextStyle)
         )
+        configureNavigationTargets(snapshot: snapshot, definition: definition)
 
         let paragraphEnabled = definition.kind == .paragraph
         tabs.setEnabled(true, forSegment: EVStyleEditorTab.character.rawValue)
@@ -831,6 +858,19 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
                 ? "The parent of this distinguished base style is fixed."
                 : "This style's parent is read-only."
         }
+    }
+
+    private func configureNavigationTargets(snapshot: EVStyleSheetSnapshot, definition: EVStyleDefinition) {
+        let parent = definition.parentKey.flatMap { snapshot.definition(for: $0) }
+        editParentButton.isEnabled = parent != nil && parent?.key != definition.key
+        editParentButton.toolTip = parent.map { "Edit \($0.name)" } ?? "This style has no parent."
+
+        let next = definition.kind == .paragraph
+            ? definition.nextStyleID.flatMap { snapshot.definition(namespace: .block, id: $0) }
+            : nil
+        editNextStyleButton.isEnabled = next?.kind == .paragraph && next?.key != definition.key
+        editNextStyleButton.toolTip = next.map { "Edit \($0.name)" }
+            ?? "Choose a next paragraph style to edit it."
     }
 
     private func selectPopupItem(for key: EVStyleKey) {
@@ -1034,6 +1074,8 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         basedOnPopup.removeAllItems()
         basedOnPopup.addItem(withTitle: "Unavailable")
         basedOnPopup.isEnabled = false
+        editParentButton.isEnabled = false
+        editNextStyleButton.isEnabled = false
         diagnosticMessage = ""
         availabilityLabel.stringValue = "No target document. Choose Edit Styles… from a document to retarget this window."
         availabilityLabel.isHidden = false
@@ -1058,6 +1100,8 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         deleteStyleButton.isEnabled = false
         nameField.isEnabled = false
         basedOnPopup.isEnabled = false
+        editParentButton.isEnabled = false
+        editNextStyleButton.isEnabled = false
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.character.rawValue)
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.paragraph.rawValue)
         availabilityLabel.stringValue = diagnosticMessage.isEmpty ? "Styles are temporarily unavailable." : diagnosticMessage
@@ -1105,13 +1149,43 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private func configurePropertiesGrid(_ grid: NSGridView) {
         grid.rowSpacing = 8
         grid.columnSpacing = 12
+        // Explicit native alignment-rect centering also works for cells that
+        // contain stacks. A stack's implicit baseline can otherwise put its
+        // label above the popup's text.
+        grid.yPlacement = .center
+        grid.rowAlignment = .none
         grid.column(at: 0).width = 104
         grid.column(at: 0).xPlacement = .trailing
         grid.column(at: 1).xPlacement = .fill
-        for view in [stylePopup, nameField, typeLabel, basedOnPopup] {
-            view.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            view.widthAnchor.constraint(greaterThanOrEqualToConstant: 390).isActive = true
+        for row in 0..<grid.numberOfRows {
+            guard let control = grid.cell(atColumnIndex: 1, rowIndex: row).contentView else { continue }
+            control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            control.widthAnchor.constraint(greaterThanOrEqualToConstant: 390).isActive = true
         }
+    }
+
+    private func configureNavigationButton(_ button: NSButton, label: String, action: Selector) {
+        button.bezelStyle = .rounded
+        button.image = NSImage(systemSymbolName: "arrow.up.right", accessibilityDescription: nil)
+        button.imagePosition = .imageOnly
+        button.target = self
+        button.action = action
+        button.isEnabled = false
+        button.setAccessibilityLabel(label)
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        button.widthAnchor.constraint(equalToConstant: 30).isActive = true
+    }
+
+    private func navigationRow(popup: NSPopUpButton, button: NSButton) -> NSStackView {
+        popup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        popup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let row = NSStackView(views: [popup, button])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.distribution = .fill
+        row.spacing = 6
+        return row
     }
 
     private func centeredContainer(
@@ -1178,6 +1252,17 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     @objc private func basedOnChanged(_ sender: NSPopUpButton) {
         guard !isUpdatingUI, let key = (sender.selectedItem?.representedObject as? EVStyleKeyBox)?.key else { return }
         _ = commit(.setParent(key.id))
+    }
+
+    @objc private func editParentStyle(_ sender: Any?) {
+        guard editParentButton.isEnabled, let key = selectedDefinition?.parentKey else { return }
+        selectStyle(key)
+    }
+
+    @objc private func editNextStyle(_ sender: Any?) {
+        guard editNextStyleButton.isEnabled, let definition = selectedDefinition,
+              definition.kind == .paragraph, let id = definition.nextStyleID else { return }
+        selectStyle(EVStyleKey(namespace: .block, id: id))
     }
 
     @objc private func tabChanged(_ sender: NSSegmentedControl) {

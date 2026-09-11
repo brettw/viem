@@ -114,6 +114,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         let (backend, surface, editor, _) = try makeEditor(html: true)
         defer { withExtendedLifetime(surface) {} }
         let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
+        XCTAssertEqual(family.numberOfVisibleItems, 20)
         family.stringValue = "SF Pro"
         XCTAssertTrue(family.sendAction(try XCTUnwrap(family.action), to: family.target))
         let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
@@ -170,6 +171,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
         try control(NSButton.self, label: "Move fallback up", in: draft.view).performClick(nil)
         let entry = try control(NSComboBox.self, label: "Add fallback family", in: draft.view)
+        XCTAssertEqual(entry.numberOfVisibleItems, 20)
         XCTAssertTrue(try XCTUnwrap(entry.window).makeFirstResponder(entry))
         let fieldEditor = try XCTUnwrap(entry.currentEditor() as? NSTextView)
         fieldEditor.insertText("Menlo", replacementRange: NSRange(location: 0, length: fieldEditor.string.utf16.count))

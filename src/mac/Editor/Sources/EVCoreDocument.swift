@@ -143,8 +143,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         try read(source: source, typeName: typeName, filename: "", allowAutomaticCode: false)
     }
 
-    public func read(source: Data, typeName: String, filename: String, allowAutomaticCode: Bool) throws {
-        openingFilename = filename
+    public func read(source: Data, typeName: String, filename: String?, allowAutomaticCode: Bool) throws {
+        openingFilename = filename ?? ""
         self.allowAutomaticCode = allowAutomaticCode
         self.source = source
         self.typeName = typeName
@@ -1294,15 +1294,17 @@ final class EVCoreViewSession {
     /// Font registration can retire the presentation while the view is idle.
     /// Refresh through an explicit core presentation event before requesting
     /// a new identity; never reuse an old hit-test identity or replay an edit.
-    func refreshLayoutIfNeeded() throws {
+    @discardableResult
+    func refreshLayoutIfNeeded() throws -> Bool {
         var info = ViemLayoutSnapshotInfoV1()
         info.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotInfoV1>.size)
         let status = viem_core_view_layout_snapshot_info(document.core, viewID, &info)
         guard status == Status.layoutUnavailable else {
             try checked(status, operation: "Validate editor layout")
-            return
+            return false
         }
         _ = try resize(width: viewportSize.width, height: viewportSize.height)
+        return true
     }
 
     func hitTest(_ point: CGPoint, in snapshot: ViemLayoutSnapshotInfoV1) throws -> ViemLayoutCaretPointV1 {

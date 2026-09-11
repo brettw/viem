@@ -675,6 +675,31 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertTrue(editItem.isEnabled)
     }
 
+    func testCodeStyleMenuPreservesEditAndExplicitDefinitionActions() throws {
+        let owner = Owner()
+        let provider = StyleProvider(catalogue: styleCatalogue(documentRevision: 1, styleSheetRevision: 4, entries: [
+            EVStyleMenuEntry(role: .character, stableID: "Character", displayName: "Base Character",
+                             isBase: true, presentation: .enabled, actionKind: .edit),
+            EVStyleMenuEntry(role: .character, stableID: "keyword-id", displayName: "@keyword",
+                             isBase: false, presentation: .enabled, actionKind: .edit),
+            EVStyleMenuEntry(role: .character, stableID: "", displayName: "Define @custom…",
+                             isBase: false, presentation: .enabled, actionKind: .defineSyntax, syntaxName: "@custom"),
+        ]))
+        let builder = EVMenuBuilder(owner: owner, styleMenuProvider: { provider })
+        let main = builder.buildMainMenu(for: NSApplication.shared)
+        let menu = try submenu("Character", of: main)
+        builder.menuNeedsUpdate(menu)
+        XCTAssertEqual(tokens(in: menu), ["Base Character", "@keyword", "Define @custom…", "-", "Edit Styles…"])
+        let actions = menu.items.compactMap(styleAction)
+        XCTAssertEqual(actions.map(\.kind), [.edit, .edit, .defineSyntax, .edit])
+        XCTAssertEqual(actions[2].syntaxName, "@custom")
+        XCTAssertEqual(actions[2].stableID, "")
+        XCTAssertTrue(menu.items.filter { !$0.isSeparatorItem }.allSatisfy {
+            $0.action == #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:))
+                && $0.keyEquivalent.isEmpty
+        })
+    }
+
     func testStyleMenuRequeriesProviderRatherThanCachingDefinitionsOrIndexes() throws {
         let owner = Owner()
         let provider = StyleProvider(catalogue: styleCatalogue(

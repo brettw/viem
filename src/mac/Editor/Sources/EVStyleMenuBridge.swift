@@ -14,7 +14,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
   }
 
   public func currentStyleMenuCatalogue() -> EVStyleMenuCatalogue? {
-    guard backend.sourceFormat != .code else { return nil }
+    if backend.sourceFormat == .code { return currentCodeStyleMenuCatalogue() }
     guard let snapshot = try? backend.styleSheetSnapshot() else { return nil }
     let selection = try? session?.listSelection()
     let selectedStyles = try? session?.selectedNamedStyles()
@@ -55,6 +55,43 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     )
   }
 
+  private func currentCodeStyleMenuCatalogue() -> EVStyleMenuCatalogue? {
+    guard let snapshot = try? EVCoreStyleBridge.copyStyleSheet(core: nil) else { return nil }
+    var entries = snapshot.definitions.map { definition in
+      EVStyleMenuEntry(
+        role: definition.kind.menuRole,
+        stableID: definition.key.id.rawValue,
+        displayName: definition.name,
+        isBase: definition.flags.isBase,
+        presentation: .enabled,
+        actionKind: .edit
+      )
+    }
+    let definedNames = Set(snapshot.definitions.filter { $0.kind == .character }.map(\.name))
+    for name in (try? backend.syntaxStyleNames()) ?? [] where !definedNames.contains(name) {
+      entries.append(EVStyleMenuEntry(
+        role: .character,
+        stableID: "",
+        displayName: "Define \(name)…",
+        isBase: false,
+        presentation: .enabled,
+        actionKind: .defineSyntax,
+        syntaxName: name
+      ))
+    }
+    entries.sort {
+      ($0.syntaxName ?? $0.displayName).localizedStandardCompare($1.syntaxName ?? $1.displayName) == .orderedAscending
+    }
+    guard let state = try? backend.documentState() else { return nil }
+    return EVStyleMenuCatalogue(
+      documentID: state.document_id,
+      documentRevision: state.document_revision,
+      styleSheetRevision: snapshot.identity.styleSheetRevision,
+      entries: entries,
+      canEditStyles: true
+    )
+  }
+
   func performHeadingShortcut(level: UInt32) {
     guard level <= 6, let session, headingShortcutPresentation(level: level).isEnabled else {
       return
@@ -88,7 +125,10 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
   }
 
   func perform(styleMenuAction action: EVStyleMenuAction, sender: Any?) {
-    guard backend.sourceFormat != .code else { return }
+    if backend.sourceFormat == .code {
+      performCodeStyleMenuAction(action, sender: sender)
+      return
+    }
     if action.kind == .assign {
       guard let session,
         let snapshot = try? backend.styleSheetSnapshot(),
@@ -131,6 +171,28 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     coordinator.show(document: self, preferredStyle: definition.kind, sender: sender)
     coordinator.selectStyle(definition.key)
   }
+
+  private func performCodeStyleMenuAction(_ action: EVStyleMenuAction, sender: Any?) {
+    guard let state = try? backend.documentState(), action.documentID == state.document_id else { return }
+    if action.kind == .defineSyntax {
+      guard action.role == .character, let name = action.syntaxName,
+        let catalogue = currentCodeStyleMenuCatalogue(),
+        catalogue.documentRevision == action.documentRevision,
+        catalogue.styleSheetRevision == action.styleSheetRevision,
+        catalogue.entries.contains(where: { $0.actionKind == .defineSyntax && $0.syntaxName == name })
+      else { return }
+      EVStyleEditorCoordinator.shared.showCode(
+        configuration: backend.configuration, definingSyntaxName: name, sender: sender)
+      return
+    }
+    guard action.kind == .edit,
+      let snapshot = try? EVCoreStyleBridge.copyStyleSheet(core: nil),
+      let definition = snapshot.definition(namespace: action.role.namespace, id: EVStyleID(rawValue: action.stableID)),
+      definition.kind.menuRole == action.role
+    else { return }
+    EVStyleEditorCoordinator.shared.showCode(
+      configuration: backend.configuration, preferredStyle: definition.key, sender: sender)
+  }
 }
 
 @MainActor
@@ -147,11 +209,16 @@ extension EVEditorView: EVStyleMenuActionRouting, NSMenuItemValidation {
       let catalogue = surface?.currentStyleMenuCatalogue(),
       catalogue.documentID == action.documentID
     else { return false }
-    if action.kind == .edit { return catalogue.canEditStyles }
+    if action.kind == .edit {
+      return catalogue.canEditStyles && catalogue.entries.contains {
+        $0.role == action.role && $0.stableID == action.stableID
+      }
+    }
     guard catalogue.documentRevision == action.documentRevision,
       catalogue.styleSheetRevision == action.styleSheetRevision,
       let entry = catalogue.entries.first(where: {
         $0.role == action.role && $0.stableID == action.stableID
+          && $0.actionKind == action.kind && $0.syntaxName == action.syntaxName
       })
     else { return false }
     item.state = entry.presentation.state

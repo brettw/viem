@@ -524,12 +524,13 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
                 title: entry.displayName,
                 command: specification.selectionCommand,
                 payload: EVStyleMenuAction(
-                    kind: .assign,
+                    kind: entry.actionKind,
                     role: role,
                     stableID: entry.stableID,
                     documentID: catalogue.documentID,
                     documentRevision: catalogue.documentRevision,
-                    styleSheetRevision: catalogue.styleSheetRevision
+                    styleSheetRevision: catalogue.styleSheetRevision,
+                    syntaxName: entry.syntaxName
                 ),
                 presentation: entry.presentation
             ))

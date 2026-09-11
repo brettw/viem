@@ -85,6 +85,150 @@ impl Drop for Suspension {
     }
 }
 
+struct ReadySyntaxGate {
+    gate: Arc<(Mutex<usize>, Condvar)>,
+    started: mpsc::Receiver<usize>,
+}
+impl ReadySyntaxGate {
+    fn release(&self, phase: usize) {
+        let (lock, cv) = &*self.gate;
+        *lock.lock().unwrap_or_else(|e| e.into_inner()) = phase;
+        cv.notify_all();
+    }
+
+    fn wait_for(&self, phase: usize) {
+        assert_eq!(
+            self.started.recv_timeout(Duration::from_secs(5)).unwrap(),
+            phase
+        );
+    }
+}
+impl Drop for ReadySyntaxGate {
+    fn drop(&mut self) {
+        self.release(usize::MAX);
+    }
+}
+
+fn exercise_syntax_finishing_during_layout(explicit_publication: bool) {
+    let _registry = crate::document::syntax::treesitter::package_registry_test_guard();
+    struct ContinuingProvider {
+        gate: Arc<(Mutex<usize>, Condvar)>,
+        calls: Arc<AtomicUsize>,
+        started: mpsc::Sender<usize>,
+    }
+    impl SyntaxProvider for ContinuingProvider {
+        fn analyze(&mut self, request: &SyntaxRequest, _: &AtomicBool) -> SyntaxResult {
+            let phase = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            self.started.send(phase).unwrap();
+            let (lock, cv) = &*self.gate;
+            let mut released = lock.lock().unwrap();
+            while *released < phase {
+                released = cv.wait(released).unwrap();
+            }
+            let mut result = SyntaxResult::missing(request, "controlled completed syntax");
+            result.coverage = crate::document::syntax::Coverage::Exact;
+            result.continuation = phase == 1;
+            result.runs.push(crate::document::syntax::SyntaxRun {
+                range: request.range.start..request.range.start + 2,
+                name: crate::document::syntax::SyntaxStyleName("Keyword".into()),
+                origin: "controlled test provider".into(),
+                priority: 0,
+            });
+            result.runs.push(crate::document::syntax::SyntaxRun {
+                range: request.range.start + 3..request.range.start + 7,
+                name: crate::document::syntax::SyntaxStyleName("@provider.undefined".into()),
+                origin: "controlled test provider".into(),
+                priority: 0,
+            });
+            result
+        }
+    }
+    let (started, receiver) = mpsc::channel();
+    let gate = ReadySyntaxGate {
+        gate: Arc::new((Mutex::new(0), Condvar::new())),
+        started: receiver,
+    };
+    let mut core = Core::<MockTextMeasurementProvider>::new(
+        Document::from_bytes(b"fn main() {}".to_vec(), Encoding::Utf8, Format::Code).unwrap(),
+    );
+    core.initialize_code_detection("fixture.rs", false).unwrap();
+    let provider_gate = gate.gate.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    core.set_syntax_provider_factory(Arc::new(move || {
+        Box::new(ContinuingProvider {
+            gate: provider_gate.clone(),
+            calls: calls.clone(),
+            started: started.clone(),
+        })
+    }));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 400., 120.);
+    gate.wait_for(1);
+    let cancellation = LayoutCancellationToken::new();
+    let request = core
+        .prepare_view_layout_job(
+            view,
+            LayoutJobPriority::ChangedVisibleRows,
+            LayoutJobRegion::Viewport(ViewportLayoutRegion::new(0..1, 0., 120.).unwrap()),
+            cancellation.clone(),
+        )
+        .unwrap();
+    let configuration = request.configuration_generation();
+    let candidate = compute_layout_job(
+        &mut core.views.get_mut(&view).unwrap().engine,
+        &request,
+        LayoutExecutionContext::WorkerPool,
+    )
+    .unwrap();
+    gate.release(1);
+    // The scheduler stores a result before starting its continuation. Waiting
+    // for phase two proves that phase one's result is ready without polling it
+    // into the document, sleeping, or racing the provider's return path.
+    gate.wait_for(2);
+    assert_eq!(core.syntax_statistics().publications, 0);
+    assert!(core.syntax_style_names().is_empty(), "unpublished names stay private");
+
+    if explicit_publication {
+        assert!(core.poll_syntax());
+        assert!(cancellation.is_cancelled());
+        assert_ne!(core.layout(view).unwrap().configuration_generation(), configuration);
+        let before_rejection = core.layout(view).unwrap().clone();
+        assert_eq!(
+            core.install_view_layout_job(view, candidate),
+            Err(CoreError::LayoutInstall(LayoutJobInstallRejection::Cancelled))
+        );
+        assert_eq!(core.layout(view).unwrap(), &before_rejection);
+    } else {
+        let installed = core.install_view_layout_job(view, candidate).unwrap();
+        assert!(!cancellation.is_cancelled());
+        assert_eq!(core.syntax_statistics().publications, 0);
+        assert_eq!(core.layout(view).unwrap().configuration_generation(), configuration);
+        assert_eq!(
+            core.layout(view).unwrap().snapshot().unwrap().revision,
+            installed.layout_revision
+        );
+        assert!(core.poll_syntax(), "the completed syntax remains ready for the next publication");
+    }
+    assert_eq!(core.syntax_statistics().publications, 1);
+    assert_eq!(core.syntax.service.runs(core.syntax_input().identity()).len(), 2);
+    assert_eq!(core.syntax_style_names(), ["@provider.undefined", "Keyword"]);
+    assert!(code_style::resolve_name(core.document.projection().style_sheet(), "@provider.undefined").is_none());
+    assert_eq!(core.syntax_statistics().publications, 1, "menu inspection does not publish work");
+    core.set_code_language(LanguageSelection::None);
+    assert!(core.syntax_style_names().is_empty(), "retired language names are not exposed");
+    assert_eq!(core.document.revision(), Revision(0));
+    assert!(!core.document.is_dirty());
+}
+
+#[test]
+fn completed_syntax_does_not_invalidate_its_own_layout_installation() {
+    exercise_syntax_finishing_during_layout(false);
+}
+
+#[test]
+fn explicit_syntax_publication_still_rejects_prepared_layout() {
+    exercise_syntax_finishing_during_layout(true);
+}
+
 fn event(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, key: Key) {
     let outcome = core
         .handle(view, CoreEvent::Input(InputEvent::Key(key)))
