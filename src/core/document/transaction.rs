@@ -1385,6 +1385,7 @@ impl Document {
             }
         };
         self.position_map_capture = next_position_capture;
+        self.advance_code_presentation(&prepared.text_position_map);
 
         debug_assert_eq!(self.revision(), prepared.after_revision);
         Ok(CommittedModelTransaction {

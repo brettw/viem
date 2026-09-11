@@ -244,9 +244,9 @@ fn large_code_metric_publication_refreshes_two_views_with_bounded_layout_and_reu
     for (index, id) in views.iter().enumerate() {
         let view = &core.views[id];
         assert_eq!(
-            view.viewport_anchor,
-            Some(before[index].0),
-            "publication retains the text anchor until replacement geometry"
+            view.viewport_anchor.unwrap().anchor.offset(),
+            before[index].0.anchor.offset(),
+            "publication retains visible text until replacement geometry"
         );
         assert_ne!(view.layout.configuration_generation(), before[index].1);
         assert!(!view.layout.content_height().is_exact());
@@ -257,7 +257,7 @@ fn large_code_metric_publication_refreshes_two_views_with_bounded_layout_and_reu
             .hard_line_prefix_height(hard_line)
             .unwrap()
             .height() as f32
-            + anchor.offset_from_row_top;
+            + anchor.offset_from_reference;
         core.materialize_requested_viewport(*id, 0., top).unwrap();
         let view = &core.views[id];
         assert_eq!(

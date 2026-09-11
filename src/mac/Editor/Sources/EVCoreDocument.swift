@@ -679,7 +679,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             isReadOnly: state.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) != 0,
             isRecovered: state.flags & UInt32(VIEM_DOCUMENT_STATE_RECOVERED) != 0,
             documentID: state.document_id,
-            documentRevision: state.document_revision
+            documentRevision: state.document_revision,
+            sourceByteCount: state.source_byte_count
         )
     }
 

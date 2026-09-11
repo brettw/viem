@@ -1048,6 +1048,15 @@ pub struct PositionMap {
 }
 
 impl PositionMap {
+    /// Heap held by the compacted map itself, without walking document text or
+    /// any history chain. Optional presentation caches use this for eviction.
+    pub(crate) fn owned_heap_bytes(&self) -> usize {
+        [&self.forward, &self.reverse].into_iter().map(|transition| {
+            transition.ordinal.iter().map(|map| map.pieces.capacity() * std::mem::size_of::<OrdinalPiece>()).sum::<usize>()
+                + transition.surviving_content.capacity() * std::mem::size_of::<SurvivingContent>()
+        }).sum()
+    }
+
     pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
         for transition in [&self.forward, &self.reverse] {
             for ordinal in &transition.ordinal { visitor.vector(&ordinal.pieces, 0); }

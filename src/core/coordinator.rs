@@ -42,6 +42,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod input_layout;
+mod viewport;
+use viewport::capture_caret_baseline_anchor;
 
 static NEXT_STYLE_EDIT_GROUP_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -800,12 +802,20 @@ impl ActiveLayoutWork {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ViewportTextAnchor {
     anchor: TextAnchor,
-    offset_from_row_top: f32,
+    offset_from_reference: f32,
+    reference: ViewportAnchorReference,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ViewportAnchorReference {
+    RowTop,
+    Baseline,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ImmediateLayoutIntent {
     PreserveViewport,
+    PreserveViewportAndRevealCaret,
     RevealCaret,
 }
 
@@ -2157,6 +2167,21 @@ impl<P: TextMeasurementProvider> Core<P> {
         if let Some(snapshot) = view.layout.snapshot() {
             view.commands.rebind_visual_block(&self.document, snapshot);
         }
+        // A host may install its own asynchronously computed viewport rather
+        // than use the immediate layout helper. Honor the same pending syntax
+        // baseline anchor before replacing it with the ordinary scroll anchor.
+        if view.viewport_anchor.is_some_and(|anchor| {
+            anchor.reference == ViewportAnchorReference::Baseline
+                && anchor.anchor.document() == self.document.id()
+                && anchor.anchor.revision() == self.document.revision()
+                && view.layout.snapshot().is_some_and(|snapshot| {
+                    snapshot.coverage.contains_text_offset(anchor.anchor.offset())
+                })
+        }) {
+            if let Err(error) = restore_viewport_anchor(view) {
+                view.layout.record_error(error);
+            }
+        }
         update_viewport_anchor(&self.document, view);
         Ok(installed)
     }
@@ -2234,7 +2259,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .visual_position()
                 .map_or(view.commands.cursor(), |position| position.text_offset);
             let focus_offset = match (intent, view.viewport_anchor) {
-                (ImmediateLayoutIntent::PreserveViewport, Some(anchor))
+                (ImmediateLayoutIntent::PreserveViewport | ImmediateLayoutIntent::PreserveViewportAndRevealCaret, Some(anchor))
                     if anchor.anchor.document() == self.document.id()
                         && anchor.anchor.revision() == self.document.revision() =>
                 {
@@ -2267,7 +2292,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let requested_top = {
             let view = self.views.get(&view_id).expect("view was validated above");
             match (intent, preserved_anchor) {
-                (ImmediateLayoutIntent::PreserveViewport, Some(anchor))
+                (ImmediateLayoutIntent::PreserveViewport | ImmediateLayoutIntent::PreserveViewportAndRevealCaret, Some(anchor))
                     if anchor.anchor.document() == self.document.id()
                         && anchor.anchor.revision() == self.document.revision() =>
                 {
@@ -2277,7 +2302,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                         .map_err(LayoutError::from)?
                         .height()
                         .min(f64::from(f32::MAX)) as f32;
-                    (focus_top + anchor.offset_from_row_top).max(0.0)
+                    (focus_top + anchor.offset_from_reference).max(0.0)
                 }
                 (ImmediateLayoutIntent::RevealCaret, _) => {
                     let cursor_is_materialized = view.layout.snapshot().is_some_and(|snapshot| {
@@ -2299,7 +2324,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                         (focus_top - viewport_height / 2.0).max(0.0)
                     }
                 }
-                (ImmediateLayoutIntent::PreserveViewport, _) => viewport_top,
+                (ImmediateLayoutIntent::PreserveViewport | ImmediateLayoutIntent::PreserveViewportAndRevealCaret, _) => viewport_top,
             }
         };
         let (visible_start, visible_end) = {
@@ -2362,12 +2387,16 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .views
                     .get_mut(&view_id)
                     .expect("view remains attached after layout installation");
-                if intent == ImmediateLayoutIntent::PreserveViewport {
+                if intent != ImmediateLayoutIntent::RevealCaret {
                     view.viewport_anchor = preserved_anchor;
                     restore_viewport_anchor(view)?;
                 }
-                if intent == ImmediateLayoutIntent::RevealCaret {
-                    reveal_caret(view)?;
+                if intent != ImmediateLayoutIntent::PreserveViewport {
+                    if intent == ImmediateLayoutIntent::PreserveViewportAndRevealCaret {
+                        viewport::reveal_caret_row(view)?;
+                    } else {
+                        reveal_caret(view)?;
+                    }
                 }
                 update_viewport_anchor(&self.document, view);
                 viewport_extension_needed(view)
@@ -2464,11 +2493,16 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .views
                     .get_mut(&view_id)
                     .expect("layout view remains attached");
-                if intent == ImmediateLayoutIntent::PreserveViewport {
+                if intent != ImmediateLayoutIntent::RevealCaret {
                     view.viewport_anchor = preserved_anchor;
                     restore_viewport_anchor(view)?;
-                } else {
-                    reveal_caret(view)?;
+                }
+                if intent != ImmediateLayoutIntent::PreserveViewport {
+                    if intent == ImmediateLayoutIntent::PreserveViewportAndRevealCaret {
+                        viewport::reveal_caret_row(view)?;
+                    } else {
+                        reveal_caret(view)?;
+                    }
                 }
                 update_viewport_anchor(&self.document, view);
                 return Ok(true);
@@ -5167,6 +5201,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                 } else {
                     false
                 };
+                let code_edit_anchor = self.document.format().is_code().then(|| {
+                    viewport::capture_edit_baseline_anchor(
+                        &self.document,
+                        self.views.get(&view_id).expect("validated view"),
+                    )
+                }).flatten();
                 let target_view = self
                     .views
                     .get_mut(&view_id)
@@ -5273,6 +5313,14 @@ impl<P: TextMeasurementProvider> Core<P> {
                     }
                 }
                 let changed = self.document.revision() != before;
+                if changed {
+                    if let Some(anchor) = code_edit_anchor {
+                        // Rebase this pre-edit boundary with the transaction.
+                        // Unlike a new caret reveal, local typing must not
+                        // recenter because the old layout revision is stale.
+                        target_view.viewport_anchor = Some(anchor);
+                    }
+                }
                 let cursor_moved = command.cursor_moved;
                 let history_navigation = command.history_navigation;
                 let command_requests_relayout =
@@ -5284,7 +5332,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .map_or(changed || cursor_moved, |requests| {
                         requests.contains(&CommandPresentationRequest::RevealCaret)
                     });
-                let command_presentation_intent = if command_requests_reveal {
+                let command_presentation_intent = if command_requests_reveal && changed && code_edit_anchor.is_some() {
+                    ImmediateLayoutIntent::PreserveViewportAndRevealCaret
+                } else if command_requests_reveal {
                     ImmediateLayoutIntent::RevealCaret
                 } else {
                     ImmediateLayoutIntent::PreserveViewport
@@ -6277,6 +6327,11 @@ impl<P: TextMeasurementProvider> Core<P> {
 
     fn commit_composition(&mut self, view_id: ViewId) -> Result<CoreOutcome, CoreError> {
         self.install_buffer_commands(view_id);
+        let code_composition_baseline = self.document.format().is_code().then(|| {
+            viewport::composition_caret_baseline(
+                &self.document, self.views.get(&view_id).expect("validated composition view"),
+            )
+        }).flatten();
         let session = self
             .views
             .get(&view_id)
@@ -6375,6 +6430,22 @@ impl<P: TextMeasurementProvider> Core<P> {
         if changed {
             self.rebase_viewport_anchors(&exact_position_map)?;
         }
+        let mut presentation_intent = ImmediateLayoutIntent::RevealCaret;
+        if let Some(baseline) = code_composition_baseline {
+            let view = self.views.get_mut(&view_id).expect("validated composition view");
+            let point = self.document.text_point(caret_offset)
+                .expect("composition preparation validated the committed caret");
+            let anchor = self.document.text_anchor(
+                point, Association::BeforeInsertion, view.commands.boundary_affinity(),
+                DeletionRecovery::PreferFollowingThenPreceding,
+            ).expect("validated composition caret has a persistent anchor");
+            view.viewport_anchor = Some(ViewportTextAnchor {
+                anchor,
+                offset_from_reference: -baseline,
+                reference: ViewportAnchorReference::Baseline,
+            });
+            presentation_intent = ImmediateLayoutIntent::PreserveViewportAndRevealCaret;
+        }
         self.publish_buffer_commands(view_id);
 
         let mut composition_changes = vec![ViewCompositionChange {
@@ -6412,7 +6483,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             // make the committed composition appear to have rolled back.
             self.materialize_views_after_document_change(
                 view_id,
-                ImmediateLayoutIntent::RevealCaret,
+                presentation_intent,
             );
         }
 
@@ -6867,11 +6938,19 @@ fn restore_viewport_anchor<P: TextMeasurementProvider>(
         let Some(snapshot) = view.layout.snapshot() else {
             return Ok(());
         };
-        let geometry =
-            snapshot.logical_endpoint_geometry(anchor.anchor.offset(), anchor.anchor.affinity())?;
-        geometry.rect.y + anchor.offset_from_row_top
+        let geometry = viewport::anchor_geometry(snapshot, anchor)?;
+        let row = &snapshot.rows[geometry.row_index];
+        let reference = match anchor.reference {
+            ViewportAnchorReference::RowTop => row.y,
+            ViewportAnchorReference::Baseline => row.baseline,
+        };
+        reference + anchor.offset_from_reference
     };
-    view.layout.set_viewport_top(requested_top)
+    view.layout.set_viewport_top(requested_top)?;
+    if anchor.reference == ViewportAnchorReference::Baseline {
+        viewport::reveal_anchored_row(view, anchor)?;
+    }
+    Ok(())
 }
 
 fn viewport_extension_needed<P: TextMeasurementProvider>(view: &View<P>) -> (bool, bool) {
@@ -6955,7 +7034,8 @@ fn update_viewport_anchor<P: TextMeasurementProvider>(document: &Document, view:
     };
     view.viewport_anchor = Some(ViewportTextAnchor {
         anchor,
-        offset_from_row_top: viewport_top - row.y,
+        offset_from_reference: viewport_top - row.y,
+        reference: ViewportAnchorReference::RowTop,
     });
 }
 

@@ -130,6 +130,11 @@ final class EVCodeStylesTests: XCTestCase {
             surface.viewDidLayout()
             let session = try XCTUnwrap(surface.session)
             surface.performInput { _ = try session.sendText("\(301 + index * 500)Gzt") }
+            if index == 1 {
+                // An offscreen caret must not pull a view back during global
+                // style changes. This view retains its first visible text.
+                surface.requestVerticalViewport(top: CGFloat(surface.viewportState.top + 500))
+            }
             return surface
         }
         func topRow(_ surface: EVEditorSurfaceController) throws -> ViemVisualRowV1 {
@@ -138,6 +143,15 @@ final class EVCodeStylesTests: XCTestCase {
         }
         let before = try surfaces.map { try topRow($0) }
         let beforeOffsets = zip(before, surfaces).map { $0.y - $1.viewportState.top }
+        XCTAssertLessThan(surfaces[1].viewPresentation.cursor_utf8_offset, before[1].text_start)
+        func caretRow(_ surface: EVEditorSurfaceController) throws -> ViemVisualRowV1 {
+            let layout = try XCTUnwrap(surface.layoutSnapshot)
+            let presentation = surface.viewPresentation
+            let caret = try XCTUnwrap(surface.session).caretGeometry(offset: presentation.cursor_utf8_offset,
+                affinity: presentation.cursor_affinity, in: layout.info)
+            return try XCTUnwrap(layout.rows.first { $0.row_index == caret.row_index })
+        }
+        var expectedCaretBaseline = try caretRow(surfaces[0]).baseline - surfaces[0].viewportState.top
         let original = try backends.map { try $0.recoverySnapshot() }
         let session = try EVCodeStyleSession(configuration: configuration)
         for (key, mutation) in [(EVStyleKey.baseDocument, EVStyleMutation.setDeclaration(.characterSize, .float(23))),
@@ -146,8 +160,29 @@ final class EVCodeStylesTests: XCTestCase {
             for (index, backend) in backends.enumerated() {
                 backend.pollSyntax()
                 let row = try topRow(surfaces[index])
-                XCTAssertEqual(row.text_start, before[index].text_start)
-                XCTAssertEqual(row.y - surfaces[index].viewportState.top, beforeOffsets[index], accuracy: 0.5)
+                let layout = try XCTUnwrap(surfaces[index].layoutSnapshot)
+                if index == 0 {
+                    // The visible caret wins over the first-row anchor. At
+                    // zt's top edge, growing text may shift its baseline only
+                    // as far as required to show the complete row and ink.
+                    let caret = try caretRow(surfaces[index])
+                    let ink = layout.clusters.filter { $0.row_index == caret.row_index }.map(\.ink_bounds)
+                    let top = min(caret.y, ink.map(\.y).min() ?? caret.y)
+                    let naturalBottom = caret.y + caret.ascent + caret.descent + caret.leading
+                    let bottom = max(naturalBottom, ink.map { $0.y + $0.height }.max() ?? naturalBottom)
+                    expectedCaretBaseline = min(max(expectedCaretBaseline, caret.baseline - top),
+                        layout.info.viewport_height - (bottom - caret.baseline))
+                    XCTAssertEqual(caret.baseline - surfaces[index].viewportState.top,
+                                   expectedCaretBaseline, accuracy: 0.5)
+                    XCTAssertGreaterThanOrEqual(top - surfaces[index].viewportState.top, -0.5)
+                    XCTAssertLessThanOrEqual(bottom - surfaces[index].viewportState.top,
+                                            layout.info.viewport_height + 0.5)
+                } else {
+                    XCTAssertEqual(row.text_start, before[index].text_start)
+                    XCTAssertEqual(row.y - surfaces[index].viewportState.top, beforeOffsets[index], accuracy: 0.5)
+                }
+                XCTAssertLessThan(layout.rows.count, 100)
+                XCTAssertLessThan(layout.clusters.count, 6_000)
                 XCTAssertEqual(try backend.recoverySnapshot(), original[index])
                 XCTAssertFalse(surfaces[index].canUndo)
             }

@@ -87,6 +87,53 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
 
   var paneCount: Int { paneContainer.panes.count }
 
+  /// Captured before an open panel or recovery prompt can run a nested event
+  /// loop. Only that exact, still-pristine blank window may be repurposed.
+  @MainActor
+  struct UntitledReplacement {
+    fileprivate weak var controller: EVDocumentWindowController?
+    fileprivate weak var document: EVDocument?
+    fileprivate weak var pane: EVDocumentContentViewController?
+    fileprivate var state: EVDocumentPersistenceState
+
+    @discardableResult
+    func install(_ opened: EVDocument) -> Bool {
+      guard let controller, let document, let pane else { return false }
+      return controller.replacePristineUntitled(document, in: pane, expected: state, with: opened)
+    }
+  }
+
+  static func isPristineUntitled(_ document: EVDocument) -> Bool {
+    let state = document.editorBackend.persistenceState
+    return document.fileURL == nil && !document.isDocumentEdited
+      && !state.isDirty && !state.isRecovered && !document.wasRecovered
+      && state.sourceByteCount == 0 && state.documentRevision == 0
+  }
+
+  func captureUntitledReplacement() -> UntitledReplacement? {
+    guard !isClosed, !isPerformingDocumentHostEffect, !closingAfterReview,
+      paneCount == 1, let document = activeDocument, Self.isPristineUntitled(document)
+    else { return nil }
+    return UntitledReplacement(controller: self, document: document,
+      pane: documentContentController, state: document.editorBackend.persistenceState)
+  }
+
+  private func replacePristineUntitled(
+    _ original: EVDocument, in pane: EVDocumentContentViewController,
+    expected: EVDocumentPersistenceState, with opened: EVDocument
+  ) -> Bool {
+    guard !isClosed, !isPerformingDocumentHostEffect, !closingAfterReview,
+      paneCount == 1, documentContentController === pane,
+      activeDocument === original, Self.isPristineUntitled(original),
+      original.editorBackend.persistenceState.documentID == expected.documentID,
+      original.editorBackend.persistenceState.documentRevision == expected.documentRevision
+    else { return false }
+    replaceActivePane(with: opened)
+    closeIfUnrepresented(original)
+    showWindow(nil)
+    return true
+  }
+
   func updateActiveDocumentChrome() {
     guard !isClosed, let document = activeDocument else { return }
     window?.title =
@@ -490,6 +537,7 @@ extension EVDocumentWindowController {
         DispatchQueue.main.async {
           do {
             try result.get()
+            if writesCurrent || adoptBinding { document.recordRecentDocument(target) }
             if writesCurrent || adoptBinding { document.recordFileBaseline(snapshot.data, at: target) }
             if adoptBinding {
               document.fileURL = target

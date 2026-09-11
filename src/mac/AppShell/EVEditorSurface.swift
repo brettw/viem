@@ -83,19 +83,23 @@ public struct EVDocumentPersistenceState: Equatable, Sendable {
   public var isRecovered: Bool
   public var documentID: UInt64
   public var documentRevision: UInt64
+  /// Exact source length, when the backend can provide it without serialization.
+  public var sourceByteCount: UInt64?
 
   public init(
     isDirty: Bool = false,
     isReadOnly: Bool = false,
     isRecovered: Bool = false,
     documentID: UInt64 = 0,
-    documentRevision: UInt64 = 0
+    documentRevision: UInt64 = 0,
+    sourceByteCount: UInt64? = nil
   ) {
     self.isDirty = isDirty
     self.isReadOnly = isReadOnly
     self.isRecovered = isRecovered
     self.documentID = documentID
     self.documentRevision = documentRevision
+    self.sourceByteCount = sourceByteCount
   }
 }
 
@@ -290,7 +294,7 @@ public enum EVFrontendRegistry {
 private final class EVUnavailableDocumentBackend: EVDocumentBackend {
   var sourceDidChange: (() -> Void)?
   var persistenceStateDidChange: ((EVDocumentPersistenceState) -> Void)?
-  var persistenceState = EVDocumentPersistenceState()
+  var persistenceState = EVDocumentPersistenceState(sourceByteCount: 0)
   private(set) var sourceFormat: EVSourceFormat = .plainText
 
   func makeEditorSurface() -> any EVEditorSurface {

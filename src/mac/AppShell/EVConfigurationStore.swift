@@ -69,6 +69,7 @@ public final class EVConfigurationStore {
   }
   public var smartQuotes: Bool { (root["editing"] as? [String: Any])?["smartQuotes"] as? Bool ?? false }
   public var showStatusBar: Bool { (root["appearance"] as? [String: Any])?["showStatusBar"] as? Bool ?? true }
+  public var recentDocumentURLs: [URL] { Self.recentDocumentURLs(in: root) }
   public var vimSyntaxDirectory: String {
     (root["code"] as? [String: Any])?["vimSyntaxDirectory"] as? String ?? EVCodePreferences.defaultVimSyntaxDirectory
   }
@@ -93,6 +94,30 @@ public final class EVConfigurationStore {
   }
   public func setCodeFilenameAssociations(_ entries: [EVCodeFilenameAssociation]) throws {
     try update(section: "code", values: ["filenameAssociations": entries.map { ["pattern": $0.pattern, "language": $0.language] }])
+  }
+
+  public func recordRecentDocument(_ url: URL) throws {
+    guard url.isFileURL, Self.isValidRecentDocumentPath(url.path) else {
+      throw invalid("Recent documents must use absolute file paths of at most 16 KiB")
+    }
+    let canonical = EVDocumentIdentity.canonicalURL(url)
+    try update { candidate in
+      var recent = Self.recentDocumentURLs(in: candidate)
+      recent.removeAll { EVDocumentIdentity.sameFile($0, canonical) }
+      recent.insert(canonical, at: 0)
+      let paths = Array(recent.prefix(10)).map(\.path)
+      guard candidate["recentDocuments"] as? [String] != paths else { return false }
+      candidate["recentDocuments"] = paths
+      return true
+    }
+  }
+
+  public func clearRecentDocuments() throws {
+    try update { candidate in
+      guard candidate["recentDocuments"] as? [String] != [] else { return false }
+      candidate["recentDocuments"] = [String]()
+      return true
+    }
   }
 
   public func codeStyleSheet() throws -> Data? { try styleDefaults(named: "code") }
@@ -140,6 +165,12 @@ public final class EVConfigurationStore {
     return directory.appendingPathComponent("\(name)_style.json")
   }
   private func update(section: String, values: [String: Any]) throws {
+    try update { candidate in
+      candidate[section] = Self.mergePreservingUnknown(candidate[section] as? [String: Any] ?? [:], values)
+      return true
+    }
+  }
+  private func update(_ mutation: (inout [String: Any]) throws -> Bool) throws {
     guard writable else { throw invalid(lastError ?? "Configuration cannot be modified") }
     let url = directory.appendingPathComponent("config.json")
     do {
@@ -147,10 +178,11 @@ public final class EVConfigurationStore {
       // Re-read before committing so unrelated changes from another settings
       // control or application instance are retained. Invalid external changes
       // remain on disk and are reported by the settings window.
-      if manager.fileExists(atPath: url.path) { candidate = try Self.readObject(Data(contentsOf: url)); try Self.validate(candidate) }
-      candidate[section] = Self.mergePreservingUnknown(candidate[section] as? [String: Any] ?? [:], values)
+      let exists = manager.fileExists(atPath: url.path)
+      if exists { candidate = try Self.readObject(Data(contentsOf: url)); try Self.validate(candidate) }
+      let changed = try mutation(&candidate)
       try Self.validate(candidate)
-      try write(candidate, to: url)
+      if changed || !exists { try write(candidate, to: url) }
       root = candidate
       lastError = nil
     }
@@ -182,6 +214,12 @@ public final class EVConfigurationStore {
   }
   private static func validate(_ object: [String: Any]) throws {
     try validateVersion(object)
+    if let raw = object["recentDocuments"] {
+      guard let paths = raw as? [String], paths.count <= 10,
+            paths.allSatisfy(isValidRecentDocumentPath) else {
+        throw invalid("Recent documents must be an array of at most 10 absolute paths, each at most 16 KiB")
+      }
+    }
     if let value = object["theme"] {
       let data = try JSONSerialization.data(withJSONObject: value)
       let theme = try JSONDecoder().decode(EVTheme.self, from: data)
@@ -220,6 +258,19 @@ public final class EVConfigurationStore {
         }
       }
     }
+  }
+  private static func isValidRecentDocumentPath(_ path: String) -> Bool {
+    path.hasPrefix("/") && !path.contains("\0") && path.utf8.count <= 16_384
+  }
+  private static func recentDocumentURLs(in object: [String: Any]) -> [URL] {
+    var result: [URL] = []
+    for path in object["recentDocuments"] as? [String] ?? [] {
+      let url = EVDocumentIdentity.canonicalURL(URL(fileURLWithPath: path))
+      if !result.contains(where: { EVDocumentIdentity.sameFile($0, url) }) {
+        result.append(url)
+      }
+    }
+    return result
   }
   private static func mergePreservingUnknown(_ old: [String: Any], _ new: [String: Any]) -> [String: Any] {
     var result = old

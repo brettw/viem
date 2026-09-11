@@ -30,6 +30,7 @@ public enum EVDocumentIdentity {
     completion: @escaping @MainActor (EVDocument?, Error?) -> Void
   ) {
     if let existing = existingDocument(at: url) {
+      existing.recordRecentDocument(canonicalURL(url))
       if display {
         if existing.windowControllers.isEmpty { existing.makeWindowControllers() }
         existing.showWindows()

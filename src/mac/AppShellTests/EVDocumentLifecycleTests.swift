@@ -29,7 +29,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
 
         var sourceDidChange: (() -> Void)?
         var persistenceStateDidChange: ((EVDocumentPersistenceState) -> Void)?
-        var persistenceState = EVDocumentPersistenceState()
+        var persistenceState = EVDocumentPersistenceState(sourceByteCount: 0)
         var sourceFormat: EVSourceFormat = .plainText
         var readCalls: [(Data, String)] = []
         var serializationTypes: [String] = []
@@ -99,6 +99,8 @@ final class EVDocumentLifecycleTests: XCTestCase {
         let backend = Backend()
         backend.serializedData = Data("serialized source".utf8)
         let document = EVDocument(editorBackend: backend)
+        var recent: [URL] = []
+        document.recordRecentDocument = { recent.append($0) }
 
         let input = Data("input source".utf8)
         try document.read(from: input, ofType: EVDocument.markdownType)
@@ -112,6 +114,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
         XCTAssertFalse(document.hasUndoManager)
         XCTAssertTrue(backend.saveSnapshots.isEmpty)
         XCTAssertTrue(backend.acknowledgedSnapshots.isEmpty)
+        XCTAssertTrue(recent.isEmpty, "In-memory reads and serialization do not open a file")
     }
 
     func testNSDocumentDataRejectsUnsafeTypesBeforeBackendSerialization() throws {
@@ -144,6 +147,8 @@ final class EVDocumentLifecycleTests: XCTestCase {
         let backend = Backend()
         backend.serializedData = Data("saved by backend".utf8)
         let document = EVDocument(editorBackend: backend)
+        var recent: [URL] = []
+        document.recordRecentDocument = { recent.append($0) }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("viem-document-tests-\(UUID().uuidString)", isDirectory: true)
         let inputURL = directory.appendingPathComponent("input.md")
@@ -161,17 +166,32 @@ final class EVDocumentLifecycleTests: XCTestCase {
         XCTAssertEqual(backend.readCalls[0].1, EVDocument.markdownType)
         XCTAssertEqual(backend.serializationTypes, [EVDocument.markdownType])
         XCTAssertEqual(try Data(contentsOf: outputURL), backend.serializedData)
+        XCTAssertEqual(recent, [EVDocumentIdentity.canonicalURL(inputURL)],
+                       "A successful URL read records once; low-level copy writes do not adopt a document")
+    }
+
+    func testFailedURLReadDoesNotRecordARecentDocument() {
+        let document = EVDocument(editorBackend: Backend())
+        var recent: [URL] = []
+        document.recordRecentDocument = { recent.append($0) }
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent("viem-missing-read-\(UUID().uuidString).txt")
+        XCTAssertThrowsError(try document.read(from: missing, ofType: EVDocument.plainTextType))
+        XCTAssertTrue(recent.isEmpty)
     }
 
     func testBackendChangeNotificationMarksNativeDocumentEdited() {
         let backend = Backend()
         let document = EVDocument(editorBackend: backend)
+        var recent: [URL] = []
+        document.recordRecentDocument = { recent.append($0) }
+        document.fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("viem-typing-\(UUID().uuidString).txt")
         document.updateChangeCount(.changeCleared)
         XCTAssertFalse(document.isDocumentEdited)
 
         backend.sourceDidChange?()
 
         XCTAssertTrue(document.isDocumentEdited)
+        XCTAssertTrue(recent.isEmpty, "Typing must not persist recent-file history")
     }
 
     func testCorePersistenceStateIsTheFinalNativeEditedAuthority() {
@@ -206,19 +226,19 @@ final class EVDocumentLifecycleTests: XCTestCase {
     func testOnlyAPristineUntitledLaunchPlaceholderMayBeDiscardedForAnOpenedFile() {
         let cleanBackend = Backend()
         let clean = EVDocument(editorBackend: cleanBackend)
-        XCTAssertTrue(EVApplicationDelegate.isDiscardableLaunchPlaceholder(clean))
+        XCTAssertTrue(EVDocumentWindowController.isPristineUntitled(clean))
 
         clean.fileURL = URL(fileURLWithPath: "/tmp/named.txt")
-        XCTAssertFalse(EVApplicationDelegate.isDiscardableLaunchPlaceholder(clean))
+        XCTAssertFalse(EVDocumentWindowController.isPristineUntitled(clean))
 
         let nativeDirty = EVDocument(editorBackend: Backend())
         nativeDirty.updateChangeCount(.changeDone)
-        XCTAssertFalse(EVApplicationDelegate.isDiscardableLaunchPlaceholder(nativeDirty))
+        XCTAssertFalse(EVDocumentWindowController.isPristineUntitled(nativeDirty))
 
         let coreDirtyBackend = Backend()
         coreDirtyBackend.persistenceState = .init(isDirty: true)
         let coreDirty = EVDocument(editorBackend: coreDirtyBackend)
-        XCTAssertFalse(EVApplicationDelegate.isDiscardableLaunchPlaceholder(coreDirty))
+        XCTAssertFalse(EVDocumentWindowController.isPristineUntitled(coreDirty))
     }
 
     func testOpenRecentReplacesThePristineLaunchPlaceholder() throws {
@@ -238,10 +258,15 @@ final class EVDocumentLifecycleTests: XCTestCase {
         }
 
         let delegate = EVApplicationDelegate()
+        delegate.recordRecentDocument = { _ in }
         delegate.applicationDidFinishLaunching(
             Notification(name: NSApplication.didFinishLaunchingNotification)
         )
         let placeholder = try XCTUnwrap(documentController.documents.first as? EVDocument)
+        let originalController = try XCTUnwrap(placeholder.windowControllers.first)
+        let originalWindow = try XCTUnwrap(originalController.window)
+        originalWindow.setContentSize(NSSize(width: 730, height: 510))
+        let originalFrame = originalWindow.frame
         XCTAssertNil(placeholder.fileURL)
 
         let item = NSMenuItem()
@@ -251,6 +276,9 @@ final class EVDocumentLifecycleTests: XCTestCase {
         XCTAssertNotNil(documentController.document(for: inputURL))
         XCTAssertFalse(documentController.documents.contains { $0 === placeholder })
         XCTAssertEqual(documentController.documents.count, 1)
+        XCTAssertTrue(documentController.document(for: inputURL)?.windowControllers.first === originalController)
+        XCTAssertEqual(originalWindow.frame, originalFrame)
+        XCTAssertTrue(originalWindow.isVisible)
     }
 
     func testNativeSaveAcknowledgesExactSnapshotOnlyAfterSuccessfulWrite() throws {
@@ -258,6 +286,12 @@ final class EVDocumentLifecycleTests: XCTestCase {
         backend.serializedData = Data("exact saved snapshot".utf8)
         backend.persistenceState = .init(isDirty: true)
         let document = EVDocument(editorBackend: backend)
+        var recent: [URL] = []
+        var bytesSeenWhenRecording: Data?
+        document.recordRecentDocument = {
+            recent.append($0)
+            bytesSeenWhenRecording = try? Data(contentsOf: $0)
+        }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("viem-save-tests-\(UUID().uuidString)", isDirectory: true)
         let outputURL = directory.appendingPathComponent("saved.txt")
@@ -285,6 +319,9 @@ final class EVDocumentLifecycleTests: XCTestCase {
         XCTAssertEqual(dataSeenAtAcknowledgement, backend.serializedData)
         XCTAssertEqual(try Data(contentsOf: outputURL), backend.serializedData)
         XCTAssertFalse(document.isDocumentEdited)
+        XCTAssertEqual(recent, [EVDocumentIdentity.canonicalURL(outputURL)])
+        XCTAssertEqual(bytesSeenWhenRecording, backend.serializedData,
+                       "Save As is recorded only after the physical write succeeds")
     }
 
     func testNativeSaveAsRejectsCrossFormatBeforeSnapshotOrFileMutation() throws {
@@ -292,6 +329,8 @@ final class EVDocumentLifecycleTests: XCTestCase {
         backend.serializedData = Data("# changed source".utf8)
         backend.persistenceState = .init(isDirty: true)
         let document = EVDocument(editorBackend: backend)
+        var recent: [URL] = []
+        document.recordRecentDocument = { recent.append($0) }
         try document.read(
             from: Data("# original source".utf8),
             ofType: EVDocument.markdownType
@@ -331,6 +370,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
         XCTAssertEqual(document.fileType, EVDocument.markdownType)
         XCTAssertEqual(try Data(contentsOf: originalURL), Data("# original source".utf8))
         XCTAssertTrue(document.isDocumentEdited)
+        XCTAssertTrue(recent.isEmpty)
     }
 
     func testFailedNativeWriteDoesNotAcknowledgeOrClearDirtyState() throws {
@@ -338,6 +378,8 @@ final class EVDocumentLifecycleTests: XCTestCase {
         backend.serializedData = Data("unsaved".utf8)
         backend.persistenceState = .init(isDirty: true)
         let document = EVDocument(editorBackend: backend)
+        var recent: [URL] = []
+        document.recordRecentDocument = { recent.append($0) }
         let missingParent = FileManager.default.temporaryDirectory
             .appendingPathComponent("viem-missing-\(UUID().uuidString)", isDirectory: true)
         let outputURL = missingParent.appendingPathComponent("saved.txt")
@@ -358,6 +400,30 @@ final class EVDocumentLifecycleTests: XCTestCase {
         XCTAssertEqual(backend.lifecycleEvents, ["snapshot"])
         XCTAssertTrue(backend.acknowledgedSnapshots.isEmpty)
         XCTAssertTrue(document.isDocumentEdited)
+        XCTAssertTrue(recent.isEmpty)
+    }
+
+    func testSuccessfulFileWriteRemainsRecentWhenCoreAcknowledgementIsStale() throws {
+        let backend = Backend()
+        backend.serializedData = Data("written revision".utf8)
+        backend.acknowledgementError = Backend.Failure.acknowledgement
+        backend.persistenceState = .init(isDirty: true)
+        let document = EVDocument(editorBackend: backend)
+        var recent: [URL] = []
+        document.recordRecentDocument = { recent.append($0) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-recent-save-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { document.close(); try? FileManager.default.removeItem(at: directory) }
+        let target = directory.appendingPathComponent("saved.txt")
+        let completion = expectation(description: "written file with stale acknowledgement")
+        document.save(to: target, ofType: EVDocument.plainTextType, for: .saveAsOperation) { error in
+            XCTAssertNotNil(error)
+            completion.fulfill()
+        }
+        wait(for: [completion], timeout: 5)
+        XCTAssertEqual(try Data(contentsOf: target), backend.serializedData)
+        XCTAssertEqual(recent, [EVDocumentIdentity.canonicalURL(target)])
+        XCTAssertTrue(document.isDocumentEdited)
     }
 
     func testSaveToWritesCopyWithoutMovingTheCoreSavePoint() throws {
@@ -365,6 +431,8 @@ final class EVDocumentLifecycleTests: XCTestCase {
         backend.serializedData = Data("copy only".utf8)
         backend.persistenceState = .init(isDirty: true)
         let document = EVDocument(editorBackend: backend)
+        var recent: [URL] = []
+        document.recordRecentDocument = { recent.append($0) }
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("viem-save-to-tests-\(UUID().uuidString)", isDirectory: true)
         let outputURL = directory.appendingPathComponent("copy.txt")
@@ -388,6 +456,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
         XCTAssertEqual(backend.lifecycleEvents, ["snapshot"])
         XCTAssertTrue(backend.acknowledgedSnapshots.isEmpty)
         XCTAssertTrue(document.isDocumentEdited)
+        XCTAssertTrue(recent.isEmpty, "A copy is not a newly opened or adopted document")
     }
 
     func testSnapshotPreparationFailureDoesNotStartNativeWriteOrAcknowledge() {
@@ -395,6 +464,8 @@ final class EVDocumentLifecycleTests: XCTestCase {
         backend.snapshotError = Backend.Failure.snapshot
         backend.persistenceState = .init(isDirty: true)
         let document = EVDocument(editorBackend: backend)
+        var recent: [URL] = []
+        document.recordRecentDocument = { recent.append($0) }
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("viem-unwritten-\(UUID().uuidString).txt")
 
@@ -416,6 +487,28 @@ final class EVDocumentLifecycleTests: XCTestCase {
         XCTAssertTrue(backend.acknowledgedSnapshots.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: outputURL.path))
         XCTAssertTrue(document.isDocumentEdited)
+        XCTAssertTrue(recent.isEmpty)
+    }
+
+    func testRecoveryAutosavesDoNotRecordRecentDocumentsOrSaveSource() {
+        let backend = Backend()
+        let document = EVDocument(editorBackend: backend)
+        var recent: [URL] = []
+        document.recordRecentDocument = { recent.append($0) }
+        let target = FileManager.default.temporaryDirectory.appendingPathComponent("viem-autosave-\(UUID().uuidString).txt")
+        document.fileURL = target
+        for operation in [NSDocument.SaveOperationType.autosaveElsewhereOperation, .autosaveInPlaceOperation] {
+            let completion = expectation(description: "recovery autosave")
+            document.save(to: target, ofType: EVDocument.plainTextType, for: operation) { error in
+                XCTAssertNil(error)
+                completion.fulfill()
+            }
+            wait(for: [completion], timeout: 2)
+        }
+        document.flushRecoverySnapshot()
+        XCTAssertTrue(recent.isEmpty)
+        XCTAssertTrue(backend.saveSnapshots.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
     }
 
     func testMakeWindowControllersCreatesOneSurfacePerNativeDocumentWindow() {

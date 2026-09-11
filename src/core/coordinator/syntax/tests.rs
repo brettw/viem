@@ -9,6 +9,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+mod retention;
+
 struct Suspended {
     gate: Arc<(Mutex<bool>, Condvar)>,
     calls: Arc<AtomicUsize>,

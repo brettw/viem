@@ -487,6 +487,74 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(recent.items.last).isEnabled)
     }
 
+    func testRecentDocumentsUseMinimalUniqueSuffixesForEveryDuplicateName() throws {
+        let owner = Owner()
+        let paths = [
+            "/Projects/first/src/main.rs",
+            "/Projects/notes.md",
+            "/Projects/second/src/main.rs",
+            "/Projects/third/tests/main.rs",
+            "/Other/Project/README.md",
+            "/Other/Project/readme.md",
+        ]
+        let urls = paths.map { URL(fileURLWithPath: $0) }
+        let builder = EVMenuBuilder(owner: owner, recentDocumentURLs: { urls })
+        let main = builder.buildMainMenu(for: NSApplication.shared)
+        let recent = try submenu("Open Recent", of: submenu("File", of: main))
+        builder.menuNeedsUpdate(recent)
+
+        XCTAssertEqual(tokens(in: recent), [
+            "first/src/main.rs", "notes.md", "second/src/main.rs", "tests/main.rs",
+            "README.md", "readme.md", "-", "Clear Menu",
+        ])
+        for (index, url) in urls.enumerated() {
+            let item = recent.items[index]
+            XCTAssertEqual(item.representedObject as? URL, url, "Input recency order is preserved")
+            XCTAssertEqual(item.toolTip, url.path)
+            XCTAssertTrue(NSApplication.shared.sendAction(try XCTUnwrap(item.action), to: item.target, from: item))
+        }
+        XCTAssertEqual(owner.openedRecentURLs, urls, "Labels must never replace the full reopening URL")
+    }
+
+    func testRecentDocumentsDisambiguateUnequalDepthsWithoutDuplicateRootSeparators() throws {
+        let owner = Owner()
+        let urls = ["/report.txt", "/archive/report.txt", "/archive/archive/report.txt"]
+            .map { URL(fileURLWithPath: $0) }
+        let builder = EVMenuBuilder(owner: owner, recentDocumentURLs: { urls })
+        let main = builder.buildMainMenu(for: NSApplication.shared)
+        let recent = try submenu("Open Recent", of: submenu("File", of: main))
+        builder.menuNeedsUpdate(recent)
+
+        XCTAssertEqual(tokens(in: recent), [
+            "/report.txt", "/archive/report.txt", "archive/archive/report.txt", "-", "Clear Menu",
+        ])
+        XCTAssertEqual(Set(recent.items.prefix(urls.count).map(\.title)).count, urls.count)
+    }
+
+    func testRecentDocumentsPreserveUnicodeSpacesAndExactFilenameExtensions() throws {
+        let owner = Owner()
+        var urls = [
+            "/稿件/第一 稿/记录.v1.md",
+            "/稿件/第二 稿/记录.v1.md",
+            "/drafts/Café notes.TXT",
+            "/drafts/Café notes.txt",
+            "/drafts/extensionless",
+        ].map { URL(fileURLWithPath: $0) }
+        let builder = EVMenuBuilder(owner: owner, recentDocumentURLs: { urls })
+        let main = builder.buildMainMenu(for: NSApplication.shared)
+        let recent = try submenu("Open Recent", of: submenu("File", of: main))
+        builder.menuNeedsUpdate(recent)
+        XCTAssertEqual(tokens(in: recent), [
+            "第一 稿/记录.v1.md", "第二 稿/记录.v1.md", "Café notes.TXT", "Café notes.txt",
+            "extensionless", "-", "Clear Menu",
+        ])
+
+        urls.remove(at: 1)
+        builder.menuNeedsUpdate(recent)
+        XCTAssertEqual(recent.items.first?.title, "记录.v1.md", "Removed collisions shorten the remaining entry")
+        XCTAssertEqual(recent.items.first?.representedObject as? URL, urls.first)
+    }
+
     func testNestedMenuHierarchyMatchesSpecification() throws {
         let owner = Owner()
         let builder = EVMenuBuilder(owner: owner)

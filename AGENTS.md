@@ -1838,12 +1838,30 @@ explicit document-style padding and invalidates only affected view geometry.
 Padding changes preserve viewport anchors and keep large-document layout local.
 
 Application preferences have one versioned JSON authority at
-`~/.viem/config.json`. Theme, Smart Quotes, Code preferences, and status-bar
+`~/.viem/config.json`. Theme, Smart Quotes, Code preferences, recent files, and status-bar
 visibility use this store; Settings controls write the same values. Valid legacy
 preferences migrate once. Reads validate the complete configuration, writes are
 atomic, and unknown keys survive updates. Invalid or unsupported versions are reported without
 overwriting the user's file. `VIEM_CONFIG_DIR` may override the directory for
 isolated development and testing.
+
+The `recentDocuments` array stores the ten most recently opened or saved files
+as full absolute paths, newest first. Successfully reopening an already open
+file also moves it to the front. Canonical path and file identity prevent
+duplicates, including symlink and hard-link aliases; using an existing entry
+promotes it instead of adding another. Successful native and Ex opens/saves
+share this list. Failed or cancelled file reads/writes, unnamed buffers, recovery
+autosaves, and writes of an unopened copy do not add entries. Updates merge
+against the current settings file and preserve unrelated settings. Clear Menu
+clears this persisted list. Missing files remain listed until explicitly cleared
+or displaced by newer entries; a failed reopen does not change recency.
+
+Open Recent normally displays the filename, including its extension. When
+different files have the same menu title, prepend parent path components to
+each colliding title until every title is unique. Use only the suffix needed
+for disambiguation, retain newest-first ordering, and keep the full path in
+the menu item's open target and tooltip. The menu reads the application
+settings authority rather than a separate operating-system recent-file list.
 
 Per-document format defaults live beside it in `text_style.json`,
 `html_style.json`, `markdown_style.json`, and `rtf_style.json`. A document loads
@@ -2015,6 +2033,32 @@ slant. Unrelated paint-only coverage MUST NOT discard valid height estimates
 merely because another syntax definition has font properties. Preserve the
 viewport's text anchor when styled row heights change and reject layout work
 whose already-published style dependencies have become stale.
+
+Typing in Code MUST NOT recenter or otherwise move the vertical viewport just
+because the source revision invalidates its prior layout. Preserve the visible
+caret row's screen baseline through local edits and asynchronous syntax metric
+changes. Normal line breaks, wrapping, and explicit cursor motion can advance
+the caret; reveal it with the minimum necessary scroll. Committing input-method
+marked text preserves the baseline shown by its composition layout. When a new
+styled row would be clipped, shift only enough to make its typographic and ink bounds
+visible. If a row is taller than the viewport, prioritize a visible baseline
+without alternating between impossible top and bottom reveals. A view whose
+caret is offscreen keeps its viewport text anchor instead. These policies remain
+portable and use exact local geometry, without laying out the gap to an offscreen
+caret or measuring the whole document.
+
+Rehighlighting MUST retain the previously accepted appearance of surviving text
+while replacement results are pending. Rebase this temporary presentation with
+the exact committed text maps, including discontiguous edits and history, rather
+than clearing the entire overlay or shifting positions by a single changed hull.
+Inserted text may use the default appearance until styled. Retained runs are
+presentation only; they do not establish current provider coverage or suppress
+fresh analysis. Replace them only within newly accepted coverage, including an
+accepted empty result that clears obsolete highlighting. Reject stale results
+and clear incompatible language/provider configurations. Bound retained spans
+and snapshots under the syntax cache budget; newly exposed uncached content may
+display defaults during fast scrolling. An ordinary edit must not flash existing
+highlighted text through an unstyled intermediate frame.
 
 The vertical scrollbar need not predict the final styled height of unvisited
 content. Unknown heights MAY use estimates from the default Code font and
@@ -3134,6 +3178,17 @@ RTF sorting and ambiguous or split rich paragraph owners return an unsupported
 result without changing source.
 
 ### Stacked document views
+
+File > Open, Open Recent, and launch/Finder opens reuse the active single-pane
+window when it contains an untouched, empty, untitled document. Read the incoming
+file successfully before replacement; keep the same native window and geometry
+without a new-window opening animation. After any open or recovery prompt,
+recheck the original document/window identity, revision, empty source, and clean
+state. Failure or cancellation leaves the original window intact. Named,
+nonempty, recovered, previously edited, and multi-pane documents remain open;
+additional selected files open in separate windows. Already represented files
+retain their existing backend and window. Eligibility uses cached state and
+source-tree aggregates, never a full source copy.
 
 `:split`/`:sp` and `:vsplit`/`:vs` create stacked panes. With no filename they
 create an independent view of the same buffer; with a filename they open or
@@ -4739,6 +4794,16 @@ Required automated fixtures and assertions are:
    Paint-only publications preserve unrelated exact heights even when another
    syntax style has metric declarations. Estimated scrollbar height remains
    usable without styling the unvisited prefix or the gap between distant views.
+   Type at an off-center caret in a distant viewport with syntax enabled and
+   unavailable; compare its screen baseline and scroll before the edit,
+   immediately afterward, and after deferred completion. Change a delimiter so
+   a larger font arrives asynchronously, including a caret near the top edge;
+   preserve the baseline or assert the minimum movement required for visibility.
+   Include ordinary newline/wrap advancement and committing marked text through
+   an input method, without recentering their previous visible content.
+   Suspend providers across insertion, deletion, discontiguous edits, undo, and
+   redo: existing mapped colors remain until accepted replacement coverage,
+   while empty current coverage clears them and stale results change nothing.
 
 Use deterministic clocks, fuel counters, bounded fake providers, and allocation
 accounting as hard release gates. Assert zero syntax-provider execution/waits

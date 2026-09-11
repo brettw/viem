@@ -29,9 +29,22 @@ final class EVApplicationDelegate: NSObject,
     private var menuBuilder: EVMenuBuilder?
     private var settingsWindowController: EVSettingsWindowController?
     private weak var launchPlaceholderDocument: EVDocument?
+    private let configuration: EVConfigurationStore
+    var documentFactory: () -> EVDocument = { EVDocument() }
+    var mainWindow: () -> NSWindow? = { NSApplication.shared.mainWindow }
+    var recordRecentDocument: (URL) -> Void
+
+    init(configuration: EVConfigurationStore? = nil) {
+        let configuration = configuration ?? .shared
+        self.configuration = configuration
+        recordRecentDocument = { try? configuration.recordRecentDocument($0) }
+        super.init()
+    }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        let builder = EVMenuBuilder(owner: self)
+        let builder = EVMenuBuilder(owner: self, recentDocumentURLs: { [configuration] in
+            configuration.recentDocumentURLs
+        })
         NSApplication.shared.mainMenu = builder.buildMainMenu(for: NSApplication.shared)
         menuBuilder = builder
     }
@@ -61,12 +74,10 @@ final class EVApplicationDelegate: NSObject,
     }
 
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        let replacement = captureUntitledReplacement()
         var openedAny = false
         for filename in filenames {
-            openedAny = openDocument(at: URL(fileURLWithPath: filename)) || openedAny
-        }
-        if openedAny {
-            discardPristineLaunchPlaceholder()
+            openedAny = presentDocument(at: URL(fileURLWithPath: filename), replacing: replacement) || openedAny
         }
         sender.reply(toOpenOrPrint: openedAny ? .success : .failure)
     }
@@ -76,6 +87,7 @@ final class EVApplicationDelegate: NSObject,
     }
 
     @objc func openDocument(_ sender: Any?) {
+        let replacement = captureUntitledReplacement()
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
@@ -84,25 +96,20 @@ final class EVApplicationDelegate: NSObject,
         panel.allowsOtherFileTypes = true
         panel.begin { [weak self] response in
             guard response == .OK else { return }
-            var openedAny = false
             for url in panel.urls {
-                openedAny = self?.openDocument(at: url) == true || openedAny
-            }
-            if openedAny {
-                self?.discardPristineLaunchPlaceholder()
+                _ = self?.presentDocument(at: url, replacing: replacement)
             }
         }
     }
 
     @objc func openRecentDocument(_ sender: Any?) {
         guard let url = (sender as? NSMenuItem)?.representedObject as? URL else { return }
-        if openDocument(at: url) {
-            discardPristineLaunchPlaceholder()
-        }
+        _ = presentDocument(at: url, replacing: captureUntitledReplacement())
     }
 
     @objc func clearRecentDocuments(_ sender: Any?) {
-        NSDocumentController.shared.clearRecentDocuments(sender)
+        do { try configuration.clearRecentDocuments() }
+        catch { NSApplication.shared.presentError(error) }
     }
 
     @objc func showSettings(_ sender: Any?) {
@@ -125,7 +132,7 @@ final class EVApplicationDelegate: NSObject,
 
     @discardableResult
     private func createUntitledDocument() -> EVDocument {
-        let document = EVDocument()
+        let document = documentFactory()
         NSDocumentController.shared.addDocument(document)
         document.makeWindowControllers()
         document.showWindows()
@@ -137,40 +144,51 @@ final class EVApplicationDelegate: NSObject,
         launchPlaceholderDocument = createUntitledDocument()
     }
 
-    private func discardPristineLaunchPlaceholder() {
-        guard let document = launchPlaceholderDocument else { return }
-        launchPlaceholderDocument = nil
-        guard Self.isDiscardableLaunchPlaceholder(document) else { return }
-        document.close()
-    }
-
-    static func isDiscardableLaunchPlaceholder(_ document: EVDocument) -> Bool {
-        document.fileURL == nil
-            && !document.isDocumentEdited
-            && !document.editorBackend.persistenceState.isDirty
+    func captureUntitledReplacement() -> EVDocumentWindowController.UntitledReplacement? {
+        if let controller = mainWindow()?.windowController as? EVDocumentWindowController {
+            return controller.captureUntitledReplacement()
+        }
+        return (launchPlaceholderDocument?.windowControllers.first as? EVDocumentWindowController)?
+            .captureUntitledReplacement()
     }
 
     @discardableResult
-    private func openDocument(at url: URL) -> Bool {
+    func openDocument(
+        at url: URL, replacing replacement: EVDocumentWindowController.UntitledReplacement?
+    ) throws -> EVDocument {
         let url = EVDocumentIdentity.canonicalURL(url)
         if let existing = EVDocumentIdentity.existingDocument(at: url) {
-            if existing.windowControllers.isEmpty { existing.makeWindowControllers() }
-            existing.showWindows()
-            return true
+            recordRecentDocument(url)
+            if let window = EVDocumentWindowController.windowShowing(document: existing) {
+                window.windowController?.showWindow(nil)
+            } else if replacement?.install(existing) != true {
+                if existing.windowControllers.isEmpty { existing.makeWindowControllers() }
+                existing.showWindows()
+            }
+            return existing
         }
 
-        do {
-            let type = Self.documentType(for: url)
-            let document = EVDocument()
-            try document.read(from: url, ofType: type)
-            document.fileURL = url
-            if !document.editorBackend.persistenceState.isDirty {
-                document.updateChangeCount(.changeCleared)
-            }
-            NSDocumentController.shared.addDocument(document)
-            NSDocumentController.shared.noteNewRecentDocumentURL(url)
+        let type = Self.documentType(for: url)
+        let document = documentFactory()
+        document.recordRecentDocument = recordRecentDocument
+        try document.read(from: url, ofType: type)
+        document.fileURL = url
+        if !document.editorBackend.persistenceState.isDirty {
+            document.updateChangeCount(.changeCleared)
+        }
+        NSDocumentController.shared.addDocument(document)
+        if replacement?.install(document) != true {
             document.makeWindowControllers()
             document.showWindows()
+        }
+        return document
+    }
+
+    private func presentDocument(
+        at url: URL, replacing replacement: EVDocumentWindowController.UntitledReplacement?
+    ) -> Bool {
+        do {
+            try openDocument(at: url, replacing: replacement)
             return true
         } catch {
             NSApplication.shared.presentError(error)

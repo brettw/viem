@@ -12,6 +12,7 @@ use std::{
 };
 
 mod providers;
+mod retention;
 pub const MAX_REGION_BYTES: usize = 256 * 1024;
 pub const MAX_CACHED_REGIONS: usize = 16;
 pub const MAX_CACHED_RUN_BYTES: usize = 4 * 1024 * 1024;
@@ -326,6 +327,9 @@ pub struct SyntaxService {
     pub configuration: SyntaxConfiguration,
     cache: VecDeque<SyntaxResult>,
     current: Option<SyntaxInputIdentity>,
+    current_input: Option<SyntaxInputSnapshot>,
+    /// Mapped appearance only; these runs cannot satisfy analysis requests.
+    retained: Vec<SyntaxRun>,
     pub statistics: SyntaxServiceStatistics,
     diagnostics: Vec<String>,
     registry_generation: u64,
@@ -353,6 +357,8 @@ impl SyntaxService {
             configuration: Default::default(),
             cache: VecDeque::new(),
             current: None,
+            current_input: None,
+            retained: Vec::new(),
             statistics: Default::default(),
             diagnostics: Vec::new(),
             registry_generation: 0,
@@ -375,6 +381,8 @@ impl SyntaxService {
         self.cancel();
         self.cache.clear();
         self.current = None;
+        self.current_input = None;
+        self.retained.clear();
     }
     pub fn cancel(&mut self) {
         let mut slot = self.mailbox.lock().unwrap_or_else(|e| e.into_inner());
@@ -402,8 +410,7 @@ impl SyntaxService {
             range.end -= 1;
         }
         if self.current != Some(input.identity()) {
-            self.current = Some(input.identity());
-            self.cache.clear();
+            self.rebase_input(input.clone(), None);
         }
         if self.cache.iter().any(|r| {
             r.input == input.identity()
@@ -476,16 +483,9 @@ impl SyntaxService {
                 && old.coverage == result.coverage
                 && old.runs == result.runs
         });
-        self.cache.retain(|old| {
-            !(old.range.start < result.range.end && result.range.start < old.range.end)
-                && old.input == input
-        });
+        self.replace_presentation_coverage(&result);
         self.cache.push_back(result);
-        while self.cache.len() > MAX_CACHED_REGIONS
-            || self.cache.iter().map(SyntaxResult::bytes).sum::<usize>() > MAX_CACHED_RUN_BYTES
-        {
-            self.cache.pop_front();
-        }
+        self.bound_presentation_cache();
         if appearance_changed {
             self.statistics.publications += 1;
         }
@@ -498,6 +498,9 @@ impl SyntaxService {
             .filter(|r| r.input == input)
             .flat_map(|r| r.runs.iter().cloned())
             .collect::<Vec<_>>();
+        if self.current == Some(input) {
+            runs.extend(self.retained.iter().cloned());
+        }
         runs.sort_by_key(|r| r.range.start);
         runs
     }
@@ -505,7 +508,8 @@ impl SyntaxService {
         self.diagnostics.join("\n")
     }
     pub fn retained_result_bytes(&self) -> usize {
-        self.cache.iter().map(SyntaxResult::bytes).sum()
+        self.cache.iter().map(SyntaxResult::bytes).sum::<usize>()
+            + self.retained.iter().map(retention::run_bytes).sum::<usize>()
     }
 }
 impl Drop for SyntaxService {

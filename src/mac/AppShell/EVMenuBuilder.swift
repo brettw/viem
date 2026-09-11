@@ -24,7 +24,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     public init(
         owner: any EVApplicationCommandRouting,
         recentDocumentURLs: @escaping @MainActor () -> [URL] = {
-            NSDocumentController.shared.recentDocumentURLs
+            EVConfigurationStore.shared.recentDocumentURLs
         },
         styleMenuProvider: (@MainActor () -> (any EVStyleMenuProviding)?)? = nil
     ) {
@@ -87,9 +87,9 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
 
         menu.removeAllItems()
         let urls = recentDocumentURLs()
-        for url in urls {
+        for (url, title) in zip(urls, Self.recentDocumentTitles(for: urls)) {
             let item = NSMenuItem(
-                title: FileManager.default.displayName(atPath: url.path),
+                title: title,
                 action: #selector(EVApplicationCommandRouting.openRecentDocument(_:)),
                 keyEquivalent: ""
             )
@@ -108,6 +108,28 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         )
         clear.isEnabled = !urls.isEmpty
         menu.addItem(clear)
+    }
+
+    /// Keep independent filenames short. Only entries whose current suffixes
+    /// collide grow by one parent component, including the filesystem root
+    /// when one full path is the suffix of another. Input order stays intact.
+    private static func recentDocumentTitles(for urls: [URL]) -> [String] {
+        let paths = urls.map(\.pathComponents)
+        var depths = Array(repeating: 1, count: urls.count)
+        var titles = urls.map(\.lastPathComponent)
+        while true {
+            let counts = titles.reduce(into: [String: Int]()) { $0[$1, default: 0] += 1 }
+            var extended = false
+            for index in urls.indices where counts[titles[index], default: 0] > 1 {
+                guard depths[index] < paths[index].count else { continue }
+                depths[index] += 1
+                titles[index] = NSString.path(withComponents: Array(paths[index].suffix(depths[index])))
+                extended = true
+            }
+            // The recent-file store deduplicates files. Still terminate if a
+            // caller supplies an identical path twice: no longer suffix exists.
+            if !extended { return titles }
+        }
     }
 
     private func makeApplicationMenu(for application: NSApplication) -> NSMenu {

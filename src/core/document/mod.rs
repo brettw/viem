@@ -5,6 +5,7 @@
 //! verified before a source transaction is committed.
 
 mod conversion;
+mod code_presentation;
 pub mod syntax;
 mod checkpoint;
 pub(crate) use checkpoint::DocumentCommandCheckpoint;
@@ -677,7 +678,7 @@ pub struct Document {
     read_only: bool,
     recovered_dirty: bool,
     /// Disposable presentation cache; never retained by document history.
-    code_presentation: Option<FormattedDocument>,
+    code_presentation: Option<code_presentation::CodePresentation>,
 }
 
 impl Default for Document {
@@ -1063,14 +1064,18 @@ impl Document {
     }
 
     pub fn projection(&self) -> &FormattedDocument {
-        self.code_presentation.as_ref().filter(|p| self.format().is_code() && p.revision() == self.revision()).unwrap_or(&self.state().projection)
+        self.code_presentation.as_ref().filter(|p| self.format().is_code() && p.projection.revision() == self.revision()).map(|p| &p.projection).unwrap_or(&self.state().projection)
     }
 
     pub fn install_code_presentation(&mut self, sheet: std::sync::Arc<StyleSheet>, runs: &[syntax::SyntaxRun]) -> bool {
         if !self.format().is_code() { self.code_presentation = None; return false; }
         let mut projection = self.state().projection.clone();
         projection.install_code_styles(sheet, runs);
-        self.code_presentation = Some(projection);
+        self.code_presentation = Some(code_presentation::CodePresentation {
+            projection,
+            transition: PositionMap::identity(self.id, PositionDomain::FormattedText,
+                self.revision(), self.state().projection.text_tree().byte_len()),
+        });
         true
     }
 
@@ -1784,6 +1789,7 @@ impl Document {
         self.edit_group_depth = 0;
         let navigation = self.history.select_node(target.node)?;
         self.position_map_capture = next_capture;
+        self.advance_code_presentation(&map);
         Ok(navigation)
     }
 
@@ -1813,6 +1819,7 @@ impl Document {
         self.edit_group_depth = 0;
         let navigation = self.history.select_node(target.node)?;
         self.position_map_capture = next_capture;
+        self.advance_code_presentation(&map);
         Ok(navigation)
     }
 
@@ -1927,6 +1934,7 @@ impl Document {
         let navigation = self.history.select_node(node)?;
         self.edit_group_depth = 0;
         self.position_map_capture = next_capture;
+        self.advance_code_presentation(&map);
         Ok(navigation)
     }
 
@@ -1948,6 +1956,7 @@ impl Document {
         let navigation = self.history.select_change(change)?;
         self.edit_group_depth = 0;
         self.position_map_capture = next_capture;
+        self.advance_code_presentation(&map);
         Ok(navigation)
     }
 

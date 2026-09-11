@@ -119,6 +119,7 @@ typedef struct ViemDocumentStateV1 {
   uint64_t document_id;
   uint64_t document_revision;
   uint64_t style_sheet_revision;
+  uint64_t source_byte_count;
   uint32_t encoding;
   uint32_t format;
   uint32_t file_format;

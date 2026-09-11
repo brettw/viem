@@ -192,6 +192,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             self.syntax.detection = Some(detection);
             self.syntax.detected_for_code = true;
         }
+        self.syntax.service.rebase_input(input.clone(), self.document.code_presentation_change_map());
         let mut requests = Vec::new();
         for view in self.views.values() {
             let start = view
@@ -266,18 +267,26 @@ impl<P: TextMeasurementProvider> Core<P> {
         true
     }
 
-    fn publish_code_presentation(
+    pub(super) fn publish_code_presentation(
         &mut self,
         sheet: Arc<crate::document::StyleSheet>,
         runs: &[crate::document::syntax::SyntaxRun],
     ) {
         let previous = self.document.projection().clone();
+        let caret_anchors: BTreeMap<_, _> = self.views.iter()
+            .filter_map(|(id, view)| capture_caret_baseline_anchor(&self.document, view).map(|anchor| (*id, anchor)))
+            .collect();
         self.document.install_code_presentation(sheet.clone(), runs);
         let metrics_changed = code_metrics_changed(&self.syntax.sheet, &sheet)
             || metrics::runs_change_metrics(&previous, self.document.projection());
         self.syntax.sheet = sheet;
-        for view in self.views.values_mut() {
+        for (id, view) in &mut self.views {
             cancel_active_layout_work(view);
+            if metrics_changed {
+                if let Some(anchor) = caret_anchors.get(id) {
+                    view.viewport_anchor = Some(*anchor);
+                }
+            }
             view.layout.invalidate_syntax_presentation(metrics_changed);
             if metrics_changed {
                 view.long_line_checkpoints = LongLineCheckpointCache::default();

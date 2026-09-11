@@ -1682,6 +1682,7 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
     assert_eq!(initial.struct_size, VIEM_DOCUMENT_STATE_V1_SIZE);
     assert_ne!(initial.document_id, 0);
     assert_eq!(initial.document_revision, 0);
+    assert_eq!(initial.source_byte_count, source.len() as u64);
     assert_eq!(initial.encoding, VIEM_ENCODING_UTF16_LE);
     assert_eq!(initial.format, VIEM_FORMAT_MARKDOWN);
     assert_eq!(initial.file_format, VIEM_FILE_FORMAT_DOS);
@@ -1729,6 +1730,7 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
     );
     let edited = document_state(&core);
     assert_eq!(edited.document_revision, 1);
+    assert_eq!(edited.source_byte_count, source.len() as u64 + 2);
     assert_eq!(edited.style_sheet_revision, initial.style_sheet_revision);
     assert_eq!(edited.encoding, initial.encoding);
     assert_eq!(edited.format, initial.format);

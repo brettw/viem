@@ -100,6 +100,12 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         let backend = Backend(data: Data("native source bytes".utf8))
         let (document, controller) = makeController(backend: backend, fileURL: url)
         defer { controller.close() }
+        var recordedURLs: [URL] = []
+        var bytesWhenRecorded: Data?
+        document.recordRecentDocument = {
+            recordedURLs.append($0)
+            bytesWhenRecorded = try? Data(contentsOf: $0)
+        }
 
         let completion = expectation(description: "write")
         var result: Result<String?, Error>?
@@ -114,6 +120,8 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         XCTAssertEqual(backend.events, ["snapshot", "acknowledge"])
         XCTAssertEqual(backend.acknowledgements, backend.snapshots)
         XCTAssertFalse(document.isDocumentEdited)
+        XCTAssertEqual(recordedURLs, [EVDocumentIdentity.canonicalURL(url)])
+        XCTAssertEqual(bytesWhenRecorded, backend.serializedData, "Recent files update only after the physical write")
     }
 
     func testFailedWriteDoesNotAcknowledgeOrCloseWriteQuitWindow() throws {
@@ -121,7 +129,9 @@ final class EVDocumentHostEffectsTests: XCTestCase {
             .appendingPathComponent("viem-host-missing-\(UUID().uuidString)", isDirectory: true)
         let url = missingDirectory.appendingPathComponent("document.txt")
         let backend = Backend(data: Data("unsaved".utf8))
-        let (_, controller) = makeController(backend: backend, fileURL: url)
+        let (document, controller) = makeController(backend: backend, fileURL: url)
+        var recordedURLs: [URL] = []
+        document.recordRecentDocument = { recordedURLs.append($0) }
         controller.showWindow(nil)
         defer { controller.close() }
 
@@ -137,6 +147,7 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         XCTAssertEqual(backend.events, ["snapshot"])
         XCTAssertTrue(backend.acknowledgements.isEmpty)
         XCTAssertTrue(controller.window?.isVisible ?? false)
+        XCTAssertTrue(recordedURLs.isEmpty, "A failed write cannot enter recent files")
     }
 
     func testWriteQuitClosesOnlyAfterSuccessfulAcknowledgement() throws {
@@ -172,6 +183,12 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         let backend = Backend(data: Data("source".utf8))
         let (document, controller) = makeController(backend: backend, fileURL: original)
         defer { controller.close() }
+        var recordedURLs: [URL] = []
+        var bytesWhenRecorded: Data?
+        document.recordRecentDocument = {
+            recordedURLs.append($0)
+            bytesWhenRecorded = try? Data(contentsOf: $0)
+        }
         let request = EVDocumentHostRequest(
             kind: .saveAs,
             documentID: backend.persistenceState.documentID,
@@ -193,6 +210,8 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         XCTAssertEqual(document.fileType, EVDocument.plainTextType)
         XCTAssertEqual(try Data(contentsOf: destination), backend.serializedData)
         XCTAssertEqual(backend.events, ["snapshot", "acknowledge"])
+        XCTAssertEqual(recordedURLs, [EVDocumentIdentity.canonicalURL(destination)])
+        XCTAssertEqual(bytesWhenRecorded, backend.serializedData)
     }
 
     func testSaveAsPreservesSourceFormatAndBytesRegardlessOfFilenameExtension() throws {
@@ -358,6 +377,8 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         backend.rangedData = Data("second\r\n".utf8)
         let (document, controller) = makeController(backend: backend, fileURL: original)
         defer { controller.close() }
+        var recordedURLs: [URL] = []
+        document.recordRecentDocument = { recordedURLs.append($0) }
 
         let stale = EVDocumentHostRequest(
             kind: .write,
@@ -366,6 +387,7 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         )
         assertFailure(.staleRequest, from: controller, request: stale)
         XCTAssertTrue(backend.events.isEmpty)
+        XCTAssertTrue(recordedURLs.isEmpty)
 
         let alternateURL = directory.appendingPathComponent("alternate.txt")
         let alternate = EVDocumentHostRequest(
@@ -384,6 +406,7 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         XCTAssertNoThrow(try alternateResult?.get())
         XCTAssertEqual(try Data(contentsOf: alternateURL), backend.serializedData)
         XCTAssertEqual(backend.events, ["snapshot"])
+        XCTAssertTrue(recordedURLs.isEmpty, "Writing an unopened alternate copy does not add a recent document")
 
         let rangedURL = directory.appendingPathComponent("range.txt")
         let ranged = EVDocumentHostRequest(
@@ -409,6 +432,7 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         XCTAssertTrue(backend.acknowledgements.isEmpty)
         XCTAssertTrue(backend.persistenceState.isDirty)
         XCTAssertTrue(document.isDocumentEdited)
+        XCTAssertTrue(recordedURLs.isEmpty, "Writing an unopened range copy does not add a recent document")
     }
 
     private func makeController(
@@ -416,6 +440,7 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         fileURL: URL? = nil
     ) -> (EVDocument, EVDocumentWindowController) {
         let document = EVDocument(editorBackend: backend)
+        document.recordRecentDocument = { _ in }
         document.fileURL = fileURL
         document.fileType = EVDocument.plainTextType
         let controller = EVDocumentWindowController(document: document, editorSurface: Surface())

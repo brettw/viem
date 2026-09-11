@@ -96,6 +96,12 @@ public final class EVDocument: NSDocument {
     var recoveryDecisionHandler: (([EVRecoveryCandidate]) -> EVRecoveryOpenDecision)?
     var readOnlySaveDecisionHandler: (() -> Bool)?
     var closeReviewDecisionHandler: ((@escaping (Bool) -> Void) -> Void)?
+    // Recent-file persistence is ancillary to opening/saving the source. The
+    // settings store retains any write diagnostic without failing that source
+    // operation. Injection keeps native lifecycle tests in an isolated store.
+    var recordRecentDocument: (URL) -> Void = {
+        try? EVConfigurationStore.shared.recordRecentDocument($0)
+    }
 
     public override var windowForSheet: NSWindow? {
         super.windowForSheet ?? EVDocumentWindowController.windowShowing(document: self)
@@ -180,6 +186,7 @@ public final class EVDocument: NSDocument {
             self.beginRecovery(for: target)
             self.synchronizeEditedState(self.editorBackend.persistenceState)
             if self.wasRecovered { self.updateChangeCount(.changeDone) }
+            self.recordRecentDocument(target)
         }
     }
 
@@ -536,6 +543,7 @@ public final class EVDocument: NSDocument {
                 return
             }
             let target = EVDocumentIdentity.canonicalURL(url)
+            self.recordRecentDocument(target)
             self.recordFileBaseline(snapshot.data, at: target)
             if self.recoveryTarget != target {
                 // A successful Save As already adopted its native target even
