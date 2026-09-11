@@ -12852,7 +12852,8 @@ pub struct ViemSelectedStylesInfoV1 {
     pub character_id_bytes: u64,
 }
 
-/// Copy semantic assignment IDs, excluding automatic source syntax styles.
+/// Copy selected named style IDs. Code includes the displayed automatic
+/// character style; other formats exclude automatic source syntax styles.
 /// # Safety
 /// Output regions must be aligned, writable, and mutually disjoint.
 #[no_mangle]

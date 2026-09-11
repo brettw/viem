@@ -19,6 +19,8 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private var sourceFormat = EVSourceFormat.plainText
     private let alignmentValues: [UInt32] = [UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_START), UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER), UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_END)]
     private var updating = false
+    private var publishingFontChange = false
+    private var endFontEditAfterPublication = false
     private var editable = false
     private let family = NSComboBox()
     private let face = NSPopUpButton()
@@ -60,7 +62,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         fallbackButton.toolTip = "Edit ordered fallback fonts"
         fallbackButton.setAccessibilityLabel("Fallback fonts")
         fallbackButton.widthAnchor.constraint(equalToConstant: 28).isActive = true
-        let familyRow = row([family, face, fallbackButton, reset(.characterFontFamilies), numeric(.characterSize, title: "Size", width: 66)])
+        let familyRow = row([family, face, fallbackButton, reset(.characterFontFamilies), numeric(.characterSize, title: "Size", width: 66, showsLabel: false)])
         let emphasis = row([
             toggle(.characterBold, title: "B", font: .boldSystemFont(ofSize: 14)),
             toggle(.characterSlant, title: "I", font: NSFontManager.shared.convert(.systemFont(ofSize: 14), toHaveTrait: .italicFontMask)),
@@ -123,23 +125,16 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         fallbackPopover = nil
         self.theme = theme
         self.sourceFormat = sourceFormat
+        let wasUpdating = updating
         updating = true
-        defer { updating = false }
+        defer { updating = wasUpdating }
         if self.definition?.key != definition?.key || self.documentID != documentID { lastLineValues = [:] }
         self.documentID = documentID
         self.definition = definition
         editable = definition?.capabilities.contains(.declarations) == true
         let paragraphEditable = editable && definition?.kind == .paragraph
         hasInvalidDraft = false
-        let chosen = stringList(.characterFontFamilies).first ?? "Helvetica"
-        fontFaces = EVFontCatalog.faces(for: chosen)
-        family.stringValue = EVFontCatalog.displayFamilyName(for: chosen)
-        family.isEnabled = editable
-        face.removeAllItems()
-        for member in fontFaces { face.addItem(withTitle: member.styleName) }
-        if let index = fontFaces.firstIndex(where: { $0.postScriptName == chosen }) { face.selectItem(at: index) }
-        else if let index = fontFaces.firstIndex(where: { $0.weight == UInt16(number(.characterWeight, fallback: 400)) && $0.italic == (unsigned(.characterSlant) != 0) }) { face.selectItem(at: index) }
-        face.isEnabled = editable && !fontFaces.isEmpty
+        refreshFontControls()
         fallbackButton.isEnabled = editable
         let fallbackCount = max(0, stringList(.characterFontFamilies).count - 1)
         fallbackButton.toolTip = "Edit ordered fallback fonts (\(fallbackCount))"
@@ -169,7 +164,56 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         } else { lineKind.selectItem(at: 0); lineValue.stringValue = "" }
         lineValue.isEnabled = paragraphEditable && lineKind.indexOfSelectedItem != 0
         synchronizeStepper(.paragraphLineSpacing, value: Double(Float(lineValue.stringValue) ?? 0), enabled: lineValue.isEnabled)
+    }
+
+    private func refreshFontControls() {
+        let wasUpdating = updating
+        updating = true
+        defer { updating = wasUpdating }
+        let chosen = stringList(.characterFontFamilies).first ?? "Helvetica"
+        fontFaces = EVFontCatalog.faces(for: chosen)
+        let displayFamily = EVFontCatalog.displayFamilyName(for: chosen)
+        if family.objectValues.contains(where: { ($0 as? String) == displayFamily }) {
+            family.selectItem(withObjectValue: displayFamily)
+        } else if family.indexOfSelectedItem >= 0 {
+            family.deselectItem(at: family.indexOfSelectedItem)
+        }
+        setFamilyText(displayFamily)
+        family.isEnabled = editable
+        face.removeAllItems()
+        for member in fontFaces { face.addItem(withTitle: member.styleName) }
+        // A popup selects its first item automatically when populated. An
+        // unresolved request must not appear to select that unrelated face.
+        face.select(nil)
+        if let current = currentFontFace, let index = fontFaces.firstIndex(of: current) {
+            face.selectItem(at: index)
+        }
+        face.isEnabled = editable && !fontFaces.isEmpty
         featureButton.isEnabled = editable && !EVFontCatalog.features(for: chosen).isEmpty
+    }
+
+    private var currentFontFace: EVFontFace? {
+        let chosen = stringList(.characterFontFamilies).first ?? "Helvetica"
+        let weight = number(.characterWeight, fallback: 400)
+        let italic = unsigned(.characterSlant) != 0
+        let matching = fontFaces.filter { Float($0.weight) == weight && $0.italic == italic }
+        return matching.first { $0.postScriptName == chosen } ?? matching.first
+    }
+
+    private func setFamilyText(_ value: String) {
+        let wasUpdating = updating
+        updating = true
+        defer { updating = wasUpdating }
+        family.stringValue = value
+        // During a combo selection AppKit may still own an older field-editor
+        // string. Keep it in sync so a later action/end notification cannot
+        // restore the previous family after the selected value was committed.
+        if let editor = family.currentEditor() as? NSTextView, editor.string != value {
+            let selection = editor.selectedRange()
+            editor.string = value
+            let start = min(selection.location, value.utf16.count)
+            editor.setSelectedRange(NSRange(location: start, length: min(selection.length, value.utf16.count - start)))
+        }
     }
 
     func refreshThemeColors(_ theme: EVTheme) {
@@ -217,7 +261,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         view.widthAnchor.constraint(equalToConstant: 20).isActive = true
         return view
     }
-    private func numeric(_ property: EVStyleProperty, title: String, icon symbol: EVStyleIcons.Symbol? = nil, width: CGFloat = 65) -> NSView {
+    private func numeric(_ property: EVStyleProperty, title: String, icon symbol: EVStyleIcons.Symbol? = nil, width: CGFloat = 65, showsLabel: Bool = true) -> NSView {
         let field = NSTextField()
         field.delegate = self
         field.tag = Int(property.rawValue)
@@ -230,7 +274,8 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         unit.font = .systemFont(ofSize: 11)
         var items: [NSView] = symbol.map { [icon($0)] } ?? []
         items += [field, stepper(property, title: title), unit, reset(property)]
-        return labeled(title, control: row(items, spacing: 3))
+        let controls = row(items, spacing: 3)
+        return showsLabel ? labeled(title, control: controls) : controls
     }
     private func stepper(_ property: EVStyleProperty, title: String) -> EVStyleStepper {
         let control = EVStyleStepper()
@@ -359,20 +404,52 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private func send(_ mutations: [EVStyleMutation]) { guard !updating, editable else { return }; onMutations?(mutations) }
 
     @objc private func familyChanged(_ sender: Any?) {
-        guard !updating else { return }
-        let value = family.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return }
-        let members = EVFontCatalog.faces(for: value)
-        let regular = members.min { abs(Int($0.weight) - 400) + ($0.italic ? 200 : 0) < abs(Int($1.weight) - 400) + ($1.italic ? 200 : 0) }
-        if let regular { chooseFace(regular) } else { send([.setDeclaration(.characterFontFamilies, .stringList(replacingPrimaryFamily(with: value)))]) }
+        changeFamily(to: family.currentEditor()?.string ?? family.stringValue)
     }
     func comboBoxSelectionDidChange(_ notification: Notification) {
-        if let value = family.objectValueOfSelectedItem as? String { family.stringValue = value }
-        familyChanged(family)
+        guard notification.object as? NSComboBox === family, !updating, !publishingFontChange,
+              let value = family.objectValueOfSelectedItem as? String else { return }
+        setFamilyText(value)
+        changeFamily(to: value)
     }
-    @objc private func faceChanged(_ sender: Any?) { guard fontFaces.indices.contains(face.indexOfSelectedItem) else { return }; chooseFace(fontFaces[face.indexOfSelectedItem]) }
+    private func changeFamily(to proposed: String) {
+        guard !updating, !publishingFontChange, editable else { return }
+        let value = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        let chosen = stringList(.characterFontFamilies).first ?? "Helvetica"
+        guard !value.isEmpty,
+              value.caseInsensitiveCompare(chosen) != .orderedSame,
+              value.caseInsensitiveCompare(EVFontCatalog.displayFamilyName(for: chosen)) != .orderedSame else {
+            refreshFontControls()
+            return
+        }
+        if let member = EVFontCatalog.faceForFamilyChange(to: value, currentFace: currentFontFace) {
+            chooseFace(member)
+        } else {
+            publishFontMutations([.setDeclaration(.characterFontFamilies, .stringList(replacingPrimaryFamily(with: value)))])
+        }
+    }
+    @objc private func faceChanged(_ sender: Any?) {
+        guard !updating, !publishingFontChange, fontFaces.indices.contains(face.indexOfSelectedItem) else { return }
+        chooseFace(fontFaces[face.indexOfSelectedItem])
+    }
     private func chooseFace(_ member: EVFontFace) {
-        send([.setDeclaration(.characterFontFamilies, .stringList(replacingPrimaryFamily(with: member.postScriptName))), .setDeclaration(.characterWeight, .unsigned(UInt32(member.weight))), .setDeclaration(.characterSlant, .fontSlant(member.italic ? 1 : 0))])
+        publishFontMutations([.setDeclaration(.characterFontFamilies, .stringList(replacingPrimaryFamily(with: member.postScriptName))), .setDeclaration(.characterWeight, .unsigned(UInt32(member.weight))), .setDeclaration(.characterSlant, .fontSlant(member.italic ? 1 : 0))])
+    }
+    private func publishFontMutations(_ mutations: [EVStyleMutation]) {
+        guard !updating, !publishingFontChange, editable else { return }
+        publishingFontChange = true
+        defer {
+            publishingFontChange = false
+            if endFontEditAfterPublication {
+                endFontEditAfterPublication = false
+                onEditEnded?()
+            }
+        }
+        send(mutations)
+        // The owner synchronously publishes a committed definition. Re-render
+        // that authority after both success and rejection, including its active
+        // field editor, rather than leaving a tentative family/face on screen.
+        refreshFontControls()
     }
     private func replacingPrimaryFamily(with value: String) -> [String] {
         [value] + stringList(.characterFontFamilies).dropFirst()
@@ -434,9 +511,16 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         send([.setDeclaration(.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: kind, value: normal ? 0 : value!)))])
     }
 
-    func controlTextDidBeginEditing(_ notification: Notification) { onEditBegan?() }
+    func controlTextDidBeginEditing(_ notification: Notification) {
+        guard !updating, !publishingFontChange else { return }
+        onEditBegan?()
+    }
     func controlTextDidEndEditing(_ notification: Notification) {
-        if notification.object as? NSComboBox === family { familyChanged(family) }
+        if publishingFontChange {
+            endFontEditAfterPublication = true
+            return
+        }
+        if !updating, notification.object as? NSComboBox === family { familyChanged(family) }
         onEditEnded?()
     }
     func controlTextDidChange(_ notification: Notification) {

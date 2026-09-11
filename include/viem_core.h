@@ -2182,7 +2182,8 @@ ViemStatus viem_core_copy_formatted_utf8(ViemCoreHandle core,
                                          uint64_t output_capacity,
                                          uint64_t *out_required);
 
-/* Semantic assignment identities, excluding automatic syntax decoration.
+/* Selected named style identities. Code includes its displayed automatic
+ * character style; other formats exclude automatic syntax decoration.
  * UTF-8 IDs are concatenated paragraph first, then character. Mixed roles
  * have zero bytes. The output is tied to the exact document revision. */
 #define VIEM_SELECTED_STYLE_PARAGRAPH_MIXED (1u << 0)

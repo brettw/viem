@@ -28,6 +28,82 @@ final class EVCodeStyleMenuTests: XCTestCase {
         return item
     }
 
+    func testNativeCodeMenusMarkTheActiveSyntaxAndBaseStylesAndValidationUpdatesMovement() async throws {
+        let surface = try surface()
+        try await waitForRustHighlighting(surface)
+        let before = try surface.backend.recoverySnapshot()
+        let owner = EVApplicationDelegate(configuration: surface.backend.configuration)
+        let builder = EVMenuBuilder(owner: owner, styleMenuProvider: { surface })
+        let main = builder.buildMainMenu(for: NSApplication.shared)
+        let character = try XCTUnwrap(main.item(withTitle: "Character")?.submenu)
+        let paragraph = try XCTUnwrap(main.item(withTitle: "Paragraph")?.submenu)
+        builder.menuNeedsUpdate(character)
+        builder.menuNeedsUpdate(paragraph)
+        let keyword = try XCTUnwrap(character.item(withTitle: "@keyword"))
+        let baseCharacter = try XCTUnwrap(character.item(withTitle: "Base Character"))
+        let baseParagraph = try XCTUnwrap(paragraph.item(withTitle: "Base Paragraph"))
+        let characterFooter = try XCTUnwrap(character.item(withTitle: "Edit Styles…"))
+        let paragraphFooter = try XCTUnwrap(paragraph.item(withTitle: "Edit Styles…"))
+        XCTAssertTrue(character.showsStateColumn)
+        XCTAssertTrue(paragraph.showsStateColumn)
+        XCTAssertEqual(keyword.state, .on)
+        XCTAssertEqual(baseCharacter.state, .off)
+        XCTAssertEqual(baseParagraph.state, .on)
+
+        for menu in [character, paragraph] {
+            for item in menu.items where item.representedObject is EVStyleMenuAction {
+                XCTAssertTrue(surface.editorView.validateMenuItem(item), item.title)
+            }
+        }
+        XCTAssertEqual(keyword.state, .on, "Native validation must preserve the syntax checkmark")
+        XCTAssertEqual(baseParagraph.state, .on)
+        XCTAssertEqual(characterFooter.state, .off)
+        XCTAssertEqual(paragraphFooter.state, .off)
+
+        // Keep the existing NSMenuItem objects as AppKit does while tracking;
+        // validation must refresh selection state without rebuilding the menu.
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 2, length: 0))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 2)
+        XCTAssertTrue(surface.editorView.validateMenuItem(keyword))
+        XCTAssertTrue(surface.editorView.validateMenuItem(baseCharacter))
+        XCTAssertEqual(keyword.state, .off)
+        XCTAssertEqual(baseCharacter.state, .on, "The space after fn has the default character style")
+        characterFooter.state = .on
+        paragraphFooter.state = .on
+        XCTAssertTrue(surface.editorView.validateMenuItem(characterFooter))
+        XCTAssertTrue(surface.editorView.validateMenuItem(paragraphFooter))
+        XCTAssertEqual(characterFooter.state, .off, "The generic editor command is never a selected style")
+        XCTAssertEqual(paragraphFooter.state, .off)
+
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 0))
+        XCTAssertTrue(surface.editorView.validateMenuItem(keyword))
+        XCTAssertTrue(surface.editorView.validateMenuItem(baseCharacter))
+        XCTAssertEqual(keyword.state, .on)
+        XCTAssertEqual(baseCharacter.state, .off)
+        XCTAssertEqual(try surface.backend.recoverySnapshot(), before)
+        XCTAssertFalse(surface.canUndo)
+    }
+
+    func testCodeMenuChecksOneUniformSyntaxSelectionAndClearsCharacterChecksForMixedText() async throws {
+        let surface = try surface()
+        try await waitForRustHighlighting(surface)
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 2))
+        var catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
+        XCTAssertEqual(catalogue.entries.filter { $0.role == .character && $0.presentation.state == .on }
+            .map(\.displayName), ["@keyword"])
+        XCTAssertEqual(catalogue.entries.first { $0.role == .paragraph && $0.stableID == "Paragraph" }?
+            .presentation.state, .on)
+
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 3))
+        catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
+        XCTAssertTrue(try XCTUnwrap(surface.session).selectedNamedStyles().characterMixed)
+        XCTAssertTrue(catalogue.entries.filter { $0.role == .character }
+            .allSatisfy { $0.presentation.state == .off }, "A mixed syntax/default selection has no unique character style")
+        XCTAssertEqual(catalogue.entries.first { $0.role == .paragraph && $0.stableID == "Paragraph" }?
+            .presentation.state, .on)
+        XCTAssertFalse(surface.canUndo)
+    }
+
     func testCodeMenuListsEveryCharacterDefinitionAndEditsTheGlobalTarget() throws {
         let surface = try surface()
         let before = try surface.backend.recoverySnapshot()
@@ -81,6 +157,9 @@ final class EVCodeStyleMenuTests: XCTestCase {
         XCTAssertEqual(entry.actionKind, .defineSyntax)
         XCTAssertEqual(entry.displayName, "Define @keyword…")
         XCTAssertEqual(entry.stableID, "", "An unresolved reference has no invented definition ID")
+        XCTAssertEqual(entry.presentation.state, .off)
+        XCTAssertEqual(catalogue.entries.first { $0.role == .character && $0.stableID == "Character" }?
+            .presentation.state, .on, "An unresolved syntax style renders with Base Character")
         XCTAssertEqual(try code.snapshot().identity.styleSheetRevision, missingRevision)
         XCTAssertFalse(try code.snapshot().definitions.contains { $0.name == "@keyword" })
         let coordinator = EVStyleEditorCoordinator.shared
@@ -128,5 +207,18 @@ final class EVCodeStyleMenuTests: XCTestCase {
         XCTAssertFalse(surface.presentation(for: .saveDefaultStyle).isEnabled)
         XCTAssertFalse(surface.presentation(for: .bold).isEnabled)
         XCTAssertEqual(try surface.backend.recoverySnapshot(), before)
+    }
+
+    private func waitForRustHighlighting(_ surface: EVEditorSurfaceController) async throws {
+        for _ in 0..<200 {
+            surface.backend.pollSyntax()
+            surface.refreshPresentation()
+            if surface.layoutPaint?.runs.contains(where: {
+                $0.text_start == 0 && $0.text_end >= 2
+                    && $0.paint.flags & UInt32(VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) == 0
+            }) == true { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("Rust fn did not receive syntax highlighting: \(surface.statusBarState.message)")
     }
 }

@@ -18,6 +18,7 @@ struct EVCoreTextStylePreviewInspection: Equatable {
     let requestedFontFamilies: [String]
     let requestedFontSize: CGFloat
     let resolvedFontFamily: String
+    let resolvedFontPostScriptName: String
     let resolvedFontSize: CGFloat
     let canvasBackground: EVStyleColor
     let accessibilityText: String
@@ -99,13 +100,21 @@ final class EVCoreTextStylePreviewView: NSView {
             height: max(bounds.height, intrinsicContentSize.height)
         )
         let requested = requestedFontDescription(from: effectiveValues)
-        let font = makeFont(from: effectiveValues)
+        // Inspect the font installed in the specimen, so tests observe stale
+        // preview content instead of resolving a fresh font from its values.
+        let font = currentStyleRange.length > 0
+            ? attributedContent.attribute(
+                NSAttributedString.Key(kCTFontAttributeName as String),
+                at: currentStyleRange.location, effectiveRange: nil
+            ) as! CTFont
+            : makeFont(from: effectiveValues)
         return EVCoreTextStylePreviewInspection(
             kind: kind,
             effectiveValues: effectiveValues,
             requestedFontFamilies: requested.families,
             requestedFontSize: requested.size,
             resolvedFontFamily: resolvedFamilyName(font, requested: requested.families),
+            resolvedFontPostScriptName: CTFontCopyPostScriptName(font) as String,
             resolvedFontSize: CTFontGetSize(font),
             canvasBackground: canvasBackground,
             accessibilityText: (accessibilityValue() as? String) ?? "",

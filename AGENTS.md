@@ -805,8 +805,8 @@ Every style sheet defines three distinguished styles:
 - **Base Paragraph** is a Paragraph-role child of Base Document and provides
   complete paragraph-layout values. It is the default paragraph-style
   assignment when an adapter does not provide a more specific assignment and
-  the fallback selection for style-editing UI. Every other Paragraph-role
-  style derives through it.
+  the fallback paragraph selection for style-editing UI. Every other
+  Paragraph-role style derives through it.
 - **Base Character** is the root of the character-style hierarchy. Its sparse
   declarations refine the document defaults without preventing paragraph styles
   from overriding them.
@@ -2006,11 +2006,16 @@ until the user supplies declarations. Merely resolving a missing name still
 never creates a definition. The menu uses the actual case-sensitive syntax name
 and preserves normal menu tracking while highlighting changes asynchronously.
 
-Character > Edit Styles… opens the global Code character styles; Paragraph >
-Edit Styles… and Format > Document Style > Edit Styles… open the global base
-paragraph and document definitions. These are settings edits shared live by
-Code buffers, with the style editor's own undo history. Selection formatting
-and manually assigning named styles to Code text remain unavailable.
+Character > Edit Styles… opens the current character style in the global Code
+sheet; Paragraph > Edit Styles… opens the current paragraph style in that sheet.
+Use the corresponding base style when the selection has no single current style.
+Format > Document Style > Edit Styles… opens the global base document definition.
+When opened from a Code view, the Styles editor follows subsequent caret and
+selection movement in that view using the policy below while retaining global
+sheet ownership. A direct settings launch has no document-following context.
+These are settings edits shared live by Code buffers, with the style editor's
+own undo history. Selection formatting and manually assigning named styles to
+Code text remain unavailable.
 
 Syntax name references are disposable, unlike authored stable-ID assignments.
 Adding, renaming, or removing a definition invalidates their resolution; names
@@ -3498,6 +3503,17 @@ formatting items show a checkmark, mixed state, or no mark as appropriate.
 Character and Paragraph menus reserve the same mark column for every item,
 so labels align whether or not the item is checked. Active named styles remain
 checked when menu validation refreshes their command state.
+In Code mode, check the named syntax style at the caret, or the single style
+shared by the selection, using the currently displayed syntax runs. Check the
+specific assigned style rather than its linked ancestors; unstyled text and
+unresolved syntax names use Base Character. A selection spanning different
+named styles has no single checked character style. Code's paragraph menu
+checks the current paragraph style. These checks describe the document, not
+the style currently selected in the style editor, and never trigger parsing.
+Code queries use intersecting cached syntax spans and indexed text boundaries;
+a large selection must not enumerate all hard lines just to open a style menu.
+The generic Edit Styles command remains unmarked even when its initial target
+is the current base style.
 Undo and Redo use the core-provided action label. The Services, window
 management, recent-document, open-window, and Help-search contents remain
 system or dynamically supplied.
@@ -3525,7 +3541,9 @@ checkboxes, or `Cancel` and `OK` buttons.
 These document-target rules also apply to the explicit global Code stylesheet
 target with the ownership and persistence exceptions in "Code format and
 syntax highlighting". Global Code style editing never retargets implicitly to
-a document and never creates a document source transaction.
+a document stylesheet and never creates a document source transaction. Following
+a Code view selects definitions within the global sheet; it does not change
+their ownership or move their edits into document history.
 
 - Although it is colloquially a dialog box, the style editor is a modeless
   auxiliary window or panel. It is never an application-modal dialog or a
@@ -3541,9 +3559,32 @@ a document and never creates a document source transaction.
   open brings the existing window forward, retargets it to the invoking
   document or explicitly requested global Code sheet, and selects the requested
   style by stable style ID.
-- Merely moving the document caret or selection does not silently retarget an
-  open editor. Retargeting occurs through an explicit Edit Style action or the
-  editor's Style picker.
+- **Paragraph > Edit Styles…** initially selects the current paragraph style;
+  **Character > Edit Styles…** initially selects the current character style,
+  including Base Character when that is current. These role-specific entry
+  points use the corresponding base style when a mixed selection has no single
+  named style in that namespace. Choosing an individual style definition from
+  a menu or another explicit Edit Style action selects that requested style.
+- An editor opened from a document view follows subsequent logical caret or
+  selection changes in that invoking view. Select its current non-default
+  character style when there is one single such style; otherwise select its
+  current paragraph style. For a selection spanning multiple character styles,
+  use the paragraph result; if paragraphs are mixed as well, use Base Paragraph.
+  Never choose an arbitrary first style from a mixed selection. Merely focusing
+  or moving in another document does not change the editor's target or following
+  context. The target-closure policy below remains applicable.
+- An explicit Style picker or hierarchy-navigation choice remains selected
+  until the followed view's caret or selection actually changes. Scrolling,
+  repainting, syntax publication, style edits, and document or stylesheet
+  revisions or layout generations alone MUST NOT override that choice. Following
+  uses the core's current named-style query and snapshot validation, including
+  existing Code syntax runs; it MUST NOT trigger parsing, wait for syntax, scan the whole
+  document, or infer named assignments from displayed font attributes. Following
+  a style changes presentation only and uses the same pending-edit validation
+  as explicit style navigation.
+- A direct global Code editor launch from Settings clears any document-following
+  context. An explicit edit action from a Code view may establish that context
+  again without changing global stylesheet ownership.
 - The window has a **Close** button at the bottom trailing edge. It has no
   **Apply**, **Cancel**, or **OK** button because valid changes are already
   applied. The standard window close command and `Command-W` have the same
@@ -3617,7 +3658,8 @@ Character style.
 Expose controls for all initial Character properties:
 
 - ordered font-family and fallback requests;
-- font size in layout units;
+- font size in layout units, aligned with the font-family and face controls
+  without a visible **Size** label above it; retain its accessible control name;
 - a native font-face picker (Regular, Light, Bold, Italic, etc.) and separate
   Bold and Italic toggles, with no generic numeric weight/slant fields;
 - native foreground/background color swatches, including Default/Inherited;
@@ -3641,6 +3683,19 @@ Italic selects an intrinsic italic face when possible. Unsupported traits use
 native synthesis. Applying or removing Bold must retain the chosen base face.
 Source adapters preserve this distinction through their owned style metadata,
 with conventional interoperable bold fallback where necessary.
+
+Changing the primary font family retains the current face's style name when
+that exact style exists in the new family. Otherwise select Regular or an
+obvious regular equivalent such as Normal, Roman, or Book; if none exists,
+select the family's first available face. Commit the chosen face identity and
+its base weight/slant together as one undoable choice, preserving the ordered
+fallback tail and the separate Bold setting. The face picker, committed style,
+live preview, and document rendering must agree. Repeated native selection and
+editing-completion notifications must not reset a newly chosen face. Font
+discovery must not mistake Core Text's substitute for an unavailable name as
+that requested family's catalogue, and resolving an explicit face must retain
+its identity when weight/slant are unchanged, including width variants that
+share the same weight and slant.
 
 Font-family fallback order requires an ordered editor rather than a single-font
 field. Primary and fallback font-name dropdowns request 20 visible font rows;
@@ -3702,9 +3757,9 @@ their supported signed ranges. Held autorepeat is one continuous undo gesture.
   core state, and present the structured diagnostic. Other controls and the
   document remain usable.
 - Undo, redo, source reprojection, or another frontend action may change the
-  selected style while the window is open. The editor observes style-sheet
-  revision changes and refreshes its fields, inheritance state, preview, and
-  summary from core without manufacturing another edit.
+  selected style's definition while the window is open. The editor observes
+  style-sheet revision changes and refreshes its fields, inheritance state,
+  preview, and summary from core without manufacturing another edit.
 
 #### Selection validity and deletion
 
@@ -3721,6 +3776,8 @@ The global Code target instead follows the name-reference and persisted
 suppression rules in its section: no source assignments or document history
 are rewritten. All target identity checks below use the global sheet identity
 when appropriate, and closing a document does not close or retarget that editor.
+If its followed Code view closes, detach that following context and retain the
+selected global definition; do not start following another document implicitly.
 
 The selected style is tracked by document-or-global target identity and stable
 style ID, never by menu index, name, or stale array position. On every style-sheet
@@ -3744,7 +3801,13 @@ Required macOS integration tests cover single-window reuse and retargeting,
 continued document editing while the window is open, live application and undo
 grouping, Character/Paragraph tab enablement, inherited versus explicit values,
 base-style parent restrictions, external undo/redo refresh, deletion fallback
-to Base Paragraph, stale callback rejection, and target-document closure.
+to Base Paragraph, stale callback rejection, and target-document closure. Also
+cover role-specific initial selection, following a non-default character style
+and falling back to paragraph styles, mixed selections, explicit picker and
+hierarchy choices surviving unrelated refreshes, no following of unrelated
+documents, and Code-view versus direct Settings launches retaining global
+ownership. Large-document following queries must remain bounded and must not
+request new syntax work.
 
 ### Explicitly deferred compatibility
 

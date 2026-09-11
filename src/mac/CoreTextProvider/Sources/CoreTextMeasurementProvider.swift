@@ -641,19 +641,25 @@ public func resolveFont(
   // This also covers previews and clipboard fonts that do not pass through
   // the portable layout resolver. Kerning always follows the font's default.
   let features = features.filter { $0.0 != "kern" }
-  let requested = families.first ?? CoreTextMeasurementProvider.defaultFontFamily
+  let requestedIndex = families.firstIndex { !EVFontCatalog.faces(for: $0).isEmpty }
+  let requested = requestedIndex.map { families[$0] } ?? CoreTextMeasurementProvider.defaultFontFamily
   let base = EVFontCatalog.baseFont(named: requested, size: size)
   let faces = EVFontCatalog.faces(for: requested)
-  let exactFace = faces.first { $0.postScriptName == requested }
+  let exactFace = faces.first { $0.postScriptName.caseInsensitiveCompare(requested) == .orderedSame }
+  let targetWidth = exactFace?.width ?? 0
+  let nearestWidth = faces.map { abs($0.width - targetWidth) }.min() ?? 0
+  let matchingWidth = faces.filter { abs($0.width - targetWidth) <= nearestWidth + 0.0001 }
+  let wantsItalic = slant != UInt32(VIEM_FONT_SLANT_UPRIGHT)
+  let matchingSlant = matchingWidth.filter { $0.italic == wantsItalic }
+  let available = matchingSlant.isEmpty ? matchingWidth : matchingSlant
   let targetWeight =
     relativeBold && exactFace != nil
-    ? EVFontCatalog.boldWeight(baseWeight: exactFace!.weight, faces: faces)
+    ? EVFontCatalog.boldWeight(baseWeight: exactFace!.weight, faces: available)
     : UInt16(max(1, min(1000, cssWeight.rounded())))
-  let wantsItalic = slant != UInt32(VIEM_FONT_SLANT_UPRIGHT)
-  let matchingSlant = faces.filter { $0.italic == wantsItalic }
-  let available = matchingSlant.isEmpty ? faces : matchingSlant
   let preferred: EVFontFace?
-  if relativeBold {
+  if !relativeBold, let exactFace, exactFace.weight == targetWeight, exactFace.italic == wantsItalic {
+    preferred = exactFace
+  } else if relativeBold {
     preferred =
       available.filter { $0.weight >= targetWeight }.min { $0.weight < $1.weight }
       ?? available.max { $0.weight < $1.weight }
@@ -662,26 +668,7 @@ public func resolveFont(
       abs(Int($0.weight) - Int(targetWeight)) < abs(Int($1.weight) - Int(targetWeight))
     }
   }
-  var member: CTFont
-  if (CTFontCopyPostScriptName(base) as String).hasPrefix(".SFNS") {
-    let anchors: [(UInt16, CGFloat)] = [
-      (100, -0.8), (200, -0.6), (300, -0.4), (400, 0), (500, 0.23), (600, 0.3), (700, 0.4),
-      (800, 0.56), (900, 0.62),
-    ]
-    let nativeWeight = anchors.min {
-      abs(Int($0.0) - Int(targetWeight)) < abs(Int($1.0) - Int(targetWeight))
-    }!.1
-    member = CTFontGetSymbolicTraits(base).contains(.traitMonoSpace)
-      ? NSFont.monospacedSystemFont(ofSize: size, weight: NSFont.Weight(rawValue: nativeWeight)) as CTFont
-      : NSFont.systemFont(ofSize: size, weight: NSFont.Weight(rawValue: nativeWeight)) as CTFont
-    if wantsItalic {
-      member =
-        CTFontCreateCopyWithSymbolicTraits(member, size, nil, .traitItalic, .traitItalic) ?? member
-    }
-  } else {
-    member =
-      preferred.map { CTFontCreateWithName($0.postScriptName as CFString, size, nil) } ?? base
-  }
+  var member = preferred.flatMap { EVFontCatalog.font(for: $0, size: size) } ?? base
   var symbolic: CTFontSymbolicTraits = []
   if relativeBold || targetWeight >= 600 { symbolic.insert(.traitBold) }
   if wantsItalic { symbolic.insert(.traitItalic) }
@@ -697,19 +684,14 @@ public func resolveFont(
     if needsSyntheticItalic { traits[kCTFontSlantTrait] = 0.2 }
   }
 
-  var descriptorAttributes: [CFString: Any] = [kCTFontTraitsAttribute: traits]
-  let cascade = families.dropFirst().compactMap { family -> CTFontDescriptor? in
-    let normalized = family.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    if normalized == "system-ui" || normalized == "sf pro" || normalized == "-apple-system" {
-      let systemFont =
-        CTFontCreateUIFontForLanguage(.system, size, nil)
-        ?? CTFontCreateWithName("Helvetica" as CFString, size, nil)
-      return CTFontCopyFontDescriptor(systemFont)
-    }
-    return CTFontDescriptorCreateWithAttributes(
-      [
-        kCTFontFamilyNameAttribute: family
-      ] as CFDictionary)
+  var descriptorAttributes: [CFString: Any] = [:]
+  if !traits.isEmpty {
+    let combined = NSMutableDictionary(dictionary: CTFontCopyTraits(member) as NSDictionary)
+    for (key, value) in traits { combined[key] = value }
+    descriptorAttributes[kCTFontTraitsAttribute] = combined
+  }
+  let cascade = families.dropFirst(requestedIndex.map { $0 + 1 } ?? families.count).compactMap { family -> CTFontDescriptor? in
+    EVFontCatalog.availableFont(named: family, size: size).map(CTFontCopyFontDescriptor)
   }
   if !cascade.isEmpty {
     descriptorAttributes[kCTFontCascadeListAttribute] = cascade

@@ -44,6 +44,15 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
     return generation == metricsGeneration && resources[identifier] != nil
   }
 
+  /// Test visibility into the actual font retained for a displayed glyph run.
+  /// This intentionally checks native draw resources, not the requested family.
+  func resolvedFontFamily(identifier: UInt64, metricsGeneration: UInt64) -> String? {
+    lock.lock()
+    let font = generation == metricsGeneration ? resources[identifier]?.batches.first?.font : nil
+    lock.unlock()
+    return font.map { CTFontCopyFamilyName($0) as String }
+  }
+
   /// True when at least one font participating in this shaped cluster has a
   /// native bitmap/COLR/SVG color-glyph table. The editor uses this to choose
   /// the non-destructive translucent Normal-mode block treatment.

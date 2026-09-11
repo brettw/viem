@@ -3,6 +3,10 @@ import CViemCore
 import ViemAppShell
 import Foundation
 
+extension Notification.Name {
+    static let viemEditorSelectionDidChange = Notification.Name("EVEditorSelectionDidChange")
+}
+
 @MainActor
 public final class EVEditorSurfaceController: NSViewController, EVEditorSurface, EVDocumentHostAttachable {
     public var viewController: NSViewController { self }
@@ -25,6 +29,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var viewportState = ViemViewportStateV1()
     private(set) var documentState = ViemDocumentStateV1()
     private(set) var presentationRefreshCount: UInt64 = 0
+    // The offsets themselves remain scoped to viewPresentation's immutable
+    // document revision. This associates that snapshot with its owning view.
+    private var selectionPresentationViewID: ViemViewId?
     private var themeObserver: NSObjectProtocol?
     private var appliedPadding: EVThemePadding?
     private var showInvisibles = false
@@ -140,6 +147,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     func detachFromCore() {
         session?.detach()
         session = nil
+        selectionPresentationViewID = nil
         formattedSnapshot = nil
         layoutTextSlices = []
         compositionOverlay = nil
@@ -271,10 +279,12 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 }
             }
 
+            let selectionChanged = selectionPresentationChanged(nextPresentation, viewID: session.viewID)
             documentState = nextDocumentState
             formattedSnapshot = nextFormattedSnapshot
             compositionOverlay = nextCompositionOverlay
             viewPresentation = nextPresentation
+            selectionPresentationViewID = session.viewID
             viewportState = nextViewport
             layoutSnapshot = nextLayoutSnapshot
             layoutPaint = nextLayoutPaint
@@ -288,9 +298,43 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             if isViewLoaded {
                 editorView.applyPresentation()
             }
+            if selectionChanged {
+                NotificationCenter.default.post(name: .viemEditorSelectionDidChange, object: self)
+            }
         } catch {
             report(error)
         }
+    }
+
+    /// Detect changes in the exported caret/selection payload, without keeping
+    /// persistent offsets or resolving a second selection/layout query. A new
+    /// source revision alone updates the retained snapshot silently: editing a
+    /// style may patch source while leaving the logical selection unchanged.
+    /// Old offsets are never reused as positions in that new revision.
+    private func selectionPresentationChanged(_ next: ViemViewPresentationV1, viewID: ViemViewId) -> Bool {
+        guard let previousViewID = selectionPresentationViewID else { return false }
+        let previous = viewPresentation
+        if previousViewID != viewID || previous.document_id != next.document_id { return true }
+        if previous.cursor_utf8_offset != next.cursor_utf8_offset || previous.cursor_affinity != next.cursor_affinity { return true }
+
+        let selectionFlags = UInt32(VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR)
+            | UInt32(VIEM_VIEW_PRESENTATION_VISUAL_ANCHOR_AFFINITY_EXACT)
+            | UInt32(VIEM_VIEW_PRESENTATION_HAS_VISUAL_BLOCK)
+        if previous.flags & selectionFlags != next.flags & selectionFlags { return true }
+        if next.flags & UInt32(VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR) != 0 {
+            if previous.visual_anchor_utf8_offset != next.visual_anchor_utf8_offset { return true }
+            if next.flags & UInt32(VIEM_VIEW_PRESENTATION_VISUAL_ANCHOR_AFFINITY_EXACT) != 0,
+               previous.visual_anchor_affinity != next.visual_anchor_affinity { return true }
+            // Ex/search temporarily changes the command mode while retaining
+            // the same Visual selection. It must not act like a new selection.
+            if previous.mode != UInt32(VIEM_MODE_COMMAND_LINE), next.mode != UInt32(VIEM_MODE_COMMAND_LINE),
+               previous.mode != next.mode { return true }
+        }
+        if next.flags & UInt32(VIEM_VIEW_PRESENTATION_HAS_VISUAL_BLOCK) != 0 {
+            return previous.visual_block_left_x != next.visual_block_left_x
+                || previous.visual_block_right_x != next.visual_block_right_x
+        }
+        return false
     }
 
     func performInput(_ operation: () throws -> Void) {
@@ -372,15 +416,14 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             return
         }
         if backend.sourceFormat == .code {
-            let style: EVStyleKey? = switch menuCommand {
-            case .editCharacterStyles: .baseCharacter
-            case .editParagraphStyles: .baseParagraph
-            case .editDocumentStyles: .baseDocument
+            let style: EVStyleKind? = switch menuCommand {
+            case .editCharacterStyles: .character
+            case .editParagraphStyles: .paragraph
+            case .editDocumentStyles: .document
             default: nil
             }
             if let style {
-                EVStyleEditorCoordinator.shared.showCode(
-                    configuration: backend.configuration, preferredStyle: style, sender: sender)
+                EVStyleEditorCoordinator.shared.show(document: self, preferredStyle: style, sender: sender)
                 return
             }
             if (300..<400).contains(menuCommand.rawValue) { return }

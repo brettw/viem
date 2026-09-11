@@ -565,7 +565,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             title: "Edit Styles…",
             command: specification.editCommand,
             payload: EVStyleMenuAction(
-                kind: .edit,
+                kind: .editCurrent,
                 role: role,
                 stableID: requestedBaseID,
                 documentID: catalogue.documentID,
@@ -610,7 +610,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             title: "Edit Styles…",
             command: editCommand,
             payload: EVStyleMenuAction(
-                kind: .edit,
+                kind: .editCurrent,
                 role: role,
                 stableID: specification.baseStableID,
                 documentID: 0,

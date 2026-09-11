@@ -2,8 +2,11 @@ use super::{BoundaryAffinity, FormattedDocument, StyleApplication, StyleId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-/// Named assignments surrounding a logical selection. Automatic syntax paint
-/// and direct formatting are intentionally separate from assignment identity.
+mod code;
+
+/// Named styles surrounding a logical selection. Code reports automatic
+/// character-style assignments; other formats report authored assignments.
+/// Direct formatting never creates a separate named-style identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SelectedNamedStyles {
     pub paragraph: Option<StyleId>,

@@ -1,6 +1,7 @@
 import AppKit
 import CViemCore
 import ViemAppShell
+import ViemCoreTextProvider
 import XCTest
 @testable import ViemEditor
 
@@ -150,6 +151,139 @@ final class EVCompactStyleControlsTests: XCTestCase {
         let reopened = EVCoreDocumentBackend()
         try reopened.read(source: backend.serializedSource(typeName: EVDocument.htmlType), typeName: EVDocument.htmlType)
         XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFamilies]?.declared, .stringList(request))
+    }
+
+    func testFamilySelectionKeepsLightFaceAndFallbacksThroughDuplicateNativeCallbacksAsOneUndo() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        try XCTUnwrap(surface.session).setIncludeStyleDefinitionsInFile(true, expected: backend.documentState())
+        let initial = try XCTUnwrap(EVFontCatalog.faces(for: "SF Pro").first { $0.styleName == "Light" })
+        let expected = try XCTUnwrap(EVFontCatalog.faces(for: "Helvetica Neue").first { $0.styleName == "Light" })
+        let tail = ["Georgia", "Apple Color Emoji", "Menlo"]
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([initial.postScriptName] + tail)))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(UInt32(initial.weight))))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterSlant, value: .fontSlant(initial.italic ? 1 : 0)))
+        let source = try backend.serializedSource(typeName: EVDocument.htmlType)
+        let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
+        let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
+        let owner = try XCTUnwrap(family.target as? EVCompactStyleControls)
+        let publish = try XCTUnwrap(owner.onMutations)
+        var batches = 0
+        owner.onMutations = { [weak owner] mutations in
+            batches += 1
+            // Programmatic control refresh must not reenter the publication.
+            owner?.comboBoxSelectionDidChange(Notification(name: NSComboBox.selectionDidChangeNotification, object: family))
+            publish(mutations)
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 770), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = editor
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        XCTAssertTrue(window.makeFirstResponder(family))
+        let fieldEditor = try XCTUnwrap(family.currentEditor() as? NSTextView)
+        XCTAssertEqual(fieldEditor.string, "SF Pro")
+        family.selectItem(withObjectValue: "Helvetica Neue")
+        owner.comboBoxSelectionDidChange(Notification(name: NSComboBox.selectionDidChangeNotification, object: family))
+        XCTAssertEqual(fieldEditor.string, "Helvetica Neue", "Selection must replace the active field editor's old family too")
+        XCTAssertTrue(family.sendAction(try XCTUnwrap(family.action), to: family.target))
+        XCTAssertTrue(window.makeFirstResponder(nil))
+        XCTAssertEqual(batches, 1, "Selection, action, and editing-end callbacks represent one family choice")
+        XCTAssertFalse(editor.hasActiveStyleEditGroupForTesting)
+        XCTAssertEqual(family.stringValue, "Helvetica Neue")
+        XCTAssertEqual(face.titleOfSelectedItem, "Light")
+        let definition = try XCTUnwrap(try backend.styleSheetSnapshot().definition(for: .baseParagraph))
+        XCTAssertEqual(definition.properties[.characterFontFamilies]?.declared, .stringList([expected.postScriptName] + tail))
+        XCTAssertEqual(definition.properties[.characterWeight]?.declared, .unsigned(UInt32(expected.weight)))
+        XCTAssertEqual(definition.properties[.characterSlant]?.declared, .fontSlant(expected.italic ? 1 : 0))
+        let changed = try backend.serializedSource(typeName: EVDocument.htmlType)
+        XCTAssertNotEqual(changed, source)
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), source, "One undo restores family, weight, and slant together")
+        XCTAssertEqual(family.stringValue, "SF Pro")
+        XCTAssertEqual(face.titleOfSelectedItem, "Light")
+        surface.perform(menuCommand: .redo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), changed)
+        XCTAssertEqual(family.stringValue, "Helvetica Neue")
+        XCTAssertEqual(face.titleOfSelectedItem, "Light")
+    }
+
+    func testTypedFamilyUsesRegularWhenPriorNamedFaceDoesNotExist() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        let light = try XCTUnwrap(EVFontCatalog.faces(for: "Helvetica Neue").first { $0.styleName == "Light" })
+        let georgia = EVFontCatalog.faces(for: "Georgia")
+        XCTAssertFalse(georgia.contains { $0.styleName == "Light" })
+        let regular = try XCTUnwrap(georgia.first { $0.styleName == "Regular" && !$0.italic })
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([light.postScriptName, "Menlo"])))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(UInt32(light.weight))))
+        let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
+        let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 770), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = editor
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        XCTAssertTrue(window.makeFirstResponder(family))
+        let fieldEditor = try XCTUnwrap(family.currentEditor() as? NSTextView)
+        fieldEditor.insertText("Georgia", replacementRange: NSRange(location: 0, length: fieldEditor.string.utf16.count))
+        XCTAssertTrue(family.sendAction(try XCTUnwrap(family.action), to: family.target))
+        XCTAssertTrue(window.makeFirstResponder(nil))
+        XCTAssertEqual(family.stringValue, "Georgia")
+        XCTAssertEqual(face.titleOfSelectedItem, "Regular")
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFamilies]?.declared, .stringList([regular.postScriptName, "Menlo"]))
+        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterWeight], .unsigned(UInt32(regular.weight)))
+    }
+
+    func testUnmatchedFaceAndUnavailableFamilyDoNotSelectAnUnrelatedFirstFace() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList(["Helvetica", "Menlo"])))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(700)))
+        let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
+        let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
+        XCTAssertEqual(face.titleOfSelectedItem, "Bold", "Helvetica is also its regular PostScript name, but the declared base weight selects Bold")
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList(["Helvetica Neue", "Menlo"])))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(333)))
+        XCTAssertGreaterThan(face.numberOfItems, 0)
+        XCTAssertEqual(face.indexOfSelectedItem, -1, "No exact face matches weight 333; displaying the first Light face would misstate the request")
+        let unavailable = "Viem Missing Font \(UUID().uuidString)"
+        family.stringValue = unavailable
+        XCTAssertTrue(family.sendAction(try XCTUnwrap(family.action), to: family.target))
+        XCTAssertEqual(family.stringValue, unavailable)
+        XCTAssertEqual(face.numberOfItems, 0)
+        XCTAssertEqual(face.indexOfSelectedItem, -1)
+        XCTAssertFalse(face.isEnabled)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFamilies]?.declared, .stringList([unavailable, "Menlo"]))
+    }
+
+    func testRejectedFamilyMutationRestoresCommittedComboAndActiveFieldEditor() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        let light = try XCTUnwrap(EVFontCatalog.faces(for: "Helvetica Neue").first { $0.styleName == "Light" })
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([light.postScriptName])))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(UInt32(light.weight))))
+        let before = try backend.styleSheetSnapshot()
+        let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
+        let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
+        let owner = try XCTUnwrap(family.target as? EVCompactStyleControls)
+        var attempts = 0
+        owner.onMutations = { _ in attempts += 1 } // A rejected publication provides no new committed definition.
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 770), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = editor
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        XCTAssertTrue(window.makeFirstResponder(family))
+        let fieldEditor = try XCTUnwrap(family.currentEditor() as? NSTextView)
+        family.selectItem(withObjectValue: "Georgia")
+        owner.comboBoxSelectionDidChange(Notification(name: NSComboBox.selectionDidChangeNotification, object: family))
+        XCTAssertEqual(attempts, 1)
+        XCTAssertEqual(family.stringValue, "Helvetica Neue")
+        XCTAssertEqual(family.objectValueOfSelectedItem as? String, "Helvetica Neue")
+        XCTAssertEqual(fieldEditor.string, "Helvetica Neue")
+        XCTAssertEqual(face.titleOfSelectedItem, "Light")
+        XCTAssertTrue(family.sendAction(try XCTUnwrap(family.action), to: family.target))
+        XCTAssertTrue(window.makeFirstResponder(nil))
+        XCTAssertEqual(attempts, 1, "Later callbacks cannot retry a rejected draft after restoring committed text")
+        XCTAssertEqual(try backend.styleSheetSnapshot(), before)
     }
 
     func testNativeFallbackPopoverOrdersAddsRemovesAppliesAndCancels() throws {

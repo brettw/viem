@@ -8,6 +8,17 @@ public struct EVFontFace: Equatable, Sendable {
   public let styleName: String
   public let weight: UInt16
   public let italic: Bool
+  public let width: Double
+
+  public init(postScriptName: String, familyName: String, styleName: String,
+              weight: UInt16, italic: Bool, width: Double = 0) {
+    self.postScriptName = postScriptName
+    self.familyName = familyName
+    self.styleName = styleName
+    self.weight = weight
+    self.italic = italic
+    self.width = width
+  }
 }
 
 public struct EVOpenTypeFeature: Equatable, Sendable {
@@ -23,12 +34,14 @@ public enum EVFontCatalog {
     let lock = NSLock()
     var generation: UInt64 = 1
     var faces: [String: [EVFontFace]] = [:]
+    var descriptors: [String: CTFontDescriptor] = [:]
   }
   private static let cache = Cache()
   public static func invalidate() {
     cache.lock.lock()
     cache.generation &+= 1
     cache.faces.removeAll()
+    cache.descriptors.removeAll()
     cache.lock.unlock()
   }
   public static func faces(for familyOrPostScriptName: String) -> [EVFontFace] {
@@ -39,41 +52,105 @@ public enum EVFontCatalog {
     if let cached { return cached }
     let result = discoverFaces(for: familyOrPostScriptName)
     cache.lock.lock()
-    if generation == cache.generation { cache.faces[familyOrPostScriptName] = result }
+    if generation == cache.generation {
+      cache.faces[familyOrPostScriptName] = result.faces
+      cache.descriptors.merge(result.descriptors) { _, new in new }
+    }
     cache.lock.unlock()
-    return result
+    return result.faces
   }
-  private static func discoverFaces(for familyOrPostScriptName: String) -> [EVFontFace] {
-    let font = baseFont(named: familyOrPostScriptName, size: 14)
-    let family = CTFontCopyFamilyName(font) as String
+
+  private struct Discovery {
+    var faces: [EVFontFace] = []
+    var descriptors: [String: CTFontDescriptor] = [:]
+  }
+
+  private static func matchingDescriptors(_ key: CFString, _ value: String) -> [CTFontDescriptor] {
     let request = CTFontDescriptorCreateWithAttributes(
-      [
-        kCTFontFamilyNameAttribute: family
-      ] as CFDictionary)
-    let descriptors =
-      CTFontDescriptorCreateMatchingFontDescriptors(
-        request, NSSet(object: kCTFontFamilyNameAttribute) as CFSet
-      ) as? [CTFontDescriptor] ?? [CTFontCopyFontDescriptor(font)]
-    var seen = Set<String>()
-    return descriptors.compactMap { descriptor -> EVFontFace? in
+      [key: value] as CFDictionary)
+    return CTFontDescriptorCreateMatchingFontDescriptors(request, NSSet(object: key) as CFSet)
+      as? [CTFontDescriptor] ?? []
+  }
+
+  private static func discoverFaces(for requested: String) -> Discovery {
+    let system = systemFont(named: requested, size: 14)
+    var family = system.map { CTFontCopyFamilyName($0) as String } ?? requested
+    var descriptors = matchingDescriptors(kCTFontFamilyNameAttribute, family)
+    if descriptors.isEmpty {
+      // Matching by name can return substitutes too. Accept only an exact
+      // installed face before asking for its family; unknown names stay empty.
+      guard let descriptor = matchingDescriptors(kCTFontNameAttribute, requested).first(where: {
+        sameName(CTFontCopyPostScriptName(CTFontCreateWithFontDescriptor($0, 14, nil)) as String, requested)
+      }) else { return Discovery() }
+      let font = CTFontCreateWithFontDescriptor(descriptor, 14, nil)
+      family = CTFontCopyFamilyName(font) as String
+      descriptors = matchingDescriptors(kCTFontFamilyNameAttribute, family)
+      if descriptors.isEmpty { descriptors = [descriptor] }
+    }
+    var result = Discovery()
+    for descriptor in descriptors {
       let candidate = CTFontCreateWithFontDescriptor(descriptor, 14, nil)
       let name = CTFontCopyPostScriptName(candidate) as String
-      guard seen.insert(name).inserted else { return nil }
-      return EVFontFace(
+      guard sameName(CTFontCopyFamilyName(candidate) as String, family),
+        result.descriptors[name] == nil else { continue }
+      result.descriptors[name] = descriptor
+      result.faces.append(EVFontFace(
         postScriptName: name,
         familyName: CTFontCopyFamilyName(candidate) as String,
         styleName: CTFontCopyName(candidate, kCTFontStyleNameKey) as String? ?? name,
         weight: weight(of: candidate),
-        italic: CTFontGetSymbolicTraits(candidate).contains(.traitItalic))
-    }.sorted {
+        italic: CTFontGetSymbolicTraits(candidate).contains(.traitItalic),
+        width: (CTFontCopyTraits(candidate) as NSDictionary)[kCTFontWidthTrait] as? Double ?? 0))
+    }
+    if requested.hasPrefix(".SFNS-"), !result.faces.contains(where: { sameName($0.postScriptName, requested) }) {
+      return Discovery()
+    }
+    result.faces.sort {
       if $0.weight != $1.weight { return $0.weight < $1.weight }
       if $0.italic != $1.italic { return !$0.italic }
-      return $0.styleName.localizedStandardCompare($1.styleName) == .orderedAscending
+      let styleOrder = $0.styleName.localizedStandardCompare($1.styleName)
+      if styleOrder != .orderedSame { return styleOrder == .orderedAscending }
+      return $0.postScriptName < $1.postScriptName
     }
+    return result
   }
 
   public static func face(named name: String) -> EVFontFace? {
-    faces(for: name).first { $0.postScriptName == name }
+    faces(for: name).first { sameName($0.postScriptName, name) }
+  }
+
+  public static func faceForFamilyChange(to familyOrFace: String, currentFace: EVFontFace?) -> EVFontFace? {
+    faceForFamilyChange(to: familyOrFace, currentFace: currentFace, faces: faces(for: familyOrFace))
+  }
+
+  static func faceForFamilyChange(to requested: String, currentFace: EVFontFace?, faces: [EVFontFace]) -> EVFontFace? {
+    // Some Regular PostScript names equal their family (e.g. Helvetica). The
+    // family picker treats those as a family; the face picker retains exact IDs.
+    if let explicit = faces.first(where: { sameName($0.postScriptName, requested) && !sameName($0.familyName, requested) }) {
+      return explicit
+    }
+    if let currentFace, let corresponding = faces.first(where: { sameName($0.styleName, currentFace.styleName) }) {
+      return corresponding
+    }
+    for style in ["Regular", "Normal", "Roman", "Book"] {
+      if let regular = faces.first(where: { !$0.italic && sameName($0.styleName, style) }) { return regular }
+    }
+    return faces.first
+  }
+
+  /// Retain Core Text's matched descriptors: private and variable named faces
+  /// cannot always be reconstructed from their PostScript spelling.
+  static func font(for face: EVFontFace, size: CGFloat) -> CTFont? {
+    _ = faces(for: face.familyName)
+    cache.lock.lock()
+    let descriptor = cache.descriptors[face.postScriptName]
+    cache.lock.unlock()
+    let matched = descriptor ?? discoverFaces(for: face.familyName).descriptors[face.postScriptName]
+    return matched.map { CTFontCreateWithFontDescriptor($0, size, nil) }
+  }
+
+  private static func sameName(_ first: String, _ second: String) -> Bool {
+    first.caseInsensitiveCompare(second) == .orderedSame
   }
 
   /// Friendly presentation only; selected PostScript identities remain exact
@@ -94,7 +171,7 @@ public enum EVFontCatalog {
   }
 
   public static func features(for familyOrFace: String) -> [EVOpenTypeFeature] {
-    let font = baseFont(named: familyOrFace, size: 14)
+    guard let font = availableFont(named: familyOrFace, size: 14) else { return [] }
     var tags = Set<String>()
     for table in [CTFontTableTag(0x4753_5542), CTFontTableTag(0x4750_4F53)] {
       guard let data = CTFontCopyTable(font, table, []) as Data? else { continue }
@@ -125,6 +202,19 @@ public enum EVFontCatalog {
   }
 
   static func baseFont(named name: String, size: CGFloat) -> CTFont {
+    availableFont(named: name, size: size)
+      ?? CTFontCreateUIFontForLanguage(.system, size, nil)
+      ?? CTFontCreateWithName("Helvetica" as CFString, size, nil)
+  }
+
+  static func availableFont(named name: String, size: CGFloat) -> CTFont? {
+    let available = faces(for: name)
+    let face = available.first { sameName($0.postScriptName, name) }
+      ?? faceForFamilyChange(to: name, currentFace: nil, faces: available)
+    return face.flatMap { font(for: $0, size: size) }
+  }
+
+  private static func systemFont(named name: String, size: CGFloat) -> CTFont? {
     if ["monospace", "ui-monospace", "system monospace", "systemmonospace"].contains(name.lowercased()) {
       return NSFont.monospacedSystemFont(ofSize: size, weight: .regular) as CTFont
     }
@@ -134,7 +224,7 @@ public enum EVFontCatalog {
       return CTFontCreateUIFontForLanguage(.system, size, nil)
         ?? CTFontCreateWithName("Helvetica" as CFString, size, nil)
     }
-    return CTFontCreateWithName(name as CFString, size, nil)
+    return nil
   }
 
   public static func weight(of font: CTFont) -> UInt16 {

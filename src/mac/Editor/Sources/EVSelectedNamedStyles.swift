@@ -39,3 +39,34 @@ extension EVCoreViewSession {
       characterMixed: info.flags & UInt32(VIEM_SELECTED_STYLE_CHARACTER_MIXED) != 0)
   }
 }
+
+@MainActor
+extension EVEditorSurfaceController {
+  /// Resolve against the current source/settings authority. A nil kind is the
+  /// caret-following policy: prefer a unique non-default character assignment.
+  func currentStyleEditorKey(preferredKind: EVStyleKind? = nil) -> EVStyleKey {
+    let fallback = preferredKind?.baseKey ?? .baseParagraph
+    if preferredKind == .document { return fallback }
+    guard let session,
+      let selected = try? session.selectedNamedStyles(),
+      let snapshot = try? backend.sourceFormat == .code
+        ? EVCoreStyleBridge.copyStyleSheet(core: nil) : backend.styleSheetSnapshot(),
+      let state = try? backend.documentState(),
+      selected.identity.documentID == state.document_id,
+      selected.identity.documentRevision == state.document_revision,
+      selected.identity.styleSheetRevision == snapshot.identity.styleSheetRevision,
+      backend.sourceFormat == .code || selected.identity == snapshot.identity
+    else { return fallback }
+
+    func current(_ kind: EVStyleKind, id: EVStyleID?, mixed: Bool) -> EVStyleKey? {
+      guard !mixed, let id else { return nil }
+      let key = EVStyleKey(namespace: kind == .character ? .character : .block, id: id)
+      return snapshot.definition(for: key)?.kind == kind ? key : nil
+    }
+    let character = current(.character, id: selected.character, mixed: selected.characterMixed)
+    if preferredKind == .character { return character ?? .baseCharacter }
+    let paragraph = current(.paragraph, id: selected.paragraph, mixed: selected.paragraphMixed)
+    if preferredKind == .paragraph { return paragraph ?? .baseParagraph }
+    return character.flatMap { $0 == .baseCharacter ? nil : $0 } ?? paragraph ?? .baseParagraph
+  }
+}

@@ -694,6 +694,9 @@ final class EVMenuBuilderTests: XCTestCase {
                 XCTAssertEqual(item.indentationLevel, 0)
             }
             XCTAssertEqual(menu.items.last?.state, .off)
+            let actions = menu.items.compactMap(styleAction)
+            XCTAssertTrue(actions.dropLast().allSatisfy(\.marksCurrentStyle))
+            XCTAssertFalse(try XCTUnwrap(actions.last).marksCurrentStyle)
         }
     }
 
@@ -734,7 +737,8 @@ final class EVMenuBuilderTests: XCTestCase {
 
         let editItem = try XCTUnwrap(paragraph.items.last)
         let editAction = try XCTUnwrap(styleAction(editItem))
-        XCTAssertEqual(editAction.kind, .edit)
+        XCTAssertEqual(editAction.kind, .editCurrent)
+        XCTAssertFalse(editAction.marksCurrentStyle)
         XCTAssertEqual(editAction.role, .paragraph)
         XCTAssertEqual(editAction.stableID, "Paragraph")
         XCTAssertEqual(editAction.documentID, 42)
@@ -759,7 +763,8 @@ final class EVMenuBuilderTests: XCTestCase {
         builder.menuNeedsUpdate(menu)
         XCTAssertEqual(tokens(in: menu), ["Base Character", "@keyword", "Define @custom…", "-", "Edit Styles…"])
         let actions = menu.items.compactMap(styleAction)
-        XCTAssertEqual(actions.map(\.kind), [.edit, .edit, .defineSyntax, .edit])
+        XCTAssertEqual(actions.map(\.kind), [.edit, .edit, .defineSyntax, .editCurrent])
+        XCTAssertEqual(actions.map(\.marksCurrentStyle), [true, true, true, false])
         XCTAssertEqual(actions[2].syntaxName, "@custom")
         XCTAssertEqual(actions[2].stableID, "")
         XCTAssertTrue(menu.items.filter { !$0.isSeparatorItem }.allSatisfy {
@@ -832,6 +837,7 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertEqual(character.items.compactMap(styleAction).map(\.stableID), [
             "Character", "Character",
         ])
+        XCTAssertEqual(character.items.compactMap(styleAction).map(\.marksCurrentStyle), [true, false])
     }
 
     private func submenu(_ title: String, of menu: NSMenu) throws -> NSMenu {

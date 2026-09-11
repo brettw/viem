@@ -232,6 +232,8 @@ public enum EVStyleMenuActionKind: UInt32, Sendable {
     /// Explicit creation of an unresolved automatic syntax name. No definition
     /// or stable ID exists until the user invokes this action.
     case defineSyntax = 3
+    /// Open the style currently selected in this namespace at invocation time.
+    case editCurrent = 4
 }
 
 /// Typed payload carried by style menu items. Keeping both the role and stable
@@ -245,6 +247,9 @@ public final class EVStyleMenuAction: NSObject, @unchecked Sendable {
     public let documentRevision: UInt64
     public let styleSheetRevision: UInt64
     public let syntaxName: String?
+    /// Definition rows show their active style state; generic editor actions
+    /// do not. This controls presentation only, never action authorization.
+    public var marksCurrentStyle: Bool { kind != .editCurrent }
 
     public init(
         kind: EVStyleMenuActionKind,

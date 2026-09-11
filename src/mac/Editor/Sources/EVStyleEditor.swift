@@ -48,6 +48,8 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
     private weak var target: EVEditorSurfaceController?
     private var contentController: EVStyleEditorViewController?
     private var targetWindowObserver: NSObjectProtocol?
+    private var selectionObserver: NSObjectProtocol?
+    private weak var followedDocument: EVEditorSurfaceController?
     private var globalSession: EVCodeStyleSession?
 
     var styleWindow: NSWindow? { controller?.window }
@@ -68,12 +70,20 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
     }
 
     func show(document: EVEditorSurfaceController, preferredStyle: EVStyleKind, sender: Any?) {
+        let styleKey = document.currentStyleEditorKey(preferredKind: preferredStyle)
+        if document.backend.sourceFormat == .code {
+            showCode(configuration: document.backend.configuration, preferredStyle: styleKey,
+                     following: document, sender: sender)
+            return
+        }
+        stopFollowingSelection()
         target = document
         observeTargetWindow(of: document)
         let isNewWindow = prepareWindow()
         (controller?.window as? EVStyleEditorPanel)?.settingsUndoManager = nil
         controller?.window?.title = "Styles"
-        contentController?.retarget(document: document, styleKey: preferredStyle.baseKey)
+        contentController?.retarget(document: document, styleKey: styleKey)
+        followSelection(of: document, globalCode: false)
         present(sender: sender, center: isNewWindow)
     }
 
@@ -81,6 +91,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         configuration: EVConfigurationStore,
         preferredStyle: EVStyleKey = .baseDocument,
         definingSyntaxName: String? = nil,
+        following document: EVEditorSurfaceController? = nil,
         sender: Any?
     ) {
         do {
@@ -105,6 +116,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
                     selectedStyle = key
                 }
             }
+            stopFollowingSelection()
             target = nil
             stopObservingTargetWindow()
             let isNewWindow = prepareWindow()
@@ -112,6 +124,10 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             controller?.window?.title = "Code Styles"
             contentController?.retarget(codeSession: session)
             contentController?.selectStyle(selectedStyle)
+            if let document {
+                observeTargetWindow(of: document)
+                followSelection(of: document, globalCode: true)
+            }
             present(sender: sender, center: isNewWindow)
         } catch {
             EVCodePreferences.shared.reportLoadDiagnostics([error.localizedDescription])
@@ -155,18 +171,27 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
     }
 
     func documentDidClose(_ document: EVEditorSurfaceController) {
+        if target !== document, followedDocument === document {
+            // The global sheet outlives its optional source-view context.
+            stopFollowingSelection()
+            stopObservingTargetWindow()
+            return
+        }
         guard target === document else { return }
+        stopFollowingSelection()
         if let alternate = document.backend.alternateStyleEditorSurface(excluding: document) {
             let retainedSelection = contentController?.inspection.selectedStyleKey ?? .baseParagraph
             target = alternate
             observeTargetWindow(of: alternate)
             contentController?.retarget(document: alternate, styleKey: retainedSelection)
+            followSelection(of: alternate, globalCode: false)
             return
         }
         if let replacement = replacementDocumentProvider(document) {
             target = replacement
             observeTargetWindow(of: replacement)
             contentController?.retarget(document: replacement, styleKey: .baseParagraph)
+            followSelection(of: replacement, globalCode: false)
             return
         }
         stopObservingTargetWindow()
@@ -182,10 +207,33 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard notification.object as AnyObject? === controller?.window else { return }
         stopObservingTargetWindow()
+        stopFollowingSelection()
         contentController?.disableForClosedDocument()
         controller = nil
         contentController = nil
         target = nil
+    }
+
+    private func followSelection(of document: EVEditorSurfaceController, globalCode: Bool) {
+        stopFollowingSelection()
+        followedDocument = document
+        selectionObserver = NotificationCenter.default.addObserver(
+            forName: .viemEditorSelectionDidChange, object: document, queue: .main
+        ) { [weak self, weak document] _ in
+            guard let self, let document else { return }
+            MainActor.assumeIsolated {
+                guard (document.backend.sourceFormat == .code) == globalCode else { return }
+                self.contentController?.followCaretStyle(document.currentStyleEditorKey())
+            }
+        }
+    }
+
+    private func stopFollowingSelection() {
+        if let selectionObserver {
+            NotificationCenter.default.removeObserver(selectionObserver)
+            self.selectionObserver = nil
+        }
+        followedDocument = nil
     }
 
     private func observeTargetWindow(of document: EVEditorSurfaceController) {
@@ -538,6 +586,15 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         selectedStyleKey = key
         selectPopupItem(for: key)
         renderCommittedStyle()
+    }
+
+    func followCaretStyle(_ key: EVStyleKey) {
+        guard hasTarget, !isCommitting, key != selectedStyleKey else { return }
+        endContinuousStyleEdit(reportUnexpectedFailure: false)
+        diagnosticMessage = ""
+        // Source edits can publish the new caret before the stylesheet change
+        // notification. Fetch its current definitions before choosing the ID.
+        reloadCommittedStyle(preferredKey: key)
     }
 
     func selectTab(_ tab: EVStyleEditorTab) {

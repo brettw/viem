@@ -1324,11 +1324,18 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
     ) -> Result<crate::document::SelectedNamedStyles, CoreError> {
         let selection = self.list_selection_identity(view_id)?;
-        let mut selected = self
-            .document
-            .projection()
-            .selected_named_styles(selection.range(), selection.active_affinity());
-        if selection.kind() == LogicalSelectionKind::None {
+        let mut selected = if self.document.format().is_code() {
+            self.document.projection().selected_code_named_styles(
+                selection.range(),
+                selection.active_affinity(),
+            )
+        } else {
+            self.document.projection().selected_named_styles(
+                selection.range(),
+                selection.active_affinity(),
+            )
+        };
+        if !self.document.format().is_code() && selection.kind() == LogicalSelectionKind::None {
             if let Some(named) = self.views[&view_id].commands.typing_named_style() {
                 selected.character = Some(named.clone());
                 selected.character_mixed = false;
