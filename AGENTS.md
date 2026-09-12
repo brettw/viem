@@ -1852,9 +1852,9 @@ atomic, and unknown keys survive updates. Invalid or unsupported versions are re
 overwriting the user's file. `VIEM_CONFIG_DIR` may override the directory for
 isolated development and testing.
 
-The planned Text width control in Editing uses this same store and the
-buffer-default inheritance policy under **Planned hard-line reflow**; it is not
-a theme, per-view wrap width, or source-backed style property.
+The Text width control in Editing uses this same store and the buffer-default
+inheritance policy under **Hard-line reflow**; it is not a theme, per-view wrap
+width, or source-backed style property.
 
 The `recentDocuments` array stores the ten most recently opened or saved files
 as full absolute paths, newest first. Successfully reopening an already open
@@ -2397,8 +2397,8 @@ source, syntax, unrelated style assignments, or width-independent shaping.
 
 - Wrapping is a per-view option. Soft wraps are layout artifacts and MUST NOT
   insert, remove, or serialize newline characters.
-- The planned `textwidth` reflow setting below controls explicit source edits
-  by `gq` and `gw`; it does not constrain soft wrapping or resize layout.
+- The `textwidth` reflow setting below controls explicit source edits by `gq`
+  and `gw`; it does not constrain soft wrapping or resize layout.
 - `wrap` controls whether soft wrapping is active. Wrapped text always uses
   Unicode-appropriate word/line-break opportunities at the usable text width;
   there is no separate `linebreak` option or character-wrapping mode.
@@ -2434,8 +2434,8 @@ a buffer to RTF returns any physical-mode views to Visual.
 - Standalone and operator-pending `j`/`k`, line start/end motions, doubled line
   operators, `C`/`D`, line-oriented insertion, and Visual Line use the selected
   mode. Counts, registers, replay, dot repeat, and undo retain that policy.
-- The planned `gq`/`gw` source-reflow operators are an explicit exception:
-  their implicit line motions and doubled forms count complete hard lines.
+- The `gq`/`gw` source-reflow operators are an explicit exception: their
+  implicit line motions and doubled forms count complete hard lines.
   Explicit visual motions and existing Visual selections retain their domains,
   then reflow expands their checked extents to the intersected hard lines.
 - Explicit `g` visual-row motions keep their visual meaning. Ex addresses and
@@ -2814,7 +2814,9 @@ resource limits, snapshot invalidation, and atomic reverse-projection failure.
 
 ### Operators, changes, and insertion entry points
 
-Required operators are `d`, `c`, `y`, `>`, `<`, `=`, `g~`, `gu`, and `gU`.
+Required operators are `d`, `c`, `y`, `>`, `<`, `=`, `g~`, `gu`, `gU`, `gq`,
+and `gw`. The hard-line reflow operators `gq` and `gw` have their own
+subsection below.
 Required shorthand/change commands are:
 
 - `dd`, `D`, `cc`, `C`, `yy`, `Y`, `>>`, `<<`, `==`;
@@ -2842,8 +2844,9 @@ retains this typed operand distinction.
 The `=` operator initially performs deterministic indentation defined by core
 configuration. It must not invoke a language-specific formatter implicitly.
 
-The planned `gq` and `gw` operators are specified under **Planned hard-line
-reflow** below. They are not implemented or claimed as supported yet.
+The `gq` and `gw` operators are specified under **Hard-line reflow** below.
+They are implemented in `src/core/document/reflow.rs` (portable formatter)
+and `src/core/command/reflow.rs` (operator glue) and are supported commands.
 
 Marks and searches are composable operator motions. `` `{a-z} `` uses the
 mark's exact position as an exclusive characterwise motion, while `'{a-z}`
@@ -2854,15 +2857,15 @@ counts where Vim does. An operator search records its jump only after the
 operator succeeds. Escape from its command line cancels the complete pending
 operator without changing text, registers, search state, or the jumplist.
 
-### Planned hard-line reflow
+### Hard-line reflow
 
-This subsection specifies approved future behavior, not implemented command
-support. Implementations MUST satisfy its command, preservation, and regression
-requirements before claiming support for `gq`, `gw`, or `textwidth`.
+This subsection specifies the implemented `gq`, `gw`, and `textwidth`
+behavior. Implementations MUST keep satisfying its command, preservation, and
+regression requirements.
 
 #### Text width and settings
 
-Settings > Editing will include an integer field labeled **Text width
+Settings > Editing includes an integer field labeled **Text width
 (columns)**, defaulting to **80**. Persist the application default as
 `editing.textWidth` in the existing versioned `config.json` authority. Missing
 values use 80; validation and atomic writes preserve unrelated settings.
@@ -2945,9 +2948,15 @@ line or repeated splitting; the following unbreakable token may overflow.
 Code additionally uses declarative comment profiles selected by the buffer's
 language. Comment recognition and reflow semantics MUST be independent of
 asynchronous syntax coverage, highlight-group names, theme/style properties,
-and which highlighter is available. The initial C/C++ profile supports standalone
+and which highlighter is available. The C-family profile supports standalone
 `//`, `///`, and `//!` leaders and `/* ... */` comments with optional interior
-`*` leaders. Recognize full-line leaders after indentation, preferring the
+`*` leaders. One declaration serves every canonical language that spells its
+comments that way: C, C++, Objective-C, Rust, Swift, C#, JavaScript,
+TypeScript, TSX, Go, Java, PHP, and CSS. A language whose comments start with
+`#`, `--`, or `"` has no profile yet; its leaders reflow as ordinary words
+until one is declared. Nested block comments are not tracked, so a language
+that allows them ends its block at the first closing delimiter.
+Recognize full-line leaders after indentation, preferring the
 longest applicable leader; a delimiter occurring inside code or a string is not
 by itself a full-line leader. Interior `*` leaders require a matching block
 comment context rather than treating arbitrary leading asterisks as comments.
@@ -3352,9 +3361,9 @@ A compound option command validates atomically before publishing any changes.
 They follow Regex v1 case rules and affect searches, repeats, and substitute;
 `wrapscan` controls navigation wrapping. They do not change persisted source.
 
-The planned numeric `textwidth`/`tw` option, its buffer scope, query and
-inheritance forms, and the Settings default are specified under **Planned
-hard-line reflow**. It is not yet part of the implemented option set.
+The numeric `textwidth`/`tw` option, its buffer scope, query and inheritance
+forms, and the Settings default are specified under **Hard-line reflow**. It
+is part of the implemented option set.
 
 Ranges always use hard lines. File dialogs, unsaved-change prompts, and error
 presentation are frontend responsibilities driven by typed core requests and

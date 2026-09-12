@@ -28,5 +28,6 @@ tree-sitter-c-sharp = "=0.23.1"
 tree-sitter-javascript = "=0.23.1"
 tree-sitter-typescript = "=0.23.2"
 tree-sitter-python = "=0.23.5"
+unicode-width = "=0.1.14"
 
 [dev-dependencies]

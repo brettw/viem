@@ -53,6 +53,7 @@ pub use selected_styles::SelectedNamedStyles;
 pub use source_lines::PhysicalSourceLine;
 mod style;
 pub(crate) use style::is_character_property;
+mod reflow;
 mod reorder;
 mod transaction;
 mod transfer;
@@ -98,6 +99,11 @@ pub use projection::{
     Block, BlockKind, Format, FormattedDocument, FormattedPayloadError, FormattedTextPayload,
     HardLineInfo, HardLineQueryError, HardLineSnapshot, ListStyle, ProjectedSourceBoundary,
     ProvenanceSpan, SourceBoundaryRelation, SourceToTextError, StyleSpan,
+};
+pub use reflow::{
+    comment_profile_for_language, reflow_edits, BlockCommentSyntax, CommentProfile, ReflowError,
+    ReflowRequest, TextWidthSetting, C_FAMILY_COMMENT_LANGUAGES, C_FAMILY_COMMENT_PROFILE,
+    DEFAULT_TEXT_WIDTH,
 };
 pub use source::SourceArtifactDigest;
 pub use style::code as code_style;

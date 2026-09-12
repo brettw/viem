@@ -1770,6 +1770,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let id = self.allocate_view_id()?;
         let mut commands = CommandInterpreter::new();
         commands.install_buffer_state(&self.buffer_commands);
+        commands.set_reflow_language(self.reflow_language());
         commands.note_document_revision(self.document.revision());
         let layout = ViewLayout::new(width, height);
         commands.set_layout_options(layout.wrap());
@@ -1868,6 +1869,31 @@ impl<P: TextMeasurementProvider> Core<P> {
 
     pub fn command_state(&self, view: ViewId) -> Option<&CommandInterpreter> {
         self.views.get(&view).map(|view| &view.commands)
+    }
+
+    /// The buffer's `textwidth` state shared by every view.
+    pub fn text_width(&self) -> crate::document::TextWidthSetting {
+        self.buffer_commands.text_width
+    }
+
+    /// Propagate the application default. Every view of this buffer sees the
+    /// new value unless the buffer holds an explicit `:set textwidth` override.
+    pub fn set_text_width_default(&mut self, width: u32) {
+        self.buffer_commands.text_width.set_default(width);
+        for view in self.views.values_mut() {
+            view.commands.set_text_width_default(width);
+        }
+    }
+
+    /// Install the canonical detected language into every view so reflow can
+    /// select its comment profile without consulting syntax coverage.
+    fn publish_reflow_language(&mut self) {
+        let language = self.reflow_language();
+        for view in self.views.values_mut() {
+            if view.commands.reflow_language() != language.as_deref() {
+                view.commands.set_reflow_language(language.clone());
+            }
+        }
     }
 
     pub fn line_location(&self, view: ViewId) -> Result<crate::command::LineLocation, CoreError> {

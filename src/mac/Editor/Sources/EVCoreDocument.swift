@@ -431,6 +431,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         source.removeAll(keepingCapacity: false)
         _ = try documentState()
         configureSyntax()
+        try checked(viem_core_set_text_width_default(core, configuration.textWidth), operation: "Load text width")
         let associations = try configuration.codeFilenameAssociationsJSON()
         let configuredAssociations = associations.withUnsafeBytes {
             viem_core_set_code_filename_associations_json(core, $0.bindMemory(to: UInt8.self).baseAddress, UInt64($0.count))
@@ -914,6 +915,11 @@ final class EVCoreViewSession {
 
     func setSmartQuotes(_ enabled: Bool) throws {
         try checked(viem_core_view_set_smart_quotes(document.core, viewID, enabled ? 1 : 0), operation: "Update smart quotes")
+    }
+
+    /// Buffer-owned application default; explicit `:set textwidth` survives.
+    func setTextWidthDefault(_ width: UInt32) throws {
+        try checked(viem_core_set_text_width_default(document.core, width), operation: "Update text width")
     }
 
     func currentFontEnWidth() throws -> CGFloat {

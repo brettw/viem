@@ -10,6 +10,7 @@ pub mod ex;
 pub mod ex_execute;
 pub mod insert_motion;
 pub mod layout_motion;
+mod reflow;
 pub mod regex_v1;
 pub mod text_object;
 pub mod visual_block;
@@ -533,6 +534,10 @@ enum Operator {
     ToggleCase,
     Lowercase,
     Uppercase,
+    /// `gq`: hard-line reflow leaving the cursor on the last formatted line.
+    Format,
+    /// `gw`: hard-line reflow restoring the original text location.
+    FormatKeepCursor,
 }
 
 impl Operator {
@@ -547,7 +552,26 @@ impl Operator {
             Self::ToggleCase => '~',
             Self::Lowercase => 'u',
             Self::Uppercase => 'U',
+            Self::Format => 'q',
+            Self::FormatKeepCursor => 'w',
         }
+    }
+
+    /// Operators entered through the `g` prefix, whose doubled forms are
+    /// spelled both `gXX` and `gXgX`.
+    fn is_g_prefixed(self) -> bool {
+        matches!(
+            self,
+            Self::ToggleCase
+                | Self::Lowercase
+                | Self::Uppercase
+                | Self::Format
+                | Self::FormatKeepCursor
+        )
+    }
+
+    fn is_format(self) -> bool {
+        matches!(self, Self::Format | Self::FormatKeepCursor)
     }
 }
 
@@ -1159,6 +1183,8 @@ pub(crate) struct BufferCommandState {
     last_repeat: Option<RepeatAction>,
     recording: Option<(char, Vec<InputEvent>)>,
     last_macro: Option<char>,
+    /// Buffer-owned `textwidth`: inherited default plus optional override.
+    pub(crate) text_width: crate::document::TextWidthSetting,
 }
 
 /// Per-view Vim controller state.
@@ -1232,6 +1258,10 @@ pub struct CommandInterpreter {
     /// Effects accumulated by low-level register policy until the enclosing
     /// command output is published or rolled back.
     pending_clipboard_writes: Vec<ClipboardWriteRequest>,
+    /// Buffer-owned `textwidth`, bridged through the buffer command state.
+    text_width: crate::document::TextWidthSetting,
+    /// Canonical language selecting the reflow comment profile.
+    reflow_language: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1329,6 +1359,8 @@ impl CommandInterpreter {
             reopened_group_after_insert_normal_once: false,
             clipboard_context: ClipboardCommandContext::default(),
             pending_clipboard_writes: Vec::new(),
+            text_width: crate::document::TextWidthSetting::default(),
+            reflow_language: None,
         }
     }
 
@@ -1350,6 +1382,7 @@ impl CommandInterpreter {
             last_repeat: self.last_repeat.clone(),
             recording: self.recording.clone(),
             last_macro: self.last_macro,
+            text_width: self.text_width,
         }
     }
 
@@ -1365,6 +1398,7 @@ impl CommandInterpreter {
         self.last_repeat.clone_from(&state.last_repeat);
         self.recording.clone_from(&state.recording);
         self.last_macro = state.last_macro;
+        self.text_width = state.text_width;
     }
 
     pub fn mode(&self) -> Mode {
@@ -2124,6 +2158,7 @@ impl CommandInterpreter {
                         !matches!(
                             *key,
                             Key::Char('g' | 'e' | 'E' | '_' | '*' | '#' | 'v' | '~' | 'u' | 'U' | 'J')
+                                | Key::Char('q' | 'w')
                                 | Key::Char('j' | 'k' | '0' | '^' | '$')
                         ) && !(self.mode == Mode::Normal && matches!(*key, Key::Char('p' | 'P')))
                     }
@@ -4019,7 +4054,7 @@ impl CommandInterpreter {
                     Key::Char('*') => self.search_word_at_cursor(document, true, false, count),
                     Key::Char('#') => self.search_word_at_cursor(document, false, false, count),
                     Key::Char('v') => self.restore_visual(document),
-                    Key::Char('~' | 'u' | 'U') => {
+                    Key::Char('~' | 'u' | 'U' | 'q' | 'w') => {
                         let Key::Char(command) = key else {
                             unreachable!()
                         };
@@ -4029,6 +4064,8 @@ impl CommandInterpreter {
                                 '~' => Operator::ToggleCase,
                                 'u' => Operator::Lowercase,
                                 'U' => Operator::Uppercase,
+                                'q' => Operator::Format,
+                                'w' => Operator::FormatKeepCursor,
                                 _ => unreachable!(),
                             },
                             count,
@@ -4038,7 +4075,7 @@ impl CommandInterpreter {
                     }
                     _ => return None,
                 };
-                if !matches!(key, Key::Char('~' | 'u' | 'U')) {
+                if !matches!(key, Key::Char('~' | 'u' | 'U' | 'q' | 'w')) {
                     self.pending = Pending::None;
                 }
                 return Some(output);
@@ -5415,6 +5452,16 @@ impl CommandInterpreter {
                 }
                 Key::Char('U') => {
                     return self.apply_visual_block_operator(document, context, Operator::Uppercase)
+                }
+                Key::Char('q') => {
+                    return self.apply_visual_block_operator(document, context, Operator::Format)
+                }
+                Key::Char('w') => {
+                    return self.apply_visual_block_operator(
+                        document,
+                        context,
+                        Operator::FormatKeepCursor,
+                    )
                 }
                 Key::Char('J') => return self.visual_block_join(document, context, false),
                 Key::Char('v') => self.exchange_visual_with_layout(document, context),
@@ -6963,6 +7010,38 @@ impl CommandInterpreter {
             .first()
             .map_or(self.cursor, |segment| segment.range.start);
         let register = self.requested_register.take();
+        if operator.is_format() {
+            // Visual Block formats each intersected hard line in full, once,
+            // rather than reflowing a pixel-width rectangle.
+            let (first, last) = resolved.rows.iter().fold((usize::MAX, 0), |(low, high), row| {
+                (low.min(row.hard_line_index), high.max(row.hard_line_index))
+            });
+            if first == usize::MAX {
+                return Ok(CommandOutput::complete());
+            }
+            let before = document.revision();
+            let output = self.apply_format_operator(
+                document,
+                operator == Operator::FormatKeepCursor,
+                first..last + 1,
+            )?;
+            if output.status != CommandStatus::Complete {
+                return Ok(output);
+            }
+            if !self.replaying && document.revision() != before {
+                self.last_repeat = Some(RepeatAction::VisualBlock(VisualBlockRepeat {
+                    shape: repeat_shape,
+                    action: VisualBlockRepeatAction::Operator { operator, register },
+                }));
+            }
+            self.leave_visual_block();
+            return Ok(CommandOutput {
+                cursor_moved: true,
+                document_changed: output.document_changed,
+                mode_changed: true,
+                ..CommandOutput::complete()
+            });
+        }
         if matches!(operator, Operator::Delete | Operator::Yank) {
             if let Err(output) = self.require_register_write(register) {
                 return Ok(output);
@@ -8206,10 +8285,7 @@ impl CommandInterpreter {
             Err(error) => return Ok(CommandOutput::count_error(error)),
         };
         let long_case_doubled = pending.g_prefix
-            && matches!(
-                pending.operator,
-                Operator::ToggleCase | Operator::Lowercase | Operator::Uppercase
-            )
+            && pending.operator.is_g_prefixed()
             && key == Key::Char(pending.operator.doubled_key());
         if (key == Key::Char(pending.operator.doubled_key()) && !pending.g_prefix)
             || long_case_doubled
@@ -8464,6 +8540,16 @@ impl CommandInterpreter {
         }
         let lines = document.hard_line_snapshot();
         document.validate_hard_line_snapshot(&lines)?;
+        if operator.is_format() {
+            // Reflow never reads registers and counts complete hard lines
+            // without materializing the compatibility flat text.
+            let covered = Self::hard_lines_covered(&lines, &extent.range);
+            return self.apply_format_operator(
+                document,
+                operator == Operator::FormatKeepCursor,
+                covered,
+            );
+        }
         if matches!(
             operator,
             Operator::Indent | Operator::Outdent | Operator::Reindent
@@ -8580,6 +8666,9 @@ impl CommandInterpreter {
                     cursor_moved: true,
                     ..CommandOutput::complete()
                 })
+            }
+            Operator::Format | Operator::FormatKeepCursor => {
+                unreachable!("reflow returned before register and extent policy")
             }
             Operator::ToggleCase | Operator::Lowercase | Operator::Uppercase => {
                 let old = document.text()[extent.range.clone()].to_owned();
@@ -8781,6 +8870,16 @@ impl CommandInterpreter {
                     }
                     Key::Char('U') => {
                         return self.apply_visual_operator(document, Operator::Uppercase, count)
+                    }
+                    Key::Char('q') => {
+                        return self.apply_visual_operator(document, Operator::Format, count)
+                    }
+                    Key::Char('w') => {
+                        return self.apply_visual_operator(
+                            document,
+                            Operator::FormatKeepCursor,
+                            count,
+                        )
                     }
                     Key::Char('J') => return self.visual_join(document, false),
                     _ => CommandOutput::unsupported(format!("visual g{key:?}")),
@@ -11853,6 +11952,7 @@ impl CommandInterpreter {
             wrap: self.wrap,
             fileformats: self.fileformats.clone(),
             search_options: self.search_options,
+            text_width: self.text_width,
             last_search_pattern: self
                 .last_search
                 .as_ref()
@@ -12258,6 +12358,9 @@ impl CommandInterpreter {
                     self.search_options.wrapscan = *value
                 }
                 (ExOptionName::Wrap, ExOptionValue::Boolean(value)) => self.wrap = *value,
+                (ExOptionName::TextWidth, ExOptionValue::OptionalNumber(value)) => {
+                    self.text_width.set_local(*value);
+                }
                 (ExOptionName::FileFormats, ExOptionValue::FileFormats(value)) => {
                     self.fileformats.clone_from(value);
                 }

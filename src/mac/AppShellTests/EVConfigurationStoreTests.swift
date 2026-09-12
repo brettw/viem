@@ -75,6 +75,40 @@ final class EVConfigurationStoreTests: XCTestCase {
     XCTAssertTrue(store.smartQuotes)
     XCTAssertEqual(try Data(contentsOf: file), external)
   }
+  func testTextWidthDefaultsToEightyPersistsAndPreservesUnrelatedSettings() throws {
+    let (directory, legacy) = try fixture()
+    let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+    XCTAssertEqual(store.textWidth, 80)
+    try store.setSmartQuotes(true)
+    try store.setTextWidth(72)
+    XCTAssertEqual(store.textWidth, 72)
+    let reopened = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+    XCTAssertEqual(reopened.textWidth, 72); XCTAssertTrue(reopened.smartQuotes)
+    XCTAssertThrowsError(try reopened.setTextWidth(0))
+    XCTAssertEqual(reopened.textWidth, 72)
+    let file = directory.appendingPathComponent("config.json")
+    let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+    XCTAssertEqual((object["editing"] as? [String: Any])?["textWidth"] as? Int, 72)
+    XCTAssertEqual((object["editing"] as? [String: Any])?["smartQuotes"] as? Bool, true)
+  }
+  func testInvalidTextWidthValuesAreRejectedWithoutOverwriting() throws {
+    for value in ["0", "-1", "1.5", "true", "\"80\"", "4294967296", "null"] {
+      let (directory, legacy) = try fixture()
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let file = directory.appendingPathComponent("config.json")
+      let before = Data(#"{"version":1,"editing":{"textWidth":\#(value)}}"#.utf8); try before.write(to: file)
+      let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+      XCTAssertNotNil(store.lastError, value); XCTAssertEqual(store.textWidth, 80, value)
+      XCTAssertThrowsError(try store.setTextWidth(72), value)
+      XCTAssertEqual(try Data(contentsOf: file), before, value)
+    }
+    let (directory, legacy) = try fixture()
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let file = directory.appendingPathComponent("config.json")
+    try Data(#"{"version":1,"editing":{"textWidth":4294967295}}"#.utf8).write(to: file)
+    let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+    XCTAssertNil(store.lastError); XCTAssertEqual(store.textWidth, UInt32.max)
+  }
   func testStyleFilesAreFormatSpecificVersionedAndPreserveUnknownData() throws {
     let (directory, legacy) = try fixture()
     let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)

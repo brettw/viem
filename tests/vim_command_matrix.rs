@@ -263,6 +263,14 @@ fn operator_shorthand_and_text_object_matrix() {
         CommandCase::new("operator", "g~", PROSE, "", "g~w"),
         CommandCase::new("operator", "gu", "ALPHA beta", "", "guw"),
         CommandCase::new("operator", "gU", PROSE, "", "gUw"),
+        CommandCase::new("operator", "gq", PROSE, "", "gqj"),
+        CommandCase::new("operator", "gw", PROSE, "", "gwj"),
+        CommandCase::new("operator", "gq-paragraph", PROSE, "", "gq}"),
+        CommandCase::new("operator", "gq-text-object", PROSE, "", "gqip"),
+        CommandCase::new("shorthand", "gqq", PROSE, "", "gqq"),
+        CommandCase::new("shorthand", "gqgq", PROSE, "", "2gqgq"),
+        CommandCase::new("shorthand", "gww", PROSE, "", "gww"),
+        CommandCase::new("shorthand", "gwgw", PROSE, "", "gwgw"),
         CommandCase::new(
             "grammar",
             "multiplied counts",
@@ -470,6 +478,22 @@ fn ex_command_surface_matrix() {
             ":setlocal nowrap<Enter>",
         ),
         CommandCase::new("Ex options", "wrap", PROSE, "", ":set wrap<Enter>"),
+        CommandCase::new(
+            "Ex options",
+            "textwidth",
+            PROSE,
+            "",
+            ":set textwidth=72<Enter>",
+        ),
+        CommandCase::new("Ex options", "tw", PROSE, "", ":set tw=72<Enter>"),
+        CommandCase::new("Ex options", "tw?", PROSE, "", ":set tw?<Enter>"),
+        CommandCase::new(
+            "Ex options",
+            "setlocal tw<",
+            PROSE,
+            ":set tw=72<Enter>",
+            ":setlocal tw<<Enter>",
+        ),
         CommandCase::new("Ex options", "nowrap", PROSE, "", ":set nowrap<Enter>"),
         CommandCase::new("Ex options", "query", PROSE, "", ":set wrap?<Enter>"),
     ]);
@@ -649,6 +673,8 @@ fn visual_mode_command_matrix() {
             ("paste", "l\"ayw0", "\"ap"),
             ("paste-before", "l\"ayw0", "\"aP"),
             ("reindent", "j", "="),
+            ("format", "j", "gq"),
+            ("format-keep-cursor", "j", "gw"),
         ] {
             let setup = Box::leak(format!("{setup}{entry}").into_boxed_str());
             cases.push(CommandCase::new(mode, name, PROSE, setup, command));

@@ -324,6 +324,11 @@ impl CommandInterpreter {
             return self.repeat_last_change(document, count).map(Some);
         }
         if let Pending::Operator(pending) = self.pending {
+            if pending.operator.is_format() {
+                // Reflow's implicit line motions and doubled forms count
+                // complete hard lines in every line mode.
+                return Ok(None);
+            }
             let count = match effective_operator_count(pending) {
                 Ok(count) => count,
                 Err(error) => return Ok(Some(CommandOutput::count_error(error))),
@@ -631,6 +636,9 @@ impl CommandInterpreter {
                 }
                 Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase => {
                     change_case(&normalized, operator)
+                }
+                Operator::Format | Operator::FormatKeepCursor => {
+                    unreachable!("reflow bypasses view-line extents")
                 }
                 Operator::Indent | Operator::Outdent | Operator::Reindent => normalized
                     .split_inclusive('\n')
@@ -1072,6 +1080,11 @@ impl CommandInterpreter {
         operator: Operator,
         applications: usize,
     ) -> Result<Option<CommandOutput>, DocumentError> {
+        if operator.is_format() {
+            // A Visual selection keeps its domain; reflow then expands the
+            // checked extent to the intersected hard lines.
+            return Ok(None);
+        }
         let Some((extent, count)) = self.mode_visual_extent(document, self.line_layout.as_ref())
         else {
             return Ok(None);

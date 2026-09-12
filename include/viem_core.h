@@ -305,10 +305,13 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_EX_OPTION_IGNORECASE 5u
 #define VIEM_EX_OPTION_SMARTCASE 6u
 #define VIEM_EX_OPTION_WRAPSCAN 7u
+#define VIEM_EX_OPTION_TEXTWIDTH 8u
 
 #define VIEM_EX_OPTION_VALUE_BOOLEAN 1u
 #define VIEM_EX_OPTION_VALUE_FILE_FORMAT 2u
 #define VIEM_EX_OPTION_VALUE_FILE_FORMATS 3u
+/* scalar_value carries the number. */
+#define VIEM_EX_OPTION_VALUE_NUMBER 4u
 
 #define VIEM_EX_JUMP_CURRENT (1u << 0)
 
@@ -2257,6 +2260,8 @@ ViemStatus viem_core_set_code_filename_associations_json(ViemCoreHandle core, co
 /* selection: Automatic=0, None=1, Language=2. Only Language takes a nonempty name. */
 ViemStatus viem_core_set_code_language(ViemCoreHandle core, uint32_t selection, const uint8_t *language, uint64_t length);
 ViemStatus viem_core_redetect_code_language(ViemCoreHandle core, const uint8_t *filename, uint64_t length);
+/* Application default for textwidth (positive). Buffer :set overrides survive. */
+ViemStatus viem_core_set_text_width_default(ViemCoreHandle core, uint32_t width);
 ViemStatus viem_core_poll_syntax(ViemCoreHandle core, uint8_t *changed);
 ViemStatus viem_core_copy_syntax_diagnostics(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
 /* Read-only two-pass UTF-8 JSON array of unique sorted names in accepted syntax

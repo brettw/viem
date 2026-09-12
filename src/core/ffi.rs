@@ -442,10 +442,13 @@ pub const VIEM_EX_OPTION_FILE_FORMATS: u32 = 4;
 pub const VIEM_EX_OPTION_IGNORECASE: u32 = 5;
 pub const VIEM_EX_OPTION_SMARTCASE: u32 = 6;
 pub const VIEM_EX_OPTION_WRAPSCAN: u32 = 7;
+pub const VIEM_EX_OPTION_TEXTWIDTH: u32 = 8;
 
 pub const VIEM_EX_OPTION_VALUE_BOOLEAN: u32 = 1;
 pub const VIEM_EX_OPTION_VALUE_FILE_FORMAT: u32 = 2;
 pub const VIEM_EX_OPTION_VALUE_FILE_FORMATS: u32 = 3;
+/// `scalar_value` carries the number.
+pub const VIEM_EX_OPTION_VALUE_NUMBER: u32 = 4;
 
 pub const VIEM_EX_JUMP_CURRENT: u32 = 1 << 0;
 
@@ -3320,6 +3323,7 @@ fn ex_option_name_to_ffi(name: &ExOptionName) -> u32 {
         ExOptionName::IgnoreCase => VIEM_EX_OPTION_IGNORECASE,
         ExOptionName::SmartCase => VIEM_EX_OPTION_SMARTCASE,
         ExOptionName::WrapScan => VIEM_EX_OPTION_WRAPSCAN,
+        ExOptionName::TextWidth => VIEM_EX_OPTION_TEXTWIDTH,
     }
 }
 
@@ -3336,6 +3340,10 @@ fn export_ex_option(
         ExOptionValue::FileFormats(values) => {
             file_formats.extend(values.iter().copied().map(file_format_to_ffi));
             (VIEM_EX_OPTION_VALUE_FILE_FORMATS, 0)
+        }
+        ExOptionValue::Number(value) => (VIEM_EX_OPTION_VALUE_NUMBER, *value),
+        ExOptionValue::OptionalNumber(value) => {
+            (VIEM_EX_OPTION_VALUE_NUMBER, value.unwrap_or(0))
         }
     };
     Ok(ViemExOptionDisplayV1 {
@@ -12983,6 +12991,23 @@ pub unsafe extern "C" fn viem_core_set_code_language(handle:ViemCoreHandle,selec
             _=>return Err(ViemStatus::InvalidArgument),
         };
         with_core_mut(handle,|core|{core.set_code_language(selection);Ok(())})
+    })
+}
+
+/// Set the application default for `textwidth` on this buffer. The value must
+/// be positive. An explicit `:set textwidth` override in the buffer survives;
+/// buffers still inheriting the default adopt it immediately. This never
+/// changes source, dirty state, or undo history.
+#[no_mangle]
+pub extern "C" fn viem_core_set_text_width_default(handle: ViemCoreHandle, width: u32) -> ViemStatus {
+    ffi_boundary(|| {
+        if width == 0 {
+            return Err(ViemStatus::InvalidArgument);
+        }
+        with_core_mut(handle, |core| {
+            core.set_text_width_default(width);
+            Ok(())
+        })
     })
 }
 

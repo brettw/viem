@@ -201,6 +201,8 @@ pub enum OptionAction {
     Toggle,
     Query,
     Reset,
+    /// `{option}<`: return a local value to inheriting the global/default.
+    Inherit,
     Assign(String),
     Append(String),
     Prepend(String),
@@ -1392,6 +1394,8 @@ fn parse_option(expression: &str, offset: usize) -> Result<OptionOperation, ExPa
         (name, OptionAction::Toggle)
     } else if let Some(name) = expression.strip_suffix('&') {
         (name, OptionAction::Reset)
+    } else if let Some(name) = expression.strip_suffix('<') {
+        (name, OptionAction::Inherit)
     } else if let Some(name) = expression.strip_prefix("inv") {
         (name, OptionAction::Toggle)
     } else if let Some(name) = expression.strip_prefix("no") {

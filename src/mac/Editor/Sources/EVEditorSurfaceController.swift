@@ -1432,6 +1432,7 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         case 5: name = "ignorecase"
         case 6: name = "smartcase"
         case 7: name = "wrapscan"
+        case UInt32(VIEM_EX_OPTION_TEXTWIDTH): name = "textwidth"
         default: name = "option\(option.name)"
         }
         switch option.value {
@@ -1441,6 +1442,8 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             return "\(name)=\(fileFormatName(value))"
         case let .fileFormats(values):
             return "\(name)=\(values.map(fileFormatName).joined(separator: ","))"
+        case let .number(value):
+            return "\(name)=\(value)"
         }
     }
 

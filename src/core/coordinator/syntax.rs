@@ -75,7 +75,15 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.syntax.service.set_language(detection.language.clone());
         self.syntax.detection = Some(detection);
         self.syntax.detected_for_code = self.document.format().is_code();
+        self.publish_reflow_language();
         Ok(())
+    }
+    /// The canonical language name selecting reflow's comment profile.
+    pub(super) fn reflow_language(&self) -> Option<String> {
+        self.syntax
+            .detection
+            .as_ref()
+            .and_then(|detection| detection.language.clone())
     }
     pub fn set_code_language(&mut self, selection: LanguageSelection) {
         self.syntax.selection = selection;
@@ -89,6 +97,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.syntax.service.set_language(detection.language.clone());
         self.syntax.detection = Some(detection);
         self.syntax.published = None;
+        self.publish_reflow_language();
     }
     /// Explicit policy changes/redetection are the only post-load detector
     /// entry points; ordinary edits and viewport requests do not call these.

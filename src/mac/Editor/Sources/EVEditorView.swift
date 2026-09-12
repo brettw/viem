@@ -135,8 +135,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private var editingPreferencesObserver: NSObjectProtocol?
     private weak var configuredEditingSession: EVCoreViewSession?
     private var configuredSmartQuotes: Bool?
+    private var configuredTextWidth: UInt32?
     var editingPreferences = EVEditingPreferences.shared {
-        didSet { configuredSmartQuotes = nil; synchronizeEditingPreferences() }
+        didSet { configuredSmartQuotes = nil; configuredTextWidth = nil; synchronizeEditingPreferences() }
     }
     private lazy var customCaretBlinkController: EVCustomCaretBlinkController = {
         let controller = EVCustomCaretBlinkController()
@@ -340,11 +341,15 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private func synchronizeEditingPreferences() {
         guard let session = surface?.session else { return }
         let enabled = editingPreferences.smartQuotes && surface?.backend.sourceFormat != .code
-        guard configuredEditingSession !== session || configuredSmartQuotes != enabled else { return }
+        let textWidth = editingPreferences.textWidth
+        guard configuredEditingSession !== session || configuredSmartQuotes != enabled
+            || configuredTextWidth != textWidth else { return }
         do {
             try session.setSmartQuotes(enabled)
+            try session.setTextWidthDefault(textWidth)
             configuredEditingSession = session
             configuredSmartQuotes = enabled
+            configuredTextWidth = textWidth
         } catch {
             // A closing or replaced session may be unavailable. The next
             // presentation retries against the live session instead.

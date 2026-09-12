@@ -68,6 +68,12 @@ public final class EVConfigurationStore {
     return result
   }
   public var smartQuotes: Bool { (root["editing"] as? [String: Any])?["smartQuotes"] as? Bool ?? false }
+  /// Application default for hard-line reflow (`gq`/`gw`); buffers inherit it
+  /// unless `:set textwidth` overrides them locally. Missing values use 80.
+  public static let defaultTextWidth: UInt32 = 80
+  public var textWidth: UInt32 {
+    Self.validTextWidth((root["editing"] as? [String: Any])?["textWidth"]) ?? Self.defaultTextWidth
+  }
   public var showStatusBar: Bool { (root["appearance"] as? [String: Any])?["showStatusBar"] as? Bool ?? true }
   public var recentDocumentURLs: [URL] { Self.recentDocumentURLs(in: root) }
   public var vimSyntaxDirectory: String {
@@ -88,6 +94,10 @@ public final class EVConfigurationStore {
     try update(section: "theme", values: value)
   }
   public func setSmartQuotes(_ enabled: Bool) throws { try update(section: "editing", values: ["smartQuotes": enabled]) }
+  public func setTextWidth(_ width: UInt32) throws {
+    guard width > 0 else { throw invalid("Text width must be a positive whole number of columns") }
+    try update(section: "editing", values: ["textWidth": NSNumber(value: width)])
+  }
   public func setShowStatusBar(_ enabled: Bool) throws { try update(section: "appearance", values: ["showStatusBar": enabled]) }
   public func setVimSyntaxDirectory(_ path: String) throws {
     try update(section: "code", values: ["vimSyntaxDirectory": path])
@@ -233,6 +243,9 @@ public final class EVConfigurationStore {
         }
       }
     }
+    if let value = (object["editing"] as? [String: Any])?["textWidth"], validTextWidth(value) == nil {
+      throw invalid("textWidth must be a positive whole number of columns up to 4294967295")
+    }
     if let raw = object["code"] {
       guard let fields = raw as? [String: Any] else { throw invalid("Invalid Code settings") }
       if let rawPath = fields["vimSyntaxDirectory"] {
@@ -258,6 +271,14 @@ public final class EVConfigurationStore {
         }
       }
     }
+  }
+  /// A positive unsigned 32-bit integer. Booleans, fractions, zero, negative
+  /// values, overflow, and non-numbers are rejected.
+  private static func validTextWidth(_ value: Any?) -> UInt32? {
+    guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+    let double = number.doubleValue
+    guard double.isFinite, double >= 1, double <= Double(UInt32.max), double == double.rounded(.towardZero) else { return nil }
+    return UInt32(exactly: double)
   }
   private static func isValidRecentDocumentPath(_ path: String) -> Bool {
     path.hasPrefix("/") && !path.contains("\0") && path.utf8.count <= 16_384

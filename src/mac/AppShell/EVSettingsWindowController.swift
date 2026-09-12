@@ -28,6 +28,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private let codeDirectoryField = NSTextField()
   private let codeDiagnostic = NSTextField(wrappingLabelWithString: "")
   private weak var smartQuotesCheckbox: NSButton?
+  private let textWidthField = NSTextField(string: "")
   private var wells: [Int: NSColorWell] = [:]
   private var fields: [Int: NSTextField] = [:]
   private let fontSelect = NSPopUpButton()
@@ -64,6 +65,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       MainActor.assumeIsolated {
         guard let self, notification.object as AnyObject? === self.editingPreferences else { return }
         self.smartQuotesCheckbox?.state = self.editingPreferences.smartQuotes ? .on : .off
+        self.textWidthField.stringValue = String(self.editingPreferences.textWidth)
       }
     }
     codeObservers = [Notification.Name.viemCodePreferencesDidChange, .viemCodeDiagnosticsDidChange].map { name in
@@ -260,6 +262,21 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       let group = section("Typing assistance", views: [checkbox, explanation])
       stack.addArrangedSubview(group)
       group.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
+      textWidthField.stringValue = String(editingPreferences.textWidth)
+      textWidthField.alignment = .right
+      textWidthField.target = self
+      textWidthField.action = #selector(changeTextWidth(_:))
+      textWidthField.delegate = self
+      textWidthField.setAccessibilityLabel("Text width (columns)")
+      textWidthField.widthAnchor.constraint(equalToConstant: 80).isActive = true
+      let widthRow = NSStackView(views: [label("Text width (columns)"), textWidthField])
+      widthRow.spacing = 10
+      let widthExplanation = NSTextField(wrappingLabelWithString: "Columns used by gq and gw to reflow Text and Code hard lines. Open documents inherit this default unless :set textwidth overrides it. Soft wrapping and typing are unaffected.")
+      widthExplanation.textColor = .secondaryLabelColor
+      widthExplanation.font = .systemFont(ofSize: 12)
+      let widthGroup = section("Reflow", views: [widthRow, widthExplanation])
+      stack.addArrangedSubview(widthGroup)
+      widthGroup.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
       return
     }
     let paper = button("Paper", action: #selector(usePaper))
@@ -345,6 +362,19 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
 
   func controlTextDidEndEditing(_ notification: Notification) {
     if notification.object as AnyObject? === codeDirectoryField { changeCodeDirectory(nil) }
+    if notification.object as AnyObject? === textWidthField { changeTextWidth(textWidthField) }
+  }
+
+  /// Zero, negative, fractional, malformed, and overflowing values are
+  /// rejected; the field reverts to the persisted default.
+  @objc private func changeTextWidth(_ sender: NSTextField) {
+    let text = sender.stringValue.trimmingCharacters(in: .whitespaces)
+    if !text.isEmpty, text.allSatisfy(\.isNumber), let width = UInt32(text), width > 0 {
+      editingPreferences.setTextWidth(width)
+    }
+    sender.stringValue = String(editingPreferences.textWidth)
+    persistenceDiagnostic.stringValue = editingPreferences.lastError ?? ""
+    persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
   }
 
   @objc private func chooseCodeDirectory() {

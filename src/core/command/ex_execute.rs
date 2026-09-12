@@ -58,6 +58,8 @@ pub struct ExExecutionContext {
     pub wrap: bool,
     pub fileformats: Vec<FileFormat>,
     pub search_options: super::regex_v1::SearchOptions,
+    /// Buffer-owned `textwidth` state.
+    pub text_width: crate::document::TextWidthSetting,
     pub last_search_pattern: Option<String>,
 }
 
@@ -68,6 +70,7 @@ impl Default for ExExecutionContext {
             wrap: false,
             fileformats: vec![FileFormat::Unix, FileFormat::Dos],
             search_options: super::regex_v1::SearchOptions::default(),
+            text_width: crate::document::TextWidthSetting::default(),
             last_search_pattern: None,
         }
     }
@@ -247,6 +250,7 @@ pub enum ExOptionName {
     IgnoreCase,
     SmartCase,
     WrapScan,
+    TextWidth,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -254,6 +258,10 @@ pub enum ExOptionValue {
     Boolean(bool),
     FileFormat(FileFormat),
     FileFormats(Vec<FileFormat>),
+    /// A displayed numeric value, such as the effective `textwidth`.
+    Number(u32),
+    /// A buffer-local numeric override; `None` returns to inheritance.
+    OptionalNumber(Option<u32>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2255,6 +2263,7 @@ fn prepare_set(
         file_format: document.file_format(),
         fileformats: context.fileformats.clone(),
         search_options: context.search_options,
+        text_width: context.text_width,
     };
     match operation {
         SetOperation::ShowChanged => {
@@ -2279,6 +2288,12 @@ fn prepare_set(
             }
             if values.wrap {
                 shown.push(display(ExOptionName::Wrap, ExOptionValue::Boolean(true)));
+            }
+            if values.text_width.local_override().is_some() {
+                shown.push(display(
+                    ExOptionName::TextWidth,
+                    ExOptionValue::Number(values.text_width.effective()),
+                ));
             }
             if document.format() != crate::document::Format::Rtf
                 && values.file_format != FileFormat::Unix
@@ -2340,6 +2355,7 @@ struct PendingOptions {
     file_format: FileFormat,
     fileformats: Vec<FileFormat>,
     search_options: super::regex_v1::SearchOptions,
+    text_width: crate::document::TextWidthSetting,
 }
 
 fn all_option_values(values: &PendingOptions) -> Vec<ExOptionDisplay> {
@@ -2357,6 +2373,10 @@ fn all_option_values(values: &PendingOptions) -> Vec<ExOptionDisplay> {
             ExOptionValue::Boolean(values.search_options.wrapscan),
         ),
         display(ExOptionName::Wrap, ExOptionValue::Boolean(values.wrap)),
+        display(
+            ExOptionName::TextWidth,
+            ExOptionValue::Number(values.text_width.effective()),
+        ),
         display(
             ExOptionName::FileFormat,
             ExOptionValue::FileFormat(values.file_format),
@@ -2412,6 +2432,38 @@ fn apply_option_operation(
             &mut values.wrap,
             plan,
         ),
+        "textwidth" | "tw" => {
+            // Both `:set` and `:setlocal` forms set a buffer override; the
+            // application default is owned by Settings, never by Ex.
+            let old = values.text_width.local_override();
+            match &operation.action {
+                OptionAction::Query => {
+                    show_option(
+                        plan,
+                        ExOptionName::TextWidth,
+                        ExOptionValue::Number(values.text_width.effective()),
+                    );
+                    return Ok(());
+                }
+                OptionAction::Assign(value) => {
+                    values
+                        .text_width
+                        .set_local(Some(parse_text_width(&name, value)?));
+                }
+                OptionAction::Inherit | OptionAction::Reset => values.text_width.set_local(None),
+                _ => return Err(ExExecuteError::UnsupportedOptionOperation(name)),
+            }
+            let new = values.text_width.local_override();
+            if new != old {
+                plan.outcome.option_effects.push(ExOptionEffect {
+                    scope,
+                    name: ExOptionName::TextWidth,
+                    old_value: ExOptionValue::OptionalNumber(old),
+                    new_value: ExOptionValue::OptionalNumber(new),
+                });
+            }
+            Ok(())
+        }
         "fileformat" | "ff" => {
             let old = values.file_format;
             match &operation.action {
@@ -2530,6 +2582,22 @@ fn show_option(plan: &mut ExPlan, name: ExOptionName, value: ExOptionValue) {
         .push(ExFrontendRequest::Info(ExInfoRequest::Options(vec![
             display(name, value),
         ])));
+}
+
+/// A positive unsigned 32-bit integer. Zero, signs, fractions, malformed
+/// text, and overflow are rejected without changing the prior value.
+fn parse_text_width(option: &str, value: &str) -> Result<u32, ExExecuteError> {
+    let invalid = || ExExecuteError::InvalidOptionValue {
+        option: option.to_owned(),
+        value: value.to_owned(),
+    };
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    match value.parse::<u32>() {
+        Ok(width) if width > 0 => Ok(width),
+        _ => Err(invalid()),
+    }
 }
 
 fn parse_file_format(option: &str, value: &str) -> Result<FileFormat, ExExecuteError> {
@@ -3529,7 +3597,8 @@ mod tests {
         ).unwrap();
         let ExFrontendRequest::Info(ExInfoRequest::Options(options)) =
             &plan.outcome.frontend_requests[0] else { panic!("expected options") };
-        assert_eq!(options.len(), 6);
+        assert_eq!(options.len(), 7);
+        assert!(options.iter().any(|option| option.name == ExOptionName::TextWidth));
     }
 
     #[test]
