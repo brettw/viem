@@ -2483,6 +2483,17 @@ The frontend renders mode from core state:
   be replaced; and
 - Command-line mode: a thin vertical insertion caret in the command line.
 
+The core publishes what the caret occupies; frontends resolve only its
+geometry. A caret target is either a **character cell** covering exactly one
+grapheme of hard-line content, or an **insertion boundary** between graphemes
+carrying the boundary affinity that selects its visual row. Modes that address
+characters (Normal, Visual, Replace) publish a cell wherever the cursor has a
+character and a boundary where it has none, such as an empty line or the end of
+the document. Insert and command-line modes always publish a boundary. A
+frontend MUST NOT re-derive this choice from the mode, the cursor offset, and
+the affinity together; those inputs do not say by themselves whether the cursor
+names a character or a gap. Affinity MUST NOT be reachable from a cell.
+
 These mode-to-appearance rules, the custom block and underline rendering rules,
 focus behavior, and caret-color policy are portable requirements. A future
 Windows frontend follows them using Windows-native facilities where suitable.
@@ -2490,8 +2501,12 @@ The decision to use `NSTextInsertionIndicator` for a vertical caret is specific
 to the macOS frontend and is not part of the core or Windows contract.
 
 The block caret is custom rendered; do not attempt to stretch a platform's thin
-insertion indicator into a block. Its logical extent is the associated atomic
-content item selected by the cursor's boundary affinity. Its visual extent uses
+insertion indicator into a block. Its logical extent is the published character
+cell. Boundary affinity chooses which visual row an insertion point occupies at
+a soft wrap; it never chooses which character a block covers. Selecting the
+block's item by affinity draws it one grapheme early after `$` and `<End>`,
+which leave an upstream boundary affinity on the last character of the line.
+Its visual extent uses
 the exact selection/highlight geometry returned by the current layout for that
 item. It is not a fixed monospace cell. When several graphemes form a visually
 indivisible shaping cluster, the block uses the containing cluster geometry

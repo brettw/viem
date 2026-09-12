@@ -402,3 +402,47 @@ private func checkedPresentationExport(_ status: UInt32, operation: String) thro
         throw EVCoreFrontendError.core(operation: operation, status: status)
     }
 }
+
+/// What the caret occupies, as decided by the portable core.
+///
+/// The frontend resolves this to geometry; it must never re-derive the choice
+/// from the mode, the cursor offset, and the boundary affinity. Affinity is
+/// reachable only from `boundary` because it disambiguates which visual row an
+/// insertion point belongs to at a soft wrap. A character cell lies on exactly
+/// one row, so using affinity to select one draws the wrong character.
+enum EVCaretTarget: Equatable {
+    /// The caret covers exactly this UTF-8 range: one grapheme of line content.
+    case cell(Range<UInt64>)
+    /// The caret sits between graphemes at this offset.
+    case boundary(offset: UInt64, affinity: UInt32)
+
+    /// The offset the caret is anchored to; for a cell, its first byte.
+    var offset: UInt64 {
+        switch self {
+        case let .cell(range): range.lowerBound
+        case let .boundary(offset, _): offset
+        }
+    }
+
+    /// Row disambiguation, meaningful only for a boundary.
+    var affinity: UInt32 {
+        switch self {
+        case .cell: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
+        case let .boundary(_, affinity): affinity
+        }
+    }
+
+    /// Read the core's decision out of one presentation export.
+    init(_ presentation: ViemViewPresentationV1) {
+        if presentation.caret_shape == UInt32(VIEM_CARET_SHAPE_CELL),
+           presentation.caret_utf8_start < presentation.caret_utf8_end
+        {
+            self = .cell(presentation.caret_utf8_start ..< presentation.caret_utf8_end)
+        } else {
+            self = .boundary(
+                offset: presentation.caret_utf8_start,
+                affinity: presentation.cursor_affinity
+            )
+        }
+    }
+}

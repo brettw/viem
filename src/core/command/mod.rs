@@ -4,6 +4,7 @@
 //! history live in [`crate::document`]; offsets here are short-lived positions
 //! in the document revision synchronously passed to [`CommandInterpreter::handle`].
 
+pub mod caret;
 pub mod clipboard;
 pub mod composition;
 pub mod ex;

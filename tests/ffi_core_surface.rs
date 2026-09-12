@@ -6584,3 +6584,55 @@ fn current_host_context_checks_targets_counts_and_nested_output_aliases() {
     );
     assert_eq!(viem_core_view_remove(core.handle, view), ViemStatus::Ok);
 }
+
+/// The caret's meaning is exported, not re-derived by a frontend. A drawing
+/// layer that picked a character from the cursor offset plus the boundary
+/// affinity drew Normal mode's block one grapheme early after `$`.
+#[test]
+fn view_presentation_exports_what_the_caret_occupies() {
+    let core = create_core("abcde\u{301}\nnext".as_bytes(), ViemDocumentOptions::default());
+    let mut context = Box::new(FakeProviderContext::new(core.handle));
+    let (view, _) = add_test_view(&core, &mut *context);
+    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut presentation = ViemViewPresentationV1::default();
+    let read = |presentation: &mut ViemViewPresentationV1| {
+        assert_eq!(
+            unsafe { viem_core_view_presentation(core.handle, view, presentation) },
+            ViemStatus::Ok
+        );
+    };
+    read(&mut presentation);
+    assert_eq!(presentation.caret_shape, VIEM_CARET_SHAPE_CELL);
+    assert_eq!(presentation.caret_utf8_start, 0);
+    assert_eq!(presentation.caret_utf8_end, 1);
+
+    for input in [key(VIEM_KEY_CHARACTER, '$' as u32), key(VIEM_KEY_END, 0)] {
+        assert_eq!(
+            unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_CHARACTER, '0' as u32), &mut outcome) },
+            ViemStatus::Ok
+        );
+        assert_eq!(
+            unsafe { test_send_key(core.handle, view, &input, &mut outcome) },
+            ViemStatus::Ok
+        );
+        read(&mut presentation);
+        // The model keeps its upstream boundary affinity, and the exported
+        // cell still covers the last grapheme rather than the one before it.
+        assert_eq!(presentation.cursor_affinity, VIEM_BOUNDARY_AFFINITY_UPSTREAM);
+        assert_eq!(presentation.caret_shape, VIEM_CARET_SHAPE_CELL);
+        assert_eq!(presentation.caret_utf8_start, presentation.cursor_utf8_offset);
+        assert_eq!(presentation.caret_utf8_start, 4);
+        assert_eq!(presentation.caret_utf8_end, 7, "the combining cluster is whole");
+    }
+
+    // Insert mode addresses the gap before that grapheme.
+    assert_eq!(
+        unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_CHARACTER, 'i' as u32), &mut outcome) },
+        ViemStatus::Ok
+    );
+    read(&mut presentation);
+    assert_eq!(presentation.mode, VIEM_MODE_INSERT);
+    assert_eq!(presentation.caret_shape, VIEM_CARET_SHAPE_BOUNDARY);
+    assert_eq!(presentation.caret_utf8_start, 4);
+    assert_eq!(presentation.caret_utf8_end, presentation.caret_utf8_start);
+}

@@ -1717,9 +1717,13 @@ pub struct ViemViewPresentationV1 {
     pub struct_size: u32,
     pub flags: u32,
     pub mode: u32,
+    /// Row disambiguation for `caret_utf8_start` when the caret shape is a
+    /// boundary. It is not a character selector: never use it to choose which
+    /// character a cell caret covers.
     pub cursor_affinity: u32,
     pub visual_anchor_affinity: u32,
-    pub reserved: u32,
+    /// `VIEM_CARET_SHAPE_CELL` or `VIEM_CARET_SHAPE_BOUNDARY`.
+    pub caret_shape: u32,
     pub document_id: u64,
     pub document_revision: u64,
     pub cursor_utf8_offset: u64,
@@ -1730,9 +1734,20 @@ pub struct ViemViewPresentationV1 {
     pub reserved_float: f32,
     pub command_line_utf8_length: u64,
     pub command_line_cursor_utf8_offset: u64,
+    /// Exact formatted range the caret occupies. A cell covers one grapheme of
+    /// hard-line content; a boundary is empty, with both ends at the caret.
+    pub caret_utf8_start: u64,
+    pub caret_utf8_end: u64,
 }
 
 pub const VIEM_VIEW_PRESENTATION_V1_SIZE: u32 = size_of::<ViemViewPresentationV1>() as u32;
+
+/// The caret covers one grapheme. Draw the character cell `caret_utf8_start
+/// ..caret_utf8_end`; boundary affinity does not apply.
+pub const VIEM_CARET_SHAPE_CELL: u32 = 1;
+/// The caret sits between graphemes at `caret_utf8_start`, with
+/// `cursor_affinity` choosing its row at a soft-wrap boundary.
+pub const VIEM_CARET_SHAPE_BOUNDARY: u32 = 2;
 
 pub const VIEM_COMMAND_LINE_KIND_NONE: u32 = 0;
 pub const VIEM_COMMAND_LINE_KIND_EX: u32 = 1;
@@ -6130,6 +6145,10 @@ fn summarize_view_presentation(
     view_id: ViewId,
 ) -> Result<ViemViewPresentationV1, ViemStatus> {
     let state = core.command_state(view_id).ok_or(ViemStatus::InvalidView)?;
+    // One authority decides what the caret occupies. The offset and affinity
+    // below are exported from the same target, so they cannot disagree with
+    // the cell a frontend draws.
+    let caret = state.caret_target(core.document());
     let mut flags = 0;
     let mut cursor_offset = state.cursor();
     let mut cursor_affinity = state.boundary_affinity();
@@ -6171,7 +6190,6 @@ fn summarize_view_presentation(
         mode: mode_to_ffi(state.mode()),
         cursor_affinity: affinity_to_ffi(cursor_affinity),
         visual_anchor_affinity,
-        reserved: 0,
         document_id: core.document().id().0,
         document_revision: core.document().revision().0,
         cursor_utf8_offset: checked_export_count(cursor_offset)?,
@@ -6182,6 +6200,13 @@ fn summarize_view_presentation(
         reserved_float: 0.0,
         command_line_utf8_length: command_line_length,
         command_line_cursor_utf8_offset: command_line_cursor,
+        caret_shape: if caret.is_cell() {
+            VIEM_CARET_SHAPE_CELL
+        } else {
+            VIEM_CARET_SHAPE_BOUNDARY
+        },
+        caret_utf8_start: checked_export_count(caret.range().start)?,
+        caret_utf8_end: checked_export_count(caret.range().end)?,
     })
 }
 

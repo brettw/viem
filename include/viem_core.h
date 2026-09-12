@@ -1287,9 +1287,12 @@ typedef struct ViemViewPresentationV1 {
   uint32_t struct_size;
   uint32_t flags;
   uint32_t mode;
+  /* Row disambiguation for caret_utf8_start when caret_shape is a boundary.
+     Never use it to choose which character a cell caret covers. */
   uint32_t cursor_affinity;
   uint32_t visual_anchor_affinity;
-  uint32_t reserved;
+  /* VIEM_CARET_SHAPE_CELL or VIEM_CARET_SHAPE_BOUNDARY. */
+  uint32_t caret_shape;
   uint64_t document_id;
   uint64_t document_revision;
   uint64_t cursor_utf8_offset;
@@ -1300,10 +1303,21 @@ typedef struct ViemViewPresentationV1 {
   float reserved_float;
   uint64_t command_line_utf8_length;
   uint64_t command_line_cursor_utf8_offset;
+  /* Exact formatted range the caret occupies. A cell covers one grapheme of
+     hard-line content; a boundary is empty, with both ends at the caret. */
+  uint64_t caret_utf8_start;
+  uint64_t caret_utf8_end;
 } ViemViewPresentationV1;
 
 #define VIEM_VIEW_PRESENTATION_V1_SIZE \
   ((uint32_t)sizeof(ViemViewPresentationV1))
+
+/* The caret covers one grapheme: draw the cell caret_utf8_start..caret_utf8_end.
+   Boundary affinity does not apply. */
+#define VIEM_CARET_SHAPE_CELL 1u
+/* The caret sits between graphemes at caret_utf8_start; cursor_affinity picks
+   its visual row at a soft-wrap boundary. */
+#define VIEM_CARET_SHAPE_BOUNDARY 2u
 
 #define VIEM_COMMAND_LINE_KIND_NONE 0u
 #define VIEM_COMMAND_LINE_KIND_EX 1u

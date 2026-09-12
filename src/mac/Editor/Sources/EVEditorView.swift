@@ -2889,7 +2889,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         guard customPresentation != .hidden else { return }
 
         let color = EVCaretAppearanceResolver.shared.color(for: self)
-        let geometry = associatedItemGeometry(snapshot)
+        let geometry = caretItemGeometry(snapshot)
         guard var rect = geometry.rect else { return }
         if geometry.cluster == nil || rect.width < 1 {
             rect.size.width = minimumCaretWidth(near: geometry.cluster, in: snapshot)
@@ -2960,36 +2960,48 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    private func associatedItemGeometry(_ snapshot: EVLayoutExport) -> (
+    /// Geometry for whatever the core says the caret occupies.
+    ///
+    /// A cell resolves to the shaping cluster containing its first byte, so an
+    /// indivisible ligature is covered whole. Everything else is an insertion
+    /// boundary, where affinity picks the row. This deliberately does not look
+    /// at the mode or re-derive the choice: `EVCaretTarget` already carries it.
+    func caretItemGeometry(_ snapshot: EVLayoutExport) -> (
         rect: NSRect?, cluster: ViemPositionedClusterV1?
     ) {
-        let cursor = presentationCaretUTF8Offset
-        let affinity = presentationCaretAffinity
-        let cluster = snapshot.clusters.first { cluster in
-            if affinity == UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM) {
-                cluster.text_end == cursor
-            } else {
-                cluster.text_start == cursor
+        let caret = presentationCaretTarget
+        if case let .cell(range) = caret {
+            let start = range.lowerBound
+            if let cluster = snapshot.clusters.first(where: { cluster in
+                cluster.text_start <= start && start < cluster.text_end
+            }) {
+                return (clusterRect(cluster), cluster)
             }
-        } ?? snapshot.clusters.first { cluster in
-            cluster.text_start <= cursor && cursor < cluster.text_end
         }
-        if let cluster { return (clusterRect(cluster), cluster) }
-        return (caretRect(offset: cursor, affinity: affinity, snapshot: snapshot), nil)
+        return (
+            caretRect(offset: caret.offset, affinity: caret.affinity, snapshot: snapshot), nil
+        )
     }
 
-    private var presentationCaretUTF8Offset: UInt64 {
-        guard let surface else { return 0 }
-        return surface.compositionOverlay?.info.selected_end
-            ?? surface.viewPresentation.cursor_utf8_offset
+    /// The caret the core published, except while an input method owns the
+    /// caret: a composition overlay is not part of the core presentation, and
+    /// its selected end is an insertion boundary inside the marked text.
+    var presentationCaretTarget: EVCaretTarget {
+        guard let surface else {
+            return .boundary(offset: 0, affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM))
+        }
+        if let overlay = surface.compositionOverlay {
+            return .boundary(
+                offset: overlay.info.selected_end,
+                affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
+            )
+        }
+        return EVCaretTarget(surface.viewPresentation)
     }
 
-    private var presentationCaretAffinity: UInt32 {
-        guard let surface else { return UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM) }
-        return surface.compositionOverlay == nil
-            ? surface.viewPresentation.cursor_affinity
-            : UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
-    }
+    private var presentationCaretUTF8Offset: UInt64 { presentationCaretTarget.offset }
+
+    private var presentationCaretAffinity: UInt32 { presentationCaretTarget.affinity }
 
     private func caretRect(
         offset: UInt64,
