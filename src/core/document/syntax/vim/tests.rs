@@ -16,6 +16,31 @@ fn program(source: &str) -> Arc<VimProgram> {
     VimProgram::compile("fixture.vim", source, VimLoadLimits::default()).unwrap()
 }
 
+#[test]
+fn setup_prefix_is_bounded_and_does_not_copy_a_giant_first_line() {
+    let text = (0..40).map(|n| format!("line {n}\n")).collect::<String>();
+    let context = VimSetupContext::from_input(&input(&text, 1));
+    assert_eq!(context.prefix.lines().count(), 32);
+    assert!(context.prefix.ends_with("line 31"));
+    let giant = input(&format!("{}\nvim9script\n", "x".repeat(100_000)), 1);
+    assert!(VimSetupContext::from_input(&giant).prefix.is_empty());
+}
+
+#[test]
+fn leading_context_reuses_previously_matched_unicode_content() {
+    let p = program("syn match Previous /[_é]\\+/\nsyn match Follow /[^\\\\]w/lc=1\n");
+    let text = "___wwww éww\n";
+    let input = input(text, 1);
+    let result = finish(&mut VimSession::new(p), &input, 0..text.len(), 100);
+    assert_eq!(result.coverage, Coverage::Exact, "{:?}", result.diagnostics);
+    let groups = names(&result, text.len());
+    for (at, byte) in text.bytes().enumerate() {
+        if byte == b'w' {
+            assert_eq!(groups[at], "Follow", "byte {at}");
+        }
+    }
+}
+
 fn finish(
     session: &mut VimSession,
     input: &SyntaxInputSnapshot,
@@ -55,7 +80,7 @@ fn names(result: &VimResult, len: usize) -> Vec<String> {
 fn strict_loader_rejects_partial_programs() {
     let errors = VimProgram::compile(
         "bad.vim",
-        "syn keyword Good good\nsyn match Bad /a\\@=b/\n",
+        "syn keyword Good good\nsyn match Bad /\\%23lbad/\n",
         VimLoadLimits::default(),
     )
     .unwrap_err();
@@ -82,6 +107,7 @@ fn regular_vm_preserves_priority_and_resumes_inside_matching() {
             calls += 1;
             let mut fuel = 3;
             match p.resume(&mut continuation, &input, &mut fuel) {
+                VimRegexProgress::Failed(message) => panic!("{message}"),
                 VimRegexProgress::Pending => {
                     assert_eq!(fuel, 0);
                     assert!(calls < 10000);
@@ -146,6 +172,28 @@ fn nextgroup_whitespace_and_failed_transition_retry_same_character() {
 }
 
 #[test]
+fn nextgroup_skipempty_implies_one_newline_and_then_skips_empty_lines() {
+    for (options, text, expected) in [
+        ("skipempty", "begin\nvalue", true),
+        ("skipempty", "begin\n\n\nvalue", true),
+        ("skipnl", "begin\nvalue", true),
+        ("skipnl", "begin\n\nvalue", false),
+        ("", "begin\nvalue", false),
+    ] {
+        let p = program(&format!(
+            "syn match Begin /begin$/ nextgroup=Value {options}\nsyn keyword Value contained value\n"
+        ));
+        let input = input(text, 1);
+        let result = finish(&mut VimSession::new(p), &input, 0..text.len(), 100);
+        assert_eq!(
+            result.runs.iter().any(|run| run.name.0 == "Value"),
+            expected,
+            "{options}: {text:?}"
+        );
+    }
+}
+
+#[test]
 fn external_delimiters_survive_exact_checkpoint_restarts() {
     let p = program(r#"syn region Here start=/<<\z(\h\w*\)/ end=/^\z1$/"#);
     let text = "<<END\nbody\nEND\nafter\n";
@@ -156,6 +204,23 @@ fn external_delimiters_survive_exact_checkpoint_restarts() {
     let second = finish(&mut session, &input, 6..input.byte_len(), 10000);
     assert_eq!(second.runs[0].range, 6..14);
     assert_eq!(second.runs.len(), 1);
+}
+
+#[test]
+fn external_delimiters_escape_vim_pattern_metacharacters() {
+    let p = program(r#"syn region Quoted start=/\z([~.*[^$]\)/ end=/\z1/"#);
+    for delimiter in ['~', '.', '*', '[', '^', '$'] {
+        let text = format!("{delimiter}inside{delimiter} outside");
+        let input = input(&text, 1);
+        let result = finish(
+            &mut VimSession::new(p.clone()),
+            &input,
+            0..text.len(),
+            10000,
+        );
+        assert_eq!(result.runs.len(), 1, "{delimiter}");
+        assert_eq!(result.runs[0].range, 0..8, "{delimiter}");
+    }
 }
 
 #[test]
@@ -470,7 +535,12 @@ fn neovim_query_regex_uses_its_declared_magic_prefix_policy() {
         assert!(pattern.is_match_text(yes, 20000).unwrap());
         assert!(!pattern.is_match_text(no, 20000).unwrap());
     }
-    assert!(VimPattern::compile_neovim_query("a@=", VimRegexLimits::default()).is_err());
+    assert!(
+        VimPattern::compile_neovim_query("a@=", VimRegexLimits::default())
+            .unwrap()
+            .is_match_text("a", 20000)
+            .unwrap()
+    );
     assert!(VimPattern::compile_neovim_query(r"\Mfoo", VimRegexLimits::default()).is_err());
     let pattern = VimPattern::compile(r"abc\c", false, VimRegexLimits::default()).unwrap();
     assert!(pattern.is_match_text("ABC", 20000).unwrap());
@@ -530,6 +600,14 @@ fn installed_macvim_runtime_matches_reference_colors_byte_for_byte() {
             "dosini",
             "[Main]\nport=123\nname=hello\n; remark\n[Second]\nx=4.2\n",
         ),
+        (
+            "vim",
+            "\" editor settings\nset number\nset tabstop=4\nlet g:example = 'value'\nnnoremap <leader>w :write<CR>\nif has('gui_running')\n  colorscheme desert\nendif\n",
+        ),
+        (
+            "vim",
+            "vim9script\n# editor settings\nset number\nvar enabled = true\ndef Configure(): bool\n  return enabled\nenddef\n",
+        ),
     ] {
         let input_path = directory.0.join("input.txt");
         let output_path = directory.0.join("groups.txt");
@@ -561,8 +639,12 @@ fn installed_macvim_runtime_matches_reference_colors_byte_for_byte() {
             .lines()
             .map(str::to_owned)
             .collect::<Vec<_>>();
-        let p = VimProgram::load_directory(runtime, language, VimLoadLimits::default()).unwrap();
         let input = input(text, 1);
+        let p = VimProgram::load_directory_with_context(
+            runtime, language, VimLoadLimits::default(),
+            &VimSetupContext::from_input(&input),
+            &std::sync::atomic::AtomicBool::new(false),
+        ).unwrap();
         let actual = names(
             &finish(&mut VimSession::new(p), &input, 0..input.byte_len(), 10000),
             text.len(),

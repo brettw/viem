@@ -1,5 +1,6 @@
 import AppKit
 import CViemCore
+import UniformTypeIdentifiers
 import XCTest
 @testable import ViemAppShell
 @testable import ViemEditor
@@ -79,6 +80,62 @@ final class EVCodeOpeningTests: XCTestCase {
         surface.loadViewIfNeeded()
         try await assertRustKeywordIsHighlighted(backend: backend, surface: surface)
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), source)
+        XCTAssertFalse(backend.persistenceState.isDirty)
+        XCTAssertFalse(document.isDocumentEdited)
+        XCTAssertNil(document.recoveryFailure)
+    }
+
+    func testUnknownDocumentURLTypesOpenAsTextWithoutChangingSourceBytes() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("viem-unknown-document-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let dynamicType = try XCTUnwrap(UTType(filenameExtension: "viem-unknown-\(UUID().uuidString)")).identifier
+        XCTAssertTrue(dynamicType.hasPrefix("dyn."))
+        let fixtures: [(String, String, Data)] = [
+            (".unknownrc", "public.data", Data("set number\r\nset expandtab\r\n".utf8)),
+            ("notes", "public.data", Data("extensionless text\n".utf8)),
+            ("notes.viem-unknown", dynamicType, Data("unknown extension\r\n".utf8)),
+            ("image.png", "public.png", Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff])),
+        ]
+        for (filename, typeName, source) in fixtures {
+            let backend = backend()
+            let url = directory.appendingPathComponent(filename)
+            try source.write(to: url)
+            let document = EVDocument(editorBackend: backend)
+            document.recordRecentDocument = { _ in }
+            defer { document.close() }
+
+            try document.read(from: url, ofType: typeName)
+
+            XCTAssertEqual(backend.sourceFormat, .plainText, filename)
+            XCTAssertEqual(document.fileType, EVDocument.plainTextType, filename)
+            XCTAssertEqual(try document.data(ofType: EVDocument.plainTextType), source, filename)
+            XCTAssertEqual(try Data(contentsOf: url), source, filename)
+            XCTAssertFalse(backend.persistenceState.isDirty, filename)
+            XCTAssertFalse(document.isDocumentEdited, filename)
+            XCTAssertNil(document.recoveryFailure, filename)
+        }
+    }
+
+    func testGenericDataDocumentTypeStillDetectsCodeFromFilename() throws {
+        let backend = backend()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("viem-data-code-document-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("main.rs")
+        let source = Data("fn main() {}\r\n".utf8)
+        try source.write(to: url)
+        let document = EVDocument(editorBackend: backend)
+        document.recordRecentDocument = { _ in }
+        defer { document.close() }
+
+        try document.read(from: url, ofType: "public.data")
+
+        XCTAssertEqual(backend.sourceFormat, .code)
+        XCTAssertEqual(document.fileType, EVDocument.plainTextType)
+        XCTAssertEqual(try document.data(ofType: EVDocument.plainTextType), source)
         XCTAssertFalse(backend.persistenceState.isDirty)
         XCTAssertFalse(document.isDocumentEdited)
         XCTAssertNil(document.recoveryFailure)

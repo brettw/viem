@@ -1,4 +1,4 @@
-//! Native Vim syntax profile v1: strict declaration loading and resumable,
+//! Native Vim syntax profile v2: strict declaration loading and resumable,
 //! fuel-metered regular matching. See `vim/PROFILE.md` for compatibility limits.
 mod checkpoints;
 mod loader;
@@ -11,7 +11,33 @@ pub use regex::{
 };
 use std::{collections::BTreeMap, ops::Range, path::Path, sync::Arc};
 
-pub const NATIVE_PROFILE_VERSION: u32 = 1;
+pub const NATIVE_PROFILE_VERSION: u32 = 2;
+
+/// Bounded, immutable input available while compiling a syntax program. This
+/// supplies runtime dialect detection without exposing editor commands or
+/// rescanning the document during highlighting.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct VimSetupContext {
+    pub prefix: String,
+}
+impl VimSetupContext {
+    pub fn from_input(input: &SyntaxInputSnapshot) -> Self {
+        let text = input.text_tree();
+        let mut end = 0;
+        for line in 0..text.hard_line_count().min(32) {
+            let Ok(line_end) = text.hard_line_end(line) else {
+                break;
+            };
+            if line_end > 64 * 1024 {
+                break;
+            }
+            end = line_end;
+        }
+        Self {
+            prefix: input.slice(0..end).unwrap_or_default(),
+        }
+    }
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VimDiagnostic {
     pub file: String,
@@ -88,6 +114,15 @@ impl VimProgram {
         cancel: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<Arc<Self>, Vec<VimDiagnostic>> {
         loader::directory_cancellable(root.as_ref(), language, limits, cancel)
+    }
+    pub fn load_directory_with_context(
+        root: impl AsRef<Path>,
+        language: &str,
+        limits: VimLoadLimits,
+        context: &VimSetupContext,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<Arc<Self>, Vec<VimDiagnostic>> {
+        loader::directory_with_context(root.as_ref(), language, limits, context, Some(cancelled))
     }
     pub fn rule_count(&self) -> usize {
         self.rules.len()
@@ -171,6 +206,7 @@ struct PatternTemplate {
 }
 #[derive(Clone, Copy, Debug, Default)]
 struct PatternOffsets {
+    lc: usize,
     ms: Option<Offset>,
     me: Option<Offset>,
     hs: Option<Offset>,
@@ -180,6 +216,7 @@ struct PatternOffsets {
 }
 #[derive(Clone, Debug, Default)]
 struct RuleOptions {
+    lc: usize,
     contained: bool,
     transparent: bool,
     oneline: bool,
@@ -383,6 +420,7 @@ struct OnelineCheck {
     line_end: usize,
     index: usize,
     active: Option<VimRegexContinuation>,
+    context_fuel: Option<usize>,
 }
 #[derive(Clone, Debug)]
 struct Probes {
@@ -666,7 +704,11 @@ impl VimSession {
                         ));
                         break;
                     }
-                    probes.active = Some(probe.pattern.start(job.position));
+                    probes.active = Some(probe.pattern.start(leading_context_start(
+                        &job.input,
+                        job.position,
+                        probe.offsets.lc,
+                    )));
                 }
                 let c = probes.active.as_mut().unwrap();
                 let inspected = c.inspected_end;
@@ -691,12 +733,43 @@ impl VimSession {
                 }
                 match progress {
                     VimRegexProgress::Pending => break,
+                    VimRegexProgress::Failed(message) => {
+                        result.diagnostics.push(VimDiagnostic::new(
+                            "syntax execution",
+                            0,
+                            &message,
+                        ));
+                        break;
+                    }
                     VimRegexProgress::Complete(found) => {
-                        if let Some(found) = found {
+                        if let Some(found) = found.filter(|m| m.end >= job.position) {
                             if found.end >= found.start
                                 && (!matches!(probe.kind, ProbeKind::Skip { .. })
                                     || found.end > found.start)
                             {
+                                if probe.offsets.lc > 0
+                                    && matches!(probe.kind, ProbeKind::Start { .. })
+                                {
+                                    match offset(&job.input, &found, probe.offsets.ms, false) {
+                                        Ok(start) if start != job.position => {
+                                            // At line start less than lc characters may
+                                            // exist. Do not let a future match suppress
+                                            // intervening rules while waiting for its ms.
+                                            probes.active = None;
+                                            probes.index += 1;
+                                            continue;
+                                        }
+                                        Ok(_) => {}
+                                        Err(message) => {
+                                            result.diagnostics.push(VimDiagnostic::new(
+                                                "syntax execution",
+                                                0,
+                                                &message,
+                                            ));
+                                            break;
+                                        }
+                                    }
+                                }
                                 let mut candidate = Candidate {
                                     kind: probe.kind.clone(),
                                     found,
@@ -722,7 +795,7 @@ impl VimSession {
                                         let line = job
                                             .input
                                             .text_tree()
-                                            .hard_line_at_byte(job.position)
+                                            .hard_line_at_byte(candidate.found.end)
                                             .unwrap_or(0);
                                         let line_end = job
                                             .input
@@ -735,6 +808,7 @@ impl VimSession {
                                             candidate,
                                             index: 0,
                                             active: None,
+                                            context_fuel: None,
                                         });
                                     } else {
                                         probes.best = Some(candidate);
@@ -779,6 +853,13 @@ impl VimSession {
             let end = next_char(&job.input, job.position).min(job.request.end);
             let at = job.position;
             self.emit(&mut job, at..end);
+            if byte(&job.input, at) == Some(b'\n') {
+                if let Some(next) = &mut job.next {
+                    // skipnl crosses the first line boundary; only skipempty
+                    // allows subsequent empty lines in this transition.
+                    next.skipnl = false;
+                }
+            }
             job.position = end;
             job.guard.clear();
         }
@@ -959,6 +1040,8 @@ impl VimSession {
             f.match_end.is_some_and(|end| end <= j.position)
                 || f.closing.as_ref().is_some_and(|r| r.end <= j.position)
                 || self.program.rules[f.rule].options.oneline
+                    && j.position >= f.search_start
+                    && f.closing.is_none()
                     && f.skip_until <= j.position
                     && byte(&j.input, j.position) == Some(b'\n')
         }) {
@@ -975,7 +1058,7 @@ impl VimSession {
                 j.next = Some(Transition {
                     groups: o.nextgroup.clone(),
                     skipwhite: o.skipwhite,
-                    skipnl: o.skipnl,
+                    skipnl: o.skipnl || o.skipempty,
                     skipempty: o.skipempty,
                 });
             }
@@ -1122,6 +1205,7 @@ impl VimSession {
                         },
                         pattern: p.clone(),
                         offsets: PatternOffsets {
+                            lc: rule.options.lc,
                             ms: rule.options.ms,
                             me: rule.options.me,
                             hs: rule.options.hs,
@@ -1150,7 +1234,9 @@ impl VimSession {
                 .unwrap_or(items.len());
             items.splice(first_start..first_start, keywords);
         }
-        let dispatch = items.len() + self.program.rules.len();
+        let dispatch = items.len()
+            + self.program.rules.len()
+            + items.iter().map(|p| p.offsets.lc).sum::<usize>();
         Ok(Probes {
             items,
             index: 0,
@@ -1195,21 +1281,25 @@ impl VimSession {
                     .map_err(|e| format!("capture boundary: {e:?}"))?,
             );
         }
-        let compile = |p: &PatternTemplate| {
+        let compile = |p: &PatternTemplate, kind: &str| {
             let mut p = p.clone();
             if p.compiled.is_none() {
-                p.compiled = Some(VimPattern::compile(
+                let compiled = VimPattern::compile(
                     &expand_external(&p.source, &captures)?,
                     *ignore_case,
                     VimRegexLimits::default(),
-                )?);
+                )?;
+                // Captured delimiters can be empty or multibyte. Validate
+                // offsets using the expanded pattern's real minimum extent.
+                loader::validate_pattern_offsets(kind, p.offsets, compiled.minimum_chars)?;
+                p.compiled = Some(compiled);
             }
             Ok::<_, String>(p)
         };
         let mut compiled_ends = Vec::new();
         let mut bytes = captured;
         for p in ends {
-            let p = compile(p)?;
+            let p = compile(p, "end")?;
             bytes =
                 bytes.saturating_add(p.compiled.as_ref().unwrap().memory_usage() + p.source.len());
             if bytes > budget.retained_bytes {
@@ -1217,7 +1307,7 @@ impl VimSession {
             }
             compiled_ends.push(p);
         }
-        let skip = skip.as_ref().map(compile).transpose()?;
+        let skip = skip.as_ref().map(|p| compile(p, "skip")).transpose()?;
         let state = RegionState {
             rule,
             captures,
@@ -1244,6 +1334,9 @@ impl VimSession {
         let state = check.candidate.region.as_ref().unwrap();
         let skip_count = usize::from(state.skip.is_some());
         loop {
+            if cancel() {
+                return Ok(None);
+            }
             if check.position > check.line_end {
                 return Ok(Some(false));
             }
@@ -1267,10 +1360,24 @@ impl VimSession {
             };
             let pattern = template.compiled.as_ref().unwrap();
             if check.active.is_none() {
+                // Prepay the bounded backward scan across resumptions so a
+                // one-instruction slice still advances through leading context.
+                let pending = check.context_fuel.get_or_insert(template.offsets.lc);
+                let charged = (*pending).min(*fuel);
+                *pending -= charged;
+                *fuel -= charged;
+                if *pending > 0 {
+                    return Ok(None);
+                }
                 if pattern.continuation_bytes() > budget.continuation_bytes {
                     return Err("regex continuation byte budget exceeded".into());
                 }
-                check.active = Some(pattern.start(check.position));
+                check.active = Some(pattern.start(leading_context_start(
+                    input,
+                    check.position,
+                    template.offsets.lc,
+                )));
+                check.context_fuel = None;
             }
             let c = check.active.as_mut().unwrap();
             let before = c.inspected_end;
@@ -1286,9 +1393,12 @@ impl VimSession {
             }
             match progress {
                 VimRegexProgress::Pending => return Ok(None),
+                VimRegexProgress::Failed(message) => return Err(message),
                 VimRegexProgress::Complete(found) => {
                     check.active = None;
-                    if let Some(found) = found.filter(|m| m.end <= check.line_end) {
+                    if let Some(found) =
+                        found.filter(|m| m.end >= check.position && m.start <= check.line_end)
+                    {
                         if check.index >= skip_count {
                             return Ok(Some(true));
                         }
@@ -1385,7 +1495,8 @@ impl VimSession {
                     search_start: end,
                     start_group: c.matchgroup,
                     end_group: None,
-                    eol_extension: region.is_none() && c.pattern.eol
+                    eol_extension: region.is_none()
+                        && c.pattern.eol
                         && !c.excludenl
                         && byte(&j.input, c.found.end) == Some(b'\n'),
                 });
@@ -1454,6 +1565,21 @@ fn next_char(input: &SyntaxInputSnapshot, at: usize) -> usize {
         4
     }
 }
+fn leading_context_start(input: &SyntaxInputSnapshot, mut at: usize, count: usize) -> usize {
+    // Legacy lc counts bytes when rewinding, then rounds back to a scalar
+    // boundary. Its implicit ms=s+lc still uses character-based offsets.
+    for _ in 0..count {
+        if at == 0 || byte(input, at - 1) == Some(b'\n') {
+            break;
+        }
+        at -= 1;
+    }
+    while at > 0 && byte(input, at).is_some_and(|b| b & 0xc0 == 0x80) {
+        at -= 1;
+    }
+    at
+}
+
 fn offset(
     input: &SyntaxInputSnapshot,
     m: &VimRegexMatch,
@@ -1500,7 +1626,7 @@ fn offset(
 fn vim_literal(text: &str) -> String {
     let mut out = String::new();
     for c in text.chars() {
-        if matches!(c, '.' | '*' | '[' | '\\' | '^' | '$') {
+        if matches!(c, '.' | '*' | '[' | '\\' | '^' | '$' | '~') {
             out.push('\\');
         }
         out.push(c);
@@ -1537,6 +1663,8 @@ fn expand_external(pattern: &str, captures: &[String]) -> Result<String, String>
 }
 
 #[cfg(test)]
-mod tests;
+mod oneline_tests;
 #[cfg(test)]
 mod performance;
+#[cfg(test)]
+mod tests;

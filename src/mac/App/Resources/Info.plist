@@ -77,6 +77,20 @@
 			<key>NSDocumentClass</key>
 			<string>ViemAppShell.EVDocument</string>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Other Files (Text)</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>NSDocumentClass</key>
+			<string>ViemAppShell.EVDocument</string>
+		</dict>
 	</array>
 	<key>CFBundleExecutable</key>
 	<string>Viem</string>

@@ -4,7 +4,7 @@ use crate::document::syntax::{
     treesitter::{
         self, InjectionRegion, ParseOutcome, SyntaxInputEdit, TreeSitterBudget, TreeSitterSession,
     },
-    vim::{VimBudget, VimLoadLimits, VimProgram, VimSession},
+    vim::{VimBudget, VimDiagnostic, VimLoadLimits, VimProgram, VimSession, VimSetupContext},
     Coverage, SyntaxInputSnapshot, SyntaxRun,
 };
 use std::{
@@ -31,6 +31,7 @@ pub struct BackendProvider {
     fallback_attempted: bool,
     fallback_failure: Vec<String>,
     fallback_input: Option<SyntaxInputSnapshot>,
+    fallback_context: Option<VimSetupContext>,
     input: Option<SyntaxInputSnapshot>,
     parse_slices: usize,
     parse_progress: usize,
@@ -97,6 +98,7 @@ struct Child {
     input: Option<SyntaxInputSnapshot>,
     failed: Option<String>,
     fallback_input: Option<SyntaxInputSnapshot>,
+    fallback_context: Option<VimSetupContext>,
     fallback_work: usize,
     cache: Option<ChildOutput>,
 }
@@ -151,6 +153,10 @@ impl BackendProvider {
                 for child in &mut self.children {
                     child.cache = None;
                     child.failed = None;
+                    if child.language == "vim" {
+                        child.session = None;
+                        continue;
+                    }
                     if let Ok(package) = treesitter::package_for_language(&child.language) {
                         if let Some(session) = &mut child.session {
                             let _ = session.replace_package(package);
@@ -180,6 +186,13 @@ impl BackendProvider {
             return;
         }
         if let Some(language) = &request.configuration.language {
+            // Vim-script highlighting is supplied by the configured Vim
+            // runtime, including its syntax groups and highlight links.
+            if language == "vim" {
+                self.primary = None;
+                self.primary_failure = None;
+                return;
+            }
             match treesitter::package_for_language(language) {
                 Ok(package) => {
                     if let Some(session) = &mut self.primary {
@@ -216,21 +229,19 @@ impl BackendProvider {
             return result;
         };
         if !self.fallback_attempted {
-            self.fallback_attempted = true;
             if !request.configuration.vim_directory.is_empty() {
-                match VimProgram::load_directory(
+                let loaded = VimProgram::load_directory_with_context(
                     &request.configuration.vim_directory,
                     vim_language(language),
                     VimLoadLimits::default(),
-                ) {
-                    Ok(program) => self.fallback = Some(VimSession::new(program)),
-                    Err(errors) => {
-                        self.fallback_failure = errors
-                            .into_iter()
-                            .map(|d| format!("{}:{}: {}", d.file, d.line, d.message))
-                            .collect()
-                    }
+                    self.fallback_context.as_ref().expect("input setup context"),
+                    cancelled,
+                );
+                if !self.finish_fallback_load(loaded, cancelled) {
+                    return SyntaxResult::missing(request, "Syntax work cancelled");
                 }
+            } else {
+                self.fallback_attempted = true;
             }
         }
         result.diagnostics.extend(self.fallback_failure.clone());
@@ -283,6 +294,32 @@ impl BackendProvider {
         }
         result.diagnostics.retain(|d| !d.is_empty());
         result
+    }
+
+    fn finish_fallback_load(
+        &mut self,
+        loaded: Result<std::sync::Arc<VimProgram>, Vec<VimDiagnostic>>,
+        cancelled: &AtomicBool,
+    ) -> bool {
+        // Workers retain providers after request cancellation. A cancelled
+        // compile is transient and must never suppress the next load attempt.
+        if cancelled.load(Ordering::Relaxed) {
+            self.fallback_attempted = false;
+            self.fallback_failure.clear();
+            return false;
+        }
+        self.fallback_attempted = true;
+        self.fallback_failure.clear();
+        match loaded {
+            Ok(program) => self.fallback = Some(VimSession::new(program)),
+            Err(errors) => {
+                self.fallback_failure = errors
+                    .into_iter()
+                    .map(|d| format!("{}:{}: {}", d.file, d.line, d.message))
+                    .collect();
+            }
+        }
+        true
     }
 
     fn children(
@@ -361,9 +398,13 @@ impl BackendProvider {
                         result.coverage = Coverage::Provisional;
                         continue;
                     }
-                    let session = treesitter::package_for_language(&region.language)
-                        .and_then(TreeSitterSession::new)
-                        .ok();
+                    let session = (region.language != "vim")
+                        .then(|| {
+                            treesitter::package_for_language(&region.language)
+                                .and_then(TreeSitterSession::new)
+                                .ok()
+                        })
+                        .flatten();
                     self.children.push(Child {
                         language: region.language.clone(),
                         ranges: region.ranges.clone(),
@@ -376,6 +417,7 @@ impl BackendProvider {
                         input: None,
                         failed: None,
                         fallback_input: None,
+                        fallback_context: None,
                         fallback_work: 0,
                         cache: None,
                     });
@@ -481,6 +523,15 @@ impl SyntaxProvider for BackendProvider {
             .as_ref()
             .is_none_or(|old| old.identity() != request.input.identity())
         {
+            let context = VimSetupContext::from_input(&request.input);
+            if self.fallback_context.as_ref() != Some(&context) {
+                self.fallback = None;
+                self.fallback_attempted = false;
+                self.fallback_failure.clear();
+                self.fallback_input = None;
+                self.fallback_work = 0;
+                self.fallback_context = Some(context);
+            }
             let preserve_cap = self
                 .capped_parse
                 .as_mut()
@@ -680,24 +731,6 @@ fn analyze_child(
         result.continuation = false;
         return result;
     }
-    if !child.fallback_attempted {
-        child.fallback_attempted = true;
-        if !request.configuration.vim_directory.is_empty() {
-            match VimProgram::load_directory(
-                &request.configuration.vim_directory,
-                vim_language(&child.language),
-                VimLoadLimits::default(),
-            ) {
-                Ok(program) => child.fallback = Some(VimSession::new(program)),
-                Err(errors) => result
-                    .diagnostics
-                    .extend(errors.into_iter().map(|diagnostic| diagnostic.message)),
-            }
-        }
-    }
-    let Some(fallback) = &mut child.fallback else {
-        return result;
-    };
     let bytes = child.ranges.iter().map(Range::len).sum::<usize>();
     if bytes > super::MAX_REGION_BYTES || child.fallback_work >= MAX_TOTAL_VIM_INSTRUCTIONS {
         result
@@ -721,7 +754,13 @@ fn analyze_child(
         }
         let tree = crate::document::FormattedTextTree::try_from_text(text).expect("valid UTF-8");
         let input = SyntaxInputSnapshot::new(request.input.identity(), tree);
-        if let Some(old) = &child.fallback_input {
+        let context = VimSetupContext::from_input(&input);
+        if child.fallback_context.as_ref() != Some(&context) {
+            child.fallback = None;
+            child.fallback_attempted = false;
+            child.fallback_work = 0;
+            child.fallback_context = Some(context);
+        } else if let (Some(old), Some(fallback)) = (&child.fallback_input, &mut child.fallback) {
             let (changed, replacement) = old
                 .text_tree()
                 .changed_extent(input.text_tree())
@@ -730,6 +769,34 @@ fn analyze_child(
         }
         child.fallback_input = Some(input);
     }
+    if !child.fallback_attempted {
+        if !request.configuration.vim_directory.is_empty() {
+            let loaded = VimProgram::load_directory_with_context(
+                &request.configuration.vim_directory,
+                vim_language(&child.language),
+                VimLoadLimits::default(),
+                child
+                    .fallback_context
+                    .as_ref()
+                    .expect("embedded setup context"),
+                cancelled,
+            );
+            if cancelled.load(Ordering::Relaxed) {
+                result.continuation = false;
+                return result;
+            }
+            match loaded {
+                Ok(program) => child.fallback = Some(VimSession::new(program)),
+                Err(errors) => result
+                    .diagnostics
+                    .extend(errors.into_iter().map(|diagnostic| diagnostic.message)),
+            }
+        }
+        child.fallback_attempted = true;
+    }
+    let Some(fallback) = &mut child.fallback else {
+        return result;
+    };
     let input = child.fallback_input.as_ref().unwrap();
     let output =
         fallback.highlight_with_control(input, 0..bytes, VimBudget::default(), &mut || {

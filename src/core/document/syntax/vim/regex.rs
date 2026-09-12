@@ -7,6 +7,14 @@ use regex_automata::{
 };
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "regex/tests.rs"]
+mod tests;
+#[path = "regex/translate.rs"]
+mod translate;
+#[path = "regex/vm.rs"]
+mod vm;
+
 const SLOTS: usize = 64;
 const UNSET: usize = usize::MAX;
 
@@ -28,6 +36,7 @@ impl Default for VimRegexLimits {
 #[derive(Clone, Debug)]
 pub struct VimPattern {
     nfa: Arc<NFA>,
+    advanced: Option<Arc<vm::Program>>,
     pub(super) external_groups: Vec<usize>,
     pub(super) multiline: bool,
     pub(super) source: Arc<str>,
@@ -49,6 +58,7 @@ struct Thread {
 }
 #[derive(Clone, Debug)]
 pub struct VimRegexContinuation {
+    advanced: Option<vm::Continuation>,
     position: usize,
     stack: Vec<Thread>,
     next: Vec<Thread>,
@@ -63,6 +73,7 @@ pub struct VimRegexContinuation {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VimRegexProgress {
     Pending,
+    Failed(String),
     Complete(Option<VimRegexMatch>),
 }
 
@@ -88,13 +99,34 @@ impl VimPattern {
         if source.len() > limits.pattern_bytes {
             return Err("pattern byte budget exceeded".into());
         }
-        let (translated, external_groups, multiline, start_marker, end_marker, case_override) =
-            translate(source)?;
-        let minimum_chars = if end_marker.is_empty() && start_marker.is_empty() {
-            regex_syntax::Parser::new()
-                .parse(&translated)
-                .map(|hir| minimum_chars(&hir))
-                .unwrap_or(0)
+        let translation = translate::translate(source)?;
+        let translated = &translation.regex;
+        let ignore_case = translation.case.unwrap_or(ignore_case);
+        if translation.groups * 2 + 2 > SLOTS {
+            return Err("capture slot budget exceeded".into());
+        }
+        let hir = regex_syntax::ParserBuilder::new()
+            .multi_line(true)
+            .case_insensitive(ignore_case)
+            .build()
+            .parse(translated)
+            .map_err(|e| format!("unsupported/invalid Vim regular pattern: {e}"))?;
+        let advanced = if translation.specials.is_empty() {
+            None
+        } else {
+            Some(Arc::new(vm::Program::compile(
+                &hir,
+                &translation.specials,
+                translation.groups,
+                ignore_case,
+                translation.multiline,
+                limits,
+            )?))
+        };
+        let minimum_chars = if translation.ends.is_empty() && translation.starts.is_empty() {
+            advanced
+                .as_ref()
+                .map_or_else(|| minimum_chars(&hir), |vm| vm.minimum_chars)
         } else {
             0
         };
@@ -103,15 +135,20 @@ impl VimPattern {
             .syntax(
                 syntax::Config::new()
                     .multi_line(true)
-                    .case_insensitive(case_override.unwrap_or(ignore_case)),
+                    .case_insensitive(ignore_case),
             )
             .build(&translated)
             .map_err(|e| format!("unsupported/invalid Vim regular pattern: {e}"))?;
         if nfa.states().len() > limits.states {
             return Err("pattern state budget exceeded".into());
         }
-        if nfa.group_info().slot_len() > SLOTS {
+        if advanced.is_none() && nfa.group_info().slot_len() > SLOTS {
             return Err("capture slot budget exceeded".into());
+        }
+        if nfa.memory_usage() + advanced.as_ref().map_or(0, |vm| vm.memory_usage())
+            > limits.nfa_bytes
+        {
+            return Err("combined Vim regex program byte budget exceeded".into());
         }
         let eol = nfa.states().iter().any(|s| {
             matches!(
@@ -124,32 +161,54 @@ impl VimPattern {
         });
         Ok(Self {
             nfa: Arc::new(nfa),
-            external_groups,
-            multiline,
+            advanced,
+            external_groups: translation.external,
+            multiline: translation.multiline,
             source: source.into(),
-            start_marker,
-            end_marker,
+            start_marker: translation.starts,
+            end_marker: translation.ends,
             eol,
             minimum_chars,
         })
     }
     pub fn memory_usage(&self) -> usize {
-        self.nfa.memory_usage() + self.source.len()
+        self.nfa.memory_usage()
+            + self.source.len()
+            + self.advanced.as_ref().map_or(0, |vm| vm.memory_usage())
     }
     pub fn continuation_bytes(&self) -> usize {
-        self.nfa.states().len() * (4 * std::mem::size_of::<Thread>() + std::mem::size_of::<usize>())
+        self.advanced.as_ref().map_or_else(
+            || {
+                self.nfa.states().len()
+                    * (4 * std::mem::size_of::<Thread>() + std::mem::size_of::<usize>())
+            },
+            |vm| vm.continuation_bytes(),
+        )
     }
     pub fn start(&self, at: usize) -> VimRegexContinuation {
         VimRegexContinuation {
+            advanced: self.advanced.as_ref().map(|vm| vm.start(at)),
             position: at,
-            stack: vec![Thread {
-                state: self.nfa.start_anchored(),
-                slots: [UNSET; SLOTS],
-            }],
+            stack: if self.advanced.is_some() {
+                Vec::new()
+            } else {
+                vec![Thread {
+                    state: self.nfa.start_anchored(),
+                    slots: [UNSET; SLOTS],
+                }]
+            },
             next: Vec::new(),
-            seen: vec![UNSET; self.nfa.states().len()],
+            seen: if self.advanced.is_some() {
+                Vec::new()
+            } else {
+                vec![UNSET; self.nfa.states().len()]
+            },
             union: None,
-            setup: self.nfa.states().len(),
+            setup: if self.advanced.is_some() {
+                0
+            } else {
+                self.nfa.states().len()
+            },
             best: None,
             done: false,
             inspected_end: at,
@@ -190,6 +249,28 @@ impl VimPattern {
         fuel: &mut usize,
         cancel: &mut dyn FnMut() -> bool,
     ) -> VimRegexProgress {
+        if let (Some(program), Some(continuation)) = (&self.advanced, &mut c.advanced) {
+            let mut result =
+                program.resume(continuation, len, &byte, fuel, cancel, &mut c.inspected_end);
+            if let VimRegexProgress::Complete(Some(found)) = &mut result {
+                let marker = |groups: &[usize], fallback| {
+                    groups
+                        .iter()
+                        .filter_map(|id| {
+                            found
+                                .captures
+                                .get(*id)
+                                .and_then(|range| range.as_ref())
+                                .map(|range| range.start)
+                        })
+                        .max()
+                        .unwrap_or(fallback)
+                };
+                found.start = marker(&self.start_marker, found.start);
+                found.end = marker(&self.end_marker, found.end);
+            }
+            return result;
+        }
         if c.done {
             return VimRegexProgress::Complete(c.best.clone());
         }
@@ -346,6 +427,7 @@ impl VimPattern {
                 VimRegexProgress::Pending => {
                     return Err("Vim predicate cancelled or instruction budget exceeded".into())
                 }
+                VimRegexProgress::Failed(error) => return Err(error),
                 VimRegexProgress::Complete(Some(_)) => return Ok(true),
                 VimRegexProgress::Complete(None) => {}
             }
@@ -405,228 +487,6 @@ fn look_matches(look: Look, at: usize, len: usize, byte: &impl Fn(usize) -> Opti
     }
 }
 
-/// Translate only the explicitly supported regular subset. No replacement of
-/// unsupported Vim operators with a different regular expression is permitted.
-fn translate(
-    source: &str,
-) -> Result<
-    (
-        String,
-        Vec<usize>,
-        bool,
-        Vec<usize>,
-        Vec<usize>,
-        Option<bool>,
-    ),
-    String,
-> {
-    let chars: Vec<char> = source.chars().collect();
-    let mut out = String::new();
-    let mut external = Vec::new();
-    let mut groups = 0usize;
-    let mut i = 0;
-    let mut branch_start = true;
-    let mut multiline = false;
-    let mut start_marker = Vec::new();
-    let mut end_marker = Vec::new();
-    let mut very = false;
-    let mut case_override = None;
-    while i < chars.len() {
-        let c = chars[i];
-        i += 1;
-        if c == '[' {
-            branch_start = false;
-            out.push('[');
-            if chars.get(i) == Some(&'^') {
-                out.push('^');
-                out.push_str("\\n");
-                i += 1;
-            }
-            let mut first = true;
-            let mut closed = false;
-            while i < chars.len() {
-                let c = chars[i];
-                i += 1;
-                if c == '-' && chars.get(i) == Some(&'-') {
-                    return Err(
-                        "ambiguous double-dash character class is outside native profile v1".into(),
-                    );
-                }
-                if c == ']' && !first {
-                    out.push(c);
-                    closed = true;
-                    break;
-                }
-                if c == '\\' {
-                    let escaped = *chars.get(i).ok_or("unterminated class escape")?;
-                    i += 1;
-                    if !matches!(escaped, '\\' | ']' | '^' | '-' | 't' | 'r' | 'n') {
-                        return Err(format!("unsupported Vim class escape: \\{escaped}"));
-                    }
-                    out.push('\\');
-                    out.push(escaped);
-                    multiline |= escaped == 'n';
-                } else {
-                    if c == '&' || c == '~' {
-                        out.push('\\');
-                    }
-                    out.push(c);
-                }
-                first = false;
-            }
-            if !closed {
-                return Err("unterminated Vim character class".into());
-            }
-            continue;
-        }
-        if c != '\\' {
-            if c == '~' {
-                return Err(
-                    "substitution-dependent Vim atoms are outside native profile v1".into(),
-                );
-            }
-            if c == '\n' {
-                multiline = true;
-            }
-            if very {
-                match c {
-                    '%' if chars.get(i) == Some(&'(') => {
-                        out.push_str("(?:");
-                        i += 1;
-                        branch_start = true;
-                        continue;
-                    }
-                    '<' | '>' => {
-                        out.push_str(if c == '<' { "\\b{start}" } else { "\\b{end}" });
-                        branch_start = false;
-                        continue;
-                    }
-                    '=' => {
-                        out.push('?');
-                        continue;
-                    }
-                    '@' | '&' | '%' | '~' => {
-                        return Err(format!("unsupported very-magic Vim operator: {c}"))
-                    }
-                    '(' => groups += 1,
-                    '{' => {
-                        let (spec, tail) = repetition(&chars, i)?;
-                        i = tail;
-                        out.push_str(&spec);
-                        continue;
-                    }
-                    '?' if i >= 2 && matches!(chars[i - 2], '*' | '+' | '?' | '}') => {
-                        return Err("Vim lazy repetition uses {-}, not a second quantifier".into())
-                    }
-                    _ => {}
-                }
-            }
-            let end_branch = i == chars.len()
-                || chars.get(i) == Some(&'\\') && matches!(chars.get(i + 1), Some('|' | ')' | 'n'))
-                || very && matches!(chars.get(i), Some('|' | ')'));
-            if !very && matches!(c, '+' | '?' | '(' | ')' | '|' | '{' | '}')
-                || c == '^' && !branch_start
-                || c == '$' && !end_branch
-                || c == '*' && branch_start
-            {
-                out.push('\\');
-            }
-            branch_start = very && matches!(c, '(' | '|') || c == '\n';
-            out.push(c);
-            continue;
-        }
-        let c = *chars.get(i).ok_or("trailing Vim escape")?;
-        i += 1;
-        if very && !c.is_alphanumeric() {
-            out.push_str(&regex::escape(&c.to_string()));
-            branch_start = false;
-            continue;
-        }
-        match c {
-            'm' => very = false,
-            'v' => very = true,
-            'M' | 'V' => return Err("nomagic modes are outside native profile v1".into()),
-            '+' | '?' | '|' | '(' | ')' => {
-                if c == '(' {
-                    groups += 1;
-                }
-                out.push(c);
-            }
-            '=' => out.push('?'),
-            '<' => out.push_str("\\b{start}"),
-            '>' => out.push_str("\\b{end}"),
-            's' => out.push_str("[ \\t]"),
-            'S' => out.push_str("[^ \\t\\n]"),
-            'd' => out.push_str("[0-9]"),
-            'D' => out.push_str("[^0-9\\n]"),
-            'w' => out.push_str("[A-Za-z0-9_]"),
-            'W' => out.push_str("[^A-Za-z0-9_\\n]"),
-            'h' => out.push_str("[A-Za-z_]"),
-            'H' => out.push_str("[^A-Za-z_\\n]"),
-            'a' => out.push_str("[A-Za-z]"),
-            'A' => out.push_str("[^A-Za-z\\n]"),
-            'x' => out.push_str("[A-Fa-f0-9]"),
-            'o' => out.push_str("[0-7]"),
-            'k' | 'i' => out.push_str("[_0-9\\p{L}\\x{c0}-\\x{ff}]"),
-            'K' | 'I' => out.push_str("[_\\p{L}\\x{c0}-\\x{ff}]"),
-            't' | 'r' | 'n' => {
-                out.push('\\');
-                out.push(c);
-                multiline |= c == 'n';
-            }
-            'c' => case_override = Some(true),
-            'C' => case_override = Some(false),
-            '%' if chars.get(i) == Some(&'(') => {
-                out.push_str("(?:");
-                i += 1;
-            }
-            'z' if chars.get(i) == Some(&'(') => {
-                groups += 1;
-                external.push(groups);
-                out.push('(');
-                i += 1;
-            }
-            'z' if matches!(chars.get(i), Some('s' | 'e')) => {
-                groups += 1;
-                if chars[i] == 's' {
-                    start_marker.push(groups);
-                } else {
-                    end_marker.push(groups);
-                }
-                out.push_str("()");
-                i += 1;
-            }
-            '{' => {
-                let (spec, tail) = repetition(&chars, i)?;
-                i = tail;
-                out.push_str(&spec);
-            }
-            '_' => return Err("multiline character classes are outside native profile v1".into()),
-            '@' | '&' | '1'..='9' | 'z' | '%' => {
-                return Err(format!("unsupported Vim assertion/backreference: \\{c}"))
-            }
-            c if !c.is_alphanumeric() => {
-                out.push_str(&regex::escape(&c.to_string()));
-            }
-            _ => return Err(format!("unsupported Vim escape: \\{c}")),
-        }
-        if c != 'm' && c != 'v' && c != 'c' && c != 'C' {
-            branch_start = c == '|'
-                || c == '('
-                || c == '%'
-                || c == 'z' && chars.get(i.wrapping_sub(1)) == Some(&'(')
-                || c == 'n';
-        }
-    }
-    Ok((
-        out,
-        external,
-        multiline,
-        start_marker,
-        end_marker,
-        case_override,
-    ))
-}
 fn minimum_chars(hir: &regex_syntax::hir::Hir) -> usize {
     use regex_syntax::hir::HirKind;
     match hir.kind() {
@@ -649,6 +509,9 @@ fn repetition(chars: &[char], mut i: usize) -> Result<(String, usize), String> {
         return Err("unterminated repetition".into());
     }
     i += 1;
+    if spec.ends_with('\\') {
+        spec.pop();
+    }
     let lazy = spec.starts_with('-');
     let spec = spec.strip_prefix('-').unwrap_or(&spec);
     if !spec.chars().all(|c| c.is_ascii_digit() || c == ',') {
@@ -657,7 +520,11 @@ fn repetition(chars: &[char], mut i: usize) -> Result<(String, usize), String> {
     let mut out = if spec.is_empty() {
         "*".into()
     } else {
-        format!("{{{spec}}}")
+        if spec.starts_with(',') {
+            format!("{{0{spec}}}")
+        } else {
+            format!("{{{spec}}}")
+        }
     };
     if lazy {
         out.push('?');

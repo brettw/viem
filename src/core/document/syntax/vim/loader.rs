@@ -1,8 +1,13 @@
 use super::regex::{VimPattern, VimRegexLimits};
 use super::{
     vim_literal, Offset, OffsetBase, PatternOffsets, PatternTemplate, Rule, RuleKind, RuleOptions,
-    VimDiagnostic, VimLoadLimits, VimProgram,
+    VimDiagnostic, VimLoadLimits, VimProgram, VimSetupContext, NATIVE_PROFILE_VERSION,
 };
+
+mod setup;
+#[cfg(test)]
+mod tests;
+use setup::Setup;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::Read,
@@ -13,7 +18,7 @@ use std::{
     },
 };
 
-struct Loader {
+struct Loader<'a> {
     program: VimProgram,
     limits: VimLoadLimits,
     errors: Vec<VimDiagnostic>,
@@ -22,9 +27,12 @@ struct Loader {
     bytes: usize,
     files: usize,
     compiled_bytes: usize,
-    current_syntax: bool,
     case_ignore: bool,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: Option<&'a AtomicBool>,
+    setup: Setup<'a>,
+    command_depth: usize,
+    expanded_bytes: usize,
+    group_pattern_fuel: usize,
 }
 pub(super) fn compile(
     name: &str,
@@ -42,7 +50,8 @@ pub(super) fn compile_cancellable(
     cancel: Arc<AtomicBool>,
 ) -> Result<Arc<VimProgram>, Vec<VimDiagnostic>> {
     let mut l = Loader::new(limits, None);
-    l.cancel = Some(cancel);
+    l.cancel = Some(cancel.as_ref());
+    l.setup = Setup::new(&VimSetupContext::default(), Some(cancel.as_ref()));
     l.source(name, text);
     l.finish()
 }
@@ -51,7 +60,7 @@ pub(super) fn directory(
     language: &str,
     limits: VimLoadLimits,
 ) -> Result<Arc<VimProgram>, Vec<VimDiagnostic>> {
-    directory_impl(root, language, limits, None)
+    directory_with_context(root, language, limits, &VimSetupContext::default(), None)
 }
 pub(super) fn directory_cancellable(
     root: &Path,
@@ -59,13 +68,20 @@ pub(super) fn directory_cancellable(
     limits: VimLoadLimits,
     cancel: Arc<AtomicBool>,
 ) -> Result<Arc<VimProgram>, Vec<VimDiagnostic>> {
-    directory_impl(root, language, limits, Some(cancel))
+    directory_with_context(
+        root,
+        language,
+        limits,
+        &VimSetupContext::default(),
+        Some(cancel.as_ref()),
+    )
 }
-fn directory_impl(
+pub(super) fn directory_with_context(
     root: &Path,
     language: &str,
     limits: VimLoadLimits,
-    cancel: Option<Arc<AtomicBool>>,
+    context: &VimSetupContext,
+    cancel: Option<&AtomicBool>,
 ) -> Result<Arc<VimProgram>, Vec<VimDiagnostic>> {
     if language.is_empty()
         || !language
@@ -87,10 +103,21 @@ fn directory_impl(
     })?;
     let mut l = Loader::new(limits, Some(canonical));
     l.cancel = cancel;
+    if context.prefix.len() > 64 * 1024 || context.prefix.lines().count() > 32 {
+        return Err(vec![VimDiagnostic::new(
+            language,
+            0,
+            "syntax setup prefix budget exceeded",
+        )]);
+    }
+    l.setup = Setup::new(context, l.cancel);
+    for b in context.prefix.bytes() {
+        l.program.generation = (l.program.generation ^ u64::from(b)).wrapping_mul(1099511628211);
+    }
     l.file(&format!("{language}.vim"));
     l.finish()
 }
-impl Loader {
+impl<'a> Loader<'a> {
     fn new(limits: VimLoadLimits, root: Option<PathBuf>) -> Self {
         Self {
             program: VimProgram {
@@ -101,7 +128,7 @@ impl Loader {
                 maxlines: 200,
                 fromstart: false,
                 multiline: false,
-                generation: 0,
+                generation: NATIVE_PROFILE_VERSION as u64,
                 source_files: Vec::new(),
             },
             limits,
@@ -111,9 +138,12 @@ impl Loader {
             bytes: 0,
             files: 0,
             compiled_bytes: 0,
-            current_syntax: false,
             case_ignore: false,
             cancel: None,
+            setup: Setup::new(&VimSetupContext::default(), None),
+            command_depth: 0,
+            expanded_bytes: 0,
+            group_pattern_fuel: 1_000_000,
         }
     }
     fn err(&mut self, file: &str, line: usize, message: impl AsRef<str>) {
@@ -223,6 +253,11 @@ impl Loader {
         self.active.remove(&path);
     }
     fn source(&mut self, file: &str, text: &str) {
+        let scope = self.setup.begin_script();
+        self.source_body(file, text);
+        self.setup.end_script(scope);
+    }
+    fn source_body(&mut self, file: &str, text: &str) {
         self.bytes = self.bytes.saturating_add(text.len());
         self.files += 1;
         if self.bytes > self.limits.source_bytes || self.files > self.limits.files {
@@ -262,16 +297,48 @@ impl Loader {
                 self.err(file, line, "orphan continuation");
                 continue;
             }
-            while physical
-                .peek()
-                .is_some_and(|(_, s)| s.trim_start().starts_with('\\'))
-            {
+            while physical.peek().is_some_and(|(_, s)| {
+                let s = s.trim_start();
+                s.starts_with('\\') || s.starts_with("\"\\")
+            }) {
                 let (_, continuation) = physical.next().unwrap();
+                if continuation.trim_start().starts_with("\"\\") {
+                    continue;
+                }
                 logical.push(' ');
                 logical.push_str(continuation.trim_start().strip_prefix('\\').unwrap());
             }
             let text = logical.trim();
             if text.is_empty() || text.starts_with('"') {
+                continue;
+            }
+            if let Some(signature) = text
+                .strip_prefix("function ")
+                .or_else(|| text.strip_prefix("function! "))
+            {
+                let mut body = Vec::new();
+                let mut closed = false;
+                for (_, statement) in physical.by_ref() {
+                    if self.cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                        self.err(file, line, "syntax compilation cancelled");
+                        return;
+                    }
+                    let statement = statement.trim();
+                    if matches!(statement, "endfunction" | "endfun") {
+                        closed = true;
+                        break;
+                    }
+                    if !statement.is_empty() && !statement.starts_with('"') {
+                        body.push(statement.to_owned());
+                    }
+                }
+                if !closed {
+                    self.err(file, line, "unterminated setup function");
+                } else if enabled {
+                    if let Err(error) = self.setup.define_function(signature, &body) {
+                        self.err(file, line, error);
+                    }
+                }
                 continue;
             }
             if let Some(condition) = text.strip_prefix("if ") {
@@ -347,31 +414,33 @@ impl Loader {
             self.err(file, text.lines().count(), "unterminated conditional");
         }
     }
-    fn condition(&self, s: &str) -> Result<bool, String> {
-        let s = s.trim();
-        if let Some(s) = s.strip_prefix('!') {
-            return self.condition(s).map(|v| !v);
-        }
-        if s == "0" {
-            return Ok(false);
-        }
-        if s == "1" {
-            return Ok(true);
-        }
-        if let Some(s) = s.strip_prefix("exists(").and_then(|s| s.strip_suffix(')')) {
-            let name = s.trim_matches(['\'', '"']);
-            if name == "b:current_syntax" {
-                return Ok(self.current_syntax);
-            }
-            // Unknown setup variables are explicitly absent in the v1 profile.
-            if name.starts_with("g:") || !name.contains(':') {
-                return Ok(false);
-            }
-        }
-        Err(format!("unsupported setup condition: {s}"))
+    fn condition(&mut self, s: &str) -> Result<bool, String> {
+        self.setup.evaluate(s)?.truth()
     }
     fn command(&mut self, text: &str) -> Result<(), String> {
+        if self.command_depth >= 32 {
+            return Err("syntax command expansion depth budget exceeded".into());
+        }
+        if self
+            .cancel
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::Relaxed))
+        {
+            return Err("syntax compilation cancelled".into());
+        }
+        self.command_depth += 1;
+        let result = self.command_inner(text);
+        self.command_depth -= 1;
+        result
+    }
+    fn command_inner(&mut self, text: &str) -> Result<(), String> {
         let (cmd, rest) = word(text)?;
+        if let Some((expanded, scope)) = self.setup.expand_macro(cmd, rest)? {
+            let caller = self.setup.replace_script(scope);
+            let result = self.expanded_command(&expanded);
+            self.setup.end_script(caller);
+            return result;
+        }
         match cmd {
             "syn" | "sy" | "syntax" => self.syntax(rest),
             "hi" | "highlight" | "hi!" | "highlight!" => {
@@ -394,24 +463,31 @@ impl Loader {
                     Err("only highlight link declarations are supported (colors belong to Code styles)".into())
                 }
             }
-            "let" if rest.starts_with("b:current_syntax") => {
-                self.current_syntax = true;
-                Ok(())
-            }
-            "let" if rest.ends_with("&cpo") || rest.ends_with("&cpoptions") => Ok(()),
-            "let" if rest.starts_with("&cpo = s:") || rest.starts_with("&cpoptions = s:") => Ok(()),
+            "let" => self.setup.assign(rest),
             "set" if matches!(rest, "cpo&vim" | "cpoptions&vim") => Ok(()),
-            "unlet" | "unlet!" if rest == "b:current_syntax" => {
-                self.current_syntax = false;
-                Ok(())
+            "unlet" | "unlet!" => self.setup.unlet(rest, cmd.ends_with('!')),
+            "com" | "com!" | "command" | "command!" => self.setup.define_macro(rest),
+            "delc" | "delcommand" => self.setup.delete_macro(rest),
+            "exe" | "execute" => {
+                let expanded = self.setup.evaluate(rest)?.text()?;
+                self.expanded_command(&expanded)
             }
-            "unlet" | "unlet!" if rest.starts_with("s:") && !rest.contains(' ') => Ok(()),
             "runtime" | "runtime!" => {
                 self.file(rest);
                 Ok(())
             }
             _ => Err(format!("unsupported native setup command: {cmd}")),
         }
+    }
+    fn expanded_command(&mut self, text: &str) -> Result<(), String> {
+        self.expanded_bytes = self.expanded_bytes.saturating_add(text.len());
+        if self.expanded_bytes > self.limits.source_bytes {
+            return Err("syntax command expansion byte budget exceeded".into());
+        }
+        if text.contains(['\n', '\r']) {
+            return Err("multiline syntax command expansion is unsupported".into());
+        }
+        self.command(text)
     }
     fn syntax(&mut self, rest: &str) -> Result<(), String> {
         let (kind, rest) = word(rest)?;
@@ -427,6 +503,33 @@ impl Loader {
             return Ok(());
         }
         if kind == "sync" {
+            let (hint, arguments) = word(rest)?;
+            if hint == "match" {
+                let rest = arguments;
+                let (_, rest) = word(rest)?;
+                let (location, rest) = word(rest)?;
+                let (group, rest) = word(rest)?;
+                if !matches!(location, "groupthere" | "grouphere") || group != "NONE" {
+                    return Err("unsupported syntax sync state hint".into());
+                }
+                let (pattern, rest) = delimited(rest)?;
+                if !rest.trim().is_empty() {
+                    return Err("unsupported syntax sync match options".into());
+                }
+                VimPattern::compile(&pattern, self.case_ignore, VimRegexLimits::default())?;
+                // This is a validated recovery hint, not a content rule. Exact
+                // scans continue to use document start or saved exact state.
+                return Ok(());
+            }
+            if hint == "linecont" {
+                let rest = arguments;
+                let (pattern, rest) = delimited(rest)?;
+                if !rest.trim().is_empty() {
+                    return Err("unsupported syntax sync linecont options".into());
+                }
+                VimPattern::compile(&pattern, self.case_ignore, VimRegexLimits::default())?;
+                return Ok(());
+            }
             for token in rest.split_whitespace() {
                 if token == "fromstart" {
                     self.program.fromstart = true;
@@ -464,16 +567,14 @@ impl Loader {
             if !group.starts_with('@') {
                 return Err("include requires a cluster".into());
             }
-            let previous = self.current_syntax;
-            self.current_syntax = false;
             let start = self.program.rules.len();
             self.file(rest);
-            self.current_syntax = previous;
             let groups = self.program.rules[start..]
                 .iter_mut()
-                .map(|r| {
+                .filter_map(|r| {
+                    let top_level = !r.options.contained;
                     r.options.contained = true;
-                    r.group.clone()
+                    top_level.then(|| r.group.clone())
                 })
                 .collect::<Vec<_>>();
             self.program
@@ -486,18 +587,22 @@ impl Loader {
         if kind == "cluster" {
             for token in rest.split_whitespace() {
                 if let Some(list) = token.strip_prefix("contains=") {
-                    self.program
-                        .clusters
-                        .insert(group.into(), list.split(',').map(str::to_owned).collect());
+                    let groups =
+                        self.expand_groups(list.split(',').map(str::to_owned).collect())?;
+                    self.program.clusters.insert(group.into(), groups);
                 } else if let Some(list) = token.strip_prefix("add=") {
+                    let groups =
+                        self.expand_groups(list.split(',').map(str::to_owned).collect())?;
                     self.program
                         .clusters
                         .entry(group.into())
                         .or_default()
-                        .extend(list.split(',').map(str::to_owned));
+                        .extend(groups);
                 } else if let Some(list) = token.strip_prefix("remove=") {
+                    let groups =
+                        self.expand_groups(list.split(',').map(str::to_owned).collect())?;
                     if let Some(items) = self.program.clusters.get_mut(group) {
-                        items.retain(|s| !list.split(',').any(|v| v == s));
+                        items.retain(|s| !groups.contains(s));
                     }
                 } else {
                     return Err(format!("unsupported cluster option: {token}"));
@@ -523,15 +628,22 @@ impl Loader {
             }
             let (pattern, tail) = delimited(remaining)?;
             let (offsets, tail) = attached_offsets(tail)?;
+            if offsets.rs.is_some() || offsets.re.is_some() {
+                return Err("region offsets cannot be attached to a match".into());
+            }
             options.ms = offsets.ms;
             options.me = offsets.me;
             options.hs = offsets.hs;
             options.he = offsets.he;
+            options.lc = offsets.lc;
             patterns.push(("match", pattern, PatternOffsets::default(), None, false));
             remaining = tail;
         }
         while !remaining.trim().is_empty() {
             remaining = remaining.trim_start();
+            if remaining.starts_with('"') {
+                break;
+            }
             if kind == "region" {
                 let mut found = false;
                 for key in ["start", "skip", "end"] {
@@ -572,8 +684,12 @@ impl Loader {
             nfa_bytes: self.limits.pattern_nfa_bytes,
             ..Default::default()
         };
-        for list in [&options.contains, &options.containedin, &options.nextgroup] {
-            validate_groups(list)?;
+        for list in [
+            &mut options.contains,
+            &mut options.containedin,
+            &mut options.nextgroup,
+        ] {
+            *list = self.expand_groups(std::mem::take(list))?;
         }
         let rule_kind = match kind {
             "keyword" => {
@@ -615,7 +731,9 @@ impl Loader {
                         if !external_references(&p)?.is_empty() {
                             // expanded only using captured literal text at runtime
                             validate_external_template(&p, self.case_ignore, regexlimits)?;
-                            validate_pattern_offsets(kind, offsets, 0)?;
+                            // Capture lengths are known only after the region
+                            // start matches. The scanner validates these offsets
+                            // against the expanded template before publishing it.
                             let template = PatternTemplate {
                                 source: p.into(),
                                 compiled: None,
@@ -669,18 +787,6 @@ impl Loader {
                         }
                     }
                 }
-                if options.oneline
-                    && starts
-                        .iter()
-                        .chain(ends.iter())
-                        .chain(skip.iter())
-                        .filter_map(|e| e.compiled.as_ref())
-                        .any(|p| p.multiline)
-                {
-                    return Err(
-                        "multiline atoms in oneline regions are outside native profile v1".into(),
-                    );
-                }
                 RuleKind::Region {
                     starts,
                     ends,
@@ -717,6 +823,92 @@ impl Loader {
             options,
         });
         Ok(())
+    }
+    fn expand_groups(&mut self, groups: Vec<String>) -> Result<Vec<String>, String> {
+        if groups.len() > 4096 {
+            return Err("syntax group-list budget exceeded".into());
+        }
+        if validate_groups(&groups).is_ok() {
+            return Ok(groups);
+        }
+        // Vim expands group-name patterns against names known before this
+        // declaration. Later group declarations must not retroactively match.
+        let mut known = BTreeSet::new();
+        for rule in &self.program.rules {
+            known.insert(rule.group.clone());
+            for name in rule
+                .options
+                .contains
+                .iter()
+                .chain(&rule.options.containedin)
+                .chain(&rule.options.nextgroup)
+                .chain(rule.options.matchgroup.iter())
+            {
+                if !name.starts_with('@') {
+                    known.insert(name.clone());
+                }
+            }
+            if let RuleKind::Region {
+                starts, ends, skip, ..
+            } = &rule.kind
+            {
+                for pattern in starts.iter().chain(ends).chain(skip.iter()) {
+                    if let Some(name) = &pattern.matchgroup {
+                        known.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        for name in self
+            .program
+            .links
+            .keys()
+            .chain(self.program.links.values())
+            .chain(self.program.clusters.values().flatten())
+        {
+            if !name.starts_with('@') {
+                known.insert(name.clone());
+            }
+        }
+        known.retain(|name| {
+            !matches!(
+                name.as_str(),
+                "ALL" | "ALLBUT" | "TOP" | "CONTAINED" | "NONE"
+            )
+        });
+        let mut result = Vec::new();
+        for group in groups {
+            if group.is_empty()
+                || group.starts_with('@') && validate_groups(std::slice::from_ref(&group)).is_err()
+            {
+                return Err("invalid syntax group or cluster name".into());
+            }
+            if validate_groups(std::slice::from_ref(&group)).is_ok() {
+                result.push(group);
+                continue;
+            }
+            let pattern = VimPattern::compile(
+                &format!("^\\%({group}\\)$"),
+                false,
+                VimRegexLimits {
+                    nfa_bytes: self.limits.pattern_nfa_bytes,
+                    ..Default::default()
+                },
+            )?;
+            for name in &known {
+                if pattern.is_match_text_with_control(
+                    name,
+                    &mut self.group_pattern_fuel,
+                    &mut || self.cancel.is_some_and(|c| c.load(Ordering::Relaxed)),
+                )? {
+                    if result.len() >= 4096 {
+                        return Err("syntax group-list expansion budget exceeded".into());
+                    }
+                    result.push(name.clone());
+                }
+            }
+        }
+        Ok(result)
     }
 }
 fn cluster_cycle(
@@ -779,7 +971,7 @@ fn external_references(p: &str) -> Result<Vec<usize>, String> {
     }
     Ok(refs)
 }
-fn validate_pattern_offsets(
+pub(super) fn validate_pattern_offsets(
     kind: &str,
     offsets: PatternOffsets,
     minimum: usize,
@@ -830,9 +1022,18 @@ fn delimited(s: &str) -> Result<(String, &str), String> {
         return Err("invalid pattern delimiter".into());
     }
     let mut escaped = false;
-    for (i, c) in s.char_indices().skip(1) {
+    let mut indices = s.char_indices().skip(1).peekable();
+    while let Some((i, c)) = indices.next() {
         if c == delim && !escaped {
             return Ok((s[delim.len_utf8()..i].to_owned(), &s[i + c.len_utf8()..]));
+        }
+        if c == '[' && !escaped {
+            if let Some(end) = bracket_end(s, i) {
+                while indices.peek().is_some_and(|(i, _)| *i <= end) {
+                    indices.next();
+                }
+                continue;
+            }
         }
         if c == '\\' {
             escaped = !escaped;
@@ -842,14 +1043,58 @@ fn delimited(s: &str) -> Result<(String, &str), String> {
     }
     Err("unterminated syntax pattern".into())
 }
+fn bracket_end(source: &str, start: usize) -> Option<usize> {
+    let mut chars = source[start + 1..].char_indices().peekable();
+    if chars.peek().is_some_and(|(_, c)| *c == '^') {
+        chars.next();
+    }
+    if chars.peek().is_some_and(|(_, c)| *c == ']') {
+        chars.next();
+    }
+    while let Some((at, ch)) = chars.next() {
+        if ch == '\\' {
+            chars.next();
+            continue;
+        }
+        if ch == ']' {
+            return Some(start + 1 + at);
+        }
+        if ch == '['
+            && chars
+                .peek()
+                .is_some_and(|(_, c)| matches!(c, ':' | '.' | '='))
+        {
+            let (_, marker) = chars.next()?;
+            while let Some((_, ch)) = chars.next() {
+                if ch == marker && chars.peek().is_some_and(|(_, c)| *c == ']') {
+                    chars.next();
+                    break;
+                }
+            }
+        }
+    }
+    None
+}
 fn attached_offsets(s: &str) -> Result<(PatternOffsets, &str), String> {
-    if s.is_empty() || s.starts_with(char::is_whitespace) {
+    if s.is_empty()
+        || s.starts_with(char::is_whitespace)
+        || !["ms=", "me=", "hs=", "he=", "rs=", "re=", "lc="]
+            .iter()
+            .any(|prefix| s.starts_with(prefix))
+    {
         return Ok((PatternOffsets::default(), s));
     }
     let (token, tail) = word(s)?;
     let mut offsets = PatternOffsets::default();
     for part in token.split(',') {
         let (key, v) = part.split_once('=').ok_or("invalid pattern offset")?;
+        if key == "lc" {
+            offsets.lc = v.parse().map_err(|_| "invalid leading context offset")?;
+            if offsets.lc > 1024 {
+                return Err("offset work budget exceeded".into());
+            }
+            continue;
+        }
         let base = match v.chars().next() {
             Some('s') => OffsetBase::Start,
             Some('e') => OffsetBase::End,
@@ -873,6 +1118,12 @@ fn attached_offsets(s: &str) -> Result<(PatternOffsets, &str), String> {
             _ => return Err("unsupported pattern offset".into()),
         };
         *slot = Some(Offset { base, delta });
+    }
+    if offsets.lc != 0 && offsets.ms.is_none() {
+        offsets.ms = Some(Offset {
+            base: OffsetBase::Start,
+            delta: offsets.lc as isize,
+        });
     }
     Ok((offsets, tail))
 }
@@ -917,35 +1168,37 @@ fn parse_option(s: &str, o: &mut RuleOptions) -> Result<bool, String> {
             } else if let Some(v) = s.strip_prefix("nextgroup=") {
                 o.nextgroup = v.split(',').map(str::to_owned).collect();
             } else if let Some(v) = s.strip_prefix("matchgroup=") {
+                let v = if v.starts_with('"') && v.ends_with('"') && v.len() >= 2 {
+                    &v[1..v.len() - 1]
+                } else {
+                    v
+                };
+                validate_groups(&[v.to_owned()])?;
                 o.matchgroup = Some(v.into());
             } else if s.starts_with("ms=")
                 || s.starts_with("me=")
                 || s.starts_with("hs=")
                 || s.starts_with("he=")
+                || s.starts_with("lc=")
             {
-                for part in s.split(',') {
-                    let (key, v) = part.split_once('=').ok_or("invalid offset")?;
-                    let base = match v.chars().next() {
-                        Some('s') => OffsetBase::Start,
-                        Some('e') => OffsetBase::End,
-                        _ => return Err("invalid offset base".into()),
-                    };
-                    let delta = if v.len() == 1 {
-                        0
-                    } else {
-                        v[1..].parse::<isize>().map_err(|_| "invalid offset")?
-                    };
-                    let off = Offset { base, delta };
-                    if delta.unsigned_abs() > 1024 {
-                        return Err("offset work budget exceeded".into());
-                    }
-                    match key {
-                        "ms" => o.ms = Some(off),
-                        "me" => o.me = Some(off),
-                        "hs" => o.hs = Some(off),
-                        "he" => o.he = Some(off),
-                        _ => return Err("unsupported offset".into()),
-                    }
+                let (offsets, _) = attached_offsets(s)?;
+                if offsets.rs.is_some() || offsets.re.is_some() {
+                    return Err("unsupported match offset".into());
+                }
+                if offsets.ms.is_some() {
+                    o.ms = offsets.ms;
+                }
+                if offsets.me.is_some() {
+                    o.me = offsets.me;
+                }
+                if offsets.hs.is_some() {
+                    o.hs = offsets.hs;
+                }
+                if offsets.he.is_some() {
+                    o.he = offsets.he;
+                }
+                if s.split(',').any(|s| s.starts_with("lc=")) {
+                    o.lc = offsets.lc;
                 }
             } else {
                 return Ok(false);

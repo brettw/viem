@@ -9,7 +9,7 @@ pub use profile::{
 };
 
 pub const DETECTION_BYTE_LIMIT: usize = 64 * 1024;
-pub const PROFILE_VERSION: u32 = 1;
+pub const PROFILE_VERSION: u32 = 2;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LanguageSelection {
     Automatic,
@@ -137,6 +137,7 @@ pub fn detect_with_profile(
             "Makefile" | "makefile" | "GNUmakefile" => Some("make"),
             "Dockerfile" => Some("dockerfile"),
             "CMakeLists.txt" => Some("cmake"),
+            ".exrc" | "_exrc" | ".netrwhist" => Some("vim"),
             _ => match extension {
                 "c" => Some("c"),
                 "h" => Some("c"),
@@ -171,7 +172,11 @@ pub fn detect_with_profile(
                 "rtf" => Some("rtf"),
                 _ => None,
             },
-        };
+        }
+        // Vim's broad *vimrc* rule runs after specific filename rules. Keep
+        // that precedence for names such as vimrc.py while recognizing local
+        // variants such as .vimrc.local and .gvimrc. `base` is already bounded.
+        .or_else(|| base.contains("vimrc").then_some("vim"));
         if let Some(language) = language {
             return result(
                 Some(language.into()),
@@ -345,6 +350,80 @@ mod tests {
             .language
             .as_deref(),
             Some("unknown123")
+        );
+    }
+    #[test]
+    fn vim_runtime_filenames_use_basename_rules_and_preserve_precedence() {
+        let source = input("set number\nlet g:enabled = 1\n");
+        for filename in [
+            ".vimrc",
+            "_vimrc",
+            "vimrc",
+            ".gvimrc",
+            "_gvimrc",
+            "gvimrc",
+            ".vimrc.local",
+            "vimrc_example.vim",
+            "settings.vim",
+            ".exrc",
+            "_exrc",
+            ".netrwhist",
+            "/home/writer/.vimrc",
+            r"C:\Users\writer\_vimrc",
+        ] {
+            let result = detect(&source, filename, &LanguageSelection::Automatic, &[]);
+            assert_eq!(result.language.as_deref(), Some("vim"), "{filename}");
+            assert_eq!(result.reason, "bundled filename association", "{filename}");
+        }
+        for filename in [".VIMRC", "settings.VIM", "/home/vimrc/notes", "exrc"] {
+            assert_eq!(
+                detect(&source, filename, &LanguageSelection::Automatic, &[]).language,
+                None,
+                "{filename}"
+            );
+        }
+        assert_eq!(
+            detect(&source, "vimrc.py", &LanguageSelection::Automatic, &[])
+                .language
+                .as_deref(),
+            Some("python"),
+            "specific extensions precede the broad *vimrc* fallback"
+        );
+        let associations = [FilenameAssociation {
+            pattern: "*vimrc*".into(),
+            language: "lua".into(),
+        }];
+        assert_eq!(
+            detect(&source, ".vimrc", &LanguageSelection::Automatic, &associations)
+                .language
+                .as_deref(),
+            Some("lua")
+        );
+        assert_eq!(
+            detect(
+                &input("\" vim: ft=python"),
+                ".vimrc",
+                &LanguageSelection::Automatic,
+                &associations
+            )
+            .language
+            .as_deref(),
+            Some("python")
+        );
+        assert_eq!(
+            detect(&source, ".vimrc", &LanguageSelection::None, &[]).language,
+            None
+        );
+        assert_eq!(
+            detect(
+                &source,
+                ".vimrc",
+                &LanguageSelection::Language("rust".into()),
+                &[]
+            )
+            .language
+            .as_deref(),
+            Some("rust")
         );
     }
     #[test]

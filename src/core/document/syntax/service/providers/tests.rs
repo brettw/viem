@@ -8,6 +8,8 @@ use crate::document::{
 };
 use std::sync::{atomic::AtomicUsize, Arc};
 
+mod vim;
+
 fn request(text: &str, language: &str, revision: u64) -> SyntaxRequest {
     SyntaxRequest {
         input: SyntaxInputSnapshot::new(
@@ -253,6 +255,7 @@ fn failed_child_tree_sitter_uses_vim_and_unknown_children_clear_host_colors() {
         input: Some(req.input.clone()),
         failed: None,
         fallback_input: None,
+        fallback_context: None,
         fallback_work: 0,
         cache: None,
     };

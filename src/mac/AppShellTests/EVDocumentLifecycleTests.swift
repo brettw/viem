@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import XCTest
 
 @testable import ViemAppShell
@@ -93,6 +94,48 @@ final class EVDocumentLifecycleTests: XCTestCase {
         XCTAssertEqual(document.writableTypes(for: .saveAsOperation), [EVDocument.plainTextType])
         try document.read(from: Data("# text".utf8), ofType: EVDocument.markdownType)
         XCTAssertEqual(document.writableTypes(for: .saveAsOperation), [EVDocument.markdownType])
+    }
+
+    func testNativeDocumentRegistrationAcceptsUnknownFilesAsReadableData() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let plistURL = root.appendingPathComponent("App/Resources/Info.plist")
+        let plist = try XCTUnwrap(PropertyListSerialization.propertyList(
+            from: Data(contentsOf: plistURL), format: nil) as? [String: Any])
+        let types = try XCTUnwrap(plist["CFBundleDocumentTypes"] as? [[String: Any]])
+        let fallback = try XCTUnwrap(types.first {
+            ($0["LSItemContentTypes"] as? [String])?.contains(UTType.data.identifier) == true
+        })
+        XCTAssertEqual(fallback["NSDocumentClass"] as? String, NSStringFromClass(EVDocument.self))
+        XCTAssertEqual(fallback["CFBundleTypeRole"] as? String, "Editor")
+        XCTAssertTrue(EVDocument.readableTypes.contains(UTType.data.identifier))
+        XCTAssertFalse(EVDocument.writableTypes.contains(UTType.data.identifier))
+        XCTAssertFalse(EVDocument.isNativeType(UTType.data.identifier))
+    }
+
+    func testUnknownReadTypesUseTextWithoutBecomingWritableFormats() throws {
+        for type in [UTType.data.identifier, UTType.png.identifier, "com.example.unknown"] {
+            let backend = Backend()
+            let source = Data([0x73, 0x65, 0x74, 0x20, 0xff, 0x00, 0x0d, 0x0a])
+            backend.serializedData = source
+            let document = EVDocument(editorBackend: backend)
+            defer { document.close() }
+
+            try document.read(from: source, ofType: type)
+
+            XCTAssertEqual(backend.readCalls.count, 1)
+            XCTAssertEqual(backend.readCalls.first?.0, source)
+            XCTAssertEqual(backend.readCalls.first?.1, EVDocument.plainTextType)
+            XCTAssertEqual(backend.sourceFormat, .plainText)
+            // AppKit repeats this assignment after its URL initializer reads.
+            document.fileType = type
+            XCTAssertEqual(document.fileType, EVDocument.plainTextType)
+            XCTAssertEqual(document.writableTypes(for: .saveOperation), [EVDocument.plainTextType])
+            XCTAssertEqual(try document.data(ofType: EVDocument.plainTextType), source)
+            XCTAssertThrowsError(try document.data(ofType: type)) { error in
+                XCTAssertEqual(error as? EVDocumentSerializationError, .unsupportedWritableType(type))
+            }
+        }
     }
 
     func testNSDocumentDataOverridesDelegateReadAndSameFormatSerializationToSourceBackend() throws {

@@ -346,6 +346,38 @@ fn blocked_providers_do_not_block_literal_display_input_or_two_view_scroll() {
 }
 
 #[test]
+fn vimrc_opens_as_code_without_changing_source_and_respects_explicit_text() {
+    let source = b"\xef\xbb\xbf\" Personal settings\r\nset number\r\nlet g:enabled = 1\r\n";
+    for filename in [".vimrc", "_vimrc", "vimrc", ".gvimrc", "settings.vim", ".exrc"] {
+        let mut core = Core::<MockTextMeasurementProvider>::new(
+            Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::PlainText).unwrap(),
+        );
+        let revision = core.document.revision();
+        core.initialize_code_detection(filename, true).unwrap();
+        assert_eq!(core.document.format(), Format::Code, "{filename}");
+        assert_eq!(
+            core.code_language_detection().unwrap().language.as_deref(),
+            Some("vim")
+        );
+        assert_eq!(core.document.source_bytes(), source, "{filename}");
+        assert_eq!(core.document.revision(), revision, "{filename}");
+        assert!(!core.document.is_dirty(), "{filename}");
+    }
+    let mut core = Core::<MockTextMeasurementProvider>::new(Document::new("set number\n"));
+    core.initialize_code_detection(".vimrc", false).unwrap();
+    assert_eq!(core.document.format(), Format::PlainText);
+    assert_eq!(
+        core.code_language_detection().unwrap().language.as_deref(),
+        Some("vim")
+    );
+    let mut core = Core::<MockTextMeasurementProvider>::new(Document::new("set number\n"));
+    core.set_code_language(LanguageSelection::None);
+    core.initialize_code_detection(".vimrc", true).unwrap();
+    assert_eq!(core.document.format(), Format::PlainText);
+    assert_eq!(core.code_language_detection().unwrap().language, None);
+}
+
+#[test]
 fn language_detection_is_load_time_state_with_explicit_redetection_and_overrides() {
     let mut core = Core::<MockTextMeasurementProvider>::new(Document::new("ordinary text"));
     core.initialize_code_detection("notes", true).unwrap();

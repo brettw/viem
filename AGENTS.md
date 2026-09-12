@@ -1782,6 +1782,13 @@ Each adapter has corpus, property, and targeted golden tests. At minimum:
 
 ### Format interpretation and conversion
 
+Every file-opening path MUST accept files whose type or extension is unknown
+to Viem, including extensionless files and dotfiles such as `.vimrc`. When no
+format is recognized, open the original bytes in Text using the shared lossless
+encoding and line-ending projections. Native file-type admission MUST NOT
+reject these files before the Text fallback runs. Recognized format defaults
+and explicit format choices still take precedence.
+
 Format changes carry an explicit operation in the portable core. Reinterpret
 changes only the adapter applied to the current source artifact: every source
 byte, encoding, BOM, and line-ending spelling remains unchanged. It must never
@@ -1919,6 +1926,11 @@ filename or load-time marker can select Code where opening would use Text;
 unrecognized input remains Text. Once Code is selected, detecting a language
 such as Markdown or HTML does not select its WYSIWYG format. Language and
 source-format selection are separate buffer state.
+
+Vim-script filenames, including `.vimrc`, `_vimrc`, `vimrc`, their gVim
+counterparts, and `.vim` files, select Code with the `vim` language. Vim-script
+highlighting uses the configured Vim syntax files and their group links; it
+does not use a Tree-sitter Vim grammar.
 
 #### Global Code stylesheet and named syntax runs
 
@@ -2159,7 +2171,8 @@ nine. The package IDs include `c`, `cpp`, `rust`, `swift`, `objc`, `c_sharp`,
 `cs`, `javascriptreact`, and `typescriptreact` without confusing filename,
 language-family, grammar, and query identities.
 
-For each selected language, prefer a registered compatible Tree-sitter package.
+Vim script uses the configured native Vim syntax program. For other selected
+languages, prefer a registered compatible Tree-sitter package.
 If there is no implementation, it cannot load, required queries are unsupported,
 or current coverage is unavailable/exceeds policy, use the corresponding Vim
 syntax if available; otherwise use default Code styling. Initial Tree-sitter

@@ -1,10 +1,18 @@
 # Portable language detection profile
 
-Profile version 1 uses decoded normalized text and never executes Vimscript,
+Profile version 2 uses decoded normalized text and never executes Vimscript,
 filetype autocommands, shell commands, regular expressions, or package callbacks.
 An explicit language (including None) precedes modelines, user filename rules,
 bundled filename rules with content disambiguation, shebangs, and finally content
 signatures. Modelines retain unknown language names instead of guessing another.
+
+Bundled filename rules match case-sensitive basenames. Vim script recognizes
+`*.vim`, `.exrc`, `_exrc`, and `.netrwhist`, followed by the broad `*vimrc*`
+fallback for `.vimrc`, `_vimrc`, `vimrc`, their gVim variants, and local variants
+such as `.vimrc.local`. Specific recognized extensions take precedence over
+this fallback; for example, `vimrc.py` selects Python. User associations and
+modelines keep their higher precedence. These rules are portable declarations,
+not execution of a configured Vim runtime's `filetype.vim`.
 
 DetectionProfile compiles an ordered declarative list of ContentSignature and
 ExtensionDisambiguator values. Its default includes the PHP/XML signatures and

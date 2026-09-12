@@ -67,6 +67,21 @@ public final class EVDocument: NSDocument {
     public static let rtfType = UTType.rtf.identifier
     public static let codeType = "com.viem.code"
 
+    public override var fileType: String? {
+        get { super.fileType }
+        set {
+            // NSDocument assigns the incoming native type again after read.
+            // Keep fallback opens bound to the adapter's serialization type,
+            // including when recovery restored a different source format.
+            super.fileType = onMainActor {
+                if let type = newValue, Self.sourceFormat(forTypeName: type) == nil {
+                    return Self.typeName(for: self.editorBackend.sourceFormat)
+                }
+                return newValue
+            }
+        }
+    }
+
     nonisolated(unsafe) public let editorBackend: any EVDocumentBackend
     private struct ActiveSave {
         let snapshot: EVDocumentSaveSnapshot
@@ -171,8 +186,9 @@ public final class EVDocument: NSDocument {
                 try self.editorBackend.restoreRecovery(snapshot)
                 recovered = true
             case .readOnly, .editAnyway:
-                try self.editorBackend.read(source: original.get(), typeName: typeName,
-                    filename: target.lastPathComponent, allowAutomaticCode: Self.sourceFormat(forTypeName: typeName) == .plainText)
+                let openingType = Self.readableType(for: typeName)
+                try self.editorBackend.read(source: original.get(), typeName: openingType,
+                    filename: target.lastPathComponent, allowAutomaticCode: Self.sourceFormat(forTypeName: openingType) == .plainText)
                 recovered = false
             case .cancel: return
             }
@@ -333,21 +349,21 @@ public final class EVDocument: NSDocument {
     }
 
     public override class var readableTypes: [String] {
-        [plainTextType, markdownType, htmlType, rtfType]
+        writableTypes + [UTType.data.identifier]
     }
 
     public override class var writableTypes: [String] {
-        readableTypes
+        [plainTextType, markdownType, htmlType, rtfType]
     }
 
     public override class func isNativeType(_ type: String) -> Bool {
-        readableTypes.contains(type)
+        writableTypes.contains(type)
     }
 
     public override nonisolated func writableTypes(for saveOperation: NSDocument.SaveOperationType) -> [String] {
         // The format selector owns adapter changes. A native Save panel must
         // offer the current serialization type, not imply a lossy conversion.
-        (try? onMainActor { [Self.typeName(for: self.editorBackend.sourceFormat)] }) ?? []
+        onMainActor { [Self.typeName(for: self.editorBackend.sourceFormat)] }
     }
 
     public static func typeName(for format: EVSourceFormat) -> String {
@@ -392,7 +408,7 @@ public final class EVDocument: NSDocument {
 
     public override nonisolated func read(from data: Data, ofType typeName: String) throws {
         try onMainActor {
-            try self.editorBackend.read(source: data, typeName: typeName)
+            try self.editorBackend.read(source: data, typeName: Self.readableType(for: typeName))
             self.fileBaseline = nil
             self.fileBaselineURL = nil
             self.fileBaselineGeneration &+= 1
@@ -574,6 +590,13 @@ public final class EVDocument: NSDocument {
         }
     }
 
+    /// Native file types describe the bytes, not necessarily a Viem format.
+    /// Unknown types use the lossless Text decoder; save validation still
+    /// requires an explicitly supported serialization type.
+    private static func readableType(for typeName: String) -> String {
+        sourceFormat(forTypeName: typeName) == nil ? plainTextType : typeName
+    }
+
     public static func sourceFormat(forTypeName typeName: String) -> EVSourceFormat? {
         let lowered = typeName.lowercased()
         if lowered == codeType { return .code }
@@ -658,7 +681,7 @@ public final class EVDocument: NSDocument {
 
     private nonisolated func onMainActor<T>(
         _ operation: @MainActor @escaping () throws -> T
-    ) throws -> T {
+    ) rethrows -> T {
         if Thread.isMainThread {
             return try MainActor.assumeIsolated(operation)
         }
