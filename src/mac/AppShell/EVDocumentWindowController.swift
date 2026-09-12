@@ -87,6 +87,15 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
 
   var paneCount: Int { paneContainer.panes.count }
 
+  /// `CTRL-W` window effects. Pane order, focus, and heights live in the pane
+  /// container; a request from a pane that is no longer in this window is
+  /// ignored rather than applied to someone else's panes.
+  public func perform(windowRequests: [EVWindowRequest], from surface: any EVEditorSurface) {
+    guard paneContainer.panes.contains(where: { $0.editorSurface === surface }) else { return }
+    for request in windowRequests { paneContainer.perform(request) }
+    updateActiveDocumentChrome()
+  }
+
   /// Captured before an open panel or recovery prompt can run a nested event
   /// loop. Only that exact, still-pristine blank window may be repurposed.
   @MainActor
@@ -907,8 +916,16 @@ final class EVDocumentContentViewController: NSViewController,
     super.init(nibName: nil, bundle: nil)
 
     editorSurface.statusBarStateDidChange = { [weak self] state in
-      self?.statusBar.apply(state)
-      (self?.viewIfLoaded?.window?.windowController as? EVDocumentWindowController)?
+      guard let self else { return }
+      self.statusBar.apply(state)
+      // The command line lives in the status line, so a hidden status line
+      // still has to appear while one is active.
+      let needed = self.showsStatusBar || state.commandLine != nil
+      if self.statusBar.isHidden == needed {
+        self.statusBar.isHidden = !needed
+        self.layoutContent()
+      }
+      (self.viewIfLoaded?.window?.windowController as? EVDocumentWindowController)?
         .updateActiveDocumentChrome()
     }
     statusBar.preferredHeightDidChange = { [weak self] in self?.layoutContent() }
@@ -917,6 +934,12 @@ final class EVDocumentContentViewController: NSViewController,
       self.editorSurface.perform(statusOption: option)
       self.statusBar.apply(self.editorSurface.statusBarState)
       self.view.window?.makeFirstResponder(self.editorSurface.viewController.view)
+    }
+    // The command line is drawn by the status line, so pointer selection in it
+    // is reported from there and routed back to this pane's surface.
+    statusBar.commandLineDidSelect = { [weak self] offset, extending in
+      guard let self else { return }
+      self.editorSurface.selectCommandLine(atUTF8Offset: offset, extending: extending)
     }
   }
 
@@ -962,7 +985,7 @@ final class EVDocumentContentViewController: NSViewController,
   func layoutContent() {
     loadViewIfNeeded()
     let bounds = view.bounds
-    let statusHeight = showsStatusBar ? EVStatusBarView.preferredHeight : 0
+    let statusHeight = statusBar.isHidden ? 0 : EVStatusBarView.preferredHeight
     let editorView = editorSurface.viewController.view
     statusBar.frame = NSRect(
       x: bounds.minX,

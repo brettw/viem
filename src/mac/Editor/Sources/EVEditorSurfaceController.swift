@@ -10,6 +10,11 @@ extension Notification.Name {
 @MainActor
 public final class EVEditorSurfaceController: NSViewController, EVEditorSurface, EVDocumentHostAttachable {
     public var viewController: NSViewController { self }
+    /// The laid-out advance of the first visual row, which the host's window
+    /// height commands count in.
+    public var visualRowHeight: CGFloat? {
+        layoutSnapshot?.rows.first.map { CGFloat($0.line_advance) }.flatMap { $0 > 0 ? $0 : nil }
+    }
     public private(set) var statusBarState = EVStatusBarState()
     public var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
     public weak var documentHostEffectHandler: (any EVDocumentHostEffectHandling)?
@@ -391,6 +396,19 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         } catch {
             report(error)
             NSSound.beep()
+        }
+    }
+
+    /// Place the command-line caret where the status line was clicked.
+    public func selectCommandLine(atUTF8Offset offset: Int, extending: Bool) {
+        guard let session, let prompt = commandLine else { return }
+        let clamped = min(max(offset, 0), prompt.text.utf8.count)
+        performInput {
+            _ = try session.editCommandLine(
+                prompt,
+                anchor: extending ? Int(prompt.selectionAnchorUTF8Offset) : clamped,
+                active: clamped
+            )
         }
     }
 
@@ -1168,6 +1186,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         return action.isEmpty ? prefix : "\(prefix) \(action)"
     }
 
+    /// Republish the status line after a focus change, so the command caret
+    /// blinks only in the active pane.
+    func refreshStatusBarActivity() { updateStatusBar() }
+
     private func updateStatusBar() {
         let point = try? session?.lineLocation()
         let line = point.map { location in
@@ -1181,7 +1203,17 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             location: "Ln \(line), Col \(column)",
             format: backend.formatLabel,
             lineMode: (try? session?.lineMode()) ?? .visual,
-            locationIsFragment: point.map { $0.flags & UInt32(VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT) == 0 } ?? false
+            locationIsFragment: point.map { $0.flags & UInt32(VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT) == 0 } ?? false,
+            commandLine: editorView.commandLineRenderState().map {
+                EVStatusCommandLine(
+                    prompt: $0.prompt,
+                    text: $0.text,
+                    cursorUTF8Offset: $0.cursorUTF8Offset,
+                    markedDisplayRange: $0.markedDisplayRange,
+                    selectedDisplayRange: $0.selectedDisplayRange
+                )
+            },
+            isActive: editorView.isActiveTextSurface
         )
         statusBarStateDidChange?(statusBarState)
     }
@@ -1268,6 +1300,40 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         ]
     }
 
+    /// Map one exported window effect. The core has already validated the
+    /// grammar; an unknown command or a missing required count is a broken
+    /// contract, not user input.
+    private func windowRequest(from effect: EVExHostEffect) throws -> EVWindowRequest {
+        let index = effect.windowCount.flatMap { Int(exactly: $0) }
+        if effect.windowCount != nil, index == nil {
+            throw EVCoreFrontendError.invalidHostEffect
+        }
+        func required() throws -> Int {
+            guard let index, index > 0 else { throw EVCoreFrontendError.invalidHostEffect }
+            return index
+        }
+        switch effect.windowCommand {
+        case UInt32(VIEM_WINDOW_FOCUS_DOWN): return .focusDown(count: try required())
+        case UInt32(VIEM_WINDOW_FOCUS_UP): return .focusUp(count: try required())
+        case UInt32(VIEM_WINDOW_FOCUS_NEXT): return .focusNext(index: index)
+        case UInt32(VIEM_WINDOW_FOCUS_PREVIOUS): return .focusPrevious(index: index)
+        case UInt32(VIEM_WINDOW_FOCUS_TOP): return .focusTop
+        case UInt32(VIEM_WINDOW_FOCUS_BOTTOM): return .focusBottom
+        case UInt32(VIEM_WINDOW_FOCUS_LAST_ACCESSED): return .focusLastAccessed
+        case UInt32(VIEM_WINDOW_ROTATE_DOWN): return .rotateDown(count: try required())
+        case UInt32(VIEM_WINDOW_ROTATE_UP): return .rotateUp(count: try required())
+        case UInt32(VIEM_WINDOW_EXCHANGE): return .exchange(index: index)
+        case UInt32(VIEM_WINDOW_MOVE_TO_TOP): return .moveToTop
+        case UInt32(VIEM_WINDOW_MOVE_TO_BOTTOM): return .moveToBottom
+        case UInt32(VIEM_WINDOW_CLOSE_OTHERS): return .closeOthers
+        case UInt32(VIEM_WINDOW_GROW): return .grow(rows: try required())
+        case UInt32(VIEM_WINDOW_SHRINK): return .shrink(rows: try required())
+        case UInt32(VIEM_WINDOW_SET_HEIGHT): return .setHeight(rows: index)
+        case UInt32(VIEM_WINDOW_EQUALIZE_HEIGHTS): return .equalizeHeights
+        default: throw EVCoreFrontendError.invalidHostEffect
+        }
+    }
+
     func applyHostEffectBatch(_ batch: EVHostEffectBatch) throws {
         let state = try backend.documentState()
         guard state.document_id == batch.documentID,
@@ -1276,11 +1342,14 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
 
         var messages: [String] = []
         var documentRequests: [EVDocumentHostRequest] = []
+        var windowRequests: [EVWindowRequest] = []
         for effect in batch.exEffects {
             guard effect.documentID == batch.documentID,
                   effect.documentRevision == batch.documentRevision
             else { throw EVCoreFrontendError.invalidHostEffect }
-            if let request = try documentHostRequest(from: effect) {
+            if effect.kind == UInt32(VIEM_EX_FRONTEND_WINDOW) {
+                windowRequests.append(try windowRequest(from: effect))
+            } else if let request = try documentHostRequest(from: effect) {
                 documentRequests.append(request)
             } else if let message = try displayMessage(for: effect) {
                 messages.append(message)
@@ -1320,6 +1389,12 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
 
         if !messages.isEmpty {
             publishHostMessage(messages.joined(separator: "\n"))
+        }
+        if !windowRequests.isEmpty {
+            guard let documentHostEffectHandler else {
+                throw EVCoreFrontendError.unsupportedHostEffect
+            }
+            documentHostEffectHandler.perform(windowRequests: windowRequests, from: self)
         }
         guard !documentRequests.isEmpty else { return }
         guard let documentHostEffectHandler else {

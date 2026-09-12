@@ -505,6 +505,9 @@ pub struct ExNormalRequest {
 pub enum ExFrontendRequest {
     File(ExFileRequest),
     Info(ExInfoRequest),
+    /// A `CTRL-W` window effect. The frontend owns pane geometry and focus;
+    /// the core only resolves which effect the grammar named.
+    Window(super::window::WindowRequest),
     /// Internal continuation staged for the main command interpreter. The
     /// interpreter consumes this before publishing an Ex outcome; it is kept
     /// in this compatibility enum only to avoid widening `ExPlan` while Ex

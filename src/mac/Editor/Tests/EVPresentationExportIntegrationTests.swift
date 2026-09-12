@@ -1,5 +1,6 @@
 import AppKit
 import CViemCore
+import ViemAppShell
 import XCTest
 
 @testable import ViemEditor
@@ -56,8 +57,11 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
         XCTAssertEqual(atEnd.prompt, ":")
         XCTAssertEqual(atEnd.text, "café")
         XCTAssertEqual(atEnd.displayText, ":café")
-        XCTAssertEqual(atEnd.font.pointSize, 14, accuracy: 0.01)
-        XCTAssertTrue(atEnd.bandRect.contains(atEnd.caretRect.origin))
+        XCTAssertEqual(atEnd.cursorUTF8Offset, "café".utf8.count)
+        let statusBar = try statusBar(in: window)
+        let atEndCaret = try XCTUnwrap(statusBar.commandCaretRect())
+        XCTAssertTrue(statusBar.bounds.contains(atEndCaret.origin))
+        XCTAssertGreaterThan(atEndCaret.minX, EVStatusBarView.contentInset)
         XCTAssertTrue(surface.editorView.isCommandLineInsertionIndicatorVisible)
         XCTAssertFalse(surface.editorView.isDocumentInsertionIndicatorVisible)
 
@@ -74,7 +78,9 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
         XCTAssertEqual(moved.text, "café")
         XCTAssertEqual(moved.info.cursor_utf8_offset, UInt64("caf".utf8.count))
         let beforeFinalGrapheme = try XCTUnwrap(surface.editorView.commandLineRenderState())
-        XCTAssertLessThan(beforeFinalGrapheme.caretRect.minX, atEnd.caretRect.minX)
+        XCTAssertEqual(beforeFinalGrapheme.cursorUTF8Offset, "caf".utf8.count)
+        let movedCaret = try XCTUnwrap(statusBar.commandCaretRect())
+        XCTAssertLessThan(movedCaret.minX, atEndCaret.minX)
 
         surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
         XCTAssertNil(surface.editorView.commandLineRenderState())
@@ -214,8 +220,24 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
-        window.contentView = surface.view
+        // A real pane pairs the editor with a status line, which renders the
+        // command line and owns its caret.
+        let container = NSView(frame: surface.view.bounds)
+        container.addSubview(surface.view)
+        let statusBar = EVStatusBarView()
+        statusBar.frame = NSRect(
+            x: 0, y: 0, width: container.bounds.width, height: EVStatusBarView.preferredHeight)
+        container.addSubview(statusBar)
+        statusBar.apply(surface.statusBarState)
+        surface.statusBarStateDidChange = { [weak statusBar] state in statusBar?.apply(state) }
+        window.contentView = container
+        statusBar.layoutSubtreeIfNeeded()
         return (surface, try XCTUnwrap(surface.session), window)
+    }
+
+    @MainActor
+    private func statusBar(in window: NSWindow) throws -> EVStatusBarView {
+        try XCTUnwrap(window.contentView?.subviews.compactMap { $0 as? EVStatusBarView }.first)
     }
 
     @MainActor

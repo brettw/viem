@@ -3430,6 +3430,98 @@ Each distinct document being closed receives one native unsaved-changes review;
 accepting Save or Delete/Don't Save must not trigger a second review. Cancel
 keeps the window and its unsaved content available for a later close attempt.
 
+#### Window commands
+
+`CTRL-W` is a Normal and Visual mode window prefix. A count is typed before
+`CTRL-W`, as in Vim; digits after the prefix are not a window command. Escape
+cancels a pending prefix without effect. Panes are ordered top to bottom, and
+that order is the only geometry these commands address.
+
+Focus commands, which never change pane order or content:
+
+- `CTRL-W j`, `CTRL-W <Down>`, `CTRL-W CTRL-J`: the pane below, stopping at the
+  bottom. A count repeats the step.
+- `CTRL-W k`, `CTRL-W <Up>`, `CTRL-W CTRL-K`: the pane above, stopping at the top.
+- `CTRL-W w`, `CTRL-W CTRL-W`: the next pane, wrapping to the top. With a count,
+  the pane with that one-based index.
+- `CTRL-W W`: the previous pane, wrapping to the bottom. With a count, the pane
+  with that one-based index.
+- `CTRL-W t`, `CTRL-W CTRL-T`: the top pane. `CTRL-W b`, `CTRL-W CTRL-B`: the
+  bottom pane.
+- `CTRL-W p`, `CTRL-W CTRL-P`: the previously focused pane. Each focus change
+  records the pane it left, so `CTRL-W p` alternates between two panes.
+- `CTRL-W h`, `CTRL-W l`, `CTRL-W <Left>`, `CTRL-W <Right>`: accepted and do
+  nothing. A stacked layout never has a left or right neighbour, which is also
+  what Vim does when one is absent.
+
+Order commands, which move panes without changing which one is focused:
+
+- `CTRL-W r`, `CTRL-W CTRL-R`: rotate downwards. Every pane moves down one and
+  the bottom pane becomes the top. A count repeats the rotation.
+- `CTRL-W R`: rotate upwards, the inverse.
+- `CTRL-W x`, `CTRL-W CTRL-X`: exchange the current pane with the next one, or
+  with the previous one when the current pane is last. With a count, exchange
+  with the pane at that one-based index. Focus follows the moved pane.
+- `CTRL-W K`: move the current pane to the top. `CTRL-W J`: move it to the
+  bottom. Focus follows the moved pane.
+
+Lifecycle commands reuse the existing Ex behavior exactly: `CTRL-W s`,
+`CTRL-W S` and `CTRL-W CTRL-S` split; `CTRL-W v` and `CTRL-W CTRL-V` split the
+same way, as `:vsplit` does; `CTRL-W n` and `CTRL-W CTRL-N` open a new empty
+pane; `CTRL-W q` and `CTRL-W CTRL-Q` quit the pane; `CTRL-W c` closes it; and
+`CTRL-W o` and `CTRL-W CTRL-O` close the other panes.
+
+Size commands change pane heights in whole visual rows of the focused pane,
+taking space from or returning it to its neighbours without changing the total:
+
+- `CTRL-W +` and `CTRL-W -`: grow or shrink the focused pane by the count,
+  default one row.
+- `CTRL-W _`: set the focused pane to the count in rows, or as tall as the
+  window allows without a count.
+- `CTRL-W =`: give every pane an equal share.
+
+A pane never shrinks below one row plus its status bar, and a size command that
+cannot move any pixels leaves every pane unchanged.
+
+Commands that require a layout this product does not have are reported as
+unsupported rather than silently accepted: `CTRL-W H`, `CTRL-W L`, `CTRL-W <`,
+`CTRL-W >` and `CTRL-W |` need side-by-side panes, and `CTRL-W T` needs tab
+pages. `CTRL-W` followed by any other key is likewise unsupported.
+
+Window commands are portable core command grammar. The core resolves the
+prefix, the count, and the command key, then emits one typed window request;
+the frontend owns pane geometry and focus. They change no document text, so
+they create no undo unit, touch no register, and are not repeated by `.`.
+
+### Status line
+
+Each pane owns one status line along its bottom edge. Its contents are:
+
+- a left group with the mode, the source-format popup, and any message; and
+- a right-aligned caret position widget: the line-mode icon and the line and
+  column, which is also the control that toggles the line mode.
+
+The caret position widget is always present and always right-aligned. The left
+group truncates before the widget moves.
+
+While a command line is active, it replaces the whole left group rather than
+covering the document with a separate band. The caret position widget remains,
+separated from the command area by five points. The command area is drawn in
+the status line's inverse colors: its background is the status foreground color
+and its text the status background color. That inverted background extends to
+the window edge on the leading side, while the command text itself obeys the
+corner inset below. The command line keeps its own caret, marked-text
+underline, and selection highlight, and scrolls horizontally to keep its caret
+visible.
+
+A window with rounded corners clips the ends of a status line. Inset every
+status line's contents, including the command line's text, by the width of the
+region the corner clips by more than one pixel. For a corner of radius `r`,
+that width is `r - sqrt(2r - 1)`, the horizontal distance at which the corner
+has eaten one pixel of height. Apply the same inset to every status line,
+including panes in the middle of a window whose corners are square, so that all
+of them align.
+
 Finder file drops target the receiving editor pane. The first dropped file
 replaces that pane's document when it is clean, including an empty untitled
 document. If the target has unsaved changes, the file opens in a new window.

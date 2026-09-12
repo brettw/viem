@@ -15,6 +15,7 @@ mod reflow;
 pub mod regex_v1;
 pub mod text_object;
 pub mod visual_block;
+pub mod window;
 
 mod command_line_completion;
 mod command_line_edit;
@@ -599,6 +600,11 @@ enum Pending {
         count_explicit: bool,
     },
     Operator(PendingOperator),
+    /// `CTRL-W` was typed. Vim reads a window command's count before the
+    /// prefix, so it is captured here and digits afterwards are not commands.
+    Window {
+        count: Option<usize>,
+    },
     ReplaceCharacter {
         count: usize,
         register: Option<char>,
@@ -2154,7 +2160,10 @@ impl CommandInterpreter {
                     Pending::Operator(pending) => {
                         !pending.g_prefix && matches!(*key, Key::Char('H' | 'M' | 'L'))
                     }
-                    Pending::SetMark | Pending::MacroRecord | Pending::MacroPlay { .. } => true,
+                    Pending::SetMark
+                    | Pending::MacroRecord
+                    | Pending::MacroPlay { .. }
+                    | Pending::Window { .. } => true,
                     Pending::G { .. } => {
                         !matches!(
                             *key,
@@ -4164,6 +4173,10 @@ impl CommandInterpreter {
                     _ => CommandOutput::unsupported("find expects text"),
                 });
             }
+            Pending::Window { count } => {
+                self.pending = Pending::None;
+                return Some(self.execute_window_command(key, count));
+            }
             Pending::SetMark => {
                 self.pending = Pending::None;
                 return Some(match key {
@@ -4246,6 +4259,12 @@ impl CommandInterpreter {
                 self.pending = Pending::Z {
                     count,
                     count_explicit: explicit_count.is_some(),
+                };
+                CommandOutput::pending()
+            }
+            Key::Ctrl('w') => {
+                self.pending = Pending::Window {
+                    count: explicit_count,
                 };
                 CommandOutput::pending()
             }
@@ -4465,6 +4484,10 @@ impl CommandInterpreter {
                 self.pending = Pending::None;
                 return Some(output);
             }
+            Pending::Window { count } => {
+                self.pending = Pending::None;
+                return Some(self.execute_window_command(key, count));
+            }
             Pending::VisualTextObject { scope, count } => {
                 self.pending = Pending::None;
                 return Some(match key {
@@ -4514,6 +4537,12 @@ impl CommandInterpreter {
         let explicit_count = self.count.take();
         let count = explicit_count.unwrap_or(1).max(1);
         let output = match key {
+            Key::Ctrl('w') => {
+                self.pending = Pending::Window {
+                    count: explicit_count,
+                };
+                CommandOutput::pending()
+            }
             Key::Char(':') => self.enter_visual_ex(document),
             Key::Char('"') => {
                 self.register_pending = true;
@@ -8069,6 +8098,7 @@ impl CommandInterpreter {
             Pending::Find { .. }
             | Pending::SetMark
             | Pending::JumpMark { .. }
+            | Pending::Window { .. }
             | Pending::MacroRecord => unreachable!("controller-only pending command was dispatched"),
             Pending::VisualTextObject { .. }
             | Pending::ReplaceVisual
@@ -8176,6 +8206,28 @@ impl CommandInterpreter {
                 self.requested_register = None;
                 Ok(CommandOutput::unsupported(format!("g{key:?}")))
             }
+        }
+    }
+
+    /// Resolve one `CTRL-W` command and publish its typed window request.
+    ///
+    /// Window commands change no document text, so they create no undo unit,
+    /// touch no register, and are not repeated by `.`.
+    fn execute_window_command(&mut self, key: Key, count: Option<usize>) -> CommandOutput {
+        use window::{window_command, WindowCommand};
+        let request = match window_command(key, count) {
+            WindowCommand::Request(request) => ExFrontendRequest::Window(request),
+            WindowCommand::File(request) => ExFrontendRequest::File(request),
+            WindowCommand::Accepted => return CommandOutput::complete(),
+            WindowCommand::Unsupported => {
+                return CommandOutput::unsupported(format!("window command {key:?}"))
+            }
+        };
+        let mut outcome = ExOutcome::default();
+        outcome.frontend_requests.push(request);
+        CommandOutput {
+            ex_outcome: Some(outcome),
+            ..CommandOutput::complete()
         }
     }
 

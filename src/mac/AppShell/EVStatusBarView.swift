@@ -5,6 +5,29 @@ public final class EVStatusBarView: NSView {
   public static var preferredHeight: CGFloat {
     max(25, ceil(EVThemeStore.shared.theme.statusFontSize + 14))
   }
+
+  /// The platform's standard window corner radius. AppKit exposes no API for
+  /// it, so it is stated here; the inset policy below is what matters.
+  public static let windowCornerRadius: CGFloat = 16
+
+  /// Width of the strip a rounded corner clips by more than one point.
+  ///
+  /// At horizontal distance `x` from the edge, a corner of radius `r` has
+  /// removed `r - sqrt(r² - (r - x)²)` of height. Solving that for one point
+  /// gives `x = r - sqrt(2r - 1)`. Insetting by it keeps text clear of the
+  /// curve without wasting the whole radius.
+  public static func cornerInset(forRadius radius: CGFloat) -> CGFloat {
+    guard radius > 1 else { return 0 }
+    return max(0, radius - (2 * radius - 1).squareRoot())
+  }
+
+  /// Every status line uses the same inset, including panes in the middle of a
+  /// window whose corners are square, so that all of them align.
+  public static var contentInset: CGFloat { cornerInset(forRadius: windowCornerRadius) }
+
+  /// Space between the command area and the caret position widget.
+  static let commandAreaGap: CGFloat = 5
+
   public var preferredHeightDidChange: (() -> Void)?
   private var themeObserver: NSObjectProtocol?
   private var heightConstraint: NSLayoutConstraint!
@@ -14,7 +37,11 @@ public final class EVStatusBarView: NSView {
   private let messageLabel = NSTextField(labelWithString: "")
   private let locationLabel = NSButton(title: "", target: nil, action: nil)
   public var optionDidChange: ((EVStatusBarOption) -> Void)?
+  /// A click inside the command area, as a UTF-8 offset into its text.
+  public var commandLineDidSelect: ((Int, Bool) -> Void)?
   private let formatSelect = EVStatusSelect()
+  private let leftGroup = NSStackView()
+  private let commandCaret = NSTextInsertionIndicator(frame: .zero)
 
   public override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -46,32 +73,36 @@ public final class EVStatusBarView: NSView {
       }
     )
     formatSelect.didChoose = { [weak self] option in self?.optionDidChange?(option) }
-    let trailing = NSStackView(views: [
-      locationLabel, formatSelect,
-    ])
-    trailing.orientation = .horizontal
-    trailing.spacing = 14
-    trailing.alignment = .centerY
-    trailing.setContentHuggingPriority(.required, for: .horizontal)
-
-    let row = NSStackView(views: [modeLabel, messageLabel, trailing])
-    row.orientation = .horizontal
-    row.spacing = 14
-    row.alignment = .centerY
-    row.translatesAutoresizingMaskIntoConstraints = false
+    // Everything except the caret position widget is left-aligned; the widget
+    // is always present and always at the trailing edge.
+    leftGroup.setViews([modeLabel, formatSelect, messageLabel], in: .leading)
+    leftGroup.orientation = .horizontal
+    leftGroup.spacing = 14
+    leftGroup.alignment = .centerY
+    leftGroup.translatesAutoresizingMaskIntoConstraints = false
+    locationLabel.translatesAutoresizingMaskIntoConstraints = false
+    commandCaret.displayMode = .hidden
+    commandCaret.isHidden = true
+    commandCaret.automaticModeOptions = [.showEffectsView, .showWhileTracking]
 
     addSubview(separator)
-    addSubview(row)
+    addSubview(leftGroup)
+    addSubview(locationLabel)
+    addSubview(commandCaret)
     heightConstraint = heightAnchor.constraint(equalToConstant: Self.preferredHeight)
+    let inset = Self.contentInset
     NSLayoutConstraint.activate([
       heightConstraint,
       separator.leadingAnchor.constraint(equalTo: leadingAnchor),
       separator.trailingAnchor.constraint(equalTo: trailingAnchor),
       separator.topAnchor.constraint(equalTo: topAnchor),
-      row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-      row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-      row.topAnchor.constraint(equalTo: separator.bottomAnchor),
-      row.bottomAnchor.constraint(equalTo: bottomAnchor),
+      leftGroup.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
+      leftGroup.topAnchor.constraint(equalTo: separator.bottomAnchor),
+      leftGroup.bottomAnchor.constraint(equalTo: bottomAnchor),
+      leftGroup.trailingAnchor.constraint(
+        lessThanOrEqualTo: locationLabel.leadingAnchor, constant: -14),
+      locationLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
+      locationLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
     ])
 
     themeObserver = NotificationCenter.default.addObserver(
@@ -113,8 +144,160 @@ public final class EVStatusBarView: NSView {
     fatalError("init(coder:) is unavailable")
   }
 
+  /// Monospaced so a typed command lines up with what the core measures.
+  private var commandFont: NSFont {
+    .monospacedSystemFont(ofSize: EVThemeStore.shared.theme.statusFontSize, weight: .regular)
+  }
+
+  /// The command area runs from the leading window edge to the caret position
+  /// widget, less the gap. Its background reaches the edge; its text does not.
+  var commandAreaRect: NSRect {
+    let limit = max(0, locationLabel.frame.minX - Self.commandAreaGap)
+    return NSRect(x: 0, y: 0, width: limit, height: bounds.height)
+  }
+
+  /// Horizontal offset of one UTF-8 position within the drawn command text,
+  /// before scrolling.
+  private func commandTextX(upTo utf8Offset: Int, in command: EVStatusCommandLine) -> CGFloat {
+    let text = command.displayText
+    let limit = command.prompt.utf8.count + max(0, utf8Offset)
+    guard let prefix = String(bytes: Array(text.utf8.prefix(limit)), encoding: .utf8) else {
+      return 0
+    }
+    return (prefix as NSString).size(withAttributes: [.font: commandFont]).width
+  }
+
+  /// Scroll applied so the caret stays inside the command area.
+  private func commandScroll(_ command: EVStatusCommandLine) -> CGFloat {
+    let caret = commandTextX(upTo: command.cursorUTF8Offset, in: command)
+    let inset = Self.contentInset
+    let available = max(0, commandAreaRect.width - inset - 2)
+    return max(0, caret - available)
+  }
+
+  /// The UTF-8 offset nearest a point in this view, for pointer selection.
+  func commandUTF8Offset(at point: NSPoint) -> Int? {
+    guard let command = currentState.commandLine else { return nil }
+    let origin = Self.contentInset - commandScroll(command)
+    var best = 0
+    var distance = CGFloat.greatestFiniteMagnitude
+    var offset = 0
+    for character in Array(command.text) + ["\u{0}"] {
+      let x = origin + commandTextX(upTo: offset, in: command)
+      if abs(x - point.x) < distance {
+        distance = abs(x - point.x)
+        best = offset
+      }
+      offset += String(character).utf8.count
+    }
+    return best
+  }
+
+  public override func mouseDown(with event: NSEvent) {
+    let point = convert(event.locationInWindow, from: nil)
+    guard currentState.commandLine != nil, commandAreaRect.contains(point),
+      let offset = commandUTF8Offset(at: point)
+    else {
+      super.mouseDown(with: event)
+      return
+    }
+    commandLineDidSelect?(offset, event.modifierFlags.contains(.shift))
+  }
+
+  public override func draw(_ dirtyRect: NSRect) {
+    super.draw(dirtyRect)
+    guard let command = currentState.commandLine else { return }
+    let theme = EVThemeStore.shared.theme
+    // Inverse of the rest of the status line, and the background runs all the
+    // way to the leading window edge even though the text is inset.
+    let background = theme.statusForeground.color
+    let foreground = theme.statusBackground.color
+    let area = commandAreaRect
+    background.setFill()
+    area.fill()
+
+    let font = commandFont
+    let text = command.displayText
+    let rendered = NSMutableAttributedString(
+      string: text, attributes: [.font: font, .foregroundColor: foreground])
+    let length = rendered.length
+    if let marked = command.markedDisplayRange, NSMaxRange(marked) <= length {
+      rendered.addAttributes(
+        [.underlineStyle: NSUnderlineStyle.single.rawValue, .underlineColor: foreground],
+        range: marked)
+    }
+    if let selected = command.selectedDisplayRange, selected.length > 0,
+      NSMaxRange(selected) <= length
+    {
+      rendered.addAttribute(.backgroundColor, value: foreground.withAlphaComponent(0.3), range: selected)
+    }
+    let lineHeight = ceil(font.ascender - font.descender + font.leading)
+    let origin = NSPoint(
+      x: Self.contentInset - commandScroll(command),
+      y: floor((bounds.height - lineHeight) / 2))
+    NSGraphicsContext.saveGraphicsState()
+    NSBezierPath(rect: NSRect(
+      x: Self.contentInset, y: 0,
+      width: max(0, area.width - Self.contentInset), height: area.height)).setClip()
+    rendered.draw(at: origin)
+    // An inactive pane outlines the caret cell instead of blinking one.
+    if !currentState.isActive {
+      var outline = commandCaretFrame(command)
+      outline.size.width = ceil(max((" " as NSString).size(withAttributes: [.font: font]).width, 1))
+      foreground.setStroke()
+      NSBezierPath(rect: outline.insetBy(dx: 0.5, dy: 0.5)).stroke()
+    }
+    NSGraphicsContext.restoreGraphicsState()
+  }
+
+  /// Caret rectangle for the command line, in this view's coordinates.
+  private func commandCaretFrame(_ command: EVStatusCommandLine) -> NSRect {
+    let font = commandFont
+    let lineHeight = ceil(font.ascender - font.descender + font.leading)
+    let x = Self.contentInset - commandScroll(command)
+      + commandTextX(upTo: command.cursorUTF8Offset, in: command)
+    return NSRect(
+      x: x, y: floor((bounds.height - lineHeight) / 2), width: 2, height: lineHeight
+    ).integral
+  }
+
+  private func updateCommandCaret() {
+    guard let command = currentState.commandLine, currentState.isActive else {
+      commandCaret.displayMode = .hidden
+      commandCaret.isHidden = true
+      return
+    }
+    commandCaret.frame = commandCaretFrame(command)
+    commandCaret.color = EVThemeStore.shared.theme.statusBackground.color
+    commandCaret.isHidden = false
+    commandCaret.displayMode = .automatic
+  }
+
+  /// Whether the command caret is currently shown.
+  public var isCommandCaretShowing: Bool { !commandCaret.isHidden }
+
+  /// The command caret's frame in this view, for input-method anchoring.
+  public func commandCaretRect() -> NSRect? {
+    commandCaret.isHidden ? nil : commandCaret.frame
+  }
+
+  public override func mouseDragged(with event: NSEvent) {
+    let point = convert(event.locationInWindow, from: nil)
+    guard currentState.commandLine != nil, let offset = commandUTF8Offset(at: point) else {
+      super.mouseDragged(with: event)
+      return
+    }
+    commandLineDidSelect?(offset, true)
+  }
+
+  public override func layout() {
+    super.layout()
+    updateCommandCaret()
+  }
+
   public func apply(_ state: EVStatusBarState) {
     currentState = state
+    leftGroup.isHidden = state.commandLine != nil
     modeLabel.stringValue = state.mode
     messageLabel.stringValue = state.message
     locationLabel.title = state.location
@@ -136,7 +319,14 @@ public final class EVStatusBarView: NSView {
     locationLabel.setAccessibilityLabel(
       "\(state.lineMode == .visual ? "Visual" : "Physical source") lines: \(state.location)")
     formatSelect.setAccessibilityLabel("Format: \(state.format)")
+    if let command = state.commandLine {
+      setAccessibilityLabel("Command line: \(command.displayText)")
+    } else {
+      setAccessibilityLabel("Editor status")
+    }
     applyTheme()
+    needsLayout = true
+    updateCommandCaret()
   }
 
   static func lineIcon(_ mode: EVLineMode) -> NSImage? {

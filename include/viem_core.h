@@ -290,6 +290,27 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_EX_FRONTEND_PWD 19u
 #define VIEM_EX_FRONTEND_CD 20u
 #define VIEM_EX_FRONTEND_CHECKTIME 21u
+/* A CTRL-W window effect. window_command names it; window_count carries its
+   count or one-based pane index when VIEM_EX_FRONTEND_HAS_COUNT is set. */
+#define VIEM_EX_FRONTEND_WINDOW 22u
+
+#define VIEM_WINDOW_FOCUS_DOWN 1u
+#define VIEM_WINDOW_FOCUS_UP 2u
+#define VIEM_WINDOW_FOCUS_NEXT 3u
+#define VIEM_WINDOW_FOCUS_PREVIOUS 4u
+#define VIEM_WINDOW_FOCUS_TOP 5u
+#define VIEM_WINDOW_FOCUS_BOTTOM 6u
+#define VIEM_WINDOW_FOCUS_LAST_ACCESSED 7u
+#define VIEM_WINDOW_ROTATE_DOWN 8u
+#define VIEM_WINDOW_ROTATE_UP 9u
+#define VIEM_WINDOW_EXCHANGE 10u
+#define VIEM_WINDOW_MOVE_TO_TOP 11u
+#define VIEM_WINDOW_MOVE_TO_BOTTOM 12u
+#define VIEM_WINDOW_CLOSE_OTHERS 13u
+#define VIEM_WINDOW_GROW 14u
+#define VIEM_WINDOW_SHRINK 15u
+#define VIEM_WINDOW_SET_HEIGHT 16u
+#define VIEM_WINDOW_EQUALIZE_HEIGHTS 17u
 
 #define VIEM_EX_FRONTEND_FORCE (1u << 0)
 #define VIEM_EX_FRONTEND_HAS_PATH (1u << 1)
@@ -297,6 +318,8 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_EX_FRONTEND_NUMBER (1u << 3)
 #define VIEM_EX_FRONTEND_LIST (1u << 4)
 #define VIEM_EX_FRONTEND_LITERAL (1u << 5)
+/* window_count carries an explicit count or pane index. */
+#define VIEM_EX_FRONTEND_HAS_COUNT (1u << 6)
 
 #define VIEM_EX_OPTION_WRAP 1u
 #define VIEM_EX_OPTION_LINEBREAK 2u
@@ -449,7 +472,8 @@ typedef struct ViemExFrontendRequestV1 {
   uint32_t struct_size;
   uint32_t kind;
   uint32_t flags;
-  uint32_t reserved;
+  /* One VIEM_WINDOW_* value when kind is VIEM_EX_FRONTEND_WINDOW. */
+  uint32_t window_command;
   uint64_t document_id;
   uint64_t document_revision;
   ViemEffectBytesRefV1 text;
@@ -459,6 +483,8 @@ typedef struct ViemExFrontendRequestV1 {
   uint64_t option_count;
   uint64_t first_payload;
   uint64_t payload_count;
+  /* Meaningful only with VIEM_EX_FRONTEND_HAS_COUNT. */
+  uint64_t window_count;
 } ViemExFrontendRequestV1;
 
 #define VIEM_EX_FRONTEND_REQUEST_V1_SIZE \

@@ -11,6 +11,35 @@ public enum EVStatusBarOption: Equatable, Sendable {
   case format(EVSourceFormat)
 }
 
+/// The active `:`, `/`, or `?` command line. It is rendered inside the status
+/// line, so its offsets travel as UTF-8 to match the core exactly.
+public struct EVStatusCommandLine: Equatable, Sendable {
+  public var prompt: String
+  public var text: String
+  /// Caret position within `text`.
+  public var cursorUTF8Offset: Int
+  /// UTF-16 ranges within `displayText`: input-method text still being
+  /// composed, and the selection.
+  public var markedDisplayRange: NSRange?
+  public var selectedDisplayRange: NSRange?
+
+  public init(
+    prompt: String,
+    text: String,
+    cursorUTF8Offset: Int,
+    markedDisplayRange: NSRange? = nil,
+    selectedDisplayRange: NSRange? = nil
+  ) {
+    self.prompt = prompt
+    self.text = text
+    self.cursorUTF8Offset = cursorUTF8Offset
+    self.markedDisplayRange = markedDisplayRange
+    self.selectedDisplayRange = selectedDisplayRange
+  }
+
+  public var displayText: String { prompt + text }
+}
+
 /// Presentation-only values shown by the window's status bar.
 public struct EVStatusBarState: Equatable, Sendable {
   public var mode: String
@@ -19,6 +48,12 @@ public struct EVStatusBarState: Equatable, Sendable {
   public var format: String
   public var lineMode: EVLineMode
   public var locationIsFragment: Bool
+  /// While this is set, the command line replaces the status line's left
+  /// group. The caret position widget stays.
+  public var commandLine: EVStatusCommandLine?
+  /// Whether this pane holds the text focus. The command caret blinks only in
+  /// the active pane and is outlined elsewhere.
+  public var isActive: Bool
 
   public init(
     mode: String = "NORMAL",
@@ -26,13 +61,17 @@ public struct EVStatusBarState: Equatable, Sendable {
     location: String = "Ln 1, Col 1",
     format: String = "Plain Text",
     lineMode: EVLineMode = .visual,
-    locationIsFragment: Bool = false
+    locationIsFragment: Bool = false,
+    commandLine: EVStatusCommandLine? = nil,
+    isActive: Bool = false
   ) {
     self.mode = mode
     self.message = message
     self.location = location
     self.format = format
     self.lineMode = lineMode
+    self.commandLine = commandLine
+    self.isActive = isActive
     self.locationIsFragment = locationIsFragment
   }
 }
@@ -158,6 +197,11 @@ public protocol EVDocumentHostEffectHandling: AnyObject {
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
   )
 
+  /// Pane geometry and focus belong to the host, not to the core or to any
+  /// one surface. The requesting surface identifies the focused pane.
+ 
+  func perform(windowRequests: [EVWindowRequest], from surface: any EVEditorSurface)
+
   /// A file drop targets the receiving surface, which may be an inactive pane.
   /// The host owns document identity, dirty-state review, and native windows.
   func openDroppedFiles(
@@ -167,6 +211,8 @@ public protocol EVDocumentHostEffectHandling: AnyObject {
 }
 
 extension EVDocumentHostEffectHandling {
+  public func perform(windowRequests: [EVWindowRequest], from surface: any EVEditorSurface) {}
+
   public func openDroppedFiles(
     _ urls: [URL], in targetSurface: any EVEditorSurface,
     completion: @escaping @MainActor (Result<Void, Error>) -> Void
@@ -220,6 +266,33 @@ public enum EVDocumentHostError: LocalizedError, Equatable {
   }
 }
 
+/// One `CTRL-W` window effect. Panes are ordered top to bottom, and an index
+/// is one-based, matching the count a user types before the prefix.
+public enum EVWindowRequest: Equatable, Sendable {
+  case focusDown(count: Int)
+  case focusUp(count: Int)
+  /// Without an index, the next pane, wrapping to the top.
+  case focusNext(index: Int?)
+  /// Without an index, the previous pane, wrapping to the bottom.
+  case focusPrevious(index: Int?)
+  case focusTop
+  case focusBottom
+  case focusLastAccessed
+  case rotateDown(count: Int)
+  case rotateUp(count: Int)
+  /// Exchange the focused pane with the next one, with the previous one when
+  /// it is last, or with the pane at `index`. Focus follows the pane.
+  case exchange(index: Int?)
+  case moveToTop
+  case moveToBottom
+  case closeOthers
+  case grow(rows: Int)
+  case shrink(rows: Int)
+  /// Without a row count, as tall as the window allows.
+  case setHeight(rows: Int?)
+  case equalizeHeights
+}
+
 /// One view onto an editor document. Its NSView is a projection, never storage.
 @MainActor
 public protocol EVEditorSurface: AnyObject {
@@ -227,14 +300,24 @@ public protocol EVEditorSurface: AnyObject {
   var statusBarState: EVStatusBarState { get }
   var statusBarStateDidChange: ((EVStatusBarState) -> Void)? { get set }
 
+  /// Height of one laid-out visual row, the unit the `CTRL-W` height commands
+  /// count in. `nil` before this surface has any layout.
+  var visualRowHeight: CGFloat? { get }
+
   func perform(menuCommand: EVMenuCommand, sender: Any?)
   func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation
   func perform(statusOption: EVStatusBarOption)
   func showDocumentMessage(_ message: String)
+
+  /// Place the command-line caret, which the status line hit-tested against
+  /// its own rendering. Offsets are UTF-8 within the command-line text.
+  func selectCommandLine(atUTF8Offset offset: Int, extending: Bool)
 }
 
 extension EVEditorSurface {
+  public var visualRowHeight: CGFloat? { nil }
   public func perform(statusOption: EVStatusBarOption) {}
+  public func selectCommandLine(atUTF8Offset offset: Int, extending: Bool) {}
   public func showDocumentMessage(_ message: String) {}
 }
 

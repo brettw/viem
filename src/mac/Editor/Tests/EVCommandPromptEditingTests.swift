@@ -22,7 +22,22 @@ import XCTest
         window.contentViewController = surface
         surface.loadViewIfNeeded(); surface.view.frame = NSRect(x: 0, y: 0, width: 600, height: 400); surface.viewDidLayout()
         window.makeFirstResponder(surface.editorView)
+        // A real pane pairs the editor with a status line, which now renders
+        // and hit-tests the command line.
+        let statusBar = EVStatusBarView()
+        statusBar.frame = NSRect(x: 0, y: 0, width: 600, height: EVStatusBarView.preferredHeight)
+        window.contentView?.addSubview(statusBar)
+        statusBar.apply(surface.statusBarState)
+        surface.statusBarStateDidChange = { [weak statusBar] state in statusBar?.apply(state) }
+        statusBar.commandLineDidSelect = { [weak surface] offset, extending in
+            surface?.selectCommandLine(atUTF8Offset: offset, extending: extending)
+        }
+        statusBar.layoutSubtreeIfNeeded()
         return (backend, surface, try XCTUnwrap(surface.session), window)
+    }
+
+    private func statusBar(in window: NSWindow) throws -> EVStatusBarView {
+        try XCTUnwrap(window.contentView?.subviews.compactMap { $0 as? EVStatusBarView }.first)
     }
     private func key(_ code: UInt16, shift: Bool = false) throws -> NSEvent {
         try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: shift ? [.shift] : [], timestamp: 0, windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code))
@@ -51,10 +66,15 @@ import XCTest
     func testMousePromptSelectionAndContextMenuKeepDocumentSelectionUntouched() throws {
         let (backend, surface, session, window) = try makeSurface()
         surface.performInput { _ = try session.sendText(":abcdef") }
-        let state = try XCTUnwrap(surface.editorView.commandLineRenderState())
-        let point = surface.editorView.convert(NSPoint(x: state.textOrigin.x, y: state.bandRect.midY), to: nil)
+        _ = try XCTUnwrap(surface.editorView.commandLineRenderState())
+        // The command line lives in the status line, so clicking it happens
+        // there rather than over the document.
+        let statusBar = try statusBar(in: window)
+        statusBar.layoutSubtreeIfNeeded()
+        let point = statusBar.convert(
+            NSPoint(x: EVStatusBarView.contentInset, y: statusBar.bounds.midY), to: nil)
         let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
-        surface.editorView.mouseDown(with: down)
+        statusBar.mouseDown(with: down)
         XCTAssertEqual(surface.commandLine?.info.cursor_utf8_offset, 0)
         surface.editorView.keyDown(with: try key(119, shift: true))
         XCTAssertEqual(surface.editorView.selectedRange(), NSRange(location: 0, length: 6))

@@ -427,6 +427,28 @@ pub const VIEM_EX_FRONTEND_EDIT_NEW_WINDOW: u32 = 18;
 pub const VIEM_EX_FRONTEND_PWD: u32 = 19;
 pub const VIEM_EX_FRONTEND_CD: u32 = 20;
 pub const VIEM_EX_FRONTEND_CHECKTIME: u32 = 21;
+/// A `CTRL-W` window effect. `window_command` names it and `window_count`
+/// carries its count or one-based pane index when `VIEM_EX_FRONTEND_HAS_COUNT`
+/// is set.
+pub const VIEM_EX_FRONTEND_WINDOW: u32 = 22;
+
+pub const VIEM_WINDOW_FOCUS_DOWN: u32 = 1;
+pub const VIEM_WINDOW_FOCUS_UP: u32 = 2;
+pub const VIEM_WINDOW_FOCUS_NEXT: u32 = 3;
+pub const VIEM_WINDOW_FOCUS_PREVIOUS: u32 = 4;
+pub const VIEM_WINDOW_FOCUS_TOP: u32 = 5;
+pub const VIEM_WINDOW_FOCUS_BOTTOM: u32 = 6;
+pub const VIEM_WINDOW_FOCUS_LAST_ACCESSED: u32 = 7;
+pub const VIEM_WINDOW_ROTATE_DOWN: u32 = 8;
+pub const VIEM_WINDOW_ROTATE_UP: u32 = 9;
+pub const VIEM_WINDOW_EXCHANGE: u32 = 10;
+pub const VIEM_WINDOW_MOVE_TO_TOP: u32 = 11;
+pub const VIEM_WINDOW_MOVE_TO_BOTTOM: u32 = 12;
+pub const VIEM_WINDOW_CLOSE_OTHERS: u32 = 13;
+pub const VIEM_WINDOW_GROW: u32 = 14;
+pub const VIEM_WINDOW_SHRINK: u32 = 15;
+pub const VIEM_WINDOW_SET_HEIGHT: u32 = 16;
+pub const VIEM_WINDOW_EQUALIZE_HEIGHTS: u32 = 17;
 
 pub const VIEM_EX_FRONTEND_FORCE: u32 = 1 << 0;
 pub const VIEM_EX_FRONTEND_HAS_PATH: u32 = 1 << 1;
@@ -434,6 +456,8 @@ pub const VIEM_EX_FRONTEND_HAS_RANGE: u32 = 1 << 2;
 pub const VIEM_EX_FRONTEND_NUMBER: u32 = 1 << 3;
 pub const VIEM_EX_FRONTEND_LIST: u32 = 1 << 4;
 pub const VIEM_EX_FRONTEND_LITERAL: u32 = 1 << 5;
+/// `window_count` carries an explicit count or pane index.
+pub const VIEM_EX_FRONTEND_HAS_COUNT: u32 = 1 << 6;
 
 pub const VIEM_EX_OPTION_WRAP: u32 = 1;
 pub const VIEM_EX_OPTION_LINEBREAK: u32 = 2;
@@ -650,7 +674,8 @@ pub struct ViemExFrontendRequestV1 {
     pub struct_size: u32,
     pub kind: u32,
     pub flags: u32,
-    pub reserved: u32,
+    /// One `VIEM_WINDOW_*` value when `kind` is `VIEM_EX_FRONTEND_WINDOW`.
+    pub window_command: u32,
     pub document_id: u64,
     pub document_revision: u64,
     pub text: ViemEffectBytesRefV1,
@@ -660,6 +685,8 @@ pub struct ViemExFrontendRequestV1 {
     pub option_count: u64,
     pub first_payload: u64,
     pub payload_count: u64,
+    /// Meaningful only with `VIEM_EX_FRONTEND_HAS_COUNT`.
+    pub window_count: u64,
 }
 
 pub const VIEM_EX_FRONTEND_REQUEST_V1_SIZE: u32 = size_of::<ViemExFrontendRequestV1>() as u32;
@@ -3251,6 +3278,7 @@ fn capture_ex_info_payloads(
             ExFrontendRequest::Info(ExInfoRequest::Options(_))
             | ExFrontendRequest::Info(ExInfoRequest::Message(_))
             | ExFrontendRequest::File(_)
+            | ExFrontendRequest::Window(_)
             | ExFrontendRequest::Normal(_) => None,
         })
         .collect()
@@ -3415,6 +3443,66 @@ fn export_ex_frontend_request(
         ..ViemExFrontendRequestV1::default()
     };
     match request {
+        ExFrontendRequest::Window(request) => {
+            use crate::command::window::WindowRequest;
+            output.kind = VIEM_EX_FRONTEND_WINDOW;
+            let mut count = |value: Option<usize>| -> Result<(), ViemStatus> {
+                if let Some(value) = value {
+                    output.flags |= VIEM_EX_FRONTEND_HAS_COUNT;
+                    output.window_count = checked_export_count(value)?;
+                }
+                Ok(())
+            };
+            output.window_command = match request {
+                WindowRequest::FocusDown { count: rows } => {
+                    count(Some(*rows))?;
+                    VIEM_WINDOW_FOCUS_DOWN
+                }
+                WindowRequest::FocusUp { count: rows } => {
+                    count(Some(*rows))?;
+                    VIEM_WINDOW_FOCUS_UP
+                }
+                WindowRequest::FocusNext { index } => {
+                    count(*index)?;
+                    VIEM_WINDOW_FOCUS_NEXT
+                }
+                WindowRequest::FocusPrevious { index } => {
+                    count(*index)?;
+                    VIEM_WINDOW_FOCUS_PREVIOUS
+                }
+                WindowRequest::FocusTop => VIEM_WINDOW_FOCUS_TOP,
+                WindowRequest::FocusBottom => VIEM_WINDOW_FOCUS_BOTTOM,
+                WindowRequest::FocusLastAccessed => VIEM_WINDOW_FOCUS_LAST_ACCESSED,
+                WindowRequest::RotateDown { count: steps } => {
+                    count(Some(*steps))?;
+                    VIEM_WINDOW_ROTATE_DOWN
+                }
+                WindowRequest::RotateUp { count: steps } => {
+                    count(Some(*steps))?;
+                    VIEM_WINDOW_ROTATE_UP
+                }
+                WindowRequest::Exchange { index } => {
+                    count(*index)?;
+                    VIEM_WINDOW_EXCHANGE
+                }
+                WindowRequest::MoveToTop => VIEM_WINDOW_MOVE_TO_TOP,
+                WindowRequest::MoveToBottom => VIEM_WINDOW_MOVE_TO_BOTTOM,
+                WindowRequest::CloseOthers => VIEM_WINDOW_CLOSE_OTHERS,
+                WindowRequest::Grow { rows } => {
+                    count(Some(*rows))?;
+                    VIEM_WINDOW_GROW
+                }
+                WindowRequest::Shrink { rows } => {
+                    count(Some(*rows))?;
+                    VIEM_WINDOW_SHRINK
+                }
+                WindowRequest::SetHeight { rows } => {
+                    count(*rows)?;
+                    VIEM_WINDOW_SET_HEIGHT
+                }
+                WindowRequest::EqualizeHeights => VIEM_WINDOW_EQUALIZE_HEIGHTS,
+            };
+        }
         ExFrontendRequest::File(request) => match request {
             ExFileRequest::EditNewWindow { path } => {
                 output.kind = VIEM_EX_FRONTEND_EDIT_NEW_WINDOW;

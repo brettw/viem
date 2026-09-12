@@ -5,16 +5,17 @@ import ViemCoreTextProvider
 import ViemAppShell
 import Foundation
 
+/// The command line's text and ranges. The status line owns its geometry, so
+/// nothing here is a rectangle.
 struct EVCommandLineRenderState {
     let prompt: String
     let text: String
     let displayText: String
+    /// UTF-16 ranges within `displayText`.
     let markedDisplayRange: NSRange?
     let selectedDisplayRange: NSRange?
-    let font: NSFont
-    let bandRect: NSRect
-    let textOrigin: NSPoint
-    let caretRect: NSRect
+    /// Caret position as a UTF-8 offset within `text`.
+    let cursorUTF8Offset: Int
 }
 
 struct EVResolvedTextPaint {
@@ -119,7 +120,6 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     /// detached, inert text surface through this weak reference instead.
     private(set) weak var surface: EVEditorSurfaceController?
     private let insertionIndicator = NSTextInsertionIndicator(frame: .zero)
-    private let commandLineInsertionIndicator = NSTextInsertionIndicator(frame: .zero)
     let documentScrollbars = EVDocumentScrollbars()
     private var markedTextValue = ""
     private var markedSelection = NSRange(location: NSNotFound, length: 0)
@@ -130,7 +130,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private var lastCustomCaretState: EVCustomCaretState?
     private var lastTextInputSelectionState: EVTextInputSelectionState?
     private var textInputGeometryUpdateActive = false
-    private var isActiveTextSurface = false
+    private(set) var isActiveTextSurface = false
     private var caretAppearanceObserver: NSObjectProtocol?
     private var editingPreferencesObserver: NSObjectProtocol?
     private weak var configuredEditingSession: EVCoreViewSession?
@@ -149,7 +149,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     var isDragAutoscrollActive: Bool { dragAutoscrollTimer?.isValid == true }
     var isDocumentInsertionIndicatorVisible: Bool { !insertionIndicator.isHidden }
-    var isCommandLineInsertionIndicatorVisible: Bool { !commandLineInsertionIndicator.isHidden }
+    /// The status line owns the command-line caret.
+    var isCommandLineInsertionIndicatorVisible: Bool {
+        statusBar?.isCommandCaretShowing ?? false
+    }
     var customCaretPresentationForTesting: EVCustomCaretPresentation {
         customCaretBlinkController.presentation
     }
@@ -173,10 +176,6 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         insertionIndicator.isHidden = true
         insertionIndicator.automaticModeOptions = [.showEffectsView, .showWhileTracking]
         addSubview(insertionIndicator, positioned: .above, relativeTo: nil)
-        commandLineInsertionIndicator.displayMode = .hidden
-        commandLineInsertionIndicator.isHidden = true
-        commandLineInsertionIndicator.automaticModeOptions = [.showEffectsView, .showWhileTracking]
-        addSubview(commandLineInsertionIndicator, positioned: .above, relativeTo: nil)
         documentScrollbars.autoresizingMask = [.width, .height]
         documentScrollbars.onScroll = { [weak self] axis, fraction in
             self?.scrollDocument(axis: axis, fraction: fraction)
@@ -246,6 +245,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         if accepted {
             isActiveTextSurface = true
             applyPresentation()
+            surface?.refreshStatusBarActivity()
         }
         return accepted
     }
@@ -256,6 +256,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             isActiveTextSurface = false
             stopDragAutoscroll()
             applyPresentation()
+            surface?.refreshStatusBarActivity()
         }
         return accepted
     }
@@ -297,7 +298,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             drawCustomCaret(snapshot, in: context)
             context.restoreGState()
         }
-        drawCommandLineBand()
+    }
+
+    /// The pane's status line, which renders and hit-tests the command line.
+    var statusBar: EVStatusBarView? {
+        superview?.subviews.lazy.compactMap { $0 as? EVStatusBarView }.first
     }
 
     private(set) lazy var commandOutputBar: EVCommandOutputBar = {
@@ -332,7 +337,6 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         updateCustomCaretPresentation()
         needsDisplay = true
         updateInsertionIndicator()
-        updateCommandLineInsertionIndicator()
         notifyTextInputStateChanged()
     }
 
@@ -1141,9 +1145,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func layoutDocumentScrollbars() {
-        let bottom = commandOutputBar.isHidden
-            ? (commandLineRenderState()?.bandRect.minY ?? bounds.maxY)
-            : commandOutputBar.frame.minY
+        let bottom = commandOutputBar.isHidden ? bounds.maxY : commandOutputBar.frame.minY
         documentScrollbars.frame = NSRect(x: bounds.minX, y: bounds.minY,
             width: bounds.width, height: max(0, bottom - bounds.minY))
         documentScrollbars.needsLayout = true
@@ -1492,20 +1494,6 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         return true
     }
 
-    private func selectCommandLine(at point: NSPoint, extending: Bool, allowOutside: Bool = false) -> Bool {
-        guard let surface, let session = surface.session, let prompt = surface.commandLine,
-              let state = commandLineRenderState(), allowOutside || state.bandRect.contains(point) else { return false }
-        if compositionActive { cancelActiveMarkedText(using: session, discardInputContext: true); return true }
-        var closest = 0
-        var distance = CGFloat.greatestFiniteMagnitude
-        for index in Array(prompt.text.indices) + [prompt.text.endIndex] {
-            let prefix = state.prompt + prompt.text[..<index]
-            let x = state.textOrigin.x + (prefix as NSString).size(withAttributes: [.font: state.font]).width
-            if abs(x - point.x) < distance { distance = abs(x - point.x); closest = prompt.text[..<index].utf8.count }
-        }
-        surface.performInput { _ = try session.editCommandLine(prompt, anchor: extending ? Int(prompt.selectionAnchorUTF8Offset) : closest, active: closest) }
-        return true
-    }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu(title: "Edit")
@@ -1525,15 +1513,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     // MARK: - Pointer and scrolling
 
-    private var draggingCommandLine = false
-
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control) { showEditorContextMenu(event); return }
-        if selectCommandLine(at: convert(event.locationInWindow, from: nil), extending: event.modifierFlags.contains(.shift)) {
-            window?.makeFirstResponder(self)
-            draggingCommandLine = true
-            return
-        }
         stopDragAutoscroll()
         window?.makeFirstResponder(self)
         customCaretBlinkController.restartAfterActivity()
@@ -1546,10 +1527,6 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        if draggingCommandLine {
-            _ = selectCommandLine(at: convert(event.locationInWindow, from: nil), extending: true, allowOutside: true)
-            return
-        }
         _ = autoscroll(with: event)
         customCaretBlinkController.restartAfterActivity()
         placeCursor(for: event, extending: true)
@@ -1557,7 +1534,6 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func mouseUp(with event: NSEvent) {
-        draggingCommandLine = false
         stopDragAutoscroll()
         super.mouseUp(with: event)
     }
@@ -1922,8 +1898,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
            let actual = utf16Range(forUTF8: utf8.lowerBound ..< utf8.lowerBound, in: state.text)
         {
             actualRange?.pointee = actual
-            let windowRect = convert(state.caretRect, to: nil)
-            return window?.convertToScreen(windowRect) ?? .zero
+            // The status line draws the command caret, so its geometry is the
+            // one an input method must anchor to.
+            guard let statusBar, let caret = statusBar.commandCaretRect() else { return .zero }
+            return window?.convertToScreen(statusBar.convert(caret, to: nil)) ?? .zero
         }
         guard let session = surface.session,
               let snapshot = surface.layoutSnapshot,
@@ -3105,122 +3083,20 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             markedDisplayRange = marked
             selectedDisplayRange = selected
         }
-        guard let prefixText = String(
-            bytes: Array(text.utf8.prefix(cursor)),
-            encoding: .utf8
-        ) else { return nil }
-        let displayText = promptText + text
-        let prefix = promptText + prefixText
-        let attributes: [NSAttributedString.Key: Any] = [.font: Self.commandLineFont]
-        let lineHeight = ceil(
-            Self.commandLineFont.ascender
-                - Self.commandLineFont.descender
-                + Self.commandLineFont.leading
-        )
-        let bandHeight = max(Self.canvasInsets.bottom, lineHeight + 6)
-        let bandRect = NSRect(
-            x: 0,
-            y: max(bounds.minY, bounds.maxY - bandHeight),
-            width: bounds.width,
-            height: min(bandHeight, bounds.height)
-        )
-        let naturalTextX = min(Self.canvasInsets.left, bandRect.maxX)
-        let prefixWidth = (prefix as NSString).size(withAttributes: attributes).width
-        let maximumCaretX = max(naturalTextX, bandRect.maxX - Self.canvasInsets.right - 2)
-        let horizontalScroll = max(0, naturalTextX + prefixWidth - maximumCaretX)
-        let textOrigin = NSPoint(
-            x: naturalTextX - horizontalScroll,
-            y: bandRect.minY + max(0, floor((bandRect.height - lineHeight) / 2))
-        )
-        let caretRect = NSRect(
-            x: naturalTextX + prefixWidth - horizontalScroll,
-            y: textOrigin.y,
-            width: 2,
-            height: lineHeight
-        )
+        guard cursor >= 0, cursor <= text.utf8.count,
+              String(bytes: Array(text.utf8.prefix(cursor)), encoding: .utf8) != nil
+        else { return nil }
         return EVCommandLineRenderState(
             prompt: promptText,
             text: text,
-            displayText: displayText,
+            displayText: promptText + text,
             markedDisplayRange: markedDisplayRange,
             selectedDisplayRange: selectedDisplayRange,
-            font: Self.commandLineFont,
-            bandRect: bandRect,
-            textOrigin: textOrigin,
-            caretRect: caretRect
+            cursorUTF8Offset: cursor
         )
     }
 
-    private func drawCommandLineBand() {
-        guard let surface else { return }
-        guard let state = commandLineRenderState() else { return }
-        let paint = surface.layoutSnapshot.flatMap(exactLayoutPaint(for:))
-        let background = paint.map { nativeCanvas($0.info) }
-            ?? resolvedColor(.textBackgroundColor)
-        let foreground = paint.map { nativeForeground($0.info.default_paint) }
-            ?? resolvedColor(.textColor)
-        background.setFill()
-        state.bandRect.fill()
-        resolvedColor(.separatorColor).setStroke()
-        let separator = NSBezierPath()
-        separator.move(to: NSPoint(x: state.bandRect.minX, y: state.bandRect.minY + 0.5))
-        separator.line(to: NSPoint(x: state.bandRect.maxX, y: state.bandRect.minY + 0.5))
-        separator.lineWidth = 1
-        separator.stroke()
-        let rendered = NSMutableAttributedString(
-            string: state.displayText,
-            attributes: [
-                .font: state.font,
-                .foregroundColor: foreground,
-            ]
-        )
-        if let marked = state.markedDisplayRange,
-           NSMaxRange(marked) <= rendered.length
-        {
-            rendered.addAttributes(
-                [
-                    .underlineStyle: NSUnderlineStyle.single.rawValue,
-                    .underlineColor: resolvedColor(.controlAccentColor),
-                ],
-                range: marked
-            )
-        }
-        if let selected = state.selectedDisplayRange,
-           selected.length > 0,
-           NSMaxRange(selected) <= rendered.length
-        {
-            rendered.addAttribute(
-                .backgroundColor,
-                value: resolvedColor(.selectedTextBackgroundColor),
-                range: selected
-            )
-        }
-        rendered.draw(at: state.textOrigin)
-        if !isActiveTextSurface {
-            let color = EVCaretAppearanceResolver.shared.color(for: self)
-            var outline = state.caretRect
-            outline.size.width = ceil(max(
-                (" " as NSString).size(withAttributes: [.font: state.font]).width,
-                1
-            ))
-            color.setStroke()
-            NSBezierPath(rect: outline.insetBy(dx: 0.5, dy: 0.5)).stroke()
-        }
-    }
 
-    private func updateCommandLineInsertionIndicator() {
-        guard isActiveTextSurface,
-              let state = commandLineRenderState()
-        else {
-            commandLineInsertionIndicator.displayMode = .hidden
-            commandLineInsertionIndicator.isHidden = true
-            return
-        }
-        commandLineInsertionIndicator.frame = state.caretRect.integral
-        commandLineInsertionIndicator.color = EVCaretAppearanceResolver.shared.color(for: self)
-        commandLineInsertionIndicator.isHidden = false
-        commandLineInsertionIndicator.displayMode = .automatic
-    }
 
     private func clusterRect(_ cluster: ViemPositionedClusterV1) -> NSRect {
         let bounds = cluster.typographic_bounds

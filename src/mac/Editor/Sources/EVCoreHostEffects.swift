@@ -147,6 +147,10 @@ struct EVExTextLineEffect: Equatable {
 struct EVExHostEffect: Equatable {
     let kind: UInt32
     let flags: UInt32
+    /// One VIEM_WINDOW_* value when `kind` is a window request.
+    let windowCommand: UInt32
+    /// The count or one-based pane index a window request carried.
+    let windowCount: UInt64?
     let documentID: UInt64
     let documentRevision: UInt64
     let text: String
@@ -400,6 +404,9 @@ private extension EVRawEffectBatch {
             return EVExHostEffect(
                 kind: request.kind,
                 flags: request.flags,
+                windowCommand: request.window_command,
+                windowCount: request.flags & UInt32(VIEM_EX_FRONTEND_HAS_COUNT) != 0
+                    ? request.window_count : nil,
                 documentID: request.document_id,
                 documentRevision: request.document_revision,
                 text: try string(request.text),
