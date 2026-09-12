@@ -1852,6 +1852,10 @@ atomic, and unknown keys survive updates. Invalid or unsupported versions are re
 overwriting the user's file. `VIEM_CONFIG_DIR` may override the directory for
 isolated development and testing.
 
+The planned Text width control in Editing uses this same store and the
+buffer-default inheritance policy under **Planned hard-line reflow**; it is not
+a theme, per-view wrap width, or source-backed style property.
+
 The `recentDocuments` array stores the ten most recently opened or saved files
 as full absolute paths, newest first. Successfully reopening an already open
 file also moves it to the front. Canonical path and file identity prevent
@@ -2063,6 +2067,18 @@ without alternating between impossible top and bottom reveals. A view whose
 caret is offscreen keeps its viewport text anchor instead. These policies remain
 portable and use exact local geometry, without laying out the gap to an offscreen
 caret or measuring the whole document.
+
+In particular, an already-visible editing line MUST NOT jump to the bottom of
+the window after a keystroke or syntax completion. Preserve its screen baseline
+through the viewport anchor while it remains fully visible. If surrounding
+layout geometry is unchanged, the numeric viewport origin also stays unchanged;
+changed heights above the anchor may require correcting that origin to keep the
+same text on screen. A partial layout region is not a document edge. Missing
+cached rows below or above the preserved anchor MUST NOT clamp the requested viewport
+to that region. Materialize the missing local coverage for the anchored
+viewport, then apply only the visibility adjustment actually required by the
+current caret row. This applies with wrapping on or off, across long-line layout
+chunks, and with either syntax provider or no highlighting.
 
 Rehighlighting MUST retain the previously accepted appearance of surviving text
 while replacement results are pending. Rebase this temporary presentation with
@@ -2381,6 +2397,8 @@ source, syntax, unrelated style assignments, or width-independent shaping.
 
 - Wrapping is a per-view option. Soft wraps are layout artifacts and MUST NOT
   insert, remove, or serialize newline characters.
+- The planned `textwidth` reflow setting below controls explicit source edits
+  by `gq` and `gw`; it does not constrain soft wrapping or resize layout.
 - `wrap` controls whether soft wrapping is active. Wrapped text always uses
   Unicode-appropriate word/line-break opportunities at the usable text width;
   there is no separate `linebreak` option or character-wrapping mode.
@@ -2416,6 +2434,10 @@ a buffer to RTF returns any physical-mode views to Visual.
 - Standalone and operator-pending `j`/`k`, line start/end motions, doubled line
   operators, `C`/`D`, line-oriented insertion, and Visual Line use the selected
   mode. Counts, registers, replay, dot repeat, and undo retain that policy.
+- The planned `gq`/`gw` source-reflow operators are an explicit exception:
+  their implicit line motions and doubled forms count complete hard lines.
+  Explicit visual motions and existing Visual selections retain their domains,
+  then reflow expands their checked extents to the intersected hard lines.
 - Explicit `g` visual-row motions keep their visual meaning. Ex addresses and
   ranges retain their explicit formatted hard-line domain.
 - Native Select All selects the entire formatted document through its exact
@@ -2820,6 +2842,9 @@ retains this typed operand distinction.
 The `=` operator initially performs deterministic indentation defined by core
 configuration. It must not invoke a language-specific formatter implicitly.
 
+The planned `gq` and `gw` operators are specified under **Planned hard-line
+reflow** below. They are not implemented or claimed as supported yet.
+
 Marks and searches are composable operator motions. `` `{a-z} `` uses the
 mark's exact position as an exclusive characterwise motion, while `'{a-z}`
 uses the marked hard line's first nonblank position and is linewise; counts do
@@ -2828,6 +2853,163 @@ not alter a named-mark destination. `/pattern`, `?pattern`, `n`, `N`, `*`, `#`,
 counts where Vim does. An operator search records its jump only after the
 operator succeeds. Escape from its command line cancels the complete pending
 operator without changing text, registers, search state, or the jumplist.
+
+### Planned hard-line reflow
+
+This subsection specifies approved future behavior, not implemented command
+support. Implementations MUST satisfy its command, preservation, and regression
+requirements before claiming support for `gq`, `gw`, or `textwidth`.
+
+#### Text width and settings
+
+Settings > Editing will include an integer field labeled **Text width
+(columns)**, defaulting to **80**. Persist the application default as
+`editing.textWidth` in the existing versioned `config.json` authority. Missing
+values use 80; validation and atomic writes preserve unrelated settings.
+The value is a positive unsigned 32-bit integer. Zero, negative, fractional,
+malformed, and overflowing values are rejected without changing the prior value.
+Vim's zero-width fallback to window width is outside this initial feature.
+
+The effective width is buffer-owned and shared by every view of that buffer.
+New buffers inherit the application default. Changing the Settings value updates
+open buffers that still inherit it, but preserves explicit buffer overrides.
+`:set textwidth=72`, `:set tw=72`, and their `:setlocal` forms set an override in
+the current buffer; they do not write the application default. Both spellings
+support `?` queries of the effective value. A buffer can explicitly return to
+inheritance with `:setlocal textwidth<` or `:setlocal tw<`. These option changes
+do not change source, dirty state, or document undo history. Reopening a document
+starts with the application default rather than persisting a local override in
+the source artifact.
+
+Width counts the complete output line, including indentation, list markers, and
+comment leaders. Use a portable Unicode column-width policy, with combining
+sequences kept together and tabs advancing to eight-column stops. It MUST NOT
+depend on UTF-8 byte length, font choice, proportional glyph advances, zoom,
+window width, or syntax styling. An unbreakable token may exceed the target;
+neither that token nor a grapheme cluster is split to force a fit.
+
+Changing `textwidth` does not reformat existing text or enable automatic hard
+wrapping during typing, paste, or input-method commit. The existing per-view
+`wrap` option and source Paragraph Flow remain independent presentation choices.
+
+#### Commands and range semantics
+
+Implement `gq` as a composable operator using the shared command grammar,
+including multiplied operator/motion counts, existing motions and text objects,
+and cancellation at each pending stage. Required forms include `gq{motion}`,
+`gqq`, `gqgq`, counted line forms, `gqj`, `gq}`, `gqip`, `gqap`, and Visual `gq`.
+Implement `gw{motion}`, `gww`, `gwgw`, and Visual `gw` with the same formatter
+and distinct cursor policy. `gq}` is the paragraph-forward form; `gq]` alone
+is incomplete Vim grammar. Section motions such as `]]` and `[[`, and therefore
+`gq]]`, are not added by this feature.
+
+Resolve the motion or selection with the existing checked endpoint algebra,
+then format the source hard lines it covers. Characterwise endpoints obey Vim's
+exclusive-end rules before conversion to a hard-line span. Visual Character
+and Line use their covered hard lines; Visual Block formats each intersected
+hard line in full, once, rather than reflowing a pixel-width rectangle. Line
+counts in doubled forms and implicit line motions such as `gqj` use hard lines
+regardless of soft wrapping or the view's Visual/Physical line setting.
+Explicit visual-row motions and Visual selections retain their normal domains
+before expansion to hard lines. Source outside those hard lines is unchanged,
+and paragraph recognition MUST NOT expand the edit beyond them.
+
+`gq` leaves the cursor at the first nonblank of the last formatted line, following
+Vim 9.2's command-specific endpoint behavior. `gw` restores its original text
+location through a persistent anchor and the committed change map; deleted
+whitespace follows the normal anchor recovery policy. Successful Visual forms
+leave Visual mode. Cursor movement after reflow follows the same minimum-reveal
+scroll policy as other commands; it does not force bottom alignment or
+recentering when the caret is already visible.
+
+#### Paragraphs and comment leaders
+
+The initial formatter supports Text and Code, operating on their literal hard
+lines. Markdown Source, HTML Source, and WYSIWYG Markdown, HTML, and RTF require
+separate format-aware semantics and initially return a non-destructive
+unsupported-format result. They MUST NOT acquire structural paragraph breaks
+through a generic text reflow implementation. Formatting is internal portable
+policy, without invoking external formatters or evaluating Vimscript.
+
+Within the selected span, join and greedily wrap each ordinary text paragraph
+at inter-word whitespace. Preserve its indentation, word order, punctuation,
+blank paragraph separators, and recognized list structure. Use one space
+between joined words; do not split words or URLs. Preserve bullet/number markers
+and hanging continuation indentation, and do not join adjacent list items.
+Initially recognize `-`, `+`, or `*`, or decimal digits followed by `.` or `)`,
+with following whitespace as list markers. Retain their spelling and numbering.
+Differing indentation separates paragraphs unless it is a recognized list
+continuation. A prefix that already exhausts the width does not cause an empty
+line or repeated splitting; the following unbreakable token may overflow.
+
+Code additionally uses declarative comment profiles selected by the buffer's
+language. Comment recognition and reflow semantics MUST be independent of
+asynchronous syntax coverage, highlight-group names, theme/style properties,
+and which highlighter is available. The initial C/C++ profile supports standalone
+`//`, `///`, and `//!` leaders and `/* ... */` comments with optional interior
+`*` leaders. Recognize full-line leaders after indentation, preferring the
+longest applicable leader; a delimiter occurring inside code or a string is not
+by itself a full-line leader. Interior `*` leaders require a matching block
+comment context rather than treating arbitrary leading asterisks as comments.
+
+Reflow a comment paragraph's body while retaining indentation and recreating
+its leader on each resulting continuation line. Preserve block-comment opener
+and closer tokens and the existing middle-leader convention when line counts
+change. Delimiter-only opener and closer lines stay on their own lines. Blank
+comment-only lines remain separators. A change between `//`,
+`///`, `//!`, another comment kind, or non-comment text starts a new paragraph;
+the formatter MUST NOT join across that boundary. Lists inside comments retain
+their hanging indentation after the repeated comment prefix. Initially, a line
+containing code followed by a trailing comment remains byte-identical and forms
+a paragraph boundary; reflow of such mixed lines is deferred until explicit
+continuation rules are specified.
+
+For example, at width 40:
+
+```cpp
+// One paragraph split across
+// several short lines.
+```
+
+becomes:
+
+```cpp
+// One paragraph split across several
+// short lines.
+```
+
+#### Transactions and validation
+
+Each reflow is one atomic source transaction and one undo unit, including
+multiple paragraphs or selected hard lines. It leaves registers unchanged.
+Dot repeat records the operator, motion/selection extent semantics, and count,
+and uses the target buffer's effective width when repeated. Macro replay uses
+the same core command path. Undo and redo restore recorded source and cursor
+state rather than invoking the formatter again. A source-identical result
+creates no history node and does not dirty the buffer.
+
+Produce minimal whitespace/leader patches through the shared lossless editing
+pipeline. Preserve unchanged physical bytes, existing retained line-ending
+spellings, encoding, and final-terminator presence. New hard breaks use the
+buffer's `fileformat`; do not normalize unrelated mixed line endings. Reflow
+must not pass generated text through smart-quote or other typing assistance.
+Unsupported encoding, stale input, cancellation, or resource exhaustion leaves
+the entire requested edit unapplied and does not replace the prior dot recipe
+or mutate registers. Bound preparation to the selected content and necessary
+local boundary/comment context; a small reflow MUST NOT flatten,
+highlight, or relayout the entire document.
+
+Required tests cover command counts and operator composition, `gq` versus `gw`
+cursor placement, Visual variants, Escape, registers, dot/macro replay, single
+undo/redo, and no-op dirty/history behavior. Add golden cases for indentation,
+tabs, Unicode widths and graphemes, overlong words/URLs, lists, all C/C++ leaders,
+block comments, blank/changed leaders, mixed trailing-comment boundaries,
+partial-paragraph selections, encoding, mixed line endings, and final
+terminators. Test Settings persistence/validation, numeric Ex aliases/queries,
+default propagation, local overrides, and multiple views of one buffer.
+Compare supported Vim behavior against pinned Vim 9.2 and explicitly fixture
+the deliberate differences above. Include a large-document local-reflow test,
+cache invalidation, cancellation/staleness, and source-byte locality checks.
 
 ### Text objects
 
@@ -3169,6 +3351,10 @@ are buffer-shared Boolean policy, defaulting to false, false, and true. Their
 A compound option command validates atomically before publishing any changes.
 They follow Regex v1 case rules and affect searches, repeats, and substitute;
 `wrapscan` controls navigation wrapping. They do not change persisted source.
+
+The planned numeric `textwidth`/`tw` option, its buffer scope, query and
+inheritance forms, and the Settings default are specified under **Planned
+hard-line reflow**. It is not yet part of the implemented option set.
 
 Ranges always use hard lines. File dialogs, unsaved-change prompts, and error
 presentation are frontend responsibilities driven by typed core requests and
@@ -4453,6 +4639,12 @@ scroll.
 
 - Vertical scrolling is continuous in layout units, not integer terminal rows.
 - Cursor reveal scrolls the minimum needed subject to configured context.
+- Typing and asynchronous layout/syntax completion preserve the visible editing
+  row's screen baseline; configured motion context does not force a new scroll
+  while that row is fully visible. Fill missing local layout coverage before
+  restoring the anchor, so a regional cache boundary cannot bottom-align the
+  row or masquerade as a document edge. Actual clipping permits only the minimum
+  reveal, with the oversized-row and offscreen-caret policies defined for Code.
 - The primary scroll anchor is a persistent `TextAnchor` with source provenance,
   insertion association, boundary affinity, and an offset from the viewport edge,
   not only an absolute y value.
@@ -4877,6 +5069,13 @@ Required automated fixtures and assertions are:
    preserve the baseline or assert the minimum movement required for visibility.
    Include ordinary newline/wrap advancement and committing marked text through
    an input method, without recentering their previous visible content.
+   Include wrapped long lines crossing layout-chunk boundaries and native Vim
+   syntax, not only unwrapped Tree-sitter documents. Place the caret away from
+   the viewport center and type rapidly before, during, and after delayed syntax
+   publication. Assert unchanged screen placement when the row still fits,
+   complete local coverage of the preserved viewport, and the minimum scroll
+   only when the final row actually clips. A million-line fixture must retain
+   these guarantees without full-document layout or anchor walks.
    Suspend providers across insertion, deletion, discontiguous edits, undo, and
    redo: existing mapped colors remain until accepted replacement coverage,
    while empty current coverage clears them and stale results change nothing.
