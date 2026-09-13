@@ -58,6 +58,7 @@ struct EVLayoutExport {
     var carets: [ViemPositionedCaretV1]
     var decorations: [ViemLayoutDecorationV1] = []
     var decorationLabels: [UInt8] = []
+    var whitespace = EVWhitespaceMarkerExport()
 }
 
 @MainActor
@@ -82,6 +83,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     private(set) var currentDocumentState = ViemDocumentStateV1()
     private(set) var formattedAccessCounters = EVFormattedAccessCounters()
     private var surfaces: [WeakSurface] = []
+    private var isRefreshingLayoutSurfaces = false
     private var isRefreshingSurfaces = false
     private var pendingSourceChangeOrigins: [ViemViewId] = []
 
@@ -403,6 +405,24 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         }
     }
 
+    /// A buffer tabstop can change other views' geometry without changing the
+    /// document. Refresh only panes whose retained snapshot was superseded.
+    func notePresentationChange(originatingViewID: ViemViewId) {
+        guard !isRefreshingLayoutSurfaces else { return }
+        isRefreshingLayoutSurfaces = true
+        defer { isRefreshingLayoutSurfaces = false }
+        for surface in surfaces.compactMap(\.value) {
+            guard let session = surface.session, session.viewID != originatingViewID else { continue }
+            var info = ViemLayoutSnapshotInfoV1()
+            info.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotInfoV1>.size)
+            let status = viem_core_view_layout_snapshot_info(core, session.viewID, &info)
+            if status == UInt32(VIEM_STATUS_OK),
+               info.identity.layout_revision != surface.layoutSnapshot?.info.identity.layout_revision {
+                surface.refreshPresentation()
+            }
+        }
+    }
+
     private func createCore() throws {
         configurationWarning = configuration.lastError
         do { try EVCodeStyleSession.initialize(configuration: configuration) }
@@ -432,6 +452,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         _ = try documentState()
         configureSyntax()
         try checked(viem_core_set_text_width_default(core, configuration.textWidth), operation: "Load text width")
+        try configureWhitespace(indentation: configuration.indentation, presentation: configuration.whitespacePresentation)
         let associations = try configuration.codeFilenameAssociationsJSON()
         let configuredAssociations = associations.withUnsafeBytes {
             viem_core_set_code_filename_associations_json(core, $0.bindMemory(to: UInt8.self).baseAddress, UInt64($0.count))
@@ -1295,7 +1316,8 @@ final class EVCoreViewSession {
         try checked(copied, operation: "Copy layout snapshot")
         let furniture = try layoutDecorationsExport(identity: copiedInfo.identity)
         return EVLayoutExport(info: copiedInfo, rows: rows, clusters: clusters, carets: carets,
-                              decorations: furniture.0, decorationLabels: furniture.1)
+                              decorations: furniture.0, decorationLabels: furniture.1,
+                              whitespace: try whitespaceMarkersExport(identity: copiedInfo.identity))
     }
 
     /// Font registration can retire the presentation while the view is idle.
@@ -1463,6 +1485,8 @@ final class EVCoreViewSession {
         }
         if outcome.flags & UInt32(VIEM_OUTCOME_DOCUMENT_CHANGED) != 0 {
             document.noteSourceChange(originatingViewID: viewID)
+        } else if outcome.flags & UInt32(VIEM_OUTCOME_LAYOUT_CHANGED) != 0 {
+            document.notePresentationChange(originatingViewID: viewID)
         }
     }
 

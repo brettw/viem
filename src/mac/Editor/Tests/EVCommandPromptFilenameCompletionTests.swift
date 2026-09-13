@@ -8,7 +8,7 @@ import XCTest
     private func makeSurface() throws -> (URL, EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession, NSWindow) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-completion-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let backend = EVCoreDocumentBackend()
+        let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory.appendingPathComponent("configuration")))
         try backend.read(source: Data("document".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
@@ -115,14 +115,22 @@ import XCTest
         XCTAssertNil(surface.commandOutput)
     }
 
-    func testNativeShiftTabInInsertModeRetainsTabInsertion() throws {
-        let (directory, backend, surface, session, window) = try makeSurface()
-        defer { window.close(); try? FileManager.default.removeItem(at: directory) }
-        surface.performInput { _ = try session.sendText("i") }
-        XCTAssertNil(surface.commandLine?.prompt)
-        surface.editorView.keyDown(with: try key(48, modifiers: .shift))
-        XCTAssertEqual(try backend.formattedText(), "\tdocument")
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+    func testNativeShiftTabInInsertModeUsesConfiguredTabInsertion() throws {
+        for expandtab in [true, false] {
+            let (directory, backend, surface, session, window) = try makeSurface()
+            defer { window.close(); try? FileManager.default.removeItem(at: directory) }
+            if !expandtab {
+                surface.performInput {
+                    _ = try session.sendText(":set noexpandtab")
+                    _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
+                }
+            }
+            surface.performInput { _ = try session.sendText("i") }
+            XCTAssertNil(surface.commandLine?.prompt)
+            surface.editorView.keyDown(with: try key(48, modifiers: .shift))
+            XCTAssertEqual(try backend.formattedText(), (expandtab ? "  " : "\t") + "document")
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        }
     }
 
 }

@@ -26,10 +26,17 @@ struct DirectionRun {
 struct FragmentSummary {
     text: Range<usize>,
     runs: Range<usize>,
+    whitespace_leading: bool,
+    whitespace_advance: f64,
 }
 
 #[derive(PartialEq)]
 struct SummaryKey {
+    whitespace_style: ResolvedTextStyle,
+    whitespace_basis: super::super::WhitespaceBasis,
+    whitespace_tabstop: u32,
+    whitespace_leading: bool,
+    whitespace_advance: u64,
     text: crate::document::FormattedTextSnapshotIdentity,
     line: Range<usize>,
     context_line: Range<usize>,
@@ -44,6 +51,7 @@ struct SummaryKey {
 }
 
 struct LineSummary {
+    whitespace_unit: f32,
     fragments: Vec<FragmentSummary>,
     runs: Vec<DirectionRun>,
     metrics: TextMetrics,
@@ -101,7 +109,8 @@ impl UnwrappedSummaryCache {
                 .iter()
                 .map(|run| style_bytes(&run.style))
                 .sum::<usize>()
-            + style_bytes(&key.default_style);
+            + style_bytes(&key.default_style)
+            + style_bytes(&key.whitespace_style);
         if bytes > MAX_BYTES {
             return;
         }
@@ -583,7 +592,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             line.height + f64::from(delta)
         };
         line.height_is_exact = !extends;
+        let whitespace_leading = slice.checkpoint.as_ref().map_or(true, |c| c.whitespace_leading)
+            && tree.slice(slice.work_range.clone()).map_err(text_error)?.bytes().all(|b| b == b' ' || b == b'\t');
         line.next_checkpoint = extends.then(|| LongLineLayoutCheckpoint {
+            whitespace_leading,
             document_id,
             document_revision,
             configuration_generation: view.configuration_generation,
@@ -629,6 +641,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let control = LayoutRunControl::cancellable(cancellation);
         let measurement_environment_id = self.provider.measurement_environment_id();
         let metrics_generation = self.provider.metrics_generation();
+        let mut whitespace_unit = styles.whitespace_shaping_style.size * view.scale * 0.5;
         let layout_revision = LayoutRevision(
             view.latest_layout_revision
                 .map_or(self.next_layout_revision, |old| {
@@ -734,6 +747,11 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 base_direction(tree, full_range.clone(), &paragraph.style, &control)?
             };
             let summary_key = SummaryKey {
+                whitespace_style: styles.whitespace_shaping_style.clone(),
+                whitespace_basis: view.whitespace.basis(),
+                whitespace_tabstop: view.whitespace.tabstop,
+                whitespace_leading: overflow_slice.and_then(|s| s.checkpoint.as_ref()).map_or(true, |c| c.whitespace_leading),
+                whitespace_advance: overflow_slice.and_then(|s| s.checkpoint.as_ref()).map_or(0.0, |c| c.cumulative_advance).to_bits(),
                 text: tree.snapshot_identity(),
                 line: line_range.clone(),
                 context_line: full_range.clone(),
@@ -761,10 +779,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 let mut width = 0.0f64;
                 let mut marker_width = 0.0f32;
                 let mut marker_end = line_range.start;
+                let mut whitespace_leading = summary_key.whitespace_leading;
+                let mut whitespace_advance = f64::from_bits(summary_key.whitespace_advance);
                 while at < line_range.end {
                     control.checkpoint()?;
                     let end = chunk_end(tree, at, line_range.end)?;
-                    let fragment = self.shape_unwrapped_fragment(
+                    let mut fragment = self.shape_unwrapped_fragment(
                         document_id,
                         document_revision,
                         tree,
@@ -776,6 +796,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         view,
                         &control,
                     )?;
+                    let initial_whitespace = (whitespace_leading, whitespace_advance);
+                    let actual_end = fragment.clusters.last().map_or(end, |c| c.text_range.end);
+                    let whitespace_text = tree.slice(at..actual_end).map_err(text_error)?;
+                    (whitespace_leading, whitespace_advance, _) = self.layout_whitespace_clusters(&mut fragment.clusters, &whitespace_text, at,
+                        &view.whitespace, whitespace_unit, shaping_style, style_runs, view.scale, document_id, document_revision, &control,
+                        whitespace_leading, whitespace_advance)?;
                     let run_start = runs.len();
                     for cluster in &fragment.clusters {
                         if cluster.text_range.start != expected
@@ -824,6 +850,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     // Keep run ownership within each shaping fragment. Even a
                     // uniform multi-gigabyte line therefore has a sparse index.
                     fragments.push(FragmentSummary {
+                        whitespace_leading: initial_whitespace.0,
+                        whitespace_advance: initial_whitespace.1,
                         text: at..end,
                         runs: run_start..runs.len(),
                     });
@@ -839,6 +867,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     );
                 }
                 let summary = Arc::new(LineSummary {
+                    whitespace_unit,
                     fragments,
                     runs,
                     metrics,
@@ -850,6 +879,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     .insert(summary_key, Arc::clone(&summary));
                 summary
             };
+            whitespace_unit = summary.whitespace_unit;
             let fragments = &summary.fragments;
             let mut runs = summary.runs.clone();
             let metrics = summary.metrics.clone();
@@ -961,7 +991,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 {
                     continue;
                 }
-                let fragment = self.shape_unwrapped_fragment(
+                let mut fragment = self.shape_unwrapped_fragment(
                     document_id,
                     document_revision,
                     tree,
@@ -973,6 +1003,11 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     view,
                     &control,
                 )?;
+                let actual_end = fragment.clusters.last().map_or(summary.text.end, |c| c.text_range.end);
+                let whitespace_text = tree.slice(summary.text.start..actual_end).map_err(text_error)?;
+                let (_, _, tab_units) = self.layout_whitespace_clusters(&mut fragment.clusters, &whitespace_text, summary.text.start,
+                    &view.whitespace, whitespace_unit, shaping_style, style_runs, view.scale, document_id, document_revision, &control,
+                    summary.whitespace_leading, summary.whitespace_advance)?;
                 statistics.segmented_text_bytes += summary.text.len();
                 statistics.shaping_fragment_count += 1;
                 for run in &runs[summary.runs.clone()] {
@@ -1001,6 +1036,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         {
                             let cluster_x = x as f32;
                             row.clusters.push(PositionedCluster {
+                                whitespace_unit: tab_units.get(&cluster.text_range.start).copied(),
                                 text_range: cluster.text_range.clone(),
                                 x: cluster_x,
                                 advance: cluster.advance,
@@ -1071,6 +1107,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     height += paragraph.style.spacing_after + next.style.spacing_before;
                 }
             } else {
+                height = height.max(row.reveal_bounds().end);
                 height += paragraph.style.spacing_after + content_insets.bottom;
             }
             statistics.positioned_cluster_count += row.clusters.len();
@@ -1100,6 +1137,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             .next_layout_revision
             .max(layout_revision.0.wrapping_add(1).max(1));
         Ok(RegionalLayoutSnapshot {
+            whitespace_unit,
             revision: layout_revision,
             document_id,
             document_revision,

@@ -70,6 +70,7 @@ impl CommandInterpreter {
             format: document.format(),
             lines: lines.clone(),
             text_width: self.text_width.effective(),
+            tabstop: self.indentation_options().tabstop,
             profile,
         }) {
             Ok(edits) => edits,

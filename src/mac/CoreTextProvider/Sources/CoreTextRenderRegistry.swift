@@ -3,6 +3,23 @@ import CoreGraphics
 import CoreText
 import Foundation
 
+/// Immutable shaping attributes that are separate from the resolved font.
+/// Values are in the same scaled layout units as the retained glyph data.
+public struct CoreTextRenderAttributes: Equatable {
+  public let baselineShift: CGFloat
+  public let letterSpacing: CGFloat
+  public let language: String?
+  public let writingDirection: NSWritingDirection
+
+  public init(baselineShift: CGFloat = 0, letterSpacing: CGFloat = 0,
+    language: String? = nil, writingDirection: NSWritingDirection = .natural) {
+    self.baselineShift = baselineShift
+    self.letterSpacing = letterSpacing
+    self.language = language
+    self.writingDirection = writingDirection
+  }
+}
+
 /// Provider-owned Core Text draw data referenced by the integer handles that
 /// cross the Rust C ABI. The registry, rather than core, owns every native font
 /// and glyph buffer while a response arena, layout cache, or snapshot leases it.
@@ -18,6 +35,15 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
     let signature: [UInt8]
     let batches: [GlyphBatch]
     let isColorGlyph: Bool
+    let textAttributes: CoreTextRenderAttributes
+
+    init(signature: [UInt8], batches: [GlyphBatch], isColorGlyph: Bool,
+      textAttributes: CoreTextRenderAttributes = .init()) {
+      self.signature = signature
+      self.batches = batches
+      self.isColorGlyph = isColorGlyph
+      self.textAttributes = textAttributes
+    }
   }
 
   private let lock = NSLock()
@@ -119,6 +145,23 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     return generation == metricsGeneration && resources[identifier] != nil
+  }
+
+  /// The immutable resolved font supplies inherited marker typography without
+  /// measuring source text again or changing its layout. Stale generations
+  /// never expose a resource from another measurement environment revision.
+  public func resolvedFont(identifier: UInt64, metricsGeneration: UInt64) -> CTFont? {
+    lock.lock()
+    defer { lock.unlock() }
+    return generation == metricsGeneration ? resources[identifier]?.batches.first?.font : nil
+  }
+
+  /// Read-only typography from the exact retained render resource. Markers
+  /// inherit this without resolving styles again or remeasuring source text.
+  public func textAttributes(identifier: UInt64, metricsGeneration: UInt64) -> CoreTextRenderAttributes? {
+    lock.lock()
+    defer { lock.unlock() }
+    return generation == metricsGeneration ? resources[identifier]?.textAttributes : nil
   }
 
   /// Test visibility into the actual font retained for a displayed glyph run.

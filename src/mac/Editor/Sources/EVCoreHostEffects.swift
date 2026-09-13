@@ -105,6 +105,7 @@ enum EVExOptionValue: Equatable {
     case fileFormat(UInt32)
     case fileFormats([UInt32])
     case number(UInt32)
+    case string(String)
 }
 
 struct EVExOptionEffect: Equatable {
@@ -460,6 +461,9 @@ private extension EVRawEffectBatch {
             case UInt32(VIEM_EX_OPTION_VALUE_NUMBER):
                 guard option.file_format_count == 0 else { throw EVCoreFrontendError.invalidHostEffect }
                 value = .number(option.scalar_value)
+            case UInt32(VIEM_EX_OPTION_VALUE_STRING):
+                guard option.file_format_count == 0 else { throw EVCoreFrontendError.invalidHostEffect }
+                value = .string(try string(option.text))
             default:
                 throw EVCoreFrontendError.invalidHostEffect
             }

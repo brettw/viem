@@ -12,6 +12,9 @@ pub mod ex_execute;
 pub mod insert_motion;
 pub mod layout_motion;
 mod reflow;
+mod indentation;
+mod whitespace;
+pub use whitespace::VisibleWhitespaceSetting;
 pub mod regex_v1;
 pub mod text_object;
 pub mod visual_block;
@@ -797,6 +800,7 @@ enum InsertPlacement {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ReplaceJournalEntry {
+    autoindent: bool,
     /// Byte range start in the current formatted snapshot while this entry is
     /// at the journal frontier. Earlier entries may have different UTF-8
     /// lengths than the graphemes they replaced, so this cannot be inferred
@@ -830,6 +834,11 @@ enum EditSessionStep {
     TypingStyle(typing_style::TypingStyle),
     Text(RegisterValue),
     ListEnter,
+    IndentedEnter,
+    Tab,
+    ShiftIndent { outdent: bool },
+    ResetIndent { restore: bool },
+    CloseComment,
     HardBreak,
     ListIndent { unindent: bool },
     Backspace,
@@ -1194,6 +1203,7 @@ pub(crate) struct BufferCommandState {
     last_macro: Option<char>,
     /// Buffer-owned `textwidth`: inherited default plus optional override.
     pub(crate) text_width: crate::document::TextWidthSetting,
+    pub(crate) indentation: crate::document::IndentationSetting,
 }
 
 /// Per-view Vim controller state.
@@ -1269,6 +1279,10 @@ pub struct CommandInterpreter {
     pending_clipboard_writes: Vec<ClipboardWriteRequest>,
     /// Buffer-owned `textwidth`, bridged through the buffer command state.
     text_width: crate::document::TextWidthSetting,
+    indentation: crate::document::IndentationSetting,
+    generated_indent: Option<indentation::GeneratedIndent>,
+    restored_indent: Option<usize>,
+    visible_whitespace: VisibleWhitespaceSetting,
     /// Canonical language selecting the reflow comment profile.
     reflow_language: Option<String>,
 }
@@ -1369,6 +1383,10 @@ impl CommandInterpreter {
             clipboard_context: ClipboardCommandContext::default(),
             pending_clipboard_writes: Vec::new(),
             text_width: crate::document::TextWidthSetting::default(),
+            indentation: Default::default(),
+            generated_indent: None,
+            restored_indent: None,
+            visible_whitespace: Default::default(),
             reflow_language: None,
         }
     }
@@ -1392,6 +1410,7 @@ impl CommandInterpreter {
             recording: self.recording.clone(),
             last_macro: self.last_macro,
             text_width: self.text_width,
+            indentation: self.indentation,
         }
     }
 
@@ -1408,6 +1427,7 @@ impl CommandInterpreter {
         self.recording.clone_from(&state.recording);
         self.last_macro = state.last_macro;
         self.text_width = state.text_width;
+        self.indentation = state.indentation;
     }
 
     pub fn mode(&self) -> Mode {
@@ -2879,7 +2899,10 @@ impl CommandInterpreter {
         if matches!(&event, InputEvent::Key(Key::SelectAll)) {
             return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
         }
-        if self.needs_input_assistance(context.document(), &event)
+        if (matches!(self.mode, Mode::Insert | Mode::Replace)
+            && (matches!(&event, InputEvent::Key(Key::Enter | Key::Tab | Key::BackTab | Key::Backspace | Key::Ctrl('t' | 'T' | 'd' | 'D')))
+                || self.generated_indent.is_some()))
+            || self.needs_input_assistance(context.document(), &event)
             || !self.typing_style.is_empty()
             || (self.mode == Mode::Replace
                 && context.document().format() == crate::document::Format::Html)
@@ -6951,7 +6974,7 @@ impl CommandInterpreter {
             Err(error) => return Ok(visual_block_error(error)),
         };
         self.requested_register = None;
-        let Some(shift_width) = 4usize.checked_mul(count) else {
+        let Some(shift_width) = self.indentation_options().shift_width().checked_mul(count) else {
             return Ok(CommandOutput {
                 status: CommandStatus::Error("Visual Block shift count is too large".into()),
                 ..CommandOutput::complete()
@@ -6960,45 +6983,32 @@ impl CommandInterpreter {
         let mut edits = Vec::new();
         let mut target = self.cursor;
         match operator {
-            Operator::Indent => {
-                let padding = match checked_text_repetition("    ", count) {
-                    Ok(padding) => padding,
-                    Err(error) => return Ok(error.into_command_output()),
-                };
-                for row in resolved
-                    .rows
-                    .iter()
-                    .filter(|row| row.ranges.iter().any(|range| !range.is_empty()))
-                {
+            Operator::Indent | Operator::Outdent => {
+                let options = self.indentation_options();
+                let lines = document.hard_line_snapshot();
+                for row in resolved.rows.iter().filter(|row| row.ranges.iter().any(|range| !range.is_empty())) {
                     let at = row.visual_left.point.text_offset;
-                    if edits.is_empty() {
-                        target = at;
+                    let start = line_start(&lines, at);
+                    let row_end = context.snapshot.rows[row.row_index].text_range.end;
+                    let before = lines.slice_utf8(start..at).expect("validated block indent prefix");
+                    let remaining = lines.slice_utf8(at..row_end).expect("validated block row");
+                    let whitespace = crate::document::leading_whitespace_len(&remaining);
+                    let column = options.columns(&before);
+                    let old_end = crate::document::indentation_end_column(column, &remaining[..whitespace], options.tabstop as usize);
+                    let end = if operator == Operator::Indent {
+                        let Some(end) = old_end.checked_add(shift_width) else { return Ok(repetition_too_large(count)); };
+                        end
+                    } else { column + (old_end - column).saturating_sub(shift_width) };
+                    let replacement = match options.try_whitespace(column, end) {
+                        Ok(value) => value,
+                        Err(_) => return Ok(repetition_too_large(count)),
+                    };
+                    if replacement != remaining[..whitespace] {
+                        if edits.is_empty() { target = at; }
+                        edits.push(TextEdit::new(at..at + whitespace, replacement));
                     }
-                    edits.push(TextEdit::new(at..at, padding.clone()));
                 }
                 edits = merge_same_boundary_insertions(edits);
-            }
-            Operator::Outdent => {
-                for row in resolved
-                    .rows
-                    .iter()
-                    .filter(|row| row.ranges.iter().any(|range| !range.is_empty()))
-                {
-                    let at = row.visual_left.point.text_offset;
-                    let row_end = context.snapshot.rows[row.row_index].text_range.end;
-                    let end = document.text().as_bytes()[at..row_end]
-                        .iter()
-                        .take(shift_width)
-                        .take_while(|byte| **byte == b' ')
-                        .count()
-                        + at;
-                    if at < end {
-                        if edits.is_empty() {
-                            target = at;
-                        }
-                        edits.push(TextEdit::new(at..end, ""));
-                    }
-                }
             }
             Operator::Reindent => {
                 let mut hard_lines = resolved
@@ -7008,21 +7018,22 @@ impl CommandInterpreter {
                     .collect::<Vec<_>>();
                 hard_lines.sort_unstable();
                 hard_lines.dedup();
-                for hard_line in hard_lines {
-                    let Some(start) = document.line_start(hard_line) else {
-                        continue;
-                    };
-                    let Some(end) = document.line_end(hard_line) else {
-                        continue;
-                    };
-                    let old = &document.text()[start..end];
-                    let replacement = old.trim_start();
-                    if old != replacement {
-                        if edits.is_empty() {
-                            target = start;
-                        }
-                        edits.push(TextEdit::new(start..end, replacement));
+                let mut cursor = 0;
+                while cursor < hard_lines.len() {
+                    let first = hard_lines[cursor];
+                    let mut last = first;
+                    cursor += 1;
+                    while cursor < hard_lines.len() && hard_lines[cursor] == last + 1 {
+                        last = hard_lines[cursor]; cursor += 1;
                     }
+                    let Some(start) = document.line_start(first) else { continue; };
+                    let Some(end) = document.line_end(last) else { continue; };
+                    let line_edits = match indent_edits(&document.hard_line_snapshot(), &(start..end), Operator::Reindent, 1, self.indentation_options()) {
+                        Ok(edits) => edits,
+                        Err(error) => return Ok(error.into_command_output()),
+                    };
+                    if edits.is_empty() && !line_edits.is_empty() { target = start; }
+                    edits.extend(line_edits);
                 }
             }
             _ => unreachable!("Visual Block shift accepts only >, <, and ="),
@@ -8739,11 +8750,11 @@ impl CommandInterpreter {
             }
             Operator::Indent | Operator::Outdent | Operator::Reindent => {
                 let edits = match indent_edits(
-                    document.text(),
                     &lines,
                     &extent.range,
                     operator,
                     application_count,
+                    self.indentation_options(),
                 ) {
                     Ok(edits) => edits,
                     Err(error) => return Ok(error.into_command_output()),
@@ -9719,7 +9730,7 @@ impl CommandInterpreter {
             Key::Enter => {
                 self.invalidate_replace_restoration();
                 if self.mode == Mode::Insert {
-                    if let Some(edit) = document.list_enter_edit(self.cursor)? {
+                    if let Some(edit) = if document.format().is_code() { None } else { document.list_enter_edit(self.cursor)? } {
                         if document.format().has_structural_lists() {
                             self.cursor = continue_list_with_cursor(document, self.cursor)?;
                         } else if edit.range.is_empty() {
@@ -9749,19 +9760,15 @@ impl CommandInterpreter {
                             ..CommandOutput::complete()
                         })
                     } else {
-                        self.insert_text(document, "\n")
+                        self.insert_indented_break(document)
                     }
                 } else {
-                    self.replace_text(document, "\n")
+                    self.insert_indented_break(document)
                 }
             }
-            Key::Tab | Key::BackTab => {
-                if self.mode == Mode::Insert {
-                    self.insert_text(document, "\t")
-                } else {
-                    self.replace_text(document, "\t")
-                }
-            }
+            Key::Tab | Key::BackTab => self.insert_tab(document),
+            Key::Ctrl('t' | 'T') => self.insert_shift(document, false),
+            Key::Ctrl('d' | 'D') => self.insert_shift(document, true),
             Key::Ctrl('r' | 'R') => {
                 self.register_pending = true;
                 Ok(CommandOutput::pending())
@@ -9797,6 +9804,9 @@ impl CommandInterpreter {
                 })
             }
             Key::Char(character) => {
+                if character == '/' && self.mode == Mode::Insert {
+                    if let Some(output) = self.close_generated_comment(document)? { return Ok(output); }
+                }
                 if self.mode == Mode::Insert {
                     self.insert_text(document, &character.to_string())
                 } else {
@@ -10137,6 +10147,10 @@ impl CommandInterpreter {
         document: &mut Document,
         input: &str,
     ) -> Result<CommandOutput, DocumentError> {
+        if input == "/" {
+            if let Some(output) = self.close_generated_comment(document)? { return Ok(output); }
+        }
+        self.generated_indent = None;
         if let Some(output) = self.try_insert_html_assistance(document, input)? {
             return Ok(output);
         }
@@ -10149,6 +10163,10 @@ impl CommandInterpreter {
         document: &mut Document,
         input: &str,
     ) -> Result<CommandOutput, DocumentError> {
+        if input == "/" {
+            if let Some(output) = self.close_generated_comment(document)? { return Ok(output); }
+        }
+        self.generated_indent = None;
         if let Some(output) = self.try_insert_html_assistance(document, input)? {
             return Ok(output);
         }
@@ -10331,6 +10349,7 @@ impl CommandInterpreter {
                 session
                     .replace_journal
                     .extend(records.into_iter().map(|record| ReplaceJournalEntry {
+                        autoindent: false,
                         start: record.before_cursor,
                         inserted: record.inserted.clone(),
                         original: record.original.clone(),
@@ -10383,11 +10402,9 @@ impl CommandInterpreter {
                     entry.start.checked_add(entry.inserted.len()) == Some(start)
                 });
                 let has_legal_boundaries = journal_entries.iter().all(|entry| {
-                    is_grapheme_boundary(document.text(), entry.start)
-                        && entry
-                            .start
-                            .checked_add(entry.inserted.len())
-                            .is_some_and(|end| is_grapheme_boundary(document.text(), end))
+                    document.hard_line_snapshot().is_grapheme_boundary(entry.start)
+                        && entry.start.checked_add(entry.inserted.len())
+                            .is_some_and(|end| document.hard_line_snapshot().is_grapheme_boundary(end))
                 });
                 if continues_frontier && has_legal_boundaries {
                     session.replace_journal.extend(journal_entries);
@@ -10416,6 +10433,21 @@ impl CommandInterpreter {
                 .filter(|entry| entry.frontier() == Some(self.cursor))
                 .cloned();
             if let Some(entry) = journal_entry {
+                if entry.autoindent {
+                    let mode = self.mode;
+                    self.mode = Mode::Insert;
+                    let result = self.soft_tab_backspace(document);
+                    self.mode = mode;
+                    if let Some(output) = result? {
+                        let retained = document.hard_line_snapshot().slice_utf8(entry.start..self.cursor)
+                            .expect("retained generated indentation");
+                        if let Some(session) = self.insert_session.as_mut() {
+                            if retained.is_empty() { session.replace_journal.pop(); }
+                            else if let Some(entry) = session.replace_journal.last_mut() { entry.inserted = retained; }
+                        }
+                        return Ok(output);
+                    }
+                }
                 let before = document.revision();
                 if let Some(record) = &entry.source_record {
                     document
@@ -10452,6 +10484,7 @@ impl CommandInterpreter {
         if let Some(request) = self.paragraph_key_request(document, Key::Backspace)? {
             return self.apply_paragraph_key(document, Key::Backspace, request);
         }
+        if let Some(output) = self.soft_tab_backspace(document)? { return Ok(output); }
         let Some(start) = document
             .hard_line_snapshot()
             .previous_grapheme_boundary(self.cursor)
@@ -10641,6 +10674,8 @@ impl CommandInterpreter {
             let mut output = CommandOutput::complete();
             for iteration in 0..iterations {
                 if opens_lines && (open_line_before_first || iteration > 0) {
+                    let prefix = self.continuation_indent(document, self.cursor, true, false);
+                    self.cleanup_generated_indent(document)?;
                     if self.line_mode == LineMode::PhysicalSource {
                         let lines = document.hard_line_snapshot();
                         let payload = FormattedTextPayload::new(&lines, "\n", vec![0])
@@ -10655,6 +10690,11 @@ impl CommandInterpreter {
                             .map_err(command_document_error)?;
                         self.cursor = cursor;
                     }
+                    if !prefix.is_empty() {
+                        document.insert(self.cursor, &prefix)?;
+                        self.cursor += prefix.len();
+                    }
+                    self.capture_generated_indent(document, prefix);
                     output.merge(CommandOutput {
                         document_changed: true,
                         cursor_moved: true,
@@ -10695,6 +10735,11 @@ impl CommandInterpreter {
                         EditSessionStep::ListEnter => {
                             self.handle_edit_mode_key(document, Key::Enter)?
                         }
+                        EditSessionStep::IndentedEnter => self.insert_indented_break(document)?,
+                        EditSessionStep::Tab => self.insert_tab(document)?,
+                        EditSessionStep::ShiftIndent { outdent } => self.insert_shift(document, *outdent)?,
+                        EditSessionStep::ResetIndent { restore } => self.reset_insert_indent(document, *restore)?,
+                        EditSessionStep::CloseComment => self.close_generated_comment(document)?.unwrap_or(CommandOutput::complete()),
                         EditSessionStep::HardBreak => {
                             self.handle_edit_mode_key(document, Key::ShiftEnter)?
                         }
@@ -10716,7 +10761,8 @@ impl CommandInterpreter {
     fn finish_insert(&mut self, document: &mut Document) -> Result<CommandOutput, DocumentError> {
         self.insert_normal_once = None;
         self.ctrl_o_just_started = false;
-        let mut expansion_changed = false;
+        self.restored_indent = None;
+        let mut expansion_changed = self.cleanup_generated_indent(document)?;
         let expansion = self.insert_session.as_ref().and_then(|session| {
             session.repeat_program.as_ref().and_then(|program| {
                 (session.entry_count > 1).then(|| (program.clone(), session.entry_count - 1))
@@ -10727,7 +10773,8 @@ impl CommandInterpreter {
             if output.status != CommandStatus::Complete {
                 return Ok(output);
             }
-            expansion_changed = output.document_changed;
+            expansion_changed |= output.document_changed;
+            expansion_changed |= self.cleanup_generated_indent(document)?;
         }
         self.typing_style = Default::default();
         self.input_assistance.clear_tag();
@@ -10798,6 +10845,8 @@ impl CommandInterpreter {
                     line_end(&document.hard_line_snapshot(), self.cursor)
                 }
             });
+        let origin_end = line_end(&document.hard_line_snapshot(), self.cursor);
+        let mut prefix = self.continuation_indent(document, origin_end, true, above);
         document.begin_edit_group();
         if self.line_mode == LineMode::PhysicalSource {
             self.open_physical_line(document, above)?;
@@ -10808,6 +10857,15 @@ impl CommandInterpreter {
                 .map_err(command_document_error)?;
             self.cursor = cursor;
         }
+        // Visual O may split an interior wrapped row while its caret stays
+        // at the preceding fragment's end. That is not a leading-whitespace
+        // location and must not acquire indentation in its text body.
+        if line_start(&document.hard_line_snapshot(), self.cursor) != self.cursor { prefix.clear(); }
+        if !prefix.is_empty() {
+            document.insert(self.cursor, &prefix)?;
+            self.cursor += prefix.len();
+        }
+        self.capture_generated_indent(document, prefix);
         // The newly opened line supplies the first insertion's context. An
         // upstream affinity retained from the old cursor (for example `$`)
         // can otherwise map a leading empty HTML line outside its paragraph.
@@ -12042,10 +12100,12 @@ impl CommandInterpreter {
             fileformats: self.fileformats.clone(),
             search_options: self.search_options,
             text_width: self.text_width,
+            indentation: self.indentation,
             last_search_pattern: self
                 .last_search
                 .as_ref()
                 .map(|(_, pattern)| pattern.clone()),
+            visible_whitespace: self.visible_whitespace.clone(),
         };
         let plan = match prepare_ex(
             document,
@@ -12437,6 +12497,8 @@ impl CommandInterpreter {
     fn apply_ex_option_effects(&mut self, effects: &[ExOptionEffect]) {
         for effect in effects {
             match (&effect.name, &effect.new_value) {
+                (_, ExOptionValue::Indentation(value)) => self.indentation = *value,
+                (_, ExOptionValue::VisibleWhitespace(value)) => self.visible_whitespace = value.clone(),
                 (ExOptionName::IgnoreCase, ExOptionValue::Boolean(value)) => {
                     self.search_options.ignorecase = *value
                 }
@@ -14401,7 +14463,7 @@ fn directional_count(count: usize, positive: bool) -> isize {
 fn covered_line_range(lines: &HardLineSnapshot, range: Range<usize>) -> Range<usize> {
     let start = line_start(lines, range.start);
     let end_line = if range.end > range.start {
-        previous_grapheme_boundary(lines.text(), range.end).unwrap_or(range.end)
+        lines.previous_grapheme_boundary(range.end).unwrap_or(range.end)
     } else {
         range.end
     };
@@ -14470,7 +14532,7 @@ fn remove_inserted_suffix(value: &mut RegisterValue, removed: &str) {
 /// Resolve the complete replacement against its input snapshot before any
 /// mutation, so one text event remains atomic even if later input is rejected.
 fn replacement_payload_targets(
-    document: &Document,
+    _document: &Document,
     lines: &HardLineSnapshot,
     start: usize,
     value: &RegisterValue,
@@ -14484,14 +14546,15 @@ fn replacement_payload_targets(
         if inserted == "\n" && value.hard_break_offsets().binary_search(&relative).is_ok() {
             continue;
         }
-        let replaced = grapheme_range_at(document.text(), end)
+        let replaced = lines.grapheme_range_at(end)
             .filter(|range| !is_hard_line_separator(lines, range));
         if journalable {
             journal_entries.push(ReplaceJournalEntry {
+                autoindent: false,
                 source_record: None,
                 start: start + relative,
                 inserted: inserted.to_owned(),
-                original: replaced.as_ref().map(|range| document.text()[range.clone()].to_owned()),
+                original: replaced.as_ref().map(|range| lines.slice_utf8(range.clone()).expect("validated replacement grapheme")),
             });
         }
         if let Some(range) = replaced {
@@ -14841,7 +14904,7 @@ fn hard_line_count_for_range(lines: &HardLineSnapshot, range: &Range<usize>) -> 
         .line_at_offset(range.start)
         .expect("a command range starts at a valid hard-line boundary")
         .index();
-    let last_offset = previous_grapheme_boundary(lines.text(), range.end).unwrap_or(range.start);
+    let last_offset = lines.previous_grapheme_boundary(range.end).unwrap_or(range.start);
     let last = lines
         .line_at_offset(last_offset)
         .expect("a command range ends at a valid hard-line boundary")
@@ -14850,64 +14913,44 @@ fn hard_line_count_for_range(lines: &HardLineSnapshot, range: &Range<usize>) -> 
 }
 
 fn indent_edits(
-    text: &str,
     lines: &HardLineSnapshot,
     range: &Range<usize>,
     operator: Operator,
     count: usize,
+    options: crate::document::IndentationOptions,
 ) -> Result<Vec<TextEdit>, TextRepetitionError> {
-    let shift_width = 4usize
-        .checked_mul(count)
+    let shift_width = options.shift_width().checked_mul(count)
+        .filter(|width| *width <= isize::MAX as usize)
         .ok_or_else(|| TextRepetitionError::new(count))?;
-    let padding = if operator == Operator::Indent {
-        Some(checked_text_repetition("    ", count)?)
-    } else {
-        None
-    };
-    let first = lines
-        .line_at_offset(range.start)
-        .expect("an indent range starts on a hard line")
-        .index();
-    let last_offset = previous_grapheme_boundary(text, range.end).unwrap_or(range.start);
-    let last = lines
-        .line_at_offset(last_offset)
-        .expect("an indent range ends on a hard line")
-        .index();
-    let mut edits = Vec::with_capacity(last.saturating_sub(first).saturating_add(1));
-    for info in lines
-        .lines(first..last.saturating_add(1))
-        .expect("an ordinal range derived from one snapshot is valid")
-    {
+    let first = lines.line_at_offset(range.start).expect("valid indent start").index();
+    let last_offset = lines.previous_grapheme_boundary(range.end).unwrap_or(range.start);
+    let last = lines.line_at_offset(last_offset).expect("valid indent end").index();
+    // The autoindent provider copies the preceding nonblank hard line. A
+    // bounded lookback avoids scanning an arbitrarily large blank region.
+    let mut previous = 0;
+    for index in (first.saturating_sub(512)..first).rev() {
+        let line = lines.line(index).expect("valid preceding line");
+        let text = lines.slice_utf8(line.content_range()).expect("validated line");
+        let len = crate::document::leading_whitespace_len(&text);
+        if len < text.len() { previous = options.columns(&text[..len]); break; }
+    }
+    let mut edits = Vec::new();
+    for info in lines.lines(first..last + 1).expect("valid indent lines") {
         let content = info.content_range();
-        let line = &text[content.clone()];
-        match operator {
-            Operator::Indent => {
-                edits.push(TextEdit::new(
-                    content.start..content.start,
-                    padding
-                        .as_ref()
-                        .expect("indent precomputes its checked padding")
-                        .clone(),
-                ));
-            }
-            Operator::Outdent => {
-                let spaces = line
-                    .bytes()
-                    .take_while(|byte| *byte == b' ')
-                    .take(shift_width)
-                    .count();
-                if spaces > 0 {
-                    edits.push(TextEdit::new(content.start..content.start + spaces, ""));
-                }
-            }
-            Operator::Reindent => {
-                let trimmed = line.trim_start();
-                let whitespace = line.len() - trimmed.len();
-                if whitespace > 0 {
-                    edits.push(TextEdit::new(content.start..content.start + whitespace, ""));
-                }
-            }
+        let line = lines.slice_utf8(content.clone()).expect("validated indent line");
+        if line.is_empty() { continue; }
+        let whitespace = crate::document::leading_whitespace_len(&line);
+        let old_columns = options.columns(&line[..whitespace]);
+        let columns = match operator {
+            Operator::Indent => old_columns.checked_add(shift_width).ok_or_else(|| TextRepetitionError::new(count))?,
+            Operator::Outdent => old_columns.saturating_sub(shift_width),
+            Operator::Reindent => if whitespace == line.len() { 0 } else { previous },
             _ => unreachable!(),
+        };
+        if whitespace != line.len() { previous = columns; }
+        let replacement = options.try_whitespace(0, columns).map_err(|_| TextRepetitionError::new(count))?;
+        if replacement != line[..whitespace] {
+            edits.push(TextEdit::new(content.start..content.start + whitespace, replacement));
         }
     }
     Ok(edits)
@@ -16743,7 +16786,7 @@ mod tests {
         let mut commands = CommandInterpreter::new();
 
         keys(&mut commands, &mut document, ">>");
-        assert_eq!(document.text(), "      a\n    b");
+        assert_eq!(document.text(), "    a\n    b");
         keys(&mut commands, &mut document, "<<");
         assert_eq!(document.text(), "  a\n    b");
         keys(&mut commands, &mut document, "==");
@@ -16975,6 +17018,7 @@ mod tests {
             for encoding in [Encoding::Utf8, Encoding::Latin1] {
                 let mut document = forced_mac_document(format, encoding);
                 let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
                 keys(&mut commands, &mut document, "dd");
                 assert_eq!(document.text(), "b\nc", "{format:?} {encoding:?}: first dd");
                 assert_eq!(document.line_count(), 1);
@@ -16984,6 +17028,7 @@ mod tests {
 
                 let mut document = forced_mac_document(format, encoding);
                 let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
                 keys(&mut commands, &mut document, "Gdd");
                 assert_eq!(document.text(), "a", "{format:?} {encoding:?}: final dd");
                 assert_eq!(document.source_bytes(), forced_mac_source("a", format));
@@ -16997,11 +17042,13 @@ mod tests {
 
                 let mut document = forced_mac_document(format, encoding);
                 let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
                 keys(&mut commands, &mut document, "GVd");
                 assert_eq!(document.text(), "a", "Visual Line final-line deletion");
 
                 let mut document = forced_mac_document(format, encoding);
                 let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
                 keys(&mut commands, &mut document, "J");
                 assert_eq!(
                     document.text(),
@@ -17013,6 +17060,7 @@ mod tests {
 
                 let mut document = forced_mac_document(format, encoding);
                 let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
                 keys(&mut commands, &mut document, "G>>");
                 assert_eq!(document.text(), "a\n    b\nc");
                 assert_eq!(
@@ -17185,6 +17233,7 @@ mod tests {
 
         let mut semantic = new_document();
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { autoindent: false, ..Default::default() }).unwrap();
         keys(&mut commands, &mut semantic, "cw");
         key(&mut commands, &mut semantic, Key::Enter);
         commands
@@ -17199,6 +17248,7 @@ mod tests {
 
         let mut literal = new_document();
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { autoindent: false, ..Default::default() }).unwrap();
         keys(&mut commands, &mut literal, "cw");
         commands
             .handle(&mut literal, InputEvent::Text("\nX".to_owned()))
@@ -18210,6 +18260,7 @@ mod tests {
     fn text_objects_compose_with_yank_indent_and_case_operators() {
         let mut document = Document::new("word next");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         keys(&mut commands, &mut document, "yiw");
         assert_eq!(commands.register('0').unwrap().text, "word");
         keys(&mut commands, &mut document, "gUiw");
@@ -18217,6 +18268,7 @@ mod tests {
 
         let mut document = Document::new("first line\nsecond line\n\nthird");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         keys(&mut commands, &mut document, ">ip");
         assert_eq!(document.text(), "    first line\n    second line\n\nthird");
     }
@@ -18981,6 +19033,7 @@ mod tests {
         for (paste, preserve_unnamed) in [('p', false), ('P', true)] {
             let mut document = Document::new("abcdef");
             let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
             commands
                 .registers
                 .yank(Some('a'), RegisterValue::characterwise("XY"));
@@ -19002,6 +19055,7 @@ mod tests {
 
         let mut document = Document::new("aa\nbb\ncc");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         keys(&mut commands, &mut document, "Vj3>");
         assert_eq!(document.text(), "            aa\n            bb\ncc");
         assert!(document.undo());
@@ -19010,18 +19064,21 @@ mod tests {
 
         let mut document = Document::new("            aa\n        bb\ncc");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         keys(&mut commands, &mut document, "Vj2<");
         assert_eq!(document.text(), "    aa\nbb\ncc");
         assert!(document.undo());
 
         let mut document = Document::new("    aa\n  bb\ncc");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         keys(&mut commands, &mut document, "Vj7=");
         assert_eq!(document.text(), "aa\nbb\ncc");
         assert!(document.undo());
 
         let mut document = Document::new("AbCd");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         keys(&mut commands, &mut document, "vl2~");
         assert_eq!(
             document.text(),
@@ -19031,6 +19088,7 @@ mod tests {
 
         let mut document = Document::new("Abcd\neFGh");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         let snapshot = layout_snapshot(&document, 500.0);
         let mut context =
             LayoutCommandContext::new(&snapshot, true, Viewport::new(0.0, 500.0).unwrap());
@@ -19255,6 +19313,7 @@ mod tests {
     fn visual_block_dot_preserves_counted_shift_and_maxcol_intent() {
         let mut document = Document::new("ab\ncd\nef\ngh");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         layout_keys(
             &mut commands,
             &mut document,
@@ -19280,6 +19339,7 @@ mod tests {
 
         let mut document = Document::new("ab\ncde\nwxyz\nmnopq");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         layout_keys(
             &mut commands,
             &mut document,
@@ -19302,6 +19362,7 @@ mod tests {
 
         let mut document = Document::new("ab\ncde\nwxyz\nmnopq");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         layout_keys(
             &mut commands,
             &mut document,
@@ -20122,6 +20183,7 @@ mod tests {
     fn visual_block_shift_outdent_and_reindent_are_atomic() {
         let mut document = Document::new("ab cd\nab ef");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         assert!(commands.set_cursor(&document, 2));
         let snapshot = layout_snapshot(&document, 500.0);
         let mut context =
@@ -20142,6 +20204,7 @@ mod tests {
 
         let mut document = Document::new("ab      cd\nab  ef");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         assert!(commands.set_cursor(&document, 2));
         let snapshot = layout_snapshot(&document, 500.0);
         let mut context =
@@ -20160,6 +20223,7 @@ mod tests {
 
         let mut document = Document::new("    one\n  two");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         let snapshot = layout_snapshot(&document, 500.0);
         let mut context =
             LayoutCommandContext::new(&snapshot, true, Viewport::new(0.0, 500.0).unwrap());
@@ -20180,6 +20244,7 @@ mod tests {
     fn visual_block_edits_follow_proportional_and_wrapped_row_hit_tests() {
         let mut document = Document::new("iiii\nWWWW");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         assert!(commands.set_cursor(&document, 1));
         let snapshot = layout_snapshot(&document, 500.0);
         let mut context =
@@ -20218,6 +20283,7 @@ mod tests {
 
         let mut document = Document::new("one two three four five");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         let snapshot = layout_snapshot(&document, 45.0);
         assert!(snapshot.rows.len() >= 3);
         let mut context =
@@ -20398,6 +20464,7 @@ mod tests {
     fn dot_repeats_operator_change_indent_and_case_recipes() {
         let mut document = Document::new("one two three four");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         keys(&mut commands, &mut document, "dw.");
         assert_eq!(document.text(), "three four");
         keys(&mut commands, &mut document, "2.");
@@ -20407,6 +20474,7 @@ mod tests {
 
         let mut document = Document::new("one two three four");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         keys(&mut commands, &mut document, "cwX");
         key(&mut commands, &mut document, Key::Escape);
         keys(&mut commands, &mut document, "w.");
@@ -20416,16 +20484,19 @@ mod tests {
 
         let mut document = Document::new("a\nb");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         keys(&mut commands, &mut document, ">>j.");
         assert_eq!(document.text(), "    a\n    b");
 
         let mut document = Document::new("one two");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         keys(&mut commands, &mut document, "gUiww.");
         assert_eq!(document.text(), "ONE TWO");
 
         let mut document = Document::new("one two");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
         keys(&mut commands, &mut document, "\"adw.");
         assert_eq!(document.text(), "");
         assert_eq!(commands.register('a').unwrap().text, "two");
@@ -20975,9 +21046,10 @@ mod tests {
     }
 
     #[test]
-    fn tab_is_ordinary_insert_and_replace_text_in_the_current_undo_unit() {
+    fn configured_hard_tab_is_ordinary_insert_and_replace_text_in_the_current_undo_unit() {
         let mut document = Document::new("ab");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { expandtab: false, softtabstop: 0, smarttab: false, ..Default::default() }).unwrap();
         key(&mut commands, &mut document, Key::Char('i'));
         key(&mut commands, &mut document, Key::Tab);
         commands
@@ -20991,6 +21063,7 @@ mod tests {
 
         let mut document = Document::new("ab");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { expandtab: false, softtabstop: 0, smarttab: false, ..Default::default() }).unwrap();
         key(&mut commands, &mut document, Key::Char('R'));
         key(&mut commands, &mut document, Key::Tab);
         commands
@@ -21497,6 +21570,7 @@ mod tests {
     fn visual_shift_retains_its_application_count_while_dot_ignores_its_count() {
         let mut document = Document::new("aa\nbb\ncc\ndd\nee");
         let mut commands = CommandInterpreter::new();
+        commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
 
         keys(&mut commands, &mut document, "Vj3>2j2.");
         let padding = " ".repeat(12);

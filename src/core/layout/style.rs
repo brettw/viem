@@ -65,6 +65,9 @@ pub struct ParagraphLayoutStyle {
 /// Layout-facing result of resolving one immutable formatted snapshot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DocumentLayoutStyles {
+    /// Default Paragraph font, excluding authored character spans and the
+    /// current paragraph's named style. Whitespace geometry uses this basis.
+    pub whitespace_shaping_style: ResolvedTextStyle,
     pub style_sheet_revision: StyleSheetRevision,
     pub document_insets: EdgeInsets,
     pub canvas_background: Color,
@@ -326,6 +329,12 @@ impl DocumentLayoutStyles {
         let sheet = input.style_sheet;
         let resolved_document = sheet.resolve_document_assignment(input.document_style)?;
         let default_shaping_style = shaping_style(&resolved_document.character)?;
+        let whitespace_paragraph = sheet.resolve_assigned_paragraph_style(
+            input.document_style, &StyleId("Paragraph".into()),
+            &crate::document::BlockProperties::default(), &CharacterProperties::default(),
+            None, &CharacterProperties::default(),
+        )?;
+        let whitespace_shaping_style = shaping_style(&whitespace_paragraph.character)?;
         let default_paint = paint_style(&resolved_document.character);
 
         let mut shaping_runs = Vec::new();
@@ -487,6 +496,7 @@ impl DocumentLayoutStyles {
         }
 
         Ok(Self {
+            whitespace_shaping_style,
             style_sheet_revision: sheet.revision,
             document_insets: EdgeInsets {
                 top: resolved_document.padding_top,

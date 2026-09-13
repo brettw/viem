@@ -31,6 +31,11 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private let codeDiagnostic = NSTextField(wrappingLabelWithString: "")
   private weak var smartQuotesCheckbox: NSButton?
   private let textWidthField = NSTextField(string: "")
+  private var indentationCheckboxes: [String: NSButton] = [:]
+  private var indentationFields: [String: NSTextField] = [:]
+  private var whitespacePopups: [String: NSPopUpButton] = [:]
+  private var listcharsFields: [String: NSTextField] = [:]
+  private weak var visibleWhitespaceCheckbox: NSButton?
   private var wells: [Int: NSColorWell] = [:]
   private var fields: [Int: NSTextField] = [:]
   private let fontSelect = NSPopUpButton()
@@ -72,8 +77,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     ) { [weak self] notification in
       MainActor.assumeIsolated {
         guard let self, notification.object as AnyObject? === self.editingPreferences else { return }
-        self.smartQuotesCheckbox?.state = self.editingPreferences.smartQuotes ? .on : .off
-        self.textWidthField.stringValue = String(self.editingPreferences.textWidth)
+        self.refreshEditingPreferences()
       }
     }
     codeObservers = [Notification.Name.viemCodePreferencesDidChange, .viemCodeDiagnosticsDidChange].map { name in
@@ -188,6 +192,10 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     content.subviews.forEach { $0.removeFromSuperview() }
     wells.removeAll()
     fields.removeAll()
+    indentationCheckboxes.removeAll()
+    indentationFields.removeAll()
+    whitespacePopups.removeAll()
+    listcharsFields.removeAll()
     let scroll = NSScrollView()
     scroll.drawsBackground = false
     scroll.hasVerticalScroller = true
@@ -295,6 +303,8 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       let widthGroup = section("Reflow", views: [widthRow, widthExplanation])
       stack.addArrangedSubview(widthGroup)
       widthGroup.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
+      buildIndentationSettings(in: stack)
+      refreshEditingPreferences()
       return
     }
     let paper = button("Paper", action: #selector(usePaper))
@@ -358,6 +368,178 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     }
   }
 
+  private func buildIndentationSettings(in stack: NSStackView) {
+    let switches = [
+      ("autoindent", "Copy indentation to new lines"),
+      ("expandtab", "Insert spaces for tabs"),
+      ("smarttab", "Use shift width for Tab in leading whitespace"),
+      ("continueCommentsOnEnter", "Continue comments when pressing Return"),
+      ("continueCommentsOnOpenLine", "Continue comments with o and O"),
+    ].map { key, title -> NSView in
+      let checkbox = NSButton(checkboxWithTitle: title, target: self, action: #selector(changeIndentationCheckbox(_:)))
+      checkbox.identifier = NSUserInterfaceItemIdentifier(key)
+      checkbox.setAccessibilityLabel(title)
+      indentationCheckboxes[key] = checkbox
+      return checkbox
+    }
+    let numbers = NSGridView(views: [
+      [label("Tab stop"), indentationField("tabstop"), label("1–1024 columns")],
+      [label("Shift width"), indentationField("shiftwidth"), label("0 uses tab stop")],
+      [label("Soft tab stop"), indentationField("softtabstop"), label("−1 uses shift width; 0 disables")],
+    ])
+    numbers.columnSpacing = 10
+    numbers.rowSpacing = 8
+    let widths = NSGridView(views: [
+      [label("Code whitespace"), whitespacePopup("codeWhitespace")],
+      [label("Other formats"), whitespacePopup("otherWhitespace")],
+    ])
+    widths.columnSpacing = 10
+    widths.rowSpacing = 8
+    let explanation = NSTextField(wrappingLabelWithString: "Defaults apply to new and inheriting documents. Changing these settings leaves existing text unchanged. Paragraph en uses half the paragraph font size for whitespace width.")
+    explanation.textColor = .secondaryLabelColor
+    explanation.font = .systemFont(ofSize: 12)
+    let indentation = section("Indentation and tabs", views: [numbers] + switches + [widths, explanation])
+    stack.addArrangedSubview(indentation)
+    indentation.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
+
+    let enabled = NSButton(checkboxWithTitle: "Show visible whitespace", target: self, action: #selector(changeVisibleWhitespace(_:)))
+    enabled.setAccessibilityLabel("Show visible whitespace")
+    visibleWhitespaceCheckbox = enabled
+    let entries = NSGridView(views: EVListcharsSettings.names.map { name in
+      let field = NSTextField(string: "")
+      field.identifier = NSUserInterfaceItemIdentifier(name)
+      field.delegate = self
+      field.target = self
+      field.action = #selector(changeListchars(_:))
+      field.setAccessibilityLabel("Visible whitespace \(name)")
+      field.widthAnchor.constraint(equalToConstant: 120).isActive = true
+      listcharsFields[name] = field
+      let hint = ["tab", "leadtab"].contains(name) ? "2–3 characters"
+        : ["multispace", "leadmultispace"].contains(name) ? "Repeating characters" : "1 character"
+      return [label(name), field, label(hint)]
+    })
+    entries.columnSpacing = 10
+    entries.rowSpacing = 6
+    let note = NSTextField(wrappingLabelWithString: "Leave a field blank to omit it and use Vim's fallback behavior. Character escapes such as \\u00b7 are supported. The Visible whitespace character style controls the markers' appearance.")
+    note.textColor = .secondaryLabelColor
+    note.font = .systemFont(ofSize: 12)
+    let visible = section("Visible whitespace", views: [enabled, entries, note, button("Edit Style…", action: #selector(editVisibleWhitespaceStyle))])
+    stack.addArrangedSubview(visible)
+    visible.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
+  }
+
+  private func indentationField(_ name: String) -> NSTextField {
+    let field = NSTextField(string: "")
+    field.identifier = NSUserInterfaceItemIdentifier(name)
+    field.alignment = .right
+    field.delegate = self
+    field.target = self
+    field.action = #selector(changeIndentationNumber(_:))
+    field.setAccessibilityLabel("Indentation \(name)")
+    field.widthAnchor.constraint(equalToConstant: 75).isActive = true
+    indentationFields[name] = field
+    return field
+  }
+
+  private func whitespacePopup(_ name: String) -> NSPopUpButton {
+    let popup = NSPopUpButton()
+    popup.identifier = NSUserInterfaceItemIdentifier(name)
+    popup.addItems(withTitles: ["Use spaces", "Use paragraph en"])
+    popup.target = self
+    popup.action = #selector(changeWhitespaceWidth(_:))
+    popup.setAccessibilityLabel(name == "codeWhitespace" ? "Code whitespace width" : "Other formats whitespace width")
+    whitespacePopups[name] = popup
+    return popup
+  }
+
+  private func refreshEditingPreferences(error: String? = nil) {
+    smartQuotesCheckbox?.state = editingPreferences.smartQuotes ? .on : .off
+    textWidthField.stringValue = String(editingPreferences.textWidth)
+    let options = editingPreferences.indentation
+    let switches = ["autoindent": options.autoindent, "expandtab": options.expandtab, "smarttab": options.smarttab,
+      "continueCommentsOnEnter": options.continueCommentsOnEnter, "continueCommentsOnOpenLine": options.continueCommentsOnOpenLine]
+    for (key, checkbox) in indentationCheckboxes { checkbox.state = switches[key] == true ? .on : .off }
+    indentationFields["tabstop"]?.stringValue = String(options.tabstop)
+    indentationFields["shiftwidth"]?.stringValue = String(options.shiftwidth)
+    indentationFields["softtabstop"]?.stringValue = String(options.softtabstop)
+    let presentation = editingPreferences.whitespacePresentation
+    whitespacePopups["codeWhitespace"]?.selectItem(at: presentation.codeWhitespace == .spaces ? 0 : 1)
+    whitespacePopups["otherWhitespace"]?.selectItem(at: presentation.otherWhitespace == .spaces ? 0 : 1)
+    visibleWhitespaceCheckbox?.state = presentation.visibleWhitespace.enabled ? .on : .off
+    let entries = EVListcharsSettings.displayEntries(presentation.visibleWhitespace.listchars)
+    for (key, field) in listcharsFields { field.stringValue = entries[key] ?? "" }
+    if selectedCategory == 2 {
+      persistenceDiagnostic.stringValue = error ?? editingPreferences.lastError ?? ""
+      persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
+    }
+  }
+
+  @objc private func changeIndentationCheckbox(_ sender: NSButton) {
+    var options = editingPreferences.indentation
+    let enabled = sender.state == .on
+    switch sender.identifier?.rawValue {
+    case "autoindent": options.autoindent = enabled
+    case "expandtab": options.expandtab = enabled
+    case "smarttab": options.smarttab = enabled
+    case "continueCommentsOnEnter": options.continueCommentsOnEnter = enabled
+    case "continueCommentsOnOpenLine": options.continueCommentsOnOpenLine = enabled
+    default: return
+    }
+    editingPreferences.setIndentation(options)
+    refreshEditingPreferences()
+  }
+
+  @objc private func changeIndentationNumber(_ sender: NSTextField) {
+    var options = editingPreferences.indentation
+    let input = sender.stringValue.trimmingCharacters(in: .whitespaces)
+    guard let number = Int32(input), (-1...1024).contains(number) else {
+      refreshEditingPreferences(error: "Enter a whole number within the field's allowed range.")
+      return
+    }
+    switch sender.identifier?.rawValue {
+    case "tabstop" where number > 0: options.tabstop = UInt32(number)
+    case "shiftwidth" where number >= 0: options.shiftwidth = UInt32(number)
+    case "softtabstop": options.softtabstop = number
+    default:
+      refreshEditingPreferences(error: "Tab stop must be positive; shift width may be zero.")
+      return
+    }
+    editingPreferences.setIndentation(options)
+    refreshEditingPreferences()
+  }
+
+  @objc private func changeWhitespaceWidth(_ sender: NSPopUpButton) {
+    var options = editingPreferences.whitespacePresentation
+    let value: EVWhitespaceWidth = sender.indexOfSelectedItem == 0 ? .spaces : .paragraphEn
+    if sender.identifier?.rawValue == "codeWhitespace" { options.codeWhitespace = value }
+    else { options.otherWhitespace = value }
+    editingPreferences.setWhitespacePresentation(options)
+    refreshEditingPreferences()
+  }
+
+  @objc private func changeVisibleWhitespace(_ sender: NSButton) {
+    var options = editingPreferences.whitespacePresentation
+    options.visibleWhitespace.enabled = sender.state == .on
+    editingPreferences.setWhitespacePresentation(options)
+    refreshEditingPreferences()
+  }
+
+  @objc private func changeListchars(_ sender: NSTextField) {
+    guard let name = sender.identifier?.rawValue else { return }
+    var options = editingPreferences.whitespacePresentation
+    guard let characters = EVListcharsSettings.decodedCharacters(sender.stringValue) else {
+      refreshEditingPreferences(error: "The character escape is incomplete or invalid.")
+      return
+    }
+    var entries = EVListcharsSettings.displayEntries(options.visibleWhitespace.listchars)
+    entries[name] = characters
+    options.visibleWhitespace.listchars = EVListcharsSettings.string(from: entries)
+    editingPreferences.setWhitespacePresentation(options)
+    refreshEditingPreferences()
+  }
+
+  @objc private func editVisibleWhitespaceStyle() { editingPreferences.openVisibleWhitespaceStyle() }
+
   @objc private func changeCodeDirectory(_ sender: Any?) {
     _ = codePreferences.setVimSyntaxDirectory(codeDirectoryField.stringValue)
     refreshCodePreferences()
@@ -366,6 +548,10 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   func controlTextDidEndEditing(_ notification: Notification) {
     if notification.object as AnyObject? === codeDirectoryField { changeCodeDirectory(nil) }
     if notification.object as AnyObject? === textWidthField { changeTextWidth(textWidthField) }
+    if let field = notification.object as? NSTextField, let name = field.identifier?.rawValue {
+      if indentationFields[name] === field { changeIndentationNumber(field) }
+      if listcharsFields[name] === field { changeListchars(field) }
+    }
     if let field = notification.object as? NSTextField, fields[field.tag] === field { changeNumber(field) }
   }
 

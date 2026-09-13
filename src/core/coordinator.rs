@@ -838,11 +838,13 @@ fn allocate_style_edit_group_id() -> Option<StyleEditGroupId> {
 
 /// Serial composition root for one buffer and its attached views.
 mod syntax;
+mod whitespace;
 
 pub struct Core<P: TextMeasurementProvider> {
     document: Document,
     syntax: syntax::CoreSyntax,
     buffer_commands: BufferCommandState,
+    whitespace_defaults: crate::layout::WhitespacePresentationOptions,
     views: BTreeMap<ViewId, View<P>>,
     next_view: Option<u64>,
     next_layout_job: Option<u64>,
@@ -981,6 +983,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             document,
             syntax: syntax::CoreSyntax::default(),
             buffer_commands,
+            whitespace_defaults: Default::default(),
             views: BTreeMap::new(),
             next_view: Some(1),
             next_layout_job: Some(1),
@@ -2260,6 +2263,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         intent: ImmediateLayoutIntent,
     ) -> Result<(), CoreError> {
         self.poll_syntax();
+        self.synchronize_whitespace(view_id)?;
         // Font registration may advance metrics synchronously during shaping.
         // Retry only disposable layout work, never the input/source transaction.
         for attempt in 0..3 {
@@ -2444,11 +2448,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     restore_viewport_anchor(view)?;
                 }
                 if intent != ImmediateLayoutIntent::PreserveViewport {
-                    if intent == ImmediateLayoutIntent::PreserveViewportAndRevealCaret {
-                        viewport::reveal_caret_row(view)?;
-                    } else {
-                        reveal_caret(view)?;
-                    }
+                    viewport::reveal_caret_row(view)?;
                 }
                 update_viewport_anchor(&self.document, view);
                 viewport_extension_needed(view)
@@ -2589,11 +2589,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     restore_viewport_anchor(view)?;
                 }
                 if intent != ImmediateLayoutIntent::PreserveViewport {
-                    if intent == ImmediateLayoutIntent::PreserveViewportAndRevealCaret {
-                        viewport::reveal_caret_row(view)?;
-                    } else {
-                        reveal_caret(view)?;
-                    }
+                    viewport::reveal_caret_row(view)?;
                 }
                 update_viewport_anchor(&self.document, view);
                 return Ok(true);
@@ -3378,7 +3374,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .publish_layout_job_viewport(job_id, region, requested_top)
             .map_err(LayoutError::from)?;
         if reveal_selection {
-            reveal_layout_endpoint(
+            viewport::reveal_layout_row_at(
                 &mut composed_layout,
                 overlay.selected_range_in_overlay().end,
                 BoundaryAffinity::Downstream,
@@ -3546,7 +3542,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .publish_layout_job_viewport(job_id, region, top)
                     .map_err(LayoutError::from)?;
                 if reveal_selection {
-                    reveal_layout_endpoint(
+                    viewport::reveal_layout_row_at(
                         &mut composed_layout,
                         focus,
                         BoundaryAffinity::Downstream,
@@ -5394,9 +5390,19 @@ impl<P: TextMeasurementProvider> Core<P> {
                 }
                 target_view.layout.set_viewport_top(viewport_top)?;
                 let mut option_layout_changed = false;
+                let mut buffer_whitespace_changed = false;
                 if let Some(ex) = command.ex_outcome.as_ref() {
                     for effect in &ex.option_effects {
                         match (&effect.name, &effect.new_value) {
+                            (_, ExOptionValue::VisibleWhitespace(_)) => {
+                                option_layout_changed = true;
+                            }
+                            (_, ExOptionValue::Indentation(value)) => {
+                                if let ExOptionValue::Indentation(old) = &effect.old_value {
+                                    buffer_whitespace_changed |= old.effective().tabstop != value.effective().tabstop;
+                                    option_layout_changed |= buffer_whitespace_changed;
+                                }
+                            }
                             (ExOptionName::Wrap, ExOptionValue::Boolean(value)) => {
                                 let changed = target_view.layout.wrap() != *value;
                                 option_layout_changed |= changed;
@@ -5689,6 +5695,13 @@ impl<P: TextMeasurementProvider> Core<P> {
                     }
                 }
                 self.publish_buffer_commands(view_id);
+                if buffer_whitespace_changed && !changed {
+                    for id in self.views.keys().copied().filter(|id| *id != view_id).collect::<Vec<_>>() {
+                        let result = self.materialize_immediate_viewport(id, ImmediateLayoutIntent::PreserveViewport)
+                            .and_then(|_| self.rematerialize_active_composition(id, false));
+                        if let Err(error) = result { self.record_presentation_error(id, error); }
+                    }
+                }
                 let presentation_result = if changed {
                     self.materialize_views_after_document_change(
                         view_id,
@@ -5703,7 +5716,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             .views
                             .get_mut(&view_id)
                             .expect("invoking view remains attached during serial dispatch");
-                        reveal_caret(view)
+                        viewport::reveal_caret_row(view)
                     };
                     match reveal {
                         Ok(()) => {
@@ -6861,38 +6874,6 @@ fn splice_paragraph_styles(
     Ok(output)
 }
 
-fn reveal_layout_endpoint(
-    layout: &mut ViewLayout,
-    text_offset: usize,
-    affinity: BoundaryAffinity,
-) -> Result<(), LayoutError> {
-    let (caret_top, caret_bottom) = {
-        let snapshot = layout.snapshot().ok_or(LayoutError::NoRows)?;
-        let geometry = snapshot
-            .logical_endpoint_geometry(text_offset, affinity)
-            .or_else(|_| {
-                snapshot.logical_endpoint_geometry(
-                    text_offset,
-                    match affinity {
-                        BoundaryAffinity::Upstream => BoundaryAffinity::Downstream,
-                        BoundaryAffinity::Downstream => BoundaryAffinity::Upstream,
-                    },
-                )
-            })?;
-        (geometry.rect.y, geometry.rect.y + geometry.rect.height)
-    };
-    let viewport_top = layout.viewport_top();
-    let viewport_bottom = viewport_top + layout.height();
-    let requested_top = if caret_top < viewport_top {
-        caret_top
-    } else if caret_bottom > viewport_bottom {
-        caret_bottom - layout.height()
-    } else {
-        viewport_top
-    };
-    layout.set_viewport_top(requested_top)
-}
-
 fn replay_frame(plan: ReplayPlan) -> ReplayFrame {
     match plan {
         ReplayPlan::Macro(plan) => ReplayFrame::Macro {
@@ -7073,31 +7054,6 @@ fn viewport_layout_extension_needed(layout: &ViewLayout) -> (bool, bool) {
             && hard_lines.start > 0,
         bottom > vertical.end && hard_lines.end < document_hard_line_count,
     )
-}
-
-fn reveal_caret<P: TextMeasurementProvider>(view: &mut View<P>) -> Result<(), LayoutError> {
-    let position = view.commands.visual_position().unwrap_or_else(|| {
-        crate::command::layout_motion::VisualPosition {
-            text_offset: view.commands.cursor(),
-            affinity: view.commands.boundary_affinity(),
-        }
-    });
-    let (caret_top, caret_bottom) = {
-        let snapshot = view.layout.snapshot().ok_or(LayoutError::NoRows)?;
-        let geometry =
-            snapshot.logical_endpoint_geometry(position.text_offset, position.affinity)?;
-        (geometry.rect.y, geometry.rect.y + geometry.rect.height)
-    };
-    let viewport_top = view.layout.viewport_top();
-    let viewport_bottom = viewport_top + view.layout.height();
-    let requested_top = if caret_top < viewport_top {
-        caret_top
-    } else if caret_bottom > viewport_bottom {
-        caret_bottom - view.layout.height()
-    } else {
-        viewport_top
-    };
-    view.layout.set_viewport_top(requested_top)
 }
 
 fn update_viewport_anchor<P: TextMeasurementProvider>(document: &Document, view: &mut View<P>) {

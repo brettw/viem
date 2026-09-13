@@ -45,7 +45,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private let viewPreferences: EVViewPreferences
     private var viewPreferencesObserver: NSObjectProtocol?
     private var appliedMargins: EVViewMargins?
-    private var showInvisibles = false
     private var lastErrorMessage = ""
     var pasteboard: any EVPasteboardAccess = EVAppKitPasteboardAccess.shared
     var findPasteboard: any EVPasteboardAccess = EVAppKitPasteboardAccess.find
@@ -551,8 +550,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             let expected = documentState
             performInput { _ = try session.setEncoding(self.encodingValue(menuCommand), expected: expected) }
         case .showInvisibleCharacters:
-            showInvisibles.toggle()
-            editorView.needsDisplay = true
+            guard layoutSnapshot?.whitespace.applicable == true else { return }
+            performInput { try session.setVisibleWhitespace(!(self.layoutSnapshot?.whitespace.enabled ?? true)) }
         case .zoomIn:
             setZoom(adjacentTo: zoomScale, increasing: true, session: session)
         case .zoomOut:
@@ -710,7 +709,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 state: documentState.encoding == encodingValue(menuCommand) ? .on : .off
             )
         case .showInvisibleCharacters:
-            EVMenuItemPresentation(isEnabled: true, state: showInvisibles ? .on : .off)
+            EVMenuItemPresentation(isEnabled: layoutSnapshot?.whitespace.applicable == true,
+                                  state: layoutSnapshot?.whitespace.enabled == true ? .on : .off)
         case .useSelectionForFind:
             EVMenuItemPresentation(
                 isEnabled: selectedUTF8Ranges().contains(where: { !$0.isEmpty })
@@ -809,7 +809,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         documentState.flags & UInt32(VIEM_DOCUMENT_STATE_CAN_REDO) != 0
     }
 
-    var showInvisibleCharactersEnabled: Bool { showInvisibles }
 
     func formattedText(in utf8Range: Range<Int>) -> String? {
         guard let snapshot = formattedSnapshot,
@@ -1535,6 +1534,17 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         case 6: name = "smartcase"
         case 7: name = "wrapscan"
         case UInt32(VIEM_EX_OPTION_TEXTWIDTH): name = "textwidth"
+        case UInt32(VIEM_EX_OPTION_AUTOINDENT): name = "autoindent"
+        case UInt32(VIEM_EX_OPTION_TABSTOP): name = "tabstop"
+        case UInt32(VIEM_EX_OPTION_SHIFTWIDTH): name = "shiftwidth"
+        case UInt32(VIEM_EX_OPTION_SOFTTABSTOP): name = "softtabstop"
+        case UInt32(VIEM_EX_OPTION_EXPANDTAB): name = "expandtab"
+        case UInt32(VIEM_EX_OPTION_SMARTTAB): name = "smarttab"
+        case UInt32(VIEM_EX_OPTION_CONTINUE_COMMENTS_ON_ENTER): name = "continuecommentsonenter"
+        case UInt32(VIEM_EX_OPTION_CONTINUE_COMMENTS_ON_OPEN_LINE): name = "continuecommentsonopenline"
+        case UInt32(VIEM_EX_OPTION_LIST): name = "list"
+        case UInt32(VIEM_EX_OPTION_LISTCHARS): name = "listchars"
+
         default: name = "option\(option.name)"
         }
         switch option.value {
@@ -1545,6 +1555,9 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         case let .fileFormats(values):
             return "\(name)=\(values.map(fileFormatName).joined(separator: ","))"
         case let .number(value):
+            if option.name == UInt32(VIEM_EX_OPTION_SOFTTABSTOP) { return "\(name)=\(Int32(bitPattern: value))" }
+            return "\(name)=\(value)"
+        case let .string(value):
             return "\(name)=\(value)"
         }
     }

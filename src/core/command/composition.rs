@@ -101,6 +101,7 @@ impl CompositionUpdate {
 pub struct CompositionSession {
     target: CompositionTarget,
     base_text: FormattedTextTree,
+    layout_text: FormattedTextTree,
     marked_text: String,
     selected_range: Range<usize>,
     generation: u64,
@@ -110,9 +111,15 @@ impl CompositionSession {
     /// Begin a session over a validated snapshot target.
     pub fn begin(document: &Document, target: CompositionTarget) -> Result<Self, CompositionError> {
         validate_target(document, &target)?;
+        let base_text = document.projection().text_tree().clone();
+        let layout_text = base_text
+            .splice_prevalidated_batch(&[(target.replacement_range.clone(), "")])
+            .map_err(DocumentError::FormattedTextStorage)
+            .map_err(CompositionError::Document)?;
         Ok(Self {
             target,
-            base_text: document.projection().text_tree().clone(),
+            base_text,
+            layout_text,
             marked_text: String::new(),
             selected_range: 0..0,
             generation: 0,
@@ -164,6 +171,18 @@ impl CompositionSession {
             CompositionBoundary::MarkedText,
         )?;
 
+        // Build once per payload, before publishing any session state. Repeated
+        // presentation exports then share one immutable tree identity, and a
+        // selection-only update preserves the same reusable text geometry.
+        let layout_text = if self.marked_text == update.marked_text {
+            self.layout_text.clone()
+        } else {
+            self.base_text
+                .splice_prevalidated_batch(&[(self.target.replacement_range.clone(), update.marked_text.as_str())])
+                .map_err(DocumentError::FormattedTextStorage)
+                .map_err(CompositionError::Document)?
+        };
+        self.layout_text = layout_text;
         self.marked_text = update.marked_text;
         self.selected_range = update.selected_range;
         self.generation = self.generation.saturating_add(1);
@@ -355,6 +374,7 @@ impl CompositionSession {
             revision: self.target.revision,
             generation: self.generation,
             base_text: self.base_text.clone(),
+            layout_text: self.layout_text.clone(),
             replacement_range: self.target.replacement_range.clone(),
             marked_text: self.marked_text.clone(),
             selected_range: self.selected_range.clone(),
@@ -370,21 +390,19 @@ pub struct CompositionOverlay {
     revision: Revision,
     generation: u64,
     base_text: FormattedTextTree,
+    layout_text: FormattedTextTree,
     replacement_range: Range<usize>,
     marked_text: String,
     selected_range: Range<usize>,
 }
 
 impl CompositionOverlay {
-    /// Persistent text for bounded layout capture. Only the marked payload
-    /// allocates new leaves; the immutable document prefix/suffix remain shared.
+    /// Persistent text for bounded layout capture. Every export of this marked
+    /// payload shares one tree identity; no splice or leaf allocation occurs.
     pub(crate) fn layout_text_tree(
         &self,
     ) -> Result<FormattedTextTree, crate::document::FormattedTextError> {
-        self.base_text.splice_prevalidated_batch(&[(
-            self.replacement_range.clone(),
-            self.marked_text.as_str(),
-        )])
+        Ok(self.layout_text.clone())
     }
 
     pub fn document_id(&self) -> DocumentId {
@@ -915,6 +933,44 @@ mod tests {
         );
         assert_eq!(session.overlay(&document).unwrap().marked_text(), "ok");
         assert_eq!(session.generation(), 1);
+    }
+
+    #[test]
+    fn large_composition_exports_share_tree_identity_until_payload_changes() {
+        let document = Document::new(format!("{}end", " ".repeat(200_000)));
+        let base_identity = document.projection().text_tree().snapshot_identity();
+        let mut session = CompositionSession::begin_at_offsets(&document, 200_000..200_003).unwrap();
+        let first = session.update(&document, CompositionUpdate::new("\t  ", 3..3)).unwrap();
+        let tree = first.layout_text_tree().unwrap();
+        let first_identity = tree.snapshot_identity();
+        assert_ne!(first_identity, base_identity);
+        assert_eq!(tree.slice(199_998..tree.byte_len()).unwrap(), "  \t  ");
+        for _ in 0..100 {
+            assert_eq!(session.overlay(&document).unwrap().layout_text_tree().unwrap().snapshot_identity(), first_identity);
+        }
+        let selection = session.update(&document, CompositionUpdate::new("\t  ", 1..1)).unwrap();
+        assert!(selection.generation() > first.generation());
+        assert_eq!(selection.layout_text_tree().unwrap().snapshot_identity(), first_identity);
+        assert!(session.update(&document, CompositionUpdate::new("é", 1..1)).is_err());
+        assert_eq!(session.overlay(&document).unwrap().layout_text_tree().unwrap().snapshot_identity(), first_identity);
+        let changed = session.update(&document, CompositionUpdate::new("next", 4..4)).unwrap();
+        assert_ne!(changed.layout_text_tree().unwrap().snapshot_identity(), first_identity);
+        assert_eq!(first.layout_text_tree().unwrap().snapshot_identity(), first_identity,
+            "Retained overlays remain exact immutable snapshots");
+        let restoration = session.cancel(&document).unwrap();
+        assert_eq!(restoration.original_formatted_text.snapshot_identity(), base_identity);
+        assert_eq!(document.projection().text_tree().snapshot_identity(), base_identity);
+    }
+
+    #[test]
+    fn cached_composition_tree_cannot_be_exported_after_source_changes() {
+        let mut document = Document::new("base");
+        let mut session = CompositionSession::begin_at_offsets(&document, 0..0).unwrap();
+        session.update(&document, CompositionUpdate::new("\t ", 2..2)).unwrap();
+        document.insert(0, "x").unwrap();
+        assert!(matches!(session.overlay(&document), Err(CompositionError::StaleRevision { .. })));
+        assert!(matches!(session.update(&document, CompositionUpdate::new("new", 3..3)), Err(CompositionError::StaleRevision { .. })));
+        assert!(matches!(session.cancel(&document), Err(CompositionError::StaleRevision { .. })));
     }
 
     #[test]

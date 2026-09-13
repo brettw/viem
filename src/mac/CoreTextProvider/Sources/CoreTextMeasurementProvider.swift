@@ -979,6 +979,13 @@ private func makeCluster(
   signature.append(request.metrics_generation)
   signature.append(Float(advance).bitPattern)
   signature.append(UInt64(bidiLevel))
+  // Identical whitespace glyphs can carry distinct marker inheritance even
+  // when their shaping geometry is equal (for example, language alone).
+  signature.append(Float(style.baselineShift).bitPattern)
+  signature.append(Float(style.letterSpacing).bitPattern)
+  signature.append(style.direction)
+  signature.append(UInt8(style.language == nil ? 0 : 1))
+  if let language = style.language { signature.append(language) }
   for batch in grouped {
     signature.append(CTFontCopyPostScriptName(batch.font) as String)
     signature.append(Float(batch.strokeWidth).bitPattern)
@@ -993,7 +1000,11 @@ private func makeCluster(
   let resource = CoreTextRenderRegistry.Resource(
     signature: bytes,
     batches: grouped,
-    isColorGlyph: allFonts.contains { CTFontGetSymbolicTraits($0).rawValue & (1 << 13) != 0 }
+    isColorGlyph: allFonts.contains { CTFontGetSymbolicTraits($0).rawValue & (1 << 13) != 0 },
+    textAttributes: .init(baselineShift: style.baselineShift,
+      letterSpacing: style.letterSpacing, language: style.language,
+      writingDirection: style.direction == UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT) ? .rightToLeft
+        : style.direction == UInt32(VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT) ? .leftToRight : .natural)
   )
   let fallback = allFonts.map { CTFontCopyPostScriptName($0) as String }
     .reduce(into: [String]()) { names, name in

@@ -329,12 +329,24 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_EX_OPTION_SMARTCASE 6u
 #define VIEM_EX_OPTION_WRAPSCAN 7u
 #define VIEM_EX_OPTION_TEXTWIDTH 8u
+#define VIEM_EX_OPTION_AUTOINDENT 9u
+#define VIEM_EX_OPTION_TABSTOP 10u
+#define VIEM_EX_OPTION_SHIFTWIDTH 11u
+#define VIEM_EX_OPTION_SOFTTABSTOP 12u
+#define VIEM_EX_OPTION_EXPANDTAB 13u
+#define VIEM_EX_OPTION_SMARTTAB 14u
+#define VIEM_EX_OPTION_CONTINUE_COMMENTS_ON_ENTER 15u
+#define VIEM_EX_OPTION_CONTINUE_COMMENTS_ON_OPEN_LINE 16u
+
 
 #define VIEM_EX_OPTION_VALUE_BOOLEAN 1u
 #define VIEM_EX_OPTION_VALUE_FILE_FORMAT 2u
 #define VIEM_EX_OPTION_VALUE_FILE_FORMATS 3u
 /* scalar_value carries the number. */
 #define VIEM_EX_OPTION_VALUE_NUMBER 4u
+#define VIEM_EX_OPTION_VALUE_STRING 5u
+#define VIEM_EX_OPTION_LIST 17u
+#define VIEM_EX_OPTION_LISTCHARS 18u
 
 #define VIEM_EX_JUMP_CURRENT (1u << 0)
 
@@ -401,6 +413,7 @@ typedef struct ViemExOptionDisplayV1 {
   uint32_t scalar_value;
   uint64_t first_file_format;
   uint64_t file_format_count;
+  ViemEffectBytesRefV1 text;
 } ViemExOptionDisplayV1;
 
 #define VIEM_EX_OPTION_DISPLAY_V1_SIZE \
@@ -2319,6 +2332,19 @@ ViemStatus viem_core_copy_link_destination(ViemCoreHandle core,
     uint8_t *output, uint64_t capacity, uint64_t *required, uint8_t *found);
 /* Application default for textwidth (positive). Buffer :set overrides survive. */
 ViemStatus viem_core_set_text_width_default(ViemCoreHandle core, uint32_t width);
+/* Application defaults; JSON is validated before mutation. Ex overrides survive. */
+ViemStatus viem_validate_whitespace_presentation(const uint8_t *json, uint64_t length);
+ViemStatus viem_core_set_indentation_defaults(ViemCoreHandle core, const uint8_t *json, uint64_t length);
+ViemStatus viem_core_set_whitespace_presentation_defaults(ViemCoreHandle core, const uint8_t *json, uint64_t length);
+ViemStatus viem_core_view_set_visible_whitespace(ViemCoreHandle core, ViemViewId view, uint8_t enabled);
+/* Exact presentation-snapshot and viewport UTF-8 JSON batch:
+   {style, markers:[{text,rowIndex,x,y,width,height}], enabled, applicable}.
+   All input/output regions must be disjoint. Count and copy pass the same
+   finite viewport (nonnegative origin and dimensions). A changed viewport
+   returns VIEM_STATUS_STALE_REVISION even when cached layout is reused. */
+ViemStatus viem_core_view_copy_whitespace_markers(ViemCoreHandle core, ViemViewId view,
+    const ViemLayoutSnapshotIdentityV1 *expected, const ViemLayoutRectV1 *expected_viewport,
+    uint8_t *output, uint64_t capacity, uint64_t *out_length);
 ViemStatus viem_core_poll_syntax(ViemCoreHandle core, uint8_t *changed);
 ViemStatus viem_core_copy_syntax_diagnostics(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
 /* Read-only two-pass UTF-8 JSON array of unique sorted names in accepted syntax

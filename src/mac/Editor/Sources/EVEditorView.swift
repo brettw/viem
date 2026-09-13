@@ -120,7 +120,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     /// detached, inert text surface through this weak reference instead.
     private(set) weak var surface: EVEditorSurfaceController?
     private let insertionIndicator = NSTextInsertionIndicator(frame: .zero)
-    let documentScrollbars = EVDocumentScrollbars()
+    let documentScrollbars: EVDocumentScrollbars
     private var markedTextValue = ""
     private var markedSelection = NSRange(location: NSNotFound, length: 0)
     private var markedTextTarget: EVMarkedTextTarget?
@@ -144,8 +144,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private weak var configuredEditingSession: EVCoreViewSession?
     private var configuredSmartQuotes: Bool?
     private var configuredTextWidth: UInt32?
+    private var configuredIndentation: EVIndentationOptions?
+    private var configuredWhitespace: EVWhitespacePresentationOptions?
     var editingPreferences = EVEditingPreferences.shared {
-        didSet { configuredSmartQuotes = nil; configuredTextWidth = nil; synchronizeEditingPreferences() }
+        didSet { configuredSmartQuotes = nil; configuredTextWidth = nil; configuredIndentation = nil; configuredWhitespace = nil; synchronizeEditingPreferences() }
     }
     private lazy var customCaretBlinkController: EVCustomCaretBlinkController = {
         let controller = EVCustomCaretBlinkController()
@@ -169,8 +171,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
     private var compositionActive: Bool { surface != nil && markedTextTarget != nil }
 
-    init(surface: EVEditorSurfaceController) {
+    init(surface: EVEditorSurfaceController,
+         scrollbarStyleProvider: @escaping @MainActor () -> NSScroller.Style = { NSScroller.preferredScrollerStyle }) {
         self.surface = surface
+        documentScrollbars = EVDocumentScrollbars(preferredStyleProvider: scrollbarStyleProvider)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.masksToBounds = true
@@ -207,6 +211,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             MainActor.assumeIsolated {
                 guard let self, notification.object as AnyObject? === self.editingPreferences else { return }
                 self.synchronizeEditingPreferences()
+                self.surface?.refreshPresentation()
+                self.needsDisplay = true
             }
         }
         synchronizeEditingPreferences()
@@ -327,6 +333,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             drawText(snapshot, clusters: clusters, paint: paint, in: context)
             drawParagraphDecorations(snapshot, dirtyRect: dirtyRect, in: context)
             if let paint { drawTextDecorations(snapshot, clusters: clusters, paint: paint) }
+            drawWhitespaceMarkers(snapshot, in: context)
             drawMarkedText(snapshot, clusters: clusters, in: context)
             drawCustomCaret(snapshot, in: context)
             context.restoreGState()
@@ -355,13 +362,17 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         let enabled = editingPreferences.smartQuotes && surface?.backend.sourceFormat != .code
         let textWidth = editingPreferences.textWidth
         guard configuredEditingSession !== session || configuredSmartQuotes != enabled
-            || configuredTextWidth != textWidth else { return }
+            || configuredTextWidth != textWidth || configuredIndentation != editingPreferences.indentation
+            || configuredWhitespace != editingPreferences.whitespacePresentation else { return }
         do {
             try session.setSmartQuotes(enabled)
             try session.setTextWidthDefault(textWidth)
+            try session.setWhitespaceDefaults(indentation: editingPreferences.indentation, presentation: editingPreferences.whitespacePresentation)
             configuredEditingSession = session
             configuredSmartQuotes = enabled
             configuredTextWidth = textWidth
+            configuredIndentation = editingPreferences.indentation
+            configuredWhitespace = editingPreferences.whitespacePresentation
         } catch {
             // A closing or replaced session may be unavailable. The next
             // presentation retries against the live session instead.
@@ -2685,9 +2696,6 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             drawFallback(cluster, row: row, color: color.0)
         }
 
-        if surface.showInvisibleCharactersEnabled {
-            drawInvisibleMarkers(snapshot)
-        }
     }
 
     /// Paragraph furniture is drawn from its own exact-layout export. It never
@@ -3251,19 +3259,6 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         )
     }
 
-    private func drawInvisibleMarkers(_ snapshot: EVLayoutExport) {
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 10),
-            .foregroundColor: NSColor.tertiaryLabelColor,
-        ]
-        for row in snapshot.rows where row.flags & UInt32(VIEM_VISUAL_ROW_WRAPS_TO_NEXT) == 0 {
-            let point = viewPoint(fromLayoutPoint: NSPoint(
-                x: CGFloat(row.paragraph_content_x + row.width) + 4,
-                y: CGFloat(row.baseline - row.ascent)))
-            guard NSRect(origin: point, size: NSSize(width: 14, height: 14)).intersects(bounds) else { continue }
-            "¶".draw(at: point, withAttributes: attributes)
-        }
-    }
 
     private func minimumCaretWidth(
         near associatedCluster: ViemPositionedClusterV1?,

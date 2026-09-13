@@ -13,6 +13,9 @@ mod measurement;
 mod mock;
 mod style;
 mod zoom;
+mod whitespace;
+pub use whitespace::{ListChars, ListCharsError, VisibleWhitespaceOptions, WhitespaceBasis,
+    WhitespaceMarker, WhitespaceMarkerKind, WhitespacePresentationOptions};
 
 pub(crate) use composition::capture_range as capture_composition_range;
 pub(crate) use engine::{affinity_rank, hard_line_ranges, nearest_caret, HardLineLayoutSlice};

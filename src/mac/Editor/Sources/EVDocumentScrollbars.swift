@@ -60,12 +60,13 @@ final class EVDocumentScrollbars: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { false }
 
-    /// Legacy gutters stay fixed while horizontal availability fades. Reflowing
-    /// the viewport as its bottom row changes would itself change availability.
+    /// Only legacy vertical controls reserve a gutter. Horizontal controls
+    /// overlay the canvas in either native style, so hidden controls never
+    /// leave a blank strip and availability changes cannot resize the viewport.
     var contentInsets: NSEdgeInsets {
         guard scrollerStyle == .legacy else { return NSEdgeInsets() }
         let width = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
-        return NSEdgeInsets(top: 0, left: 0, bottom: width, right: width)
+        return NSEdgeInsets(top: 0, left: 0, bottom: 0, right: width)
     }
 
     var isVisibilityTimerScheduled: Bool { visibilityTimer != nil }

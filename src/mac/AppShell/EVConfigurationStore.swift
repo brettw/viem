@@ -1,6 +1,10 @@
 import Foundation
 import CoreFoundation
 
+extension Notification.Name {
+  public static let viemConfigurationDidChange = Notification.Name("com.viem.configuration.did-change")
+}
+
 public struct EVCodeFilenameAssociation: Codable, Equatable, Sendable {
   public var pattern: String
   public var language: String
@@ -86,6 +90,12 @@ public final class EVConfigurationStore {
   public var textWidth: UInt32 {
     Self.validTextWidth((root["editing"] as? [String: Any])?["textWidth"]) ?? Self.defaultTextWidth
   }
+  public var indentation: EVIndentationOptions {
+    Self.editingOptions(root, key: "indentation") ?? EVIndentationOptions()
+  }
+  public var whitespacePresentation: EVWhitespacePresentationOptions {
+    Self.editingOptions(root, key: "whitespacePresentation") ?? EVWhitespacePresentationOptions()
+  }
   public var showStatusBar: Bool { (root["appearance"] as? [String: Any])?["showStatusBar"] as? Bool ?? true }
   public var recentDocumentURLs: [URL] { Self.recentDocumentURLs(in: root) }
   public var vimSyntaxDirectory: String {
@@ -109,6 +119,37 @@ public final class EVConfigurationStore {
   public func setTextWidth(_ width: UInt32) throws {
     guard width > 0 else { throw invalid("Text width must be a positive whole number of columns") }
     try update(section: "editing", values: ["textWidth": NSNumber(value: width)])
+  }
+  public func setIndentation(_ options: EVIndentationOptions) throws {
+    guard options.isValid else { throw invalid("Tab stop must be 1–1024, shift width 0–1024, and soft tab stop −1–1024") }
+    let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(options))
+    try update(section: "editing", values: ["indentation": object])
+  }
+  public func setWhitespacePresentation(_ options: EVWhitespacePresentationOptions) throws {
+    guard options.isValid else { throw invalid(EVListcharsSettings.validationError(options.visibleWhitespace.listchars) ?? "Invalid Visible whitespace style") }
+    if let error = EVEditingPreferences.validateWhitespacePresentation?(options) { throw invalid(error) }
+    var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(options)) as! [String: Any]
+    var visible = object["visibleWhitespace"] as! [String: Any]
+    var style = visible["style"] as! [String: Any]
+    // Explicit null clears known sparse declarations; unknown future fields are
+    // still retained by the normal recursive configuration merge.
+    for key in EVVisibleWhitespaceStyle.propertyNames where style[key] == nil { style[key] = NSNull() }
+    visible["style"] = style
+    object["visibleWhitespace"] = visible
+    try update(section: "editing", values: ["whitespacePresentation": object])
+  }
+
+  /// Refreshes this store after another settings owner commits the same file.
+  public func reloadFromDisk() throws {
+    let file = directory.appendingPathComponent("config.json")
+    guard manager.fileExists(atPath: file.path) else { return }
+    do {
+      let candidate = try Self.readObject(Data(contentsOf: file))
+      try Self.validate(candidate)
+      root = candidate
+      lastError = nil
+      writable = true
+    } catch { lastError = error.localizedDescription; throw error }
   }
   public func setShowStatusBar(_ enabled: Bool) throws { try update(section: "appearance", values: ["showStatusBar": enabled]) }
   public func setVimSyntaxDirectory(_ path: String) throws {
@@ -207,11 +248,13 @@ public final class EVConfigurationStore {
       if changed || !exists { try write(candidate, to: url) }
       root = candidate
       lastError = nil
+      NotificationCenter.default.post(name: .viemConfigurationDidChange, object: self)
     }
     catch { lastError = error.localizedDescription; throw error }
   }
   private func write(_ object: [String: Any], to url: URL) throws {
     let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .fragmentsAllowed])
+    guard data.count <= 4 * 1024 * 1024 else { throw invalid("Configuration must fit within 4 MiB") }
     try manager.createDirectory(at: directory, withIntermediateDirectories: true)
     try data.write(to: url, options: .atomic)
   }
@@ -263,6 +306,16 @@ public final class EVConfigurationStore {
     if let value = (object["editing"] as? [String: Any])?["textWidth"], validTextWidth(value) == nil {
       throw invalid("textWidth must be a positive whole number of columns up to 4294967295")
     }
+    if let editing = object["editing"] as? [String: Any] {
+      if let raw = editing["indentation"] {
+        let value = try JSONDecoder().decode(EVIndentationOptions.self, from: JSONSerialization.data(withJSONObject: raw, options: .fragmentsAllowed))
+        guard value.isValid else { throw invalid("Invalid indentation defaults") }
+      }
+      if let raw = editing["whitespacePresentation"] {
+        let value = try JSONDecoder().decode(EVWhitespacePresentationOptions.self, from: JSONSerialization.data(withJSONObject: raw, options: .fragmentsAllowed))
+        guard value.isValid else { throw invalid(EVListcharsSettings.validationError(value.visibleWhitespace.listchars) ?? "Invalid Visible whitespace style") }
+      }
+    }
     if let raw = object["code"] {
       guard let fields = raw as? [String: Any] else { throw invalid("Invalid Code settings") }
       if let rawPath = fields["vimSyntaxDirectory"] {
@@ -296,6 +349,11 @@ public final class EVConfigurationStore {
     let double = number.doubleValue
     guard double.isFinite, double >= 1, double <= Double(UInt32.max), double == double.rounded(.towardZero) else { return nil }
     return UInt32(exactly: double)
+  }
+  private static func editingOptions<T: Decodable>(_ root: [String: Any], key: String) -> T? {
+    guard let object = (root["editing"] as? [String: Any])?[key],
+          let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+    return try? JSONDecoder().decode(T.self, from: data)
   }
   private static func isValidRecentDocumentPath(_ path: String) -> Bool {
     path.hasPrefix("/") && !path.contains("\0") && path.utf8.count <= 16_384

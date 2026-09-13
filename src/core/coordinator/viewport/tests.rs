@@ -83,6 +83,10 @@ fn caret_row(core: &Core<MockTextMeasurementProvider>, view: ViewId) -> crate::l
     });
     let geometry = snapshot
         .logical_endpoint_geometry(position.text_offset, position.affinity)
+        .or_else(|_| snapshot.logical_endpoint_geometry(position.text_offset, match position.affinity {
+            BoundaryAffinity::Upstream => BoundaryAffinity::Downstream,
+            BoundaryAffinity::Downstream => BoundaryAffinity::Upstream,
+        }))
         .unwrap();
     snapshot.rows[geometry.row_index].clone()
 }
@@ -398,4 +402,216 @@ fn splitting_a_giant_markdown_paragraph_keeps_anchor_and_new_caret_materialized(
     assert_ne!(snapshot.document_revision, revision_after_enter);
     assert_eq!(snapshot.document_revision, core.document.revision());
     assert!(snapshot.rows[0].y <= layout.viewport_top(), "the preserved viewport must remain fully materialized");
+}
+
+fn set_bottom_margin(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, bottom: f32) {
+    core.set_view_insets(view, crate::layout::EdgeInsets {
+        bottom,
+        ..Default::default()
+    }).unwrap();
+}
+
+fn row_ink_bottom(row: &crate::layout::VisualRow) -> f32 {
+    row.ink_bounds().map_or(row.y + row.natural_height(), |ink| {
+        (row.y + row.natural_height()).max(ink.y + ink.height)
+    })
+}
+
+fn assert_row_above_margin(core: &Core<MockTextMeasurementProvider>, view: ViewId, margin: f32) {
+    let row = caret_row(core, view);
+    let layout = &core.views[&view].layout;
+    assert!(row.y >= layout.viewport_top() - 0.05);
+    assert!(row_ink_bottom(&row) <= layout.viewport_top() + layout.height() - margin + 0.05,
+        "row bottom {} must be above reserved bottom {}", row_ink_bottom(&row),
+        layout.viewport_top() + layout.height() - margin);
+}
+
+#[test]
+fn typing_in_bottom_margin_reveals_the_row_and_retains_full_viewport_coverage() {
+    for format in [Format::Code, Format::PlainText] {
+        for wrap in [true, false] {
+            let (mut core, view) = fixture_for_format(220., format);
+            core.handle(view, CoreEvent::SetWrap(wrap)).unwrap();
+            set_bottom_margin(&mut core, view, 28.);
+            let row = caret_row(&core, view);
+            core.handle(view, CoreEvent::SetViewportOrigin {
+                left: 0., top: Some(row.baseline - 220.),
+            }).unwrap();
+            let previous_top = core.layout(view).unwrap().viewport_top();
+            let shape_calls = core.views[&view].engine.provider().request_calls();
+            core.handle(view, CoreEvent::Input(InputEvent::Text("x".into()))).unwrap();
+            assert_row_above_margin(&core, view, 28.);
+            let layout = core.layout(view).unwrap();
+            let row = caret_row(&core, view);
+            assert!(layout.viewport_top() > previous_top);
+            assert!((row_ink_bottom(&row) - layout.viewport_top() - 212.).abs() < 0.05,
+                "reveal should move only enough to clear the margin");
+            assert_eq!(layout.height(), 240.);
+            let snapshot = layout.snapshot().unwrap();
+            assert_eq!(snapshot.viewport_height, 240.);
+            assert!(snapshot.coverage.vertical_range().unwrap().end >= layout.viewport_top() + 240.);
+            assert!(snapshot.rows.iter().any(|row| {
+                let y = row.y - layout.viewport_top();
+                y >= 212. && y < 240.
+            }), "the reserved margin remains materialized for painting");
+            assert!(snapshot.coverage.hard_lines().len() < 128);
+            let visible_baseline = row.baseline - layout.viewport_top();
+            for character in "value".chars() {
+                core.handle(view, CoreEvent::Input(InputEvent::Text(character.to_string()))).unwrap();
+                assert!((baseline(&core, view) - visible_baseline).abs() < 0.05,
+                    "{format:?}, wrap={wrap}: typing should preserve the visible baseline");
+            }
+            assert!(core.views[&view].engine.provider().request_calls() - shape_calls < 128);
+        }
+    }
+}
+
+#[test]
+fn newline_respects_bottom_margin_without_moving_an_already_visible_row() {
+    for screen_baseline in [64., 200.] {
+        let (mut core, view) = fixture(screen_baseline);
+        set_bottom_margin(&mut core, view, 28.);
+        let prior = caret_row(&core, view);
+        let before = baseline(&core, view);
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Enter))).unwrap();
+        let row = caret_row(&core, view);
+        let layout = core.layout(view).unwrap();
+        let previous = layout.snapshot().unwrap().rows.iter()
+            .find(|row| row.text_range.start == prior.text_range.start).unwrap();
+        let expected = (before + row.baseline - previous.baseline)
+            .min(layout.height() - 28. - (row_ink_bottom(&row) - row.baseline));
+        assert!((baseline(&core, view) - expected).abs() < 0.05);
+        assert_row_above_margin(&core, view, 28.);
+    }
+}
+
+#[test]
+fn document_end_including_an_empty_final_line_can_scroll_above_bottom_margin() {
+    for wrap in [true, false] {
+        let mut core = Core::new(Document::new("line\n".repeat(80) + "end"));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 200., 80.);
+        core.handle(view, CoreEvent::SetWrap(wrap)).unwrap();
+        set_bottom_margin(&mut core, view, 28.);
+        core.handle(view, CoreEvent::PlaceCursor {
+            document_revision: core.document.revision(), text_offset: core.document.text().len(),
+            affinity: BoundaryAffinity::Upstream, extend_selection: false,
+        }).unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('a')))).unwrap();
+        assert_row_above_margin(&core, view, 28.);
+        for input in [InputEvent::Key(Key::Enter), InputEvent::Text("tail".into())] {
+            core.handle(view, CoreEvent::Input(input)).unwrap();
+            assert_row_above_margin(&core, view, 28.);
+            let row = caret_row(&core, view);
+            let layout = core.layout(view).unwrap();
+            let total = layout.content_height().height() as f32;
+            assert!((total - (row.y + row.height()) - 28.).abs() < 0.05,
+                "document scroll extent includes the bottom margin exactly once");
+            assert!((layout.viewport_top() + layout.height() - total).abs() < 0.05);
+        }
+    }
+}
+
+#[test]
+fn exact_line_spacing_at_document_end_keeps_full_row_above_bottom_margin() {
+    let source = format!("<p style=\"font-size:20pt;line-height:8pt;margin-block-start:0pt;margin-block-end:0pt\">{}last</p>", "line<br>".repeat(20));
+    for wrap in [true, false] {
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 400., 60.);
+        core.handle(view, CoreEvent::SetWrap(wrap)).unwrap();
+        set_bottom_margin(&mut core, view, 28.);
+        core.handle(view, CoreEvent::PlaceCursor {
+            document_revision: core.document.revision(), text_offset: core.document.text().len(),
+            affinity: BoundaryAffinity::Upstream, extend_selection: false,
+        }).unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('a')))).unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Text(" tail".into()))).unwrap();
+        let row = caret_row(&core, view);
+        assert!(row.natural_height() > row.line_advance);
+        assert_row_above_margin(&core, view, 28.);
+        let layout = core.layout(view).unwrap();
+        assert!((row_ink_bottom(&row) - layout.viewport_top() - 32.).abs() < 0.05);
+    }
+}
+
+#[test]
+fn marked_text_and_its_commit_share_the_bottom_margin_reveal_policy() {
+    use crate::command::composition::{CompositionTarget, CompositionUpdate};
+    let (mut core, view) = fixture(200.);
+    set_bottom_margin(&mut core, view, 28.);
+    let offset = core.views[&view].commands.cursor();
+    core.handle(view, CoreEvent::Composition(CompositionEvent::Begin(
+        CompositionTarget::at_offsets(&core.document, offset..offset).unwrap(),
+    ))).unwrap();
+    let marked = "日本語\n語";
+    core.handle(view, CoreEvent::Composition(CompositionEvent::Update(CompositionUpdate {
+        marked_text: marked.into(), selected_range: marked.len()..marked.len(),
+    }))).unwrap();
+    let layout = core.presentation_layout(view).unwrap();
+    let snapshot = layout.snapshot().unwrap();
+    let geometry = snapshot.logical_endpoint_geometry(offset + marked.len(), BoundaryAffinity::Downstream).unwrap();
+    let row = &snapshot.rows[geometry.row_index];
+    assert!(row_ink_bottom(row) <= layout.viewport_top() + layout.height() - 28. + 0.05);
+    let composed_baseline = row.baseline - layout.viewport_top();
+    assert!((row_ink_bottom(row) - layout.viewport_top() - 212.).abs() < 0.05);
+    core.handle(view, CoreEvent::Composition(CompositionEvent::Commit)).unwrap();
+    assert_row_above_margin(&core, view, 28.);
+    assert!((baseline(&core, view) - composed_baseline).abs() < 0.05);
+}
+
+#[test]
+fn oversized_bottom_margin_yields_room_for_a_row_and_tall_rows_do_not_oscillate() {
+    for (size, margin) in [(16., 200.), (64., 28.), (160., 28.)] {
+        let mut core = Core::new(Document::new("line\n".repeat(30)));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 500., 80.);
+        core.views.get_mut(&view).unwrap().layout.set_default_style(crate::layout::ResolvedTextStyle {
+            size, ..Default::default()
+        }).unwrap();
+        set_bottom_margin(&mut core, view, margin);
+        core.handle(view, CoreEvent::PlaceCursor {
+            document_revision: core.document.revision(), text_offset: 52,
+            affinity: BoundaryAffinity::Downstream, extend_selection: false,
+        }).unwrap();
+        let row = caret_row(&core, view);
+        let layout = core.layout(view).unwrap();
+        if row.natural_height() <= layout.height() {
+            assert!(row.y >= layout.viewport_top() - 0.05);
+            assert!(row_ink_bottom(&row) <= layout.viewport_top() + layout.height() + 0.05);
+        } else {
+            assert!(row.baseline >= layout.viewport_top());
+            assert!(row.baseline <= layout.viewport_top() + layout.height());
+        }
+        let top = layout.viewport_top();
+        for _ in 0..4 {
+            reveal_caret_row(core.views.get_mut(&view).unwrap()).unwrap();
+            assert_eq!(core.layout(view).unwrap().viewport_top(), top);
+        }
+    }
+}
+
+#[test]
+fn bottom_margin_change_invalidates_old_layout_without_measuring_the_document() {
+    let (mut core, view) = fixture(64.);
+    let before = core.layout(view).unwrap().configuration_generation();
+    let top = core.layout(view).unwrap().viewport_top();
+    let request = core.prepare_view_layout_job(
+        view, LayoutJobPriority::ChangedVisibleRows,
+        LayoutJobRegion::Viewport(ViewportLayoutRegion::new(9_980..10_030, top, 240.).unwrap()),
+        LayoutCancellationToken::new(),
+    ).unwrap();
+    let mut worker = LayoutEngine::new(MockTextMeasurementProvider::new());
+    let candidate = compute_layout_job(&mut worker, &request, LayoutExecutionContext::WorkerPool).unwrap();
+    let shape_calls = core.views[&view].engine.provider().request_calls();
+    let revision = core.document.revision();
+    set_bottom_margin(&mut core, view, 40.);
+    assert_ne!(core.layout(view).unwrap().configuration_generation(), before);
+    let installed = core.layout(view).unwrap().snapshot().unwrap().revision;
+    assert!(core.install_view_layout_job(view, candidate).is_err());
+    let layout = core.layout(view).unwrap();
+    assert_eq!(layout.snapshot().unwrap().revision, installed);
+    assert_eq!(core.document.revision(), revision);
+    assert_eq!(layout.height(), 240.);
+    assert!((baseline(&core, view) - 64.).abs() < 0.05);
+    assert!(layout.snapshot().unwrap().coverage.hard_lines().len() < 128);
+    assert!(core.views[&view].engine.provider().request_calls() - shape_calls < 128);
 }

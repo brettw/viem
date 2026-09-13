@@ -14,6 +14,9 @@
 //! capacity, then provide a sufficiently large buffer. Returned byte strings
 //! are length-delimited and never NUL-terminated.
 
+mod whitespace;
+pub use whitespace::*;
+
 use crate::command::clipboard::{
     ClipboardCommandContext, ClipboardContent, ClipboardGeneration, ClipboardSnapshot,
     ClipboardTarget, ClipboardWriteRequest,
@@ -466,12 +469,24 @@ pub const VIEM_EX_OPTION_IGNORECASE: u32 = 5;
 pub const VIEM_EX_OPTION_SMARTCASE: u32 = 6;
 pub const VIEM_EX_OPTION_WRAPSCAN: u32 = 7;
 pub const VIEM_EX_OPTION_TEXTWIDTH: u32 = 8;
+pub const VIEM_EX_OPTION_AUTOINDENT: u32 = 9;
+pub const VIEM_EX_OPTION_TABSTOP: u32 = 10;
+pub const VIEM_EX_OPTION_SHIFTWIDTH: u32 = 11;
+pub const VIEM_EX_OPTION_SOFTTABSTOP: u32 = 12;
+pub const VIEM_EX_OPTION_EXPANDTAB: u32 = 13;
+pub const VIEM_EX_OPTION_SMARTTAB: u32 = 14;
+pub const VIEM_EX_OPTION_CONTINUE_COMMENTS_ON_ENTER: u32 = 15;
+pub const VIEM_EX_OPTION_CONTINUE_COMMENTS_ON_OPEN_LINE: u32 = 16;
+
 
 pub const VIEM_EX_OPTION_VALUE_BOOLEAN: u32 = 1;
 pub const VIEM_EX_OPTION_VALUE_FILE_FORMAT: u32 = 2;
 pub const VIEM_EX_OPTION_VALUE_FILE_FORMATS: u32 = 3;
 /// `scalar_value` carries the number.
 pub const VIEM_EX_OPTION_VALUE_NUMBER: u32 = 4;
+pub const VIEM_EX_OPTION_VALUE_STRING: u32 = 5;
+pub const VIEM_EX_OPTION_LIST: u32 = 17;
+pub const VIEM_EX_OPTION_LISTCHARS: u32 = 18;
 
 pub const VIEM_EX_JUMP_CURRENT: u32 = 1 << 0;
 
@@ -588,6 +603,7 @@ pub struct ViemExOptionDisplayV1 {
     pub scalar_value: u32,
     pub first_file_format: u64,
     pub file_format_count: u64,
+    pub text: ViemEffectBytesRefV1,
 }
 
 pub const VIEM_EX_OPTION_DISPLAY_V1_SIZE: u32 = size_of::<ViemExOptionDisplayV1>() as u32;
@@ -3415,15 +3431,29 @@ fn ex_option_name_to_ffi(name: &ExOptionName) -> u32 {
         ExOptionName::SmartCase => VIEM_EX_OPTION_SMARTCASE,
         ExOptionName::WrapScan => VIEM_EX_OPTION_WRAPSCAN,
         ExOptionName::TextWidth => VIEM_EX_OPTION_TEXTWIDTH,
+        ExOptionName::AutoIndent => VIEM_EX_OPTION_AUTOINDENT,
+        ExOptionName::TabStop => VIEM_EX_OPTION_TABSTOP,
+        ExOptionName::ShiftWidth => VIEM_EX_OPTION_SHIFTWIDTH,
+        ExOptionName::SoftTabStop => VIEM_EX_OPTION_SOFTTABSTOP,
+        ExOptionName::ExpandTab => VIEM_EX_OPTION_EXPANDTAB,
+        ExOptionName::SmartTab => VIEM_EX_OPTION_SMARTTAB,
+        ExOptionName::ContinueCommentsOnEnter => VIEM_EX_OPTION_CONTINUE_COMMENTS_ON_ENTER,
+        ExOptionName::ContinueCommentsOnOpenLine => VIEM_EX_OPTION_CONTINUE_COMMENTS_ON_OPEN_LINE,
+        ExOptionName::List => VIEM_EX_OPTION_LIST,
+        ExOptionName::ListChars => VIEM_EX_OPTION_LISTCHARS,
+
     }
 }
 
 fn export_ex_option(
     option: &ExOptionDisplay,
     file_formats: &mut Vec<u32>,
+    strings: &mut Vec<u8>,
 ) -> Result<ViemExOptionDisplayV1, ViemStatus> {
     let first_file_format = checked_export_count(file_formats.len())?;
+    let mut text = ViemEffectBytesRefV1::default();
     let (value_kind, scalar_value) = match &option.value {
+        ExOptionValue::String(value) => { text = push_effect_text(strings, value)?; (VIEM_EX_OPTION_VALUE_STRING, 0) }
         ExOptionValue::Boolean(value) => (VIEM_EX_OPTION_VALUE_BOOLEAN, u32::from(*value)),
         ExOptionValue::FileFormat(value) => {
             (VIEM_EX_OPTION_VALUE_FILE_FORMAT, file_format_to_ffi(*value))
@@ -3433,6 +3463,8 @@ fn export_ex_option(
             (VIEM_EX_OPTION_VALUE_FILE_FORMATS, 0)
         }
         ExOptionValue::Number(value) => (VIEM_EX_OPTION_VALUE_NUMBER, *value),
+        ExOptionValue::Integer(value) => (VIEM_EX_OPTION_VALUE_NUMBER, *value as u32),
+        ExOptionValue::Indentation(_) | ExOptionValue::VisibleWhitespace(_) => return Err(ViemStatus::InvalidArgument),
         ExOptionValue::OptionalNumber(value) => {
             (VIEM_EX_OPTION_VALUE_NUMBER, value.unwrap_or(0))
         }
@@ -3443,6 +3475,7 @@ fn export_ex_option(
         value_kind,
         scalar_value,
         first_file_format,
+        text,
         file_format_count: checked_export_count(file_formats.len())?
             .checked_sub(first_file_format)
             .ok_or(ViemStatus::LengthOverflow)?,
@@ -3703,7 +3736,7 @@ fn export_ex_frontend_request(
                 output.kind = VIEM_EX_FRONTEND_OPTIONS;
                 output.first_option = checked_export_count(options.len())?;
                 for display in displays {
-                    options.push(export_ex_option(display, file_formats)?);
+                    options.push(export_ex_option(display, file_formats, strings)?);
                 }
                 output.option_count = checked_export_count(options.len())?
                     .checked_sub(output.first_option)

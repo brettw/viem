@@ -58,6 +58,9 @@ pub use source_lines::PhysicalSourceLine;
 mod style;
 pub(crate) use style::is_character_property;
 mod reflow;
+mod indentation;
+pub use indentation::{IndentationOptions, IndentationOverrides, IndentationSetting};
+pub(crate) use indentation::{leading_whitespace_len, end_column as indentation_end_column};
 mod reorder;
 mod transaction;
 mod transfer;
@@ -105,6 +108,7 @@ pub use projection::{
     ProvenanceSpan, SourceBoundaryRelation, SourceToTextError, StyleSpan,
 };
 pub use reflow::{
+    comment_continuation_prefix,
     comment_profile_for_language, reflow_edits, BlockCommentSyntax, CommentProfile, ReflowError,
     ReflowRequest, TextWidthSetting, C_FAMILY_COMMENT_LANGUAGES, C_FAMILY_COMMENT_PROFILE,
     DEFAULT_TEXT_WIDTH,

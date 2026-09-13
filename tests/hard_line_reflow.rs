@@ -900,6 +900,7 @@ fn a_stale_snapshot_or_out_of_range_span_applies_nothing() {
     let fresh = d.hard_line_snapshot();
     assert!(matches!(
         reflow_edits(&ReflowRequest {
+            tabstop: 2,
             snapshot: &fresh,
             format: d.format(),
             lines: 0..9,

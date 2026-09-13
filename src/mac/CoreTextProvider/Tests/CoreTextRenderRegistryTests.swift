@@ -7,6 +7,27 @@ import Testing
 
 @Suite("Core Text render registry")
 struct CoreTextRenderRegistryTests {
+  @Test("Whitespace markers inherit the exact resolved font only from the matching generation")
+  func markerFontPreservesResolvedSizeAndTraits() throws {
+    let registry = CoreTextRenderRegistry(generation: 1)
+    let font = CTFontCreateWithName("TimesNewRomanPS-BoldItalicMT" as CFString, 27, nil)
+    let attributes = CoreTextRenderAttributes(baselineShift: 4, letterSpacing: 2,
+      language: "ar", writingDirection: .rightToLeft)
+    #expect(registry.install(.init(signature: [9], batches: [.init(font: font,
+      strokeWidth: 0, glyphs: [CGGlyph(0)], positions: [.zero])], isColorGlyph: false,
+      textAttributes: attributes),
+      preferredIdentifier: 9, generation: 1) == 9)
+    let resolved = try #require(registry.resolvedFont(identifier: 9, metricsGeneration: 1))
+    #expect(CTFontGetSize(resolved) == 27)
+    #expect(CTFontGetSymbolicTraits(resolved) == CTFontGetSymbolicTraits(font))
+    #expect(registry.textAttributes(identifier: 9, metricsGeneration: 1) == attributes)
+    #expect(registry.textAttributes(identifier: 9, metricsGeneration: 2) == nil)
+    #expect(registry.resolvedFont(identifier: 9, metricsGeneration: 2) == nil)
+    registry.retireAll(forNewGeneration: 2)
+    #expect(registry.resolvedFont(identifier: 9, metricsGeneration: 1) == nil)
+    #expect(registry.textAttributes(identifier: 9, metricsGeneration: 1) == nil)
+  }
+
   @Test("Evicting native resources releases oversized registry bucket allocations")
   func evictedResourcesReleaseDictionaryCapacity() throws {
     let registry = CoreTextRenderRegistry(generation: 1)

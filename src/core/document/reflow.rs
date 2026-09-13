@@ -8,12 +8,12 @@
 use super::{Format, HardLineSnapshot, TextEdit};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthStr;
 
 /// The application default for `textwidth`.
 pub const DEFAULT_TEXT_WIDTH: u32 = 80;
 /// Tabs advance to the next multiple of this column count.
-pub const TAB_STOP: usize = 8;
+#[cfg(test)]
+const TAB_STOP: usize = 8;
 /// Bound on the local comment context inspected outside the formatted span.
 const CONTEXT_LINE_LIMIT: usize = 512;
 
@@ -164,20 +164,16 @@ pub struct ReflowRequest<'a> {
     pub format: Format,
     pub lines: Range<usize>,
     pub text_width: u32,
+    pub tabstop: u32,
     pub profile: Option<&'a CommentProfile>,
 }
 
-/// Column reached after placing one grapheme at `column`.
-pub fn advance_column(column: usize, grapheme: &str) -> usize {
-    if grapheme == "\t" {
-        return column + TAB_STOP - column % TAB_STOP;
-    }
-    column + UnicodeWidthStr::width(grapheme)
+#[cfg(test)]
+fn end_column(start: usize, text: &str) -> usize {
+    super::indentation::end_column(start, text, TAB_STOP)
 }
-
-/// Column reached after placing `text` starting at `start`.
-pub fn end_column(start: usize, text: &str) -> usize {
-    text.graphemes(true).fold(start, advance_column)
+fn columns(start: usize, text: &str, tabstop: usize) -> usize {
+    super::indentation::end_column(start, text, tabstop)
 }
 
 fn is_indent_grapheme(grapheme: &str) -> bool {
@@ -260,11 +256,11 @@ enum Kind {
     Text(Parsed),
 }
 
-fn parse_text(text: &str, key: PrefixKey, base_end: usize, opener: bool) -> Option<Parsed> {
+fn parse_text(text: &str, key: PrefixKey, base_end: usize, opener: bool, tabstop: usize) -> Option<Parsed> {
     let inner_len = leading_len(&text[base_end..], is_indent_grapheme);
     let inner_end = base_end + inner_len;
-    let base_column = end_column(0, &text[..base_end]);
-    let inner_column = end_column(base_column, &text[base_end..inner_end]);
+    let base_column = columns(0, &text[..base_end], tabstop);
+    let inner_column = columns(base_column, &text[base_end..inner_end], tabstop);
     parse_body(
         text,
         key,
@@ -273,6 +269,7 @@ fn parse_text(text: &str, key: PrefixKey, base_end: usize, opener: bool) -> Opti
         inner_column - base_column,
         inner_column,
         opener,
+        tabstop,
     )
 }
 
@@ -285,6 +282,7 @@ fn parse_body(
     inner_columns: usize,
     inner_column: usize,
     opener: bool,
+    tabstop: usize,
 ) -> Option<Parsed> {
     let body_end = text.len() - trailing_gap_len(&text[inner_end..]);
     if body_end <= inner_end {
@@ -294,7 +292,7 @@ fn parse_body(
     let (word_start, hanging) = match list_marker(body) {
         Some(marker_len) => {
             let start = inner_end + marker_len;
-            let columns = end_column(inner_column, &text[inner_end..start]) - inner_column;
+            let columns = columns(inner_column, &text[inner_end..start], tabstop) - inner_column;
             (start, Some(columns))
         }
         None => (inner_end, None),
@@ -341,6 +339,7 @@ fn is_delimiter_only(text: &str, middle: &str) -> bool {
 struct Classifier<'a> {
     profile: Option<&'a CommentProfile>,
     in_block: bool,
+    tabstop: usize,
 }
 
 impl Classifier<'_> {
@@ -352,7 +351,7 @@ impl Classifier<'_> {
         let indent = &text[..indent_len];
         let rest = &text[indent_len..];
         let Some(profile) = self.profile else {
-            return plain(text);
+            return plain(text, self.tabstop);
         };
         if let Some(block) = profile.block.filter(|_| self.in_block) {
             return self.classify_block_interior(text, indent_len, rest, block);
@@ -365,6 +364,7 @@ impl Classifier<'_> {
                     PrefixKey::LineComment(indent.to_owned(), leader),
                     base_end,
                     false,
+                    self.tabstop,
                 )
                 .map_or(Kind::Separator, Kind::Text);
             }
@@ -386,6 +386,7 @@ impl Classifier<'_> {
                             PrefixKey::Block,
                             base_end,
                             true,
+                            self.tabstop,
                         ) {
                             Some(parsed) => parsed,
                             None => return Kind::Fixed,
@@ -399,7 +400,7 @@ impl Classifier<'_> {
                         if is_delimiter_only(after, block.middle) {
                             return Kind::Fixed;
                         }
-                        parse_text(text, PrefixKey::Block, base_end, true)
+                        parse_text(text, PrefixKey::Block, base_end, true, self.tabstop)
                             .map_or(Kind::Fixed, Kind::Text)
                     }
                 };
@@ -411,23 +412,12 @@ impl Classifier<'_> {
                 .iter()
                 .any(|leader| rest.contains(leader));
             if has_open || has_close || has_leader {
-                // Code followed by a trailing comment stays byte-identical.
-                // A trailing opener without its closer starts block context.
-                if let Some(open) = rest.rfind(block.open) {
-                    let closed_after = rest[open + block.open.len()..].contains(block.close);
-                    let line_comment_first = profile
-                        .line_leaders
-                        .iter()
-                        .filter_map(|leader| rest.find(leader))
-                        .any(|at| at < open);
-                    if !closed_after && !line_comment_first {
-                        self.in_block = true;
-                    }
-                }
+                // This profile recognizes full-line leaders only. A delimiter
+                // inside code or a quoted string does not establish context.
                 return Kind::Fixed;
             }
         }
-        plain(text)
+        plain(text, self.tabstop)
     }
 
     fn classify_block_interior(
@@ -458,8 +448,8 @@ impl Classifier<'_> {
         };
         let inner_len = leading_len(&text[base_end..], is_indent_grapheme);
         let inner_end = base_end + inner_len;
-        let base_column = end_column(0, &text[..base_end]);
-        let inner_column = end_column(base_column, &text[base_end..inner_end]);
+        let base_column = columns(0, &text[..base_end], self.tabstop);
+        let inner_column = columns(base_column, &text[base_end..inner_end], self.tabstop);
         let inner_columns = inner_column - base_column;
         let after = &text[inner_end..];
         match after.find(block.close) {
@@ -477,6 +467,7 @@ impl Classifier<'_> {
                     inner_columns,
                     inner_column,
                     false,
+                    self.tabstop,
                 ) else {
                     return Kind::Fixed;
                 };
@@ -492,14 +483,15 @@ impl Classifier<'_> {
                 inner_columns,
                 inner_column,
                 false,
+                self.tabstop,
             )
             .map_or(Kind::Separator, Kind::Text),
         }
     }
 }
 
-fn plain(text: &str) -> Kind {
-    parse_text(text, PrefixKey::Plain, 0, false).map_or(Kind::Separator, Kind::Text)
+fn plain(text: &str, tabstop: usize) -> Kind {
+    parse_text(text, PrefixKey::Plain, 0, false, tabstop).map_or(Kind::Separator, Kind::Text)
 }
 
 struct Line {
@@ -559,7 +551,7 @@ fn block_context_before(
             .filter_map(|leader| rest.find(leader))
             .min();
         let close = rest.rfind(block.close);
-        let open = rest.rfind(block.open);
+        let open = rest.starts_with(block.open).then_some(0);
         let after_leader = |at: usize| leader_at.is_some_and(|leader| leader < at);
         match (open, close) {
             (Some(open), Some(close)) => {
@@ -616,6 +608,57 @@ fn middle_convention(
         return Some(text[..indent_len].to_owned());
     }
     None
+}
+
+/// Build a comment continuation from the same registry and bounded block
+/// context used by reflow. `before_cursor` ends at the insertion boundary;
+/// delimiters after it must not prematurely end a split comment.
+pub fn comment_continuation_prefix(
+    snapshot: &HardLineSnapshot,
+    line: usize,
+    before_cursor: &str,
+    profile: &CommentProfile,
+    above: bool,
+) -> Option<String> {
+    let indent_len = leading_len(before_cursor, is_indent_grapheme);
+    let indent = &before_cursor[..indent_len];
+    let rest = &before_cursor[indent_len..];
+    let in_block = profile.block.is_some_and(|block|
+        block_context_before(snapshot, line, profile, block));
+    if !in_block {
+        for leader in profile.line_leaders {
+            if rest.starts_with(leader) {
+                let end = indent_len + leader.len();
+                let gap = leading_len(&before_cursor[end..], is_indent_grapheme);
+                return Some(format!("{}{}", &before_cursor[..end],
+                    if gap == 0 { " " } else { &before_cursor[end..end + gap] }));
+            }
+        }
+    }
+    let block = profile.block?;
+    if let Some(open) = rest.starts_with(block.open).then_some(0).filter(|_| !in_block) {
+        if above || rest[open + block.open.len()..].contains(block.close) { return None; }
+        return middle_convention(snapshot, line + 1, block)
+            .or_else(|| Some(format!("{indent} {} ", block.middle)));
+    }
+    if !in_block { return None; }
+    if !above && rest.contains(block.close) {
+        // A starred middle leader adds one column relative to the opener;
+        // the first non-comment line returns to the opener's indentation.
+        for index in (line.saturating_sub(CONTEXT_LINE_LIMIT)..line).rev() {
+            let (_, previous) = read_line(snapshot, index)?;
+            if previous.trim_start_matches([' ', '\t']).starts_with(block.open) {
+                return Some(previous[..leading_len(&previous, is_indent_grapheme)].to_owned());
+            }
+        }
+        return None;
+    }
+    if rest.starts_with(block.middle) {
+        let end = indent_len + block.middle.len();
+        let gap = leading_len(&before_cursor[end..], is_indent_grapheme);
+        Some(format!("{}{}", &before_cursor[..end],
+            if gap == 0 { " " } else { &before_cursor[end..end + gap] }))
+    } else { Some(indent.to_owned()) }
 }
 
 fn continuation_prefix(
@@ -686,6 +729,7 @@ fn format_paragraph(
     paragraph: &Paragraph,
     continuation: &str,
     text_width: usize,
+    tabstop: usize,
     edits: &mut Vec<TextEdit>,
 ) {
     let words = words_of(paragraph);
@@ -700,13 +744,13 @@ fn format_paragraph(
         .suffix_end
         .map(|end| last_line.text[last_line.parsed.body_end..end].to_owned())
         .unwrap_or_default();
-    let continuation_columns = end_column(0, continuation);
-    let mut column = end_column(0, &first_line.text[..first_line.parsed.word_start]);
+    let continuation_columns = columns(0, continuation, tabstop);
+    let mut column = columns(0, &first_line.text[..first_line.parsed.word_start], tabstop);
     let word_text = |word: &Word| -> &str {
         let line = &paragraph.lines[word.line];
         &line.text[word.range.start - line.start..word.range.end - line.start]
     };
-    column = end_column(column, word_text(first_word));
+    column = columns(column, word_text(first_word), tabstop);
     for index in 1..words.len() {
         let previous = &words[index - 1];
         let word = &words[index];
@@ -735,16 +779,16 @@ fn format_paragraph(
             " "
         };
         let is_last = index + 1 == words.len();
-        let after_gap = end_column(column, joined_gap);
-        let mut end = end_column(after_gap, word_text(word));
+        let after_gap = columns(column, joined_gap, tabstop);
+        let mut end = columns(after_gap, word_text(word), tabstop);
         if is_last {
-            end = end_column(end, &suffix);
+            end = columns(end, &suffix, tabstop);
         }
         let replacement = if end > text_width {
-            column = end_column(continuation_columns, word_text(word));
+            column = columns(continuation_columns, word_text(word), tabstop);
             format!("\n{continuation}")
         } else {
-            column = end_column(after_gap, word_text(word));
+            column = columns(after_gap, word_text(word), tabstop);
             joined_gap.to_owned()
         };
         if replacement != original_gap {
@@ -761,7 +805,7 @@ pub fn reflow_edits(request: &ReflowRequest<'_>) -> Result<Vec<TextEdit>, Reflow
     if !request.format.is_literal() {
         return Err(ReflowError::UnsupportedFormat(request.format));
     }
-    if request.text_width == 0 {
+    if request.text_width == 0 || request.tabstop == 0 {
         return Err(ReflowError::InvalidTextWidth);
     }
     let text_width =
@@ -779,6 +823,7 @@ pub fn reflow_edits(request: &ReflowRequest<'_>) -> Result<Vec<TextEdit>, Reflow
     let block = profile.and_then(|profile| profile.block);
     let mut classifier = Classifier {
         profile,
+        tabstop: request.tabstop as usize,
         in_block: match (profile, block) {
             (Some(profile), Some(block)) => {
                 block_context_before(request.snapshot, lines.start, profile, block)
@@ -792,7 +837,7 @@ pub fn reflow_edits(request: &ReflowRequest<'_>) -> Result<Vec<TextEdit>, Reflow
         if let Some((first_index, paragraph)) = current.take() {
             let continuation =
                 continuation_prefix(&paragraph, request.snapshot, first_index, block);
-            format_paragraph(&paragraph, &continuation, text_width, edits);
+            format_paragraph(&paragraph, &continuation, text_width, request.tabstop as usize, edits);
         }
     };
     for index in lines {
@@ -838,6 +883,7 @@ mod tests {
             format: document.format(),
             lines,
             text_width: width,
+            tabstop: 8,
             profile: language.and_then(comment_profile_for_language),
         })
         .unwrap();
@@ -859,6 +905,22 @@ mod tests {
         let count = document.line_count();
         reflow_document(&mut document, 0..count, width, Some(language));
         document.text().to_owned()
+    }
+
+    #[test]
+    fn configured_tabstop_controls_reflow_without_font_geometry() {
+        let mut document = Document::from_bytes(b"\talpha beta gamma".to_vec(), Encoding::Utf8, Format::Code).unwrap();
+        let snapshot = document.hard_line_snapshot();
+        let edits = reflow_edits(&ReflowRequest { snapshot: &snapshot, format: Format::Code,
+            lines: 0..1, text_width: 13, tabstop: 2, profile: None }).unwrap();
+        document.apply_edits(edits).unwrap();
+        assert_eq!(document.text(), "\talpha beta\n\tgamma");
+        let mut document = Document::from_bytes(b"\talpha beta gamma".to_vec(), Encoding::Utf8, Format::Code).unwrap();
+        let snapshot = document.hard_line_snapshot();
+        let edits = reflow_edits(&ReflowRequest { snapshot: &snapshot, format: Format::Code,
+            lines: 0..1, text_width: 13, tabstop: 8, profile: None }).unwrap();
+        document.apply_edits(edits).unwrap();
+        assert_eq!(document.text(), "\talpha\n\tbeta\n\tgamma");
     }
 
     #[test]
@@ -1103,7 +1165,7 @@ mod tests {
         )
         .unwrap();
         reflow_document(&mut leading, 1..3, 80, Some("c"));
-        assert_eq!(leading.text(), "s = \"/*\"; // x\n * not comment lines\n");
+        assert_eq!(leading.text(), "s = \"/*\"; // x\n * not comment\n * lines\n");
     }
 
     #[test]
@@ -1148,6 +1210,7 @@ mod tests {
                     format,
                     lines: 0..1,
                     text_width: 80,
+            tabstop: 8,
                     profile: None,
                 })
                 .unwrap_err(),
@@ -1160,6 +1223,7 @@ mod tests {
                 format: Format::PlainText,
                 lines: 0..1,
                 text_width: 0,
+            tabstop: 8,
                 profile: None,
             })
             .unwrap_err(),
@@ -1171,6 +1235,7 @@ mod tests {
                 format: Format::PlainText,
                 lines: 0..5,
                 text_width: 80,
+            tabstop: 8,
                 profile: None,
             }),
             Err(ReflowError::InvalidLineRange { .. })

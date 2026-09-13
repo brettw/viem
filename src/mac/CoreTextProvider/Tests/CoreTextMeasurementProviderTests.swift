@@ -9,6 +9,20 @@ import Testing
 
 @Suite("Core Text measurement provider")
 struct CoreTextMeasurementProviderTests {
+  @Test("ASCII indentation retains separate tab and space geometry around shaped text")
+  func indentationWhitespaceClusters() throws {
+    let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 181)
+    let result = try shape(provider: provider, text: " \t \tfi", globalStart: 100,
+      purpose: UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
+      styleRun: (range: 100..<104, size: 40), fontFamily: "Times New Roman", fontSize: 20)
+    for offset in 100..<104 {
+      let cluster = try #require(result.clusters.first { $0.value.text_start == UInt64(offset) })
+      #expect(cluster.value.text_end == UInt64(offset + 1))
+      #expect(cluster.carets.map(\.text_offset).sorted() == [UInt64(offset), UInt64(offset + 1)])
+    }
+    #expect(result.clusters.last?.value.text_end == 106)
+  }
+
   @Test("Tracking preserves default ligatures and explicit font feature choices")
   func trackingPreservesLigatures() throws {
     let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 84)

@@ -2477,6 +2477,60 @@ mod tests {
     }
 
     #[test]
+    fn exact_line_spacing_preserves_final_row_extent_in_every_layout_path() {
+        let document = Document::from_bytes(
+            b"<p style=\"font-size:20pt;line-height:8pt;margin-block-start:0pt;margin-block-end:0pt\">first<br>second<br>last</p>".to_vec(),
+            crate::document::Encoding::Utf8, crate::document::Format::Html,
+        ).unwrap();
+        assert_eq!(document.line_count(), 3);
+        for regional in [false, true] {
+            for wrap in [false, true] {
+                let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+                let mut view = ViewLayout::new(400., 40.);
+                view.set_wrap(wrap);
+                for (job, margin) in [(1, 12.), (2, 32.)] {
+                    let old_configuration = view.configuration_generation();
+                    view.set_insets(super::super::EdgeInsets { bottom: margin, ..Default::default() });
+                    assert_ne!(view.configuration_generation(), old_configuration);
+                    if regional {
+                        let requirements = inspect_layout_provider(&engine);
+                        let request = prepare_layout_job(
+                            &document, &mut view, requirements, LayoutJobId(job),
+                            LayoutJobPriority::ChangedVisibleRows, viewport(0..3, 0., 40.),
+                            LayoutCancellationToken::new(),
+                        ).unwrap();
+                        let candidate = compute_layout_job(&mut engine, &request, LayoutExecutionContext::WorkerPool).unwrap();
+                        install_layout_job(&mut view, target(&document, requirements.metrics_generation), candidate).unwrap();
+                    } else {
+                        engine.relayout(&document, &mut view).unwrap();
+                    }
+                    let snapshot = view.snapshot().unwrap();
+                    let rows = &snapshot.rows;
+                    let last = rows.last().unwrap();
+                    assert_eq!(rows.len(), 3);
+                    assert_eq!(last.line_advance, 8.);
+                    assert!(last.natural_height() > last.line_advance);
+                    assert_eq!(rows[1].y - rows[0].y, 8., "interline spacing remains unchanged");
+                    assert_eq!(last.y - rows[1].y, 8.);
+                    assert!((snapshot.total_height - row_bottom(last) - margin).abs() < 0.001,
+                        "regional={regional}, wrap={wrap}: final-row bottom {} plus margin {margin} differs from extent {}",
+                        row_bottom(last), snapshot.total_height);
+                    assert!(snapshot.total_height_is_exact);
+                    assert!((view.content_height().height() as f32 - snapshot.total_height).abs() < 0.001);
+                    let max_top = snapshot.total_height - view.height();
+                    view.set_viewport_top(f32::MAX).unwrap();
+                    assert!((view.viewport_top() - max_top).abs() < 0.001);
+                }
+            }
+        }
+
+        fn row_bottom(row: &super::super::VisualRow) -> f32 {
+            let natural = row.y + row.natural_height();
+            row.ink_bounds().map_or(natural, |ink| natural.max(ink.y + ink.height))
+        }
+    }
+
+    #[test]
     fn viewport_long_line_uses_bounded_shape_fragments() {
         let document = Document::new("x".repeat(10_000));
         let provider = InstrumentedProvider::new(ProviderThreading::AnyWorker);

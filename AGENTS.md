@@ -1855,6 +1855,15 @@ state. Color changes require only repainting. View margins inset content in
 document coordinates and are additive with
 source-authored canvas padding. Margin changes preserve viewport anchors and
 invalidate only affected view geometry, keeping large-document layout local.
+The bottom view margin contributes to the document's scroll extent and reserves
+space below the active row when revealing a caret or input-method selection.
+It is not a paint clip: scrolled content continues to draw through that area
+to the status line. Reveal uses the smallest scroll that places the row's ink
+and typographic bounds above the margin. If the row and margin cannot both fit,
+reduce the reserved area enough to show the row; physically oversized rows keep
+the baseline-priority policy below. At document end, scroll extent includes the
+last row's full ink and natural height before adding bottom padding, even when
+exact line spacing advances by less than that height.
 
 Application preferences have one versioned JSON authority at
 `~/.viem/config.json`. Theme, Smart Quotes, Code preferences, recent files, and status-bar
@@ -1863,6 +1872,14 @@ preferences migrate once. Reads validate the complete configuration, writes are
 atomic, and unknown keys survive updates. Invalid or unsupported versions are reported without
 overwriting the user's file. `VIEM_CONFIG_DIR` may override the directory for
 isolated development and testing.
+
+Editing contains **Indentation and tabs** and **Visible whitespace** sections
+alongside the existing editing controls. Indentation
+defaults live at `editing.indentation`; leading whitespace and marker defaults
+live at `editing.whitespacePresentation`. Missing fields inherit the defaults
+specified below. Updates validate the complete candidate and preserve unknown
+keys, including nested keys. Successful settings changes update open views;
+invalid input leaves the last valid settings and the file untouched.
 
 The Text width control in Editing uses this same store and the buffer-default
 inheritance policy under **Hard-line reflow**; it is not a theme, per-view wrap
@@ -2877,6 +2894,142 @@ counts where Vim does. An operator search records its jump only after the
 operator succeeds. Escape from its command line cancels the complete pending
 operator without changing text, registers, search state, or the jumplist.
 
+### Indentation and whitespace presentation
+
+#### Editing columns and automatic indentation
+
+Literal Text, Code, Markdown Source and HTML Source use Neovim-style logical
+indentation columns. The defaults are `autoindent`, `tabstop=2`, `shiftwidth=2`,
+`softtabstop=2`, `expandtab`, and `smarttab`. WYSIWYG structural breaks keep
+their format-aware behavior; a generic indentation operation must not create
+source syntax or bypass reverse-edit verification.
+
+Settings > Editing > Indentation and tabs exposes automatic indentation, whether Tab
+inserts spaces or hard tabs, hard-tab width, indentation width, soft-tab width,
+smart Tab in leading whitespace, and separate comment-continuation switches
+for Enter and `o`/`O`. Hard-tab width accepts 1–1024 columns; indentation width
+accepts 0–1024, with 0 inheriting hard-tab width; soft-tab width accepts
+−1–1024, with −1 inheriting indentation width and 0 disabling soft-tab editing
+outside the leading-whitespace smart Tab rule.
+These are buffer defaults. Their long Vim names and `ai`, `ts`, `sw`, `sts`,
+`et`, and `sta` aliases are exposed through `:set`/`:setlocal`, including queries,
+boolean toggles, reset, and `<` to resume inheritance. The comment switches
+are `continuecommentsonenter` and `continuecommentsonopenline`. Overrides are
+per field and shared by every view of a buffer; changing one does not freeze
+the other inherited defaults. Option changes never enter document history.
+
+Tab advances to the next soft-tab stop, or an indentation stop in leading
+whitespace with smart Tab enabled. Space insertion uses the required number
+of spaces; hard-tab insertion uses tabs and spaces to reach the same logical
+column. A tab advances to a stop rather than adding a constant width. Insert
+Backspace removes whitespace to the preceding applicable stop, splitting a
+hard tab into retained spaces when necessary. Insert Ctrl-T/Ctrl-D move to the
+next/previous indentation stop. `0` followed by Ctrl-D removes the leading
+indentation and the typed zero; `^` followed by Ctrl-D does the same but restores
+that indentation on the next Enter. The `>`/`<` operators shift by indentation
+width. The deterministic `=` provider copies
+the preceding nonblank indentation; language indentation engines, `cindent`,
+`indentexpr`, and implicit external formatting are not part of this feature.
+Counts, operator motions, Visual forms, dot repeat and undo grouping retain
+their command-specific semantics. Replace-mode Tab is one restoration unit:
+Backspace restores all characters overwritten by that Tab press. Replace-mode
+Enter inserts the break and prefix without overwriting the following body;
+Backspace removes its generated indentation by the applicable soft stops,
+then restores the original split including whitespace consumed at that boundary.
+
+Enter and `o`/`O` copy the current hard line's indentation with autoindent
+enabled, reconstructing its logical width using the configured spaces/tabs
+policy. Splitting a line uses indentation before the insertion boundary and
+consumes leading whitespace in the moved suffix. The established Visual-mode
+`O` split at an interior soft-wrap boundary can leave its insertion caret in
+the preceding fragment's body; that position receives no generated indentation
+or comment leader. Indentation is inserted only at a resulting hard-line start.
+Unchanged automatically generated indentation is removed when leaving an
+otherwise empty inserted line. Authored blank lines and manually adjusted
+indentation are retained. Paste and input-method commit insert their supplied
+text without replaying Enter or Tab assistance for its contents.
+
+Code comment continuation is enabled by default for Enter and `o`/`O`. It uses
+the same language profile, full-line leader recognition and block context as
+hard-line reflow. Preserve `//`, `///` and `//!` exactly, and preserve an
+established starred or unstarred `/* ... */` body. A new conventional block
+continues with ` * `; entering `/` immediately after that generated prefix
+closes it as ` */`. After a block closer, resume the opener's indentation without
+a comment leader. A leading `*` without block-comment context is ordinary text.
+Only a full-line block opener establishes this profile's context; delimiters in
+quoted code or after other code do not. Neither continuation nor reflow depends
+on syntax-highlighting availability, asynchronous coverage, or style names.
+Comment context and the `=` provider's preceding-nonblank lookup inspect at
+most 512 preceding hard lines. If the required context lies outside that bound,
+comment continuation falls back to ordinary indentation, and `=` uses zero.
+
+#### Physical width of leading whitespace
+
+Settings > Editing > Indentation and tabs has two independent width choices, **Code**
+and **Other formats**, each offering **Use spaces** and **Use paragraph en**.
+Code defaults to paragraph en; other formats default to spaces. Code means the
+literal Code format, not Normal/Insert command mode or a rich-text Code style.
+
+Leading whitespace is the ASCII space/tab prefix of a hard line. A soft wrap
+does not start a new prefix. In paragraph-en mode, each leading space occupies
+half the size of the default Paragraph font, excluding character styles, actual
+space-glyph advance and tracking. Hard-tab stops use the same units. Thus an
+eight-column tab stop is equivalent to eight leading spaces and eight ens;
+the default two-column stop is equivalent to two. There is no independent
+eight-en hard-tab override. In Use spaces mode, spaces retain their ordinary
+font-dependent advances and tab intervals use the current font's space advance.
+Nonleading spaces retain ordinary shaping in either mode. Logical indentation
+and reflow columns remain independent of fonts, zoom and window width.
+
+Whitespace geometry participates in full, regional and streamed long-line
+layout, caret/selection geometry and exact snapshot identities. Changes to
+the applicable font metrics, width basis or tabstop invalidate affected layout
+and checkpoints. Large documents must retain bounded viewport layout and reuse
+unchanged regions. A marker toggle must not change the resulting geometry.
+
+#### Visible whitespace
+
+Settings > Editing > **Visible whitespace** follows the Code styles section's
+presentation. It contains an enable checkbox, an **Edit Style…** button and a
+character entry for every Vim 9.2 `listchars` category: `eol`, `tab`, `space`,
+`multispace`, `lead`, `leadmultispace`, `leadtab`, `trail`, `extends`, `precedes`,
+`conceal`, and `nbsp`. It defaults to enabled with
+`tab:>-,trail:*,extends:>,precedes:<`; every other entry is blank. Blank omits
+that category. Tab/leadtab take two or three printable single-column Unicode
+characters; multispace/leadmultispace take a nonempty sequence; the other
+categories take one. Invalid characters and malformed entries are rejected
+atomically. `leadtab` requires `tab`; otherwise leading tabs inherit `tab`.
+An omitted tab category uses Vim's `^I` fallback. Pattern repetition and
+leading/trailing precedence follow Vim. `nbsp` includes U+00A0 and U+202F.
+The Ex `:set` parser preserves escaped spaces, including a final space filler,
+and collapses doubled backslashes; `\x`, `\u`, and `\U` numeric character
+escapes remain available to the `listchars` value parser.
+
+`:set list`, `nolist`, `list!`, `listchars=…`/`lcs=…`, queries, and `<`/reset
+operate on view-local overrides of the live application defaults. The marker
+toggle in View > Show Invisible Characters uses that same `list` override and
+is unavailable in WYSIWYG; it does not maintain a second marker preference. The
+style is the application-owned character style **Visible whitespace**, whose
+only default declaration is dark-blue foreground, sRGB `#00008B`. Other
+character properties inherit from the underlying text. Its modeless editor
+uses application-settings undo, not document history; this style is never
+assigned to text or inherited by typing.
+
+Markers apply to Text, Code and source views. They are suppressed whenever
+`Format::is_wysiwyg()` is true, including rich-format Code blocks. `conceal`
+configures any future literal-source conceal decoration; it does not reveal
+hidden WYSIWYG syntax. `extends` and `precedes` decorate viewport clipping of
+unwrapped lines. Marker ink fits/clips to existing whitespace geometry and
+does not add source characters, caret stops, wrapping width or line height.
+Search, registers, clipboard, accessibility, undo and serialization see the
+actual text. Exact-snapshot marker exports use the same composition projection
+as text while input-method marked text is active.
+
+Tests MUST cover option inheritance and atomic rejection, tab and soft-tab
+stops, comment/reflow agreement, count/repeat/undo behavior, WYSIWYG exclusion,
+marker precedence and Unicode validation, mixed-font geometry, cache
+invalidation, multiple views, composition and bounded large-document layout.
+
 ### Hard-line reflow
 
 This subsection specifies the implemented `gq`, `gw`, and `textwidth`
@@ -2906,7 +3059,8 @@ the source artifact.
 
 Width counts the complete output line, including indentation, list markers, and
 comment leaders. Use a portable Unicode column-width policy, with combining
-sequences kept together and tabs advancing to eight-column stops. It MUST NOT
+sequences kept together and tabs advancing to the buffer's effective `tabstop`
+stops (two columns by default). It MUST NOT
 depend on UTF-8 byte length, font choice, proportional glyph advances, zoom,
 window width, or syntax styling. An unbreakable token may exceed the target;
 neither that token nor a grapheme cluster is split to force a fit.
@@ -4860,7 +5014,10 @@ scroll.
   document. Scrolling vertically clamps the horizontal origin to the new
   visible range. Showing and hiding the horizontal scrollbar fades with a short
   delay to avoid flicker at viewport boundaries. Visibility changes must not
-  trigger repeated reflow; legacy scrollbar gutters remain stable while fading.
+  trigger repeated reflow. The legacy vertical scrollbar reserves a stable right
+  gutter; horizontal controls overlay the canvas in both native styles and never
+  reserve a bottom strip. Layout, painting, pointer hits and input-method geometry
+  use the same full-height canvas up to the status line.
 - Scrollbar extents use bounded current layout and the existing document-height
   estimates. Updating a scrollbar must not shape or scan the whole document.
 

@@ -19,10 +19,14 @@ use std::ops::Range;
 use std::sync::Arc;
 use super::unicode_breaks::LineBreakState;
 use unicode_segmentation::UnicodeSegmentation;
+use super::whitespace::{WhitespaceConfiguration, WhitespacePresentationOptions, ListCharsError, WhitespaceMarker};
 
 #[path = "unwrapped.rs"]
 mod unwrapped;
 use unwrapped::{HorizontalMaterialization, UnwrappedSummaryCache};
+#[path = "whitespace_geometry.rs"]
+mod whitespace_geometry;
+use whitespace_geometry::attach_whitespace_units;
 
 #[cfg(test)]
 #[path = "adjacent_regions_tests.rs"]
@@ -48,6 +52,7 @@ const CANCELLATION_TEXT_SCAN_BYTES: usize = 64 * 1024;
 /// future cache admission.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LongLineLayoutCheckpoint {
+    pub(super) whitespace_leading: bool,
     pub(super) document_id: DocumentId,
     pub(super) document_revision: Revision,
     pub(super) configuration_generation: ViewConfigurationGeneration,
@@ -338,6 +343,9 @@ pub struct SelectionRectangle {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PositionedCluster {
+    /// A tab's current-font space width in Spaces mode. ParagraphEn tabs use
+    /// the snapshot-wide unit. This is geometry metadata, never a caret stop.
+    pub whitespace_unit: Option<f32>,
     pub text_range: Range<usize>,
     pub x: f32,
     pub advance: f32,
@@ -412,6 +420,18 @@ impl VisualRow {
         self.ascent + self.descent + self.leading
     }
 
+    /// Vertical bounds that must fit when revealing a row or accounting for
+    /// the final row's scroll extent. Exact line spacing controls the next
+    /// baseline, but must not clip this row's typography or glyph ink.
+    pub(crate) fn reveal_bounds(&self) -> Range<f32> {
+        let ink = self.ink_bounds();
+        let top = ink.map_or(self.y, |ink| self.y.min(ink.y));
+        let bottom = ink.map_or(self.y + self.natural_height(), |ink| {
+            (self.y + self.natural_height()).max(ink.y + ink.height)
+        });
+        top..bottom
+    }
+
     pub fn bounds(&self, left: f32) -> LayoutRect {
         LayoutRect {
             x: left,
@@ -454,6 +474,8 @@ impl VisualRow {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayoutSnapshot {
+    /// Unstyled default Paragraph whitespace unit in scaled layout points.
+    pub whitespace_unit: f32,
     pub revision: LayoutRevision,
     pub document_id: DocumentId,
     pub document_revision: Revision,
@@ -549,6 +571,7 @@ impl RegionalHardLineLayout {
 /// Immutable worker result for a bounded sequence of hard lines.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegionalLayoutSnapshot {
+    whitespace_unit: f32,
     revision: LayoutRevision,
     document_id: DocumentId,
     document_revision: Revision,
@@ -1403,6 +1426,7 @@ fn layout_epsilon(value: f32) -> f32 {
 /// presentation-only horizontal/vertical scroll, errors, or scheduling state.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LayoutJobViewConfiguration {
+    pub(super) whitespace: WhitespaceConfiguration,
     width: f32,
     height: f32,
     viewport_left: f32,
@@ -1432,6 +1456,8 @@ impl LayoutJobViewConfiguration {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewLayout {
+    whitespace: WhitespaceConfiguration,
+    whitespace_bounds: std::cell::RefCell<super::whitespace::WhitespaceBoundsCache>,
     paragraph_flow: bool,
     width: f32,
     height: f32,
@@ -1461,6 +1487,8 @@ pub type ViewLayoutState = ViewLayout;
 impl ViewLayout {
     pub fn new(width: f32, height: f32) -> Self {
         Self {
+            whitespace: WhitespaceConfiguration::default(),
+            whitespace_bounds: Default::default(),
             paragraph_flow: false,
             width: finite_nonnegative(width),
             height: finite_nonnegative(height),
@@ -1494,6 +1522,25 @@ impl ViewLayout {
             self.height = height;
             self.bump_configuration(width_changed);
         }
+    }
+
+    pub fn whitespace_presentation(&self) -> &WhitespacePresentationOptions { &self.whitespace.options }
+    pub fn whitespace_tabstop(&self) -> u32 { self.whitespace.tabstop }
+    pub fn set_whitespace_presentation(&mut self, options: WhitespacePresentationOptions, format: crate::document::Format, tabstop: u32) -> Result<(), ListCharsError> {
+        options.validate()?;
+        if tabstop == 0 || tabstop > 1024 { return Err(ListCharsError("tabstop must be between 1 and 1024".into())); }
+        let next = WhitespaceConfiguration { options, format, tabstop };
+        if self.whitespace != next {
+            let geometry_changed = self.whitespace.basis() != next.basis() || self.whitespace.tabstop != next.tabstop;
+            self.whitespace = next;
+            self.bump_configuration(geometry_changed);
+        }
+        Ok(())
+    }
+    /// Caller validates that the text tree and positioned snapshot represent
+    /// the same document projection. Also usable with an IME overlay snapshot.
+    pub fn whitespace_markers(&self, text: &crate::document::FormattedTextTree, snapshot: &LayoutSnapshot, viewport: LayoutRect) -> Vec<WhitespaceMarker> {
+        super::whitespace::marker_plan(&self.whitespace, &mut self.whitespace_bounds.borrow_mut(), text, snapshot, viewport, self.wrap)
     }
 
     pub fn set_insets(&mut self, insets: EdgeInsets) {
@@ -1593,6 +1640,17 @@ impl ViewLayout {
 
     pub fn height(&self) -> f32 {
         self.height
+    }
+
+    /// Height available for keeping an editing row above the application
+    /// bottom margin. The margin remains paintable viewport space and also
+    /// contributes to the document's scroll extent. If a row plus the margin
+    /// cannot fit, reserve only the space left after that row; a row taller
+    /// than the viewport uses the caller's baseline-visibility fallback.
+    pub(crate) fn reveal_height(&self, row_height: f32) -> f32 {
+        (self.height - self.insets.bottom)
+            .max(row_height.min(self.height))
+            .max(0.0)
     }
 
     /// Horizontal presentation offset in document layout coordinates.
@@ -1862,6 +1920,7 @@ impl ViewLayout {
         style_runs: Vec<ShapeStyleRun>,
     ) -> LayoutJobViewConfiguration {
         LayoutJobViewConfiguration {
+            whitespace: self.whitespace.clone(),
             width: self.width,
             height: self.height,
             viewport_left: self.viewport_left,
@@ -2210,6 +2269,7 @@ fn partial_snapshot_from_region(
         && region.hard_lines.end == region.document_hard_line_count;
     let total = height_index.total_height();
     Ok(LayoutSnapshot {
+        whitespace_unit: region.whitespace_unit,
         revision: region.revision,
         document_id: region.document_id,
         document_revision: region.document_revision,
@@ -3182,6 +3242,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
 
         let measurement_environment_id = self.provider.measurement_environment_id();
         let metrics_generation = self.provider.metrics_generation();
+        let whitespace_unit = document_styles.whitespace_shaping_style.size * view.scale * 0.5;
         let shaped = self.shape_ranges_with_origin(
             document_id,
             document_revision,
@@ -3228,12 +3289,17 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             let line_fragments = &shaped[fragment_cursor..fragment_cursor + count];
             fragment_cursor += count;
             let extends_past_work = line_slice.work_range.end < line_slice.full_range.end;
-            let (clusters, empty_metrics) = flatten_line_fragments_for_slice(
+            let (mut clusters, empty_metrics) = flatten_line_fragments_for_slice(
                 line_range,
                 line_fragments,
                 extends_past_work,
                 &control,
             )?;
+            let whitespace_leading = line_slice.checkpoint.as_ref().map_or(true, |c| c.whitespace_leading);
+            let (_, _, tab_units) = self.layout_whitespace_clusters(&mut clusters, region_text, text_origin, &view.whitespace, whitespace_unit,
+                if view.default_style_is_override { &default_style } else { &paragraph.style.default_shaping_style }, style_runs,
+                view.scale, document_id, document_revision, &control,
+                whitespace_leading, line_slice.checkpoint.as_ref().map_or(0.0, |c| c.cumulative_advance))?;
             let right_to_left = line_slice.checkpoint.as_ref().map_or_else(
                 || {
                     paragraph_is_right_to_left(
@@ -3409,6 +3475,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         layout_revision,
                         &control,
                     )?;
+                    attach_whitespace_units(&mut row, &tab_units);
                     if paragraph.is_first_hard_line && row_in_line == 0 {
                         self.decorate_list_row(
                             &mut row,
@@ -3445,6 +3512,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         y += paragraph.style.spacing_after + next.style.spacing_before;
                     }
                 } else {
+                    if let Some(row) = rows.last() {
+                        y = y.max(row.reveal_bounds().end);
+                    }
                     y += paragraph.style.spacing_after + content_insets.bottom;
                 }
             }
@@ -3464,6 +3534,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 .map(|cluster| f64::from(cluster.advance))
                 .sum::<f64>();
             let next_checkpoint = extends_past_work.then(|| LongLineLayoutCheckpoint {
+                whitespace_leading: whitespace_leading && region_text[line_range.start - text_origin..text_coverage_end - text_origin].bytes().all(|b| b == b' ' || b == b'\t'),
                 document_id,
                 document_revision,
                 configuration_generation: view.configuration_generation,
@@ -3527,6 +3598,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             })
         });
         let result = RegionalLayoutSnapshot {
+            whitespace_unit,
             revision: layout_revision,
             document_id,
             document_revision,
@@ -3743,6 +3815,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             .flat_map(|fragment| fragment.diagnostics.iter().cloned())
             .collect();
         let mut fragment_cursor = 0;
+        let whitespace_style = document_styles.as_ref().map_or(&default_style, |styles| &styles.whitespace_shaping_style);
+        let whitespace_unit = whitespace_style.size * view.scale * 0.5;
         let mut rows = Vec::new();
         let mut y = content_insets.top;
         let mut previous_paragraph_index = None;
@@ -3768,8 +3842,11 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             let count = fragment_ranges[hard_line_index].len();
             let line_fragments = &shaped[fragment_cursor..fragment_cursor + count];
             fragment_cursor += count;
-            let (clusters, empty_metrics) =
+            let (mut clusters, empty_metrics) =
                 flatten_line_fragments(line_range, line_fragments, control)?;
+            let (_, _, tab_units) = self.layout_whitespace_clusters(&mut clusters, text, 0, &view.whitespace, whitespace_unit,
+                if view.default_style_is_override { &default_style } else { &paragraph.style.default_shaping_style }, &style_runs,
+                view.scale, document_id, document_revision, control, true, 0.0)?;
             let right_to_left = paragraph_is_right_to_left(
                 &paragraph.style,
                 &text[line_range.clone()],
@@ -3904,6 +3981,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     layout_revision,
                     control,
                 )?;
+                attach_whitespace_units(&mut row, &tab_units);
                 if paragraph.is_first_hard_line && row_in_line == 0 {
                     self.decorate_list_row(
                         &mut row,
@@ -3931,6 +4009,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         if self.provider.metrics_generation() != metrics_generation {
             return Err(LayoutError::MetricsChangedDuringShape.into());
         }
+        if let Some(row) = rows.last() {
+            y = y.max(row.reveal_bounds().end);
+        }
         if has_previous_paragraph {
             y += previous_spacing_after;
         }
@@ -3944,6 +4025,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             .copied()
             .fold(view.width, f32::max);
         let snapshot = LayoutSnapshot {
+            whitespace_unit,
             revision: layout_revision,
             document_id,
             document_revision,
@@ -4781,6 +4863,7 @@ fn position_row(
         let cluster = &logical_clusters[logical_index];
         let cluster_x = x as f32;
         clusters.push(PositionedCluster {
+            whitespace_unit: None,
             text_range: cluster.text_range.clone(),
             x: cluster_x,
             advance: cluster.advance,
@@ -6154,7 +6237,7 @@ mod tests {
         assert!((rows[2].ascent - 20.0 * 0.78).abs() < 0.001);
         assert_eq!(rows[2].paragraph_content_x, 11.0);
         assert_eq!(rows[2].carets[0].x, 11.0);
-        assert!((snapshot.total_height - (rows[2].y + 9.0 + 8.0)).abs() < 0.001);
+        assert!((snapshot.total_height - (rows[2].y + rows[2].natural_height() + 8.0)).abs() < 0.001);
         let second_line_y = f64::from(rows[1].y);
         let third_line_y = f64::from(rows[2].y);
         let total_height = f64::from(snapshot.total_height);

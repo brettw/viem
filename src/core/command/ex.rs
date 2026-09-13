@@ -383,7 +383,7 @@ impl<'a> Parser<'a> {
         let args = match name {
             // A trailing Space is a real Normal-mode command.  Only the
             // whitespace separating `:normal[!]` from its payload is trivia.
-            CommandName::Normal => raw_args.trim_start(),
+            CommandName::Normal | CommandName::Set | CommandName::SetLocal => raw_args.trim_start(),
             // For `:&` and `:~`, whitespace distinguishes a following line
             // count from an immediately adjacent occurrence number.  Keep
             // that leading separator for the substitute-tail parser.
@@ -1351,14 +1351,32 @@ fn parse_flags_and_count(
     Ok((flags, count))
 }
 
+/// `:set` has its own escape layer: escaped whitespace belongs to a value,
+/// and doubled backslashes produce one literal backslash. Preserve other
+/// backslashes for the option's grammar, including listchars \x/\u/\U.
+fn set_option_expressions(args: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut expression = String::new();
+    let mut chars = args.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\\' && chars.peek().is_some_and(|next| *next == '\\' || next.is_whitespace()) {
+            expression.push(chars.next().expect("inspected escaped character"));
+        } else if character.is_whitespace() {
+            if !expression.is_empty() { result.push(std::mem::take(&mut expression)); }
+        } else { expression.push(character); }
+    }
+    if !expression.is_empty() { result.push(expression); }
+    result
+}
+
 fn parse_set(args: &str, scope: SetScope, offset: usize) -> Result<ExAction, ExParseError> {
-    let operation = if args.is_empty() {
+    let operation = if args.trim().is_empty() {
         SetOperation::ShowChanged
-    } else if args == "all" {
+    } else if args.trim() == "all" {
         SetOperation::ShowAll
     } else {
-        let options = args
-            .split_whitespace()
+        let options = set_option_expressions(args)
+            .iter()
             .map(|expression| parse_option(expression, offset))
             .collect::<Result<Vec<_>, _>>()?;
         SetOperation::Options(options)
@@ -1704,6 +1722,23 @@ mod tests {
                 ]),
             })
         );
+    }
+
+    #[test]
+    fn set_values_preserve_escaped_spaces_backslashes_and_numeric_escapes() {
+        let options = |input| match parse(input).action {
+            ExAction::Set(SetCommand { operation: SetOperation::Options(values), .. }) => values,
+            _ => panic!("expected option assignments"),
+        };
+        assert_eq!(options(":set lcs=tab:>\\ ")[0].action, OptionAction::Assign("tab:> ".into()));
+        let values = options(":set lcs=tab:>\\  ts=4");
+        assert_eq!(values[0].action, OptionAction::Assign("tab:> ".into()));
+        assert_eq!(values[1].action, OptionAction::Assign("4".into()));
+        let escaped = format!(":set lcs=tab:>{0}{0}", char::from(92));
+        let value = format!("tab:>{}", char::from(92));
+        assert_eq!(options(&escaped)[0].action, OptionAction::Assign(value));
+        assert_eq!(options(r":set lcs=tab:\x3e\u002d,trail:\U0000002a")[0].action,
+            OptionAction::Assign(r"tab:\x3e\u002d,trail:\U0000002a".into()));
     }
 
     #[test]

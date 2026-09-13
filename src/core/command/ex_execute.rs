@@ -60,6 +60,8 @@ pub struct ExExecutionContext {
     pub search_options: super::regex_v1::SearchOptions,
     /// Buffer-owned `textwidth` state.
     pub text_width: crate::document::TextWidthSetting,
+    pub indentation: crate::document::IndentationSetting,
+    pub visible_whitespace: super::VisibleWhitespaceSetting,
     pub last_search_pattern: Option<String>,
 }
 
@@ -71,6 +73,8 @@ impl Default for ExExecutionContext {
             fileformats: vec![FileFormat::Unix, FileFormat::Dos],
             search_options: super::regex_v1::SearchOptions::default(),
             text_width: crate::document::TextWidthSetting::default(),
+            indentation: Default::default(),
+            visible_whitespace: Default::default(),
             last_search_pattern: None,
         }
     }
@@ -251,11 +255,18 @@ pub enum ExOptionName {
     SmartCase,
     WrapScan,
     TextWidth,
+    AutoIndent, TabStop, ShiftWidth, SoftTabStop, ExpandTab, SmartTab,
+    ContinueCommentsOnEnter, ContinueCommentsOnOpenLine,
+    List, ListChars,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExOptionValue {
     Boolean(bool),
+    String(String),
+    Integer(i32),
+    Indentation(crate::document::IndentationSetting),
+    VisibleWhitespace(super::VisibleWhitespaceSetting),
     FileFormat(FileFormat),
     FileFormats(Vec<FileFormat>),
     /// A displayed numeric value, such as the effective `textwidth`.
@@ -2267,10 +2278,16 @@ fn prepare_set(
         fileformats: context.fileformats.clone(),
         search_options: context.search_options,
         text_width: context.text_width,
+        indentation: context.indentation,
+        visible_whitespace: context.visible_whitespace.clone(),
     };
     match operation {
         SetOperation::ShowChanged => {
             let mut shown = Vec::new();
+            if values.visible_whitespace.enabled.is_some() {
+                shown.push(display(ExOptionName::List, ExOptionValue::Boolean(values.visible_whitespace.enabled())));
+            }
+            if values.visible_whitespace.listchars.is_some() { shown.push(display(ExOptionName::ListChars, ExOptionValue::String(values.visible_whitespace.listchars().into()))); }
             if values.search_options.ignorecase {
                 shown.push(display(
                     ExOptionName::IgnoreCase,
@@ -2298,6 +2315,8 @@ fn prepare_set(
                     ExOptionValue::Number(values.text_width.effective()),
                 ));
             }
+            let defaults = { let mut d = values.indentation; d.local = Default::default(); indentation_options(d) };
+            shown.extend(indentation_options(values.indentation).into_iter().zip(defaults).filter_map(|(value, default)| (value != default).then_some(value)));
             if document.format() != crate::document::Format::Rtf
                 && values.file_format != FileFormat::Unix
             {
@@ -2359,10 +2378,14 @@ struct PendingOptions {
     fileformats: Vec<FileFormat>,
     search_options: super::regex_v1::SearchOptions,
     text_width: crate::document::TextWidthSetting,
+    indentation: crate::document::IndentationSetting,
+    visible_whitespace: super::VisibleWhitespaceSetting,
 }
 
 fn all_option_values(values: &PendingOptions) -> Vec<ExOptionDisplay> {
-    vec![
+    let mut result = vec![
+        display(ExOptionName::List, ExOptionValue::Boolean(values.visible_whitespace.enabled())),
+        display(ExOptionName::ListChars, ExOptionValue::String(values.visible_whitespace.listchars().into())),
         display(
             ExOptionName::IgnoreCase,
             ExOptionValue::Boolean(values.search_options.ignorecase),
@@ -2388,11 +2411,148 @@ fn all_option_values(values: &PendingOptions) -> Vec<ExOptionDisplay> {
             ExOptionName::FileFormats,
             ExOptionValue::FileFormats(values.fileformats.clone()),
         ),
-    ]
+    ];
+    result.extend(indentation_options(values.indentation));
+    result
 }
 
 fn display(name: ExOptionName, value: ExOptionValue) -> ExOptionDisplay {
     ExOptionDisplay { name, value }
+}
+
+fn indentation_options(setting: crate::document::IndentationSetting) -> Vec<ExOptionDisplay> {
+    let value = setting.effective();
+    vec![
+        display(ExOptionName::AutoIndent, ExOptionValue::Boolean(value.autoindent)),
+        display(ExOptionName::TabStop, ExOptionValue::Number(value.tabstop)),
+        display(ExOptionName::ShiftWidth, ExOptionValue::Number(value.shiftwidth)),
+        display(ExOptionName::SoftTabStop, ExOptionValue::Integer(value.softtabstop)),
+        display(ExOptionName::ExpandTab, ExOptionValue::Boolean(value.expandtab)),
+        display(ExOptionName::SmartTab, ExOptionValue::Boolean(value.smarttab)),
+        display(ExOptionName::ContinueCommentsOnEnter, ExOptionValue::Boolean(value.continue_comments_on_enter)),
+        display(ExOptionName::ContinueCommentsOnOpenLine, ExOptionValue::Boolean(value.continue_comments_on_open_line)),
+    ]
+}
+fn apply_indentation_option(scope: SetScope, operation: &OptionOperation,
+    values: &mut crate::document::IndentationSetting, plan: &mut ExPlan) -> Result<bool, ExExecuteError> {
+    let name = operation.name.to_ascii_lowercase();
+    let key = match name.as_str() {
+        "autoindent" | "ai" => ExOptionName::AutoIndent,
+        "tabstop" | "ts" => ExOptionName::TabStop,
+        "shiftwidth" | "sw" => ExOptionName::ShiftWidth,
+        "softtabstop" | "sts" => ExOptionName::SoftTabStop,
+        "expandtab" | "et" => ExOptionName::ExpandTab,
+        "smarttab" | "sta" => ExOptionName::SmartTab,
+        "continuecommentsonenter" => ExOptionName::ContinueCommentsOnEnter,
+        "continuecommentsonopenline" => ExOptionName::ContinueCommentsOnOpenLine,
+        _ => return Ok(false),
+    };
+    if operation.action == OptionAction::Query {
+        let display = indentation_options(*values).into_iter().find(|d| d.name == key).unwrap();
+        show_option(plan, key, display.value);
+        return Ok(true);
+    }
+    let old = *values;
+    let effective = values.effective();
+    let boolean = match key {
+        ExOptionName::AutoIndent => Some((&mut values.local.autoindent, effective.autoindent)),
+        ExOptionName::ExpandTab => Some((&mut values.local.expandtab, effective.expandtab)),
+        ExOptionName::SmartTab => Some((&mut values.local.smarttab, effective.smarttab)),
+        ExOptionName::ContinueCommentsOnEnter => Some((&mut values.local.continue_comments_on_enter, effective.continue_comments_on_enter)),
+        ExOptionName::ContinueCommentsOnOpenLine => Some((&mut values.local.continue_comments_on_open_line, effective.continue_comments_on_open_line)),
+        _ => None,
+    };
+    if let Some((local, value)) = boolean {
+        *local = match &operation.action {
+            OptionAction::Enable => Some(true), OptionAction::Disable => Some(false),
+            OptionAction::Toggle => Some(!value), OptionAction::Inherit | OptionAction::Reset => None,
+            _ => return Err(ExExecuteError::UnsupportedOptionOperation(name)),
+        };
+    } else {
+        let number = match &operation.action {
+            OptionAction::Assign(value) => Some(value.parse::<i32>().map_err(|_| ExExecuteError::InvalidOptionValue { option: name.clone(), value: value.clone() })?),
+            OptionAction::Inherit | OptionAction::Reset => None,
+            _ => return Err(ExExecuteError::UnsupportedOptionOperation(name)),
+        };
+        if number.is_some_and(|n| match key { ExOptionName::TabStop => !(1..=1024).contains(&n), ExOptionName::ShiftWidth => !(0..=1024).contains(&n), _ => !(-1..=1024).contains(&n) }) {
+            return Err(ExExecuteError::InvalidOptionValue { option: name, value: number.unwrap().to_string() });
+        }
+        match key {
+            ExOptionName::TabStop => values.local.tabstop = number.map(|v| v as u32),
+            ExOptionName::ShiftWidth => values.local.shiftwidth = number.map(|v| v as u32),
+            ExOptionName::SoftTabStop => values.local.softtabstop = number,
+            _ => unreachable!(),
+        }
+    }
+    if old != *values {
+        plan.outcome.option_effects.push(ExOptionEffect { scope, name: key,
+            old_value: ExOptionValue::Indentation(old), new_value: ExOptionValue::Indentation(*values) });
+    }
+    Ok(true)
+}
+
+fn show_listchars(plan: &mut ExPlan, setting: &super::VisibleWhitespaceSetting) {
+    show_option(plan, ExOptionName::ListChars, ExOptionValue::String(setting.listchars().into()));
+}
+
+/// Vim's comma-option modifiers match one complete contiguous token sequence.
+/// Category parsing happens after modification; repeated category names are
+/// legal and are not independently removed or deduplicated here.
+fn modify_listchars(current: &str, value: &str, action: &OptionAction) -> String {
+    if value.is_empty() { return current.to_owned(); }
+    let found = current.match_indices(value).find_map(|(start, _)| {
+        let end = start + value.len();
+        ((start == 0 || current.as_bytes()[start - 1] == b',')
+            && (end == current.len() || current.as_bytes()[end] == b','))
+            .then_some(start..end)
+    });
+    match action {
+        OptionAction::Remove(_) => {
+            let Some(mut range) = found else { return current.to_owned(); };
+            if current.as_bytes().get(range.end) == Some(&b',') { range.end += 1; }
+            else if range.start > 0 { range.start -= 1; }
+            format!("{}{}", &current[..range.start], &current[range.end..])
+        }
+        OptionAction::Append(_) | OptionAction::Prepend(_) if found.is_some() => current.to_owned(),
+        OptionAction::Append(_) => {
+            let separator = if current.is_empty() || current.ends_with(',') { "" } else { "," };
+            format!("{current}{separator}{value}")
+        }
+        OptionAction::Prepend(_) => {
+            let separator = if current.is_empty() { "" } else { "," };
+            format!("{value}{separator}{current}")
+        }
+        _ => unreachable!("listchars modifier helper accepts only +=, ^=, and -="),
+    }
+}
+
+fn apply_whitespace_option(scope: SetScope, operation: &OptionOperation, setting: &mut super::VisibleWhitespaceSetting, plan: &mut ExPlan) -> Result<bool, ExExecuteError> {
+    let name = operation.name.to_ascii_lowercase();
+    let key = match name.as_str() { "list" => ExOptionName::List, "listchars" | "lcs" => ExOptionName::ListChars, _ => return Ok(false) };
+    let old = setting.clone();
+    if key == ExOptionName::List {
+        match &operation.action {
+            OptionAction::Query => { show_option(plan, key, ExOptionValue::Boolean(setting.enabled())); return Ok(true); }
+            OptionAction::Enable => setting.enabled = Some(true),
+            OptionAction::Disable => setting.enabled = Some(false),
+            OptionAction::Toggle => setting.enabled = Some(!setting.enabled()),
+            OptionAction::Reset | OptionAction::Inherit => setting.enabled = None,
+            _ => return Err(ExExecuteError::UnsupportedOptionOperation(name)),
+        }
+    } else {
+        match &operation.action {
+            OptionAction::Query => { show_listchars(plan, setting); return Ok(true); }
+            OptionAction::Reset | OptionAction::Inherit => setting.listchars = None,
+            OptionAction::Assign(value) => setting.listchars = Some(value.clone()),
+            OptionAction::Append(value) | OptionAction::Prepend(value) | OptionAction::Remove(value) => {
+                setting.listchars = Some(modify_listchars(setting.listchars(), value, &operation.action));
+            }
+            _ => return Err(ExExecuteError::UnsupportedOptionOperation(name)),
+        }
+        crate::layout::ListChars::parse(setting.listchars()).map_err(|_| ExExecuteError::InvalidOptionValue { option: name, value: setting.listchars().into() })?;
+    }
+    if old != *setting { plan.outcome.option_effects.push(ExOptionEffect { scope, name: key, old_value: ExOptionValue::VisibleWhitespace(old), new_value: ExOptionValue::VisibleWhitespace(setting.clone()) }); }
+    Ok(true)
 }
 
 fn apply_option_operation(
@@ -2402,6 +2562,8 @@ fn apply_option_operation(
     plan: &mut ExPlan,
 ) -> Result<(), ExExecuteError> {
     let name = operation.name.to_ascii_lowercase();
+    if apply_indentation_option(scope, operation, &mut values.indentation, plan)? { return Ok(()); }
+    if apply_whitespace_option(scope, operation, &mut values.visible_whitespace, plan)? { return Ok(()); }
     match name.as_str() {
         "ignorecase" | "ic" => apply_boolean_option(
             scope,
@@ -3600,7 +3762,7 @@ mod tests {
         ).unwrap();
         let ExFrontendRequest::Info(ExInfoRequest::Options(options)) =
             &plan.outcome.frontend_requests[0] else { panic!("expected options") };
-        assert_eq!(options.len(), 7);
+        assert_eq!(options.len(), 17);
         assert!(options.iter().any(|option| option.name == ExOptionName::TextWidth));
     }
 

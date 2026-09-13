@@ -1,7 +1,7 @@
 //! Stable screen placement while editing and refining syntax metrics.
 
 use super::*;
-use crate::layout::{CaretGeometry, LayoutSnapshot};
+use crate::layout::{CaretGeometry, LayoutSnapshot, ViewLayout};
 
 pub(super) fn anchor_geometry(
     snapshot: &LayoutSnapshot,
@@ -114,7 +114,7 @@ pub(super) fn reveal_anchored_row<P: TextMeasurementProvider>(
 ) -> Result<(), LayoutError> {
     let snapshot = view.layout.snapshot().ok_or(LayoutError::NoRows)?;
     let geometry = anchor_geometry(snapshot, anchor)?;
-    reveal_row_at(view, anchor.anchor.offset(), geometry.point.affinity)
+    reveal_layout_row_at(&mut view.layout, anchor.anchor.offset(), geometry.point.affinity)
 }
 
 pub(super) fn reveal_caret_row<P: TextMeasurementProvider>(
@@ -126,24 +126,29 @@ pub(super) fn reveal_caret_row<P: TextMeasurementProvider>(
             affinity: view.commands.boundary_affinity(),
         }
     });
-    reveal_row_at(view, position.text_offset, position.affinity)
+    reveal_layout_row_at(&mut view.layout, position.text_offset, position.affinity)
 }
 
-fn reveal_row_at<P: TextMeasurementProvider>(
-    view: &mut View<P>,
+/// Source-backed and composed layouts share one row reveal policy. Reserve
+/// the application bottom margin without reducing painting or materialization
+/// coverage, and include the complete row's typography and ink.
+pub(super) fn reveal_layout_row_at(
+    layout: &mut ViewLayout,
     offset: usize,
     affinity: BoundaryAffinity,
 ) -> Result<(), LayoutError> {
-    let snapshot = view.layout.snapshot().ok_or(LayoutError::NoRows)?;
-    let geometry = snapshot.logical_endpoint_geometry(offset, affinity)?;
+    let snapshot = layout.snapshot().ok_or(LayoutError::NoRows)?;
+    let geometry = snapshot.logical_endpoint_geometry(offset, affinity).or_else(|_| {
+        snapshot.logical_endpoint_geometry(offset, match affinity {
+            BoundaryAffinity::Upstream => BoundaryAffinity::Downstream,
+            BoundaryAffinity::Downstream => BoundaryAffinity::Upstream,
+        })
+    })?;
     let row = &snapshot.rows[geometry.row_index];
-    let ink = row.ink_bounds();
-    let top = ink.map_or(row.y, |ink| row.y.min(ink.y));
-    let bottom = ink.map_or(row.y + row.natural_height(), |ink| {
-        (row.y + row.natural_height()).max(ink.y + ink.height)
-    });
-    let height = view.layout.height();
-    let current = view.layout.viewport_top();
+    let bounds = row.reveal_bounds();
+    let (top, bottom) = (bounds.start, bounds.end);
+    let height = layout.reveal_height(bottom - top);
+    let current = layout.viewport_top();
     let requested = if bottom - top > height {
         // No viewport can contain an oversized row. Keep its baseline visible
         // without oscillating between mutually impossible top/bottom reveals.
@@ -155,7 +160,7 @@ fn reveal_row_at<P: TextMeasurementProvider>(
     } else {
         current
     };
-    view.layout.set_viewport_top(requested)
+    layout.set_viewport_top(requested)
 }
 
 /// Preserve coverage above an editing row at the start of a long paragraph.
