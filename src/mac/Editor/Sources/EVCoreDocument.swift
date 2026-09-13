@@ -909,8 +909,8 @@ final class EVCoreViewSession {
         }
     }
 
-    func setThemePadding(_ padding: EVThemePadding) throws {
-        try checked(viem_core_view_set_padding(document.core, viewID, Float(padding.top), Float(padding.left), Float(padding.bottom), Float(padding.right)), operation: "Update document padding")
+    func setViewMargins(_ padding: EVViewMargins) throws {
+        try checked(viem_core_view_set_padding(document.core, viewID, Float(padding.top), Float(padding.left), Float(padding.bottom), Float(padding.right)), operation: "Update view margins")
     }
 
     func setSmartQuotes(_ enabled: Bool) throws {

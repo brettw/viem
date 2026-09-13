@@ -7,32 +7,26 @@ import XCTest
 
 @MainActor
 final class EVCodeStyleInheritanceTests: XCTestCase {
-    func testLegacySettingsLoadLinksWithoutLosingLocalEditsOrRewritingTheFile() throws {
+    func testSavedParentLinksLoadWithoutLosingLocalEditsOrRewritingTheFile() throws {
         let configuration = configuration()
-        let originalColor: [String: Float] = [
-            "red": 115 / 255, "green": 123 / 255, "blue": 130 / 255, "alpha": 1,
-        ]
         let parentColor: [String: Float] = ["red": 0.1, "green": 0.5, "blue": 0.3, "alpha": 1]
         let localColor: [String: Float] = ["red": 0.2, "green": 0.3, "blue": 0.8, "alpha": 1]
         let entries: [[String: Any]] = [
                 ["id": "syntax:Comment", "name": "Project comments",
-                 "based_on": EVStyleKey.baseCharacter.id.rawValue,
                  "properties": ["foreground": parentColor, "size": 21] as [String: Any]],
-                // Version 1 saved the copied foreground and parent even when
-                // the user had changed only the font size.
                 ["id": "syntax:@comment", "name": "@comment",
-                 "based_on": EVStyleKey.baseCharacter.id.rawValue,
-                 "properties": ["foreground": originalColor, "size": 27] as [String: Any]],
+                 "based_on": "syntax:Comment",
+                 "properties": ["size": 27] as [String: Any]],
                 ["id": "syntax:@comment.documentation", "name": "@comment.documentation",
                  "based_on": "syntax:@comment",
                  "properties": ["foreground": localColor]],
         ]
-        let legacy: [String: Any] = [
-            "version": 1,
+        let settings: [String: Any] = [
+            "version": 2,
             "character_styles": entries,
             "suppressed_character_ids": ["syntax:Todo"],
         ]
-        let saved = try JSONSerialization.data(withJSONObject: legacy, options: [.sortedKeys])
+        let saved = try JSONSerialization.data(withJSONObject: settings, options: [.sortedKeys])
         try FileManager.default.createDirectory(at: configuration.directory, withIntermediateDirectories: true)
         let file = configuration.directory.appendingPathComponent("code_style.json")
         try saved.write(to: file)
@@ -51,7 +45,7 @@ final class EVCodeStyleInheritanceTests: XCTestCase {
         XCTAssertEqual(documentation.properties[.characterForeground]?.declared,
                        .color(EVStyleColor(red: 0.2, green: 0.3, blue: 0.8, alpha: 1)))
         XCTAssertFalse(snapshot.definitions.contains { $0.name == "Comment" || $0.name == "Todo" })
-        XCTAssertEqual(try Data(contentsOf: file), saved, "Loading the legacy file must not rewrite user settings")
+        XCTAssertEqual(try Data(contentsOf: file), saved, "Loading the settings file must not rewrite user settings")
         XCTAssertFalse(session.undoManager.canUndo)
     }
 

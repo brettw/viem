@@ -7,6 +7,249 @@ import XCTest
 
 @MainActor
 final class EVCompactStyleControlsTests: XCTestCase {
+    func testInheritedFieldsAreEmptyUntilOverrideAndUncheckingRestoresInheritance() throws {
+        let (backend, surface, editor, _) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
+        editor.selectStyle(heading)
+        XCTAssertTrue(editor.useInheritedForTesting(.characterSize))
+        XCTAssertTrue(editor.useInheritedForTesting(.characterWeight))
+        let size = try control(NSTextField.self, label: "Size", in: editor.view)
+        let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
+        let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
+        let override = try control(NSButton.self, label: "Override font size", in: editor.view)
+        XCTAssertEqual(size.stringValue, "")
+        XCTAssertEqual(family.stringValue, "")
+        XCTAssertNil(face.titleOfSelectedItem)
+        XCTAssertFalse(size.isEnabled)
+        XCTAssertFalse(family.isEnabled)
+        XCTAssertFalse(face.isEnabled)
+        XCTAssertEqual(override.title, "")
+        XCTAssertEqual(override.toolTip, "Override inherited")
+        XCTAssertEqual(override.state, .off)
+        override.performClick(nil)
+        XCTAssertEqual(override.state, .on)
+        XCTAssertTrue(size.isEnabled)
+        XCTAssertEqual(size.floatValue, 14)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterSize]?.declared, .float(14))
+        override.performClick(nil)
+        XCTAssertEqual(override.state, .off)
+        XCTAssertEqual(size.stringValue, "")
+        XCTAssertFalse(size.isEnabled)
+        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterSize]?.declared)
+    }
+
+    func testWeightOverrideIsVisibleAndIndependentOfInheritedFontFamily() throws {
+        let (backend, surface, editor, _) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
+        editor.selectStyle(heading)
+        let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
+        let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
+        let familyOverride = try control(NSButton.self, label: "Override font families", in: editor.view)
+        let weightOverride = try control(NSButton.self, label: "Override weight", in: editor.view)
+        XCTAssertEqual(familyOverride.state, .off)
+        XCTAssertEqual(family.stringValue, "")
+        XCTAssertFalse(family.isEnabled)
+        XCTAssertEqual(weightOverride.state, .on)
+        XCTAssertEqual(weightOverride.toolTip, "Override inherited")
+        XCTAssertTrue(face.isEnabled)
+        XCTAssertEqual(face.titleOfSelectedItem, "Bold")
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterWeight]?.declared, .unsigned(700))
+
+        familyOverride.performClick(nil)
+        XCTAssertTrue(family.isEnabled)
+        familyOverride.performClick(nil)
+        XCTAssertFalse(family.isEnabled)
+        XCTAssertEqual(weightOverride.state, .on, "Changing the family override must not erase an independent face/weight override")
+        XCTAssertTrue(face.isEnabled)
+        XCTAssertEqual(face.titleOfSelectedItem, "Bold")
+
+        weightOverride.performClick(nil)
+        XCTAssertFalse(face.isEnabled)
+        XCTAssertNil(face.titleOfSelectedItem)
+        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterWeight]?.declared)
+        XCTAssertEqual(familyOverride.state, .off)
+        XCTAssertEqual(family.stringValue, "")
+        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterWeight], .unsigned(400))
+    }
+
+    func testClearingFaceOverrideResolvesInheritedWeightForAnExplicitPostScriptFont() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        let styleKey = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
+        editor.selectStyle(styleKey)
+        let faces = EVFontCatalog.faces(for: "SF Pro")
+        let bold = try XCTUnwrap(faces.first { $0.styleName == "Bold" })
+        let regular = try XCTUnwrap(faces.first { $0.styleName == "Regular" })
+        let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
+        let weightOverride = try control(NSButton.self, label: "Override weight", in: editor.view)
+        face.selectItem(withTitle: bold.styleName)
+        XCTAssertTrue(face.sendAction(try XCTUnwrap(face.action), to: face.target))
+        XCTAssertEqual(editor.inspection.preview.resolvedFontPostScriptName, bold.postScriptName)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: styleKey)?.properties[.characterFontFamilies]?.declared, .stringList([bold.postScriptName]))
+        weightOverride.performClick(nil)
+        XCTAssertFalse(face.isEnabled)
+        XCTAssertNil(face.titleOfSelectedItem)
+        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: styleKey)?.properties[.characterWeight]?.declared)
+        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterWeight], .unsigned(400))
+        XCTAssertEqual(editor.inspection.preview.resolvedFontPostScriptName, regular.postScriptName,
+            "The retained PostScript request must not freeze Bold when its weight becomes inherited")
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: styleKey)?.properties[.characterFontFamilies]?.declared, .stringList([bold.postScriptName]),
+            "The family request remains independently declared")
+    }
+
+    func testFirstClickOnInheritedBoldTogglesBoldAndUndoesAsOneAction() throws {
+        let (backend, surface, editor, _) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
+        editor.selectStyle(heading)
+        let bold = try control(NSButton.self, label: "Bold", in: editor.view)
+        let override = try control(NSButton.self, label: "Override bold", in: editor.view)
+        XCTAssertFalse(bold.isEnabled)
+        XCTAssertEqual(bold.state, .off)
+        try performFirstClick(bold)
+        XCTAssertTrue(bold.isEnabled)
+        XCTAssertEqual(bold.state, .on)
+        XCTAssertEqual(override.state, .on)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterBold]?.declared, .boolean(true))
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterBold]?.declared)
+        XCTAssertFalse(bold.isEnabled)
+        XCTAssertFalse(surface.canUndo, "Activation and the forwarded click are a single gesture")
+    }
+
+    func testFirstClickOnInheritedStepperIncrementsAndUndoesAsOneAction() throws {
+        let (backend, surface, editor, _) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
+        editor.selectStyle(heading)
+        let stepper = try control(EVStyleStepper.self, label: "Adjust first line", in: editor.view)
+        XCTAssertFalse(stepper.isEnabled)
+        try inheritedWrapper(for: stepper).activateAndPerform(stepper) {
+            stepper.performTrackingGesture {
+                stepper.doubleValue += stepper.increment
+                XCTAssertTrue(stepper.sendAction(stepper.action, to: stepper.target))
+            }
+        }
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.paragraphFirstLineIndent]?.declared, .float(1))
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.paragraphFirstLineIndent]?.declared)
+        XCTAssertFalse(surface.canUndo)
+    }
+
+    func testFirstMouseClickOnInheritedFontFaceOpensItsNativePopup() throws {
+        let (_, surface, editor, _) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        editor.selectStyle(EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1")))
+        XCTAssertTrue(editor.useInheritedForTesting(.characterWeight))
+        let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
+        let override = try control(NSButton.self, label: "Override weight", in: editor.view)
+        XCTAssertFalse(face.isEnabled)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 650),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = editor
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        editor.view.layoutSubtreeIfNeeded()
+        var beganTracking = false
+        let observer = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification,
+            object: face.menu, queue: .main) { _ in
+                beganTracking = true
+                DispatchQueue.main.async { face.menu?.cancelTracking() }
+            }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        try dispatchNativeFirstClick(face)
+        XCTAssertTrue(beganTracking, "The first click must open the native face popup")
+        XCTAssertTrue(face.isEnabled)
+        XCTAssertEqual(override.state, .on)
+    }
+
+    func testFirstMouseClickOnInheritedSizeFocusesItsNativeTextEditor() throws {
+        let (_, surface, editor, _) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        editor.selectStyle(EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code")))
+        let size = try control(NSTextField.self, label: "Size", in: editor.view)
+        XCTAssertFalse(size.isEnabled)
+        XCTAssertEqual(size.stringValue, "")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 650),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = editor
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        editor.view.layoutSubtreeIfNeeded()
+        try dispatchNativeFirstClick(size)
+        XCTAssertTrue(size.isEnabled)
+        let fieldEditor = try XCTUnwrap(size.currentEditor() as? NSTextView,
+            "The first click must enter the native text field")
+        XCTAssertEqual(size.floatValue, 14)
+        XCTAssertTrue(editor.hasActiveStyleEditGroupForTesting)
+        for text in ["18", "19"] {
+            fieldEditor.insertText(text, replacementRange: NSRange(location: 0, length: fieldEditor.string.utf16.count))
+        }
+        XCTAssertEqual(size.floatValue, 19)
+        XCTAssertTrue(window.makeFirstResponder(nil))
+        XCTAssertFalse(editor.hasActiveStyleEditGroupForTesting)
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(size.stringValue, "")
+        XCTAssertFalse(size.isEnabled)
+        XCTAssertFalse(surface.canUndo, "The initial activation and subsequent field typing share one undo gesture")
+    }
+
+    private func dispatchNativeFirstClick(_ control: NSControl) throws {
+        let window = try XCTUnwrap(control.window)
+        let wrapper = try inheritedWrapper(for: control)
+        let location = control.convert(NSPoint(x: control.bounds.midX, y: control.bounds.midY), to: nil)
+        let parent = try XCTUnwrap(wrapper.superview)
+        let hit = try XCTUnwrap(wrapper.hitTest(parent.convert(location, from: nil)))
+        XCTAssertTrue(hit === wrapper)
+        func event(_ type: NSEvent.EventType) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+        }
+        NSApplication.shared.postEvent(try event(.leftMouseUp), atStart: true)
+        hit.mouseDown(with: try event(.leftMouseDown))
+    }
+
+    func testInheritedNativeControlReceivesTheOriginalMouseDownOnlyAfterActivation() throws {
+        final class ClickRecorder: NSControl {
+            var recordedEvent: NSEvent?
+            override func mouseDown(with event: NSEvent) {
+                XCTAssertTrue(isEnabled)
+                recordedEvent = event
+            }
+        }
+        let control = ClickRecorder(frame: NSRect(x: 0, y: 0, width: 100, height: 30))
+        control.widthAnchor.constraint(equalToConstant: 100).isActive = true
+        control.heightAnchor.constraint(equalToConstant: 30).isActive = true
+        let wrapper = EVInheritedStyleControl(views: [control])
+        wrapper.frame = NSRect(x: 10, y: 10, width: 100, height: 30)
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 180, height: 100))
+        host.addSubview(wrapper)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        control.isEnabled = false
+        var activationCount = 0
+        wrapper.canActivate = { !control.isEnabled }
+        wrapper.activate = { activationCount += 1; control.isEnabled = true }
+        let local = NSPoint(x: control.bounds.midX, y: control.bounds.midY)
+        let location = control.convert(local, to: nil)
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: location,
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+            context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        XCTAssertTrue(wrapper.hitTest(host.convert(location, from: nil)) === wrapper)
+        XCTAssertEqual(activationCount, 0, "Hit testing and hovering do not declare values")
+        wrapper.mouseDown(with: event)
+        XCTAssertEqual(activationCount, 1)
+        XCTAssertTrue(control.recordedEvent === event, "The font popup, toggle, or text field must receive the same click")
+        control.isEnabled = false
+        wrapper.canActivate = { false }
+        wrapper.mouseDown(with: event)
+        XCTAssertEqual(activationCount, 1, "Read-only controls cannot activate")
+    }
+
     func testUnderlineButtonHasVisibleUnderlineAndNativeAction() throws {
         let (backend, surface, editor, _) = try makeEditor(html: true)
         defer { withExtendedLifetime(surface) {} }
@@ -33,6 +276,20 @@ final class EVCompactStyleControlsTests: XCTestCase {
         editor.themeStore = themeStore
         editor.retarget(document: surface, styleKey: .baseParagraph)
         return (backend, surface, editor, themeStore)
+    }
+
+    private func inheritedWrapper(for control: NSView) throws -> EVInheritedStyleControl {
+        var ancestor = control.superview
+        while let view = ancestor {
+            if let wrapper = view as? EVInheritedStyleControl { return wrapper }
+            ancestor = view.superview
+        }
+        return try XCTUnwrap(nil as EVInheritedStyleControl?, "Missing inherited-control activation wrapper")
+    }
+
+    private func performFirstClick(_ button: NSButton) throws {
+        if button.isEnabled { button.performClick(nil) }
+        else { try inheritedWrapper(for: button).activateAndPerform(button) { button.performClick(nil) } }
     }
 
     private func control<T: NSView>(_ type: T.Type, label: String, in root: NSView) throws -> T {
@@ -81,7 +338,6 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertEqual(EVThemeColor(swatch.color), EVTheme.midnight.foreground)
         XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterForeground], .color(styleColor(EVTheme.midnight.foreground)))
         XCTAssertEqual(editor.inspection.preview.canvasBackground, styleColor(EVTheme.midnight.background))
-        XCTAssertTrue(editor.inspection.summary.contains("Default (theme foreground)"))
         store.update(.paper)
         XCTAssertEqual(EVThemeColor(swatch.color), EVTheme.paper.foreground)
         XCTAssertEqual(editor.inspection.preview.canvasBackground, styleColor(EVTheme.paper.background))
@@ -92,23 +348,25 @@ final class EVCompactStyleControlsTests: XCTestCase {
     func testExplicitAndInheritedBlackRemainBlackUntilNativeDefaultAction() throws {
         let (backend, surface, editor, store) = try makeEditor(theme: .midnight)
         defer { withExtendedLifetime(surface) {} }
+        let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
+        editor.selectStyle(heading)
         let swatch = try control(NSColorWell.self, label: "Text color", in: editor.view)
         swatch.color = .black
         XCTAssertTrue(swatch.sendAction(try XCTUnwrap(swatch.action), to: swatch.target))
         let black = EVStyleColor(red: 0, green: 0, blue: 0, alpha: 1)
         XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterForeground], .color(black))
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterForeground]?.declared, .color(black))
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterForeground]?.declared, .color(black))
         store.update(.paper); store.update(.midnight)
         XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterForeground], .color(black))
-        let reset = try control(NSButton.self, label: "Default foreground", in: editor.view)
+        let reset = try control(NSButton.self, label: "Override foreground", in: editor.view)
         reset.performClick(nil)
-        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterForeground]?.declared)
+        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterForeground]?.declared)
         XCTAssertEqual(EVThemeColor(swatch.color), EVTheme.midnight.foreground)
-        editor.selectStyle(EVStyleKey.baseDocument)
+        editor.selectStyle(EVStyleKey.baseParagraph)
         swatch.color = .black
         XCTAssertTrue(swatch.sendAction(try XCTUnwrap(swatch.action), to: swatch.target))
-        editor.selectStyle(EVStyleKey.baseParagraph)
-        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterForeground], .color(black), "An explicit declaration inherited from a parent is preserved")
+        editor.selectStyle(heading)
+        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterForeground], .color(black), "An explicit declaration inherited from Base Paragraph is preserved")
     }
 
     func testNativeLightFaceThenBoldCommitsSourceBackedStyle() throws {
@@ -123,7 +381,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         face.select(light)
         XCTAssertTrue(face.sendAction(try XCTUnwrap(face.action), to: face.target))
         let bold = try control(NSButton.self, label: "Bold", in: editor.view)
-        bold.performClick(nil)
+        try performFirstClick(bold)
         XCTAssertEqual(editor.inspection.diagnostic, "")
         XCTAssertEqual(bold.state, .on)
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterBold]?.declared, .boolean(true))
@@ -357,15 +615,17 @@ final class EVCompactStyleControlsTests: XCTestCase {
             XCTAssertEqual(stepper.isEnabled, field.isEnabled)
             if field.isEnabled { XCTAssertEqual(stepper.doubleValue, field.doubleValue, accuracy: 0.0001) }
         }
-        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(14))
         let size = try control(EVStyleStepper.self, label: "Adjust size", in: editor.view)
         size.doubleValue += size.increment
         XCTAssertTrue(size.sendAction(try XCTUnwrap(size.action), to: size.target))
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(15))
-        try control(NSButton.self, label: "Default font size", in: editor.view).performClick(nil)
-        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared)
-        XCTAssertEqual(size.doubleValue, 14)
-        editor.selectStyle(EVStyleKey.baseCharacter)
+        let baseOverride = try control(NSButton.self, label: "Override font size", in: editor.view)
+        XCTAssertFalse(baseOverride.isEnabled)
+        baseOverride.performClick(nil)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(15))
+        XCTAssertEqual(size.doubleValue, 15)
+        editor.selectStyle(EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code")))
         XCTAssertFalse(try control(EVStyleStepper.self, label: "Adjust start indent", in: editor.view).isEnabled)
     }
 

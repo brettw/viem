@@ -640,7 +640,7 @@ fn source_backed_named_styles_convert_the_same_from_source_and_rich_views() {
                 edit: StyleDefinitionEdit::InsertCharacter {
                     style: CharacterStyle {
                         id: "Accent".into(),
-                        based_on: Some(authored.projection().style_sheet().base_character.clone()),
+                        based_on: None,
                         properties: CharacterProperties {
                             weight: Some(700),
                             ..Default::default()

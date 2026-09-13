@@ -16,28 +16,23 @@ pub fn snapshot() -> Arc<StyleSheet> {
 }
 
 pub fn default_sheet() -> StyleSheet {
-    default_sheet_with_links(true)
-}
 
-/// Version 1 copied each family's paint onto every syntax name. Keep that
-/// exact baseline available to distinguish stored overrides during migration.
-fn default_sheet_with_links(linked: bool) -> StyleSheet {
     let mut sheet = StyleSheet::default();
     sheet
         .block_styles
-        .retain(|id, _| *id == sheet.base_document || *id == sheet.base_paragraph);
+        .retain(|id, _| *id == sheet.base_paragraph);
     sheet
         .block_metadata
         .retain(|id, _| sheet.block_styles.contains_key(id));
     sheet
         .character_styles
-        .retain(|id, _| *id == sheet.base_character);
+        .clear();
     sheet
         .character_metadata
         .retain(|id, _| sheet.character_styles.contains_key(id));
     sheet
         .block_styles
-        .get_mut(&sheet.base_document)
+        .get_mut(&sheet.base_paragraph)
         .unwrap()
         .character
         .font_families = Some(vec!["monospace".into()]);
@@ -183,18 +178,14 @@ fn default_sheet_with_links(linked: bool) -> StyleSheet {
     for (root, names, (red, green, blue)) in families {
         for name in *names {
             let id = StyleId(format!("syntax:{name}"));
-            let parent = if linked && name != root {
-                StyleId(format!("syntax:{}", default_parent(name, root, names)))
-            } else {
-                sheet.base_character.clone()
-            };
+            let parent = (name != root).then(|| StyleId(format!("syntax:{}", default_parent(name, root, names))));
             sheet.character_styles.insert(
                 id.clone(),
                 CharacterStyle {
                     id: id.clone(),
-                    based_on: Some(parent),
+                    based_on: parent,
                     properties: CharacterProperties {
-                        foreground: (!linked || name == root).then_some(Color {
+                        foreground: (name == root).then_some(Color {
                             red: *red as f32 / 255.,
                             green: *green as f32 / 255.,
                             blue: *blue as f32 / 255.,
@@ -215,7 +206,7 @@ fn default_sheet_with_links(linked: bool) -> StyleSheet {
             id.clone(),
             CharacterStyle {
                 id: id.clone(),
-                based_on: Some(sheet.base_character.clone()),
+                based_on: None,
                 properties: Default::default(),
             },
         );
@@ -319,21 +310,11 @@ fn validate(sheet: &StyleSheet) -> Result<(), String> {
         validate_character_properties(id, &sheet.character_styles[id].properties)
             .map_err(|e| format!("{e:?}"))?;
     }
-    if sheet.block_styles.len() != 2
-        || !sheet.block_styles.contains_key(&sheet.base_document)
-        || !sheet.block_styles.contains_key(&sheet.base_paragraph)
-        || !sheet.character_styles.contains_key(&sheet.base_character)
-    {
-        return Err("Code base styles are required".into());
+    if sheet.block_styles.len() != 1 || !sheet.block_styles.contains_key(&sheet.base_paragraph) {
+        return Err("Code Base Paragraph is required".into());
     }
-    if sheet.block_styles[&sheet.base_document].role != BlockRole::Document
-        || sheet.block_styles[&sheet.base_document].based_on.is_some()
-        || sheet.block_styles[&sheet.base_paragraph].role != BlockRole::Paragraph
-        || sheet.block_styles[&sheet.base_paragraph].based_on.as_ref() != Some(&sheet.base_document)
-        || sheet.character_styles[&sheet.base_character]
-            .based_on
-            .is_some()
-    {
+    if sheet.block_styles[&sheet.base_paragraph].role != BlockRole::Paragraph
+        || sheet.block_styles[&sheet.base_paragraph].based_on.is_some() {
         return Err("Invalid Code base relationships".into());
     }
     Ok(())
@@ -386,15 +367,10 @@ pub fn parse_json(bytes: &[u8]) -> Result<StyleSheet, String> {
         return Err("Code stylesheet exceeds 4 MiB".into());
     }
     let mut sheet = default_sheet();
-    let mut legacy = false;
     if !bytes.is_empty() {
         let file: File = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-        if ![1, 2].contains(&file.version) || file.character_styles.len() > 4096 {
+        if file.version != 2 || file.character_styles.len() > 4096 {
             return Err("Unsupported Code stylesheet".into());
-        }
-        legacy = file.version == 1;
-        if legacy {
-            sheet = default_sheet_with_links(false);
         }
         for id in file.suppressed_character_ids {
             sheet.character_styles.remove(&id);
@@ -427,89 +403,9 @@ pub fn parse_json(bytes: &[u8]) -> Result<StyleSheet, String> {
         }
     }
     validate(&sheet)?;
-    if legacy {
-        sheet = migrate_legacy_links(sheet);
-        validate(&sheet)?;
-    }
     Ok(sheet)
 }
 
-fn migrate_legacy_links(legacy: StyleSheet) -> StyleSheet {
-    let old_defaults = default_sheet_with_links(false);
-    let new_defaults = default_sheet();
-    let mut sheet = legacy.clone();
-    let mut introduced = BTreeSet::new();
-    for (id, style) in &mut sheet.character_styles {
-        let (Some(old), Some(new)) = (
-            old_defaults.character_styles.get(id),
-            new_defaults.character_styles.get(id),
-        ) else {
-            continue;
-        };
-        // A saved entry contains the whole old definition, even for a size-only
-        // edit. Only its unchanged default parent and copied default paint move
-        // to the new inheritance model. A custom parent retains its complete
-        // appearance, including an old-default-equivalent local color.
-        if style.based_on == old.based_on {
-            style.based_on = new.based_on.clone();
-            if style.properties.foreground == old.properties.foreground {
-                style.properties.foreground = new.properties.foreground;
-            }
-            if old.based_on != new.based_on {
-                introduced.insert(id.clone());
-            }
-        }
-    }
-    // Deleted groups stay deleted. Follow only the known default ancestry to
-    // find an existing parent, retaining the legacy appearance when a new link
-    // cannot be used. Never repair an explicitly authored dangling reference.
-    for id in &introduced {
-        let original_parent = sheet.character_styles[id].based_on.clone();
-        let mut parent = original_parent.clone();
-        while let Some(missing) = parent
-            .as_ref()
-            .filter(|p| !sheet.character_styles.contains_key(*p))
-        {
-            parent = new_defaults
-                .character_styles
-                .get(missing)
-                .and_then(|s| s.based_on.clone());
-        }
-        if parent != original_parent {
-            let style = sheet.character_styles.get_mut(id).unwrap();
-            style.based_on = parent;
-            style.properties.foreground = legacy.character_styles[id].properties.foreground;
-        }
-    }
-    // Valid legacy user relationships can conflict with a new default edge
-    // (e.g. Comment already based on @comment). Retire only an introduced edge
-    // in each such cycle, never the user's relationship or declaration.
-    for id in introduced {
-        let mut seen = BTreeSet::new();
-        let mut parent = sheet.character_styles[&id].based_on.as_ref();
-        let mut cyclic = false;
-        while let Some(current) = parent {
-            if current == &id {
-                cyclic = true;
-                break;
-            }
-            if !seen.insert(current) {
-                break;
-            }
-            parent = sheet
-                .character_styles
-                .get(current)
-                .and_then(|s| s.based_on.as_ref());
-        }
-        if cyclic {
-            let original = &legacy.character_styles[&id];
-            let style = sheet.character_styles.get_mut(&id).unwrap();
-            style.based_on = original.based_on.clone();
-            style.properties.foreground = original.properties.foreground;
-        }
-    }
-    sheet
-}
 
 pub fn replace_json(bytes: &[u8]) -> Result<Arc<StyleSheet>, String> {
     let mut sheet = parse_json(bytes)?;
@@ -571,10 +467,9 @@ mod tests {
         let mut invalid = sheet;
         invalid
             .block_styles
-            .get_mut(&invalid.base_document)
+            .get_mut(&invalid.base_paragraph)
             .unwrap()
-            .block
-            .line_spacing = Some(LineSpacing::Normal);
+            .role = BlockRole::Document;
         assert!(parse_json(&export_snapshot(&invalid).unwrap()).is_err());
     }
 
@@ -671,19 +566,9 @@ pub fn edit(
             .ok_or("Style generation exhausted")?,
     );
     if let StyleDefinitionEdit::DeleteCharacter(id) = &edit {
-        if *id != next.base_character {
-            let parent = next
-                .character_styles
-                .get(id)
-                .and_then(|s| s.based_on.clone())
-                .unwrap_or_else(|| next.base_character.clone());
-            for child in next
-                .character_styles
-                .values_mut()
-                .filter(|s| s.based_on.as_ref() == Some(id))
-            {
-                child.based_on = Some(parent.clone());
-            }
+        let parent = next.character_styles.get(id).and_then(|s| s.based_on.clone());
+        for child in next.character_styles.values_mut().filter(|s| s.based_on.as_ref() == Some(id)) {
+            child.based_on = parent.clone();
         }
     }
     next.apply_configuration_edit(&edit, revision, false)

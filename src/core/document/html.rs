@@ -821,6 +821,9 @@ pub(super) fn project_tokens_with_configuration(
                         }
                     }
                 }
+                if tag.attribute("data-viem-character") == Some("none") {
+                    frame.named_character = None;
+                }
                 if paragraph_element && stack.iter().any(|ancestor| ancestor.name == "blockquote") {
                     frame.paragraph_style = Some("Block quote".into());
                 }
@@ -852,7 +855,7 @@ pub(super) fn project_tokens_with_configuration(
                                 _ => builder.style_sheet.base_paragraph.clone(),
                             });
                     let document_style = super::DocumentStyleAssignment::new(
-                        builder.style_sheet.base_document.clone(),
+                        builder.style_sheet.base_paragraph.clone(),
                     );
                     if let Ok(resolved) = builder.style_sheet.resolve_assigned_paragraph_style(
                         &document_style,

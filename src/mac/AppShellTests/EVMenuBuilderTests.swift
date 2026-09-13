@@ -218,14 +218,14 @@ final class EVMenuBuilderTests: XCTestCase {
             "Show Colors", "Text Color…", "Highlight Color…",
         ])
         XCTAssertEqual(tokens(in: try submenu("Character", of: main)), [
-            "Base Character", "-", "Edit Styles…",
+            "Default Paragraph", "-", "Edit Styles…",
         ])
         XCTAssertEqual(tokens(in: try submenu("Paragraph", of: main)), [
             "Bulleted List", "Numbered List", "Indent", "Unindent", "-",
             "Base Paragraph", "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6", "-", "Edit Styles…",
         ])
         XCTAssertEqual(tokens(in: try submenu("Style", of: format)), [
-            "Edit document style…", "Save as default text style", "Include style definitions in file",
+            "Edit Styles…", "Save as default text style", "Include style definitions in file",
         ])
 
         let paragraph = try submenu("Paragraph", of: format)
@@ -275,6 +275,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Format/Bold": ("b", [.command]),
             "Format/Italic": ("i", [.command]),
             "Format/Underline": ("u", [.command]),
+            "Format/Style/Edit Styles…": (String(UnicodeScalar(NSF8FunctionKey)!), []),
             "Paragraph/Base Paragraph": ("0", [.command]),
             "Paragraph/Heading 1": ("1", [.command]),
             "Paragraph/Heading 2": ("2", [.command]),
@@ -309,8 +310,8 @@ final class EVMenuBuilderTests: XCTestCase {
         }
         let grouped = Dictionary(grouping: tagged, by: \.0)
 
-        XCTAssertEqual(Set(grouped.keys), Set(EVMenuCommand.allCases.filter { $0 != .baseParagraphStyle && $0 != .baseDocumentStyle }))
-        for command in EVMenuCommand.allCases where command != .baseParagraphStyle && command != .baseDocumentStyle {
+        XCTAssertEqual(Set(grouped.keys), Set(EVMenuCommand.allCases.filter { $0 != .baseParagraphStyle }))
+        for command in EVMenuCommand.allCases where command != .baseParagraphStyle {
             XCTAssertEqual(grouped[command]?.count, 1, "Unexpected menu count for \(command)")
         }
 
@@ -319,7 +320,7 @@ final class EVMenuBuilderTests: XCTestCase {
             .revertLastSaved, .browseVersions, .pageSetup, .printDocument,
         ]
         let styleCommands: Set<EVMenuCommand> = [
-            .baseCharacterStyle, .editCharacterStyles,
+            .defaultParagraphStyle, .editCharacterStyles,
             .baseParagraphStyle, .editParagraphStyles,
 
         ]
@@ -615,14 +616,14 @@ final class EVMenuBuilderTests: XCTestCase {
             "Show Colors", "Text Color…", "Highlight Color…",
         ])
         XCTAssertEqual(try titles(in: submenu("Character", of: menu)), [
-            "Base Character", "Edit Styles…",
+            "Default Paragraph", "Edit Styles…",
         ])
         XCTAssertEqual(try titles(in: submenu("Paragraph", of: menu)), [
             "Bulleted List", "Numbered List", "Indent", "Unindent",
             "Base Paragraph", "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6", "Edit Styles…",
         ])
         XCTAssertEqual(try titles(in: submenu("Style", of: format)), [
-            "Edit document style…", "Save as default text style", "Include style definitions in file",
+            "Edit Styles…", "Save as default text style", "Include style definitions in file",
         ])
 
         let paragraph = try submenu("Paragraph", of: format)
@@ -652,12 +653,17 @@ final class EVMenuBuilderTests: XCTestCase {
         }
     }
 
-    func testNoBarViemKeyIsRegisteredAsAGlobalShortcut() {
+    func testNoBareViemTextKeyIsRegisteredAsAGlobalShortcut() {
         let owner = Owner()
         let builder = EVMenuBuilder(owner: owner)
         let menu = builder.buildMainMenu(for: NSApplication.shared)
 
         for item in allItems(in: menu) where !item.keyEquivalent.isEmpty {
+            if item.tag == EVMenuCommand.editStyles.rawValue {
+                XCTAssertEqual(item.keyEquivalent, String(UnicodeScalar(NSF8FunctionKey)!))
+                XCTAssertTrue(item.keyEquivalentModifierMask.isEmpty)
+                continue
+            }
             let modifiers = item.keyEquivalentModifierMask
             XCTAssertFalse(
                 modifiers.intersection([.command, .control, .option]).isEmpty,
@@ -698,7 +704,7 @@ final class EVMenuBuilderTests: XCTestCase {
         let provider = StyleProvider(catalogue: styleCatalogue(documentRevision: 1, styleSheetRevision: 1, entries: [
             styleEntry(.paragraph, id: "Paragraph", name: "Base Paragraph", isBase: true, state: .on),
             styleEntry(.paragraph, id: "Heading1", name: "Heading 1"),
-            styleEntry(.character, id: "Character", name: "Base Character", isBase: true, state: .on),
+            styleEntry(.character, id: "", name: "Default Paragraph", isBase: true, state: .on),
             styleEntry(.character, id: "Accent", name: "Accent"),
         ]))
         let builder = EVMenuBuilder(owner: owner, styleMenuProvider: { provider })
@@ -727,10 +733,9 @@ final class EVMenuBuilderTests: XCTestCase {
             styleSheetRevision: 11,
             entries: [
                 styleEntry(.paragraph, id: "Heading2", name: "Heading", state: .mixed),
-                styleEntry(.character, id: "Character", name: "Base Character", isBase: true),
+                styleEntry(.character, id: "", name: "Default Paragraph", isBase: true),
                 styleEntry(.paragraph, id: "Paragraph", name: "Base Paragraph", isBase: true),
                 styleEntry(.paragraph, id: "Heading1", name: "Heading", enabled: true, state: .on),
-                styleEntry(.document, id: "Document", name: "Base Document", isBase: true),
             ]
         ))
         let builder = EVMenuBuilder(owner: owner, styleMenuProvider: { provider })
@@ -770,7 +775,7 @@ final class EVMenuBuilderTests: XCTestCase {
     func testCodeStyleMenuPreservesEditAndExplicitDefinitionActions() throws {
         let owner = Owner()
         let provider = StyleProvider(catalogue: styleCatalogue(documentRevision: 1, styleSheetRevision: 4, entries: [
-            EVStyleMenuEntry(role: .character, stableID: "Character", displayName: "Base Character",
+            EVStyleMenuEntry(role: .character, stableID: "", displayName: "Default Paragraph",
                              isBase: true, presentation: .enabled, actionKind: .edit),
             EVStyleMenuEntry(role: .character, stableID: "keyword-id", displayName: "@keyword",
                              isBase: false, presentation: .enabled, actionKind: .edit),
@@ -781,7 +786,7 @@ final class EVMenuBuilderTests: XCTestCase {
         let main = builder.buildMainMenu(for: NSApplication.shared)
         let menu = try submenu("Character", of: main)
         builder.menuNeedsUpdate(menu)
-        XCTAssertEqual(tokens(in: menu), ["Base Character", "@keyword", "Define @custom…", "-", "Edit Styles…"])
+        XCTAssertEqual(tokens(in: menu), ["Default Paragraph", "@keyword", "Define @custom…", "-", "Edit Styles…"])
         let actions = menu.items.compactMap(styleAction)
         XCTAssertEqual(actions.map(\.kind), [.edit, .edit, .defineSyntax, .editCurrent])
         XCTAssertEqual(actions.map(\.marksCurrentStyle), [true, true, true, false])
@@ -852,10 +857,10 @@ final class EVMenuBuilderTests: XCTestCase {
         let character = try submenu("Character", of: main)
         builder.menuNeedsUpdate(character)
 
-        XCTAssertEqual(tokens(in: character), ["Base Character", "-", "Edit Styles…"])
+        XCTAssertEqual(tokens(in: character), ["Default Paragraph", "-", "Edit Styles…"])
         XCTAssertTrue(character.items.filter { !$0.isSeparatorItem }.allSatisfy { !$0.isEnabled })
         XCTAssertEqual(character.items.compactMap(styleAction).map(\.stableID), [
-            "Character", "Character",
+            "", "",
         ])
         XCTAssertEqual(character.items.compactMap(styleAction).map(\.marksCurrentStyle), [true, false])
     }

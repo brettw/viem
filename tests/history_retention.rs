@@ -169,7 +169,7 @@ fn async_save_completion_stays_clean_after_pruned_configuration_only_edits() {
         overwrite: ArtifactOverwrite::ReplaceExisting,
     }).unwrap();
     for size in [18., 24.] {
-        let mut style = document.projection().style_sheet().block_style(&"Document".into()).unwrap().clone();
+        let mut style = document.projection().style_sheet().block_style(&"Paragraph".into()).unwrap().clone();
         style.character.size = Some(size);
         document.apply_style_request(StyleModelRequest::new(document.id(), document.revision(),
             StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {

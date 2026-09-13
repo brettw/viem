@@ -21,7 +21,7 @@ fn switching_into_html_installs_source_styles_and_switching_back_uses_plain_styl
         document
             .projection()
             .style_sheet()
-            .block_style_metadata(&"Document".into())
+            .block_style_metadata(&"Paragraph".into())
             .unwrap()
             .origin,
         viem_core::document::StyleDefinitionOrigin::SourceBacked
@@ -37,7 +37,7 @@ fn switching_into_html_installs_source_styles_and_switching_back_uses_plain_styl
         document
             .projection()
             .style_sheet()
-            .block_style_metadata(&"Document".into())
+            .block_style_metadata(&"Paragraph".into())
             .unwrap()
             .origin,
         viem_core::document::StyleDefinitionOrigin::GeneratedConfiguration

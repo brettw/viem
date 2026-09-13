@@ -9,7 +9,7 @@ fn defaults() -> Vec<u8> {
     let mut value: serde_json::Value =
         serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
     for style in value["block_styles"].as_array_mut().unwrap() {
-        if style["id"] == "Document" {
+        if style["id"] == "Paragraph" {
             style["character"]["size"] = 31.into();
             style["character"]["font_families"] = serde_json::json!(["Georgia"]);
         }
@@ -52,7 +52,7 @@ fn defaults_are_clean_sparse_and_source_declarations_override_them() {
         assert_eq!(
             doc.projection()
                 .style_sheet()
-                .block_style(&"Document".into())
+                .block_style(&"Paragraph".into())
                 .unwrap()
                 .character
                 .size,
@@ -92,7 +92,7 @@ fn explicit_source_style_update_does_not_materialize_default_font() {
         let mut style = doc
             .projection()
             .style_sheet()
-            .block_style(&"Document".into())
+            .block_style(&"Paragraph".into())
             .unwrap()
             .clone();
         style.character.underline = Some(true);
@@ -126,7 +126,7 @@ fn explicit_source_style_update_does_not_materialize_default_font() {
 fn default_files_validate_atomically_and_export_current_overrides() {
     let mut doc = Document::new("Text");
     let before = doc.source_bytes();
-    for invalid in [br#"{"version":2}"#.as_slice(),br#"{"version":1,"block_styles":[{"id":"Document","name":"Bad","role":"Paragraph","based_on":null,"next_paragraph_style":null,"character":{},"block":{}}]}"#.as_slice()] {
+    for invalid in [br#"{"version":2}"#.as_slice(),br#"{"version":1,"block_styles":[{"id":"Paragraph","name":"Bad","role":"Document","based_on":null,"next_paragraph_style":null,"character":{},"block":{}}]}"#.as_slice()] {
         assert!(doc.initialize_style_defaults(invalid).is_err());assert_eq!(doc.source_bytes(),before);assert_eq!(doc.revision(),Revision(0));
     }
     doc.initialize_style_defaults(&defaults()).unwrap();
@@ -172,7 +172,7 @@ fn saved_named_defaults_can_be_assigned_with_only_sparse_supporting_syntax() {
                 StyleDefinitionEdit::InsertCharacter {
                     style: CharacterStyle {
                         id: id.clone(),
-                        based_on: Some("Character".into()),
+                        based_on: None,
                         properties: CharacterProperties {
                             size: Some(25.),
                             ..Default::default()

@@ -27,7 +27,6 @@ struct EVStyleEditorInspection: Equatable {
     let declaredProperties: Set<EVStyleProperty>
     let hasInvalidDraft: Bool
     let diagnostic: String
-    let summary: String
     let preview: EVCoreTextStylePreviewInspection
 }
 
@@ -69,7 +68,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         super.init()
     }
 
-    func show(document: EVEditorSurfaceController, preferredStyle: EVStyleKind, sender: Any?) {
+    func show(document: EVEditorSurfaceController, preferredStyle: EVStyleKind?, sender: Any?) {
         let styleKey = document.currentStyleEditorKey(preferredKind: preferredStyle)
         if document.backend.sourceFormat == .code {
             showCode(configuration: document.backend.configuration, preferredStyle: styleKey,
@@ -89,7 +88,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
 
     func showCode(
         configuration: EVConfigurationStore,
-        preferredStyle: EVStyleKey = .baseDocument,
+        preferredStyle: EVStyleKey = .baseParagraph,
         definingSyntaxName: String? = nil,
         following document: EVEditorSurfaceController? = nil,
         sender: Any?
@@ -140,7 +139,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             let content = EVStyleEditorViewController()
             content.onClose = { [weak self] in self?.controller?.close() }
             let panel = EVStyleEditorPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 760, height: 770),
+                contentRect: NSRect(x: 0, y: 0, width: 760, height: 650),
                 styleMask: [.titled, .closable, .resizable, .utilityWindow],
                 backing: .buffered,
                 defer: false
@@ -149,7 +148,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             panel.isFloatingPanel = false
             panel.level = .normal
             panel.hidesOnDeactivate = false
-            panel.contentMinSize = NSSize(width: 700, height: 720)
+            panel.contentMinSize = NSSize(width: 700, height: 620)
             panel.backgroundColor = .windowBackgroundColor
             panel.isReleasedWhenClosed = false
             panel.collectionBehavior.insert(.fullScreenAuxiliary)
@@ -316,7 +315,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private let characterControls = NSView()
     private let paragraphControls = NSView()
     private let preview = EVCoreTextStylePreviewView()
-    private let summary = NSTextView()
     private let compactControls = EVCompactStyleControls()
     private let nextStyleRow = EVFollowingStyleRow()
 
@@ -351,7 +349,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             } ?? []),
             hasInvalidDraft: nameDraftIsInvalid || compactControls.hasInvalidDraft,
             diagnostic: diagnosticMessage,
-            summary: summary.string,
             preview: preview.inspection()
         )
     }
@@ -366,7 +363,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             MainActor.assumeIsolated {
                 guard let self, notification.object as AnyObject? === self.themeStore else { return }
                 self.compactControls.refreshThemeColors(self.themeStore.theme)
-                if let definition = self.selectedDefinition { self.updatePreviewAndSummary(snapshot: self.snapshot, definition: definition) }
+                if let definition = self.selectedDefinition { self.updatePreview(snapshot: self.snapshot, definition: definition) }
             }
         }
         let root = EVStyleEditorBackgroundView(frame: .zero)
@@ -463,19 +460,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             preview.bottomAnchor.constraint(equalTo: previewBox.bottomAnchor, constant: -10),
         ])
 
-        summary.isEditable = false
-        summary.isSelectable = true
-        summary.drawsBackground = true
-        summary.backgroundColor = .textBackgroundColor
-        summary.font = .systemFont(ofSize: 12)
-        summary.textContainerInset = NSSize(width: 9, height: 8)
-        summary.setAccessibilityLabel("Resolved style summary")
-        let summaryScroll = NSScrollView()
-        summaryScroll.borderType = .bezelBorder
-        summaryScroll.hasVerticalScroller = true
-        summaryScroll.autohidesScrollers = true
-        summaryScroll.documentView = summary
-
         let closeButton = NSButton(title: "Close", target: self, action: #selector(closePressed(_:)))
         closeButton.bezelStyle = .rounded
         closeButton.setAccessibilityLabel("Close style editor")
@@ -493,7 +477,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         let stack = NSStackView(views: [
             sectionTitle("Properties"), propertiesContainer, availabilityLabel,
             separator(), tabsContainer, formattingBox,
-            previewBox, summaryScroll, bottom,
+            previewBox, bottom,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -517,17 +501,15 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             formattingBox.heightAnchor.constraint(greaterThanOrEqualToConstant: 150),
             preferredPreviewHeight,
             previewBox.heightAnchor.constraint(greaterThanOrEqualToConstant: 92),
-            summaryScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 70),
         ])
         formattingBox.setContentCompressionResistancePriority(.required, for: .vertical)
         previewBox.setContentCompressionResistancePriority(.required, for: .vertical)
-        summaryScroll.setContentHuggingPriority(.defaultLow, for: .vertical)
         view = root
         renderNoDocument()
     }
 
     func retarget(document: EVEditorSurfaceController, styleID: EVStyleID) {
-        let namespace: EVStyleNamespace = styleID == .baseCharacter ? .character : .block
+        let namespace: EVStyleNamespace = styleID == .defaultParagraph ? .character : .block
         retarget(document: document, styleKey: EVStyleKey(namespace: namespace, id: styleID))
     }
 
@@ -556,7 +538,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         document = nil
         self.codeSession = codeSession
         restoreDefaultsButton.isHidden = false
-        selectedStyleKey = .baseDocument
+        selectedStyleKey = .baseParagraph
         diagnosticMessage = codeSession.lastError ?? ""
         documentObserver = NotificationCenter.default.addObserver(forName: .viemGlobalCodeStyleDidChange, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.targetDocumentDidChange() }
@@ -620,7 +602,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
                 self.selectedStyleKey = key
             }
         }
-        guard kind != .document, let document, let session = document.session,
+        guard let document, let session = document.session,
               [.html, .htmlSource, .rtf].contains(document.backend.sourceFormat) else { return false }
         return changeStyleCatalogue {
             let latest = try document.backend.styleSheetSnapshot()
@@ -848,9 +830,11 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
 
         compactControls.configure(definition, theme: themeStore.theme, sourceFormat: codeSession != nil ? .code : (document?.backend.sourceFormat ?? .plainText), documentID: snapshot.identity.documentID)
         nextStyleRow.configure(
-            selected: definition.nextStyleID.map { EVStyleKey(namespace: .block, id: $0) },
-            choices: snapshot.compatibleFollowingStyles(for: definition),
-            editable: codeSession == nil && definition.capabilities.contains(.nextStyle)
+            selected: definition.flags.isBase ? nil
+                : definition.nextStyleID.map { EVStyleKey(namespace: .block, id: $0) },
+            choices: definition.flags.isBase ? [] : snapshot.compatibleFollowingStyles(for: definition),
+            editable: !definition.flags.isBase && codeSession == nil
+                && definition.capabilities.contains(.nextStyle)
         )
         configureNavigationTargets(snapshot: snapshot, definition: definition)
 
@@ -866,7 +850,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             tabs.selectedSegment = EVStyleEditorTab.character.rawValue
         }
         tabChanged(tabs)
-        updatePreviewAndSummary(snapshot: snapshot, definition: definition)
+        updatePreview(snapshot: snapshot, definition: definition)
     }
 
     private func configureStylePopup(snapshot: EVStyleSheetSnapshot) {
@@ -892,6 +876,10 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private func configureBasedOn(snapshot: EVStyleSheetSnapshot, definition: EVStyleDefinition) {
         basedOnPopup.removeAllItems()
         if definition.capabilities.contains(.parent) {
+            if definition.kind == .character {
+                basedOnPopup.addItem(withTitle: "Default Paragraph")
+                basedOnPopup.lastItem?.representedObject = EVStyleKeyBox(.defaultParagraph)
+            }
             for candidate in snapshot.legalParents(for: definition)
                 .sorted(by: { $0.name.localizedStandardCompare($1.name) == .orderedAscending })
             {
@@ -908,7 +896,8 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             basedOnPopup.isEnabled = !basedOnPopup.itemArray.isEmpty
             basedOnPopup.toolTip = "Only compatible styles that cannot create an inheritance cycle are shown."
         } else {
-            let title = definition.parentKey.flatMap { snapshot.definition(for: $0)?.name } ?? "None"
+            let title = definition.parentKey.flatMap { snapshot.definition(for: $0)?.name }
+                ?? (definition.kind == .character ? "Default Paragraph" : "None")
             basedOnPopup.addItem(withTitle: title)
             basedOnPopup.isEnabled = false
             basedOnPopup.toolTip = definition.flags.isBase
@@ -920,9 +909,10 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private func configureNavigationTargets(snapshot: EVStyleSheetSnapshot, definition: EVStyleDefinition) {
         let parent = definition.parentKey.flatMap { snapshot.definition(for: $0) }
         editParentButton.isEnabled = parent != nil && parent?.key != definition.key
-        editParentButton.toolTip = parent.map { "Edit \($0.name)" } ?? "This style has no parent."
+        editParentButton.toolTip = parent.map { "Edit \($0.name)" }
+            ?? (definition.kind == .character ? "Inherits the current paragraph style." : "This style has no parent.")
 
-        let next = definition.kind == .paragraph
+        let next = definition.kind == .paragraph && !definition.flags.isBase
             ? definition.nextStyleID.flatMap { snapshot.definition(namespace: .block, id: $0) }
             : nil
         editNextStyleButton.isEnabled = next?.kind == .paragraph && next?.key != definition.key
@@ -936,19 +926,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         }) {
             stylePopup.select(item)
         }
-    }
-
-    private func contributorName(for property: EVResolvedStyleProperty?) -> String {
-        guard let property else { return "Unavailable" }
-        if property.isDeclared { return "Explicit" }
-        if let contributor = property.contributor {
-            let name = snapshot?.definition(for: contributor)?.name ?? contributor.id.rawValue
-            return "Inherited · \(name)"
-        }
-        if property.contributorKind == UInt32(VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY) {
-            return "Default · engine"
-        }
-        return "Inherited"
     }
 
     private func beginContinuousStyleEdit() {
@@ -1059,7 +1036,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
                 availabilityLabel.stringValue = rejection
                 availabilityLabel.isHidden = false
                 availabilityLabel.textColor = .systemRed
-                updatePreviewAndSummary(snapshot: snapshot, definition: definition)
+                updatePreview(snapshot: snapshot, definition: definition)
             }
             return false
         }
@@ -1075,7 +1052,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         }
     }
 
-    private func updatePreviewAndSummary(snapshot: EVStyleSheetSnapshot?, definition: EVStyleDefinition) {
+    private func updatePreview(snapshot: EVStyleSheetSnapshot?, definition: EVStyleDefinition) {
         preview.apply(
             kind: definition.kind,
             effectiveValues: definition.properties.reduce(into: [:]) { values, entry in
@@ -1087,31 +1064,9 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             canvasBackground: previewCanvasBackground(snapshot: snapshot)
         )
 
-        let parent = definition.parentKey.flatMap { snapshot?.definition(for: $0)?.name } ?? "None"
-        let visible = EVStyleProperty.characterProperties
-            + (definition.kind == .paragraph ? EVStyleProperty.paragraphProperties : [])
-        let declared = visible.compactMap { definition.properties[$0] }.filter(\.isDeclared)
-        var lines = ["Style: \(definition.name)  ·  Based on: \(parent)"]
-        if declared.isEmpty { lines.append("All formatting is inherited.") }
-        else { lines.append(declared.map { "\($0.property.displayName): \(format($0.declared))" }.joined(separator: "  ·  ")) }
-        let inherited = visible.compactMap { definition.properties[$0] }.filter { !$0.isDeclared }
-        if !inherited.isEmpty {
-            lines.append("Inherited contributions")
-            lines.append(inherited.map { $0.usesThemeDefault ? "\($0.property.displayName): Default (theme foreground)" : "\($0.property.displayName): \(format($0.effective)) — \(contributorName(for: $0))" }.joined(separator: "  ·  "))
-        }
-        if definition.kind == .paragraph {
-            let nextName = definition.nextStyleID.flatMap {
-                snapshot?.definition(namespace: .block, id: $0)?.name
-            } ?? "Same Style"
-            lines.append("  Following paragraph style: \(nextName)")
-        }
-        if !diagnosticMessage.isEmpty { lines.append(contentsOf: ["", "Last edit: \(diagnosticMessage)"]) }
-        summary.string = lines.joined(separator: "\n")
     }
 
     private func previewCanvasBackground(snapshot: EVStyleSheetSnapshot?) -> EVStyleColor {
-        if let resolved = snapshot?.definition(for: .baseDocument)?.properties[.canvasBackground],
-           !resolved.usesThemeDefault, case let .color(background)? = resolved.effective { return background }
         let color = themeStore.theme.background
         return EVStyleColor(red: Float(color.red), green: Float(color.green), blue: Float(color.blue), alpha: Float(color.alpha))
     }
@@ -1145,7 +1100,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         characterControls.isHidden = false
         paragraphControls.isHidden = true
         preview.showUnavailable()
-        summary.string = "No document is currently targeted. No style changes can be issued."
     }
 
     private func renderUnavailableStyleSheet() {
@@ -1165,7 +1119,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         availabilityLabel.isHidden = false
         availabilityLabel.textColor = .systemRed
         preview.showUnavailable()
-        summary.string = availabilityLabel.stringValue
     }
 
     func controlTextDidChange(_ notification: Notification) {
@@ -1468,7 +1421,7 @@ private final class EVFollowingStyleRow: NSObject {
     }
 
     @objc private func changed(_ sender: NSPopUpButton) {
-        guard !isConfiguring else { return }
+        guard !isConfiguring, sender.isEnabled else { return }
         onChange?((sender.selectedItem?.representedObject as? EVStyleKeyBox)?.key)
     }
 }

@@ -42,14 +42,13 @@ fn native_style_export_is_optional_minimal_and_exactly_undoable() {
     let saved = String::from_utf8(document.source_bytes()).unwrap();
     assert!(saved.contains("data-viem-version=\"2\""), "{saved}");
     assert!(
-        saved.contains("body {\n  font-family: 'SF Pro';\n  font-size: 14pt;\n}"),
+        saved.contains("p {\n  font-family: 'SF Pro';\n  font-size: 14pt;\n  margin-block-start: 7pt;\n  margin-block-end: 7pt;\n}"),
         "{saved}"
     );
     for omitted in [
         "text-indent:",
         "vertical-align:",
         "letter-spacing:",
-        "li {",
         "--viem-prop-",
     ] {
         assert!(!saved.contains(omitted), "unexpected {omitted}: {saved}");
@@ -84,7 +83,7 @@ fn saved_defaults_stay_out_of_html_until_enabled_then_reopen_without_settings() 
     let mut defaults: serde_json::Value =
         serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
     for style in defaults["block_styles"].as_array_mut().unwrap() {
-        if style["id"] == "Document" {
+        if style["id"] == "Paragraph" {
             style["character"]["size"] = 21.into();
             style["character"]["font_families"] = serde_json::json!(["Georgia"]);
         }
@@ -131,7 +130,7 @@ fn custom_styles_and_direct_formatting_persist_without_exporting_native_ancestor
             edit: StyleDefinitionEdit::InsertCharacter {
                 style: CharacterStyle {
                     id: "Accent".into(),
-                    based_on: Some("Character".into()),
+                    based_on: None,
                     properties: CharacterProperties {
                         size: Some(19.0),
                         ..Default::default()
@@ -198,7 +197,7 @@ fn toggling_export_and_deleting_custom_style_preserve_unrecognized_owned_css() {
             edit: StyleDefinitionEdit::InsertCharacter {
                 style: CharacterStyle {
                     id: "Custom".into(),
-                    based_on: Some("Character".into()),
+                    based_on: None,
                     properties: CharacterProperties {
                         size: Some(23.0),
                         ..Default::default()

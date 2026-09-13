@@ -10,12 +10,12 @@ impl Document {
     pub fn validate_typing_named_style(&self, style: &StyleId) -> Result<(), DocumentError> {
         let sheet = self.projection().style_sheet();
         if style.is_internal()
-            || sheet.character_style(style).is_none()
+            || (!style.0.is_empty() && sheet.character_style(style).is_none())
             || !match self.format() {
                 Format::Html | Format::HtmlSource => true,
-                Format::Rtf => style == &sheet.base_character || style.0.starts_with("RtfC"),
+                Format::Rtf => style.0.is_empty() || style.0.starts_with("RtfC"),
                 Format::Markdown | Format::MarkdownSource => {
-                    style.0 == "Code" || style == &sheet.base_character
+                    style.0 == "Code" || style.0.is_empty()
                 }
                 _ => false,
             }
@@ -77,7 +77,7 @@ impl Document {
                 paragraph_style,
                 &block.direct_paragraph,
                 defaults,
-                Some(style),
+                (!style.0.is_empty()).then_some(style),
                 &direct,
             )
             .map(|resolved| resolved.character)
@@ -497,7 +497,7 @@ impl Document {
                 .selected_named_styles(at..at, affinity)
                 .character
                 .as_ref()
-                == Some(style)
+                == (!style.0.is_empty()).then_some(style)
         });
         let context_matches = named_matches
             && self.typing_context_matches(

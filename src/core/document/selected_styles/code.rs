@@ -39,8 +39,7 @@ impl FormattedDocument {
                         _ => None,
                     })
                     .next_back()
-            }
-            .or_else(|| Some(sheet.base_character.clone()));
+            };
             return result;
         }
 
@@ -65,6 +64,7 @@ impl FormattedDocument {
         }
         let boundaries = boundaries.into_iter().collect::<Vec<_>>();
         let mut active = BTreeMap::new();
+        let mut observed = false;
         for interval in boundaries.windows(2) {
             let (start, end) = (interval[0], interval[1]);
             if let Some(indices) = ends.get(&start) {
@@ -91,14 +91,14 @@ impl FormattedDocument {
             }
             let character = active
                 .last_key_value()
-                .map(|(_, id)| *id)
-                .unwrap_or(&sheet.base_character);
-            if result.character.as_ref().is_some_and(|id| id != character) {
+                .map(|(_, id)| (*id).clone());
+            if observed && result.character != character {
                 result.character = None;
                 result.character_mixed = true;
                 return result;
             }
-            result.character = Some(character.clone());
+            result.character = character;
+            observed = true;
         }
         result
     }
@@ -152,7 +152,7 @@ mod tests {
         );
         assert_eq!(
             query(2, BoundaryAffinity::Downstream).character,
-            Some(projection.style_sheet().base_character.clone())
+            None
         );
         assert_eq!(
             query(4, BoundaryAffinity::Downstream).character,
@@ -165,7 +165,7 @@ mod tests {
             let selected = query(at, affinity);
             assert_eq!(
                 selected.character,
-                Some(projection.style_sheet().base_character.clone())
+                None
             );
             assert_eq!(
                 selected.paragraph,
@@ -212,7 +212,7 @@ mod tests {
                 .projection()
                 .selected_code_named_styles(0..0, BoundaryAffinity::Downstream)
                 .character,
-            Some(empty.projection().style_sheet().base_character.clone())
+            None
         );
     }
 

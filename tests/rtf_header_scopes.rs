@@ -140,7 +140,7 @@ fn formatting_writers_create_owned_header_tables_without_touching_opaque_tables(
             edit: StyleDefinitionEdit::InsertCharacter {
                 style: CharacterStyle {
                     id: "RtfC2".into(),
-                    based_on: Some("Character".into()),
+                    based_on: None,
                     properties: CharacterProperties {
                         slant: Some(FontSlant::Italic),
                         ..Default::default()
@@ -163,4 +163,37 @@ fn formatting_writers_create_owned_header_tables_without_touching_opaque_tables(
     assert!(document.undo());
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source.as_bytes());
+}
+
+
+#[test]
+fn sparse_normal_style_retains_rtf_defaults_below_user_paragraph_defaults() {
+    use viem_core::layout::DocumentLayoutStyles;
+    let header = r"{\rtf1\deff3{\fonttbl{\f0 Arial;}{\f3 Georgia;}}";
+    for stylesheet in ["", r"{\stylesheet{\s0 Normal;}}", r"{\stylesheet{\s0\fs40 Normal;}}"] {
+        let source = format!("{header}{stylesheet}\\s0 Text{{\\*\\unknown Opaque}}}}");
+        let mut document = open(&source);
+        let initial = DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap();
+        assert_eq!(initial.font_families, vec!["Georgia"]);
+        assert_eq!(initial.size, if stylesheet.contains(r"\fs40") { 20.0 } else { 12.0 });
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        let mut defaults: serde_json::Value = serde_json::from_slice(&Document::new("").export_style_defaults().unwrap()).unwrap();
+        for style in defaults["block_styles"].as_array_mut().unwrap() {
+            if style["id"] == "Paragraph" {
+                style["character"]["size"] = 31.into();
+                style["character"]["font_families"] = serde_json::json!(["Courier"]);
+            }
+        }
+        document.initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap()).unwrap();
+        let customized = DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap();
+        assert_eq!(customized.font_families, vec!["Georgia"], "The authored default-font table remains authoritative");
+        assert_eq!(customized.size, if stylesheet.contains(r"\fs40") { 20.0 } else { 31.0 });
+        document.insert(0, "X").unwrap();
+        assert_eq!(DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap(), customized);
+        let mut reopened = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Rtf).unwrap();
+        reopened.initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap()).unwrap();
+        assert_eq!(DocumentLayoutStyles::character_at(reopened.projection(), 0, false).unwrap(), customized);
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
 }

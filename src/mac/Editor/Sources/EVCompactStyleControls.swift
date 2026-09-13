@@ -3,8 +3,88 @@ import CViemCore
 import ViemAppShell
 import ViemCoreTextProvider
 
-/// A compact, declaration-aware typography palette. Default always removes the
-/// declaration; inherited values are displayed without being written back.
+/// Static captions activate an inherited property without asking AppKit to edit
+/// or dispatch an action through a non-editable text field.
+@MainActor
+final class EVStyleControlLabel: NSTextField {
+    var onClick: () -> Void = {}
+
+    override func mouseDown(with event: NSEvent) { onClick() }
+}
+
+/// A disabled native control remains inspectable and keeps its standard click
+/// behavior. The enclosing view intercepts only an inherited control's first
+/// click, declares its inherited value, and forwards that same event to AppKit.
+@MainActor
+final class EVInheritedStyleControl: NSStackView {
+    var canActivate: () -> Bool = { false }
+    var activate: () -> Void = {}
+    var beginGesture: () -> Void = {}
+    var endGesture: (_ editingText: Bool) -> Void = { _ in }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point) else { return nil }
+        guard canActivate() else { return hit }
+        if isActivationOnly(hit) { return self }
+        guard let control = enclosingControl(hit), !control.isEnabled else { return hit }
+        return self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow
+        guard let hit = super.hitTest(point) else { return }
+        if isActivationOnly(hit) { activateWithoutPerform(); return }
+        guard let control = enclosingControl(hit) else { return }
+        activateAndPerform(control) {
+            if let well = control as? EVStyleColorWell {
+                _ = well.sendAction(well.pulldownAction, to: well.pulldownTarget)
+            } else { control.mouseDown(with: event) }
+        }
+    }
+
+    /// The same dispatch is shared by mouse input and interaction tests; native
+    /// controls receive the event only after a successful declaration refresh.
+    func activateAndPerform(_ control: NSControl, action: () -> Void) {
+        guard canActivate() else { return }
+        if isActivationOnly(control) { activateWithoutPerform(); return }
+        let priorState = (control as? NSButton)?.state
+        // Finish the previous field before opening this gesture. Otherwise its
+        // delayed editing-end callback can close the new field's undo group.
+        control.window?.makeFirstResponder(nil)
+        beginGesture()
+        defer { endGesture((control as? NSTextField)?.currentEditor() != nil) }
+        activate()
+        guard control.isEnabled else { return }
+        if let priorState, let button = control as? NSButton { button.state = priorState }
+        action()
+    }
+
+    private func isActivationOnly(_ view: NSView) -> Bool {
+        if view is NSImageView { return true }
+        if let label = view as? NSTextField { return !label.isEditable && !label.isSelectable }
+        return false
+    }
+
+    private func activateWithoutPerform() {
+        guard canActivate() else { return }
+        window?.makeFirstResponder(nil)
+        beginGesture()
+        activate()
+        endGesture(false)
+    }
+
+    private func enclosingControl(_ hit: NSView) -> NSControl? {
+        var candidate: NSView? = hit
+        while let view = candidate, view !== self {
+            if let control = view as? NSControl { return control }
+            candidate = view.superview
+        }
+        return nil
+    }
+}
+
+/// A compact, declaration-aware typography palette. Unchecked overrides remove
+/// declarations; inherited values are displayed only by the live preview.
 @MainActor
 final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDelegate {
     let characterView = NSStackView()
@@ -22,6 +102,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private var publishingFontChange = false
     private var endFontEditAfterPublication = false
     private var editable = false
+    private var inheritedGestureActive = false
     private let family = NSComboBox()
     private let face = NSPopUpButton()
     private let fallbackButton = NSButton()
@@ -31,13 +112,15 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private var steppers: [EVStyleProperty: EVStyleStepper] = [:]
     private var lastLineValues: [UInt32: Float] = [:]
     private var buttons: [EVStyleProperty: NSButton] = [:]
-    private var wells: [EVStyleProperty: NSColorWell] = [:]
+    private var wells: [EVStyleProperty: EVStyleColorWell] = [:]
     private var directions: [EVStyleProperty: NSPopUpButton] = [:]
-    private var resetButtons: [EVStyleProperty: NSButton] = [:]
+    private var overrideButtons: [EVStyleProperty: NSButton] = [:]
     private let alignment = NSSegmentedControl()
     private let lineKind = NSPopUpButton()
     private let lineValue = NSTextField()
     private var fontFaces: [EVFontFace] = []
+    private var isBaseParagraph: Bool { definition?.flags.contains(.baseParagraph) == true }
+    private let sectionSpacing = NSFont.systemFontSize
 
     override init() {
         super.init()
@@ -54,7 +137,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         face.target = self
         face.action = #selector(faceChanged(_:))
         face.setAccessibilityLabel("Font face")
-        face.widthAnchor.constraint(equalToConstant: 150).isActive = true
+        face.widthAnchor.constraint(equalToConstant: 140).isActive = true
         fallbackButton.title = "…"
         fallbackButton.bezelStyle = .texturedRounded
         fallbackButton.target = self
@@ -62,12 +145,16 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         fallbackButton.toolTip = "Edit ordered fallback fonts"
         fallbackButton.setAccessibilityLabel("Fallback fonts")
         fallbackButton.widthAnchor.constraint(equalToConstant: 28).isActive = true
-        let familyRow = row([family, face, fallbackButton, reset(.characterFontFamilies), numeric(.characterSize, title: "Size", width: 66, showsLabel: false)])
+        let familyRow = row([
+            overrideGroup(.characterFontFamilies, control: row([family, fallbackButton], spacing: 4)),
+            overrideGroup(.characterWeight, control: face),
+            numeric(.characterSize, title: "Size", width: 62, showsLabel: false),
+        ])
         let emphasis = row([
             toggle(.characterBold, title: "B", font: .boldSystemFont(ofSize: 14)),
             toggle(.characterSlant, title: "I", font: NSFontManager.shared.convert(.systemFont(ofSize: 14), toHaveTrait: .italicFontMask)),
             toggle(.characterUnderline, title: "U"), toggle(.characterStrikethrough, title: "S̶"),
-        ], spacing: 2)
+        ], spacing: sectionSpacing)
         featureButton.image = EVStyleIcons.image(.features)
         featureButton.bezelStyle = .texturedRounded
         featureButton.target = self
@@ -76,11 +163,16 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         featureButton.setAccessibilityLabel("OpenType features")
         featureButton.widthAnchor.constraint(equalToConstant: 32).isActive = true
         featureButton.heightAnchor.constraint(equalToConstant: 27).isActive = true
-        let appearance = row([emphasis, divider(), color(.characterForeground, title: "Text"), color(.characterBackground, title: "Highlight"), NSView(), featureButton])
+        let appearance = row([
+            labeled("", control: emphasis),
+            color(.characterForeground, title: "Text Color"),
+            color(.characterBackground, title: "Background Color"),
+            NSView(),
+            labeled("OpenType", control: overrideGroup(.characterOpenTypeFeatures, control: featureButton), property: .characterOpenTypeFeatures),
+        ])
         let metrics = row([
             numeric(.characterLetterSpacing, title: "Tracking", icon: .tracking),
             numeric(.characterBaselineShift, title: "Baseline", icon: .baseline),
-            text(.characterLanguage, title: "Language", width: 94),
             direction(.characterDirection, title: "Direction"),
         ])
         configure(characterView, rows: [familyRow, appearance, separator(), metrics])
@@ -95,7 +187,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         alignment.target = self
         alignment.action = #selector(alignmentChanged(_:))
         alignment.setAccessibilityLabel("Paragraph alignment")
-        let paraToolbar = row([alignment, reset(.paragraphAlignment), NSView(), direction(.paragraphBaseDirection, title: "Direction")])
+        let paraToolbar = row([overrideGroup(.paragraphAlignment, control: alignment), NSView(), direction(.paragraphBaseDirection, title: "Direction")])
         let indents = row([
             numeric(.paragraphLeadingIndent, title: "Start indent", icon: .leadingIndent),
             numeric(.paragraphTrailingIndent, title: "End indent", icon: .trailingIndent),
@@ -112,7 +204,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         lineValue.tag = Int(EVStyleProperty.paragraphLineSpacing.rawValue)
         lineValue.setAccessibilityLabel("Line spacing value")
         lineValue.widthAnchor.constraint(equalToConstant: 48).isActive = true
-        let line = labeled("Line spacing", control: row([icon(.lineSpacing), lineKind, lineValue, stepper(.paragraphLineSpacing, title: "Line spacing value"), reset(.paragraphLineSpacing)], spacing: 3))
+        let line = labeled("Line spacing", control: overrideGroup(.paragraphLineSpacing, control: row([icon(.lineSpacing), lineKind, lineValue, stepper(.paragraphLineSpacing, title: "Line spacing value")], spacing: 3)), property: .paragraphLineSpacing)
         let spacing = row([
             numeric(.paragraphSpacingBefore, title: "Space before", icon: .before),
             numeric(.paragraphSpacingAfter, title: "Space after", icon: .after), line,
@@ -128,41 +220,45 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         let wasUpdating = updating
         updating = true
         defer { updating = wasUpdating }
-        if self.definition?.key != definition?.key || self.documentID != documentID { lastLineValues = [:] }
+        if self.definition?.key != definition?.key || self.documentID != documentID {
+            lastLineValues = [:]
+            for well in wells.values { well.dismissColorControls() }
+        }
         self.documentID = documentID
         self.definition = definition
         editable = definition?.capabilities.contains(.declarations) == true
-        let paragraphEditable = editable && definition?.kind == .paragraph
         hasInvalidDraft = false
         refreshFontControls()
-        fallbackButton.isEnabled = editable
+        fallbackButton.isEnabled = isOverridden(.characterFontFamilies)
         let fallbackCount = max(0, stringList(.characterFontFamilies).count - 1)
         fallbackButton.toolTip = "Edit ordered fallback fonts (\(fallbackCount))"
-        buttons[.characterBold]?.state = boolean(.characterBold) ? .on : .off
-        buttons[.characterSlant]?.state = unsigned(.characterSlant) != 0 ? .on : .off
-        for property in [EVStyleProperty.characterUnderline, .characterStrikethrough] { buttons[property]?.state = boolean(property) ? .on : .off }
-        for (property, button) in buttons { button.isEnabled = editable; setHelp(button, property) }
+        buttons[.characterBold]?.state = isOverridden(.characterBold) && boolean(.characterBold) ? .on : .off
+        buttons[.characterSlant]?.state = isOverridden(.characterSlant) && unsigned(.characterSlant) != 0 ? .on : .off
+        for property in [EVStyleProperty.characterUnderline, .characterStrikethrough] { buttons[property]?.state = isOverridden(property) && boolean(property) ? .on : .off }
+        for (property, button) in buttons { button.isEnabled = isOverridden(property); setHelp(button, property) }
         for (property, field) in fields {
-            if property == .characterLanguage { field.stringValue = string(property) }
-            else { field.stringValue = Self.numberText(number(property, fallback: property == .characterSize ? 14 : 0)) }
-            field.isEnabled = editable && (!EVStyleProperty.paragraphProperties.contains(property) || paragraphEditable)
+            field.stringValue = isOverridden(property) ? Self.numberText(number(property, fallback: property == .characterSize ? 14 : 0)) : ""
+            field.isEnabled = isOverridden(property)
             field.textColor = .labelColor
             setHelp(field, property)
             synchronizeStepper(property, value: Double(number(property, fallback: property == .characterSize ? 14 : 0)), enabled: field.isEnabled)
         }
         refreshThemeColors(theme)
-        for (property, popup) in directions { popup.selectItem(at: min(2, Int(unsigned(property)))); popup.isEnabled = editable; setHelp(popup, property) }
-        for (property, button) in resetButtons { button.isEnabled = editable && definition?.properties[property]?.isDeclared == true }
-        alignment.selectedSegment = alignmentValues.firstIndex(of: unsigned(.paragraphAlignment)) ?? 0
-        alignment.isEnabled = paragraphEditable
-        lineKind.isEnabled = paragraphEditable
-        lineValue.isEnabled = editable
+        for (property, popup) in directions { popup.selectItem(at: isOverridden(property) ? min(2, Int(unsigned(property))) : -1); popup.isEnabled = isOverridden(property); setHelp(popup, property) }
+        for (property, button) in overrideButtons {
+            button.isEnabled = canEdit(property) && !isBaseParagraph
+            button.state = isBaseParagraph || definition?.properties[property]?.isDeclared == true ? .on : .off
+        }
+        alignment.selectedSegment = isOverridden(.paragraphAlignment) ? (alignmentValues.firstIndex(of: unsigned(.paragraphAlignment)) ?? 0) : -1
+        alignment.isEnabled = isOverridden(.paragraphAlignment)
+        lineKind.isEnabled = isOverridden(.paragraphLineSpacing)
         if case let .lineSpacing(value)? = definition?.properties[.paragraphLineSpacing]?.effective {
             lineKind.selectItem(withTag: Int(value.kind))
             if value.kind != UInt32(VIEM_STYLE_LINE_SPACING_NORMAL) { lastLineValues[value.kind] = value.value }
             lineValue.stringValue = value.kind == UInt32(VIEM_STYLE_LINE_SPACING_NORMAL) ? "" : Self.numberText(value.value)
         } else { lineKind.selectItem(at: 0); lineValue.stringValue = "" }
-        lineValue.isEnabled = paragraphEditable && lineKind.indexOfSelectedItem != 0
+        if !isOverridden(.paragraphLineSpacing) { lineKind.select(nil); lineValue.stringValue = "" }
+        lineValue.isEnabled = isOverridden(.paragraphLineSpacing) && lineKind.indexOfSelectedItem > 0
         synchronizeStepper(.paragraphLineSpacing, value: Double(Float(lineValue.stringValue) ?? 0), enabled: lineValue.isEnabled)
     }
 
@@ -178,18 +274,18 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         } else if family.indexOfSelectedItem >= 0 {
             family.deselectItem(at: family.indexOfSelectedItem)
         }
-        setFamilyText(displayFamily)
-        family.isEnabled = editable
+        setFamilyText(isOverridden(.characterFontFamilies) ? displayFamily : "")
+        family.isEnabled = isOverridden(.characterFontFamilies)
         face.removeAllItems()
         for member in fontFaces { face.addItem(withTitle: member.styleName) }
         // A popup selects its first item automatically when populated. An
         // unresolved request must not appear to select that unrelated face.
         face.select(nil)
-        if let current = currentFontFace, let index = fontFaces.firstIndex(of: current) {
+        if isOverridden(.characterWeight), let current = currentFontFace, let index = fontFaces.firstIndex(of: current) {
             face.selectItem(at: index)
         }
-        face.isEnabled = editable && !fontFaces.isEmpty
-        featureButton.isEnabled = editable && !EVFontCatalog.features(for: chosen).isEmpty
+        face.isEnabled = isOverridden(.characterWeight) && !fontFaces.isEmpty
+        featureButton.isEnabled = isOverridden(.characterOpenTypeFeatures) && !EVFontCatalog.features(for: chosen).isEmpty
     }
 
     private var currentFontFace: EVFontFace? {
@@ -221,10 +317,10 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         for (property, well) in wells {
             let resolved = definition?.properties[property]
             if property == .characterForeground && (resolved?.usesThemeDefault == true || resolved == nil) {
-                well.color = theme.foreground.color
-            } else if case let .color(value)? = resolved?.effective { well.color = value.appKitColor }
-            else { well.color = property == .characterForeground ? theme.foreground.color : .clear }
-            well.isEnabled = editable
+                well.setCommittedColor(EVStyleColor(red: Float(theme.foreground.red), green: Float(theme.foreground.green), blue: Float(theme.foreground.blue), alpha: Float(theme.foreground.alpha)), displayColor: theme.foreground.color)
+            } else if case let .color(value)? = resolved?.effective { well.setCommittedColor(value) }
+            else { well.setCommittedColor(EVStyleColorPaletteController.transparent) }
+            well.isEnabled = isOverridden(property)
             setHelp(well, property)
         }
     }
@@ -239,17 +335,23 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             row.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -20).isActive = true
         }
     }
-    private func row(_ views: [NSView], spacing: CGFloat = 9) -> NSStackView {
+    private func row(_ views: [NSView], spacing: CGFloat? = nil) -> NSStackView {
         let stack = NSStackView(views: views)
         stack.orientation = .horizontal
         stack.alignment = .centerY
-        stack.spacing = spacing
+        stack.spacing = spacing ?? sectionSpacing
         return stack
     }
-    private func labeled(_ title: String, control: NSView) -> NSStackView {
-        let label = NSTextField(labelWithString: title)
+    private func labeled(_ title: String, control: NSView, property: EVStyleProperty? = nil) -> NSStackView {
+        let label = EVStyleControlLabel(labelWithString: title)
+        label.onClick = { [weak self, weak label] in
+            guard let property else { return }
+            self?.activateFromLabel(property, label: label)
+        }
         label.font = .systemFont(ofSize: 10, weight: .medium)
         label.textColor = .secondaryLabelColor
+        // Empty captions reserve the same space above the emphasis buttons.
+        label.heightAnchor.constraint(equalToConstant: ceil(label.font!.ascender - label.font!.descender + label.font!.leading)).isActive = true
         let stack = NSStackView(views: [label, control])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -269,13 +371,15 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         field.alignment = .right
         field.widthAnchor.constraint(equalToConstant: width).isActive = true
         fields[property] = field
-        let unit = NSTextField(labelWithString: "pt")
+        let unit = EVStyleControlLabel(labelWithString: "pt")
+        unit.onClick = { [weak self, weak unit] in self?.activateFromLabel(property, label: unit) }
         unit.textColor = .secondaryLabelColor
         unit.font = .systemFont(ofSize: 11)
+        unit.setContentCompressionResistancePriority(.required, for: .horizontal)
         var items: [NSView] = symbol.map { [icon($0)] } ?? []
-        items += [field, stepper(property, title: title), unit, reset(property)]
-        let controls = row(items, spacing: 3)
-        return showsLabel ? labeled(title, control: controls) : controls
+        items += [field, stepper(property, title: title), unit]
+        let controls = overrideGroup(property, control: row(items, spacing: 3))
+        return showsLabel ? labeled(title, control: controls, property: property) : controls
     }
     private func stepper(_ property: EVStyleProperty, title: String) -> EVStyleStepper {
         let control = EVStyleStepper()
@@ -288,10 +392,14 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         control.action = #selector(stepperChanged(_:))
         control.setAccessibilityLabel("Adjust \(title.lowercased())")
         control.onGestureBegan = { [weak self] in
-            self?.onEditEnded?()
-            self?.onEditBegan?()
+            guard let self, !self.inheritedGestureActive else { return }
+            self.onEditEnded?()
+            self.onEditBegan?()
         }
-        control.onGestureEnded = { [weak self] in self?.onEditEnded?() }
+        control.onGestureEnded = { [weak self] in
+            guard let self, !self.inheritedGestureActive else { return }
+            self.onEditEnded?()
+        }
         steppers[property] = control
         return control
     }
@@ -317,16 +425,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: field))
     }
 
-    private func text(_ property: EVStyleProperty, title: String, width: CGFloat) -> NSView {
-        let field = NSTextField()
-        field.delegate = self
-        field.tag = Int(property.rawValue)
-        field.setAccessibilityLabel(title)
-        field.widthAnchor.constraint(equalToConstant: width).isActive = true
-        fields[property] = field
-        return labeled(title, control: row([field, reset(property)], spacing: 3))
-    }
-    private func toggle(_ property: EVStyleProperty, title: String, font: NSFont = .systemFont(ofSize: 14)) -> NSButton {
+    private func toggle(_ property: EVStyleProperty, title: String, font: NSFont = .systemFont(ofSize: 14)) -> NSView {
         let button = NSButton(title: title, target: self, action: #selector(toggleChanged(_:)))
         button.setButtonType(.pushOnPushOff)
         button.bezelStyle = .texturedRounded
@@ -341,42 +440,87 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         button.setAccessibilityLabel(property == .characterBold ? "Bold" : property == .characterSlant ? "Italic" : property.displayName)
         button.widthAnchor.constraint(equalToConstant: 31).isActive = true
         button.heightAnchor.constraint(equalToConstant: 27).isActive = true
-        let menu = NSMenu()
-        let inherited = NSMenuItem(title: "Use Inherited \(property.displayName)", action: #selector(clearMenu(_:)), keyEquivalent: "")
-        inherited.target = self
-        inherited.tag = Int(property.rawValue)
-        menu.addItem(inherited)
-        button.menu = menu
         buttons[property] = button
-        return button
+        return overrideGroup(property, control: button)
     }
-    private func reset(_ property: EVStyleProperty) -> NSButton {
-        let button = NSButton(title: "↶", target: self, action: #selector(clear(_:)))
-        button.bezelStyle = .inline
-        button.font = .systemFont(ofSize: 12)
-        button.tag = Int(property.rawValue)
-        button.toolTip = "Use inherited \(property.displayName.lowercased())"
-        button.setAccessibilityLabel("Default \(property.displayName.lowercased())")
-        button.widthAnchor.constraint(greaterThanOrEqualToConstant: 18).isActive = true
-        resetButtons[property] = button
-        return button
+
+    private func overrideGroup(_ property: EVStyleProperty, control: NSView) -> NSView {
+        let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(overrideChanged(_:)))
+        checkbox.controlSize = .small
+        checkbox.tag = Int(property.rawValue)
+        checkbox.toolTip = "Override inherited"
+        checkbox.setAccessibilityLabel("Override \(property.displayName.lowercased())")
+        overrideButtons[property] = checkbox
+        let wrapper = EVInheritedStyleControl(views: [control])
+        wrapper.orientation = .horizontal
+        wrapper.spacing = 0
+        wrapper.canActivate = { [weak self] in
+            guard let self else { return false }
+            return self.canEdit(property) && !self.isOverridden(property)
+        }
+        wrapper.activate = { [weak self] in self?.enableOverride(property) }
+        wrapper.beginGesture = { [weak self] in
+            guard let self else { return }
+            self.onEditEnded?()
+            self.onEditBegan?()
+            self.inheritedGestureActive = true
+        }
+        wrapper.endGesture = { [weak self] editingText in
+            self?.inheritedGestureActive = false
+            // A text click begins a continuing field edit. Keep activation and
+            // subsequent typing in the same undo gesture until editing ends.
+            if !editingText { self?.onEditEnded?() }
+        }
+        return row([checkbox, wrapper], spacing: 3)
     }
+
+    private func canEdit(_ property: EVStyleProperty) -> Bool {
+        editable && (!EVStyleProperty.paragraphProperties.contains(property) || definition?.kind == .paragraph)
+    }
+
+    private func isOverridden(_ property: EVStyleProperty) -> Bool {
+        canEdit(property) && (isBaseParagraph || definition?.properties[property]?.isDeclared == true)
+    }
+
+    private func enableOverride(_ property: EVStyleProperty) {
+        guard canEdit(property), !isOverridden(property) else { return }
+        var value = definition?.properties[property]?.effective
+        if property == .characterBackground, value == nil {
+            value = .color(EVStyleColor(red: 0, green: 0, blue: 0, alpha: 0))
+        }
+        if property == .characterForeground, definition?.properties[property]?.usesThemeDefault == true {
+            let color = theme.foreground
+            value = .color(EVStyleColor(red: Float(color.red), green: Float(color.green), blue: Float(color.blue), alpha: Float(color.alpha)))
+        }
+        if let value { send([.setDeclaration(property, value)]) }
+    }
+
+    private func activateFromLabel(_ property: EVStyleProperty, label: NSView?) {
+        guard canEdit(property), !isOverridden(property) else { return }
+        label?.window?.makeFirstResponder(nil)
+        onEditEnded?()
+        onEditBegan?()
+        enableOverride(property)
+        onEditEnded?()
+    }
+
+    @objc private func overrideChanged(_ sender: NSButton) {
+        guard !isBaseParagraph, let property = EVStyleProperty(rawValue: UInt32(sender.tag)) else { return }
+        if sender.state == .on { enableOverride(property) }
+        else { send([.clearDeclaration(property)]) }
+    }
+
     private func color(_ property: EVStyleProperty, title: String) -> NSView {
-        let well = NSColorWell(style: .minimal)
+        let well = EVStyleColorWell(frame: .zero)
+        well.includesTransparent = property == .characterBackground
         well.target = self
         well.action = #selector(colorChanged(_:))
         well.tag = Int(property.rawValue)
-        well.setAccessibilityLabel("\(title) color")
+        well.setAccessibilityLabel(property == .characterForeground ? "Text color" : "Background color")
         well.widthAnchor.constraint(equalToConstant: 31).isActive = true
-        well.heightAnchor.constraint(equalToConstant: 25).isActive = true
+        well.heightAnchor.constraint(equalToConstant: 27).isActive = true
         wells[property] = well
-        let button = reset(property)
-        button.title = "Default"
-        button.widthAnchor.constraint(equalToConstant: 48).isActive = true
-        // The explicit word makes the inheritance behavior discoverable.
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 11)
-        return row([label, well, button], spacing: 4)
+        return labeled(title, control: overrideGroup(property, control: well), property: property)
     }
     private func direction(_ property: EVStyleProperty, title: String) -> NSView {
         let popup = NSPopUpButton()
@@ -386,11 +530,12 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         popup.tag = Int(property.rawValue)
         popup.setAccessibilityLabel("\(property == .characterDirection ? "Character" : "Paragraph") direction")
         directions[property] = popup
-        return labeled(title, control: row([popup, reset(property)], spacing: 3))
+        return labeled(title, control: overrideGroup(property, control: popup), property: property)
     }
-    private func divider() -> NSView { let view = NSBox(); view.boxType = .separator; view.widthAnchor.constraint(equalToConstant: 1).isActive = true; view.heightAnchor.constraint(equalToConstant: 22).isActive = true; return view }
     private func separator() -> NSView { let view = NSBox(); view.boxType = .separator; return view }
-    private func setHelp(_ control: NSView, _ property: EVStyleProperty) { control.toolTip = definition?.properties[property]?.isDeclared == true ? "Declared in this style. Use Default to inherit." : "Inherited from the parent style." }
+    private func setHelp(_ control: NSView, _ property: EVStyleProperty) {
+        control.toolTip = isBaseParagraph ? "Defined by Base Paragraph." : definition?.properties[property]?.isDeclared == true ? "Declared in this style. Uncheck the override to inherit." : "Inherited from the parent style."
+    }
     private func number(_ property: EVStyleProperty, fallback: Float = 0) -> Float {
         switch definition?.properties[property]?.effective { case let .float(value)?: value; case let .unsigned(value)?: Float(value); default: fallback }
     }
@@ -476,8 +621,6 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         if property == .characterSlant { send([.setDeclaration(property, .fontSlant(sender.state == .on ? 1 : 0))]) }
         else { send([.setDeclaration(property, .boolean(sender.state == .on))]) }
     }
-    @objc private func clearMenu(_ sender: NSMenuItem) { guard let property = EVStyleProperty(rawValue: UInt32(sender.tag)) else { return }; send([.clearDeclaration(property)]) }
-    @objc private func clear(_ sender: NSButton) { guard let property = EVStyleProperty(rawValue: UInt32(sender.tag)) else { return }; send([.clearDeclaration(property)]) }
     @objc private func colorChanged(_ sender: NSColorWell) {
         guard let property = EVStyleProperty(rawValue: UInt32(sender.tag)), let rgb = sender.color.usingColorSpace(.deviceRGB) else { return }
         let color = EVStyleColor(red: Float(rgb.redComponent), green: Float(rgb.greenComponent), blue: Float(rgb.blueComponent), alpha: Float(rgb.alphaComponent))
@@ -521,11 +664,12 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             return
         }
         if !updating, notification.object as? NSComboBox === family { familyChanged(family) }
-        onEditEnded?()
+        // AppKit may end a temporary field editor while forwarding the first
+        // native click. The wrapper owns that transition's gesture lifetime.
+        if !inheritedGestureActive { onEditEnded?() }
     }
     func controlTextDidChange(_ notification: Notification) {
         guard let field = notification.object as? NSTextField, !(field is NSComboBox), let property = EVStyleProperty(rawValue: UInt32(field.tag)), !updating else { return }
-        if property == .characterLanguage { send([.setDeclaration(property, .string(field.stringValue))]); return }
         if property == .paragraphLineSpacing { lineSpacingChanged(field); return }
         guard let value = Float(field.stringValue), value.isFinite, property != .characterSize || value > 0 else { field.textColor = .systemRed; steppers[property]?.isEnabled = false; hasInvalidDraft = true; return }
         field.textColor = .labelColor
@@ -559,7 +703,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         values.append(EVOpenTypeFeature(tag: tag, setting: sender.state == .on ? 0 : 1))
         send([.setDeclaration(.characterOpenTypeFeatures, .openTypeFeatures(values.sorted { $0.tag < $1.tag }))])
     }
-    @objc private func resetFeatures(_ sender: Any?) { send([.clearDeclaration(.characterOpenTypeFeatures)]) }
+    @objc private func resetFeatures(_ sender: Any?) { send([.setDeclaration(.characterOpenTypeFeatures, .openTypeFeatures([]))]) }
 }
 
 /// Edits the ordered fallback tail as one draft. Apply is one style mutation;

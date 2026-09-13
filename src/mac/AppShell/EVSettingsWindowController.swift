@@ -18,6 +18,8 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   NSTableViewDelegate, NSTextFieldDelegate
 {
   private let store: EVThemeStore
+  private let viewPreferences: EVViewPreferences
+  private var viewObserver: NSObjectProtocol?
   private let editingPreferences: EVEditingPreferences
   private let codePreferences: EVCodePreferences
   private let sidebar = NSTableView()
@@ -41,7 +43,8 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
 
   convenience init(store: EVThemeStore) { self.init(store: store, editingPreferences: .shared) }
 
-  init(store: EVThemeStore, editingPreferences: EVEditingPreferences, codePreferences: EVCodePreferences? = nil) {
+  init(store: EVThemeStore, editingPreferences: EVEditingPreferences, codePreferences: EVCodePreferences? = nil, viewPreferences: EVViewPreferences? = nil) {
+    self.viewPreferences = viewPreferences ?? .shared
     self.store = store
     self.editingPreferences = editingPreferences
     let codePreferences = codePreferences ?? .shared
@@ -56,6 +59,11 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     build()
     observer = NotificationCenter.default.addObserver(
       forName: .viemThemeDidChange, object: store, queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated { self?.refresh() }
+    }
+    viewObserver = NotificationCenter.default.addObserver(
+      forName: .viemViewPreferencesDidChange, object: self.viewPreferences, queue: .main
     ) { [weak self] _ in
       MainActor.assumeIsolated { self?.refresh() }
     }
@@ -89,6 +97,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
 
   deinit {
     if let observer { NotificationCenter.default.removeObserver(observer) }
+    if let viewObserver { NotificationCenter.default.removeObserver(viewObserver) }
     if let editingObserver { NotificationCenter.default.removeObserver(editingObserver) }
     codeObservers.forEach { NotificationCenter.default.removeObserver($0) }
   }
@@ -158,10 +167,10 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   {
     let image = NSImageView(
       image: NSImage(
-        systemSymbolName: ["doc.text", "paintpalette", "text.cursor", "chevron.left.forwardslash.chevron.right"][row], accessibilityDescription: nil)
+        systemSymbolName: ["rectangle.inset.filled", "paintpalette", "text.cursor", "chevron.left.forwardslash.chevron.right"][row], accessibilityDescription: nil)
         ?? NSImage())
     image.contentTintColor = .secondaryLabelColor
-    let label = NSTextField(labelWithString: ["Documents", "Theme", "Editing", "Code"][row])
+    let label = NSTextField(labelWithString: ["View", "Theme", "Editing", "Code"][row])
     label.font = .systemFont(ofSize: 13, weight: .medium)
     let row = NSStackView(views: [image, label])
     row.spacing = 9
@@ -198,12 +207,12 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     stack.translatesAutoresizingMaskIntoConstraints = false
     scroll.documentView = stack
     stack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
-    let title = NSTextField(labelWithString: ["Documents", "Theme", "Editing", "Code"][selectedCategory])
+    let title = NSTextField(labelWithString: ["View", "Theme", "Editing", "Code"][selectedCategory])
     title.font = .systemFont(ofSize: 25, weight: .bold)
     stack.addArrangedSubview(title)
     let subtitle = NSTextField(
       wrappingLabelWithString: [
-        "Default styles and app settings are saved in ~/.viem. Documents can override their format’s defaults.",
+        "Set the space around text in every editor view.",
         "Make a comfortable space for writing. Changes apply to every window.",
         "Choose how Viem helps while you type. These preferences apply to every document.",
         "Configure syntax highlighting and the shared styles used by every Code document.",
@@ -242,13 +251,22 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       return
     }
     if selectedCategory == 0 {
-      stack.addArrangedSubview(
-        section(
-          "New documents",
-          views: [
-            label("Text, HTML, Markdown, and RTF each have their own default style set."),
-            label("Use Format > Style to edit a document’s styles or save them as its format’s defaults."),
-          ]))
+      let margins = NSStackView()
+      margins.spacing = 14
+      for (index, name) in ["Top", "Left", "Bottom", "Right"].enumerated() {
+        let group = NSStackView(views: [
+          label(name), numberField(10 + index, "View \(name.lowercased()) margin"),
+        ])
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 5
+        margins.addArrangedSubview(group)
+      }
+      let group = section("Text margins · pixels", views: [margins])
+      stack.addArrangedSubview(group)
+      group.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
+      stack.addArrangedSubview(button("Restore Defaults", action: #selector(restoreViewMargins)))
+      refresh()
       return
     }
     if selectedCategory == 2 {
@@ -320,21 +338,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     ])
     fonts.spacing = 10
     stack.addArrangedSubview(section("Status bar", views: [statusColors, fonts]))
-    let pads = NSStackView()
-    pads.spacing = 14
-    for (index, name) in ["Top", "Left", "Bottom", "Right"].enumerated() {
-      let group = NSStackView(views: [
-        label(name), numberField(10 + index, "Document \(name.lowercased()) padding"),
-      ])
-      group.orientation = .vertical
-      group.alignment = .leading
-      group.spacing = 5
-      pads.addArrangedSubview(group)
-    }
-    let note = label("Padding moves with the document as you scroll.")
-    note.font = .systemFont(ofSize: 11)
-    note.textColor = .secondaryLabelColor
-    stack.addArrangedSubview(section("Document padding · pt", views: [pads, note]))
     let reset = button("Restore Defaults", action: #selector(usePaper))
     reset.controlSize = .small
     stack.addArrangedSubview(reset)
@@ -363,6 +366,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   func controlTextDidEndEditing(_ notification: Notification) {
     if notification.object as AnyObject? === codeDirectoryField { changeCodeDirectory(nil) }
     if notification.object as AnyObject? === textWidthField { changeTextWidth(textWidthField) }
+    if let field = notification.object as? NSTextField, fields[field.tag] === field { changeNumber(field) }
   }
 
   /// Zero, negative, fractional, malformed, and overflowing values are
@@ -399,6 +403,11 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
 
   @objc private func editCodeStyles() { codePreferences.openStyles() }
 
+  func showViewCategoryForTesting() {
+    sidebar.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+    selectedCategory = 0
+    showCategory()
+  }
   func showCodeCategoryForTesting() {
     sidebar.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false)
     selectedCategory = 3
@@ -452,6 +461,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     field.tag = tag
     field.alignment = .right
     field.target = self
+    field.delegate = self
     field.action = #selector(changeNumber(_:))
     field.setAccessibilityLabel(name)
     field.widthAnchor.constraint(equalToConstant: 60).isActive = true
@@ -459,7 +469,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     return field
   }
   private func refresh() {
-    persistenceDiagnostic.stringValue = store.lastError ?? ""
+    persistenceDiagnostic.stringValue = (selectedCategory == 0 ? viewPreferences.lastError : store.lastError) ?? ""
     persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
     let theme = store.theme
     let colors = [
@@ -468,11 +478,16 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     ]
     for (tag, well) in wells { well.color = colors[tag].color }
     fields[6]?.doubleValue = theme.statusFontSize
+    let margins = viewPreferences.margins
     for (index, value) in [
-      theme.padding.top, theme.padding.left, theme.padding.bottom, theme.padding.right,
+      margins.top, margins.left, margins.bottom, margins.right,
     ].enumerated() { fields[10 + index]?.doubleValue = value }
     fontSelect.selectItem(withTitle: theme.statusFontFamily)
     preview.theme = theme
+  }
+  @objc private func restoreViewMargins() {
+    viewPreferences.setMargins(EVViewMargins())
+    refresh()
   }
   @objc private func usePaper() {
     store.update(.paper)
@@ -511,15 +526,20 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       refresh()
       return
     }
-    var theme = store.theme
-    switch sender.tag {
-    case 6: theme.statusFontSize = value
-    case 10: theme.padding.top = value
-    case 11: theme.padding.left = value
-    case 12: theme.padding.bottom = value
-    default: theme.padding.right = value
+    if sender.tag == 6 {
+      var theme = store.theme
+      theme.statusFontSize = value
+      store.update(theme)
+    } else {
+      var margins = viewPreferences.margins
+      switch sender.tag {
+      case 10: margins.top = value
+      case 11: margins.left = value
+      case 12: margins.bottom = value
+      default: margins.right = value
+      }
+      viewPreferences.setMargins(margins)
     }
-    store.update(theme)
     refresh()
   }
 }
@@ -532,8 +552,8 @@ private final class EVThemePreview: NSView {
     NSBezierPath(roundedRect: bounds, xRadius: 9, yRadius: 9).addClip()
     theme.background.color.setFill()
     bounds.fill()
-    let x = min(CGFloat(theme.padding.left) * 0.55 + 8, 95)
-    let y = min(CGFloat(theme.padding.top) * 0.55 + 7, 44)
+    let x = min(CGFloat(EVViewMargins().left) * 0.55 + 8, 95)
+    let y = min(CGFloat(EVViewMargins().top) * 0.55 + 7, 44)
     let font = NSFont.systemFont(ofSize: 18, weight: .medium)
     ("A space for your words." as NSString).draw(
       at: NSPoint(x: x, y: y),

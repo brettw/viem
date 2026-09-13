@@ -20,16 +20,14 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
         XCTAssertEqual(editor.inspection.selectedStyleKey, .baseParagraph)
         XCTAssertTrue(editor.inspection.parentChoices.isEmpty,
                       "A fixed parent can be inspected even though it cannot be changed")
-        XCTAssertTrue(parent.isEnabled)
+        XCTAssertFalse(parent.isEnabled, "Base Paragraph is the style root")
         parent.performClick(nil)
-        XCTAssertEqual(editor.inspection.selectedStyleKey, .baseDocument)
-        XCTAssertEqual(editor.inspection.selectedTab, .character)
-        XCTAssertFalse(parent.isEnabled)
-        parent.performClick(nil)
-        XCTAssertEqual(editor.inspection.selectedStyleKey, .baseDocument)
+        XCTAssertEqual(editor.inspection.selectedStyleKey, .baseParagraph)
 
-        editor.selectStyle(EVStyleKey.baseCharacter)
-        XCTAssertFalse(parent.isEnabled)
+        editor.selectStyle(EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code")))
+        XCTAssertEqual(editor.inspection.parentValue, "Default Paragraph")
+        XCTAssertTrue(editor.inspection.parentChoices.contains(.defaultParagraph))
+        XCTAssertFalse(parent.isEnabled, "The contextual paragraph default is not an editable definition")
         XCTAssertEqual(try backend.recoverySnapshot(), before)
         XCTAssertEqual(try backend.styleSheetSnapshot().identity, identity)
         XCTAssertFalse(surface.canUndo)
@@ -53,7 +51,7 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
         editor.selectStyle(heading)
         XCTAssertTrue(editor.setFollowingStyleForTesting(nil))
         XCTAssertFalse(next.isEnabled, "Same Style has no other style to navigate to")
-        editor.selectStyle(EVStyleKey.baseCharacter)
+        editor.selectStyle(EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code")))
         XCTAssertFalse(next.isEnabled)
         editor.disableForClosedDocument()
         XCTAssertFalse(next.isEnabled)
@@ -112,8 +110,8 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
         window.contentViewController = editor
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             window.appearance = try XCTUnwrap(NSAppearance(named: appearance))
-            for width in [CGFloat(700), 1000] {
-                window.setContentSize(NSSize(width: width, height: 820))
+            for (width, height) in [(CGFloat(700), CGFloat(620)), (1000, 820)] {
+                window.setContentSize(NSSize(width: width, height: height))
                 editor.view.layoutSubtreeIfNeeded()
                 let allViews = descendants(of: editor.view)
                 for (title, accessibilityLabel) in [

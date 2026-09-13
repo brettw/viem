@@ -21,7 +21,7 @@ final class EVStyleEditorTests: XCTestCase {
                 editor.retarget(document: surface, styleKey: .baseParagraph)
                 XCTAssertTrue(editor.createStyle(kind: kind), editor.inspection.diagnostic)
                 let key = try XCTUnwrap(editor.inspection.selectedStyleKey)
-                guard key != .baseParagraph && key != .baseCharacter else {
+                guard key != .baseParagraph && key != .defaultParagraph else {
                     XCTFail("\(type) \(kind): new style disappeared: \(String(decoding: try backend.serializedSource(typeName: type), as: UTF8.self))")
                     continue
                 }
@@ -84,7 +84,7 @@ final class EVStyleEditorTests: XCTestCase {
 
         XCTAssertTrue(coordinator.styleWindow === originalWindow)
         XCTAssertEqual(coordinator.inspection?.targetDocumentIdentity, ObjectIdentifier(secondBackend))
-        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, EVStyleKey.baseCharacter)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1")))
         XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, try secondBackend.documentState().document_id)
     }
 
@@ -101,13 +101,14 @@ final class EVStyleEditorTests: XCTestCase {
         XCTAssertTrue(editor.inspection.paragraphTabEnabled)
         XCTAssertTrue(editor.inspection.mutationsEnabled)
         XCTAssertTrue(editor.inspection.nameEditable)
-        XCTAssertTrue(editor.inspection.summary.contains("contributions"))
-        XCTAssertTrue(editor.inspection.summary.contains("Following paragraph style"))
 
-        editor.selectStyle(EVStyleKey.baseDocument)
-        XCTAssertEqual(editor.inspection.selectedStyleKey, EVStyleKey.baseDocument)
-        XCTAssertEqual(editor.inspection.characterPropertyCount, 14)
-        XCTAssertEqual(editor.inspection.paragraphPropertyCount, 0)
+        let picker = try XCTUnwrap(descendants(of: editor.view).compactMap { $0 as? NSPopUpButton }
+            .first { $0.accessibilityLabel() == "Style" })
+        XCTAssertFalse(picker.itemTitles.contains("Base Document"))
+        XCTAssertFalse(picker.itemTitles.contains("Base Character"))
+        XCTAssertFalse(picker.itemTitles.contains("Default Paragraph"))
+        XCTAssertFalse(descendants(of: editor.view).contains { $0.accessibilityLabel() == "Language" })
+        XCTAssertFalse(descendants(of: editor.view).contains { $0.accessibilityLabel() == "Resolved style summary" })
     }
 
     @MainActor
@@ -136,7 +137,6 @@ final class EVStyleEditorTests: XCTestCase {
         XCTAssertEqual(heading.properties[.characterSize]?.declared, .float(31))
         XCTAssertEqual(try backend.serializedSource(typeName: "public.markdown"), source)
         XCTAssertGreaterThan(second.presentationRefreshCount, secondRefreshBefore)
-        XCTAssertTrue(editor.inspection.summary.contains("Font size: 31 pt"))
 
         _ = try session.undo()
 
@@ -146,7 +146,6 @@ final class EVStyleEditorTests: XCTestCase {
                 .properties[.characterSize]?.declared,
             .float(24)
         )
-        XCTAssertTrue(editor.inspection.summary.contains("Font size: 24 pt"))
 
         _ = try session.redo()
         XCTAssertEqual(
@@ -200,7 +199,6 @@ final class EVStyleEditorTests: XCTestCase {
         )
         defer { withExtendedLifetime(surface) {} }
         XCTAssertFalse(editor.inspection.declaredProperties.contains(.characterUnderline))
-        XCTAssertTrue(editor.inspection.summary.contains("Underline: Off — Inherited · Base Document"))
 
         XCTAssertTrue(editor.setPropertyForTesting(.characterUnderline, value: .boolean(false)))
         XCTAssertTrue(editor.inspection.declaredProperties.contains(.characterUnderline))
@@ -213,7 +211,6 @@ final class EVStyleEditorTests: XCTestCase {
 
         XCTAssertTrue(editor.useInheritedForTesting(.characterUnderline))
         XCTAssertFalse(editor.inspection.declaredProperties.contains(.characterUnderline))
-        XCTAssertTrue(editor.inspection.summary.contains("Underline: Off — Inherited · Base Document"))
     }
 
     @MainActor
@@ -222,28 +219,23 @@ final class EVStyleEditorTests: XCTestCase {
         defer { withExtendedLifetime(surface) {} }
 
         XCTAssertTrue(editor.inspection.paragraphTabEnabled)
-        XCTAssertEqual(editor.inspection.parentValue, "Base Document")
+        XCTAssertEqual(editor.inspection.parentValue, "None")
         XCTAssertTrue(editor.inspection.parentChoices.isEmpty)
         editor.selectTab(.paragraph)
         XCTAssertEqual(editor.inspection.selectedTab, .paragraph)
 
-        editor.selectStyle(EVStyleKey.baseDocument)
+        editor.selectStyle(EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code")))
         XCTAssertFalse(editor.inspection.paragraphTabEnabled)
         XCTAssertEqual(editor.inspection.selectedTab, .character)
-        XCTAssertEqual(editor.inspection.parentValue, "None")
-        XCTAssertTrue(editor.inspection.parentChoices.isEmpty)
-
-        editor.selectStyle(EVStyleKey.baseCharacter)
-        XCTAssertFalse(editor.inspection.paragraphTabEnabled)
-        XCTAssertEqual(editor.inspection.parentValue, "None")
-        XCTAssertTrue(editor.inspection.parentChoices.isEmpty)
+        XCTAssertEqual(editor.inspection.parentValue, "Default Paragraph")
+        XCTAssertTrue(editor.inspection.parentChoices.contains(.defaultParagraph))
 
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(heading)
         XCTAssertTrue(editor.inspection.paragraphTabEnabled)
         XCTAssertFalse(editor.inspection.parentChoices.contains(heading))
         XCTAssertTrue(editor.inspection.parentChoices.contains(EVStyleKey.baseParagraph))
-        XCTAssertFalse(editor.inspection.parentChoices.contains(EVStyleKey.baseDocument))
+        XCTAssertFalse(editor.inspection.parentChoices.contains(EVStyleKey.defaultParagraph))
     }
 
     @MainActor
@@ -255,7 +247,6 @@ final class EVStyleEditorTests: XCTestCase {
         defer { withExtendedLifetime(surface) {} }
         XCTAssertTrue(editor.renameForTesting("Chapter Heading"))
         XCTAssertEqual(editor.inspection.selectedStyleID, EVStyleID(rawValue: "Heading1"))
-        XCTAssertTrue(editor.inspection.summary.contains("Style: Chapter Heading"))
         XCTAssertEqual(
             try backend.styleSheetSnapshot()
                 .definition(namespace: .block, id: EVStyleID(rawValue: "Heading1"))?.name,
@@ -293,7 +284,6 @@ final class EVStyleEditorTests: XCTestCase {
                 .properties[.characterSize]?.declared,
             .float(30)
         )
-        XCTAssertTrue(editor.inspection.summary.contains("Font size: 30 pt"))
     }
 
     @MainActor
@@ -337,7 +327,6 @@ final class EVStyleEditorTests: XCTestCase {
 
         XCTAssertFalse(coordinator.inspection?.hasDocument ?? true)
         XCTAssertNil(coordinator.inspection?.selectedStyleKey)
-        XCTAssertTrue(coordinator.inspection?.summary.contains("No document") == true)
         XCTAssertNotNil(coordinator.styleWindow)
     }
 
@@ -354,7 +343,7 @@ final class EVStyleEditorTests: XCTestCase {
         }
         coordinator.show(document: first, preferredStyle: .character, sender: nil)
         defer { coordinator.close() }
-        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseCharacter)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
 
         coordinator.documentDidClose(first)
 
@@ -618,6 +607,11 @@ final class EVStyleEditorTests: XCTestCase {
             try XCTUnwrap(spacedAfter.currentStyleLines.first).origin.x,
             accuracy: 0.01
         )
+    }
+
+    @MainActor
+    private func descendants(of view: NSView) -> [NSView] {
+        view.subviews.flatMap { [$0] + descendants(of: $0) }
     }
 
     @MainActor

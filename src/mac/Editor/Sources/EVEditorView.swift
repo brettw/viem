@@ -1227,8 +1227,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         guard let surface else { return }
         guard let session = surface.session else { return }
         customCaretBlinkController.restartAfterActivity()
-        let zoomModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
-        if zoomModifiers == [.command], let key = event.charactersIgnoringModifiers,
+        let shortcutModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if event.keyCode == 100, shortcutModifiers.isEmpty {
+            surface.perform(menuCommand: .editStyles, sender: event)
+            return
+        }
+        if shortcutModifiers == [.command], let key = event.charactersIgnoringModifiers,
            key == "-" || key == "=" {
             surface.perform(menuCommand: key == "=" ? .zoomIn : .zoomOut, sender: event)
             return
@@ -1270,6 +1274,14 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                     codepoint: scalar.value
                 )
             }
+            return
+        }
+
+        if (event.keyCode == 115 || event.keyCode == 119),
+           !event.modifierFlags.contains(.control) {
+            // AppKit resolves Home/End through the user's key bindings. Native
+            // line and document selectors remain separate core intentions.
+            interpretKeyEvents([event])
             return
         }
 
@@ -1425,8 +1437,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         case #selector(moveDown(_:)): UInt32(VIEM_KEY_DOWN)
         case #selector(moveToBeginningOfLine(_:)): UInt32(VIEM_KEY_HOME)
         case #selector(moveToEndOfLine(_:)): UInt32(VIEM_KEY_END)
-        case #selector(moveToBeginningOfDocument(_:)): UInt32(VIEM_KEY_DOCUMENT_START)
-        case #selector(moveToEndOfDocument(_:)): UInt32(VIEM_KEY_DOCUMENT_END)
+        case #selector(moveToBeginningOfDocument(_:)), #selector(scrollToBeginningOfDocument(_:)): UInt32(VIEM_KEY_DOCUMENT_START)
+        case #selector(moveToEndOfDocument(_:)), #selector(scrollToEndOfDocument(_:)): UInt32(VIEM_KEY_DOCUMENT_END)
         case #selector(pageUp(_:)), #selector(scrollPageUp(_:)): UInt32(VIEM_KEY_PAGE_UP)
         case #selector(pageDown(_:)), #selector(scrollPageDown(_:)): UInt32(VIEM_KEY_PAGE_DOWN)
         case #selector(deleteBackward(_:)): UInt32(VIEM_KEY_BACKSPACE)

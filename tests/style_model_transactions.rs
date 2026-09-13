@@ -220,7 +220,7 @@ fn configured_sheet_and_document_root_survive_later_reprojection() {
 #[test]
 fn dependency_summary_names_descendants_but_not_unrelated_styles() {
     let mut document = Document::new("plain");
-    let base = document.projection().style_sheet().base_character.clone();
+    let base = StyleId::from("Code");
     for (id, parent) in [
         ("Parent", base.clone()),
         ("Child", StyleId::from("Parent")),
@@ -304,7 +304,7 @@ fn in_use_delete_and_incompatible_document_assignment_are_structured() {
     let error = markdown
         .apply_style_request(configure(
             &markdown,
-            ConfigurationStyleIntent::AssignDocumentStyle(StyleId::from("Paragraph")),
+            ConfigurationStyleIntent::AssignDocumentStyle(StyleId::from("Heading1")),
         ))
         .unwrap_err();
     assert!(matches!(
@@ -446,7 +446,7 @@ fn base_definition_and_document_style_assignment_require_configuration_authority
     let mut base_document = document
         .projection()
         .style_sheet()
-        .block_style(&document.projection().style_sheet().base_document)
+        .block_style(&document.projection().style_sheet().base_paragraph)
         .unwrap()
         .clone();
     base_document.character.size = Some(18.0);
@@ -469,7 +469,7 @@ fn base_definition_and_document_style_assignment_require_configuration_authority
 
     let custom = BlockStyle {
         id: StyleId::from("WritingCanvas"),
-        based_on: Some(document.projection().style_sheet().base_document.clone()),
+        based_on: Some(document.projection().style_sheet().base_paragraph.clone()),
         next_paragraph_style: None,
         role: BlockRole::Document,
         character: CharacterProperties {
@@ -523,7 +523,7 @@ fn persisted_style_capabilities_are_explicit_for_plain_and_markdown() {
             ),
             (
                 PipelineEditIntent::AssignCharacterStyle {
-                    style: StyleId::from("Character"),
+                    style: StyleId::from(""),
                 },
                 UnsupportedEditReason::FormatHasNoNamedStyleStorage,
             ),
@@ -542,7 +542,7 @@ fn persisted_style_capabilities_are_explicit_for_plain_and_markdown() {
         ] {
             if format != Format::PlainText
                 && (matches!(&intent, PipelineEditIntent::AssignBlockStyle { style } if style.0 == "Paragraph")
-                    || matches!(&intent, PipelineEditIntent::AssignCharacterStyle { style } if style.0 == "Character"))
+                    || matches!(&intent, PipelineEditIntent::AssignCharacterStyle { style } if style.0 == ""))
             {
                 assert_eq!(
                     pipeline.capabilities(range, &intent).unwrap().decision,
@@ -576,7 +576,7 @@ fn persisted_style_capabilities_are_explicit_for_plain_and_markdown() {
 
         let persisted = PersistedStyleIntent::AssignCharacterStyle {
             range,
-            style: StyleId::from("Character"),
+            style: StyleId::from(""),
         };
         if format != Format::PlainText {
             document
@@ -723,4 +723,44 @@ fn unused_configuration_definitions_support_insert_update_and_delete() {
         .style_sheet()
         .block_style(&style.id)
         .is_none());
+}
+
+#[test]
+fn clearing_a_character_override_reports_contextual_heading_metric_changes() {
+    use viem_core::layout::DocumentLayoutStyles;
+    for inherited_from_parent in [false, true] {
+        let source = b"# `head`\n\n`body`";
+        let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let target = if inherited_from_parent { "CodeParent" } else { "Code" };
+        if inherited_from_parent {
+            document.apply_style_request(configure(&document,
+                ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::InsertCharacter {
+                    style: CharacterStyle { id: target.into(), based_on: None, properties: CharacterProperties {
+                        size: Some(14.0), ..Default::default()
+                    } },
+                    metadata: StyleDefinitionMetadata::generated("Code parent"),
+                }))).unwrap();
+        }
+        let mut code = document.projection().style_sheet().character_style(&"Code".into()).unwrap().clone();
+        code.based_on = inherited_from_parent.then(|| target.into());
+        code.properties.size = (!inherited_from_parent).then_some(14.0);
+        document.apply_style_request(configure(&document,
+            ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::UpdateCharacter(code)))).unwrap();
+        assert_eq!(DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap().size, 14.0);
+        assert_eq!(DocumentLayoutStyles::character_at(document.projection(), 5, false).unwrap().size, 14.0);
+        let mut style = document.projection().style_sheet().character_style(&target.into()).unwrap().clone();
+        style.properties.size = None;
+        let committed = document.apply_style_request(configure(&document,
+            ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::UpdateCharacter(style)))).unwrap();
+        let change = committed.summary().style_change().unwrap();
+        assert_eq!(change.changed_properties(), &BTreeSet::from([StyleProperty::CharacterSize]));
+        assert_eq!(change.invalidation_effects(), &BTreeSet::from([StyleInvalidationEffect::Shaping]));
+        assert!(change.affected_character_styles().contains(&StyleId::from("Code")));
+        assert!(change.affected_ranges().iter().any(|range| range.start == 0 && range.end >= 4));
+        assert_eq!(DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap().size, 24.0);
+        assert_eq!(DocumentLayoutStyles::character_at(document.projection(), 5, false).unwrap().size, 14.0);
+        assert_eq!(document.source_bytes(), source);
+        assert!(document.undo());
+        assert_eq!(DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap().size, 14.0);
+    }
 }

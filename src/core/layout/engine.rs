@@ -772,6 +772,29 @@ impl RegionalLayoutSnapshot {
             .retain(|entry| entry.text_range.end >= start);
     }
 
+    pub(crate) fn append_adjacent_region(&mut self, following: &Self) {
+        let preceding = self.clone();
+        *self = following.clone();
+        self.prepend_adjacent_region(&preceding);
+    }
+
+    /// Join the old paragraph's visible tail to the newly inserted paragraph.
+    /// Both inputs were captured and shaped independently within bounded slices.
+    pub(crate) fn prepend_adjacent_region(&mut self, preceding: &Self) {
+        debug_assert_eq!(preceding.hard_lines.end, self.hard_lines.start);
+        debug_assert_eq!(preceding.document_id, self.document_id);
+        debug_assert_eq!(preceding.document_revision, self.document_revision);
+        debug_assert_eq!(preceding.configuration_generation, self.configuration_generation);
+        debug_assert_eq!(preceding.metrics_generation, self.metrics_generation);
+        self.hard_lines.start = preceding.hard_lines.start;
+        self.lines.splice(0..0, preceding.lines.iter().cloned());
+        self.paint_runs.splice(0..0, preceding.paint_runs.iter().cloned());
+        self.grapheme_boundaries.extend(preceding.grapheme_boundaries.iter().copied());
+        self.grapheme_boundaries.sort_unstable();
+        self.grapheme_boundaries.dedup();
+        self.diagnostics.splice(0..0, preceding.diagnostics.iter().cloned());
+    }
+
     fn rebind_revision(&mut self, revision: LayoutRevision) {
         self.revision = revision;
         for line in &mut self.lines {
@@ -5374,7 +5397,7 @@ mod tests {
         blocks: &[Block],
         sheet: &StyleSheet,
     ) -> DocumentLayoutStyles {
-        let document_style = DocumentStyleAssignment::new(sheet.base_document.clone());
+        let document_style = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
         DocumentLayoutStyles::resolve_input(DocumentStyleInput {
             text,
             blocks,

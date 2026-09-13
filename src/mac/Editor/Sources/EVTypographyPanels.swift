@@ -62,6 +62,7 @@ final class EVTypographyPanels: NSObject {
     guard let session = surface.session, let style = try? session.selectedTypography(),
       let selection = try? session.listSelection(), surface.canEditTypography
     else { return }
+    EVStyleColorWell.deactivatePanelOwner()
     colorSurface = surface
     colorSelection = selection
     colorProperty = highlight ? .characterBackground : .characterForeground

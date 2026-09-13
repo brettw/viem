@@ -29,8 +29,8 @@ final class EVStyleMenuBridgeTests: XCTestCase {
     check(.heading0, state: .on)
 
     let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
-    let item = NSMenuItem(title: "Base Character", action: #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:)), keyEquivalent: "")
-    item.representedObject = EVStyleMenuAction(kind: .assign, role: .character, stableID: "Character", documentID: catalogue.documentID, documentRevision: catalogue.documentRevision, styleSheetRevision: catalogue.styleSheetRevision)
+    let item = NSMenuItem(title: "Default Paragraph", action: #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:)), keyEquivalent: "")
+    item.representedObject = EVStyleMenuAction(kind: .assign, role: .character, stableID: "", documentID: catalogue.documentID, documentRevision: catalogue.documentRevision, styleSheetRevision: catalogue.styleSheetRevision)
     _ = surface.editorView.validateMenuItem(item)
     XCTAssertEqual(item.state, .on)
     XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), source)
@@ -88,7 +88,7 @@ final class EVStyleMenuBridgeTests: XCTestCase {
     XCTAssertTrue(internalStyles.allSatisfy { $0.name.hasPrefix("*") && !$0.capabilities.contains(.assign) })
     let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
     XCTAssertEqual(catalogue.entries.first { $0.stableID == "Heading2" }?.presentation.state, .on)
-    XCTAssertEqual(catalogue.entries.first { $0.stableID == "Character" }?.presentation.state, .on)
+    XCTAssertEqual(catalogue.entries.first { $0.stableID == "" }?.presentation.state, .on)
     let internalIDs = Set(internalStyles.map { $0.key.id.rawValue })
     XCTAssertFalse(catalogue.entries.contains { internalIDs.contains($0.stableID) })
     let definition = try XCTUnwrap(internalStyles.first { $0.key.id.rawValue == "* HTML Tag name" })
@@ -213,11 +213,11 @@ final class EVStyleMenuBridgeTests: XCTestCase {
     XCTAssertEqual(catalogue.documentID, coreSnapshot.identity.documentID)
     XCTAssertEqual(catalogue.documentRevision, coreSnapshot.identity.documentRevision)
     XCTAssertEqual(catalogue.styleSheetRevision, coreSnapshot.identity.styleSheetRevision)
-    XCTAssertEqual(catalogue.entries.count, coreSnapshot.definitions.filter { !$0.flags.contains(.internalList) && !$0.flags.contains(.internalSyntax) }.count)
+    XCTAssertEqual(catalogue.entries.count, coreSnapshot.definitions.filter { !$0.flags.contains(.internalList) && !$0.flags.contains(.internalSyntax) }.count + 1)
     XCTAssertEqual(
       catalogue.entries.filter { $0.role == .character }.map(\.stableID),
       [
-        "Character", "Code"
+        "", "Code"
       ])
     XCTAssertEqual(
       Set(catalogue.entries.filter { $0.role == .paragraph }.map(\.stableID)),
@@ -225,15 +225,11 @@ final class EVStyleMenuBridgeTests: XCTestCase {
         [
           "Paragraph", "Block quote", "Code Block", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6",
         ]))
-    XCTAssertEqual(
-      catalogue.entries.filter { $0.role == .document }.map(\.stableID),
-      [
-        "Document"
-      ])
+    XCTAssertFalse(catalogue.entries.contains { $0.displayName == "Base Document" || $0.displayName == "Base Character" })
     XCTAssertTrue(catalogue.entries.allSatisfy { !$0.presentation.isEnabled })
     XCTAssertEqual(catalogue.entries.first { $0.stableID == "Paragraph" }?.presentation.state, .on)
-    XCTAssertEqual(catalogue.entries.first { $0.stableID == "Character" }?.presentation.state, .on)
-    XCTAssertTrue(catalogue.entries.filter { !["Paragraph", "Character"].contains($0.stableID) }.allSatisfy { $0.presentation.state == .off })
+    XCTAssertEqual(catalogue.entries.first { $0.stableID == "" }?.presentation.state, .on)
+    XCTAssertTrue(catalogue.entries.filter { !["Paragraph", ""].contains($0.stableID) }.allSatisfy { $0.presentation.state == .off })
     XCTAssertTrue(catalogue.canEditStyles)
   }
 

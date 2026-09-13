@@ -223,7 +223,7 @@ fn quoted_markdown_list_indentation_preserves_every_quote_marker() {
 }
 #[test]
 fn legacy_source_list_definitions_remain_active_and_lossless() {
-    let source="<style id=\"viem-styles\" data-viem-version=\"2\">li {\n  margin-inline-start: 16pt;\n}\n</style><ul><li>Bullet</li></ul><ol><li>Number</li></ol>";
+    let source="<style id=\"viem-styles\" data-viem-version=\"2\">li {\n  --viem-inherit: \"character-font-families character-size\";\n  font-family: 'SF Pro';\n  font-size: 14pt;\n  margin-inline-start: 16pt;\n}\n</style><ul><li>Bullet</li></ul><ol><li>Number</li></ol>";
     let document = open(source, Format::Html);
     assert_eq!(document.source_bytes(), source.as_bytes());
     assert_eq!(

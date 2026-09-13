@@ -2121,6 +2121,7 @@ impl CommandInterpreter {
             },
             Mode::Insert | Mode::Replace => {
                 matches!(*key, Key::Up | Key::Down | Key::PageUp | Key::PageDown)
+                    || (self.line_mode == LineMode::Visual && matches!(*key, Key::Home | Key::End))
             }
             Mode::VisualBlock => true,
             Mode::CommandLine => false,
@@ -2701,10 +2702,14 @@ impl CommandInterpreter {
             self.input_assistance.clear_tag();
         }
         let edit_group_depth = document.edit_group_depth();
+        let edit_line_edge = matches!(self.mode, Mode::Insert | Mode::Replace)
+            && matches!(event, InputEvent::Key(Key::Home | Key::End));
         self.record_event(&event);
         match self.dispatch_event(document, event) {
             Ok(mut output) => {
-                self.finish_non_layout_dispatch(&output);
+                if !edit_line_edge {
+                    self.finish_non_layout_dispatch(&output);
+                }
                 self.finish_insert_normal_once(document, &mut output);
                 self.finish_explicit_register_prefix(&output);
                 self.position_revision = Some(document.revision());
@@ -4372,8 +4377,8 @@ impl CommandInterpreter {
             Key::Char('-') => {
                 self.move_cursor(document, Motion::LineOffsetFirstNonBlank(-1), count)
             }
-            Key::Char('0') | Key::Home => self.move_cursor(document, Motion::LineStart, 1),
-            Key::Char('^') => self.move_cursor(document, Motion::FirstNonBlank, 1),
+            Key::Char('0') => self.move_cursor(document, Motion::LineStart, 1),
+            Key::Char('^') | Key::Home => self.move_cursor(document, Motion::FirstNonBlank, 1),
             Key::Char('$') | Key::End => self.move_cursor(document, Motion::LineEnd, count),
             Key::Char('|') => self.move_cursor(document, Motion::Column(count), 1),
             Key::Char('w') => self.move_cursor(document, Motion::WordForward(false), count),
@@ -4651,8 +4656,8 @@ impl CommandInterpreter {
             Key::Char('-') => {
                 self.move_cursor(document, Motion::LineOffsetFirstNonBlank(-1), count)
             }
-            Key::Char('0') | Key::Home => self.move_cursor(document, Motion::LineStart, 1),
-            Key::Char('^') => self.move_cursor(document, Motion::FirstNonBlank, 1),
+            Key::Char('0') => self.move_cursor(document, Motion::LineStart, 1),
+            Key::Char('^') | Key::Home => self.move_cursor(document, Motion::FirstNonBlank, 1),
             Key::Char('$') | Key::End => self.move_cursor(document, Motion::LineEnd, count),
             Key::Char('|') => self.move_cursor(document, Motion::Column(count), 1),
             Key::Char('w') => self.move_cursor(document, Motion::WordForward(false), count),
@@ -5060,6 +5065,9 @@ impl CommandInterpreter {
                 Some(output)
             }
             Mode::Insert | Mode::Replace => {
+                if matches!(key, Key::Home | Key::End) {
+                    return self.handle_edit_mode_key(document, key).map(Some);
+                }
                 let Some(motion) = (match key {
                     Key::Up => Some(InsertLayoutMotion::Rows(false)),
                     Key::Down => Some(InsertLayoutMotion::Rows(true)),
@@ -5644,7 +5652,7 @@ impl CommandInterpreter {
             }
             Key::Char('j') | Key::Down => Ok(self.move_layout_rows(document, context, count, true)),
             Key::Char('k') | Key::Up => Ok(self.move_layout_rows(document, context, count, false)),
-            Key::Char('0') | Key::Home => Ok(self.apply_visual_block_logical_motion(
+            Key::Char('0') => Ok(self.apply_visual_block_logical_motion(
                 document,
                 context,
                 |commands, document| commands.move_cursor(document, Motion::LineStart, 1),
@@ -5654,7 +5662,7 @@ impl CommandInterpreter {
                 context,
                 |commands, document| commands.move_to_document_edge(document, key == Key::DocumentEnd),
             )),
-            Key::Char('^') => Ok(self.apply_visual_block_logical_motion(
+            Key::Char('^') | Key::Home => Ok(self.apply_visual_block_logical_motion(
                 document,
                 context,
                 |commands, document| commands.move_cursor(document, Motion::FirstNonBlank, 1),
@@ -9780,14 +9788,14 @@ impl CommandInterpreter {
                 }
                 let mut output = if matches!(key, Key::DocumentStart | Key::DocumentEnd) {
                     self.move_to_document_edge(document, key == Key::DocumentEnd)
+                } else if matches!(key, Key::Home | Key::End) {
+                    self.move_edit_line_edge(document, key == Key::End)?
                 } else {
                     let motion = match key {
                     Key::Left => Motion::InsertionHorizontal(-1),
                     Key::Right => Motion::InsertionHorizontal(1),
                     Key::Up => Motion::Vertical(-1),
                     Key::Down => Motion::Vertical(1),
-                    Key::Home => Motion::InsertionLineStart,
-                    Key::End => Motion::InsertionLineEnd,
                     _ => unreachable!(),
                     };
                     self.move_cursor(document, motion, 1)
@@ -13201,7 +13209,6 @@ impl CommandInterpreter {
                 }
             }
             Motion::LineStart => line_start(&lines, self.cursor),
-            Motion::InsertionLineStart => line_start(&lines, self.cursor),
             Motion::FirstNonBlank => first_non_blank(text, &lines, self.cursor),
             Motion::LineEnd => {
                 let mut position = self.cursor;
@@ -13489,7 +13496,6 @@ enum Motion {
     InsertionHorizontal(isize),
     Vertical(isize),
     LineStart,
-    InsertionLineStart,
     FirstNonBlank,
     LineEnd,
     InsertionLineEnd,
@@ -14088,8 +14094,8 @@ fn operator_motion_for_key(key: Key) -> Option<OperatorMotion> {
         Key::Char('+') => Some(OperatorMotion::Down),
         Key::Char('k') | Key::Up => Some(OperatorMotion::Up),
         Key::Char('-') => Some(OperatorMotion::Up),
-        Key::Char('0') | Key::Home => Some(OperatorMotion::LineStart),
-        Key::Char('^') => Some(OperatorMotion::FirstNonBlank),
+        Key::Char('0') => Some(OperatorMotion::LineStart),
+        Key::Char('^') | Key::Home => Some(OperatorMotion::FirstNonBlank),
         Key::Char('$') | Key::End => Some(OperatorMotion::LineEnd),
         Key::Char('|') => Some(OperatorMotion::Column),
         Key::Char('w') => Some(OperatorMotion::WordForward(false)),

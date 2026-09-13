@@ -172,7 +172,7 @@ fn internal_palette_edits_are_sparse_undoable_configuration_and_identity_is_prot
         Some(&before)
     );
     let mut parent = before.clone();
-    parent.based_on = Some("Character".into());
+    parent.based_on = Some("Code".into());
     assert!(apply(&mut doc, StyleDefinitionEdit::UpdateCharacter(parent)).is_err());
     assert!(apply(&mut doc, StyleDefinitionEdit::DeleteCharacter(id.clone())).is_err());
     assert!(apply(

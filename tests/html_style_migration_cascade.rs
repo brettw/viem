@@ -7,7 +7,6 @@ const LEGACY_A: &str = r#".viem-c-41 {
   --viem-style-id: "A";
   --viem-style-name: "A \22 name\22 ";
   --viem-style-role: "character";
-  --viem-based-on: "Character";
   --viem-prop-character-weight: "400";
   --viem-prop-character-underline: "false";
   --viem-prop-character-letter-spacing: "0";
@@ -98,7 +97,7 @@ fn migration_keeps_untouched_rule_before_opaque_override_and_later_v2_sheet() {
             StyleDefinitionEdit::InsertCharacter {
                 style: CharacterStyle {
                     id: "B".into(),
-                    based_on: Some("Character".into()),
+                    based_on: None,
                     properties: CharacterProperties {
                         weight: Some(700),
                         ..Default::default()

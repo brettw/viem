@@ -570,3 +570,48 @@ fn character_assignment_across_source_groups_preserves_unselected_text_and_direc
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source);
 }
+
+
+#[test]
+fn default_paragraph_character_assignment_handles_a_real_cs0_and_keeps_source_scopes() {
+    use viem_core::layout::DocumentLayoutStyles;
+    let header = r"{\rtf1\deff2{\fonttbl{\f0 Arial;}{\f1 Courier;}{\f2 Times New Roman;}}{\stylesheet{\s0\fs24 Normal;}{\s5\sbasedon0\fs40 Heading;}{\*\cs0\b Zero;}{\*\cs2\f1\i Accent;}}";
+    for assigned in [0, 2] {
+        let source = format!("{header}\\s5\\li60\\cs{assigned}\\ul Before pick{{\\*\\unknown Opaque}} after}}");
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
+        let before = DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap();
+        let selected = range(&document, 7, 11);
+        apply(&mut document, PersistedStyleIntent::AssignCharacterStyle {
+            range: selected,
+            style: "".into(),
+        });
+        assert_eq!(document.text(), "Before pick after");
+        let cleared = DocumentLayoutStyles::character_at(document.projection(), 7, false).unwrap();
+        assert_eq!(cleared.font_families, vec!["Times New Roman"]);
+        assert_eq!(cleared.size, 20.0);
+        assert_eq!(cleared.slant, FontSlant::Upright);
+        assert!(!cleared.bold);
+        assert!(cleared.underline, "Sparse direct formatting survives named-style clearing");
+        for at in [0, 12] {
+            assert_eq!(DocumentLayoutStyles::character_at(document.projection(), at, false).unwrap(), before);
+        }
+        assert!(!document.projection().style_spans().iter().any(|span| {
+            span.range.contains(&7) && matches!(span.application, StyleApplication::Named(_))
+        }));
+        assert_eq!(document.projection().blocks()[0].direct_paragraph.leading_indent, Some(3.0));
+        let saved = document.source_bytes();
+        assert!(saved.starts_with(header.as_bytes()), "Styles and font tables remain byte exact");
+        assert!(String::from_utf8_lossy(&saved).contains(r"{\*\unknown Opaque}"));
+        let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Rtf).unwrap();
+        assert_eq!(DocumentLayoutStyles::character_at(reopened.projection(), 7, false).unwrap(), cleared);
+        let mut heading = document.projection().style_sheet().block_style(&"RtfP5".into()).unwrap().clone();
+        heading.character.size = Some(22.0);
+        edit(&mut document, StyleDefinitionEdit::UpdateBlock(heading));
+        assert_eq!(DocumentLayoutStyles::character_at(document.projection(), 7, false).unwrap().size, 22.0,
+            "Clearing must retain paragraph inheritance rather than freeze its appearance as direct formatting");
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), saved);
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+}

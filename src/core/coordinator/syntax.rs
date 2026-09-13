@@ -314,7 +314,7 @@ fn code_metrics_changed(
     let resolve = |sheet: &crate::document::StyleSheet, name: Option<&str>| {
         sheet
             .resolve_assigned_paragraph_style(
-                &crate::document::DocumentStyleAssignment::new(sheet.base_document.clone()),
+                &crate::document::DocumentStyleAssignment::new(sheet.base_paragraph.clone()),
                 &sheet.base_paragraph,
                 &Default::default(),
                 &Default::default(),

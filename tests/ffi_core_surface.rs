@@ -1389,7 +1389,7 @@ fn native_named_style_assignment_checks_selection_sheet_and_preserves_history() 
                 edit: StyleDefinitionEdit::InsertCharacter {
                     style: CharacterStyle {
                         id: "Accent".into(),
-                        based_on: Some("Character".into()),
+                        based_on: None,
                         properties: CharacterProperties {
                             underline: Some(true),
                             ..Default::default()

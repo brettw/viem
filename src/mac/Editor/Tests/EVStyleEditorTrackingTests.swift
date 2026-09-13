@@ -38,8 +38,8 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         }
         moveCaret(1, in: surface)
         surface.perform(menuCommand: .editCharacterStyles, sender: nil)
-        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseCharacter,
-                       "Opening Character explicitly still edits the base character style when it is current")
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading,
+                       "With no named character style, Character opens the current paragraph style")
         surface.perform(menuCommand: .editParagraphStyles, sender: nil)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
         XCTAssertEqual(try surface.backend.recoverySnapshot(), original)
@@ -144,8 +144,8 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         let footer = try XCTUnwrap(character.item(withTitle: "Edit Styles…"))
         XCTAssertTrue(surface.editorView.validateMenuItem(footer))
         surface.editorView.performEditorStyleMenuAction(footer)
-        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseCharacter,
-                       "An explicit Character editor request uses Base Character for mixed assignments")
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading,
+                       "Mixed character assignments open the uniform current paragraph style")
 
         surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 20))
         let mixedParagraphs = try session.selectedNamedStyles()
@@ -167,11 +167,11 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         for _ in 0..<200 {
             backend.pollSyntax()
             surface.refreshPresentation()
-            if try session.selectedNamedStyles().character != EVStyleKey.baseCharacter.id { break }
+            if try session.selectedNamedStyles().character != nil { break }
             try await Task.sleep(for: .milliseconds(10))
         }
         let capture = try XCTUnwrap(session.selectedNamedStyles().character)
-        XCTAssertNotEqual(capture, EVStyleKey.baseCharacter.id)
+        XCTAssertFalse(capture.rawValue.isEmpty)
         let captureKey = EVStyleKey(namespace: .character, id: capture)
         let original = try backend.recoverySnapshot()
         let coordinator = EVStyleEditorCoordinator.shared
@@ -190,9 +190,9 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         XCTAssertEqual(try backend.recoverySnapshot(), original)
         XCTAssertFalse(surface.canUndo)
 
-        coordinator.showCode(configuration: configuration, preferredStyle: .baseDocument, sender: nil)
+        coordinator.showCode(configuration: configuration, preferredStyle: .baseParagraph, sender: nil)
         moveCaret(2, in: surface)
-        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseDocument,
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph,
                        "Standalone Code settings have no source caret to follow")
         XCTAssertTrue(coordinator.inspection?.mutationsEnabled == true)
         XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, 0)

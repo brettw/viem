@@ -152,10 +152,10 @@ fn named_identity_and_sparse_direct_overrides_remain_separate() {
     assert_eq!(core.selected_typography(view).unwrap().0.size, 22.);
     text(&mut core, view, "x");
     named_at(core.document(), 0..1, "RtfC2");
-    assign(&mut core, view, "Character");
+    assign(&mut core, view, "");
     assert_eq!(
         core.selected_named_styles(view).unwrap().character,
-        Some("Character".into())
+        None
     );
     assert_eq!(
         core.selected_typography(view).unwrap().0.slant,
@@ -200,7 +200,7 @@ fn named_choice_replays_with_dot_and_resets_on_normal_movement() {
     key(&mut core, view, Key::Char('l'));
     assert_eq!(
         core.selected_named_styles(view).unwrap().character,
-        Some("Character".into())
+        None
     );
     key(&mut core, view, Key::Char('h'));
     assign(&mut core, view, "Code");
@@ -343,7 +343,7 @@ fn vertical_navigation_resets_pending_name_in_both_line_policies() {
         key(&mut core, view, Key::Char('j'));
         assert_eq!(
             core.selected_named_styles(view).unwrap().character,
-            Some("Character".into())
+            None
         );
         key(&mut core, view, Key::Char('i'));
         text(&mut core, view, "x");
@@ -354,4 +354,21 @@ fn vertical_navigation_resets_pending_name_in_both_line_policies() {
             .iter()
             .all(|span| { span.application != StyleApplication::Named("Code".into()) }));
     }
+}
+
+#[test]
+fn default_paragraph_typing_in_unstyled_html_keeps_ordinary_source() {
+    let source = "<p data-keep='x'>word</p><!--keep-->";
+    let (mut core, view) = fixture(Format::Html, source);
+    key(&mut core, view, Key::Char('i'));
+    assign(&mut core, view, "");
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+    text(&mut core, view, "a");
+    text(&mut core, view, "b");
+    text(&mut core, view, "c");
+    assert_eq!(core.document().source_bytes(), b"<p data-keep='x'>abcword</p><!--keep-->");
+    assert_eq!(core.selected_named_styles(view).unwrap().character, None);
+    key(&mut core, view, Key::Escape);
+    key(&mut core, view, Key::Char('u'));
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
 }

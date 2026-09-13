@@ -225,9 +225,6 @@ impl StyleSheet {
                     break;
                 };
                 current = style.based_on.clone();
-                if id == self.base_character {
-                    break;
-                }
                 if let Some(metadata) = self.character_metadata.get_mut(&id) {
                     metadata.origin = StyleDefinitionOrigin::SourceBacked;
                 }
@@ -237,7 +234,7 @@ impl StyleSheet {
                     break;
                 };
                 current = style.based_on.clone();
-                if id == self.base_paragraph || id == self.base_document {
+                if id == self.base_paragraph {
                     break;
                 }
                 if let Some(metadata) = self.block_metadata.get_mut(&id) {
@@ -311,22 +308,9 @@ impl StyleSheet {
             });
         }
         defaults.install_source_definitions(&definitions)?;
-        if defaults.block_styles[&defaults.base_document].role != BlockRole::Document
-            || defaults.block_styles[&defaults.base_document]
-                .based_on
-                .is_some()
-            || defaults.block_styles[&defaults.base_paragraph].role != BlockRole::Paragraph
-            || defaults.block_styles[&defaults.base_paragraph]
-                .based_on
-                .as_ref()
-                != Some(&defaults.base_document)
-            || defaults.character_styles[&defaults.base_character]
-                .based_on
-                .is_some()
-        {
-            return Err(StyleDefaultsError::Json(
-                "invalid base style relationships".into(),
-            ));
+        if defaults.block_styles[&defaults.base_paragraph].role != BlockRole::Paragraph
+            || defaults.block_styles[&defaults.base_paragraph].based_on.is_some() {
+            return Err(StyleDefaultsError::Json("invalid base paragraph relationship".into()));
         }
         let mut candidate = self.clone();
         candidate.default_blocks = defaults.block_styles;
@@ -339,7 +323,7 @@ impl StyleSheet {
         candidate.validate_block_cycles()?;
         candidate.validate_character_cycles()?;
         candidate.resolve_document_style(
-            &candidate.base_document,
+            &candidate.base_paragraph,
             &BlockProperties::default(),
             &CharacterProperties::default(),
         )?;

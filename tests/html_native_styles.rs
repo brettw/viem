@@ -357,7 +357,7 @@ fn native_source_style_intent_with_export_off_keeps_source_clean() {
     let mut style = document
         .projection()
         .style_sheet()
-        .block_style(&"Document".into())
+        .block_style(&"Paragraph".into())
         .unwrap()
         .clone();
     style.character.size = Some(28.);

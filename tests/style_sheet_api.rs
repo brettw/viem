@@ -25,7 +25,7 @@ fn style_definitions_have_ergonomic_read_only_lookup_and_iteration() {
     let character_id = StyleId::from("Comment");
     let character = CharacterStyle {
         id: character_id.clone(),
-        based_on: Some(sheet.base_character.clone()),
+        based_on: None,
         properties: CharacterProperties::default(),
     };
     sheet

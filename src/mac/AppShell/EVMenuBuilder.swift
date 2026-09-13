@@ -45,7 +45,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         mainMenu.addItem(makeStyleMenu(title: "Paragraph", role: .paragraph,
             baseTitle: "Base Paragraph", baseCommand: .baseParagraphStyle, editCommand: .editParagraphStyles))
         mainMenu.addItem(makeStyleMenu(title: "Character", role: .character,
-            baseTitle: "Base Character", baseCommand: .baseCharacterStyle, editCommand: .editCharacterStyles))
+            baseTitle: "Default Paragraph", baseCommand: .defaultParagraphStyle, editCommand: .editCharacterStyles))
         mainMenu.addItem(topLevelItem("View", submenu: makeViewMenu()))
 
         let windowMenu = makeWindowMenu(for: application)
@@ -380,7 +380,8 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         let styles = NSMenu(title: "Style")
-        styles.addItem(coreItem("Edit document style…", command: .editDocumentStyles))
+        styles.addItem(coreItem("Edit Styles…", command: .editStyles,
+            key: String(UnicodeScalar(NSF8FunctionKey)!), modifiers: []))
         styles.addItem(coreItem("Save as default text style", command: .saveDefaultStyle))
         styles.addItem(coreItem("Include style definitions in file", command: .includeStyleDefinitionsInFile))
         menu.addItem(submenuItem("Style", submenu: styles))
@@ -673,11 +674,9 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     ) -> (baseTitle: String, baseStableID: String, selectionCommand: EVMenuCommand, editCommand: EVMenuCommand) {
         switch role {
         case .character:
-            ("Base Character", "Character", .baseCharacterStyle, .editCharacterStyles)
+            ("Default Paragraph", "", .defaultParagraphStyle, .editCharacterStyles)
         case .paragraph:
             ("Base Paragraph", "Paragraph", .baseParagraphStyle, .editParagraphStyles)
-        case .document:
-            ("Base Document", "Document", .baseDocumentStyle, .editDocumentStyles)
         }
     }
 

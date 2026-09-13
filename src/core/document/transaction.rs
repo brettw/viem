@@ -1696,7 +1696,7 @@ impl Document {
         }
         if self.format().is_markdown() {
             if let PersistedStyleIntent::AssignCharacterStyle { range, style } = &intent {
-                if style.0 == "Code" || style == &self.projection().style_sheet().base_character {
+                if style.0 == "Code" || style.0.is_empty() {
                     self.validate_style_text_range(*range)?;
                     return self.prepare_markdown_named_character(
                         range.start().offset()..range.end().offset(),
@@ -2117,15 +2117,23 @@ impl Document {
             }
             PersistedStyleIntent::AssignCharacterStyle { range, style } => {
                 self.validate_style_text_range(*range)?;
-                if expected.character_style(style).is_none() {
+                if !style.0.is_empty() && expected.character_style(style).is_none() {
                     return Err(StyleError::UnknownStyle(style.clone()).into());
                 }
                 let range = range.start().offset()..range.end().offset();
+                if style.0.is_empty() {
+                    let current = self.projection().selected_named_styles(range.clone(), BoundaryAffinity::Downstream);
+                    if current.character.is_none() && !current.character_mixed {
+                        return Ok(self.no_op_prepared());
+                    }
+                }
                 let sources = named_character::html_source_runs(self, &range)?;
                 if sources.is_empty() {
                     return Ok(self.no_op_prepared());
                 }
-                let (opening, closing) = if style.0 == "Code" {
+                let (opening, closing) = if style.0.is_empty() {
+                    ("<span data-viem-character=\"none\">".to_owned(), "</span>")
+                } else if style.0 == "Code" {
                     ("<code>".to_owned(), "</code>")
                 } else {
                     (
@@ -2293,6 +2301,7 @@ impl Document {
                 &candidate.projection,
                 &(range.start().offset()..range.end().offset()),
                 style,
+                false,
             )?;
             for (offset, grapheme) in
                 self.text()[range.start().offset()..range.end().offset()].grapheme_indices(true)
@@ -2301,7 +2310,7 @@ impl Document {
                     continue;
                 }
                 let offset = range.start().offset() + offset;
-                if !candidate.projection.style_spans().iter().any(|span| {
+                if !style.0.is_empty() && !candidate.projection.style_spans().iter().any(|span| {
                     span.range.contains(&offset)
                         && span.application == StyleApplication::Named(style.clone())
                 }) {
@@ -2469,14 +2478,14 @@ impl Document {
                         &input,
                         id,
                         true,
-                        Some(&before.base_character),
+                        None,
                     )?);
                 }
                 patches
             }
             PersistedStyleIntent::AssignCharacterStyle { range, style } => {
                 self.validate_style_text_range(*range)?;
-                if expected.character_style(style).is_none() {
+                if !style.0.is_empty() && expected.character_style(style).is_none() {
                     return Err(StyleError::UnknownStyle(style.clone()).into());
                 }
                 super::rtf_styles::character_assignment_patches(
@@ -2637,8 +2646,7 @@ impl Document {
                 } else {
                     old_named
                 };
-                if new_named.unwrap_or(&actual.base_character)
-                    != expected.unwrap_or(&before.base_character)
+                if new_named != expected.filter(|id| !id.0.is_empty())
                 {
                     return Err(DocumentError::VerificationFailed.into());
                 }
@@ -2692,7 +2700,7 @@ impl Document {
                     style_sheet.rebase_source_references_for_delete(edit, style_sheet_revision)?;
                     configured_projection.reassign_deleted_style(edit.style_id(), edit.is_block());
                     if document_style.style == *edit.style_id() {
-                        document_style.style = style_sheet.base_document.clone();
+                        document_style.style = style_sheet.base_paragraph.clone();
                     }
                 }
                 style_sheet.apply_configuration_edit(
@@ -7550,7 +7558,7 @@ fn effective_block_definition_changes(
         let after_id = if after_sheet.block_style(id).is_some() {
             id
         } else if before.role == super::BlockRole::Document {
-            &after_sheet.base_document
+            &after_sheet.base_paragraph
         } else {
             &after_sheet.base_paragraph
         };
@@ -7630,17 +7638,22 @@ fn effective_character_definition_changes(
             Some(id),
             &CharacterProperties::default(),
         )?;
-        let after_id = if after_sheet.character_style(id).is_some() {
-            id
-        } else {
-            &after_sheet.base_character
-        };
+        let after_id = after_sheet.character_style(id).map(|_| id);
+        // Equal values in Base Paragraph do not imply equal values elsewhere:
+        // clearing an explicit 14pt declaration exposes a heading's 24pt size.
+        // Compare sparse named chains as well, so declarations that begin or
+        // stop masking paragraph context invalidate their dependent ranges.
+        // This depends only on style ancestry, never a whole-document traversal.
+        changed.extend(
+            before_sheet.named_character_declarations(Some(id))?
+                .changed_properties(&after_sheet.named_character_declarations(after_id)?),
+        );
         let after = after_sheet.resolve_assigned_paragraph_style(
             after_assignment,
             &after_sheet.base_paragraph,
             &BlockProperties::default(),
             &CharacterProperties::default(),
-            Some(after_id),
+            after_id,
             &CharacterProperties::default(),
         )?;
         changed.extend(before.character.changed_properties(&after.character));

@@ -18,7 +18,7 @@ fn same_metrics(a: &ResolvedCharacterStyle, b: &ResolvedCharacterStyle) -> bool 
 
 fn metric_runs(projection: &FormattedDocument) -> Result<Vec<MetricRun>, StyleError> {
     let sheet = projection.style_sheet();
-    let assignment = DocumentStyleAssignment::new(sheet.base_document.clone());
+    let assignment = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
     let resolve = |id| {
         sheet
             .resolve_assigned_paragraph_style(

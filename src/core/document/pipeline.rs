@@ -565,7 +565,7 @@ impl TransformationPipelineSnapshot {
             }
             PipelineEditIntent::AssignCharacterStyle { style }
                 if self.configuration.format.is_markdown()
-                    && matches!(style.0.as_str(), "Code" | "Character") => StageEditDisposition::Translated,
+                    && matches!(style.0.as_str(), "Code" | "") => StageEditDisposition::Translated,
             PipelineEditIntent::AssignBlockStyle { .. }
             | PipelineEditIntent::AssignCharacterStyle { .. } => StageEditDisposition::Unsupported(
                 if self.configuration.format == Format::PlainText {

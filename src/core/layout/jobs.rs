@@ -1025,6 +1025,22 @@ impl LayoutJobCandidate {
         }
     }
 
+    pub(crate) fn append_adjacent_region(&mut self, following: &RegionalLayoutSnapshot) {
+        match &mut self.product {
+            LayoutJobProduct::RegionalHardLines(region)
+            | LayoutJobProduct::PartialViewport(region) => region.append_adjacent_region(following),
+        }
+    }
+
+    pub(crate) fn prepend_adjacent_region(&mut self, preceding: &RegionalLayoutSnapshot) {
+        match &mut self.product {
+            LayoutJobProduct::RegionalHardLines(region)
+            | LayoutJobProduct::PartialViewport(region) => {
+                region.prepend_adjacent_region(preceding);
+            }
+        }
+    }
+
     pub(crate) fn append_following_viewport_tail(
         &mut self,
         following: Option<&RegionalLayoutSnapshot>,

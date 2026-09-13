@@ -77,8 +77,8 @@ final class EVCodePreferencesTests: XCTestCase {
 
   func testCodeStyleAuthorityDoesNotResurrectDeletedDeclarations() throws {
     let configuration = fixture()
-    let old = Data(#"{"version":1,"block_styles":[{"id":"Document","character":{"size":19}}],"character_styles":[{"id":"keyword"}]}"#.utf8)
-    let cleared = Data(#"{"version":1,"block_styles":[{"id":"Document","character":{}}],"character_styles":[],"suppressed":["keyword"]}"#.utf8)
+    let old = Data(#"{"version":2,"block_styles":[{"id":"Paragraph","character":{"size":19}}],"character_styles":[{"id":"keyword"}]}"#.utf8)
+    let cleared = Data(#"{"version":2,"block_styles":[{"id":"Paragraph","character":{}}],"character_styles":[],"suppressed":["keyword"]}"#.utf8)
     try configuration.saveCodeStyleSheet(old)
     try configuration.saveCodeStyleSheet(cleared)
     let stored = try XCTUnwrap(configuration.codeStyleSheet())
@@ -89,22 +89,22 @@ final class EVCodePreferencesTests: XCTestCase {
     XCTAssertNil(try configuration.styleDefaults(named: "text"))
   }
 
-  func testCodeStyleVersionsLoadAndSaveAcrossMigrationAndSettingsUndo() throws {
+  func testCodeStyleVersionTwoLoadsAndSavesAcrossSettingsUndo() throws {
     let configuration = fixture()
-    let legacy = Data(#"{"version":1,"character_styles":[{"id":"syntax:@comment","properties":{"foreground":{"red":0.4}}}]}"#.utf8)
+    let customized = Data(#"{"version":2,"character_styles":[{"id":"syntax:@comment","properties":{"foreground":{"red":0.4}}}]}"#.utf8)
     let linked = Data(#"{"version":2,"character_styles":[],"suppressed_character_ids":["syntax:Todo"]}"#.utf8)
-    for (data, expectedVersion) in [(legacy, 1), (linked, 2), (legacy, 1), (linked, 2)] {
+    for (data, expectedCount) in [(customized, 1), (linked, 0), (customized, 1), (linked, 0)] {
       try configuration.saveCodeStyleSheet(data)
       let reopened = EVConfigurationStore(directory: configuration.directory, legacyDefaults: nil)
       let saved = try XCTUnwrap(reopened.codeStyleSheet())
       XCTAssertEqual(try reopened.styleDefaults(named: "code"), saved)
       let object = try XCTUnwrap(JSONSerialization.jsonObject(with: saved) as? [String: Any])
-      XCTAssertEqual(object["version"] as? Int, expectedVersion)
-      XCTAssertEqual((object["character_styles"] as? [[String: Any]])?.count, expectedVersion == 1 ? 1 : 0)
+      XCTAssertEqual(object["version"] as? Int, 2)
+      XCTAssertEqual((object["character_styles"] as? [[String: Any]])?.count, expectedCount)
     }
     // The generic format entry point must retain Code's complete replacement
     // semantics, including declarations removed during settings undo.
-    try configuration.saveStyleDefaults(legacy, named: "code")
+    try configuration.saveStyleDefaults(customized, named: "code")
     try configuration.saveStyleDefaults(linked, named: "code")
     let object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(configuration.codeStyleSheet())) as? [String: Any])
     XCTAssertEqual((object["character_styles"] as? [[String: Any]])?.count, 0)
@@ -117,7 +117,7 @@ final class EVCodePreferencesTests: XCTestCase {
     let valid = Data(#"{"version":2,"character_styles":[]}"#.utf8)
     try configuration.saveCodeStyleSheet(valid)
     let file = configuration.directory.appendingPathComponent("code_style.json")
-    for version in ["0", "3", "2.5", "true", "\"2\""] {
+    for version in ["0", "1", "3", "2.5", "true", "\"2\""] {
       let original = try Data(contentsOf: file)
       let unsupported = Data("{\"version\":\(version)}".utf8)
       XCTAssertThrowsError(try configuration.saveCodeStyleSheet(unsupported))

@@ -338,8 +338,8 @@ impl CommandInterpreter {
             } else {
                 match key {
                     Key::Char('$') | Key::End => LineShape::End,
-                    Key::Char('0') | Key::Home => LineShape::Start,
-                    Key::Char('^') => LineShape::StartNonblank,
+                    Key::Char('0') => LineShape::Start,
+                    Key::Char('^') | Key::Home => LineShape::StartNonblank,
                     Key::Char('k' | '-') | Key::Up => LineShape::Up,
                     Key::Char('_') => LineShape::Whole,
                     _ => LineShape::Down,
@@ -415,8 +415,8 @@ impl CommandInterpreter {
                     .and_then(|motion| g_caret(&snapshot, document.text(), motion.position)),
                 Key::Char('-') => gk(&snapshot, current, count, None)
                     .and_then(|motion| g_caret(&snapshot, document.text(), motion.position)),
-                Key::Char('0') | Key::Home => g0(&snapshot, current),
-                Key::Char('^') => g_caret(&snapshot, document.text(), current),
+                Key::Char('0') => g0(&snapshot, current),
+                Key::Char('^') | Key::Home => g_caret(&snapshot, document.text(), current),
                 Key::Char('$') | Key::End => {
                     if count == 1 {
                         g_dollar_for_document(document, &snapshot, current)
@@ -496,7 +496,7 @@ impl CommandInterpreter {
         let target = document.physical_line(target_index)?;
         let source = match key {
             Key::Char('$') | Key::End => target.content_range.end,
-            Key::Char('^' | '+' | '-' | '_') | Key::Enter => {
+            Key::Char('^' | '+' | '-' | '_') | Key::Home | Key::Enter => {
                 let blank = target.text.len() - target.text.trim_start_matches([' ', '\t']).len();
                 target.content_range.start
                     + document
@@ -961,6 +961,64 @@ impl CommandInterpreter {
 }
 
 impl CommandInterpreter {
+    /// Native line selectors share ^/$'s view policy while keeping the
+    /// insertion boundary and edit-mode undo grouping intact.
+    pub(super) fn move_edit_line_edge(
+        &mut self,
+        document: &Document,
+        at_end: bool,
+    ) -> Result<CommandOutput, DocumentError> {
+        if self.line_mode == LineMode::Visual {
+            if let Some(snapshot) = self.line_layout.clone() {
+                let current = match self.current_visual_position(&snapshot) {
+                    Ok(position) => position,
+                    Err(error) => return Ok(layout_error(error)),
+                };
+                let moved = if at_end {
+                    g_dollar_for_document(document, &snapshot, current)
+                } else {
+                    g_caret(&snapshot, document.text(), current)
+                };
+                let position = match moved {
+                    Ok(position) => position,
+                    Err(error) => return Ok(layout_error(error)),
+                };
+                self.desired_x = None;
+                self.preferred_column = None;
+                return Ok(self.install_visual_position(document, &snapshot, position));
+            }
+            // Headless command interpretation retains its hard-line fallback.
+            let output = self.move_cursor(document, if at_end {
+                Motion::InsertionLineEnd
+            } else {
+                Motion::FirstNonBlank
+            }, 1);
+            self.boundary_affinity = if at_end { BoundaryAffinity::Upstream } else { BoundaryAffinity::Downstream };
+            self.visual_position = None;
+            return Ok(output);
+        }
+        let line = self.physical_line(document)?;
+        let source = if at_end {
+            line.content_range.end
+        } else {
+            let blank = line.text.len() - line.text.trim_start_matches([' ', '\t']).len();
+            line.content_range.start + document.encoding().encode_fragment(&line.text[..blank])?.len()
+        };
+        let point = document.visible_point_for_source(source, !at_end)?;
+        let before = (self.cursor, self.boundary_affinity);
+        self.cursor = point;
+        self.boundary_affinity = if at_end { BoundaryAffinity::Upstream } else { BoundaryAffinity::Downstream };
+        self.visual_position = None;
+        self.desired_x = None;
+        self.preferred_column = None;
+        self.typing_style = Default::default();
+        self.remember_physical_cursor(document, source);
+        Ok(CommandOutput {
+            cursor_moved: before != (self.cursor, self.boundary_affinity),
+            ..CommandOutput::complete()
+        })
+    }
+
     pub(super) fn mode_line_insertion(
         &self,
         document: &Document,

@@ -312,7 +312,7 @@ fn owned_styles_in_templates_atomic_content_and_script_text_are_not_adopted_or_e
                 .unwrap()
                 .character
                 .size,
-            None,
+            Some(14.0),
             "{hidden}"
         );
         enable_style_export(&mut document);
@@ -462,7 +462,7 @@ fn character_assignment_spans_existing_named_and_semantic_wrappers_without_touch
             StyleDefinitionEdit::InsertCharacter {
                 style: CharacterStyle {
                     id: id.into(),
-                    based_on: Some("Character".into()),
+                    based_on: None,
                     properties: CharacterProperties {
                         size: Some(if id == "A" { 12.0 } else { 20.0 }),
                         ..Default::default()
@@ -513,7 +513,7 @@ fn canonical_character_styles_preserve_sparse_properties_ids_and_rule_locality()
         StyleDefinitionEdit::InsertCharacter {
             style: CharacterStyle {
                 id: id.clone(),
-                based_on: Some("Character".into()),
+                based_on: None,
                 properties: CharacterProperties {
                     weight: Some(700),
                     underline: Some(false),
@@ -577,7 +577,7 @@ fn named_parent_edits_update_only_dependent_materialized_css_rules() {
     for (id, based_on, properties) in [
         (
             parent.clone(),
-            Some("Character".into()),
+            None,
             CharacterProperties {
                 weight: Some(400),
                 ..Default::default()
@@ -593,7 +593,7 @@ fn named_parent_edits_update_only_dependent_materialized_css_rules() {
         ),
         (
             unrelated.clone(),
-            Some("Character".into()),
+            None,
             CharacterProperties {
                 slant: Some(FontSlant::Italic),
                 ..Default::default()
@@ -712,7 +712,7 @@ fn character_assignments_use_named_layers_and_inline_overrides_win() {
         StyleDefinitionEdit::InsertCharacter {
             style: CharacterStyle {
                 id: id.clone(),
-                based_on: Some("Character".into()),
+                based_on: None,
                 properties: CharacterProperties {
                     weight: Some(400),
                     foreground: Some(Color {
@@ -842,13 +842,13 @@ fn source_heading_inspector_field_edits_write_a_rule_and_are_undoable() {
 #[test]
 fn deleting_assigned_style_removes_only_its_rule_and_class_and_rebases_children() {
     let mut document = html("<p data-keep='yes'>Text</p>");
-    for (id, parent) in [("Parent", "Character"), ("Child", "Parent")] {
+    for (id, parent) in [("Parent", ""), ("Child", "Parent")] {
         definition(
             &mut document,
             StyleDefinitionEdit::InsertCharacter {
                 style: CharacterStyle {
                     id: id.into(),
-                    based_on: Some(parent.into()),
+                    based_on: (!parent.is_empty()).then(|| parent.into()),
                     properties: Default::default(),
                 },
                 metadata: metadata(id),
@@ -887,7 +887,7 @@ fn deleting_assigned_style_removes_only_its_rule_and_class_and_rebases_children(
             .character_style(&StyleId::from("Child"))
             .unwrap()
             .based_on,
-        Some("Character".into())
+        None
     );
     assert!(document.undo());
     assert_eq!(document.source_bytes(), before);

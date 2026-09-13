@@ -67,6 +67,18 @@ public final class EVConfigurationStore {
           let result = try? JSONDecoder().decode(EVTheme.self, from: data), result.isValid else { return .paper }
     return result
   }
+  public var viewMargins: EVViewMargins {
+    guard let value = (root["view"] as? [String: Any])?["margins"],
+          let data = try? JSONSerialization.data(withJSONObject: value),
+          let result = try? JSONDecoder().decode(EVViewMargins.self, from: data), result.isValid
+    else { return EVViewMargins() }
+    return result
+  }
+  public func setViewMargins(_ margins: EVViewMargins) throws {
+    guard margins.isValid else { throw invalid("View margins must be between 0 and 1000 pixels") }
+    let value = try JSONSerialization.jsonObject(with: JSONEncoder().encode(margins))
+    try update(section: "view", values: ["margins": value])
+  }
   public var smartQuotes: Bool { (root["editing"] as? [String: Any])?["smartQuotes"] as? Bool ?? false }
   /// Application default for hard-line reflow (`gq`/`gw`); buffers inherit it
   /// unless `:set textwidth` overrides them locally. Missing values use 80.
@@ -214,13 +226,11 @@ public final class EVConfigurationStore {
   }
   private static func validateStyleVersion(_ object: [String: Any], named name: String) throws {
     guard name == "code" else { try validateVersion(object); return }
-    // The core migrates Code's copied version-1 declarations to the linked
-    // version-2 stylesheet. Other settings and format defaults remain at 1.
     guard let version = object["version"] as? NSNumber,
           CFGetTypeID(version) != CFBooleanGetTypeID(),
-          [1, 2].contains(version.intValue),
+          version.intValue == 2,
           version.doubleValue == Double(version.intValue)
-    else { throw invalid("Unsupported Code stylesheet version; expected 1 or 2") }
+    else { throw invalid("Unsupported Code stylesheet version; expected 2") }
   }
   private static func validate(_ object: [String: Any]) throws {
     try validateVersion(object)
@@ -234,6 +244,13 @@ public final class EVConfigurationStore {
       let data = try JSONSerialization.data(withJSONObject: value)
       let theme = try JSONDecoder().decode(EVTheme.self, from: data)
       guard theme.isValid else { throw invalid("Invalid theme values") }
+    }
+    if let raw = object["view"] {
+      guard let fields = raw as? [String: Any] else { throw invalid("Invalid View settings") }
+      if let value = fields["margins"] {
+        let margins = try JSONDecoder().decode(EVViewMargins.self, from: JSONSerialization.data(withJSONObject: value))
+        guard margins.isValid else { throw invalid("View margins must be between 0 and 1000 pixels") }
+      }
     }
     for (section, key) in [("editing", "smartQuotes"), ("appearance", "showStatusBar")] {
       if let raw = object[section] {
