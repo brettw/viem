@@ -45,8 +45,7 @@ extension EVEditorSurfaceController {
   /// Resolve against the current source/settings authority. A nil kind is the
   /// caret-following policy: prefer a unique non-default character assignment.
   func currentStyleEditorKey(preferredKind: EVStyleKind? = nil) -> EVStyleKey {
-    let fallback = preferredKind?.baseKey ?? .baseParagraph
-    if preferredKind == .document { return fallback }
+    let fallback = EVStyleKey.baseParagraph
     guard let session,
       let selected = try? session.selectedNamedStyles(),
       let snapshot = try? backend.sourceFormat == .code
@@ -64,9 +63,9 @@ extension EVEditorSurfaceController {
       return snapshot.definition(for: key)?.kind == kind ? key : nil
     }
     let character = current(.character, id: selected.character, mixed: selected.characterMixed)
-    if preferredKind == .character { return character ?? .baseCharacter }
     let paragraph = current(.paragraph, id: selected.paragraph, mixed: selected.paragraphMixed)
     if preferredKind == .paragraph { return paragraph ?? .baseParagraph }
-    return character.flatMap { $0 == .baseCharacter ? nil : $0 } ?? paragraph ?? .baseParagraph
+    if preferredKind == .character { return character ?? paragraph ?? .baseParagraph }
+    return character ?? paragraph ?? .baseParagraph
   }
 }

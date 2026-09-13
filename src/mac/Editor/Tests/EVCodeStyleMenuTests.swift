@@ -40,7 +40,7 @@ final class EVCodeStyleMenuTests: XCTestCase {
         builder.menuNeedsUpdate(character)
         builder.menuNeedsUpdate(paragraph)
         let keyword = try XCTUnwrap(character.item(withTitle: "@keyword"))
-        let baseCharacter = try XCTUnwrap(character.item(withTitle: "Base Character"))
+        let baseCharacter = try XCTUnwrap(character.item(withTitle: "Default Paragraph"))
         let baseParagraph = try XCTUnwrap(paragraph.item(withTitle: "Base Paragraph"))
         let characterFooter = try XCTUnwrap(character.item(withTitle: "Edit Styles…"))
         let paragraphFooter = try XCTUnwrap(paragraph.item(withTitle: "Edit Styles…"))
@@ -112,7 +112,7 @@ final class EVCodeStyleMenuTests: XCTestCase {
         let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
         let characters = catalogue.entries.filter { $0.role == .character }
         XCTAssertEqual(Set(characters.map(\.stableID)),
-                       Set(initial.definitions.filter { $0.kind == .character }.map { $0.key.id.rawValue }))
+                       Set(initial.definitions.filter { $0.kind == .character }.map { $0.key.id.rawValue } + [""]))
         XCTAssertTrue(characters.allSatisfy { $0.actionKind == .edit && $0.presentation.isEnabled })
         let keyword = try XCTUnwrap(characters.first { $0.displayName == "@keyword" })
         let coordinator = EVStyleEditorCoordinator.shared
@@ -158,8 +158,8 @@ final class EVCodeStyleMenuTests: XCTestCase {
         XCTAssertEqual(entry.displayName, "Define @keyword…")
         XCTAssertEqual(entry.stableID, "", "An unresolved reference has no invented definition ID")
         XCTAssertEqual(entry.presentation.state, .off)
-        XCTAssertEqual(catalogue.entries.first { $0.role == .character && $0.stableID == "Character" }?
-            .presentation.state, .on, "An unresolved syntax style renders with Base Character")
+        XCTAssertEqual(catalogue.entries.first { $0.role == .character && $0.stableID == "" && $0.isBase }?
+            .presentation.state, .on, "An unresolved syntax style renders with Default Paragraph")
         XCTAssertEqual(try code.snapshot().identity.styleSheetRevision, missingRevision)
         XCTAssertFalse(try code.snapshot().definitions.contains { $0.name == "@keyword" })
         let coordinator = EVStyleEditorCoordinator.shared
@@ -187,8 +187,8 @@ final class EVCodeStyleMenuTests: XCTestCase {
         let coordinator = EVStyleEditorCoordinator.shared
         coordinator.close()
         defer { coordinator.close() }
-        for (command, key) in [(EVMenuCommand.editCharacterStyles, EVStyleKey.baseCharacter),
-                               (.editParagraphStyles, .baseParagraph), (.editDocumentStyles, .baseDocument)] {
+        for (command, key) in [(EVMenuCommand.editCharacterStyles, EVStyleKey.baseParagraph),
+                               (.editParagraphStyles, .baseParagraph), (.editStyles, .baseParagraph)] {
             XCTAssertTrue(surface.presentation(for: command).isEnabled)
             surface.perform(menuCommand: command, sender: nil)
             XCTAssertEqual(coordinator.inspection?.selectedStyleKey, key)

@@ -7,7 +7,7 @@ fn id(name: &str) -> StyleId {
 fn resolved(sheet: &StyleSheet, name: &str) -> ResolvedCharacterStyle {
     sheet
         .resolve_paragraph_style(
-            &sheet.base_document,
+            &sheet.base_paragraph,
             &sheet.base_paragraph,
             resolve_name(sheet, name),
             &BlockProperties::default(),
@@ -20,7 +20,7 @@ fn resolved(sheet: &StyleSheet, name: &str) -> ResolvedCharacterStyle {
 /// Reproduce the sparse version-1 file, whose changed entries nevertheless
 /// stored entire definitions, including their copied default foreground.
 fn legacy_json(sheet: &StyleSheet) -> Vec<u8> {
-    let defaults = default_sheet_with_links(false);
+    let defaults = default_sheet();
     serde_json::to_vec(&File {
         version: 1,
         block_styles: vec![],
@@ -48,16 +48,10 @@ fn legacy_json(sheet: &StyleSheet) -> Vec<u8> {
 
 #[test]
 fn links_preserve_the_default_palette_and_exact_name_lookup() {
-    let legacy = default_sheet_with_links(false);
     let linked = default_sheet();
     validate(&linked).unwrap();
-    for metadata in legacy.character_metadata.values() {
-        assert_eq!(
-            resolved(&linked, &metadata.display_name),
-            resolved(&legacy, &metadata.display_name),
-            "{} changed its default appearance",
-            metadata.display_name
-        );
+    for (name, color) in [("@comment", (115, 123, 130)), ("@keyword.function", (170, 65, 153)), ("@string.escape", (38, 132, 77))] {
+        assert_eq!(resolved(&linked, name).foreground, Color { red: color.0 as f32 / 255., green: color.1 as f32 / 255., blue: color.2 as f32 / 255., alpha: 1. });
     }
     for (child, parent) in [
         ("@comment.documentation", "@comment"),
@@ -129,124 +123,22 @@ fn parent_changes_cascade_until_an_individual_property_is_overridden() {
 }
 
 #[test]
-fn legacy_migration_separates_copied_defaults_from_local_changes_and_renames() {
-    let mut legacy = default_sheet_with_links(false);
-    let comment_id = id("Comment");
-    let color = Color {
-        red: 0.7,
-        green: 0.2,
-        blue: 0.3,
-        alpha: 1.,
-    };
-    legacy
-        .character_styles
-        .get_mut(&comment_id)
-        .unwrap()
-        .properties
-        .foreground = Some(color);
-    legacy
-        .character_metadata
-        .get_mut(&comment_id)
-        .unwrap()
-        .display_name = "Project comments".into();
-    legacy
-        .character_styles
-        .get_mut(&id("@comment"))
-        .unwrap()
-        .properties
-        .size = Some(27.);
-    let local = legacy
-        .character_styles
-        .get_mut(&id("@comment.documentation"))
-        .unwrap();
-    local.properties.slant = Some(FontSlant::Italic);
-    local.properties.foreground = Some(Color {
-        red: 0.,
-        green: 0.,
-        blue: 1.,
-        alpha: 1.,
-    });
-    // Explicitly detached parents must stay detached, including their paint.
-    legacy
-        .character_styles
-        .get_mut(&id("Todo"))
-        .unwrap()
-        .based_on = None;
-    let loaded = parse_json(&legacy_json(&legacy)).unwrap();
-    assert_eq!(
-        loaded.character_styles[&id("@comment")].based_on,
-        Some(comment_id.clone())
-    );
-    assert_eq!(
-        loaded.character_styles[&id("@comment")]
-            .properties
-            .foreground,
-        None
-    );
-    assert_eq!(resolved(&loaded, "@comment").foreground, color);
-    assert_eq!(resolved(&loaded, "@comment").size, 27.);
-    assert_eq!(resolved(&loaded, "@comment.documentation").size, 27.);
-    assert_eq!(
-        resolved(&loaded, "@comment.documentation").slant,
-        FontSlant::Italic
-    );
-    assert_eq!(
-        loaded.character_styles[&id("@comment.documentation")]
-            .properties
-            .foreground,
-        legacy.character_styles[&id("@comment.documentation")]
-            .properties
-            .foreground
-    );
-    assert_eq!(
-        loaded.character_styles[&id("Todo")],
-        legacy.character_styles[&id("Todo")]
-    );
-    assert!(resolve_name(&loaded, "Comment").is_none());
-    assert_eq!(resolve_name(&loaded, "Project comments"), Some(&comment_id));
-    let encoded = export_snapshot(&loaded).unwrap();
-    assert_eq!(serde_json::from_slice::<File>(&encoded).unwrap().version, 2);
-    let restored = parse_json(&encoded).unwrap();
-    assert_eq!(restored.character_styles, loaded.character_styles);
-    assert_eq!(restored.character_metadata, loaded.character_metadata);
+fn obsolete_version_one_is_rejected_without_migration() {
+    let sheet = default_sheet();
+    assert!(parse_json(&legacy_json(&sheet)).is_err());
+    let restored = parse_json(&export_snapshot(&sheet).unwrap()).unwrap();
+    assert_eq!(restored.character_styles, sheet.character_styles);
 }
 
 #[test]
-fn migration_preserves_suppression_and_avoids_cycles_with_authored_parents() {
-    let mut legacy = default_sheet_with_links(false);
-    legacy
-        .remove_character_style(&id("Comment"), false)
-        .unwrap();
-    let loaded = parse_json(&legacy_json(&legacy)).unwrap();
-    assert!(resolve_name(&loaded, "Comment").is_none());
-    assert_eq!(
-        loaded.character_styles[&id("@comment")].based_on,
-        Some(loaded.base_character.clone())
-    );
-    assert_eq!(resolved(&loaded, "@comment"), resolved(&legacy, "@comment"));
-    assert_eq!(
-        loaded.character_styles[&id("@comment.documentation")].based_on,
-        Some(id("@comment"))
-    );
-    let restored = parse_json(&export_snapshot(&loaded).unwrap()).unwrap();
-    assert_eq!(restored.character_styles, loaded.character_styles);
-
-    let mut legacy = default_sheet_with_links(false);
-    legacy
-        .character_styles
-        .get_mut(&id("Comment"))
-        .unwrap()
-        .based_on = Some(id("@comment.documentation"));
-    validate(&legacy).unwrap();
-    let loaded = parse_json(&legacy_json(&legacy)).unwrap();
-    validate(&loaded).unwrap();
-    assert_eq!(
-        loaded.character_styles[&id("Comment")],
-        legacy.character_styles[&id("Comment")]
-    );
-    for name in ["Comment", "@comment", "@comment.documentation"] {
-        assert_eq!(resolved(&loaded, name), resolved(&legacy, name));
-    }
+fn current_schema_rejects_dangling_parents_and_cycles_without_repair() {
+    let mut sheet = default_sheet();
+    sheet.character_styles.get_mut(&id("Comment")).unwrap().based_on = Some(id("@comment.documentation"));
+    assert!(parse_json(&export_snapshot(&sheet).unwrap()).is_err());
+    let mut sheet = default_sheet();
+    sheet.character_styles.remove(&id("Comment"));
+    sheet.character_metadata.remove(&id("Comment"));
+    assert!(parse_json(&export_snapshot(&sheet).unwrap()).is_err());
 }
 
 #[test]
@@ -263,7 +155,7 @@ fn version_two_preserves_explicit_default_colored_and_detached_overrides() {
         .character_styles
         .get_mut(&id("@comment.documentation"))
         .unwrap()
-        .based_on = Some(sheet.base_character.clone());
+        .based_on = None;
     let restored = parse_json(&export_snapshot(&sheet).unwrap()).unwrap();
     assert_eq!(restored.character_styles, sheet.character_styles);
     assert_eq!(restored.character_metadata, sheet.character_metadata);

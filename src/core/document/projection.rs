@@ -1496,7 +1496,7 @@ impl FormattedDocument {
         source_content_start: usize,
         source_content_end: usize,
     ) -> Self {
-        let document_style = DocumentStyleAssignment::new(style_sheet.base_document.clone());
+        let document_style = DocumentStyleAssignment::new(style_sheet.base_paragraph.clone());
         let flat_text: Arc<str> = flat_text.into();
         let text = FormattedTextTree::try_from_shared(flat_text.clone())
             .expect("a materialized Rust string has representable text-tree aggregates");
@@ -3162,16 +3162,11 @@ impl FormattedDocument {
                 *flow = OrderedRangeStore::new(blocks);
             }
             if &self.document_style.style == id {
-                self.document_style.style = self.style_sheet.base_document.clone();
+                self.document_style.style = self.style_sheet.base_paragraph.clone();
             }
         } else {
             let mut spans = self.styles.to_vec();
-            for span in &mut spans {
-                if matches!(&span.application, StyleApplication::Named(style) if style == id) {
-                    span.application =
-                        StyleApplication::Named(self.style_sheet.base_character.clone());
-                }
-            }
+            spans.retain(|span| !matches!(&span.application, StyleApplication::Named(style) if style == id));
             self.styles = IntervalRangeStore::new(spans);
         }
     }
@@ -3188,7 +3183,7 @@ impl FormattedDocument {
     }
 
     pub(crate) fn install_code_styles(&mut self, sheet: Arc<StyleSheet>, runs: &[super::syntax::SyntaxRun]) {
-        self.document_style = DocumentStyleAssignment::new(sheet.base_document.clone());
+        self.document_style = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
         let names=sheet.character_styles().filter_map(|style|sheet.character_style_metadata(&style.id).map(|metadata|(metadata.display_name.as_str(),&style.id))).collect::<std::collections::BTreeMap<_,_>>();
         self.styles = IntervalRangeStore::new(runs.iter().filter_map(|run| {
             if run.range.start >= run.range.end || run.range.end > self.text.byte_len() { return None; }
@@ -3226,9 +3221,6 @@ impl FormattedDocument {
         character_styles: &std::collections::BTreeSet<StyleId>,
     ) -> Vec<Range<usize>> {
         let mut ranges = Vec::new();
-        if character_styles.contains(&self.style_sheet.base_character) {
-            ranges.push(0..self.text.byte_len());
-        }
         if block_styles.contains(&self.document_style.style) {
             ranges.push(0..self.text.byte_len());
         }
@@ -6044,7 +6036,7 @@ mod tests {
         for projection in [&plain, &markdown] {
             assert_eq!(
                 projection.document_style.style,
-                projection.style_sheet.base_document
+                projection.style_sheet.base_paragraph
             );
             assert_eq!(
                 projection.document_style.direct_canvas,

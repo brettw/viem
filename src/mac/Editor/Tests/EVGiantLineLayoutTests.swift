@@ -45,6 +45,44 @@ final class EVGiantLineLayoutTests: XCTestCase {
     }
 
     @MainActor
+    func testBaseParagraphMetricsEditKeepsGiantWordGeometryBoundedAndUndoable() throws {
+        let source = String(repeating: "a", count: 256 * 1024)
+        let surface = try makeSurface(source)
+        let session = try XCTUnwrap(surface.session)
+        _ = try session.setWrap(true)
+        let original = try session.layoutExport()
+        let originalWidth = try XCTUnwrap(original.rows.first).width
+        let editor = EVStyleEditorViewController()
+        editor.retarget(document: surface, styleKey: .baseParagraph)
+
+        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(32)),
+                      editor.inspection.diagnostic)
+        let changed = try session.layoutExport()
+        XCTAssertFalse(original.info.identity.isSameLayout(as: changed.info.identity))
+        XCTAssertGreaterThan(try XCTUnwrap(changed.rows.first).width, originalWidth * 1.5)
+        XCTAssertEqual(changed.rows.count, 1)
+        XCTAssertEqual(changed.rows.first?.text_end, UInt64(source.utf8.count))
+        XCTAssertLessThan(changed.clusters.count, 5000)
+        XCTAssertLessThan(changed.carets.count, 10_000)
+        XCTAssertTrue(changed.clusters.allSatisfy {
+            session.provider.renderRegistry.contains(identifier: $0.render_run.identifier,
+                metricsGeneration: $0.render_run.metrics_generation)
+        })
+
+        _ = try session.undo()
+        let restored = try session.layoutExport()
+        XCTAssertEqual(try XCTUnwrap(restored.rows.first).width, originalWidth, accuracy: 0.05)
+        XCTAssertEqual(restored.rows.count, 1)
+        XCTAssertLessThan(restored.clusters.count, 5000)
+        XCTAssertLessThan(restored.carets.count, 10_000)
+        XCTAssertTrue(restored.clusters.allSatisfy {
+            session.provider.renderRegistry.contains(identifier: $0.render_run.identifier,
+                metricsGeneration: $0.render_run.metrics_generation)
+        })
+        XCTAssertEqual(try surface.backend.serializedSource(typeName: "public.plain-text"), Data(source.utf8))
+    }
+
+    @MainActor
     func testNativeGiantLineKeepsExactVisibleShapingAndRefillsHorizontalGeometry() throws {
         let prefix = String(repeating: "a", count: 4095) + "fi AV e\u{301} שלום مرحبا 👩‍🚀 "
         let phrase = "fi AV e\u{301} שלום مرحبا 👩‍🚀 "

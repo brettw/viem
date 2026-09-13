@@ -206,6 +206,66 @@ pub fn g_caret(
     first_non_blank(&snapshot.rows[row_index], formatted_text)
 }
 
+/// Document-backed `g^`/Home without a flat document or row-sized copy.
+/// Sparse overflow rows can cover an entire giant word or whitespace run;
+/// only the immutable leaves before the first nonblank scalar are visited.
+pub(crate) fn g_caret_for_document(
+    document: &crate::document::Document,
+    snapshot: &LayoutSnapshot,
+    current: VisualPosition,
+) -> Result<VisualPosition, LayoutMotionError> {
+    if snapshot.document_id != document.id()
+        || snapshot.document_revision != document.revision()
+    {
+        return Err(LayoutMotionError::TextDoesNotMatchLayout);
+    }
+    let (row_index, _) = locate(snapshot, current)?;
+    first_non_blank_for_document(document, snapshot.rows[row_index].text_range.clone())
+}
+
+pub(super) fn first_non_blank_for_document(
+    document: &crate::document::Document,
+    range: Range<usize>,
+) -> Result<VisualPosition, LayoutMotionError> {
+    let tree = document.projection().text_tree();
+    let lines = document.hard_line_snapshot();
+    if range.start > range.end
+        || range.end > tree.byte_len()
+        || !lines.is_grapheme_boundary(range.start)
+        || !lines.is_grapheme_boundary(range.end)
+    {
+        return Err(LayoutMotionError::TextDoesNotMatchLayout);
+    }
+    let mut at = range.start;
+    while at < range.end {
+        let chunk = tree.byte_chunk_at(at);
+        let chunk = &chunk[..chunk.len().min(range.end - at)];
+        let text = std::str::from_utf8(chunk)
+            .map_err(|_| LayoutMotionError::TextDoesNotMatchLayout)?;
+        if let Some((local, _)) = text.char_indices().find(|(_, ch)| !ch.is_whitespace()) {
+            let scalar = at + local;
+            // A space followed by a combining mark is one nonblank grapheme.
+            // Resolve only this local boundary rather than copying that cluster.
+            let offset = if lines.is_grapheme_boundary(scalar) {
+                scalar
+            } else {
+                lines.previous_grapheme_boundary(scalar)
+                    .filter(|offset| *offset >= range.start)
+                    .ok_or(LayoutMotionError::TextDoesNotMatchLayout)?
+            };
+            return Ok(VisualPosition {
+                text_offset: offset,
+                affinity: BoundaryAffinity::Downstream,
+            });
+        }
+        at += chunk.len();
+    }
+    Ok(VisualPosition {
+        text_offset: range.start,
+        affinity: BoundaryAffinity::Downstream,
+    })
+}
+
 /// `g$`: logical end of the current visual row with upstream affinity.
 pub fn g_dollar(
     snapshot: &LayoutSnapshot,
@@ -800,6 +860,86 @@ mod tests {
                 affinity: BoundaryAffinity::Downstream,
             }
         );
+    }
+
+    #[test]
+    fn document_home_scan_matches_grapheme_whitespace_semantics() {
+        for text in ["", " \t", "\u{2003}\u{a0}x", " \u{301}x", " \t e\u{301}x"] {
+            let document = Document::new(text);
+            let expected = text.grapheme_indices(true)
+                .find(|(_, grapheme)| !grapheme.chars().all(char::is_whitespace))
+                .map_or(0, |(offset, _)| offset);
+            assert_eq!(first_non_blank_for_document(&document, 0..text.len()).unwrap(),
+                VisualPosition { text_offset: expected, affinity: BoundaryAffinity::Downstream });
+            assert!(!document.projection().compatibility_text_is_materialized());
+        }
+        let document = Document::new("prefix \u{301}suffix");
+        assert_eq!(first_non_blank_for_document(&document, 6..15).unwrap().text_offset, 6);
+        assert_eq!(first_non_blank_for_document(&document, 7..15),
+            Err(LayoutMotionError::TextDoesNotMatchLayout), "ranges cannot split graphemes");
+    }
+
+    #[test]
+    fn document_home_giant_whitespace_and_combining_runs_keep_flat_text_unmaterialized() {
+        let bytes = 2 * 1024 * 1024;
+        for (text, expected) in [
+            (" ".repeat(bytes), 0),
+            (format!("{}\u{301}x", " ".repeat(bytes)), bytes - 1),
+            (format!(" {}x", "\u{301}".repeat(bytes / 2)), 0),
+        ] {
+            let document = Document::new(&text);
+            assert_eq!(first_non_blank_for_document(&document, 0..text.len()).unwrap().text_offset,
+                expected);
+            assert!(!document.projection().compatibility_text_is_materialized());
+        }
+    }
+
+    #[test]
+    fn document_home_insert_and_replace_keep_large_literal_documents_unflattened() {
+        use crate::command::{CommandStatus, InputEvent, Key, Mode};
+        use crate::document::{Encoding, Format};
+        use crate::{Core, CoreEvent};
+
+        let bytes = 2 * 1024 * 1024;
+        let ordinary = "   ordinary words on a logical line with enough text to wrap\n";
+        for (text, wrap, focus, sparse) in [
+            (ordinary.repeat(40_000), true, ordinary.len() * 20_000 + 15, false),
+            ("a".repeat(bytes), true, bytes / 2, true),
+            (format!("{}tail", " ".repeat(bytes)), false, 12, true),
+        ] {
+            for format in [Format::PlainText, Format::Code] {
+                for (key, mode) in [(Key::Char('i'), Mode::Insert), (Key::Char('R'), Mode::Replace)] {
+                    let document = Document::from_bytes(text.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+                    let mut core = Core::new(document);
+                    let view = core.add_view(MockTextMeasurementProvider::new(), 180.0, 100.0);
+                    core.handle(view, CoreEvent::SetWrap(wrap)).unwrap();
+                    core.handle(view, CoreEvent::PlaceCursor {
+                        document_revision: core.document().revision(), text_offset: focus,
+                        affinity: BoundaryAffinity::Downstream, extend_selection: false,
+                    }).unwrap();
+                    core.handle(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+                    let commands = core.command_state(view).unwrap();
+                    assert_eq!(commands.mode(), mode);
+                    let current = VisualPosition {
+                        text_offset: commands.cursor(), affinity: commands.boundary_affinity(),
+                    };
+                    let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+                    assert_eq!(snapshot.has_horizontal_materialization(), sparse);
+                    let expected = g_caret(snapshot, &text, current).unwrap();
+                    assert!(!core.document().projection().compatibility_text_is_materialized(),
+                        "fixture should reach Home without a flat copy: {format:?} {mode:?}");
+                    let result = core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Home))).unwrap();
+                    assert_eq!(result.command.unwrap().status, CommandStatus::Complete);
+                    let commands = core.command_state(view).unwrap();
+                    assert_eq!(commands.cursor(), expected.text_offset, "{format:?} {mode:?}");
+                    assert_eq!(commands.boundary_affinity(), expected.affinity);
+                    assert_eq!(commands.mode(), mode);
+                    assert!(!core.document().projection().compatibility_text_is_materialized(),
+                        "Home must scan tree leaves without copying the document: {format:?} {mode:?}");
+                    assert!(!core.document().history_status().is_dirty);
+                }
+            }
+        }
     }
 
     #[test]

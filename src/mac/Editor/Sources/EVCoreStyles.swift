@@ -16,9 +16,8 @@ struct EVStyleID: Hashable, RawRepresentable, CustomStringConvertible {
 
     var description: String { rawValue }
 
-    static let baseDocument = EVStyleID(rawValue: "Document")
     static let baseParagraph = EVStyleID(rawValue: "Paragraph")
-    static let baseCharacter = EVStyleID(rawValue: "Character")
+    static let defaultParagraph = EVStyleID(rawValue: "")
 }
 
 struct EVStyleKey: Hashable, CustomStringConvertible {
@@ -27,35 +26,21 @@ struct EVStyleKey: Hashable, CustomStringConvertible {
 
     var description: String { "\(namespace):\(id.rawValue)" }
 
-    static let baseDocument = EVStyleKey(namespace: .block, id: .baseDocument)
     static let baseParagraph = EVStyleKey(namespace: .block, id: .baseParagraph)
-    static let baseCharacter = EVStyleKey(namespace: .character, id: .baseCharacter)
+    static let defaultParagraph = EVStyleKey(namespace: .character, id: .defaultParagraph)
 }
 
 enum EVStyleKind: Int, CaseIterable {
-    case document
     case paragraph
     case character
 
     var displayName: String {
         switch self {
-        case .document: "Document"
         case .paragraph: "Paragraph"
         case .character: "Character"
         }
     }
 
-    var baseName: String { "Base \(displayName)" }
-
-    var baseStyleID: EVStyleID { baseKey.id }
-
-    var baseKey: EVStyleKey {
-        switch self {
-        case .document: .baseDocument
-        case .paragraph: .baseParagraph
-        case .character: .baseCharacter
-        }
-    }
 }
 
 struct EVStyleSheetIdentity: Equatable {
@@ -99,14 +84,12 @@ struct EVStyleDefinitionFlags: OptionSet, Equatable {
 
     static let hasParent = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_HAS_PARENT))
     static let hasNextStyle = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_HAS_NEXT_STYLE))
-    static let baseDocument = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_BASE_DOCUMENT))
     static let baseParagraph = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_BASE_PARAGRAPH))
-    static let baseCharacter = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_BASE_CHARACTER))
     static let internalSyntax = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_INTERNAL))
     static let internalList = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_INTERNAL_LIST))
 
     var isBase: Bool {
-        !intersection([.baseDocument, .baseParagraph, .baseCharacter]).isEmpty
+        contains(.baseParagraph)
     }
 }
 
@@ -318,7 +301,7 @@ struct EVStyleSheetSnapshot: Equatable {
 
     private func rolesCanInherit(child: EVStyleKind, parent: EVStyleKind) -> Bool {
         switch (child, parent) {
-        case (.document, .document), (.paragraph, .paragraph), (.character, .character): true
+        case (.paragraph, .paragraph), (.character, .character): true
         default: false
         }
     }
@@ -765,8 +748,6 @@ enum EVCoreStyleBridge {
             let kind: EVStyleKind
             if namespace == .character {
                 kind = .character
-            } else if raw.role == UInt32(VIEM_STYLE_ROLE_DOCUMENT) {
-                kind = .document
             } else if raw.role == UInt32(VIEM_STYLE_ROLE_PARAGRAPH) {
                 kind = .paragraph
             } else {
@@ -877,7 +858,7 @@ enum EVCoreStyleBridge {
                                          selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
         let identity = EVStyleSheetIdentity(documentID: selection.document_id,
             documentRevision: selection.document_revision, styleSheetRevision: 0)
-        let encoded = values.map { EncodedMutation(key: .baseCharacter, expected: identity,
+        let encoded = values.map { EncodedMutation(key: .defaultParagraph, expected: identity,
             mutation: .setDeclaration($0.0, $0.1)) }
         var requests: [ViemDirectStyleEditV1] = []
         var outcome = ViemCoreOutcomeV1()

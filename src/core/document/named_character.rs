@@ -39,6 +39,7 @@ pub(super) fn verify_assignment(
     after: &FormattedDocument,
     range: &Range<usize>,
     style: &StyleId,
+    preserve_code_paragraphs: bool,
 ) -> Result<(), DocumentError> {
     let mut boundaries = BTreeSet::from([0, range.start, range.end]);
     for span in before.style_spans().iter().chain(after.style_spans()) {
@@ -57,8 +58,10 @@ pub(super) fn verify_assignment(
         let new = after
             .selected_named_styles(at..at + 1, BoundaryAffinity::Downstream)
             .character;
-        let expected = if range.contains(&at) {
-            Some(style.clone())
+        let preserved_paragraph = preserve_code_paragraphs && before.blocks_for_region(&(at..at + 1))
+            .iter().any(|block| block.style.0 == "Code Block" && block.range.contains(&at));
+        let expected = if range.contains(&at) && !preserved_paragraph {
+            (!style.0.is_empty()).then(|| style.clone())
         } else {
             old
         };
@@ -242,10 +245,9 @@ impl Document {
         let mut patches = Vec::new();
         for (fragment, block_code) in fragments(self, &range) {
             if block_code {
-                if code {
-                    continue;
-                }
-                return Err(DocumentError::UnsupportedFormatting.into());
+                // Fences assign the paragraph's Code Block style. There is no
+                // named character assignment to remove from their body.
+                continue;
             }
             let context = fragment.start.saturating_sub(1)
                 ..fragment.end.saturating_add(1).min(self.text().len());
@@ -314,7 +316,7 @@ impl Document {
             {
                 return Err(DocumentError::VerificationFailed.into());
             }
-            verify_assignment(self.projection(), &candidate.projection, &range, style)?;
+            verify_assignment(self.projection(), &candidate.projection, &range, style, true)?;
         }
         Ok(prepared)
     }

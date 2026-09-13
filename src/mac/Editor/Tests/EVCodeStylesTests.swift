@@ -19,28 +19,28 @@ final class EVCodeStylesTests: XCTestCase {
         editor.retarget(codeSession: session)
         XCTAssertNil(editor.inspection.targetDocumentIdentity)
         XCTAssertEqual(editor.inspection.targetCoreDocumentID, 0)
-        XCTAssertEqual(editor.inspection.selectedStyleKey, .baseDocument)
+        XCTAssertEqual(editor.inspection.selectedStyleKey, .baseParagraph)
         XCTAssertFalse(editor.inspection.hasDocument)
         XCTAssertTrue(editor.inspection.mutationsEnabled)
         let initial = try session.snapshot()
-        let originalSize = initial.definition(for: .baseDocument)?.properties[.characterSize]?.declared
+        let originalSize = initial.definition(for: .baseParagraph)?.properties[.characterSize]?.declared
         editor.beginContinuousStyleEditForTesting()
         XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(18)), editor.inspection.diagnostic)
         XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(20)), editor.inspection.diagnostic)
         editor.endContinuousStyleEditForTesting()
         XCTAssertTrue(session.undoManager.canUndo)
-        XCTAssertEqual(try session.snapshot().definition(for: .baseDocument)?.properties[.characterSize]?.declared, .float(20))
+        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(20))
         let committedRevision = try session.snapshot().identity.styleSheetRevision
         session.undoManager.undo()
-        XCTAssertEqual(try session.snapshot().definition(for: .baseDocument)?.properties[.characterSize]?.declared, originalSize)
+        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, originalSize)
         XCTAssertFalse(session.undoManager.canUndo, "The continuous edit is one settings transaction")
         XCTAssertGreaterThan(try session.snapshot().identity.styleSheetRevision, committedRevision)
         session.undoManager.redo()
-        XCTAssertEqual(try session.snapshot().definition(for: .baseDocument)?.properties[.characterSize]?.declared, .float(20))
+        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(20))
         let data = try XCTUnwrap(configuration.codeStyleSheet())
         XCTAssertEqual(viem_code_replace_style_json(nil, 0), UInt32(VIEM_STATUS_OK))
         XCTAssertEqual(data.withUnsafeBytes { viem_code_replace_style_json($0.bindMemory(to: UInt8.self).baseAddress, UInt64($0.count)) }, UInt32(VIEM_STATUS_OK))
-        XCTAssertEqual(try session.snapshot().definition(for: .baseDocument)?.properties[.characterSize]?.declared, .float(20))
+        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(20))
         XCTAssertNil(try configuration.styleDefaults(named: "text"))
     }
 
@@ -72,10 +72,10 @@ final class EVCodeStylesTests: XCTestCase {
         let session = try EVCodeStyleSession(configuration: configuration)
         let before = try session.snapshot()
         try Data("not a directory".utf8).write(to: configuration.directory)
-        XCTAssertThrowsError(try session.edit(key: .baseDocument, expected: before.identity, mutation: .setDeclaration(.characterSize, .float(27))))
+        XCTAssertThrowsError(try session.edit(key: .baseParagraph, expected: before.identity, mutation: .setDeclaration(.characterSize, .float(27))))
         let after = try session.snapshot()
-        XCTAssertEqual(after.definition(for: .baseDocument)?.properties[.characterSize]?.declared,
-                       before.definition(for: .baseDocument)?.properties[.characterSize]?.declared)
+        XCTAssertEqual(after.definition(for: .baseParagraph)?.properties[.characterSize]?.declared,
+                       before.definition(for: .baseParagraph)?.properties[.characterSize]?.declared)
         XCTAssertFalse(session.undoManager.canUndo)
         XCTAssertNotNil(session.lastError)
     }
@@ -93,10 +93,10 @@ final class EVCodeStylesTests: XCTestCase {
         let before = try [first, second].map { try $0.recoverySnapshot() }
         let session = try EVCodeStyleSession(configuration: configuration)
         let sheet = try session.snapshot()
-        try session.edit(key: .baseDocument, expected: sheet.identity, mutation: .setDeclaration(.characterSize, .float(19)))
+        try session.edit(key: .baseParagraph, expected: sheet.identity, mutation: .setDeclaration(.characterSize, .float(19)))
         for (index, backend) in [first, second].enumerated() {
             backend.pollSyntax()
-            XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseDocument)?.properties[.characterSize]?.declared, .float(19))
+            XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(19))
             XCTAssertEqual(try backend.recoverySnapshot(), before[index])
             XCTAssertFalse(backend.persistenceState.isDirty)
             XCTAssertFalse(surfaces[index].canUndo)
@@ -154,7 +154,7 @@ final class EVCodeStylesTests: XCTestCase {
         var expectedCaretBaseline = try caretRow(surfaces[0]).baseline - surfaces[0].viewportState.top
         let original = try backends.map { try $0.recoverySnapshot() }
         let session = try EVCodeStyleSession(configuration: configuration)
-        for (key, mutation) in [(EVStyleKey.baseDocument, EVStyleMutation.setDeclaration(.characterSize, .float(23))),
+        for (key, mutation) in [(EVStyleKey.baseParagraph, EVStyleMutation.setDeclaration(.characterSize, .float(23))),
                          (.baseParagraph, .setDeclaration(.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_EXACT), value: 38))))] {
             try session.edit(key: key, expected: session.snapshot().identity, mutation: mutation)
             for (index, backend) in backends.enumerated() {
@@ -195,12 +195,12 @@ final class EVCodeStylesTests: XCTestCase {
         let session = try EVCodeStyleSession(configuration: configuration)
         let backends = [EVCoreDocumentBackend(configuration: configuration), EVCoreDocumentBackend(configuration: configuration)]
         for backend in backends { try backend.read(source: Data("const x = 1;".utf8), typeName: EVDocument.codeType) }
-        try session.edit(key: .baseDocument, expected: session.snapshot().identity, mutation: .setDeclaration(.characterSize, .float(18)))
+        try session.edit(key: .baseParagraph, expected: session.snapshot().identity, mutation: .setDeclaration(.characterSize, .float(18)))
         let initial = try session.snapshot()
         let before = try backends.map { try $0.recoverySnapshot() }
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: EVCodeStyleSession.exportGlobalJSON()) as? [String: Any])
         var blocks = try XCTUnwrap(object["block_styles"] as? [[String: Any]])
-        let index = try XCTUnwrap(blocks.firstIndex { $0["id"] as? String == "Document" })
+        let index = try XCTUnwrap(blocks.firstIndex { $0["id"] as? String == "Paragraph" })
         var character = try XCTUnwrap(blocks[index]["character"] as? [String: Any])
         character["size"] = 23
         blocks[index]["character"] = character
@@ -208,15 +208,15 @@ final class EVCodeStylesTests: XCTestCase {
         let external = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         let file = configuration.directory.appendingPathComponent("code_style.json")
         try external.write(to: file, options: .atomic)
-        XCTAssertThrowsError(try session.edit(key: .baseDocument, expected: initial.identity, mutation: .setDeclaration(.characterSize, .float(25))))
+        XCTAssertThrowsError(try session.edit(key: .baseParagraph, expected: initial.identity, mutation: .setDeclaration(.characterSize, .float(25))))
         await checkExternalChanges()
-        XCTAssertEqual(try session.snapshot().definition(for: .baseDocument)?.properties[.characterSize]?.declared, .float(23))
+        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(23))
         XCTAssertGreaterThan(try session.snapshot().identity.styleSheetRevision, initial.identity.styleSheetRevision)
         XCTAssertFalse(session.undoManager.canUndo, "A stale settings undo must not overwrite an external replacement")
         XCTAssertEqual(try Data(contentsOf: file), external, "Reloading does not rewrite external JSON")
         for (index, backend) in backends.enumerated() {
             backend.pollSyntax()
-            XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseDocument)?.properties[.characterSize]?.declared, .float(23))
+            XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(23))
             XCTAssertEqual(try backend.recoverySnapshot(), before[index])
         }
         let revision = try session.snapshot().identity.styleSheetRevision
@@ -238,7 +238,7 @@ final class EVCodeStylesTests: XCTestCase {
     func testLocalStyleWritesAreNotReimportedAndKeepSettingsUndo() async throws {
         let configuration = configuration()
         let session = try EVCodeStyleSession(configuration: configuration)
-        try session.edit(key: .baseDocument, expected: session.snapshot().identity, mutation: .setDeclaration(.characterSize, .float(18)))
+        try session.edit(key: .baseParagraph, expected: session.snapshot().identity, mutation: .setDeclaration(.characterSize, .float(18)))
         let revision = try session.snapshot().identity.styleSheetRevision
         await checkExternalChanges()
         XCTAssertEqual(try session.snapshot().identity.styleSheetRevision, revision)

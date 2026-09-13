@@ -621,3 +621,81 @@ fn document_edge_keys_use_prompt_boundaries_and_split_insert_undo_units() {
     keys(&mut core, view, "u");
     assert_eq!(core.document().text(), "abcd\ntail");
 }
+
+#[test]
+fn insert_and_replace_line_edge_keys_follow_visual_and_physical_line_policy() {
+    use viem_core::command::Mode;
+    use viem_core::document::BoundaryAffinity;
+    for format in [Format::PlainText, Format::Markdown] {
+        for mode in [Mode::Insert, Mode::Replace] {
+            for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
+                let source = "  alpha beta gamma delta epsilon zeta eta theta\nnext line";
+                let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+                let (mut core, view) = editor(document, 110.);
+                core.handle(view, CoreEvent::SetLineMode(line_mode)).unwrap();
+                let row = core.layout(view).unwrap().snapshot().unwrap().rows[1].clone();
+                assert!(row.wraps_to_next);
+                core.handle(view, CoreEvent::PlaceCursor {
+                    document_revision: core.document().revision(),
+                    text_offset: row.text_range.start + 1,
+                    affinity: BoundaryAffinity::Downstream, extend_selection: false,
+                }).unwrap();
+                // Native Home is the same nonblank line start as ^.
+                key(&mut core, view, Key::Char('^'));
+                let start = core.command_state(view).unwrap().cursor();
+                key(&mut core, view, Key::Char('$'));
+                let end = if line_mode == LineMode::PhysicalSource {
+                    core.document().visible_point_for_source(source.find('\n').unwrap(), false).unwrap()
+                } else {
+                    core.command_state(view).unwrap().visual_position().unwrap().text_offset
+                };
+                key(&mut core, view, Key::Char(if mode == Mode::Insert { 'i' } else { 'R' }));
+                key(&mut core, view, Key::Home);
+                assert_eq!(core.command_state(view).unwrap().cursor(), start, "{format:?} {mode:?} {line_mode:?}");
+                key(&mut core, view, Key::End);
+                assert_eq!(core.command_state(view).unwrap().cursor(), end, "{format:?} {mode:?} {line_mode:?}");
+                assert_eq!(core.command_state(view).unwrap().mode(), mode);
+                assert_eq!(core.command_state(view).unwrap().boundary_affinity(), BoundaryAffinity::Upstream);
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+                assert!(!core.document().history_status().is_dirty);
+            }
+        }
+    }
+}
+
+#[test]
+fn home_matches_caret_and_insert_line_navigation_splits_undo_units() {
+    let (mut core, view) = editor(Document::new("  alpha beta gamma delta epsilon\ntail"), 120.);
+    keys(&mut core, view, "ll");
+    key(&mut core, view, Key::Home);
+    assert_eq!(core.command_state(view).unwrap().cursor(), 2);
+    keys(&mut core, view, "iX");
+    key(&mut core, view, Key::End);
+    keys(&mut core, view, "Y");
+    key(&mut core, view, Key::Escape);
+    keys(&mut core, view, "u");
+    assert!(core.document().text().contains("Xalpha"));
+    assert!(!core.document().text().contains('Y'));
+    keys(&mut core, view, "u");
+    assert_eq!(core.document().text(), "  alpha beta gamma delta epsilon\ntail");
+}
+
+#[test]
+fn counted_registered_home_operator_matches_first_nonblank_and_undo() {
+    for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        let source = "  alpha beta gamma delta epsilon zeta\ntail";
+        let mut results = Vec::new();
+        for motion in [Key::Home, Key::Char('^')] {
+            let (mut core, view) = editor(Document::new(source), 120.);
+            core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
+            keys(&mut core, view, "llllll\"a2d3");
+            key(&mut core, view, motion);
+            let deleted = core.command_state(view).unwrap().register('a').unwrap().text.clone();
+            assert!(!deleted.is_empty());
+            results.push((core.document().text().to_owned(), deleted));
+            keys(&mut core, view, "u");
+            assert_eq!(core.document().text(), source);
+        }
+        assert_eq!(results[0], results[1], "{mode:?}");
+    }
+}

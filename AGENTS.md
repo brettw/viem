@@ -118,8 +118,8 @@ Use these terms consistently in code, tests, and documentation:
   paragraph style is assigned. Depending on the format, it may contain one or
   more formatted hard lines or may itself define the hard-line boundary.
 - **Style sheet**: the immutable normalized collection of block and character
-  style definitions associated with one formatted snapshot. Document and
-  paragraph styles are roles within the block-style namespace.
+  style definitions associated with one formatted snapshot. Paragraph styles form the block-style namespace; source-root declarations
+  retain source-format document context separately.
 - **Direct formatting**: sparse block or character property declarations
   attached to content after named-style assignment; it does not mutate the
   named style.
@@ -711,8 +711,7 @@ The base plain-text pipeline is decoding, the shared line-ending projection,
 and an otherwise identity lossless format projection. Each logical source-line
 break ends one formatted hard line and one paragraph; consecutive breaks create
 empty paragraphs, and the final unterminated segment is still a paragraph. Its
-synthetic Base Document, Base Paragraph, and Base Character styles provide
-display defaults, with zero paragraph spacing by default so the result has
+synthetic Base Paragraph style provides display defaults, with zero paragraph spacing by default so the result has
 gVim-like line placement. Plain text exposes no source-backed named styles or
 direct formatting capabilities.
 
@@ -767,12 +766,9 @@ source CSS or RTF control state.
 The style sheet has a revision identity, stable style identities, and two
 namespaces:
 
-- A **block style** applies to a typed block node. Its role declares which
-  property domains are applicable. The initial roles are Document and
-  Paragraph. The document root uses a Document-role block style; a paragraph
-  style is a Paragraph-role block style containing paragraph layout declarations
-  and character declarations that provide the paragraph's default text
-  appearance. A heading paragraph style can therefore set spacing and
+- A **block style** applies to a typed paragraph block node. It contains
+  paragraph layout declarations and character declarations that provide the
+  paragraph's default text appearance. A heading paragraph style can therefore set spacing and
   indentation as well as font family, size, weight, or color.
 - A **character style** applies to a formatted text range and contains only
   character declarations. It does not change paragraph geometry.
@@ -782,10 +778,10 @@ index. Renaming or reordering a style does not invalidate assignments to it.
 Disposable syntax style-name references are resolved separately as specified
 under Code; they are not authored stable-ID assignments.
 Each style has at most one parent in the same namespace. Multiple inheritance
-is forbidden. Every non-root block style ultimately derives from Base Document
-and every non-root character style ultimately derives from Base Character. A
-block-style child may narrow its parent's general applicability to a concrete
-block role, but it may not broaden a specialized parent to an incompatible role.
+is forbidden. Every non-root paragraph style ultimately derives from Base
+Paragraph. A character style with no parent inherits the current paragraph's
+appearance; named character parents contribute their sparse declarations on
+that same contextual foundation.
 Parent links must be acyclic; a missing parent, role violation, or cycle
 produces a diagnostic and deterministically falls back to the applicable base
 path without discarding source syntax.
@@ -794,28 +790,27 @@ Deleting a non-base style is allowed only when the same atomic intention
 reassigns its children and every content assignment, or when none exist.
 Otherwise deletion is rejected; it never leaves silently dangling style IDs.
 
-Every style sheet defines three distinguished styles:
+Every style sheet defines one distinguished style, **Base Paragraph**. It is
+the root of the paragraph hierarchy, has no parent, provides complete paragraph
+layout and default character values, and cannot be deleted. It is the default
+paragraph assignment and the fallback selection for style-editing UI. Its
+initial generated font is **SF Pro at 14 layout units**; Code uses the system
+monospace family at the same size. Every other paragraph style derives through
+it. Adapters identify source-backed and generated declarations.
 
-- **Base Document** is the root of the block-style hierarchy and has no parent.
-  It is the default assignment for the formatted document root. It provides the
-  canvas background and padding together with inheritable default character
-  declarations such as font and foreground color. The initial generated Base
-  Document requests **SF Pro at 14 layout units** as its default font; format-
-  backed document styles may override that request through the normal cascade.
-- **Base Paragraph** is a Paragraph-role child of Base Document and provides
-  complete paragraph-layout values. It is the default paragraph-style
-  assignment when an adapter does not provide a more specific assignment and
-  the fallback paragraph selection for style-editing UI. Every other
-  Paragraph-role style derives through it.
-- **Base Character** is the root of the character-style hierarchy. Its sparse
-  declarations refine the document defaults without preventing paragraph styles
-  from overriding them.
+**Default Paragraph** is the user-facing character-style choice meaning no
+named character style is applied. It is not a stored definition or assignment,
+cannot be edited, and never appears in the style editor's Style picker. It
+resolves to the containing paragraph's current character appearance. It is the
+default parent choice for character styles; internally an absent parent ends
+the named character chain. Explicit character-to-character inheritance remains
+available, including Code syntax style links. Choosing Default Paragraph clears
+named character styles in the selection, or establishes unstyled subsequent
+typing at the caret without a source edit until text is inserted.
 
-These styles cannot be deleted. Together with engine emergency values they
-produce complete paragraph and character results, so layout never depends on an
-unrecorded platform default. Adapters may synthesize them from application,
-document, source, or pipeline defaults and must identify which declarations are
-source-backed versus generated.
+There are no Base Document or Base Character definitions. View margins belong
+to Settings > View, not to a style. Source-root declarations needed to preserve
+HTML or RTF source semantics remain distinct from editable named styles.
 
 #### Declarations and values
 
@@ -836,9 +831,9 @@ diagnostic rather than being approximated on reverse edit.
 Every property belongs to a schema-defined domain with an applicability and
 inheritance rule. The initial domains are Document Canvas, Paragraph Layout,
 and Character. A style definition may declare only properties allowed by its
-role: for example, a Document-role style cannot declare future list-numbering
-properties, while a Paragraph-role style cannot change the document canvas
-padding. Inapplicable declarations are diagnostics, not silently ignored
+role: for example, a Paragraph-role style cannot change the document canvas
+padding. Document Canvas declarations belong to source-root context rather
+than an editable named style. Inapplicable declarations are diagnostics, not silently ignored
 values. Target-only properties affect the assigned block; inheritable properties
 also contribute to applicable descendants.
 
@@ -847,8 +842,8 @@ Initial Document Canvas properties include:
 - canvas background color; and
 - logical start, end, top, and bottom padding.
 
-The Base Document style's Character declarations define the default content
-font request, size, and foreground color. Selection, caret, diagnostics, gutter,
+Base Paragraph's Character declarations define the default content font
+request, size, and foreground color. Selection, caret, diagnostics, gutter,
 window chrome, and other editor-interface colors remain view/theme properties;
 they are not document content styles and are adjusted independently for
 accessibility.
@@ -894,51 +889,31 @@ fallbacks.
 
 #### Cascade and assignments
 
-The formatted document root is a styleable Document block. It stores a
-Document-role block-style ID, normally Base Document, plus sparse direct
-Document Canvas and default-character declarations when the adapter needs to
-represent source constructs such as an HTML `body` inline style. Each paragraph
-stores a compatible Paragraph-role block-style ID plus sparse direct paragraph
-and paragraph-default-character declarations. Character-style assignments and
-direct character formatting are separate range maps over formatted text. At a
-given text position there is at most one assigned named character style, but
-different direct properties may cover independently overlapping ranges.
+Each paragraph stores a Paragraph-role block-style ID plus sparse direct
+paragraph and paragraph-default-character declarations. Source-root context
+retains direct canvas and default-character declarations when needed for source
+constructs such as HTML body styling, without a separate named document style.
+Character-style assignments and direct character formatting are separate range
+maps. At most one named character style applies at a position; absence is
+Default Paragraph. Different direct properties may overlap independently.
 
-Document Canvas properties are resolved in this order:
+Paragraph geometry resolves engine emergency values, the Base Paragraph to
+assigned paragraph chain, applicable structural geometry, and direct paragraph
+declarations, with later declarations winning. Source-root canvas declarations
+remain source-format context; application view margins are independent.
 
-1. engine emergency values;
-2. ancestor-to-descendant applicable declarations from Base Document through
-   the block style assigned to the document root; and
-3. direct Document Canvas declarations on the root.
+Character appearance resolves the complete paragraph appearance first,
+including Base Paragraph, source-root defaults, the assigned paragraph's
+ancestors, and direct paragraph character declarations. Then apply only the
+sparse declarations in the assigned character chain, ancestor to descendant,
+followed by structural contributions and direct character declarations. An
+absent character parent or assignment contributes no additional properties.
+Source-authored defaults retain their precedence over generated defaults.
 
-Paragraph geometry is resolved in this order, with later declarations winning:
-
-1. engine emergency values;
-2. applicable inheritable block declarations from Base Document;
-3. ancestor-to-descendant declarations from Base Paragraph through the
-   Paragraph-role style assigned to the paragraph;
-4. a future structural block contribution, such as list-item geometry; and
-5. direct paragraph declarations on the paragraph.
-
-Character appearance is resolved in this order:
-
-1. engine emergency values;
-2. character declarations from Base Document through the Document-role style
-   assigned to the root, followed by direct root default-character declarations;
-3. Base Character declarations;
-4. character declarations from Base Paragraph through the assigned paragraph
-   style, followed by direct paragraph-default-character declarations;
-5. ancestor-to-descendant declarations explicitly present in the assigned
-   character-style chain, without reapplying Base Character over the paragraph
-   defaults;
-6. a future structural contribution for generated content such as a list
-   marker; and
-7. direct character declarations.
-
-This ordering makes the document style the common visual foundation, while a
-named paragraph style can change a heading's font and a named character style
-and then direct bold, italic, font, size, or color formatting can override it.
-Direct formatting never mutates or implicitly creates a named style.
+For example, a Code character style declaring Courier and green, with no size,
+is 12 point in a 12-point paragraph and 20 point in a 20-point heading. It never
+reapplies Base Paragraph's size over the heading. Direct formatting does not
+mutate or implicitly create a named style.
 
 Direct character formatting is canonicalized per property: applying a property
 replaces that property's value only in the selected range, splitting existing
@@ -1829,20 +1804,23 @@ source/view switch elsewhere can still reinterpret without changing bytes.
 The theme is an application preference, shared across views and independent of
 source-backed named styles. It defines text foreground and canvas background,
 caret and selection colors, status foreground/background and font family/size,
-and top/left/right/bottom document-edge padding. Color values are portable sRGB.
-The macOS Settings window has a category sidebar, including Documents, Editing,
-Code, and Theme, with a live preview, native color controls, typography controls,
-edge-padding controls, presets, and restore-defaults action.
+with color values in portable sRGB. The macOS Settings window has View, Theme,
+Editing, and Code categories; there is no Documents category. Theme contains
+its live preview, color controls, status typography, presets, and restore action.
+View contains independent top/left/bottom/right text margins in pixels, with
+defaults of 28/30/28/30. Margins are application view preferences stored under
+`view.margins` in config.json and applied to every view, independently of theme
+presets and document style definitions.
 
 A missing foreground or canvas color means **Default**, resolved through the
 theme at painting time. Generated base styles leave these colors unspecified.
 An explicit document color, including black or white, takes precedence and is
 not confused with Default. Default is not serialized as an explicit theme color.
 Theme changes never modify source bytes, style declarations, history, or dirty
-state. Color changes require only repainting. Theme padding belongs to document
-coordinates, so scrolling carries it off the visible edge; it is additive with
-explicit document-style padding and invalidates only affected view geometry.
-Padding changes preserve viewport anchors and keep large-document layout local.
+state. Color changes require only repainting. View margins inset content in
+document coordinates and are additive with
+source-authored canvas padding. Margin changes preserve viewport anchors and
+invalidate only affected view geometry, keeping large-document layout local.
 
 Application preferences have one versioned JSON authority at
 `~/.viem/config.json`. Theme, Smart Quotes, Code preferences, recent files, and status-bar
@@ -1885,7 +1863,7 @@ needed to represent that assignment in a source-backed format. Source and
 WYSIWYG variants share their format's defaults. Loading defaults is presentation
 configuration and never changes source bytes, dirty state, or undo history.
 
-Format > Style contains Edit document style and Save as default <format> style.
+Format > Style contains Edit Styles and Save as default <format> style.
 HTML also exposes Include style definitions in file, as specified above.
 Saving defaults exports the current style configuration to the corresponding
 JSON file. Existing open buffers keep their current configuration; subsequently
@@ -1952,8 +1930,8 @@ jobs retain the stylesheet revision independently of their text snapshot and
 validate it on installation; shared style changes never mutate a retained
 projection or install geometry resolved with an obsolete Code sheet.
 
-The sheet contains Base Document, Base Paragraph, Base Character, and named
-syntax character styles. Code's initial Base Document requests the system
+The sheet contains Base Paragraph and named syntax character styles.
+Code's initial Base Paragraph requests the system
 monospace family at 14 layout units; default foreground/background use the
 application theme. Base Paragraph defines line spacing, initially Single
 (`normal`), with zero space before/after and zero paragraph indents. All Code
@@ -1997,18 +1975,10 @@ individual descendants may override properties or choose another valid parent.
 This is a hierarchy of real definitions shown in the style editor, not a
 fallback lookup for missing names. Existing default resolved colors are retained.
 
-Code stylesheet storage version 2 records these linked defaults and sparse
-overrides. Version 1 remains readable: compare its full saved definitions with
-the old defaults, migrate unchanged default parents and copied default paint,
-and retain custom declarations, stable IDs, renames, and suppressions. An
-explicit custom parent (including no parent) retains its declarations. A
-declaration equal to the old copied default cannot be distinguished from that
-default in version 1 and is treated as inherited when its parent is unchanged.
-Do not resurrect a deleted parent or introduce a cycle with an authored link;
-repair only a newly introduced default edge, retaining the previous local
-appearance when that edge cannot be used. Loading does not rewrite the saved
-file or add settings undo history; the next settings edit saves version 2.
-Version 2 reloads preserve explicit overrides even when equal to default values.
+Code stylesheet storage version 2 records linked defaults and sparse overrides.
+Only version 2 is accepted; no migration from copied version-1 declarations is
+provided. Reloads preserve explicit overrides even when equal to default values.
+Loading does not rewrite the settings file or add undo history.
 
 In Code, the Character menu MUST expose the global Code character definitions
 and syntax names referenced by accepted, retained highlighting results for the
@@ -3571,6 +3541,12 @@ document close. Crash leftovers remain available for recovery.
 
 ### Native macOS editing affordances
 
+Home and End are interpreted through AppKit's native key bindings. Native
+line-beginning/end selectors obey the current Visual or Physical Source line
+policy and target the same line positions as `^` and `$`, including Insert and
+Replace modes. Native document-beginning/end selectors retain document-edge
+behavior. Do not hardcode physical Home/End key codes over user system bindings.
+
 The macOS frontend supports mouse placement/drag selection, scroll gestures,
 standard copy/cut/paste/select-all menu items, drag selection auto-scroll, and
 font selection for the active range. Native commands dispatch the same core
@@ -3697,11 +3673,9 @@ The menu hierarchy is:
   - Text Color…
   - Highlight Color…
   - separator
-  - Document Style
-    - Base Document
-    - dynamically listed named document styles
-    - separator
+  - Style
     - Edit Styles…
+    - Save as default <format> style
   - separator
   - Paragraph
     - Alignment
@@ -3734,7 +3708,7 @@ The menu hierarchy is:
   - separator
   - Edit Styles…
 - **Character**
-  - Base Character
+  - Default Paragraph (clear named character styling)
   - dynamically listed named character styles
   - separator
   - Edit Styles…
@@ -3827,7 +3801,7 @@ checked when menu validation refreshes their command state.
 In Code mode, check the named syntax style at the caret, or the single style
 shared by the selection, using the currently displayed syntax runs. Check the
 specific assigned style rather than its linked ancestors; unstyled text and
-unresolved syntax names use Base Character. A selection spanning different
+unresolved syntax names use the current paragraph appearance. A selection spanning different
 named styles has no single checked character style. Code's paragraph menu
 checks the current paragraph style. These checks describe the document, not
 the style currently selected in the style editor, and never trigger parsing.
@@ -3850,7 +3824,7 @@ source, or undo state.
 
 Use [`docs/Word style.png`](<docs/Word style.png>) as the visual reference for
 the style editor's overall density, labeled properties at the top, large
-formatting area, bordered live preview, resolved-format summary, and bottom
+formatting area, bordered live preview, and bottom
 action row. It is a composition reference rather than a behavioral or
 pixel-exact template. Use native AppKit controls, metrics, typography, focus
 rings, accessibility behavior, and current macOS window appearance. Do not
@@ -3871,10 +3845,13 @@ their ownership or move their edits into document history.
   document-modal sheet. The user can focus and edit any document while it is
   open.
 - Its title is **Styles**, with the compact utility-panel title bar and window
-  buttons used by the native font picker. Formatting controls, preview, and
-  resolved summary have no section headings. Omit the inherited-formatting
+  buttons used by the native font picker. Formatting controls and preview have
+  no section headings. There is no textual resolved-attribute summary. Omit the inherited-formatting
   instruction, live-apply footer text, and separator above the Close button;
   relevant availability and error messages remain visible when needed.
+- **F8** opens the style editor through the same **Edit Styles…** action,
+  without Command, Control, Option, or Shift. It works in Normal and Insert
+  modes without inserting text or changing the editing mode.
 - Exactly one style-editor window exists application-wide. Invoking any
   `Edit Styles…` action while it is closed creates it. Invoking one while it is
   open brings the existing window forward, retargets it to the invoking
@@ -3882,9 +3859,9 @@ their ownership or move their edits into document history.
   style by stable style ID.
 - **Paragraph > Edit Styles…** initially selects the current paragraph style;
   **Character > Edit Styles…** initially selects the current character style,
-  including Base Character when that is current. These role-specific entry
-  points use the corresponding base style when a mixed selection has no single
-  named style in that namespace. Choosing an individual style definition from
+  or the current paragraph style when Default Paragraph is current. A mixed
+  character selection uses the paragraph result; mixed paragraphs use Base
+  Paragraph. Choosing an individual style definition from
   a menu or another explicit Edit Style action selects that requested style.
 - An editor opened from a document view follows subsequent logical caret or
   selection changes in that invoking view. Select its current non-default
@@ -3920,10 +3897,9 @@ From top to bottom, the content is:
 
 1. a properties section containing:
    - **Style**, a pop-up that selects a style in the target document and groups
-     Document, Paragraph, and Character styles;
+     Paragraph and Character styles;
    - **Name**, an editable text field;
-   - **Style type**, a read-only value showing Document, Paragraph, or
-     Character; and
+   - **Style type**, a read-only value showing Paragraph or Character; and
    - **Based on**, a pop-up for the style's parent with a trailing **↗** button;
    - **Next paragraph**, a pop-up for paragraph styles with a trailing **↗**
      button;
@@ -3932,17 +3908,14 @@ From top to bottom, the content is:
 3. the controls for the selected tab;
 4. a bordered, live preview using the real core style resolver and Core Text
    shaping path;
-5. a scrollable, read-only summary of explicit declarations, inherited values,
-   their contributing base styles, and the resulting effective properties; and
-6. a bottom action row containing the **Close** button.
+5. a bottom action row containing the **Close** button.
 
 Style type is immutable after style creation. The Based on picker contains only
 parents allowed by the selected style's namespace and role and excludes the
 style itself and its transitive descendants. It cannot create an inheritance
-cycle. Base Character and Base Document have no editable parent; Base
-Paragraph's parent is fixed to Base Document. The distinguished base styles
-remain editable where their declarations permit it, but cannot be deleted or
-have their role changed.
+cycle. Base Paragraph has no parent and cannot be deleted or have its role
+changed. Character styles offer Default Paragraph as their default parent;
+this clears the parent link and has no editable definition to navigate to.
 
 Each **↗** button selects the referenced style in this same editor by stable
 ID, allowing the user to traverse the hierarchy. Navigation commits any valid
@@ -3955,47 +3928,66 @@ Top-section labels MUST be vertically centered with their fields and pop-ups,
 including rows with auxiliary buttons, at supported window sizes and in light
 and dark appearances.
 
-Every property control must distinguish **Inherited** (no declaration at this
-style layer) from an explicit value, including explicit normal weight, no
-decoration, zero spacing, or transparent color. The UI shows the effective
-inherited value while making it visually clear that the selected style does not
-declare that value. A `Use Inherited` or equivalent action removes the
-declaration rather than copying the current ancestor value into the style.
+Each property has an unlabeled checkbox immediately to its left, with tooltip
+**Override inherited**. Unchecked means no declaration at this layer. Its native
+controls are disabled and entry fields are empty, including font family and
+size. Clicking a disabled property control checks its override box and then
+performs that same original click, such as opening the font list or selecting
+Bold. The initial activation and action form one undo gesture. Checking a box
+starts from the resolved value; unchecking removes the declaration and restores
+the inherited presentation. Explicit normal weight, no decoration, zero spacing,
+and transparent color remain distinct from inheritance. Unsupported properties
+remain disabled and cannot activate through a click. Clicking a property caption,
+unit label, or icon only enables the property; it MUST NOT forward a native
+control action or open a field, menu, or color panel. A missing inherited
+background activates as explicitly transparent.
 
-The first version of this two-tab editor changes Character and Paragraph
-declarations. It does not edit Document Canvas background or padding; a future
-Document tab or separate canvas UI must be specified before those properties
-are exposed. Document-role styles may be selected to edit their allowed
-Character declarations, but their Paragraph tab is disabled.
+Base Paragraph supplies every effective property. Its override checkboxes are
+always checked and disabled, while its supported value controls remain editable.
+Its Next paragraph is always Same Style, with the popup and navigation button
+disabled. Opening this editor does not materialize sparse source declarations.
 
 #### Character tab
 
-The Character tab edits Character declarations. It is enabled for Character,
-Paragraph, and Document styles because all three supported roles may contribute
-default character appearance. For a Paragraph style, these controls edit the
+The Character tab edits Character declarations. It is enabled for Character
+and Paragraph styles. For a Paragraph style, these controls edit the
 paragraph's default character declarations rather than assigning a separate
 Character style.
 
-Expose controls for all initial Character properties:
+Expose controls for these Character properties (language remains a core/source
+property without an editor control):
 
 - ordered font-family and fallback requests;
 - font size in layout units, aligned with the font-family and face controls
   without a visible **Size** label above it; retain its accessible control name;
 - a native font-face picker (Regular, Light, Bold, Italic, etc.) and separate
   Bold and Italic toggles, with no generic numeric weight/slant fields;
-- native foreground/background color swatches, including Default/Inherited;
+- native foreground/background color wells, including Default/Inherited;
+  their compact picker always shows the current color swatch and exact value,
+  marks a matching palette choice, and retains a visible current-color entry
+  for custom colors outside the palette. **More Colors…** opens the native
+  color panel initialized to that current color. Merely opening the picker
+  must not change an already enabled property or create an undo entry;
 - underline and strike decoration;
-- language;
 - writing-direction override;
 - an original SVG feature button opening the selected font’s supported OpenType
   feature menu, with checkmarks and the same catalog as Format > OpenType Features;
 - letter spacing; and
 - baseline shift.
 
+Font family/fallback and native face/base weight have independent override
+checkboxes. An explicit face weight remains visible and editable when its font
+family is inherited; clearing the family does not remove that weight override.
+
 Character controls form compact grouped rows, with original consistent SVG
 icons and separate B/I/U actions. Paragraph controls use corresponding alignment,
 indentation, and spacing groups. The reference images guide density and grouping;
-the interface must not be a tall generic attribute list.
+the interface must not be a tall generic attribute list. **Text Color**,
+**Background Color**, and **OpenType** captions appear above their controls,
+like Tracking and Baseline. The B/I/U/strike buttons reserve the same caption
+space so their override checkboxes align vertically with the color checkboxes.
+Separate adjacent property sections on a row with one em before each subsequent
+checkbox; keep each checkbox close to its own control.
 
 Font face establishes the base weight/slant. Bold is a separate portable semantic
 property: add 300 to the base weight (capped at 1000), then choose the next
@@ -4028,7 +4020,7 @@ or undo authorities.
 #### Paragraph tab
 
 The Paragraph tab is enabled only for Paragraph-role styles. It is visibly
-disabled for Character and Document styles and cannot retain keyboard focus
+disabled for Character styles and cannot retain keyboard focus
 when disabled.
 
 Expose controls for all initial Paragraph Layout properties:
@@ -4049,7 +4041,7 @@ applicable value form the committed declaration.
 
 Numeric style fields have native up/down steppers on their right edge. A
 step uses the displayed resolved value and creates an explicit declaration;
-inherited reset remains available. Invalid drafts disable the stepper without
+the override checkbox can restore inheritance. Invalid drafts disable the stepper without
 committing. Indents, paragraph spacing, baseline offsets, and tracking retain
 their supported signed ranges. Held autorepeat is one continuous undo gesture.
 
@@ -4080,17 +4072,16 @@ their supported signed ranges. Held autorepeat is one continuous undo gesture.
 - Undo, redo, source reprojection, or another frontend action may change the
   selected style's definition while the window is open. The editor observes
   style-sheet revision changes and refreshes its fields, inheritance state,
-  preview, and summary from core without manufacturing another edit.
+  and preview from core without manufacturing another edit.
 
 #### Selection validity and deletion
 
 Deleting any non-base style that is in use reassigns its content to the
-corresponding Base Paragraph or Base Character, rather than to the deleted
-style's parent. Definitions, assignments, and supporting source metadata change
+Base Paragraph assignment or no character assignment (Default Paragraph),
+rather than to the deleted style's parent. Definitions, assignments, and supporting source metadata change
 atomically and undo restores all of them. Generated heading/list definitions
 must not silently reappear after reparsing; an adapter may persist an explicit
-deletion marker in its owned schema. The three distinguished base styles remain
-undeletable. Required tests cover local edits and reopen after deletion, source
+deletion marker in its owned schema. Base Paragraph remains undeletable. Required tests cover local edits and reopen after deletion, source
 locality, and deeper generated list levels.
 
 The global Code target instead follows the name-reference and persisted

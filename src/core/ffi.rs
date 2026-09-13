@@ -1142,9 +1142,7 @@ pub const VIEM_STYLE_ORIGIN_SYNTHETIC_READ_ONLY: u32 = 3;
 
 pub const VIEM_STYLE_DEFINITION_HAS_PARENT: u32 = 1 << 0;
 pub const VIEM_STYLE_DEFINITION_HAS_NEXT_STYLE: u32 = 1 << 1;
-pub const VIEM_STYLE_DEFINITION_BASE_DOCUMENT: u32 = 1 << 2;
 pub const VIEM_STYLE_DEFINITION_BASE_PARAGRAPH: u32 = 1 << 3;
-pub const VIEM_STYLE_DEFINITION_BASE_CHARACTER: u32 = 1 << 4;
 pub const VIEM_STYLE_DEFINITION_INTERNAL: u32 = 1 << 5;
 pub const VIEM_STYLE_DEFINITION_INTERNAL_LIST: u32 = 1 << 6;
 
@@ -4853,7 +4851,7 @@ pub unsafe extern "C" fn viem_code_create_style(request:*const ViemCreateStyleV1
         let sheet = crate::document::code_style::snapshot();
         validate_code_style_identity(request.identity,&sheet)?;
         let edit = crate::document::StyleDefinitionEdit::InsertCharacter {
-            style: crate::document::CharacterStyle {id:StyleId(id),based_on:Some(if parent.is_empty() {sheet.base_character.clone()} else {StyleId(parent)}),properties:Default::default()},
+            style: crate::document::CharacterStyle {id:StyleId(id),based_on:(!parent.is_empty()).then(|| StyleId(parent)),properties:Default::default()},
             metadata:crate::document::StyleDefinitionMetadata::generated(name),
         };
         let sheet = crate::document::code_style::edit(sheet.revision,edit).map_err(|_| ViemStatus::InvalidArgument)?;
@@ -5373,7 +5371,7 @@ fn generated_style_capabilities(
     if !is_base {
         capabilities |= VIEM_STYLE_CAPABILITY_EDIT_PARENT | VIEM_STYLE_CAPABILITY_DELETE;
     }
-    if role == Some(BlockRole::Paragraph) {
+    if !is_base && role == Some(BlockRole::Paragraph) {
         capabilities |= VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE;
     }
     if source_editable
@@ -5393,7 +5391,7 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, ViemStatu
 }
 
 fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: ViemStyleSheetIdentityV1, format: Format) -> Result<StyleSheetExport, ViemStatus> {
-    let assignment = DocumentStyleAssignment::new(sheet.base_document.clone());
+    let assignment = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
     let mut definitions = Vec::new();
     let mut properties = Vec::new();
     let mut value_items = Vec::new();
@@ -5403,7 +5401,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
         .try_reserve(sheet.block_style_count() + sheet.character_style_count())
         .map_err(|_| ViemStatus::ResourceExhausted)?;
 
-    for style in sheet.block_styles() {
+    for style in sheet.block_styles().filter(|style| style.role == BlockRole::Paragraph) {
         let metadata = sheet
             .block_style_metadata(&style.id)
             .ok_or(ViemStatus::CoreFailure)?;
@@ -5473,7 +5471,6 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
             }
         }
 
-        let is_base_document = style.id == sheet.base_document;
         let is_base_paragraph = style.id == sheet.base_paragraph;
         let mut flags = if style.id.is_internal_list() || style.id.legacy_list_level().is_some() {
             VIEM_STYLE_DEFINITION_INTERNAL_LIST
@@ -5492,9 +5489,6 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
         } else {
             ViemStyleStringRefV1::default()
         };
-        if is_base_document {
-            flags |= VIEM_STYLE_DEFINITION_BASE_DOCUMENT;
-        }
         if is_base_paragraph {
             flags |= VIEM_STYLE_DEFINITION_BASE_PARAGRAPH;
         }
@@ -5506,7 +5500,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
             origin: style_origin_to_ffi(metadata.origin),
             capabilities: (generated_style_capabilities(
                 metadata.origin,
-                is_base_document || is_base_paragraph,
+                is_base_paragraph,
                 Some(style.role),
                 format.has_rich_source(),
             ) & if format.is_code() { !VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE } else { u32::MAX }) | if sheet.has_user_default(&style.id, false)
@@ -5569,8 +5563,8 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
                     .ok_or(ViemStatus::CoreFailure)?,
             )?;
         }
-        let is_base = style.id == sheet.base_character;
-        let mut flags = u32::from(is_base) * VIEM_STYLE_DEFINITION_BASE_CHARACTER;
+        let is_base = false;
+        let mut flags = 0;
         if style.id.is_internal() {
             flags |= VIEM_STYLE_DEFINITION_INTERNAL;
         }
@@ -5594,7 +5588,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
                     is_base,
                     None,
                     format.has_rich_source(),
-                ) | if format.has_rich_source() || format.is_markdown() && matches!(style.id.0.as_str(), "Character" | "Code")
+                ) | if format.has_rich_source() || format.is_markdown() && style.id.0 == "Code"
                 {
                     VIEM_STYLE_CAPABILITY_ASSIGN
                 } else {
@@ -9497,7 +9491,7 @@ pub unsafe extern "C" fn viem_core_view_assign_style(
         }
         let namespace = parse_style_namespace(request.namespace)?;
         let style = unsafe { composition_utf8(request.style_id, out_outcome)? };
-        if style.is_empty() || style.contains('\0') {
+        if (style.is_empty() && namespace != StyleNamespace::Character) || style.contains('\0') {
             return Err(ViemStatus::InvalidArgument);
         }
         unsafe { clear_outcome(out_outcome)? };
@@ -9823,13 +9817,8 @@ pub unsafe extern "C" fn viem_core_view_create_style(
             validate_style_sheet_identity(request.identity, core.document())?;
             let sheet = core.document().projection().style_sheet();
             let parent = if parent.is_empty() {
-                match namespace {
-                    StyleNamespace::Block => sheet.base_paragraph.clone(),
-                    StyleNamespace::Character => sheet.base_character.clone(),
-                }
-            } else {
-                StyleId(parent)
-            };
+                (namespace == StyleNamespace::Block).then(|| sheet.base_paragraph.clone())
+            } else { Some(StyleId(parent)) };
             let metadata = crate::document::StyleDefinitionMetadata {
                 display_name: name,
                 origin: StyleDefinitionOrigin::SourceBacked,
@@ -9838,7 +9827,7 @@ pub unsafe extern "C" fn viem_core_view_create_style(
                 StyleNamespace::Block => crate::document::StyleDefinitionEdit::InsertBlock {
                     style: crate::document::BlockStyle {
                         id: StyleId(id),
-                        based_on: Some(parent),
+                        based_on: parent,
                         next_paragraph_style: (!next.is_empty()).then_some(StyleId(next)),
                         role: BlockRole::Paragraph,
                         character: CharacterProperties::default(),
@@ -9850,7 +9839,7 @@ pub unsafe extern "C" fn viem_core_view_create_style(
                     crate::document::StyleDefinitionEdit::InsertCharacter {
                         style: crate::document::CharacterStyle {
                             id: StyleId(id),
-                            based_on: Some(parent),
+                            based_on: parent,
                             properties: CharacterProperties::default(),
                         },
                         metadata,
@@ -11047,8 +11036,8 @@ mod tests {
             unsafe { viem_core_style_sheet_info(handle, &mut info) },
             ViemStatus::Ok
         );
-        assert_eq!(info.definition_count, 20);
-        assert_eq!(info.property_count, 421);
+        assert_eq!(info.definition_count, 18);
+        assert_eq!(info.property_count, 388);
         assert_ne!(info.string_bytes, 0);
 
         let mut count_info = ViemStyleSheetInfoV1::default();
@@ -11106,18 +11095,18 @@ mod tests {
 
         let document = definitions
             .iter()
-            .find(|definition| style_arena_text(&strings, definition.stable_id) == "Document")
+            .find(|definition| style_arena_text(&strings, definition.stable_id) == "Paragraph")
             .unwrap();
         assert_eq!(
             style_arena_text(&strings, document.display_name),
-            "Base Document"
+            "Base Paragraph"
         );
         assert_ne!(
             style_arena_text(&strings, document.stable_id),
             style_arena_text(&strings, document.display_name)
         );
         assert_eq!(document.namespace, super::VIEM_STYLE_NAMESPACE_BLOCK);
-        assert_eq!(document.role, super::VIEM_STYLE_ROLE_DOCUMENT);
+        assert_eq!(document.role, super::VIEM_STYLE_ROLE_PARAGRAPH);
         assert_eq!(
             document.origin,
             super::VIEM_STYLE_ORIGIN_GENERATED_CONFIGURATION
@@ -11147,7 +11136,7 @@ mod tests {
         );
         assert_eq!(
             style_arena_text(&strings, size.contributor_style_id),
-            "Document"
+            "Paragraph"
         );
 
         let families = document_properties
@@ -11188,9 +11177,9 @@ mod tests {
         );
         assert_eq!(
             style_arena_text(&strings, inherited_family.contributor_style_id),
-            "Document"
+            "Paragraph"
         );
-        assert!(inherited_family.dependency_count >= 3);
+        assert!(inherited_family.dependency_count >= 2);
 
         // Every output remains untouched when just one capacity is short.
         let sentinel_definition = ViemStyleDefinitionV1 {
@@ -11276,7 +11265,7 @@ mod tests {
         let mut root = document
             .projection()
             .style_sheet()
-            .block_style(&document.projection().style_sheet().base_document)
+            .block_style(&document.projection().style_sheet().base_paragraph)
             .unwrap()
             .clone();
         root.character.background = Some(Color {

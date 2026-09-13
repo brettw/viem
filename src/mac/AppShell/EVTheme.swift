@@ -29,22 +29,6 @@ public struct EVThemeColor: Codable, Equatable, Sendable {
   }
 }
 
-public struct EVThemePadding: Codable, Equatable, Sendable {
-  public var top: Double = 28
-  public var left: Double = 30
-  public var bottom: Double = 28
-  public var right: Double = 30
-  public init(top: Double = 28, left: Double = 30, bottom: Double = 28, right: Double = 30) {
-    self.top = top
-    self.left = left
-    self.bottom = bottom
-    self.right = right
-  }
-  var isValid: Bool {
-    [top, left, bottom, right].allSatisfy { $0.isFinite && (0...1000).contains($0) }
-  }
-}
-
 public struct EVTheme: Codable, Equatable, Sendable {
   public var foreground = EVThemeColor(0.08, 0.09, 0.11)
   public var background = EVThemeColor(1, 1, 1)
@@ -54,7 +38,6 @@ public struct EVTheme: Codable, Equatable, Sendable {
   public var selection = EVThemeColor(0.12, 0.39, 0.73, 0.28)
   public var statusFontFamily = "System"
   public var statusFontSize: Double = 11
-  public var padding = EVThemePadding()
 
   public init() {}
   public static let paper = EVTheme()
@@ -81,7 +64,7 @@ public struct EVTheme: Codable, Equatable, Sendable {
     [foreground, background, statusForeground, statusBackground, caret, selection].allSatisfy(
       \.isValid)
       && statusFontSize.isFinite && (8...32).contains(statusFontSize)
-      && !statusFontFamily.isEmpty && statusFontFamily.count < 256 && padding.isValid
+      && !statusFontFamily.isEmpty && statusFontFamily.count < 256
   }
 }
 

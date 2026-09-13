@@ -116,7 +116,6 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
     let source = try surface.backend.serializedSource(typeName: "public.plain-text")
     let state = surface.backend.persistenceState
     var midnight = EVTheme.midnight
-    midnight.padding = prior.padding
     EVThemeStore.shared.update(midnight)
     let after = try XCTUnwrap(surface.layoutSnapshot)
     XCTAssertTrue(before.info.identity.isSameLayout(as: after.info.identity))
@@ -229,7 +228,7 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
     let session = try XCTUnwrap(surface.session)
     XCTAssertEqual(try session.currentFontEnWidth(), 7, accuracy: 0.001)
     let editor = EVStyleEditorViewController()
-    editor.retarget(document: surface, styleKey: .baseDocument)
+    editor.retarget(document: surface, styleKey: .baseParagraph)
     XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(48)))
     XCTAssertEqual(try session.currentFontEnWidth(), 24, accuracy: 0.001)
     XCTAssertEqual(try surface.backend.serializedSource(typeName: "public.plain-text"), Data())

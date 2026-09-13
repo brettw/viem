@@ -24,6 +24,10 @@ use unicode_segmentation::UnicodeSegmentation;
 mod unwrapped;
 use unwrapped::{HorizontalMaterialization, UnwrappedSummaryCache};
 
+#[cfg(test)]
+#[path = "adjacent_regions_tests.rs"]
+mod adjacent_regions_tests;
+
 pub(super) const MAX_SHAPE_FRAGMENT_BYTES: usize = 4096;
 pub(super) const SHAPING_CONTEXT_BYTES: usize = 32;
 const DEFAULT_CACHE_ENTRIES: usize = 2048;
@@ -802,6 +806,55 @@ impl RegionalLayoutSnapshot {
             .extend(following.diagnostics.iter().cloned());
         self.diagnostics
             .retain(|entry| entry.text_range.end >= start);
+    }
+
+    pub(crate) fn append_adjacent_region(&mut self, following: &Self) {
+        let preceding = self.clone();
+        *self = following.clone();
+        self.prepend_adjacent_region(&preceding);
+    }
+
+    /// Join the old paragraph's visible tail to the newly inserted paragraph.
+    /// Both inputs were captured and shaped independently within bounded slices.
+    pub(crate) fn prepend_adjacent_region(&mut self, preceding: &Self) {
+        debug_assert_eq!(preceding.hard_lines.end, self.hard_lines.start);
+        debug_assert_eq!(preceding.document_id, self.document_id);
+        debug_assert_eq!(preceding.document_revision, self.document_revision);
+        debug_assert_eq!(
+            preceding.configuration_generation,
+            self.configuration_generation
+        );
+        debug_assert_eq!(
+            preceding.measurement_environment_id,
+            self.measurement_environment_id
+        );
+        debug_assert_eq!(preceding.metrics_generation, self.metrics_generation);
+        debug_assert_eq!(
+            preceding.document_hard_line_count,
+            self.document_hard_line_count
+        );
+        debug_assert_eq!(preceding.document_text_len, self.document_text_len);
+        debug_assert_eq!(
+            preceding.document_style_revision,
+            self.document_style_revision
+        );
+        // Joined rows retain their horizontal gaps and their shared source for
+        // logical boundary validation; ordinary rows need no coverage record.
+        if let Some(preceding_sparse) = &preceding.horizontal_materialization {
+            if let Some(sparse) = &mut self.horizontal_materialization {
+                debug_assert!(sparse.text.shares_root_with(&preceding_sparse.text));
+                sparse.rows.splice(0..0, preceding_sparse.rows.iter().cloned());
+            } else {
+                self.horizontal_materialization = Some(preceding_sparse.clone());
+            }
+        }
+        self.hard_lines.start = preceding.hard_lines.start;
+        self.lines.splice(0..0, preceding.lines.iter().cloned());
+        self.paint_runs.splice(0..0, preceding.paint_runs.iter().cloned());
+        self.grapheme_boundaries.extend(preceding.grapheme_boundaries.iter().copied());
+        self.grapheme_boundaries.sort_unstable();
+        self.grapheme_boundaries.dedup();
+        self.diagnostics.splice(0..0, preceding.diagnostics.iter().cloned());
     }
 
     fn rebind_revision(&mut self, revision: LayoutRevision) {
@@ -5575,7 +5628,7 @@ mod tests {
         blocks: &[Block],
         sheet: &StyleSheet,
     ) -> DocumentLayoutStyles {
-        let document_style = DocumentStyleAssignment::new(sheet.base_document.clone());
+        let document_style = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
         DocumentLayoutStyles::resolve_input(DocumentStyleInput {
             text,
             blocks,

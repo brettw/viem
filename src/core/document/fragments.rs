@@ -288,7 +288,7 @@ impl Document {
                     current_runs
                         .iter()
                         .any(|run| run.named.is_some())
-                        .then(|| scratch.projection().style_sheet().base_character.clone())
+                        .then(|| StyleId::from(""))
                 });
                 if let Some(named) = named {
                     let range = TextRange::new(

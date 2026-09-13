@@ -38,7 +38,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     // document revision. This associates that snapshot with its owning view.
     private var selectionPresentationViewID: ViemViewId?
     private var themeObserver: NSObjectProtocol?
-    private var appliedPadding: EVThemePadding?
+    private let viewPreferences: EVViewPreferences
+    private var viewPreferencesObserver: NSObjectProtocol?
+    private var appliedMargins: EVViewMargins?
     private var showInvisibles = false
     private var lastErrorMessage = ""
     var pasteboard: any EVPasteboardAccess = EVAppKitPasteboardAccess.shared
@@ -83,11 +85,15 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         formattedSnapshot?.utf16Length ?? 0
     }
 
-    init(backend: EVCoreDocumentBackend) {
+    init(backend: EVCoreDocumentBackend, viewPreferences: EVViewPreferences? = nil) {
+        self.viewPreferences = viewPreferences ?? .shared
         self.backend = backend
         super.init(nibName: nil, bundle: nil)
         themeObserver = NotificationCenter.default.addObserver(forName: .viemThemeDidChange, object: EVThemeStore.shared, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyTheme() }
+        }
+        viewPreferencesObserver = NotificationCenter.default.addObserver(forName: .viemViewPreferencesDidChange, object: self.viewPreferences, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyViewMargins() }
         }
         do {
             try attachToCore()
@@ -97,12 +103,19 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
     }
 
-    deinit { if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) } }
+    deinit {
+        if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
+        if let viewPreferencesObserver { NotificationCenter.default.removeObserver(viewPreferencesObserver) }
+    }
 
     private func applyTheme() {
-        let padding = EVThemeStore.shared.theme.padding
+        if isViewLoaded { refreshPresentation() }
+    }
+
+    private func applyViewMargins() {
+        let margins = viewPreferences.margins
         do {
-            if appliedPadding != padding { try session?.setThemePadding(padding); appliedPadding = padding }
+            if appliedMargins != margins { try session?.setViewMargins(margins); appliedMargins = margins }
             if isViewLoaded { refreshPresentation() }
         } catch { report(error) }
     }
@@ -144,8 +157,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
         attachedSession.commandTurnHost = self
         session = attachedSession
-        try attachedSession.setThemePadding(EVThemeStore.shared.theme.padding)
-        appliedPadding = EVThemeStore.shared.theme.padding
+        try attachedSession.setViewMargins(viewPreferences.margins)
+        appliedMargins = viewPreferences.margins
         if isViewLoaded { refreshPresentation() }
     }
 
@@ -437,7 +450,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             let style: EVStyleKind? = switch menuCommand {
             case .editCharacterStyles: .character
             case .editParagraphStyles: .paragraph
-            case .editDocumentStyles: .document
+            case .editStyles: .paragraph
             default: nil
             }
             if let style {
@@ -585,10 +598,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 preferredStyle: .paragraph,
                 sender: sender
             )
-        case .editDocumentStyles:
+        case .editStyles:
             EVStyleEditorCoordinator.shared.show(
                 document: self,
-                preferredStyle: .document,
+                preferredStyle: nil,
                 sender: sender
             )
         case .saveDefaultStyle:
@@ -621,7 +634,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             )
         }
         if backend.sourceFormat == .code, (300..<400).contains(menuCommand.rawValue) {
-            if [.editCharacterStyles, .editParagraphStyles, .editDocumentStyles].contains(menuCommand) {
+            if [.editCharacterStyles, .editParagraphStyles, .editStyles].contains(menuCommand) {
                 return .enabled
             }
             return .disabled
@@ -727,7 +740,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 && (try? session?.listSelection()) != nil)
         case .saveDefaultStyle:
             EVMenuItemPresentation(isEnabled: backend.sourceFormat != .code, title: "Save as default \(backend.sourceFormat.defaultStyleName) style")
-        case .editCharacterStyles, .editParagraphStyles, .editDocumentStyles:
+        case .editCharacterStyles, .editParagraphStyles, .editStyles:
             EVMenuItemPresentation(isEnabled: backend.sourceFormat != .code)
         case .printDocument:
             .disabled

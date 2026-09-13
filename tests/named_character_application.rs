@@ -31,7 +31,7 @@ fn named(document: &Document, at: usize) -> StyleId {
             None
         })
         .last()
-        .unwrap_or_else(|| "Character".into())
+        .unwrap_or_else(|| "".into())
 }
 fn unchanged_bytes(before: &[u8], after: &[u8], patches: &[SourcePatch]) {
     let mut old = 0;
@@ -60,7 +60,7 @@ fn html_named_character_assignments_stay_inside_blocks_and_preserve_irregular_so
                         edit: StyleDefinitionEdit::InsertCharacter {
                             style: CharacterStyle {
                                 id: "Accent".into(),
-                                based_on: Some("Character".into()),
+                                based_on: None,
                                 properties: CharacterProperties {
                                     underline: Some(true),
                                     ..Default::default()
@@ -125,8 +125,8 @@ fn html_reassigns_code_and_custom_styles_only_inside_selected_inline_text() {
     let mut document = open(b"<p>left <code>a<i>bc</i>d</code> right</p>", Format::Html);
     let original = document.source_bytes();
     let at = document.text().find("bc").unwrap();
-    assign(&mut document, at..at + 2, "Character").unwrap();
-    assert_eq!(named(&document, at).0, "Character");
+    assign(&mut document, at..at + 2, "").unwrap();
+    assert_eq!(named(&document, at).0, "");
     assert_eq!(named(&document, at - 1).0, "Code");
     assert_eq!(named(&document, at + 2).0, "Code");
     assign(&mut document, at..at + 2, "Code").unwrap();
@@ -179,9 +179,9 @@ fn markdown_base_character_removes_partial_code_with_literal_markers_losslessly(
     let before = document.source_bytes();
     let text = document.text().to_owned();
     let start = text.find("*b*").unwrap();
-    assign(&mut document, start..start + 3, "Character").unwrap();
+    assign(&mut document, start..start + 3, "").unwrap();
     assert_eq!(document.text(), text);
-    assert_eq!(named(&document, start).0, "Character");
+    assert_eq!(named(&document, start).0, "");
     assert_eq!(named(&document, start - 1).0, "Code");
     assert_eq!(named(&document, start + 3).0, "Code");
     let after = document.source_bytes();
@@ -225,7 +225,7 @@ fn named_typing_preserves_space_only_markdown_and_rejects_internal_styles() {
     let mut document = open(b"tail", Format::Markdown);
     let before = document.source_bytes();
     let mut at = 0;
-    for (style, text) in [("Code", " "), ("Character", " "), ("Code", " x ")] {
+    for (style, text) in [("Code", " "), ("", " "), ("Code", " x ")] {
         let payload =
             FormattedTextPayload::new(&document.hard_line_snapshot(), text, vec![]).unwrap();
         let start = at;
@@ -273,7 +273,7 @@ fn html_named_assignment_preserves_existing_direct_properties() {
                 edit: StyleDefinitionEdit::InsertCharacter {
                     style: CharacterStyle {
                         id: "Accent".into(),
-                        based_on: Some("Character".into()),
+                        based_on: None,
                         properties: CharacterProperties {
                             size: Some(22.0),
                             weight: Some(600),
@@ -300,4 +300,30 @@ fn html_named_assignment_preserves_existing_direct_properties() {
     assert_eq!(document.source_bytes(), before);
     assert!(document.redo());
     assert_eq!(document.source_bytes(), after);
+}
+
+#[test]
+fn default_paragraph_clears_inline_code_without_changing_code_paragraphs() {
+    let mut document = open(b"`inline`\n\n```\nblock\n```", Format::Markdown);
+    let end = document.text().len();
+    assign(&mut document, 0..end, "").unwrap();
+    assert_eq!(document.text(), "inline\nblock");
+    assert_eq!(document.source_bytes(), b"inline\n\n```\nblock\n```");
+    assert!(!document.projection().style_spans().iter().any(|span| matches!(span.application, StyleApplication::Named(_))));
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), b"`inline`\n\n```\nblock\n```");
+}
+
+#[test]
+fn clearing_an_already_default_html_selection_is_a_source_and_history_noop() {
+    let source = b"<p data-keep='x'>plain <i>italic</i></p><!--keep-->";
+    let mut document = open(source, Format::Html);
+    let revision = document.revision();
+    let history = document.history_status();
+    let end = document.text().len();
+    let changed = assign(&mut document, 0..end, "").unwrap();
+    assert_eq!(changed.summary().kind(), ModelChangeKind::NoOp);
+    assert_eq!(document.source_bytes(), source);
+    assert_eq!(document.revision(), revision);
+    assert_eq!(document.history_status(), history);
 }

@@ -108,7 +108,11 @@ pub(super) fn read(input: &NormalizedText) -> RtfSheet {
             .is_some_and(|header| header.start == *open && header.end == *close + 1)
     });
     let mut sheet = StyleSheet::default();
-    let mut document = sheet.block_style(&sheet.base_document).unwrap().clone();
+    sheet.set_intrinsic_character_defaults(CharacterProperties {
+        size: Some(12.0),
+        ..Default::default()
+    });
+    let mut document = sheet.block_style(&sheet.base_paragraph).unwrap().clone();
     document.character.size = Some(12.0);
     document.character.font_families = rtf::default_font_name(&tables)
         .map(|name| vec![name.to_owned()])
@@ -116,11 +120,11 @@ pub(super) fn read(input: &NormalizedText) -> RtfSheet {
     sheet
         .install_source_definitions(&[StyleDefinitionEdit::InsertBlock {
             style: document,
-            metadata: StyleDefinitionMetadata::generated("Document"),
+            metadata: StyleDefinitionMetadata::generated("Base Paragraph"),
         }])
         .expect("RTF document defaults have valid native properties");
     sheet.record_source_character_defaults(
-        sheet.base_document.clone(),
+        sheet.base_paragraph.clone(),
         CharacterProperties {
             font_families: rtf::default_font_name(&tables).map(|name| vec![name.to_owned()]),
             ..Default::default()
@@ -229,7 +233,7 @@ pub(super) fn read(input: &NormalizedText) -> RtfSheet {
                 StyleDefinitionEdit::InsertCharacter {
                     style: CharacterStyle {
                         id: raw.entry.id.clone(),
-                        based_on: parent.or_else(|| Some("Character".into())),
+                        based_on: parent,
                         properties: raw.character.clone(),
                     },
                     metadata,
@@ -238,20 +242,26 @@ pub(super) fn read(input: &NormalizedText) -> RtfSheet {
                 StyleDefinitionEdit::InsertBlock {
                     style: BlockStyle {
                         id: raw.entry.id.clone(),
-                        based_on: parent.or_else(|| {
-                            Some(if raw.entry.handle == 0 {
-                                "Document".into()
-                            } else {
-                                "Paragraph".into()
-                            })
-                        }),
+                        based_on: if raw.entry.handle == 0 { None }
+                            else { parent.or_else(|| Some("Paragraph".into())) },
                         next_paragraph_style: raw
                             .next
                             .and_then(|handle| ids.get(&(false, handle)))
                             .cloned()
                             .or_else(|| (raw.next == Some(0)).then(|| "Paragraph".into())),
                         role: BlockRole::Paragraph,
-                        character: raw.character.clone(),
+                        character: if raw.entry.handle == 0 {
+                            let mut properties = raw.character.clone();
+                            // The document's authored default-font table still
+                            // applies when Normal omits its own font selector.
+                            if properties.font_families.is_none() {
+                                properties.font_families = rtf::default_font_name(&tables)
+                                    .map(|name| vec![name.to_owned()]);
+                            }
+                            properties
+                        } else {
+                            raw.character.clone()
+                        },
                         block: raw.paragraph.clone(),
                     },
                     metadata,
@@ -429,7 +439,7 @@ pub(super) fn definition_patches(
         };
         let mut controls = format!("{}{}", if character { "\\*\\cs" } else { "\\s" }, number);
         if let Some(parent) =
-            parent.filter(|id| id.0 != "Document" && !(character && id.0 == "Character"))
+            parent.filter(|id| !(character && id.0.is_empty()))
         {
             controls.push_str(&format!(
                 "\\sbasedon{}",
@@ -499,10 +509,14 @@ pub(super) fn character_assignment_patches(
     id: &StyleId,
 ) -> Result<Vec<(Range<usize>, String)>, DocumentError> {
     let native = read(input);
-    let number = handle(&native, id, true)
-        .or_else(|| (id.0 == "Character" && native.id(0, true).is_none()).then_some(0))
-        .ok_or(DocumentError::UnsupportedFormatting)?;
-    let mut runs: Vec<(Range<usize>, CharacterProperties)> = Vec::new();
+    let clearing = id.0.is_empty();
+    let reset_through_paragraph = clearing && native.id(0, true).is_some();
+    let number = if clearing {
+        0
+    } else {
+        handle(&native, id, true).ok_or(DocumentError::UnsupportedFormatting)?
+    };
+    let mut runs: Vec<(Range<usize>, CharacterProperties, String)> = Vec::new();
     let mut at = range.start;
     for span in projection.provenance_for_region(range) {
         if span.formatted.is_empty() {
@@ -528,27 +542,47 @@ pub(super) fn character_assignment_patches(
                 super::rich_text::overlay(&mut properties, &value);
             }
         }
-        if let Some((previous, _)) = runs
+        let selector = if reset_through_paragraph {
+            let block = projection
+                .blocks_for_region(&span.formatted)
+                .into_iter()
+                .find(|block| block.range.start <= span.formatted.start
+                    && span.formatted.end <= block.range.end)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let paragraph = handle(&native, &block.style, false)
+                .ok_or(DocumentError::UnsupportedFormatting)?;
+            // A real cs0 definition cannot represent "no character style".
+            // Plain clears the named assignment, and restoring this same
+            // paragraph immediately removes Plain's direct font resets. Keep
+            // the paragraph's sparse direct declarations in this local scope.
+            format!("\\plain\\s{paragraph}{}", paragraph_controls(&block.direct_paragraph)?)
+        } else {
+            format!("\\cs{number}")
+        };
+        if let Some((previous, _, _)) = runs
             .last_mut()
-            .filter(|(previous, value)| previous.end == span.source.start && *value == properties)
+            .filter(|(previous, value, previous_selector)| {
+                previous.end == span.source.start && *value == properties
+                    && *previous_selector == selector
+            })
         {
             previous.end = span.source.end;
         } else {
-            runs.push((span.source, properties));
+            runs.push((span.source, properties, selector));
         }
     }
     if at != range.end {
         return Err(DocumentError::AmbiguousProjection);
     }
     let mut patches = Vec::new();
-    for (source, properties) in runs {
+    for (source, properties, selector) in runs {
         let mut direct = rtf::character_patches(input, &source, &properties)?;
         let (end, _) = direct.pop().ok_or(DocumentError::UnsupportedFormatting)?;
         let (start, prefix) = direct.pop().ok_or(DocumentError::UnsupportedFormatting)?;
         patches.extend(direct);
         patches.push((
             start,
-            format!("{{\\cs{number}{}", prefix.trim_start_matches('{')),
+            format!("{{{selector}{}", prefix.trim_start_matches('{')),
         ));
         patches.push((end, "}".to_owned()));
     }

@@ -1,0 +1,38 @@
+{
+  "unicode_version": "15.0.0",
+  "uax14_revision": 49,
+  "uax14_url": "https://www.unicode.org/reports/tr14/tr14-49.html",
+  "retrieved_utc": "2026-09-13",
+  "files": {
+    "LineBreak.txt": {
+      "url": "https://www.unicode.org/Public/15.0.0/ucd/LineBreak.txt",
+      "sha256": "012bca868e2c4e59a5a10a7546baf0c6fb1b2ef458c277f054915c8a49d292bf",
+      "bytes": 248086
+    },
+    "DerivedGeneralCategory.txt": {
+      "url": "https://www.unicode.org/Public/15.0.0/ucd/extracted/DerivedGeneralCategory.txt",
+      "sha256": "fe29a45c0882500e591140aaa5c4f5067e6a5d746806148af34400c48b9c06f9",
+      "bytes": 268339
+    },
+    "EastAsianWidth.txt": {
+      "url": "https://www.unicode.org/Public/15.0.0/ucd/EastAsianWidth.txt",
+      "sha256": "743e7bc435c04ab1a8459710b1c3cad56eedced5b806b4659b6e69b85d0adf2a",
+      "bytes": 186337
+    },
+    "emoji-data.txt": {
+      "url": "https://www.unicode.org/Public/15.0.0/ucd/emoji/emoji-data.txt",
+      "sha256": "29071dba22c72c27783a73016afb8ffaeb025866740791f9c2d0b55cc45a3470",
+      "bytes": 111505
+    },
+    "LineBreakTest.txt": {
+      "url": "https://www.unicode.org/Public/15.0.0/ucd/auxiliary/LineBreakTest.txt",
+      "sha256": "371bde4052aa593b108684ae292d8ea2dbb93c19990e0cdf416fa7239557aac3",
+      "bytes": 1085570
+    },
+    "LICENSE.txt": {
+      "url": "https://www.unicode.org/license.txt",
+      "sha256": "e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96",
+      "bytes": 1995
+    }
+  }
+}

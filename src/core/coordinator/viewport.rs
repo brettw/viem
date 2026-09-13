@@ -158,5 +158,59 @@ fn reveal_row_at<P: TextMeasurementProvider>(
     view.layout.set_viewport_top(requested)
 }
 
+/// Preserve coverage above an editing row at the start of a long paragraph.
+/// A regional boundary is not a document edge and must not clamp the viewport.
+pub(super) fn include_preceding_rows<P: TextMeasurementProvider>(
+    core: &mut Core<P>,
+    view_id: ViewId,
+    mut candidate: LayoutJobCandidate,
+    mut required_height: f32,
+) -> Result<LayoutJobCandidate, CoreError> {
+    let flow = core.presentation_flow(view_id);
+    let height = core.views[&view_id].layout.height().max(f32::EPSILON);
+    while required_height > 0. && candidate.regional_snapshot().hard_lines().start > 0 {
+        let line = candidate.regional_snapshot().hard_lines().start - 1;
+        let range = core.document.projection().presentation_line_range(line, flow)
+            .ok_or(LayoutJobError::InvalidDocumentLineIndex { hard_line: line })?;
+        let following = candidate.regional_snapshot().clone();
+        let mut checkpoint = {
+            let cache = &core.views[&view_id].long_line_checkpoints;
+            cache.before(range.clone(), range.end).and_then(|last| {
+                cache.before_height(range.clone(), (last.completed_height() - height).max(0.))
+            })
+        };
+        let mut tail = None;
+        loop {
+            let work_start = checkpoint.as_ref().map_or(range.start, LongLineLayoutCheckpoint::next_text_offset);
+            let region = match checkpoint.take() {
+                Some(checkpoint) => ViewportLayoutRegion::resume_long_line(checkpoint, 0., height)?,
+                None => ViewportLayoutRegion::new(line..line + 1, 0., height)?,
+            };
+            let request = core.prepare_view_layout_job(
+                view_id, LayoutJobPriority::ChangedVisibleRows,
+                LayoutJobRegion::Viewport(region), LayoutCancellationToken::new(),
+            )?;
+            let view = core.views.get_mut(&view_id).expect("validated editing view");
+            candidate = compute_layout_job(&mut view.engine, &request, view.immediate_layout_context)?;
+            let next = candidate.next_long_line_checkpoint().cloned();
+            candidate.retain_viewport_tail(tail.as_ref());
+            if let Some(next) = next {
+                if next.next_text_offset() <= work_start {
+                    return Err(LayoutJobError::InvalidLongLineCheckpoint("preceding viewport continuation did not advance").into());
+                }
+                core.views.get_mut(&view_id).expect("validated editing view")
+                    .long_line_checkpoints.insert(&core.document, next.clone());
+                tail = Some(candidate.regional_snapshot().clone());
+                checkpoint = Some(next);
+                continue;
+            }
+            required_height -= candidate.regional_snapshot().lines()[0].height() as f32;
+            candidate.append_adjacent_region(&following);
+            break;
+        }
+    }
+    Ok(candidate)
+}
+
 #[cfg(test)]
 mod tests;

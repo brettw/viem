@@ -1,7 +1,7 @@
 use viem_core::document::*;
 
 // Frozen input from the v1 grammar, independent of the current authoring code.
-const LEGACY_CHARACTER: &str = ".viem-c-41 {\n  --viem-style-id: \"A\";\n  --viem-style-name: \"A \\22 name\\22 \";\n  --viem-style-role: \"character\";\n  --viem-based-on: \"Character\";\n  --viem-prop-character-weight: \"400\";\n  --viem-prop-character-underline: \"false\";\n  --viem-prop-character-letter-spacing: \"0\";\n  font-weight: 400;\n  text-decoration-line: none;\n  letter-spacing: 0pt;\n}\n";
+const LEGACY_CHARACTER: &str = ".viem-c-41 {\n  --viem-style-id: \"A\";\n  --viem-style-name: \"A \\22 name\\22 \";\n  --viem-style-role: \"character\";\n  --viem-prop-character-weight: \"400\";\n  --viem-prop-character-underline: \"false\";\n  --viem-prop-character-letter-spacing: \"0\";\n  font-weight: 400;\n  text-decoration-line: none;\n  letter-spacing: 0pt;\n}\n";
 const OPEN_V1: &str = "<style id=\"viem-styles\" data-viem-version=\"1\">";
 const OPEN_V2: &str = "<style id=\"viem-styles\" data-viem-version=\"2\">";
 const BODY: &str =
@@ -117,7 +117,7 @@ fn explicit_style_edit_migrates_v1_atomically_and_preserves_opaque_source() {
                         .unwrap()
                         .character
                         .size,
-                    None
+                    Some(14.0)
                 );
             }
             let rich = Document::from_bytes(saved.clone(), encoding, Format::Html).unwrap();

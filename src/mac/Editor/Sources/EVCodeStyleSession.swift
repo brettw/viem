@@ -60,8 +60,21 @@ final class EVCodeStyleSession {
             initializationError = nil
         } catch {
             try? replaceGlobalJSON(Data())
-            initializationError = error.localizedDescription
-            throw error
+            let reason: String
+            if let bridgeError = error as? EVStyleBridgeError,
+               case .core(let status) = bridgeError,
+               status == UInt32(VIEM_STATUS_INVALID_ARGUMENT) {
+                reason = "The file contains invalid style definitions."
+            } else {
+                reason = error.localizedDescription
+            }
+            let file = directory.appendingPathComponent("code_style.json")
+            let message = "The Code stylesheet at \(file.path) could not be loaded. \(reason) Default Code styles are active."
+            initializationError = message
+            throw NSError(domain: "ViemCodeStyle", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: message,
+                NSUnderlyingErrorKey: error,
+            ])
         }
     }
 

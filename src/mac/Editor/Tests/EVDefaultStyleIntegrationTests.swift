@@ -23,7 +23,7 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
       let surface = try XCTUnwrap(original.makeEditorSurface() as? EVEditorSurfaceController)
       surface.loadViewIfNeeded()
       let snapshot = try original.styleSheetSnapshot()
-      try surface.session?.editStyle(key: .baseDocument, expected: snapshot.identity,
+      try surface.session?.editStyle(key: .baseParagraph, expected: snapshot.identity,
         mutation: .setDeclaration(.characterSize, .float(27)))
       XCTAssertEqual(surface.presentation(for: .saveDefaultStyle).title, "Save as default \(name) style")
       let before = try original.documentState()
@@ -38,7 +38,7 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
       XCTAssertEqual(try reopened.documentState().document_revision, 0)
       XCTAssertFalse(reopened.persistenceState.isDirty)
       XCTAssertEqual(try reopened.serializedSource(typeName: type), Data(source.utf8))
-      let style = try XCTUnwrap(try reopened.styleSheetSnapshot().definition(for: .baseDocument))
+      let style = try XCTUnwrap(try reopened.styleSheetSnapshot().definition(for: .baseParagraph))
       XCTAssertNil(style.properties[.characterSize]?.declared)
       XCTAssertEqual(style.properties[.characterSize]?.effective, .float(27))
     }

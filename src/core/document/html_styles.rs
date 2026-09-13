@@ -54,9 +54,7 @@ pub(super) fn native_style_selector(
     if character {
         return (id.0 == "Code").then(|| "code".into());
     }
-    if id == &sheet.base_document {
-        Some("body".into())
-    } else if id == &sheet.base_paragraph {
+    if id == &sheet.base_paragraph {
         Some("p".into())
     } else if id.0 == "Block quote" {
         Some("blockquote".into())
@@ -83,7 +81,7 @@ pub(super) fn native_style_selector(
 
 pub(super) fn is_native_style(sheet: &StyleSheet, id: &StyleId, character: bool) -> bool {
     native_style_selector(sheet, id, character).is_some()
-        || (character && id == &sheet.base_character)
+
 }
 
 fn selector_v2(sheet: &StyleSheet, id: &StyleId, character: bool) -> String {
@@ -95,7 +93,6 @@ fn native_definition(selector: &str) -> Option<(StyleSheet, StyleId, bool)> {
     let mut sheet = StyleSheet::for_format(Format::Html);
     let character = selector == "code";
     let id = match selector {
-        "body" => sheet.base_document.clone(),
         "p" => sheet.base_paragraph.clone(),
         "pre" => StyleId::from("Code Block"),
         "blockquote" => StyleId::from("Block quote"),
@@ -140,9 +137,6 @@ pub(super) fn class_name(id: &StyleId, character: bool) -> String {
 
 fn selector(sheet: &StyleSheet, id: &StyleId, character: bool) -> String {
     if !character {
-        if id == &sheet.base_document {
-            return "body".into();
-        }
         if id == &sheet.base_paragraph {
             return "p".into();
         }
@@ -893,7 +887,7 @@ fn canonical_v1_spelling(sheet: &StyleSheet, id: &StyleId, character: bool) -> O
         )
     } else {
         let style = sheet.block_style(id)?;
-        if style.role == BlockRole::Document && id != &sheet.base_document {
+        if style.role == BlockRole::Document && id != &sheet.base_paragraph {
             return None;
         }
         (
@@ -1079,11 +1073,7 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
                 metadata,
             })
     } else {
-        let role = if id == StyleSheet::default().base_document {
-            BlockRole::Document
-        } else {
-            BlockRole::Paragraph
-        };
+        let role = BlockRole::Paragraph;
         Some(StyleDefinitionEdit::InsertBlock {
             style: BlockStyle {
                 id,
@@ -1125,13 +1115,11 @@ fn effective_style_properties(
     } else {
         block_chain(sheet, id)?
     };
-    if character || id != &sheet.base_document {
-        b.background = None;
-        b.padding_top = None;
-        b.padding_right = None;
-        b.padding_bottom = None;
-        b.padding_left = None;
-    }
+    b.background = None;
+    b.padding_top = None;
+    b.padding_right = None;
+    b.padding_bottom = None;
+    b.padding_left = None;
     Some((c, b))
 }
 
@@ -1147,7 +1135,6 @@ fn minimal_style_css(
     character: bool,
     native_selector: bool,
 ) -> Option<String> {
-    let document = !character && id == &sheet.base_document;
     let list_level = (!character && native_selector)
         .then(|| list_style_level(id))
         .flatten();
@@ -1160,8 +1147,10 @@ fn minimal_style_css(
         block_chain(sheet, &previous)
     });
     let (mut c, mut b) = effective_style_properties(sheet, id, character)?;
-    let mut inherited = if document || character {
-        CharacterProperties {
+    // Base Paragraph no longer has a body-style ancestor. Paragraph selectors
+    // (p, headings, lists, pre) must serialize their resolved font declarations;
+    // a sibling p rule cannot provide CSS inheritance for those elements.
+    let mut inherited = CharacterProperties {
             weight: Some(400),
             slant: Some(FontSlant::Upright),
             underline: Some(false),
@@ -1171,9 +1160,6 @@ fn minimal_style_css(
             letter_spacing: Some(0.0),
             baseline_shift: Some(0.0),
             ..Default::default()
-        }
-    } else {
-        block_chain(sheet, &sheet.base_document)?.0
     };
     if let Some((previous, _)) = &previous_list {
         inherited = previous.clone();
@@ -1319,7 +1305,7 @@ fn write_rule_for_selector(
         )
     } else {
         let style = sheet.block_style(id)?;
-        if style.role == BlockRole::Document && id != &sheet.base_document {
+        if style.role == BlockRole::Document && id != &sheet.base_paragraph {
             return None;
         }
         (
@@ -1499,17 +1485,6 @@ pub(super) fn definition_patches_with_policy(
         };
         let native = is_native_style(after, id, character);
         if !include_builtin_definitions && native {
-            continue;
-        }
-        if character
-            && id == &after.base_character
-            && after.character_style(id).is_some_and(|style| {
-                style.based_on.is_none() && style.properties == CharacterProperties::default()
-            })
-            && after
-                .character_style_metadata(id)
-                .is_some_and(|m| m.display_name == "Base Character")
-        {
             continue;
         }
         if (include_builtin_definitions && native
@@ -1800,7 +1775,7 @@ mod tests {
                     edit: StyleDefinitionEdit::InsertCharacter {
                         style: CharacterStyle {
                             id: "Added".into(),
-                            based_on: Some("Character".into()),
+                            based_on: None,
                             properties: CharacterProperties {
                                 slant: Some(FontSlant::Italic),
                                 ..Default::default()
@@ -1954,7 +1929,7 @@ mod tests {
     fn deleted_native_rules_migrate_and_follow_full_paragraph_fallback() {
         let mut sheet = StyleSheet::for_format(Format::Html);
         sheet.mark_html_base_styles_source_backed();
-        let mut body = sheet.block_style(&sheet.base_document).unwrap().clone();
+        let mut body = sheet.block_style(&sheet.base_paragraph).unwrap().clone();
         body.character.letter_spacing = Some(2.0);
         let mut paragraph = sheet.block_style(&sheet.base_paragraph).unwrap().clone();
         paragraph.character.size = Some(20.0);
@@ -1978,7 +1953,7 @@ mod tests {
             } else {
                 write_rule
             };
-            let rules = [&sheet.base_document, &sheet.base_paragraph]
+            let rules = [&sheet.base_paragraph, &sheet.base_paragraph]
                 .into_iter()
                 .map(|id| writer(&sheet, id, false).unwrap())
                 .collect::<String>();
@@ -2108,7 +2083,7 @@ mod tests {
             .insert_character_style(
                 CharacterStyle {
                     id: "A".into(),
-                    based_on: Some("Character".into()),
+                    based_on: None,
                     properties: CharacterProperties {
                         weight: Some(400),
                         underline: Some(false),
@@ -2123,7 +2098,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(canonical_v1_spelling(&sheet,&StyleId::from("A"),true).unwrap(),
-            ".viem-c-41 {\n  --viem-style-id: \"A\";\n  --viem-style-name: \"A \\22 name\\22 \";\n  --viem-style-role: \"character\";\n  --viem-based-on: \"Character\";\n  --viem-prop-character-weight: \"400\";\n  --viem-prop-character-underline: \"false\";\n  --viem-prop-character-letter-spacing: \"0\";\n  font-weight: 400;\n  text-decoration-line: none;\n  letter-spacing: 0pt;\n}\n");
+            ".viem-c-41 {\n  --viem-style-id: \"A\";\n  --viem-style-name: \"A \\22 name\\22 \";\n  --viem-style-role: \"character\";\n  --viem-prop-character-weight: \"400\";\n  --viem-prop-character-underline: \"false\";\n  --viem-prop-character-letter-spacing: \"0\";\n  font-weight: 400;\n  text-decoration-line: none;\n  letter-spacing: 0pt;\n}\n");
     }
 
     #[test]
@@ -2131,12 +2106,12 @@ mod tests {
         let mut sheet = StyleSheet::for_format(Format::Html);
         sheet.ensure_list_level(3);
         assert_eq!(
-            write_rule(&sheet, &sheet.base_document, false).unwrap(),
-            "body {\n  font-family: 'SF Pro';\n  font-size: 14pt;\n}\n"
+            write_rule(&sheet, &sheet.base_paragraph, false).unwrap(),
+            "p {\n  font-family: 'SF Pro';\n  font-size: 14pt;\n  margin-block-start: 7pt;\n  margin-block-end: 7pt;\n}\n"
         );
         assert_eq!(
             write_rule(&sheet, &"List1".into(), false).unwrap(),
-            "li {\n}\n"
+            "li {\n  --viem-inherit: \"character-font-families character-size\";\n  font-family: 'SF Pro';\n  font-size: 14pt;\n}\n"
         );
         let rules = sheet
             .block_styles()
@@ -2218,7 +2193,7 @@ mod tests {
             rule.contains("--viem-prop-paragraph-line-spacing:"),
             "{rule}"
         );
-        assert!(!rule.contains("--viem-prop-character-weight:"), "{rule}");
+        assert!(rule.contains("--viem-prop-character-weight:"), "{rule}");
     }
 
     #[test]
@@ -2841,14 +2816,11 @@ pub(super) fn remove_assignment_patches(
                 .filter(|token| *token != class)
                 .collect::<Vec<_>>()
                 .join(" ");
-            let fallback = class_name(
-                &StyleId::from(if character { "Character" } else { "Paragraph" }),
-                character,
-            );
-            if !remaining.is_empty() {
-                remaining.insert(0, ' ');
+            if !character {
+                let fallback = class_name(&sheet.base_paragraph, false);
+                if !remaining.is_empty() { remaining.insert(0, ' '); }
+                remaining.insert_str(0, &fallback);
             }
-            remaining.insert_str(0, &fallback);
             let (range, replacement) = class_patch(&input.text, token.range.clone(), &remaining);
             Some((converter.source_range(range), replacement))
         })

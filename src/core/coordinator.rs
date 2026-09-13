@@ -1337,7 +1337,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         };
         if !self.document.format().is_code() && selection.kind() == LogicalSelectionKind::None {
             if let Some(named) = self.views[&view_id].commands.typing_named_style() {
-                selected.character = Some(named.clone());
+                selected.character = (!named.0.is_empty()).then(|| named.clone());
                 selected.character_mixed = false;
             }
         }
@@ -2531,7 +2531,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 LayoutJobRegion::Viewport(viewport),
                 LayoutCancellationToken::new(),
             )?;
-            let candidate = {
+            let mut candidate = {
                 let view = self
                     .views
                     .get_mut(&view_id)
@@ -2540,6 +2540,45 @@ impl<P: TextMeasurementProvider> Core<P> {
             };
             let coverage = candidate.regional_snapshot().lines()[0].text_coverage();
             if coverage.start <= focus_offset && focus_offset <= coverage.end {
+                let caret = self.views[&view_id].commands.cursor();
+                let following_line = focus_line + 1;
+                if intent == ImmediateLayoutIntent::PreserveViewportAndRevealCaret
+                    && coverage.end < caret
+                    && self.document.projection().presentation_line_range(following_line, flow)
+                        .is_some_and(|line| line.start == caret)
+                {
+                    // Enter can split a giant paragraph. Preserve the saved
+                    // row and shape the new paragraph's first bounded slice in
+                    // the same published snapshot before revealing the caret.
+                    let preceding = candidate.regional_snapshot().clone();
+                    let request = self.prepare_view_layout_job(
+                        view_id,
+                        LayoutJobPriority::ChangedVisibleRows,
+                        LayoutJobRegion::Viewport(ViewportLayoutRegion::new(
+                            following_line..following_line + 1, top, height,
+                        )?),
+                        LayoutCancellationToken::new(),
+                    )?;
+                    let view = self.views.get_mut(&view_id).expect("validated edit view");
+                    candidate = compute_layout_job(&mut view.engine, &request, view.immediate_layout_context)?;
+                    candidate.prepend_adjacent_region(&preceding);
+                }
+                if intent != ImmediateLayoutIntent::RevealCaret {
+                    if let Some(anchor) = preserved_anchor {
+                        let relative_reference = candidate.regional_snapshot().lines()[0].rows()
+                            .iter().find(|row| row.text_range.start <= focus_offset && focus_offset <= row.text_range.end)
+                            .map(|row| match anchor.reference {
+                                ViewportAnchorReference::Baseline => row.baseline,
+                                ViewportAnchorReference::RowTop => row.y,
+                            });
+                        if let Some(reference) = relative_reference {
+                            let required = -(reference + anchor.offset_from_reference);
+                            if required > 0. {
+                                candidate = viewport::include_preceding_rows(self, view_id, candidate, required)?;
+                            }
+                        }
+                    }
+                }
                 self.install_view_layout_job(view_id, candidate)?;
                 let view = self
                     .views
@@ -5261,12 +5300,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                 } else {
                     false
                 };
-                let code_edit_anchor = self.document.format().is_code().then(|| {
-                    viewport::capture_edit_baseline_anchor(
-                        &self.document,
-                        self.views.get(&view_id).expect("validated view"),
-                    )
-                }).flatten();
+                let edit_anchor = viewport::capture_edit_baseline_anchor(
+                    &self.document,
+                    self.views.get(&view_id).expect("validated view"),
+                );
                 let target_view = self
                     .views
                     .get_mut(&view_id)
@@ -5374,7 +5411,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 }
                 let changed = self.document.revision() != before;
                 if changed {
-                    if let Some(anchor) = code_edit_anchor {
+                    if let Some(anchor) = edit_anchor {
                         // Rebase this pre-edit boundary with the transaction.
                         // Unlike a new caret reveal, local typing must not
                         // recenter because the old layout revision is stale.
@@ -5395,7 +5432,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .map_or(changed || cursor_moved, |requests| {
                         requests.contains(&CommandPresentationRequest::RevealCaret)
                     });
-                let command_presentation_intent = if command_requests_reveal && changed && code_edit_anchor.is_some() {
+                let command_presentation_intent = if command_requests_reveal && changed && edit_anchor.is_some() {
                     ImmediateLayoutIntent::PreserveViewportAndRevealCaret
                 } else if command_requests_reveal {
                     ImmediateLayoutIntent::RevealCaret
@@ -6391,11 +6428,9 @@ impl<P: TextMeasurementProvider> Core<P> {
 
     fn commit_composition(&mut self, view_id: ViewId) -> Result<CoreOutcome, CoreError> {
         self.install_buffer_commands(view_id);
-        let code_composition_baseline = self.document.format().is_code().then(|| {
-            viewport::composition_caret_baseline(
-                &self.document, self.views.get(&view_id).expect("validated composition view"),
-            )
-        }).flatten();
+        let composition_baseline = viewport::composition_caret_baseline(
+            &self.document, self.views.get(&view_id).expect("validated composition view"),
+        );
         let session = self
             .views
             .get(&view_id)
@@ -6495,7 +6530,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             self.rebase_viewport_anchors(&exact_position_map)?;
         }
         let mut presentation_intent = ImmediateLayoutIntent::RevealCaret;
-        if let Some(baseline) = code_composition_baseline {
+        if let Some(baseline) = composition_baseline {
             let view = self.views.get_mut(&view_id).expect("validated composition view");
             let point = self.document.text_point(caret_offset)
                 .expect("composition preparation validated the committed caret");

@@ -22,7 +22,6 @@ final class EVThemeTests: XCTestCase {
     var theme = EVTheme.midnight
     theme.statusFontFamily = "Georgia"
     theme.statusFontSize = 16
-    theme.padding = EVThemePadding(top: 12, left: 24, bottom: 36, right: 48)
     store.update(theme)
     XCTAssertEqual(notifications, 1)
     XCTAssertEqual(EVThemeStore(configuration: EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)).theme, theme)
@@ -30,9 +29,6 @@ final class EVThemeTests: XCTestCase {
     let generation = store.generation
     store.update(theme)
     var invalid = theme
-    invalid.padding.left = -1
-    store.update(invalid)
-    invalid = theme
     invalid.foreground.red = .nan
     store.update(invalid)
     invalid = theme
@@ -64,10 +60,8 @@ final class EVThemeTests: XCTestCase {
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
     XCTAssertGreaterThanOrEqual(window.contentLayoutRect.height, 640)
     let fields = descendants(window.contentView).compactMap { $0 as? NSTextField }
-    let top = try XCTUnwrap(fields.first { $0.accessibilityLabel() == "Document top padding" })
-    let status = try XCTUnwrap(fields.first { $0.accessibilityLabel() == "Status font size" })
-    XCTAssertFalse(
-      top.convert(top.bounds, to: nil).intersects(status.convert(status.bounds, to: nil)))
+    XCTAssertNotNil(fields.first { $0.accessibilityLabel() == "Status font size" })
+    XCTAssertFalse(fields.contains { $0.accessibilityLabel()?.contains("margin") == true })
     let categories = try XCTUnwrap(
       descendants(window.contentView).compactMap { $0 as? NSTableView }.first)
     XCTAssertGreaterThan(

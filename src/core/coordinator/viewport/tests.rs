@@ -24,10 +24,19 @@ impl SyntaxProvider for DeferredProvider {
 }
 
 fn fixture(screen_baseline: f32) -> (Core<MockTextMeasurementProvider>, ViewId) {
+    fixture_for_format(screen_baseline, Format::Code)
+}
+
+fn fixture_for_format(screen_baseline: f32, format: Format) -> (Core<MockTextMeasurementProvider>, ViewId) {
+    let paragraph = if format == Format::Markdown {
+        "An ordinary paragraph with several words that wrap across the narrow text view.\n\n"
+    } else {
+        LINE
+    };
     let document = Document::from_bytes(
-        LINE.repeat(20_000).into_bytes(),
+        paragraph.repeat(20_000).into_bytes(),
         Encoding::Utf8,
-        Format::Code,
+        format,
     )
     .unwrap();
     let mut core = Core::new(document);
@@ -38,7 +47,11 @@ fn fixture(screen_baseline: f32) -> (Core<MockTextMeasurementProvider>, ViewId) 
         view,
         CoreEvent::PlaceCursor {
             document_revision: core.document.revision(),
-            text_offset: LINE.len() * 10_000 + 6,
+            text_offset: if format == Format::Markdown {
+                core.document.text().find("narrow").unwrap() + 500_000
+            } else {
+                LINE.len() * 10_000 + 6
+            },
             affinity: BoundaryAffinity::Downstream,
             extend_selection: false,
         },
@@ -84,7 +97,7 @@ fn publish_large_runs(core: &mut Core<MockTextMeasurementProvider>, size: f32) {
         .insert_character_style(
             CharacterStyle {
                 id: StyleId("test:large".into()),
-                based_on: Some(sheet.base_character.clone()),
+                based_on: None,
                 properties: CharacterProperties {
                     size: Some(size),
                     ..Default::default()
@@ -276,4 +289,113 @@ fn committing_marked_text_keeps_the_displayed_composition_baseline() {
         .unwrap();
     assert!((baseline(&core, view) - screen_baseline).abs() < 0.1);
     assert!(core.views[&view].layout.last_error().is_none());
+}
+
+#[test]
+fn typing_near_bottom_preserves_visible_rows_in_every_text_format() {
+    for format in [Format::PlainText, Format::Markdown, Format::Html, Format::Rtf] {
+        // Every format contains many independent paragraphs so edits must
+        // invalidate only the active neighborhood of the large document.
+        let (mut core, view) = if format.is_rich_text() {
+            let source = if format == Format::Html {
+                "<p>An ordinary paragraph with several words that wrap across the narrow text view.</p>".repeat(20_000)
+            } else {
+                format!(r"{{\rtf1 {}}}", r"An ordinary paragraph with several words that wrap across the narrow text view.\par ".repeat(20_000))
+            };
+            let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, format).unwrap();
+            let mut core = Core::new(document);
+            let view = core.add_view(MockTextMeasurementProvider::new(), 400., 240.);
+            core.handle(view, CoreEvent::PlaceCursor {
+                document_revision: core.document.revision(), text_offset: 60_006,
+                affinity: BoundaryAffinity::Downstream, extend_selection: false,
+            }).unwrap();
+            let row = caret_row(&core, view);
+            core.handle(view, CoreEvent::SetViewportOrigin {
+                left: 0., top: Some(row.baseline - 220.),
+            }).unwrap();
+            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('i')))).unwrap();
+            (core, view)
+        } else {
+            fixture_for_format(220., format)
+        };
+        let initial = baseline(&core, view);
+        let old_top = core.views[&view].layout.viewport_top();
+        assert!(old_top > 500., "fixture must be scrolled far from the top");
+        assert!(initial > 180., "{format:?} fixture must edit near the viewport bottom, got {initial}");
+        let calls = core.views[&view].engine.provider().request_calls();
+        core.handle(view, CoreEvent::Input(InputEvent::Text("x".into()))).unwrap();
+        assert!((baseline(&core, view) - initial).abs() < 0.1,
+            "{format:?}: visible typing must retain baseline {initial}, got {}", baseline(&core, view));
+        assert!(core.views[&view].layout.last_error().is_none());
+        assert!(core.views[&view].layout.snapshot().unwrap().rows.len() < 150);
+        assert!(core.views[&view].engine.provider().request_calls() - calls < 128);
+    }
+}
+
+#[test]
+fn newline_near_bottom_in_markdown_reveals_only_the_clipped_row() {
+    for screen_baseline in [64., 220.] {
+        let (mut core, view) = fixture_for_format(screen_baseline, Format::Markdown);
+        let before = baseline(&core, view);
+        let prior = caret_row(&core, view);
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Enter))).unwrap();
+        let row = caret_row(&core, view);
+        let layout = &core.views[&view].layout;
+        let previous = layout.snapshot().unwrap().rows.iter()
+            .find(|row| row.text_range.start == prior.text_range.start).unwrap();
+        let expected = (before + row.baseline - previous.baseline)
+            .min(layout.height() - (row.natural_height() - row.ascent));
+        assert!((baseline(&core, view) - expected).abs() < 0.1,
+            "expected minimal reveal to baseline {expected}, got {}", baseline(&core, view));
+        assert!(layout.last_error().is_none());
+    }
+}
+
+#[test]
+fn splitting_a_giant_markdown_paragraph_keeps_anchor_and_new_caret_materialized() {
+    let source = "ordinary words ".repeat(14_000);
+    let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+    let mut core = Core::new(document);
+    let view = core.add_view(MockTextMeasurementProvider::new(), 400., 240.);
+    core.handle(view, CoreEvent::PlaceCursor {
+        document_revision: core.document.revision(), text_offset: 100_006,
+        affinity: BoundaryAffinity::Downstream, extend_selection: false,
+    }).unwrap();
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('i')))).unwrap();
+    let prior = caret_row(&core, view);
+    core.views.get_mut(&view).unwrap().layout.set_viewport_top(prior.baseline - 220.).unwrap();
+    let before = baseline(&core, view);
+    let shape_calls = core.views[&view].engine.provider().request_calls();
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Enter))).unwrap();
+    assert!(core.views[&view].engine.provider().request_calls() - shape_calls < 600,
+        "splitting two giant paragraphs must keep shape work bounded");
+    let row = caret_row(&core, view);
+    let layout = &core.views[&view].layout;
+    let snapshot = layout.snapshot().unwrap();
+    let previous = snapshot.rows.iter().find(|row| row.text_range.start == prior.text_range.start).unwrap();
+    let expected = (before + row.baseline - previous.baseline)
+        .min(layout.height() - (row.natural_height() - row.ascent));
+    assert!((baseline(&core, view) - expected).abs() < 0.1);
+    assert!(layout.last_error().is_none());
+    assert_eq!(snapshot.document_revision, core.document.revision());
+    assert_eq!(snapshot.coverage.hard_lines(), 0..2);
+    // The old tail and new prefix remain two bounded captures, not a full
+    // relayout of either of the giant paragraphs after source invalidation.
+    assert!(snapshot.rows.last().unwrap().text_range.end - snapshot.rows[0].text_range.start
+        < 2 * MAX_LONG_LINE_LAYOUT_SLICE_BYTES + 1024);
+    let baseline_after_enter = baseline(&core, view);
+    let revision_after_enter = core.document.revision();
+    let shape_calls = core.views[&view].engine.provider().request_calls();
+    core.handle(view, CoreEvent::Input(InputEvent::Text("x".into()))).unwrap();
+    assert!(core.views[&view].engine.provider().request_calls() - shape_calls < 600,
+        "later typing must reuse the preceding paragraph's cached prefix");
+    assert!(core.views[&view].long_line_checkpoints.values().any(|checkpoint| {
+        checkpoint.hard_line_index() == 0 && checkpoint.document_revision() == core.document.revision()
+    }));
+    assert!((baseline(&core, view) - baseline_after_enter).abs() < 0.1);
+    let layout = &core.views[&view].layout;
+    let snapshot = layout.snapshot().unwrap();
+    assert_ne!(snapshot.document_revision, revision_after_enter);
+    assert_eq!(snapshot.document_revision, core.document.revision());
+    assert!(snapshot.rows[0].y <= layout.viewport_top(), "the preserved viewport must remain fully materialized");
 }

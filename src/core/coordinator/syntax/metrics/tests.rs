@@ -18,13 +18,12 @@ fn define(
         .cloned()
         .unwrap_or_else(|| StyleId(format!("test:{name}")));
     let based_on = parent
-        .and_then(|name| code_style::resolve_name(sheet, name).cloned())
-        .unwrap_or_else(|| sheet.base_character.clone());
+        .and_then(|name| code_style::resolve_name(sheet, name).cloned());
     sheet
         .insert_character_style(
             CharacterStyle {
                 id,
-                based_on: Some(based_on),
+                based_on,
                 properties,
             },
             StyleDefinitionMetadata::generated(name),

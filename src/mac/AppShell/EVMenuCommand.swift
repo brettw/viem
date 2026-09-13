@@ -71,12 +71,11 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case showColors
     case textColor
     case highlightColor
-    case baseCharacterStyle
+    case defaultParagraphStyle
     case editCharacterStyles
     case baseParagraphStyle
     case editParagraphStyles
-    case baseDocumentStyle
-    case editDocumentStyles
+    case editStyles
     case saveDefaultStyle
     case alignStart
     case alignCenter
@@ -166,7 +165,6 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
 public enum EVStyleMenuRole: UInt32, CaseIterable, Sendable {
     case character = 1
     case paragraph = 2
-    case document = 3
 }
 
 /// A single definition in the current core-owned style catalogue.

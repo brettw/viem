@@ -124,8 +124,7 @@ impl FormattedDocument {
             let character = active_characters
                 .last_key_value()
                 .map(|(_, id)| id.clone())
-                .or_else(|| (!active_code.is_empty()).then(|| StyleId::from("Code")))
-                .unwrap_or_else(|| self.style_sheet().base_character.clone());
+                .or_else(|| (!active_code.is_empty() && paragraph.0 != "Code Block").then(|| StyleId::from("Code")));
             paragraphs.insert(paragraph);
             // Character assignments attach to text within each containing
             // block. Separators between those wrappers carry no competing
@@ -142,7 +141,7 @@ impl FormattedDocument {
             paragraph_mixed: paragraphs.len() > 1,
             character_mixed: characters.len() > 1,
             paragraph: (paragraphs.len() == 1).then(|| paragraphs.into_iter().next().unwrap()),
-            character: (characters.len() == 1).then(|| characters.into_iter().next().unwrap()),
+            character: (characters.len() == 1).then(|| characters.into_iter().next().unwrap()).flatten(),
         }
     }
 }
@@ -194,7 +193,7 @@ mod tests {
                 .projection()
                 .selected_named_styles(0..1, BoundaryAffinity::Downstream)
                 .character,
-            Some("Code".into())
+            None
         );
         for (format, source) in [
             (Format::Html, "<p><code>one</code><br>two</p>"),
@@ -225,7 +224,7 @@ mod tests {
                 .projection()
                 .selected_named_styles(at..at, BoundaryAffinity::Downstream);
             assert_eq!(selected.paragraph, Some("Heading2".into()), "{needle}");
-            assert_eq!(selected.character, Some("Character".into()));
+            assert_eq!(selected.character, None);
         }
         let selected = document
             .projection()
@@ -273,7 +272,7 @@ mod tests {
             projected
                 .selected_named_styles(1..1, BoundaryAffinity::Upstream)
                 .character,
-            Some("Character".into())
+            None
         );
         assert_eq!(
             projected
@@ -285,7 +284,7 @@ mod tests {
             projected
                 .selected_named_styles(3..3, BoundaryAffinity::Downstream)
                 .character,
-            Some("Character".into())
+            None
         );
         assert!(
             projected
@@ -301,6 +300,6 @@ mod tests {
             .projection()
             .selected_named_styles(0..0, BoundaryAffinity::Downstream);
         assert_eq!(selected.paragraph, Some("Paragraph".into()));
-        assert_eq!(selected.character, Some("Character".into()));
+        assert_eq!(selected.character, None);
     }
 }

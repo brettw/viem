@@ -852,9 +852,7 @@ typedef struct ViemRgbaV1 {
 
 #define VIEM_STYLE_DEFINITION_HAS_PARENT (1u << 0)
 #define VIEM_STYLE_DEFINITION_HAS_NEXT_STYLE (1u << 1)
-#define VIEM_STYLE_DEFINITION_BASE_DOCUMENT (1u << 2)
 #define VIEM_STYLE_DEFINITION_BASE_PARAGRAPH (1u << 3)
-#define VIEM_STYLE_DEFINITION_BASE_CHARACTER (1u << 4)
 #define VIEM_STYLE_DEFINITION_INTERNAL (1u << 5)
 #define VIEM_STYLE_DEFINITION_INTERNAL_LIST (1u << 6)
 
@@ -1618,9 +1616,10 @@ typedef struct ViemSetParagraphStyleV1 {
 } ViemSetParagraphStyleV1;
 #define VIEM_SET_PARAGRAPH_STYLE_V1_SIZE ((uint32_t)sizeof(ViemSetParagraphStyleV1))
 
-/* Named paragraph or character style assignment. Character assignment requires
- * a linear Visual selection; paragraph assignment also accepts the current
- * paragraph identity returned by viem_core_view_list_selection. */
+/* Named paragraph or character style assignment. With no selection a character
+ * assignment updates subsequent typing. An empty character style_id clears the
+ * named assignment (Default Paragraph); it is never a stored style definition.
+ * Paragraph assignment accepts the current paragraph identity. */
 typedef struct ViemAssignStyleV1 {
   uint32_t struct_size;
   uint32_t namespace;

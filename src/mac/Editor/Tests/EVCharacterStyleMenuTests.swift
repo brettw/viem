@@ -50,7 +50,7 @@ import XCTest
         return key
     }
 
-    private func assertReopenedStyle(_ saved: Data, type: String, range: NSRange, id: String) throws {
+    private func assertReopenedStyle(_ saved: Data, type: String, range: NSRange, id: String?) throws {
         let backend = EVCoreDocumentBackend()
         try backend.read(source: saved, typeName: type)
         let view = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -120,7 +120,7 @@ import XCTest
         XCTAssertEqual(try backend.serializedSource(typeName: type), saved)
     }
 
-    func testChoosingBaseCharacterStopsPendingNamedStyle() throws {
+    func testChoosingDefaultParagraphStopsPendingNamedStyle() throws {
         for type in [EVDocument.markdownType, EVDocument.htmlType] {
             let (backend, view, session) = try surface("", type: type)
             try keys("i", view: view, session: session)
@@ -128,7 +128,7 @@ import XCTest
             view.editorView.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
             let beforeBaseChoice = try backend.serializedSource(typeName: type)
             let revision = try backend.revision()
-            try choose("Character", in: view)
+            try choose("", in: view)
             XCTAssertEqual(try backend.serializedSource(typeName: type), beforeBaseChoice)
             XCTAssertEqual(try backend.revision(), revision)
             view.editorView.insertText("Y", replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -136,11 +136,71 @@ import XCTest
             view.refreshPresentation()
             XCTAssertEqual(try backend.formattedText(), "XY")
             XCTAssertEqual(try selectedStyle(NSRange(location: 0, length: 1), view: view, session: session)?.rawValue, "Code")
-            XCTAssertEqual(try selectedStyle(NSRange(location: 1, length: 1), view: view, session: session)?.rawValue, "Character")
+            XCTAssertEqual(try selectedStyle(NSRange(location: 1, length: 1), view: view, session: session)?.rawValue, nil)
             let saved = try backend.serializedSource(typeName: type)
             try assertReopenedStyle(saved, type: type, range: NSRange(location: 0, length: 1), id: "Code")
-            try assertReopenedStyle(saved, type: type, range: NSRange(location: 1, length: 1), id: "Character")
+            try assertReopenedStyle(saved, type: type, range: NSRange(location: 1, length: 1), id: nil)
             XCTAssertNil(view.commandOutput)
+        }
+    }
+
+    func testCharacterStyleInheritsEachParagraphFontSizeAndClearsToItsParagraph() throws {
+        for (source, type) in [("body\n\n# title", EVDocument.markdownType), ("<p>body</p><h1>title</h1>", EVDocument.htmlType)] {
+            let (backend, view, session) = try surface(source, type: type)
+            let code = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code"))
+            let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
+            let green = EVStyleColor(red: 0, green: 0.5, blue: 0, alpha: 1)
+            for (key, property, value) in [
+                (EVStyleKey.baseParagraph, EVStyleProperty.characterFontFamilies, EVStyleValue.stringList(["Times New Roman"])),
+                (.baseParagraph, .characterSize, .float(12)),
+                (heading, .characterSize, .float(20)),
+                (code, .characterFontFamilies, .stringList(["Courier"])),
+                (code, .characterForeground, .color(green)),
+            ] {
+                _ = try session.editStyle(key: key, expected: backend.styleSheetSnapshot().identity,
+                    mutation: .setDeclaration(property, value))
+            }
+            let sheet = try backend.styleSheetSnapshot()
+            XCTAssertNil(sheet.definition(for: .defaultParagraph))
+            XCTAssertNil(sheet.definition(for: code)?.parentKey)
+            XCTAssertNil(sheet.definition(for: code)?.properties[.characterSize]?.declared)
+            for (range, size, paragraph) in [(NSRange(location: 0, length: 4), CGFloat(12), EVStyleKey.baseParagraph),
+                                           (NSRange(location: 5, length: 5), CGFloat(20), heading)] {
+                _ = try selectedStyle(range, view: view, session: session)
+                try choose("Code", in: view)
+                let typography = try session.selectedTypography()
+                XCTAssertEqual(typography.fontFamily, "Courier")
+                XCTAssertEqual(typography.size, size)
+                XCTAssertEqual(typography.foreground, green)
+                XCTAssertEqual(view.currentStyleEditorKey(), code)
+                try choose("", in: view)
+                XCTAssertNil(try session.selectedNamedStyles().character)
+                XCTAssertEqual(view.currentStyleEditorKey(), paragraph)
+                let inherited = try session.selectedTypography()
+                XCTAssertEqual(inherited.fontFamily, "Times New Roman")
+                XCTAssertEqual(inherited.size, size)
+            }
+        }
+    }
+
+    func testDefaultParagraphClearsSelectedCharacterStylesAndUndoRestoresThem() throws {
+        for (source, type) in [("one two", EVDocument.markdownType), ("<p data-keep='yes'>one two</p><!--keep-->", EVDocument.htmlType)] {
+            let (backend, view, session) = try surface(source, type: type)
+            _ = try selectedStyle(NSRange(location: 0, length: 3), view: view, session: session)
+            try choose("Code", in: view)
+            let styled = try backend.serializedSource(typeName: type)
+            try choose("", in: view)
+            XCTAssertNil(try session.selectedNamedStyles().character)
+            XCTAssertEqual(view.currentStyleEditorKey(), .baseParagraph)
+            XCTAssertEqual(try backend.formattedText(), "one two")
+            let cleared = try backend.serializedSource(typeName: type)
+            XCTAssertFalse(String(decoding: cleared, as: UTF8.self).contains("Default Paragraph"))
+            try assertReopenedStyle(cleared, type: type, range: NSRange(location: 0, length: 3), id: nil)
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+            view.perform(menuCommand: .undo, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), styled)
+            view.perform(menuCommand: .redo, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), cleared)
         }
     }
 
@@ -154,7 +214,7 @@ import XCTest
             XCTAssertEqual(try session.selectedNamedStyles().character?.rawValue, "Code")
             let saved = try backend.serializedSource(typeName: type)
             try assertReopenedStyle(saved, type: type, range: range, id: "Code")
-            XCTAssertEqual(try selectedStyle(NSRange(location: 4, length: 3), view: view, session: session)?.rawValue, "Character")
+            XCTAssertEqual(try selectedStyle(NSRange(location: 4, length: 3), view: view, session: session)?.rawValue, nil)
             _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             view.perform(menuCommand: .undo, sender: nil)
             XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
@@ -178,8 +238,8 @@ import XCTest
             XCTAssertEqual(try session.selectedNamedStyles().character?.rawValue, id)
             let saved = try backend.serializedSource(typeName: type)
             try assertReopenedStyle(saved, type: type, range: range, id: id)
-            XCTAssertEqual(try selectedStyle(NSRange(location: 0, length: 1), view: view, session: session)?.rawValue, "Character")
-            XCTAssertEqual(try selectedStyle(NSRange(location: 9, length: 4), view: view, session: session)?.rawValue, "Character")
+            XCTAssertEqual(try selectedStyle(NSRange(location: 0, length: 1), view: view, session: session)?.rawValue, nil)
+            XCTAssertEqual(try selectedStyle(NSRange(location: 9, length: 4), view: view, session: session)?.rawValue, nil)
             _ = try selectedStyle(NSRange(location: 0, length: 13), view: view, session: session)
             XCTAssertTrue(try session.selectedNamedStyles().characterMixed)
             XCTAssertTrue(try XCTUnwrap(view.currentStyleMenuCatalogue()).entries.filter { $0.role == .character }.allSatisfy { $0.presentation.state == .off })

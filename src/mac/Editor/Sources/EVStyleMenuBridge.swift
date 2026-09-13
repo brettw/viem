@@ -19,7 +19,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     let selection = try? session?.listSelection()
     let selectedStyles = try? session?.selectedNamedStyles()
 
-    let entries = snapshot.definitions.filter {
+    var entries = snapshot.definitions.filter {
       !$0.flags.contains(.internalSyntax)
         && (!$0.flags.contains(.internalList)
           || (selectedStyles?.identity == snapshot.identity
@@ -46,6 +46,13 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
         )
       )
     }
+    entries.insert(EVStyleMenuEntry(
+      role: .character, stableID: "", displayName: "Default Paragraph", isBase: true,
+      presentation: EVMenuItemPresentation(
+        isEnabled: selection != nil && [.html, .htmlSource, .markdown, .markdownSource, .rtf].contains(backend.sourceFormat),
+        state: selectedStyles?.identity == snapshot.identity
+          && selectedStyles?.characterMixed == false && selectedStyles?.character == nil ? .on : .off)
+    ), at: 0)
     return EVStyleMenuCatalogue(
       documentID: snapshot.identity.documentID,
       documentRevision: snapshot.identity.documentRevision,
@@ -81,6 +88,12 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
         actionKind: .edit
       )
     }
+    entries.insert(EVStyleMenuEntry(
+      role: .character, stableID: "", displayName: "Default Paragraph", isBase: true,
+      presentation: EVMenuItemPresentation(isEnabled: true,
+        state: selectionMatches && selectedStyles?.characterMixed == false && selectedStyles?.character == nil ? .on : .off),
+      actionKind: .edit
+    ), at: 0)
     let definedNames = Set(snapshot.definitions.filter { $0.kind == .character }.map(\.name))
     for name in (try? backend.syntaxStyleNames()) ?? [] where !definedNames.contains(name) {
       entries.append(EVStyleMenuEntry(
@@ -153,22 +166,23 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
         let snapshot = try? backend.styleSheetSnapshot(),
         snapshot.identity.documentID == action.documentID,
         snapshot.identity.documentRevision == action.documentRevision,
-        snapshot.identity.styleSheetRevision == action.styleSheetRevision,
-        let definition = snapshot.definition(
-          namespace: action.role.namespace,
-          id: EVStyleID(rawValue: action.stableID)),
-        definition.kind.menuRole == action.role,
-        !definition.flags.contains(.internalSyntax)
+        snapshot.identity.styleSheetRevision == action.styleSheetRevision
       else { return }
+      let key = EVStyleKey(namespace: action.role.namespace, id: EVStyleID(rawValue: action.stableID))
+      let clearCharacter = key == .defaultParagraph
+      let definition = snapshot.definition(for: key)
+      if !clearCharacter {
+        guard let definition, definition.kind.menuRole == action.role,
+          !definition.flags.contains(.internalSyntax) else { return }
+      }
       let level = action.role == .paragraph ? standardHeadingLevel(for: action.stableID) : nil
-      guard level != nil || definition.capabilities.contains(.assign) else { return }
+      guard clearCharacter || level != nil || definition?.capabilities.contains(.assign) == true else { return }
       performInput {
         let selection = try session.listSelection()
         if let level {
           _ = try session.setParagraphStyle(level: level, expected: selection)
         } else {
-          _ = try session.assignStyle(
-            definition.key, identity: snapshot.identity, expected: selection)
+          _ = try session.assignStyle(key, identity: snapshot.identity, expected: selection)
         }
       }
       return
@@ -204,6 +218,12 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
         configuration: backend.configuration, definingSyntaxName: name, following: self, sender: sender)
       return
     }
+    if action.kind == .edit, action.role == .character, action.stableID.isEmpty {
+      EVStyleEditorCoordinator.shared.showCode(
+        configuration: backend.configuration,
+        preferredStyle: currentStyleEditorKey(preferredKind: .paragraph), following: self, sender: sender)
+      return
+    }
     guard action.kind == .edit,
       let snapshot = try? EVCoreStyleBridge.copyStyleSheet(core: nil),
       let definition = snapshot.definition(namespace: action.role.namespace, id: EVStyleID(rawValue: action.stableID)),
@@ -232,7 +252,7 @@ extension EVEditorView: EVStyleMenuActionRouting, NSMenuItemValidation {
     if action.kind == .editCurrent { return catalogue.canEditStyles }
     if action.kind == .edit {
       guard catalogue.canEditStyles, let entry = catalogue.entries.first(where: {
-        $0.role == action.role && $0.stableID == action.stableID
+        $0.role == action.role && $0.stableID == action.stableID && $0.actionKind == .edit
       }) else { return false }
       item.state = action.marksCurrentStyle ? entry.presentation.state : .off
       return true
@@ -261,7 +281,6 @@ extension EVStyleKind {
     switch self {
     case .character: .character
     case .paragraph: .paragraph
-    case .document: .document
     }
   }
 }
@@ -271,14 +290,13 @@ extension EVStyleMenuRole {
     switch self {
     case .character: .character
     case .paragraph: .paragraph
-    case .document: .document
     }
   }
 
   fileprivate var namespace: EVStyleNamespace {
     switch self {
     case .character: .character
-    case .paragraph, .document: .block
+    case .paragraph: .block
     }
   }
 }
