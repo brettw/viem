@@ -7,6 +7,24 @@ import Testing
 
 @Suite("Core Text render registry")
 struct CoreTextRenderRegistryTests {
+  @Test("Evicting native resources releases oversized registry bucket allocations")
+  func evictedResourcesReleaseDictionaryCapacity() throws {
+    let registry = CoreTextRenderRegistry(generation: 1)
+    let identifiers = (1...10_000).map(UInt64.init)
+    for identifier in identifiers {
+      #expect(registry.install(.init(signature: [], batches: [], isColorGlyph: false),
+        preferredIdentifier: identifier, generation: 1, pin: true) == identifier)
+    }
+    #expect(registry.storageCapacityForTesting >= identifiers.count)
+    registry.releaseResponseResources(identifiers: Array(identifiers.dropLast(20)), generation: 1)
+    #expect(registry.resourceCountForTesting == 20)
+    #expect(registry.storageCapacityForTesting <= 256)
+    #expect(identifiers.suffix(20).allSatisfy { registry.contains(identifier: $0, metricsGeneration: 1) })
+    registry.releaseResponseResources(identifiers: Array(identifiers.suffix(20)), generation: 1)
+    #expect(registry.resourceCountForTesting == 0)
+    #expect(registry.storageCapacityForTesting == 0)
+  }
+
   @Test("Cached paint colors preserve colored ink, synthetic stroke and transparency")
   func documentColorAndSyntheticStroke() throws {
     let registry = CoreTextRenderRegistry(generation: 1)

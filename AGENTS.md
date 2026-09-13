@@ -3288,9 +3288,15 @@ materializing or hashing the document. An asynchronously completed save carries
 the captured source identity even when its history node has been pruned.
 Changing file identity with a successful `:saveas` is not undone.
 
-History retention has configurable node and retained-byte budgets. The byte
-budget includes retained source, derived projections and their materialized
-caches, position maps, and history bookkeeping. A conservative heap estimate
+History retention has configurable node and retained-byte budgets. The default
+byte policy allows 256 MiB of additional retained history above the current
+document state's unavoidable storage; a large live document must not by itself
+erase every undo step. Explicit callers may instead choose a combined retained
+byte target. Diagnostics report the total retained estimate, current-state
+estimate, and additional history cost separately. All estimates include retained
+source, derived projections and their materialized caches, position maps, and
+applicable bookkeeping; moving live state outside the default history allowance
+must not hide its memory from total diagnostics. A conservative heap estimate
 is acceptable; serialized source-byte length alone is not. Structurally shared
 allocations are charged once, and retained-memory accounting for a new
 persistent snapshot must not traverse unchanged shared subtrees. Source-buffer bytes remain a separate
@@ -4626,7 +4632,14 @@ Requirements for the provider contract:
 - Cache-fragment boundaries must not change shaping. The request supplies
   context and the response identifies the stable interior that can be cached.
 - Native objects do not leak into general core APIs. Opaque handles have an
-  explicit owner, thread rule, and metrics-generation lifetime.
+  explicit owner, thread rule, and metrics-generation validity. A shaped
+  fragment holds a shared native-resource lease; cache/snapshot eviction releases
+  that lease, and the last lease releases its native resources. Measurement
+  provider ABI v3
+  retain/release callbacks provide this ownership without native pointers in
+  document or command APIs. Lease release may originate on any thread and after
+  view removal; the frontend schedules native destruction on its required
+  executor. Borrowed drawing exports remain tied to their exact layout.
 - The provider announces a new metrics generation when font availability,
   fallback, feature resolution, or scale makes previous measurements stale.
 - Core does not assume calls must run on the UI thread. The macOS
@@ -4636,6 +4649,15 @@ Unicode line-break opportunity detection belongs in portable core code so all
 frontends make the same wrapping choices. Shaping supplies the actual advances
 and legal cluster boundaries. Locale-sensitive hyphenation is deferred unless
 added with a portable policy and provider capability.
+
+The portable line breaker implements the default Unicode 15.0 UAX #14 rules
+directly, using compact character-property tables generated from the published
+Unicode data. It does not use an external line-breaking implementation or a
+copied implementation table. The optional numeric-expression tailoring in
+UAX #14 section 8.2 is not enabled. Unicode version changes require deliberate
+data regeneration and conformance review. Streaming state must remain bounded;
+partial layout resumes at a verified break checkpoint rather than guessing
+context at an arbitrary text slice.
 
 ## Core layout model
 
@@ -4890,15 +4912,24 @@ structurally; avoid brittle wall-clock-only tests.
 
 ### TODO: Compact document projections and measure large-file memory
 
-**Open performance defect; high priority for large-file support.** Replace the
-eager, character-granularity decoding/provenance representation with compact
-shared mappings and bounded projection work. The Code highlighting workers are
-independent of foreground editing, but the underlying document projection still
-has excessive retained storage and expensive cold construction. Passing the
-syntax-worker responsiveness tests does not close this TODO or demonstrate that
-the complete editor has acceptable large-file memory use. This is shared
-document infrastructure, initially exercised through Code and Text; retain the
-portable ownership boundaries and the lossless behavior of every format.
+**Open follow-up; the compact Text/Code implementation is measured below.**
+Ordinary literal mappings now scale with bounded chunks and actual conversion
+exceptions. Remaining work includes progressive cold construction, dense
+exceptions, rich projections, and full native memory/latency validation.
+Passing syntax-worker responsiveness tests alone does not close this TODO or
+establish complete-editor memory bounds. Retain the portable ownership
+boundaries and lossless behavior of every format while addressing the remaining
+requirements.
+
+**Implementation update (September 2026):** The compact literal pipeline,
+regional Text/Code edits, sparse backing allocations, streaming hash/search,
+shared and budgeted layout, render-resource leases, and byte-budgeted idle
+syntax sessions are implemented. See `docs/large-file-memory-results.md` for
+repeated allocation/process measurements and remaining limits. The original
+baseline below remains historical evidence. This TODO remains open for
+progressive first display, dense-exception/rich-projection bounds, and broader
+native memory/latency profiling; compact eager opening does not satisfy the
+progressive-display requirement by itself.
 
 #### Recorded evidence and measurement limits
 
@@ -4945,7 +4976,7 @@ fixture. The measured typing/newline/undo and distant two-view scroll paths are
 regional, but cold construction remains eager. These timings are neither
 native AppKit frame measurements nor proof of bounded peak memory.
 
-#### Known sources of amplification
+#### Original sources of amplification (before the compact literal path)
 
 - `encoding.rs` builds `DecodedText` with a `DecodedSpan` for each decoded
   Unicode scalar, including each ordinary ASCII character in valid UTF-8.
@@ -5032,12 +5063,16 @@ alone accounts for the entire amplification.
    relational provenance, hidden syntax, indivisible entities, and structured
    ambiguous/synthetic/unresolvable results. An identity fast path for Code/Text
    must not incorrectly assume those properties for Markdown, HTML, or RTF.
-7. **Resolve the undo-budget consequence explicitly.** The default 256 MiB
-   history policy currently charges the live document state as well as retained
-   history. At the recorded sizes, ordinary edits can therefore lose undo
-   history as retention attempts to meet a budget smaller than the live state.
-   The benchmark used 128 history nodes and live-state estimate plus 64 MiB;
-   this was a disclosed test override, not normal product behavior. Verify
+7. **Resolve the undo-budget consequence explicitly.** The original 256 MiB
+   combined history policy charged the live document state as well as retained
+   history. The implemented default now allows 256 MiB of additional history
+   above live-state cost, while reporting total, live, and additional estimates;
+   explicitly constructed combined targets remain available. With the original
+   combined target, ordinary edits lost undo history as retention attempted to
+   meet a budget smaller than the live state. The earlier Code benchmark used
+   128 history nodes and live-state estimate plus 64 MiB; this was a disclosed
+   test override. The repeated literal-memory fixtures now use the shipped
+   default policy and verify that completed edits retain undo. Verify
    useful undo under the shipped policy after compaction, and decide explicitly
    how unavoidable live-state cost relates to prunable history cost. Raising
    the benchmark budget, undercounting mappings, or disabling retention is not

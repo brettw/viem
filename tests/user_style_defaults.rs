@@ -38,10 +38,16 @@ fn defaults_are_clean_sparse_and_source_declarations_override_them() {
         // Defaults add retained configuration allocations, which must count
         // toward the byte budget without creating an edit or moving history.
         assert!(after.retained_memory_bytes > before.retained_memory_bytes);
+        assert!(after.live_state_memory_bytes > before.live_state_memory_bytes);
+        // Independent accounting tables may retain a few different spare
+        // buckets after reprojection; no old document state is retained.
+        assert!(after.additional_history_memory_bytes <= 4096);
         assert_eq!(
             after,
             HistoryStatus {
                 retained_memory_bytes: after.retained_memory_bytes,
+                live_state_memory_bytes: after.live_state_memory_bytes,
+                additional_history_memory_bytes: after.additional_history_memory_bytes,
                 ..before
             }
         );

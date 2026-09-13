@@ -832,6 +832,19 @@ impl TreeSitterSession {
         }
         Ok(true)
     }
+    /// Inputs pin shared formatted chunks even while a provider is idle. Charge
+    /// different revisions conservatively; identical completed/pending roots
+    /// count once. This is a cache policy estimate, not resident-memory data.
+    pub(crate) fn retained_input_bytes(&self) -> usize {
+        let complete = self.complete.as_ref().map(|snapshot| &snapshot.input);
+        let pending = self.pending.as_ref().map(|pending| &pending.input);
+        let charge = |input: &SyntaxInputSnapshot| input.byte_len()
+            .saturating_add(input.text_tree().leaf_count().saturating_mul(256));
+        complete.map_or(0, charge).saturating_add(pending.filter(|input| {
+            complete.is_none_or(|old| !old.text_tree().shares_root_with(input.text_tree()))
+        }).map_or(0, charge))
+    }
+
     pub fn native_allocation_metrics(&self) -> AllocationMetrics {
         self.native.metrics()
     }

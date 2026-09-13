@@ -70,6 +70,17 @@ pub struct VimRegexContinuation {
     pub inspected_end: usize,
     pub instructions: usize,
 }
+impl VimRegexContinuation {
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.stack.capacity() * std::mem::size_of::<Thread>()
+            + self.next.capacity() * std::mem::size_of::<Thread>()
+            + self.seen.capacity() * std::mem::size_of::<usize>()
+            + self.advanced.as_ref().map_or(0, |vm| vm.retained_bytes())
+            + self.best.as_ref().map_or(0, |best| best.captures.capacity()
+                * std::mem::size_of::<Option<std::ops::Range<usize>>>())
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VimRegexProgress {
     Pending,

@@ -259,18 +259,24 @@ fn prefer_mac_interpretation(decoded: &str) -> bool {
 }
 
 pub(crate) fn normalize(decoded: &DecodedText, format: FileFormat) -> NormalizedText {
-    let mut text = String::with_capacity(decoded.text.len());
-    let mut units = Vec::with_capacity(decoded.spans.len());
-    let mut endings = Vec::new();
-    let mut offset = 0;
-    let mut span_index = 0;
+    normalize_with_mapping(decoded, format, false)
+}
 
-    while offset < decoded.text.len() {
-        let span = decoded
-            .spans
-            .get(span_index)
-            .expect("every decoded scalar has one provenance span");
-        debug_assert_eq!(span.decoded.start, offset);
+/// Literal adapters retain bounded identity/conversion runs rather than one
+/// record per scalar. Rich parsers can still request the scalar iterator above.
+pub(crate) fn normalize_literal(decoded: &DecodedText, format: FileFormat) -> NormalizedText {
+    normalize_with_mapping(decoded, format, true)
+}
+
+fn normalize_with_mapping(decoded: &DecodedText, format: FileFormat, compact: bool) -> NormalizedText {
+    let mut text = String::with_capacity(decoded.text.len());
+    let mut units: Vec<LogicalUnit> = Vec::with_capacity(decoded.spans.len());
+    let mut endings = Vec::new();
+    let mut spans = decoded.scalar_spans();
+    let mut previous_regular = false;
+
+    while let Some(span) = spans.next() {
+        let offset = span.decoded.start;
         let ch = decoded.text[offset..]
             .chars()
             .next()
@@ -284,26 +290,27 @@ pub(crate) fn normalize(decoded: &DecodedText, format: FileFormat) -> Normalized
         };
 
         if is_ending {
-            let decoded_end = if is_crlf && format == FileFormat::Dos {
-                offset + 2
-            } else {
-                offset + len
-            };
-            let consumed_spans = if is_crlf && format == FileFormat::Dos {
-                2
-            } else {
-                1
-            };
             let source_start = span.source.start;
-            let source_end = decoded.spans[span_index + consumed_spans - 1].source.end;
+            let source_end = if is_crlf && format == FileFormat::Dos {
+                spans.next().expect("CRLF has a following scalar").source.end
+            } else { span.source.end };
             let normalized_start = text.len();
             text.push('\n');
             let normalized = normalized_start..text.len();
-            units.push(LogicalUnit {
-                normalized: normalized.clone(),
-                source: source_start..source_end,
-                decoding_diagnostic: None,
-            });
+            let regular = source_end - source_start == decoded.encoding.scalar_source_width('\n');
+            if let Some(previous) = units.last_mut().filter(|previous| {
+                compact && previous_regular && regular
+                    && text.len() - previous.normalized.start <= super::encoding::MAPPING_CHUNK_BYTES
+            }) {
+                previous.normalized.end = text.len();
+                previous.source.end = source_end;
+            } else {
+                units.push(LogicalUnit {
+                    normalized: normalized.clone(),
+                    source: source_start..source_end,
+                    decoding_diagnostic: None,
+                });
+            }
             endings.push(LineEnding {
                 normalized,
                 source: source_start..source_end,
@@ -315,23 +322,28 @@ pub(crate) fn normalize(decoded: &DecodedText, format: FileFormat) -> Normalized
                     FileFormat::Unix
                 },
             });
-            offset = decoded_end;
-            span_index += consumed_spans;
+            previous_regular = regular;
             continue;
         }
 
         let normalized_start = text.len();
         text.push(ch);
-        units.push(LogicalUnit {
-            normalized: normalized_start..text.len(),
-            source: span.source.clone(),
-            decoding_diagnostic: span.diagnostic,
-        });
-        offset += len;
-        span_index += 1;
+        let regular = span.diagnostic.is_none();
+        if let Some(previous) = units.last_mut().filter(|previous| {
+            compact && previous_regular && regular
+                && text.len() - previous.normalized.start <= super::encoding::MAPPING_CHUNK_BYTES
+        }) {
+            previous.normalized.end = text.len();
+            previous.source.end = span.source.end;
+        } else {
+            units.push(LogicalUnit {
+                normalized: normalized_start..text.len(),
+                source: span.source,
+                decoding_diagnostic: span.diagnostic,
+            });
+        }
+        previous_regular = regular;
     }
-
-    debug_assert_eq!(span_index, decoded.spans.len());
 
     NormalizedText {
         text,
@@ -345,6 +357,29 @@ pub(crate) fn normalize(decoded: &DecodedText, format: FileFormat) -> Normalized
 mod tests {
     use super::*;
     use crate::document::Encoding;
+
+    #[test]
+    fn literal_normalization_keeps_long_lines_compact_and_matches_scalar_oracle() {
+        for encoding in [Encoding::Utf8, Encoding::Latin1, Encoding::Utf16Le, Encoding::Utf16Be] {
+            for format in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
+                let text = format!("{}\r\n{}\r{}\n", "éa".repeat(10_000), "b".repeat(10_000), "c".repeat(10_000));
+                let bytes = encoding.encode_fragment(&text).unwrap();
+                let decoded = encoding.decode(&bytes).unwrap();
+                let dense = normalize(&decoded, format);
+                let compact = normalize_literal(&decoded, format);
+                assert_eq!(compact.text, dense.text);
+                assert!(compact.units.len() < 32);
+                assert_eq!(compact.endings.iter().map(|e| (&e.normalized, &e.source)).collect::<Vec<_>>(),
+                    dense.endings.iter().map(|e| (&e.normalized, &e.source)).collect::<Vec<_>>());
+                for run in &compact.units {
+                    let start = dense.units.partition_point(|unit| unit.normalized.start < run.normalized.start);
+                    let end = dense.units.partition_point(|unit| unit.normalized.end <= run.normalized.end);
+                    assert_eq!(dense.units[start].source.start, run.source.start);
+                    assert_eq!(dense.units[end - 1].source.end, run.source.end);
+                }
+            }
+        }
+    }
 
     #[test]
     fn detects_dos_only_when_all_breaks_are_crlf() {

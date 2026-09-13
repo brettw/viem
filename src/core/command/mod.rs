@@ -53,7 +53,7 @@ use ex_execute::{
     ExNavigation, ExNormalRequest, ExOptionEffect, ExOptionName, ExOptionValue, ExOutcome,
     ExRegisterEffectKind, ExRegisterKind, ExRegisterReader, ExRegisterValue,
 };
-use insert_motion::{ctrl_u_delete_range_since, ctrl_w_delete_range};
+use insert_motion::{ctrl_u_delete_range_since_snapshot, ctrl_w_delete_range, ctrl_w_delete_range_snapshot};
 use layout_motion::{
     align_viewport, g0, g_caret, g_dollar_for_document, gj, gk, screen_motion, viewport_line,
     LayoutMotionError, ScreenMotion, Viewport, ViewportAlignment, ViewportLine, VisualPosition,
@@ -6197,6 +6197,9 @@ impl CommandInterpreter {
         context: &LayoutCommandContext<'_>,
         shape: VisualBlockRepeatShape,
     ) -> Result<(), CommandOutput> {
+        if context.snapshot.has_horizontal_materialization() {
+            return Err(layout_error(layout_motion::complete_horizontal_demand(context.snapshot, self.cursor)));
+        }
         let current = self
             .current_visual_position(context.snapshot)
             .map_err(layout_error)?;
@@ -6792,6 +6795,9 @@ impl CommandInterpreter {
         follow: bool,
         count: usize,
     ) -> Result<CommandOutput, DocumentError> {
+        if context.snapshot.has_horizontal_materialization() {
+            return Ok(layout_error(layout_motion::complete_horizontal_demand(context.snapshot, self.cursor)));
+        }
         let register_name = self.requested_register.take().unwrap_or('"');
         let register = match self.require_register_value(document, register_name) {
             Ok(register) => register,
@@ -8404,11 +8410,11 @@ impl CommandInterpreter {
         motion: OperatorMotion,
         count: usize,
     ) -> Option<MotionExtent> {
-        let text = document.text();
         let motion = if operator == Operator::Change
             && matches!(motion, OperatorMotion::WordForward(_))
-            && grapheme_range_at(text, self.cursor)
-                .is_some_and(|range| !text[range].chars().all(char::is_whitespace))
+            && document.hard_line_snapshot().grapheme_range_at(self.cursor)
+                .and_then(|range| document.projection().text_tree().slice(range).ok())
+                .is_some_and(|text| !text.chars().all(char::is_whitespace))
         {
             match motion {
                 OperatorMotion::WordForward(big) => OperatorMotion::WordEnd(big),
@@ -8426,9 +8432,18 @@ impl CommandInterpreter {
         motion: OperatorMotion,
         count: usize,
     ) -> Option<MotionExtent> {
-        let text = document.text();
         let lines = document.hard_line_snapshot();
-        let origin = self.cursor.min(text.len());
+        let origin = self.cursor.min(lines.text_length());
+        let local_destination = match motion {
+            OperatorMotion::Left => Some(move_horizontal(&lines, origin, directional_count(count, false))),
+            OperatorMotion::Right => Some(move_horizontal(&lines, origin, directional_count(count, true))),
+            OperatorMotion::LineStart => Some(line_start(&lines, origin)),
+            _ => None,
+        };
+        if let Some(destination) = local_destination {
+            return Some(MotionExtent { range: origin.min(destination)..origin.max(destination), kind: MotionKind::Characterwise });
+        }
+        let text = document.text();
         let characterwise = |destination: usize, inclusive: bool| {
             let (start, mut end) = if destination < origin {
                 (destination, origin)
@@ -8444,14 +8459,8 @@ impl CommandInterpreter {
             }
         };
         match motion {
-            OperatorMotion::Left => Some(characterwise(
-                move_horizontal(text, &lines, origin, directional_count(count, false)),
-                false,
-            )),
-            OperatorMotion::Right => Some(characterwise(
-                move_horizontal(text, &lines, origin, directional_count(count, true)),
-                false,
-            )),
+            OperatorMotion::Left | OperatorMotion::Right | OperatorMotion::LineStart =>
+                unreachable!("local operator motions returned before materializing text"),
             OperatorMotion::Down | OperatorMotion::Up => {
                 let amount = directional_count(count, motion == OperatorMotion::Down);
                 let destination = move_vertical(text, &lines, origin, amount);
@@ -8462,7 +8471,6 @@ impl CommandInterpreter {
                     kind: MotionKind::Linewise,
                 })
             }
-            OperatorMotion::LineStart => Some(characterwise(line_start(&lines, origin), false)),
             OperatorMotion::FirstNonBlank => {
                 Some(characterwise(first_non_blank(text, &lines, origin), false))
             }
@@ -8629,8 +8637,8 @@ impl CommandInterpreter {
                     value.clipboard_fragment = document.clipboard_fragment(extent.range.clone()).ok();
                 }
                 self.yank_register(register, value);
-                self.cursor =
-                    yank_cursor_after_motion(document.text(), &lines, old_cursor, &extent);
+                self.cursor = if extent.kind != MotionKind::Linewise { extent.range.start }
+                    else { yank_cursor_after_motion(document.text(), &lines, old_cursor, &extent) };
                 Ok(CommandOutput {
                     cursor_moved: self.cursor != old_cursor,
                     ..CommandOutput::complete()
@@ -8883,17 +8891,16 @@ impl CommandInterpreter {
         motion: OperatorMotion,
         count: usize,
     ) -> Option<usize> {
-        let text = document.text();
         let lines = document.hard_line_snapshot();
-        let origin = self.cursor.min(text.len());
+        let origin = self.cursor.min(lines.text_length());
         match motion {
             OperatorMotion::Sentence(forward) => {
-                Some(move_sentence(text, &lines, origin, forward, count))
+                Some(move_sentence(document.text(), &lines, origin, forward, count))
             }
             OperatorMotion::Paragraph(forward) => {
                 Some(move_paragraph(&lines, origin, forward, count))
             }
-            OperatorMotion::MatchPair => matching_pair(text, &lines, origin),
+            OperatorMotion::MatchPair => matching_pair(document.text(), &lines, origin),
             OperatorMotion::Percentage => {
                 Some(nth_line_start(&lines, percentage_line(&lines, count)?))
             }
@@ -10032,20 +10039,20 @@ impl CommandInterpreter {
         document: &Document,
         step: &EditSessionStep,
     ) -> Result<Range<usize>, CommandOutput> {
-        let line = document
-            .hard_line_snapshot()
+        let snapshot = document.hard_line_snapshot();
+        let line = snapshot
             .line_at_offset(self.cursor)
             .expect("an edit caret resolves to one hard line")
             .content_range();
         let (name, range) = match step {
             EditSessionStep::DeleteWord => (
                 "Ctrl-W",
-                ctrl_w_delete_range(document.text(), line, self.cursor),
+                ctrl_w_delete_range_snapshot(&snapshot, line, self.cursor),
             ),
             EditSessionStep::DeleteToLineStart => {
                 let floor = self.insert_session.as_ref()
                     .map_or(line.start, |session| session.unit_floor);
-                ("Ctrl-U", ctrl_u_delete_range_since(document.text(), line, self.cursor, floor))
+                ("Ctrl-U", ctrl_u_delete_range_since_snapshot(&snapshot, line, self.cursor, floor))
             }
             _ => unreachable!("only Insert-mode delete motions use this resolver"),
         };
@@ -10077,7 +10084,8 @@ impl CommandInterpreter {
         if range.is_empty() {
             return Ok(CommandOutput::complete());
         }
-        let removed = document.text()[range.clone()].to_owned();
+        let removed = document.projection().text_tree().slice(range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
         self.cursor = delete_with_cursor(document, range)?;
         if let Some(session) = self.insert_session.as_mut() {
             session.unit_floor = session.unit_floor.min(self.cursor);
@@ -11496,7 +11504,6 @@ impl CommandInterpreter {
                 )
             }
             RepeatTarget::Search(search) => match search_destination(
-                document.text(),
                 &document.hard_line_snapshot(),
                 self.cursor,
                 search.direction,
@@ -11504,12 +11511,7 @@ impl CommandInterpreter {
                 count,
                 self.search_options,
             ) {
-                Ok(Some(destination)) => Some(exclusive_motion_extent(
-                    document.text(),
-                    &document.hard_line_snapshot(),
-                    self.cursor,
-                    destination,
-                )),
+                Ok(Some(destination)) => Some(exclusive_search_extent(document, self.cursor, destination)),
                 Ok(None) => {
                     return Ok(CommandOutput {
                         status: CommandStatus::SearchNotFound,
@@ -12641,13 +12643,17 @@ impl CommandInterpreter {
         forward: bool,
         whole_word: bool,
     ) -> Result<CommandOutput, DocumentError> {
-        let Some(range) = keyword_range(document.text(), self.cursor) else {
-            return Ok(CommandOutput {
-                status: CommandStatus::Error("no word under cursor".into()),
+        let word = match search_keyword(document, self.cursor) {
+            Ok(Some(word)) => word,
+            result => return Ok(CommandOutput {
+                status: CommandStatus::Error(match result {
+                    Err(error) => error.to_string(),
+                    _ => "no word under cursor".into(),
+                }),
                 ..CommandOutput::complete()
-            });
+            }),
         };
-        let escaped = regex_v1::escape_literal(&document.text()[range]);
+        let escaped = regex_v1::escape_literal(&word);
         let pattern = if whole_word {
             format!(r"\b{escaped}\b")
         } else {
@@ -12683,7 +12689,6 @@ impl CommandInterpreter {
             Err(error) => return Ok(CommandOutput::count_error(error)),
         };
         let destination = match search_destination(
-            document.text(),
             &document.hard_line_snapshot(),
             self.cursor,
             search.direction,
@@ -12705,12 +12710,7 @@ impl CommandInterpreter {
                 });
             }
         };
-        let extent = exclusive_motion_extent(
-            document.text(),
-            &document.hard_line_snapshot(),
-            self.cursor,
-            destination,
-        );
+        let extent = exclusive_search_extent(document, self.cursor, destination);
         self.apply_operator_target_with_jump(
             document,
             pending.operator,
@@ -12796,13 +12796,17 @@ impl CommandInterpreter {
         whole_word: bool,
         count: usize,
     ) -> CommandOutput {
-        let Some(range) = keyword_range(document.text(), self.cursor) else {
-            return CommandOutput {
-                status: CommandStatus::Error("no word under cursor".into()),
+        let word = match search_keyword(document, self.cursor) {
+            Ok(Some(word)) => word,
+            result => return CommandOutput {
+                status: CommandStatus::Error(match result {
+                    Err(error) => error.to_string(),
+                    _ => "no word under cursor".into(),
+                }),
                 ..CommandOutput::complete()
-            };
+            },
         };
-        let escaped = regex_v1::escape_literal(&document.text()[range]);
+        let escaped = regex_v1::escape_literal(&word);
         let pattern = if whole_word {
             format!(r"\b{escaped}\b")
         } else {
@@ -13123,7 +13127,6 @@ impl CommandInterpreter {
     ) -> CommandOutput {
         let old = self.cursor;
         match search_destination(
-            document.text(),
             &document.hard_line_snapshot(),
             old,
             direction,
@@ -13151,14 +13154,13 @@ impl CommandInterpreter {
 
     fn move_cursor(&mut self, document: &Document, motion: Motion, count: usize) -> CommandOutput {
         self.typing_style = Default::default();
-        let text = document.text();
+        let text = || document.text();
         let lines = document.hard_line_snapshot();
         let old = self.cursor;
         let in_linear_visual = matches!(self.mode, Mode::VisualCharacter | Mode::VisualLine);
         let retain_visual_line_end = in_linear_visual && self.visual_to_line_end;
         self.cursor = match motion {
             Motion::Horizontal(amount) => move_horizontal(
-                text,
                 &lines,
                 self.cursor,
                 directional_count(count, amount > 0),
@@ -13167,14 +13169,14 @@ impl CommandInterpreter {
                 let mut position = self.cursor;
                 if amount > 0 {
                     for _ in 0..count {
-                        let Some(next) = next_grapheme_boundary(text, position) else {
+                        let Some(next) = lines.next_grapheme_boundary(position) else {
                             break;
                         };
                         position = next;
                     }
                 } else {
                     for _ in 0..count {
-                        let Some(previous) = previous_grapheme_boundary(text, position) else {
+                        let Some(previous) = lines.previous_grapheme_boundary(position) else {
                             break;
                         };
                         position = previous;
@@ -13184,25 +13186,25 @@ impl CommandInterpreter {
             }
             Motion::Vertical(amount) => {
                 let line_position = move_vertical(
-                    text,
+                    text(),
                     &lines,
                     self.cursor,
                     directional_count(count, amount > 0),
                 );
                 if retain_visual_line_end {
                     self.preferred_column = None;
-                    last_grapheme_on_line(text, &lines, line_position)
+                    last_grapheme_on_line(text(), &lines, line_position)
                 } else {
                     let desired = self
                         .preferred_column
-                        .unwrap_or_else(|| grapheme_column(text, &lines, self.cursor));
+                        .unwrap_or_else(|| grapheme_column(text(), &lines, self.cursor));
                     self.preferred_column = Some(desired);
-                    position_at_column(text, &lines, line_start(&lines, line_position), desired)
+                    position_at_column(text(), &lines, line_start(&lines, line_position), desired)
                 }
             }
             Motion::LineStart => line_start(&lines, self.cursor),
             Motion::InsertionLineStart => line_start(&lines, self.cursor),
-            Motion::FirstNonBlank => first_non_blank(text, &lines, self.cursor),
+            Motion::FirstNonBlank => first_non_blank(text(), &lines, self.cursor),
             Motion::LineEnd => {
                 let mut position = self.cursor;
                 for _ in 1..count {
@@ -13211,17 +13213,17 @@ impl CommandInterpreter {
                     };
                     position = next;
                 }
-                last_grapheme_on_line(text, &lines, position)
+                last_grapheme_on_line(text(), &lines, position)
             }
             Motion::InsertionLineEnd => line_end(&lines, self.cursor),
             Motion::WordForward(big) => normalize_normal_cursor(
-                text,
+                text(),
                 &lines,
-                move_word_forward(text, self.cursor, big, count),
+                move_word_forward(text(), self.cursor, big, count),
             ),
-            Motion::WordEnd(big) => move_word_end(text, self.cursor, big, count),
-            Motion::WordBackward(big) => move_word_backward(text, self.cursor, big, count),
-            Motion::WordEndBackward(big) => move_word_end_backward(text, self.cursor, big, count),
+            Motion::WordEnd(big) => move_word_end(text(), self.cursor, big, count),
+            Motion::WordBackward(big) => move_word_backward(text(), self.cursor, big, count),
+            Motion::WordEndBackward(big) => move_word_end_backward(text(), self.cursor, big, count),
             Motion::LastNonBlank => {
                 let mut position = self.cursor;
                 for _ in 1..count {
@@ -13230,30 +13232,30 @@ impl CommandInterpreter {
                     };
                     position = next;
                 }
-                last_non_blank(text, &lines, position)
+                last_non_blank(text(), &lines, position)
             }
             Motion::Column(one_based) => position_at_column(
-                text,
+                text(),
                 &lines,
                 line_start(&lines, self.cursor),
                 one_based.saturating_sub(1),
             ),
             Motion::LineOffsetFirstNonBlank(amount) => {
                 let line = move_vertical(
-                    text,
+                    text(),
                     &lines,
                     self.cursor,
                     directional_count(count, amount > 0),
                 );
-                first_non_blank(text, &lines, line)
+                first_non_blank(text(), &lines, line)
             }
             Motion::Sentence(forward) => normalize_normal_cursor(
-                text,
+                text(),
                 &lines,
-                move_sentence(text, &lines, self.cursor, forward, count),
+                move_sentence(text(), &lines, self.cursor, forward, count),
             ),
             Motion::Paragraph(forward) => normalize_normal_cursor(
-                text,
+                text(),
                 &lines,
                 move_paragraph(&lines, self.cursor, forward, count),
             ),
@@ -13521,6 +13523,9 @@ fn layout_error(error: LayoutMotionError) -> CommandOutput {
 }
 
 fn visual_block_error(error: VisualBlockError) -> CommandOutput {
+    if let VisualBlockError::NeedsLayout(demand) = error {
+        return layout_error(LayoutMotionError::OutsideMaterializedCoverage(demand));
+    }
     CommandOutput {
         status: CommandStatus::VisualBlockError(error),
         ..CommandOutput::complete()
@@ -14174,8 +14179,27 @@ fn exclusive_motion_extent(
     }
 }
 
+fn exclusive_search_extent(document: &Document, origin: usize, destination: usize) -> MotionExtent {
+    let lines = document.hard_line_snapshot();
+    if destination > origin && destination == line_start(&lines, destination) {
+        if origin <= first_nonblank_document(document, &lines, origin) {
+            return MotionExtent {
+                range: line_start(&lines, origin)..destination,
+                kind: MotionKind::Linewise,
+            };
+        }
+        return MotionExtent {
+            range: origin..lines.previous_grapheme_boundary(destination).unwrap_or(destination),
+            kind: MotionKind::Characterwise,
+        };
+    }
+    MotionExtent {
+        range: origin.min(destination)..origin.max(destination),
+        kind: MotionKind::Characterwise,
+    }
+}
+
 fn search_destination(
-    text: &str,
     lines: &HardLineSnapshot,
     origin: usize,
     direction: SearchDirection,
@@ -14210,9 +14234,9 @@ fn search_destination(
         let mut seek = |start: usize, before: Option<usize>| -> Result<Option<usize>, String> {
             let mut at = start;
             let mut last = None;
-            while at <= text.len() {
+            while at <= lines.text_length() {
                 let Some(matched) = regex
-                    .find(&input, at, text.len(), &mut work)
+                    .find(&input, at, lines.text_length(), &mut work)
                     .map_err(|e| e.to_string())?
                 else {
                     break;
@@ -14250,7 +14274,7 @@ fn search_destination(
             SearchDirection::Backward => {
                 let found = seek(0, Some(cursor))?;
                 if found.is_none() && options.wrapscan {
-                    seek(0, Some(text.len().saturating_add(1)))?
+                    seek(0, Some(lines.text_length().saturating_add(1)))?
                 } else {
                     found
                 }
@@ -15209,6 +15233,38 @@ fn command_line_delete_word(buffer: &mut CommandLineBuffer) {
     }
 }
 
+/// A keyword exceeding the regex pattern limit cannot be searched. Read only
+/// enough surrounding text to extract a permitted word or report that limit;
+/// an arbitrarily long word or combining cluster never allocates a flat document.
+fn search_keyword(document: &Document, offset: usize) -> Result<Option<String>, regex_v1::RegexError> {
+    let tree = document.projection().text_tree();
+    let limit = regex_v1::RegexLimits::default().pattern_bytes;
+    let mut start = offset.saturating_sub(limit + 4);
+    let mut end = offset.saturating_add(limit + 4).min(tree.byte_len());
+    while tree.byte_chunk_at(start).first().is_some_and(|byte| byte & 0xc0 == 0x80) { start += 1; }
+    while tree.byte_chunk_at(end).first().is_some_and(|byte| byte & 0xc0 == 0x80) { end -= 1; }
+    let text = tree.slice(start..end).expect("scalar-aligned search context");
+    let Some(range) = keyword_range(&text, offset - start) else { return Ok(None); };
+    // A window may begin inside a very large combining cluster. Its omitted
+    // base character decides whether that preceding cluster belongs to the
+    // keyword; a leading combining mark alone cannot decide this correctly.
+    if start > 0 && text.graphemes(true).next().is_some_and(|first| range.start == first.len()) {
+        let snapshot = document.hard_line_snapshot();
+        if !snapshot.is_grapheme_boundary(start) {
+            let previous = snapshot.previous_grapheme_boundary(start).unwrap_or(0);
+            let first = std::str::from_utf8(tree.byte_chunk_at(previous))
+                .expect("scalar-aligned tree leaf").chars().next();
+            if first.is_some_and(|character| character.is_alphanumeric() || character == '_') {
+                return Err(regex_v1::RegexError::RegexResourceLimit("pattern length"));
+            }
+        }
+    }
+    if range.len() > limit {
+        return Err(regex_v1::RegexError::RegexResourceLimit("pattern length"));
+    }
+    Ok(Some(text[range].into()))
+}
+
 fn keyword_range(text: &str, offset: usize) -> Option<Range<usize>> {
     let current = grapheme_range_at(text, offset)?;
     let is_keyword = |grapheme: &str| {
@@ -15296,6 +15352,38 @@ mod tests {
     use crate::document::{Encoding, Format};
     use crate::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
 
+    #[test]
+    fn insert_delete_motions_keep_large_literal_snapshots_unmaterialized() {
+        for format in [Format::PlainText, Format::Code] {
+            let prefix = "unchanged line\n".repeat(20_000);
+            let mut document = Document::from_bytes(format!("{prefix}word !!  ").into_bytes(), Encoding::Utf8, format).unwrap();
+            let mut commands = CommandInterpreter::new();
+            assert!(commands.set_cursor(&document, prefix.len()));
+            keys(&mut commands, &mut document, "A");
+            assert_eq!(key(&mut commands, &mut document, Key::Ctrl('w')).status, CommandStatus::Complete);
+            assert_eq!(document.projection().text_tree().slice(prefix.len()..document.projection().text_tree().byte_len()).unwrap(), "word ");
+            assert!(!document.projection().compatibility_text_is_materialized());
+            keys(&mut commands, &mut document, "typed");
+            assert_eq!(key(&mut commands, &mut document, Key::Ctrl('u')).status, CommandStatus::Complete);
+            key(&mut commands, &mut document, Key::Escape);
+            assert_eq!(document.projection().text_tree().slice(prefix.len()..document.projection().text_tree().byte_len()).unwrap(), "word ");
+            assert!(!document.projection().compatibility_text_is_materialized());
+            keys(&mut commands, &mut document, "u");
+            assert_eq!(document.source_bytes(), format!("{prefix}word !!  ").into_bytes());
+        }
+    }
+
+    #[test]
+    fn horizontal_operators_keep_large_literal_snapshots_unmaterialized() {
+        for operator in ["dh", "dl", "yh", "yl", "ch", "cl", "d0"] {
+            let mut document = Document::new(format!("{}\nabcde", "x".repeat(128 * 1024)));
+            let mut commands = CommandInterpreter::new();
+            assert!(commands.set_cursor(&document, 128 * 1024 + 3));
+            assert_eq!(keys(&mut commands, &mut document, operator).status, CommandStatus::Complete);
+            assert!(!document.projection().compatibility_text_is_materialized(), "{operator}");
+        }
+    }
+
     fn line_start(text: &str, offset: usize) -> usize {
         let document = Document::new(text);
         super::line_start(&document.hard_line_snapshot(), offset)
@@ -15378,6 +15466,63 @@ mod tests {
             output = layout_key(commands, document, &mut context, *key);
         }
         output
+    }
+
+    #[test]
+    fn counted_horizontal_commands_keep_large_projection_text_unmaterialized() {
+        let mut document = Document::new("x".repeat(100_000));
+        let mut commands = CommandInterpreter::new();
+        keys(&mut commands, &mut document, "80000l");
+        assert_eq!(commands.cursor(), 80_000);
+        assert!(!document.projection().compatibility_text_is_materialized());
+        keys(&mut commands, &mut document, "80000h");
+        assert_eq!(commands.cursor(), 0);
+        assert!(!document.projection().compatibility_text_is_materialized());
+    }
+
+    #[test]
+    fn search_commands_keep_large_projection_text_unmaterialized() {
+        let mut document = Document::new(format!("needle {}needle!", "row\n".repeat(20_000)));
+        document.delete(80_013..80_014).unwrap();
+        let mut commands = CommandInterpreter::new();
+        keys(&mut commands, &mut document, "/needle");
+        assert_eq!(key(&mut commands, &mut document, Key::Enter).status, CommandStatus::Complete);
+        assert_eq!(commands.cursor(), 80_007);
+        assert!(!document.projection().compatibility_text_is_materialized());
+        keys(&mut commands, &mut document, "#");
+        assert_eq!(commands.cursor(), 0);
+        assert!(!document.projection().compatibility_text_is_materialized());
+        keys(&mut commands, &mut document, "n");
+        assert_eq!(commands.cursor(), 80_007);
+        assert!(!document.projection().compatibility_text_is_materialized());
+    }
+
+    #[test]
+    fn bounded_search_keyword_preserves_unicode_and_rejects_oversized_words() {
+        let text = format!("{} αa\u{301}_é𐐀 😀 xyz", " ".repeat(20_000));
+        let mut document = Document::new(format!("{text}!"));
+        document.delete(text.len()..text.len() + 1).unwrap();
+        for (offset, _) in text.grapheme_indices(true).skip(19_999) {
+            let expected = keyword_range(&text, offset).map(|range| text[range].to_string());
+            assert_eq!(search_keyword(&document, offset).unwrap(), expected);
+        }
+        assert!(!document.projection().compatibility_text_is_materialized());
+        let mut oversized = Document::new(format!("{}!", "a".repeat(100_000)));
+        oversized.delete(100_000..100_001).unwrap();
+        for offset in [0, 50_000, 99_999] {
+            assert!(matches!(search_keyword(&oversized, offset), Err(regex_v1::RegexError::RegexResourceLimit("pattern length"))));
+        }
+        assert!(!oversized.projection().compatibility_text_is_materialized());
+        for (base, oversized_word) in [("a", true), ("😀", false)] {
+            let text = format!("{base}{}b", "\u{301}".repeat(30_000));
+            let document = Document::new(text.clone());
+            let result = search_keyword(&document, text.len() - 1);
+            if oversized_word {
+                assert!(matches!(result, Err(regex_v1::RegexError::RegexResourceLimit("pattern length"))));
+            } else {
+                assert_eq!(result.unwrap().as_deref(), Some("b"));
+            }
+        }
     }
 
     #[test]

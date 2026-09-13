@@ -48,7 +48,7 @@ pub use fragments::{FragmentEdit, ReplacementFragment};
 pub(crate) use replacement::RecordedReplacement;
 
 use super::formatted_text::{FormattedTextSpliceStats, LogicalGraphemeSnapshot};
-use super::line_endings::{detect, normalize};
+use super::line_endings::{detect, normalize, normalize_literal};
 use super::projection::{escape_markdown_insert, project, splice_line_local_projection};
 use super::source_line_index::SourceHardLineSpliceStats;
 use super::transfer::{self, HardLineTransfer};
@@ -783,6 +783,9 @@ struct CandidateVerification<'a> {
 }
 
 const MAX_LINE_LOCAL_PROJECTION_HARD_LINES: usize = 64;
+// Literal edits only need bounded encoding/line-ending context around the
+// changed text. Hard lines themselves are not a safe allocation bound.
+const LITERAL_EDIT_CONTEXT_BYTES: usize = 4096;
 
 struct LineLocalProjectionRegion {
     inherit_html_context: bool,
@@ -3347,16 +3350,18 @@ impl Document {
         }
 
         let snapshot = self.hard_line_snapshot();
+        let mut only_text_changing_payloads = true;
         edits.retain(|edit| {
             let captured = snapshot
                 .capture(edit.range.clone())
                 .expect("document range validation also validates payload capture boundaries");
-            captured.text() != edit.payload.text()
+            let changes_text = captured.text() != edit.payload.text();
+            let keep = changes_text
                 || captured.break_offsets() != edit.payload.break_offsets()
-                || self
-                    .decoding_diagnostics()
-                    .iter()
-                    .any(|diagnostic| ranges_overlap(&edit.range, &diagnostic.formatted_range))
+                || self.decoding_diagnostics().iter().any(|diagnostic|
+                    ranges_overlap(&edit.range, &diagnostic.formatted_range));
+            if keep && !changes_text { only_text_changing_payloads = false; }
+            keep
         });
         if edits.is_empty() {
             return Ok(self.no_op_prepared());
@@ -3375,12 +3380,12 @@ impl Document {
             return Ok(prepared);
         }
 
-        // Literal Code payloads with ordinary logical newlines have the same
+        // Literal payloads with ordinary logical newlines have the same
         // graph as a text splice. Keep typing, IME and paste on the persistent
         // regional path; rich-payload verification must not flatten/reproject
-        // an entire Code buffer for every inserted character or newline.
-        if self.format().is_code() && edits.iter().all(|edit|
-            edit.payload.break_offsets().iter().copied().eq(edit.payload.text().match_indices('\n').map(|(at,_)|at)))
+        // an entire buffer for every inserted character or newline.
+        if self.format().is_literal() && only_text_changing_payloads && edits.iter().all(|edit|
+            !edit.payload.text().contains('\r') && edit.payload.break_offsets().iter().copied().eq(edit.payload.text().match_indices('\n').map(|(at,_)|at)))
         {
             let patches=self.translate_source_edits(logical_edits.iter().zip(&edits).map(|(text,payload)|(text,Some(payload))))?;
             return self.prepare_text_edits_with_patches(logical_edits,Some(patches));
@@ -5763,7 +5768,11 @@ impl Document {
         }
         let bytes = self.state().source.bytes();
         let decoded = self.state().encoding.decode(&bytes)?;
-        let current = normalize(&decoded, self.state().file_format);
+        let current = if self.format().is_literal() {
+            normalize_literal(&decoded, self.state().file_format)
+        } else {
+            normalize(&decoded, self.state().file_format)
+        };
         debug_assert!(current
             .endings
             .iter()
@@ -5866,10 +5875,10 @@ impl Document {
             .map_between(current.node, target.node, identity)?;
         debug_assert_eq!(text_position_map.target_revision(), candidate.revision);
         debug_assert_eq!(text_position_map.target_len(), new_text.byte_len());
-        let source_patches = match self.state().source.changed_extent(&candidate.source) {
-            None=>Vec::new(),
-            Some((old,new))=>vec![SourcePatch::primary(old,candidate.source.bytes_in(new).expect("validated source difference"))],
-        };
+        let source_patches = self.state().source.changed_extents(&candidate.source)
+            .into_iter().map(|(old, new)| SourcePatch::primary(old,
+                candidate.source.bytes_in(new).expect("validated source difference")))
+            .collect();
         let navigation = HistoryNavigation {
             from: current,
             to: target,
@@ -5953,12 +5962,12 @@ impl Document {
         Ok(candidate)
     }
 
-    /// Independently changed Code lines must not turn into one document-sized
+    /// Independently changed literal lines must not turn into one document-sized
     /// projection window. Adjacent edits stay together so simultaneous changes
     /// can create graphemes across their boundaries without an invalid interim
     /// caret. Separated groups are verified in reverse source order, then the
     /// outer transaction supplies the one history entry and original batch map.
-    fn build_disjoint_code_edit_candidate(
+    fn build_disjoint_literal_edit_candidate(
         &self,
         source: &super::source::SourceSnapshot,
         revision: Revision,
@@ -5967,26 +5976,29 @@ impl Document {
         edits: &[TextEdit],
         source_patches: &[SourcePatch],
     ) -> Result<Option<TextEditCandidate>, ModelTransactionError> {
-        if !self.format().is_code() || edits.len() < 2 || source_patches.len() != edits.len() {
+        if !self.format().is_literal() || edits.len() < 2 || source_patches.len() != edits.len() {
             return Ok(None);
         }
         let mut groups = Vec::new();
         let mut first = 0;
         let mut previous_last_line: usize = 0;
+        let mut previous_end: usize = 0;
         for (index, edit) in edits.iter().enumerate() {
             let start_line = self.projection().hard_line_at_offset(edit.range.start)
                 .ok_or(DocumentError::VerificationFailed)?;
             let end_line = self.projection().hard_line_at_offset(edit.range.end)
                 .ok_or(DocumentError::VerificationFailed)?;
-            if index > first && start_line > previous_last_line.saturating_add(1) {
+            if index > first && (start_line > previous_last_line.saturating_add(1)
+                || edit.range.start > previous_end.saturating_add(2 * LITERAL_EDIT_CONTEXT_BYTES)) {
                 groups.push(first..index);
                 first = index;
             }
             previous_last_line = end_line;
+            previous_end = edit.range.end;
         }
         groups.push(first..edits.len());
         if groups.len() < 2 { return Ok(None); }
-        // Literal Code uses monotonic one-patch translations. Keep uncommon
+        // Literal text uses monotonic one-patch translations. Keep uncommon
         // supporting patch sets on the existing fully verified path.
         for group in &groups {
             if self.line_local_projection_region(&edits[group.clone()], &source_patches[group.clone()])?.is_none() {
@@ -6016,6 +6028,9 @@ impl Document {
         // proves the complete batch without flattening either full snapshot.
         state.source = source.clone();
         state.revision = revision;
+        state.projection.order_new_literal_block_ids(
+            self.projection().text_tree().byte_len(), edits, self.next_projected_block_id,
+        ).map_err(super::block_identity_document_error)?;
         let sheet = state.projection.style_sheet().clone();
         let assignment = state.projection.document_style().clone();
         state.projection.install_configuration_styles(revision, sheet, assignment);
@@ -6034,7 +6049,7 @@ impl Document {
         edits: &[TextEdit],
         source_patches: &[SourcePatch],
     ) -> Result<TextEditCandidate, ModelTransactionError> {
-        if let Some(candidate) = self.build_disjoint_code_edit_candidate(
+        if let Some(candidate) = self.build_disjoint_literal_edit_candidate(
             &source, revision, target_text, text_splice_work, edits, source_patches,
         )? {
             return Ok(candidate);
@@ -6069,7 +6084,11 @@ impl Document {
                 .state()
                 .encoding
                 .decode_region(&regional_bytes, new_source.start)?;
-            let normalized = normalize(&decoded, self.state().file_format);
+            let normalized = if self.format().is_literal() {
+                normalize_literal(&decoded, self.state().file_format)
+            } else {
+                normalize(&decoded, self.state().file_format)
+            };
             // A folded separator can end a regional Source capture exactly
             // at the next physical row; its parser-only terminal row is not
             // one of the source records replaced by this regional edit.
@@ -6079,7 +6098,7 @@ impl Document {
                     .endings
                     .last()
                     .is_some_and(|ending| ending.source.end == new_source.end);
-            if self.format() != Format::Markdown && !self.format().is_code()
+            if self.format() != Format::Markdown && !self.format().is_literal()
                 && normalized.endings.len() + usize::from(!unowned_terminal_row)
                     != region.source_lines.len()
             {
@@ -6195,17 +6214,20 @@ impl Document {
                 target_text.clone(),
                 source.len(),
                 self.format() == Format::MarkdownSource,
-                self.format().is_code(),
+                self.format().is_literal(),
                 edits,
                 &mut next_projected_block_id,
             )
             .map_err(super::block_identity_document_error)?;
-            if !self.format().is_code() && projection.hard_line_count() != self.projection().hard_line_count() {
+            if !self.format().is_literal() && projection.hard_line_count() != self.projection().hard_line_count() {
                 return Err(DocumentError::VerificationFailed.into());
             }
 
-            let source_hard_lines = if self.format().is_code() {
-                let mut start = new_source.start;
+            let source_hard_lines = if self.format().is_literal() {
+                // A chunk can begin inside the first line. Preserve its
+                // unchanged source prefix while rebuilding only local breaks.
+                let mut start = self.state().source_hard_lines.get(region.source_lines.start)
+                    .ok_or(DocumentError::VerificationFailed)?.start;
                 let mut ranges = Vec::with_capacity(normalized.endings.len() + 1);
                 for ending in &normalized.endings {
                     ranges.push(start..ending.source.end);
@@ -7095,16 +7117,16 @@ impl Document {
         if edits.is_empty() || self.format().is_rich_text() {
             return Ok(None);
         }
-        for edit in edits {
+        for edit in edits.iter().filter(|_| !self.format().is_literal()) {
             let replaced = self
                 .projection()
                 .text_tree()
                 .slice(edit.range.clone())
                 .map_err(DocumentError::FormattedTextStorage)?;
-            if !self.format().is_code() && (edit.replacement.contains('\r')
+            if edit.replacement.contains('\r')
                 || edit.replacement.contains('\n')
                 || replaced.contains('\r')
-                || replaced.contains('\n'))
+                || replaced.contains('\n')
             {
                 // Edits that change hard-line topology require the whole pipeline.
                 return Ok(None);
@@ -7120,11 +7142,11 @@ impl Document {
             let Some(line_range) = self.projection().hard_line_range(line) else {
                 return Ok(None);
             };
-            if edit.range.start < line_range.start || (!self.format().is_code() && edit.range.end > line_range.end) {
+            if edit.range.start < line_range.start || (!self.format().is_literal() && edit.range.end > line_range.end) {
                 return Ok(None);
             }
             first_line = first_line.min(line);
-            last_line = last_line.max(if self.format().is_code() {
+            last_line = last_line.max(if self.format().is_literal() {
                 self.projection().hard_line_at_offset(edit.range.end).unwrap_or(line)
             } else { line });
         }
@@ -7193,7 +7215,7 @@ impl Document {
             }
         }
         let hard_lines = first_line..last_line.saturating_add(1);
-        if hard_lines.is_empty() || hard_lines.len() > MAX_LINE_LOCAL_PROJECTION_HARD_LINES {
+        if hard_lines.is_empty() || (!self.format().is_literal() && hard_lines.len() > MAX_LINE_LOCAL_PROJECTION_HARD_LINES) {
             return Ok(None);
         }
 
@@ -7205,7 +7227,17 @@ impl Document {
             .projection()
             .hard_line_range(last_line)
             .ok_or(DocumentError::VerificationFailed)?;
-        let old_formatted = first_formatted.start..last_formatted.end;
+        let mut old_formatted = first_formatted.start..last_formatted.end;
+        if self.format().is_literal() && old_formatted.len() > 2 * LITERAL_EDIT_CONTEXT_BYTES {
+            let first_edit = edits.first().ok_or(DocumentError::VerificationFailed)?.range.start;
+            let last_edit = edits.last().ok_or(DocumentError::VerificationFailed)?.range.end;
+            if let Some((extent, _)) = self.projection().literal_projection_extent(&(first_edit..last_edit)) {
+                // Compact mapping runs have bounded byte size and break at
+                // hard-line separators. The unchanged outer block/line tails
+                // are retained by the persistent projection splice.
+                old_formatted = extent.start.max(first_formatted.start)..extent.end.min(last_formatted.end);
+            }
+        }
         let source_lines =
             if self.state().source_hard_lines.len() == self.projection().hard_line_count() {
                 hard_lines.clone()
@@ -7257,7 +7289,13 @@ impl Document {
                 .ok_or(DocumentError::AmbiguousProjection)?
                 .start
         };
-        let old_source = old_source_start..old_source_end;
+        let mut old_source = old_source_start..old_source_end;
+        if self.format().is_literal()
+            && (old_formatted.start != first_formatted.start || old_formatted.end != last_formatted.end)
+        {
+            old_source = self.projection().source_range(old_formatted.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+        }
         if source_patches.iter().any(|patch| {
             patch.part != SourcePartId::PRIMARY
                 || patch.range.start < old_source.start

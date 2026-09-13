@@ -6,6 +6,9 @@ mod engine;
 mod height_index;
 mod jobs;
 mod long_line_cache;
+mod line_breaks;
+mod unicode_breaks;
+mod unicode_break_data;
 mod measurement;
 mod mock;
 mod style;
@@ -25,6 +28,7 @@ pub use engine::{
     LayoutSnapshot, LayoutWorkStatistics, LongLineLayoutCheckpoint, PositionedCaret,
     DecorationKind, PositionedCluster, PositionedDecoration, RegionalHardLineLayout, RegionalLayoutCacheLimits,
     RegionalLayoutCacheStatistics, RegionalLayoutSnapshot, SelectionRectangle,
+    ShapingCacheStatistics,
     ViewConfigurationGeneration, ViewLayout, ViewLayoutState, VisualRow,
 };
 pub use height_index::{

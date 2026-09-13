@@ -13,12 +13,14 @@ static NEXT_HISTORY_NODE_ID: AtomicU64 = AtomicU64::new(1);
 /// A budget is a target rather than permission to discard the active state.
 /// Consequently one oversized current snapshot, or the parent and result of
 /// an open undo unit, may temporarily exceed these values.
-/// The byte target charges retained source, derived projections, position maps,
-/// and history bookkeeping; it does not mean serialized document bytes.
+/// Total diagnostics charge source, projections, maps and bookkeeping. The
+/// default target gives history headroom above current live state; explicitly
+/// constructed combined targets can instead bound their total together.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HistoryRetentionPolicy {
     node_budget: usize,
     retained_byte_budget: usize,
+    additional_to_live_state: bool,
 }
 
 impl HistoryRetentionPolicy {
@@ -29,7 +31,18 @@ impl HistoryRetentionPolicy {
         Self {
             node_budget,
             retained_byte_budget,
+            additional_to_live_state: false,
         }
+    }
+
+    /// Allow this many bytes of retained history above the current state.
+    /// The live-state allocation estimate remains included in diagnostics.
+    pub const fn additional_history(node_budget: usize, history_byte_budget: usize) -> Self {
+        Self { node_budget, retained_byte_budget: history_byte_budget, additional_to_live_state: true }
+    }
+
+    pub const fn is_additional_to_live_state(self) -> bool {
+        self.additional_to_live_state
     }
 
     pub const fn unlimited() -> Self {
@@ -47,7 +60,7 @@ impl HistoryRetentionPolicy {
 
 impl Default for HistoryRetentionPolicy {
     fn default() -> Self {
-        Self::new(
+        Self::additional_history(
             Self::DEFAULT_NODE_BUDGET,
             Self::DEFAULT_RETAINED_BYTE_BUDGET,
         )
@@ -347,6 +360,11 @@ pub struct HistoryStatus {
     /// allocations, history maps and metadata. Shared allocations count once.
     /// This is the byte-budget charge; it is distinct from source byte length.
     pub retained_memory_bytes: usize,
+    /// Current immutable state and the bookkeeping needed to retain that state
+    /// alone, independent of older undo states.
+    pub live_state_memory_bytes: usize,
+    /// Retained bytes above the live-state estimate, including history metadata.
+    pub additional_history_memory_bytes: usize,
     /// Whether the persisted state remains available for history navigation.
     /// Its identity and digest survive when this is false.
     pub save_point_retained: bool,
@@ -378,6 +396,9 @@ pub(crate) struct History<T, M = ()> {
     retained_source_bytes: usize,
     accounting: Option<HistoryAccounting<T>>,
     memory: RetainedMemory,
+    live_memory: RetainedMemory,
+    live_memory_roots: Vec<AllocationId>,
+    singleton_index_bytes: usize,
     memory_metadata_bytes: usize,
     visit_state_memory: Option<fn(&T, &mut MemoryVisitor<'_>)>,
     visit_map_memory: Option<fn(&M, &mut MemoryVisitor<'_>)>,
@@ -562,6 +583,9 @@ impl<T, M> History<T, M> {
         let retained_source_bytes = retained_buffers.iter().map(|buffer| buffer.bytes).sum();
         let save_point_digest = accounting.as_ref().map(|value| (value.digest)(&initial));
         let save_point_source = accounting.as_ref().map(|value| (value.source_identity)(&initial));
+        let node_indexes = HashMap::from([(root_id, 0)]);
+        let change_indexes = HashMap::from([(root_change, 0)]);
+        let singleton_index_bytes = (node_indexes.capacity() + change_indexes.capacity()) * 48;
         Self {
             nodes: vec![Node {
                 id: root_id,
@@ -575,8 +599,8 @@ impl<T, M> History<T, M> {
                 memory_roots: Vec::new(),
                 memory_metadata_bytes: 0,
             }],
-            node_indexes: HashMap::from([(root_id, 0)]),
-            change_indexes: HashMap::from([(root_change, 0)]),
+            node_indexes,
+            change_indexes,
             current: 0,
             group_node: None,
             next_change_number: 1,
@@ -587,6 +611,9 @@ impl<T, M> History<T, M> {
             retained_source_bytes,
             accounting,
             memory: RetainedMemory::default(),
+            live_memory: RetainedMemory::default(),
+            live_memory_roots: Vec::new(),
+            singleton_index_bytes,
             memory_metadata_bytes: 0,
             visit_state_memory: None,
             visit_map_memory: None,
@@ -630,6 +657,38 @@ impl<T, M> History<T, M> {
             + node.memory_roots.capacity() * std::mem::size_of::<AllocationId>()
             + node.incoming.as_ref().map_or(0, |edge| edge.record.owned_heap_bytes());
         self.memory_metadata_bytes = self.memory_metadata_bytes.saturating_add(node.memory_metadata_bytes);
+        if index == self.current {
+            self.refresh_live_memory();
+        }
+    }
+
+    fn refresh_live_memory(&mut self) {
+        if !self.command_checkpoints.is_empty() { return; }
+        let Some(visit_state) = self.visit_state_memory else { return; };
+        let state = &self.nodes[self.current].state;
+        let roots = self.live_memory.capture(|visitor| {
+            visitor.arc(state, |_| {});
+            visit_state(state, visitor);
+        });
+        let previous = std::mem::replace(&mut self.live_memory_roots, roots);
+        self.live_memory.release(previous);
+    }
+
+    fn live_state_memory_bytes(&self) -> usize {
+        if self.visit_state_memory.is_none() {
+            return self.nodes[self.current].retained_buffers.iter().map(|buffer| buffer.bytes).sum();
+        }
+        // A current-only document still needs both allocation ledgers, their
+        // root vectors, one history node and its source-buffer index. Charging
+        // that baseline to undo would consume the allowance in proportion to
+        // file size before there was any old state to retain.
+        let state_roots = self.live_memory_roots.capacity() * std::mem::size_of::<AllocationId>();
+        self.live_memory.bytes()
+            .saturating_add(self.live_memory.bookkeeping_bytes())
+            .saturating_add(state_roots.saturating_mul(2))
+            .saturating_add(std::mem::size_of::<Node<T, M>>())
+            .saturating_add(self.nodes[self.current].retained_buffers.capacity() * std::mem::size_of::<RetainedBuffer>())
+            .saturating_add(self.singleton_index_bytes)
     }
 
     fn release_node_memory(&mut self, index: usize) {
@@ -644,6 +703,8 @@ impl<T, M> History<T, M> {
             eprintln!("  ledger allocations {}", self.memory.allocation_count());
         }
         self.memory.bytes()
+            .saturating_add(self.live_memory.bookkeeping_bytes())
+            .saturating_add(self.live_memory_roots.capacity() * std::mem::size_of::<AllocationId>())
             .saturating_add(self.nodes.capacity() * std::mem::size_of::<Node<T, M>>())
             .saturating_add(self.node_indexes.capacity() * 48)
             .saturating_add(self.change_indexes.capacity() * 48)
@@ -653,6 +714,11 @@ impl<T, M> History<T, M> {
     #[cfg(test)]
     pub(super) fn assert_memory_matches_full_recount(&mut self) {
         self.refresh_node_memory(self.current);
+        self.assert_memory_matches_full_recount_without_refresh();
+    }
+
+    #[cfg(test)]
+    pub(super) fn assert_memory_matches_full_recount_without_refresh(&self) {
         let mut fresh = RetainedMemory::default();
         for node in &self.nodes {
             fresh.capture(|visitor| {
@@ -664,6 +730,37 @@ impl<T, M> History<T, M> {
             });
         }
         self.memory.assert_same_allocations(&fresh);
+        let mut live = RetainedMemory::default();
+        let state = &self.nodes[self.current].state;
+        live.capture(|visitor| {
+            visitor.arc(state, |_| {});
+            self.visit_state_memory.unwrap()(state, visitor);
+        });
+        self.live_memory.assert_same_allocations(&live);
+    }
+
+    #[cfg(test)]
+    pub(super) fn assert_current_only_memory_baseline(&self) {
+        assert_eq!(self.nodes.len(), 1);
+        let node = &self.nodes[0];
+        assert!(node.incoming.is_none());
+        self.memory.assert_same_allocations(&self.live_memory);
+        // Independent hash tables can have different usable capacities after
+        // replacement, even with identical allocation graphs. The live-state
+        // allowance estimates a second table with the live ledger's capacity;
+        // this is the only variable ledger difference in a current-only tree.
+        let capacity_difference = self.memory.bookkeeping_bytes() as i128
+            - self.live_memory.bookkeeping_bytes() as i128;
+        let metadata_difference = (self.nodes.capacity() - 1) * std::mem::size_of::<Node<T, M>>()
+            + (self.node_indexes.capacity() + self.change_indexes.capacity()) * 48
+            - self.singleton_index_bytes
+            + node.children.capacity() * std::mem::size_of::<usize>();
+        let root_difference = (node.memory_roots.capacity() as i128
+            - self.live_memory_roots.capacity() as i128) * std::mem::size_of::<AllocationId>() as i128;
+        assert_eq!(
+            self.retained_memory_bytes() as i128 - self.live_state_memory_bytes() as i128,
+            capacity_difference + metadata_difference as i128 + root_difference,
+        );
     }
 
     /// Install initial projection-only configuration without changing the
@@ -848,6 +945,9 @@ impl<T, M> History<T, M> {
         self.save_point_source = checkpoint.save_point_source;
         self.retention = checkpoint.retention;
         self.retained_source_bytes = checkpoint.retained_source_bytes;
+        // Both ledgers are frozen while a command checkpoint is active. Their
+        // roots already describe the restored state; refreshing here would
+        // publish lazy caches created by the failed command into its status.
     }
 
     pub(crate) fn begin_group(&mut self) {
@@ -924,6 +1024,8 @@ impl<T, M> History<T, M> {
             retention: self.retention,
             retained_source_bytes: self.retained_source_bytes,
             retained_memory_bytes: self.retained_memory_bytes(),
+            live_state_memory_bytes: self.live_state_memory_bytes(),
+            additional_history_memory_bytes: self.retained_memory_bytes().saturating_sub(self.live_state_memory_bytes()),
             save_point_retained: self.node_indexes.contains_key(&self.save_point),
             save_point_digest: self.save_point_digest,
         }
@@ -1231,6 +1333,9 @@ impl<T, M> History<T, M> {
     }
 
     fn exceeds_retention(&self, node_count: usize, retained_bytes: usize) -> bool {
+        let retained_bytes = if self.retention.additional_to_live_state {
+            retained_bytes.saturating_sub(self.live_state_memory_bytes())
+        } else { retained_bytes };
         node_count > self.retention.node_budget
             || retained_bytes > self.retention.retained_byte_budget
     }
@@ -1997,6 +2102,22 @@ mod tests {
         assert_eq!(history.status().node_count, 2);
         assert!(history.location_for_node(a.node).is_none());
         assert!(history.status().can_undo);
+    }
+
+    #[test]
+    fn additional_budget_preserves_shared_live_state_but_prunes_excess_history() {
+        let original = SourceSnapshot::new(vec![b'a'; 1024 * 1024]);
+        let mut history = byte_history(original.clone(), HistoryRetentionPolicy::additional_history(10, 2));
+        assert!(HistoryRetentionPolicy::default().is_additional_to_live_state());
+        let edited = original.replace(2, 3, vec![b'b']).unwrap();
+        history.commit(ByteState(edited.clone()), false);
+        assert!(history.status().can_undo, "the live megabyte must not consume history headroom");
+        assert_eq!(history.status().additional_history_memory_bytes, 0);
+        // Entirely replacing the live content makes the old megabyte history.
+        let replaced = edited.replace(0, edited.len(), vec![b'c'; 1024 * 1024]).unwrap();
+        history.commit(ByteState(replaced), false);
+        assert!(!history.status().can_undo);
+        assert_eq!(history.status().node_count, 1);
     }
 
     #[test]

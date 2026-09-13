@@ -263,12 +263,8 @@ impl MockTextMeasurementProvider {
             mix(&feature.tag);
             mix(&feature.value.to_le_bytes());
         }
-        Some(RenderRunHandle {
-            owner: policy.owner,
-            identifier,
-            metrics_generation: request.metrics_generation,
-            threading: policy.threading,
-        })
+        Some(RenderRunHandle::new(policy.owner, identifier,
+            request.metrics_generation, policy.threading))
     }
 
     fn fallback_font(text: &str, style: &ResolvedTextStyle) -> String {
@@ -318,6 +314,7 @@ impl MockTextMeasurementProvider {
         shaping_text.push_str(request.context_after);
         let graphemes: Vec<(usize, &str)> = shaping_text.grapheme_indices(true).collect();
         let mut clusters = Vec::new();
+        let mut fonts = std::collections::BTreeMap::<String, std::sync::Arc<str>>::new();
         let mut index = 0;
 
         while index < graphemes.len() {
@@ -397,7 +394,9 @@ impl MockTextMeasurementProvider {
                     typographic_bounds,
                     ink_bounds,
                     bidi_level,
-                    fallback_font: Self::fallback_font(cluster_text, style),
+                    fallback_font: std::sync::Arc::clone(fonts
+                        .entry(Self::fallback_font(cluster_text, style))
+                        .or_insert_with_key(|name| std::sync::Arc::from(name.as_str()))),
                     caret_stops: vec![
                         ClusterCaretStop {
                             text_offset: global_start,
@@ -547,10 +546,10 @@ mod tests {
         );
         assert_eq!(response.metrics_generation, MetricsGeneration(1));
         assert_eq!(response.visual_order, vec![0, 2, 1, 3]);
-        assert_eq!(response.clusters[1].fallback_font, "Unicode Fallback");
-        assert_eq!(response.clusters[3].fallback_font, "Mock Emoji");
+        assert_eq!(response.clusters[1].fallback_font.as_ref(), "Unicode Fallback");
+        assert_eq!(response.clusters[3].fallback_font.as_ref(), "Mock Emoji");
         assert!(response.clusters.iter().all(|cluster| {
-            cluster.render_run.is_some_and(|run| {
+            cluster.render_run.as_ref().is_some_and(|run| {
                 run.owner == RenderRunOwner(0x4d4f_434b)
                     && run.metrics_generation == MetricsGeneration(1)
                     && run.threading == RenderRunThreading::AnyThread

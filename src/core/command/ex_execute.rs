@@ -2235,7 +2235,7 @@ fn substitution_edits(
                             .hard_break_offsets(range.clone())
                             .map(|at| text.len() + at - range.start),
                     );
-                    text.push_str(&input.text()[range.clone()]);
+                    text.push_str(&snapshot.slice_utf8(range.clone()).expect("validated capture boundaries"));
                     fragments.push(ReplacementFragment::Capture(range));
                 }
             }

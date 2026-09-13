@@ -197,6 +197,7 @@ pub enum BlockInsertEdge {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VisualBlockError {
+    NeedsLayout(super::layout_motion::LayoutDemand),
     WrongDocument {
         expected: DocumentId,
         actual: DocumentId,
@@ -271,6 +272,12 @@ fn resolve_block_selection_impl(
     formatted_text: &str,
     to_line_end: bool,
 ) -> Result<ResolvedBlockSelection, VisualBlockError> {
+    if snapshot.has_horizontal_materialization() {
+        let super::layout_motion::LayoutMotionError::OutsideMaterializedCoverage(demand) =
+            super::layout_motion::complete_horizontal_demand(snapshot, selection.active.text_offset)
+            else { unreachable!() };
+        return Err(VisualBlockError::NeedsLayout(demand));
+    }
     validate_snapshot(selection, snapshot, formatted_text)?;
     let anchor_row = locate_endpoint(snapshot, selection.anchor)?;
     let active_row = locate_endpoint(snapshot, selection.active)?;

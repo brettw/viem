@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::sync::Arc;
 
 /// Height plus the certainty of every hard line contributing to it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,7 +98,8 @@ pub enum ViewHeightIndexError {
 /// The tree is indexed implicitly by aggregate hard-line counts rather than by
 /// stored document ordinals. Inserting or deleting hard lines therefore
 /// changes only the logarithmic split/join paths; following entries are not
-/// renumbered or shifted.
+/// renumbered or shifted. Clones share immutable nodes, so staging a viewport
+/// update does not copy the heights learned while visiting earlier regions.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewHeightIndex {
     root: Link,
@@ -435,7 +437,7 @@ impl ViewHeightIndex {
     }
 }
 
-type Link = Option<Box<Node>>;
+type Link = Option<Arc<Node>>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct HeightRun {
@@ -468,8 +470,12 @@ struct Node {
 }
 
 impl Node {
-    fn new(run: HeightRun) -> Box<Self> {
-        Box::new(Self {
+    fn new(run: HeightRun) -> Arc<Self> {
+        Arc::new(Self::leaf(run))
+    }
+
+    fn leaf(run: HeightRun) -> Self {
+        Self {
             run,
             left: None,
             right: None,
@@ -478,7 +484,7 @@ impl Node {
             subtree_exact: run.exact,
             subtree_runs: 1,
             subtree_depth: 1,
-        })
+        }
     }
 
     fn refresh(&mut self) {
@@ -560,20 +566,22 @@ fn balanced_tree_from_runs(runs: &[HeightRun]) -> Link {
         return None;
     }
     let middle = runs.len() / 2;
-    let mut root = Node::new(runs[middle]);
+    let mut root = Node::leaf(runs[middle]);
     let left_runs = &runs[..middle];
     let right_runs = &runs[middle + 1..];
     root.left = balanced_tree_from_runs(left_runs);
     root.right = balanced_tree_from_runs(right_runs);
     root.refresh();
-    Some(root)
+    Some(Arc::new(root))
 }
 
 fn split(mut tree: Link, at: usize) -> (Link, Link) {
-    let Some(mut root) = tree.take() else {
+    let Some(root) = tree.take() else {
         debug_assert_eq!(at, 0);
         return (None, None);
     };
+    // Only the split path is copied when a prior snapshot still owns it.
+    let mut root = Arc::unwrap_or_clone(root);
     debug_assert!(at <= root.subtree_lines);
     let left_lines = subtree_lines(&root.left);
     let run_end = left_lines
@@ -653,24 +661,24 @@ fn join_with_run(left: Link, run: HeightRun, right: Link) -> Link {
     let left_depth = subtree_depth(&left);
     let right_depth = subtree_depth(&right);
     if left_depth > right_depth.saturating_add(1) {
-        let mut root = left.expect("a positive depth has a root");
+        let mut root = Arc::unwrap_or_clone(left.expect("a positive depth has a root"));
         root.right = join_with_run(root.right.take(), run, right);
         return Some(rebalance(root));
     }
     if right_depth > left_depth.saturating_add(1) {
-        let mut root = right.expect("a positive depth has a root");
+        let mut root = Arc::unwrap_or_clone(right.expect("a positive depth has a root"));
         root.left = join_with_run(left, run, root.left.take());
         return Some(rebalance(root));
     }
 
-    let mut root = Node::new(run);
+    let mut root = Node::leaf(run);
     root.left = left;
     root.right = right;
     root.refresh();
-    Some(root)
+    Some(Arc::new(root))
 }
 
-fn rebalance(mut root: Box<Node>) -> Box<Node> {
+fn rebalance(mut root: Node) -> Arc<Node> {
     root.refresh();
     let left_depth = subtree_depth(&root.left);
     let right_depth = subtree_depth(&root.right);
@@ -678,7 +686,7 @@ fn rebalance(mut root: Box<Node>) -> Box<Node> {
         let left = root.left.as_mut().expect("an imbalanced side exists");
         if subtree_depth(&left.right) > subtree_depth(&left.left) {
             let child = root.left.take().expect("an imbalanced side exists");
-            root.left = Some(rotate_left(child));
+            root.left = Some(rotate_left(Arc::unwrap_or_clone(child)));
         }
         return rotate_right(root);
     }
@@ -686,38 +694,41 @@ fn rebalance(mut root: Box<Node>) -> Box<Node> {
         let right = root.right.as_mut().expect("an imbalanced side exists");
         if subtree_depth(&right.left) > subtree_depth(&right.right) {
             let child = root.right.take().expect("an imbalanced side exists");
-            root.right = Some(rotate_right(child));
+            root.right = Some(rotate_right(Arc::unwrap_or_clone(child)));
         }
         return rotate_left(root);
     }
-    root
+    Arc::new(root)
 }
 
-fn rotate_left(mut root: Box<Node>) -> Box<Node> {
-    let mut pivot = root
+fn rotate_left(mut root: Node) -> Arc<Node> {
+    let pivot = root
         .right
         .take()
         .expect("a left rotation requires a right child");
+    let mut pivot = Arc::unwrap_or_clone(pivot);
     root.right = pivot.left.take();
     root.refresh();
-    pivot.left = Some(root);
+    pivot.left = Some(Arc::new(root));
     pivot.refresh();
-    pivot
+    Arc::new(pivot)
 }
 
-fn rotate_right(mut root: Box<Node>) -> Box<Node> {
-    let mut pivot = root
+fn rotate_right(mut root: Node) -> Arc<Node> {
+    let pivot = root
         .left
         .take()
         .expect("a right rotation requires a left child");
+    let mut pivot = Arc::unwrap_or_clone(pivot);
     root.left = pivot.right.take();
     root.refresh();
-    pivot.right = Some(root);
+    pivot.right = Some(Arc::new(root));
     pivot.refresh();
-    pivot
+    Arc::new(pivot)
 }
 
-fn pop_last(mut root: Box<Node>) -> (Link, HeightRun) {
+fn pop_last(root: Arc<Node>) -> (Link, HeightRun) {
+    let mut root = Arc::unwrap_or_clone(root);
     if let Some(right) = root.right.take() {
         let (new_right, run) = pop_last(right);
         root.right = new_right;
@@ -728,7 +739,8 @@ fn pop_last(mut root: Box<Node>) -> (Link, HeightRun) {
     }
 }
 
-fn pop_first(mut root: Box<Node>) -> (HeightRun, Link) {
+fn pop_first(root: Arc<Node>) -> (HeightRun, Link) {
+    let mut root = Arc::unwrap_or_clone(root);
     if let Some(left) = root.left.take() {
         let (run, new_left) = pop_first(left);
         root.left = new_left;
@@ -902,6 +914,48 @@ mod tests {
         assert_eq!(checked.lines, index.hard_line_count());
         assert_eq!(checked.runs, index.statistics().run_count());
         assert_eq!(checked.depth, index.statistics().tree_depth());
+    }
+
+    #[test]
+    fn staging_large_learned_height_index_shares_unchanged_paths() {
+        fn pointers(tree: &Link, result: &mut std::collections::HashSet<*const Node>) {
+            if let Some(node) = tree {
+                result.insert(Arc::as_ptr(node));
+                pointers(&node.left, result);
+                pointers(&node.right, result);
+            }
+        }
+
+        let mut original = ViewHeightIndex::new_estimated(1_000_000, 16.0).unwrap();
+        // Model a long scroll through differently wrapped hard lines: exact
+        // height runs cannot collapse into one uniform estimate.
+        let heights: Vec<_> = (0..65_536).map(|line| 16.0 * (1 + line % 3) as f64).collect();
+        original.set_exact_heights(400_000, &heights).unwrap();
+        let before = original.total_height();
+        let mut staged = original.clone();
+        assert!(Arc::ptr_eq(
+            original.root.as_ref().unwrap(),
+            staged.root.as_ref().unwrap()
+        ));
+
+        let mut original_nodes = std::collections::HashSet::new();
+        pointers(&original.root, &mut original_nodes);
+        staged.set_exact_height(432_123, 80.0).unwrap();
+        staged.invalidate(432_124..432_126).unwrap();
+        let mut staged_nodes = std::collections::HashSet::new();
+        pointers(&staged.root, &mut staged_nodes);
+        let copied_nodes = staged_nodes.difference(&original_nodes).count();
+        assert!(
+            copied_nodes <= original.statistics().tree_depth() * 12,
+            "local staging copied {copied_nodes} of {} learned nodes",
+            original_nodes.len()
+        );
+        assert_eq!(original.total_height(), before);
+        assert!(original.range_height(432_124..432_126).unwrap().is_exact());
+        assert!(!staged.range_height(432_124..432_126).unwrap().is_exact());
+        assert_eq!(staged.range_height(432_123..432_124).unwrap().height(), 80.0);
+        assert_valid_index(&original);
+        assert_valid_index(&staged);
     }
 
     #[test]

@@ -215,31 +215,32 @@ pub(crate) fn normalize_normal_cursor_snapshot(lines: &HardLineSnapshot, offset:
 }
 
 pub(crate) fn move_horizontal(
-    text: &str,
     lines: &HardLineSnapshot,
     offset: usize,
     amount: isize,
 ) -> usize {
-    let mut position = normalize_normal_cursor(text, lines, offset);
+    // Compatibility callers can supply a stale byte ordinal. Floor once using
+    // local tree boundaries, then keep every step inside this exact hard line.
+    let mut offset = offset.min(lines.text_length());
+    while lines.byte_chunk_at(offset).first().is_some_and(|byte| byte & 0xc0 == 0x80) {
+        offset -= 1;
+    }
+    if !lines.is_grapheme_boundary(offset) {
+        offset = lines.previous_grapheme_boundary(offset).unwrap_or(0);
+    }
+    let mut position = normalize_normal_cursor_snapshot(lines, offset);
+    let range = lines.line_at_offset(position).expect("normalized command boundary").content_range();
     if amount > 0 {
         for _ in 0..amount as usize {
-            let Some(next) = next_grapheme_boundary(text, position) else {
-                break;
-            };
-            if next >= line_end(lines, position) {
-                break;
-            }
+            let Some(next) = lines.next_grapheme_boundary(position) else { break; };
+            if next >= range.end { break; }
             position = next;
         }
     } else {
         for _ in 0..amount.unsigned_abs() {
-            let start = line_start(lines, position);
-            let Some(previous) = previous_grapheme_boundary(text, position) else {
-                break;
-            };
-            if previous < start {
-                break;
-            }
+            if position <= range.start { break; }
+            let Some(previous) = lines.previous_grapheme_boundary(position) else { break; };
+            if previous < range.start { break; }
             position = previous;
         }
     }
@@ -746,7 +747,7 @@ mod tests {
 
     fn move_horizontal(text: &str, offset: usize, amount: isize) -> usize {
         let document = Document::new(text);
-        super::move_horizontal(text, &document.hard_line_snapshot(), offset, amount)
+        super::move_horizontal(&document.hard_line_snapshot(), offset, amount)
     }
 
     fn move_vertical(text: &str, offset: usize, amount: isize) -> usize {
@@ -759,6 +760,32 @@ mod tests {
         let text = "a\u{301}bc";
         assert_eq!(move_horizontal(text, 0, 1), "a\u{301}".len());
         assert!(is_grapheme_boundary(text, move_horizontal(text, 0, 1)));
+    }
+
+    #[test]
+    fn counted_horizontal_motion_scales_on_large_lines_and_clamps_without_flattening() {
+        let text = format!("{}\nnext", "a\u{301}😀".repeat(50_000));
+        let document = Document::new(text.clone());
+        let lines = document.hard_line_snapshot();
+        let last = 350_000 - "😀".len();
+        assert_eq!(super::move_horizontal(&lines, 0, isize::MAX), last);
+        assert_eq!(super::move_horizontal(&lines, last, isize::MIN), 0);
+        assert_eq!(super::move_horizontal(&lines, 350_001, isize::MIN), 350_001);
+        assert_eq!(super::move_horizontal(&lines, 0, 50_000), 175_000);
+        assert_eq!(super::move_horizontal(&lines, 175_000, -50_000), 0);
+        assert!(!document.projection().compatibility_text_is_materialized());
+    }
+
+    #[test]
+    fn horizontal_motion_floors_stale_bytes_and_preserves_empty_line_boundaries() {
+        let document = Document::new("a\u{301}😀b\n\nend");
+        let lines = document.hard_line_snapshot();
+        assert_eq!(super::move_horizontal(&lines, 1, 0), 0);
+        assert_eq!(super::move_horizontal(&lines, 5, 0), 3);
+        assert_eq!(super::move_horizontal(&lines, 5, 1), 7);
+        assert_eq!(super::move_horizontal(&lines, 9, isize::MAX), 9);
+        assert_eq!(super::move_horizontal(&lines, 9, isize::MIN), 9);
+        assert_eq!(super::move_horizontal(&lines, usize::MAX, 0), 12);
     }
 
     #[test]
@@ -779,8 +806,8 @@ mod tests {
         .unwrap();
         let lines = document.hard_line_snapshot();
         assert_eq!(super::move_vertical(document.text(), &lines, 0, 1), 2);
-        assert_eq!(super::move_horizontal(document.text(), &lines, 2, 1), 3);
-        assert_eq!(super::move_horizontal(document.text(), &lines, 3, 1), 4);
+        assert_eq!(super::move_horizontal(&lines, 2, 1), 3);
+        assert_eq!(super::move_horizontal(&lines, 3, 1), 4);
         assert_eq!(super::last_grapheme_on_line(document.text(), &lines, 2), 4);
     }
 

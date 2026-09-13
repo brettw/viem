@@ -30,6 +30,7 @@ struct Allocation {
 pub(super) struct RetainedMemory {
     allocations: HashMap<AllocationId, Allocation>,
     bytes: usize,
+    bookkeeping_child_bytes: usize,
     #[cfg(test)]
     visited: usize,
 }
@@ -82,6 +83,7 @@ impl RetainedMemory {
             if allocation.references == 0 {
                 let allocation = self.allocations.remove(&id).unwrap();
                 self.bytes = self.bytes.saturating_sub(allocation.bytes);
+                self.bookkeeping_child_bytes -= allocation.children.capacity() * size_of::<AllocationId>();
                 self.release(allocation.children);
             }
         }
@@ -104,6 +106,14 @@ impl RetainedMemory {
 
     pub(super) fn allocation_count(&self) -> usize {
         self.allocations.len()
+    }
+
+    /// The ledger's own storage, excluding the allocations it describes.
+    /// Useful when a second incremental ledger tracks the active state: the
+    /// shared document allocations count once, but both ledgers occupy heap.
+    pub(super) fn bookkeeping_bytes(&self) -> usize {
+        self.allocations.capacity().saturating_mul(96)
+            .saturating_add(self.bookkeeping_child_bytes)
     }
 }
 
@@ -141,6 +151,7 @@ impl MemoryVisitor<'_> {
             .saturating_add(96)
             .saturating_add(children.capacity() * size_of::<AllocationId>());
         self.ledger.bytes = self.ledger.bytes.saturating_add(charged);
+        self.ledger.bookkeeping_child_bytes += children.capacity() * size_of::<AllocationId>();
         self.ledger.allocations.insert(
             id,
             Allocation {
@@ -155,6 +166,15 @@ impl MemoryVisitor<'_> {
         if bytes != 0 {
             self.allocation(AllocationId::Owned(owner, category), bytes, |_| {});
         }
+    }
+
+    /// One graph edge per shared allocation in this parent, even when many
+    /// packed values reference the same immutable default attributes.
+    pub(super) fn arc_once<T: ?Sized>(
+        &mut self, value: &Arc<T>, visit_children: impl FnOnce(&mut MemoryVisitor<'_>),
+    ) {
+        let id = AllocationId::Arc(Arc::as_ptr(value).cast::<u8>() as usize);
+        if !self.roots.contains(&id) { self.arc(value, visit_children); }
     }
 
     pub(super) fn arc<T: ?Sized>(

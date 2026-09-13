@@ -121,6 +121,7 @@ impl<'a> Loader<'a> {
     fn new(limits: VimLoadLimits, root: Option<PathBuf>) -> Self {
         Self {
             program: VimProgram {
+                retained_bytes: 0,
                 rules: Vec::new(),
                 links: BTreeMap::new(),
                 clusters: BTreeMap::new(),
@@ -185,6 +186,17 @@ impl<'a> Loader<'a> {
             }
         }
         if self.errors.is_empty() {
+            let strings = |values: &[String]| values.iter().map(|value| value.capacity() + 16).sum::<usize>()
+                + values.len() * std::mem::size_of::<String>();
+            self.program.retained_bytes = self.compiled_bytes
+                + self.program.rules.capacity() * std::mem::size_of::<Rule>()
+                + self.program.rules.iter().map(|rule| rule.group.capacity() + 16
+                    + strings(&rule.options.contains) + strings(&rule.options.containedin)
+                    + strings(&rule.options.nextgroup)
+                    + rule.options.matchgroup.as_ref().map_or(0, |name| name.capacity() + 16)).sum::<usize>()
+                + self.program.links.iter().map(|(name, target)| name.capacity() + target.capacity() + 96).sum::<usize>()
+                + self.program.clusters.iter().map(|(name, groups)| name.capacity() + strings(groups) + 96).sum::<usize>()
+                + strings(&self.program.source_files);
             Ok(Arc::new(self.program))
         } else {
             Err(self.errors)

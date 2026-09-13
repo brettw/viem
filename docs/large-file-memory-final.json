@@ -1,0 +1,1513 @@
+{
+  "fixture_revision": 1,
+  "source_revision": "2cb2172b0d76ac58d41e2a17fc4345fcb9364453",
+  "working_source_sha256": "a4174010f517fd8bb3afcb5d4783624c798fcb50139ed00662680bea0ac513a0",
+  "binary_sha256": "fc9424d1357b0dc60b4641b010249e5419ab82d0d965bb4033e05284b3eeaef3",
+  "probe_sha256": "938f2c7affd74f0fe50f239ae310d0bb419870206e2753a5a5c0a385886bd507",
+  "compiler": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "os": "macOS-26.6.2-arm64-arm-64bit",
+  "method": "fresh serial release subprocess per case; Rust global allocator requested sizes; macOS TASK_VM_INFO self sampling; no syntax providers or native UI",
+  "supplemental": false,
+  "results": [
+    {
+      "arguments": [
+        "plain",
+        "lines",
+        1048576,
+        "document"
+      ],
+      "exit_code": 0,
+      "samples": [
+        {
+          "encoding": "utf8",
+          "fixture_revision": 1,
+          "format": "plain",
+          "history_policy": "default",
+          "operation": "document",
+          "scope": "Rust requested heap and macOS self TASK_VM_INFO; mock shaping, no AppKit",
+          "shape": "lines",
+          "source_bytes": 1048576,
+          "syntax": "disabled",
+          "type_sizes": {
+            "Block": 32,
+            "BlockProperties": 104,
+            "CharacterProperties": 160,
+            "ProvenanceSpan": 32,
+            "StyleSpan": 200
+          }
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 0.169917,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 11,
+          "live_requested_heap_bytes": 1909,
+          "peak_requested_heap_bytes": 3435,
+          "phase": "baseline",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 1802576,
+            "peak_rss_bytes": 2588672,
+            "physical_footprint_bytes": 1769808,
+            "rss_bytes": 2588672
+          },
+          "total_allocations_and_reallocations": 36
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 0.8055840000000001,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 12,
+          "live_requested_heap_bytes": 1050485,
+          "peak_requested_heap_bytes": 1050485,
+          "phase": "source_ready",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 2834768,
+            "peak_rss_bytes": 3686400,
+            "physical_footprint_bytes": 2834768,
+            "rss_bytes": 3686400
+          },
+          "total_allocations_and_reallocations": 66
+        },
+        {
+          "can_undo": false,
+          "elapsed_ms": 13.879042,
+          "hard_lines": 8193,
+          "history_additional_bytes": 0,
+          "history_estimate_bytes": 3457689,
+          "history_live_state_bytes": 3457689,
+          "history_nodes": 1,
+          "live_allocations": 4588,
+          "live_requested_heap_bytes": 3283562,
+          "peak_requested_heap_bytes": 6814836,
+          "phase": "opened",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 10862976,
+            "peak_rss_bytes": 12828672,
+            "physical_footprint_bytes": 10862976,
+            "rss_bytes": 12828672
+          },
+          "total_allocations_and_reallocations": 6076
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 14.628459,
+          "hard_lines": 8193,
+          "history_additional_bytes": 23084,
+          "history_estimate_bytes": 3824895,
+          "history_live_state_bytes": 3801811,
+          "history_nodes": 2,
+          "live_allocations": 4733,
+          "live_requested_heap_bytes": 3539588,
+          "peak_requested_heap_bytes": 6814836,
+          "phase": "one_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 11043200,
+            "peak_rss_bytes": 13746176,
+            "physical_footprint_bytes": 11043200,
+            "rss_bytes": 13746176
+          },
+          "total_allocations_and_reallocations": 6769
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 14.749709,
+          "hard_lines": 8194,
+          "history_additional_bytes": 45916,
+          "history_estimate_bytes": 3849142,
+          "history_live_state_bytes": 3803226,
+          "history_nodes": 3,
+          "live_allocations": 4893,
+          "live_requested_heap_bytes": 3562478,
+          "peak_requested_heap_bytes": 6814836,
+          "phase": "newline_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 11141504,
+            "peak_rss_bytes": 13877248,
+            "physical_footprint_bytes": 11141504,
+            "rss_bytes": 13877248
+          },
+          "total_allocations_and_reallocations": 7466
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 14.938834,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 13,
+          "live_requested_heap_bytes": 1982,
+          "peak_requested_heap_bytes": 6814836,
+          "phase": "dropped",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 11141504,
+            "peak_rss_bytes": 13910016,
+            "physical_footprint_bytes": 11141504,
+            "rss_bytes": 13910016
+          },
+          "total_allocations_and_reallocations": 7496
+        }
+      ]
+    },
+    {
+      "arguments": [
+        "plain",
+        "lines",
+        4194304,
+        "document"
+      ],
+      "exit_code": 0,
+      "samples": [
+        {
+          "encoding": "utf8",
+          "fixture_revision": 1,
+          "format": "plain",
+          "history_policy": "default",
+          "operation": "document",
+          "scope": "Rust requested heap and macOS self TASK_VM_INFO; mock shaping, no AppKit",
+          "shape": "lines",
+          "source_bytes": 4194304,
+          "syntax": "disabled",
+          "type_sizes": {
+            "Block": 32,
+            "BlockProperties": 104,
+            "CharacterProperties": 160,
+            "ProvenanceSpan": 32,
+            "StyleSpan": 200
+          }
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 0.029709,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 11,
+          "live_requested_heap_bytes": 1909,
+          "peak_requested_heap_bytes": 3435,
+          "phase": "baseline",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 1802576,
+            "peak_rss_bytes": 2588672,
+            "physical_footprint_bytes": 1769808,
+            "rss_bytes": 2588672
+          },
+          "total_allocations_and_reallocations": 36
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 2.540792,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 12,
+          "live_requested_heap_bytes": 4196213,
+          "peak_requested_heap_bytes": 4196213,
+          "phase": "source_ready",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 6013288,
+            "peak_rss_bytes": 6848512,
+            "physical_footprint_bytes": 6013288,
+            "rss_bytes": 6848512
+          },
+          "total_allocations_and_reallocations": 66
+        },
+        {
+          "can_undo": false,
+          "elapsed_ms": 51.999167,
+          "hard_lines": 32769,
+          "history_additional_bytes": 0,
+          "history_estimate_bytes": 13695537,
+          "history_live_state_bytes": 13695537,
+          "history_nodes": 1,
+          "live_allocations": 17896,
+          "live_requested_heap_bytes": 13061354,
+          "peak_requested_heap_bytes": 27196020,
+          "phase": "opened",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 39436696,
+            "peak_rss_bytes": 41435136,
+            "physical_footprint_bytes": 39436696,
+            "rss_bytes": 41435136
+          },
+          "total_allocations_and_reallocations": 23270
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 52.2515,
+          "hard_lines": 32769,
+          "history_additional_bytes": 30446,
+          "history_estimate_bytes": 13718553,
+          "history_live_state_bytes": 13688107,
+          "history_nodes": 2,
+          "live_allocations": 18069,
+          "live_requested_heap_bytes": 13087140,
+          "peak_requested_heap_bytes": 27196020,
+          "phase": "one_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 39616920,
+            "peak_rss_bytes": 42369024,
+            "physical_footprint_bytes": 39616920,
+            "rss_bytes": 42369024
+          },
+          "total_allocations_and_reallocations": 24021
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 52.821833999999996,
+          "hard_lines": 32770,
+          "history_additional_bytes": 51808,
+          "history_estimate_bytes": 15127762,
+          "history_live_state_bytes": 15075954,
+          "history_nodes": 3,
+          "live_allocations": 18257,
+          "live_requested_heap_bytes": 14047150,
+          "peak_requested_heap_bytes": 27196020,
+          "phase": "newline_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 40518040,
+            "peak_rss_bytes": 43302912,
+            "physical_footprint_bytes": 40518040,
+            "rss_bytes": 43302912
+          },
+          "total_allocations_and_reallocations": 24782
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 53.52075,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 13,
+          "live_requested_heap_bytes": 1982,
+          "peak_requested_heap_bytes": 27196020,
+          "phase": "dropped",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 40518040,
+            "peak_rss_bytes": 43335680,
+            "physical_footprint_bytes": 40518040,
+            "rss_bytes": 43335680
+          },
+          "total_allocations_and_reallocations": 24812
+        }
+      ]
+    },
+    {
+      "arguments": [
+        "plain",
+        "lines",
+        16777216,
+        "document"
+      ],
+      "exit_code": 0,
+      "samples": [
+        {
+          "encoding": "utf8",
+          "fixture_revision": 1,
+          "format": "plain",
+          "history_policy": "default",
+          "operation": "document",
+          "scope": "Rust requested heap and macOS self TASK_VM_INFO; mock shaping, no AppKit",
+          "shape": "lines",
+          "source_bytes": 16777216,
+          "syntax": "disabled",
+          "type_sizes": {
+            "Block": 32,
+            "BlockProperties": 104,
+            "CharacterProperties": 160,
+            "ProvenanceSpan": 32,
+            "StyleSpan": 200
+          }
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 0.029625,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 11,
+          "live_requested_heap_bytes": 1910,
+          "peak_requested_heap_bytes": 3436,
+          "phase": "baseline",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 1802576,
+            "peak_rss_bytes": 2588672,
+            "physical_footprint_bytes": 1769808,
+            "rss_bytes": 2588672
+          },
+          "total_allocations_and_reallocations": 36
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 10.205499999999999,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 12,
+          "live_requested_heap_bytes": 16779126,
+          "peak_requested_heap_bytes": 16779126,
+          "phase": "source_ready",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 18596200,
+            "peak_rss_bytes": 19431424,
+            "physical_footprint_bytes": 18596200,
+            "rss_bytes": 19431424
+          },
+          "total_allocations_and_reallocations": 66
+        },
+        {
+          "can_undo": false,
+          "elapsed_ms": 210.645166,
+          "hard_lines": 131073,
+          "history_additional_bytes": 0,
+          "history_estimate_bytes": 54646929,
+          "history_live_state_bytes": 54646929,
+          "history_nodes": 1,
+          "live_allocations": 71128,
+          "live_requested_heap_bytes": 52172523,
+          "peak_requested_heap_bytes": 108720757,
+          "phase": "opened",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 157106704,
+            "peak_rss_bytes": 159023104,
+            "physical_footprint_bytes": 157106704,
+            "rss_bytes": 159023104
+          },
+          "total_allocations_and_reallocations": 92016
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 210.958041,
+          "hard_lines": 131073,
+          "history_additional_bytes": 37808,
+          "history_estimate_bytes": 54674427,
+          "history_live_state_bytes": 54636619,
+          "history_nodes": 2,
+          "live_allocations": 71329,
+          "live_requested_heap_bytes": 52203845,
+          "peak_requested_heap_bytes": 108720757,
+          "phase": "one_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 157270544,
+            "peak_rss_bytes": 159940608,
+            "physical_footprint_bytes": 157270544,
+            "rss_bytes": 159940608
+          },
+          "total_allocations_and_reallocations": 92827
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 211.138833,
+          "hard_lines": 131074,
+          "history_additional_bytes": 75556,
+          "history_estimate_bytes": 54702838,
+          "history_live_state_bytes": 54627282,
+          "history_nodes": 3,
+          "live_allocations": 71545,
+          "live_requested_heap_bytes": 52235503,
+          "peak_requested_heap_bytes": 108720757,
+          "phase": "newline_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 157418000,
+            "peak_rss_bytes": 160120832,
+            "physical_footprint_bytes": 157418000,
+            "rss_bytes": 160120832
+          },
+          "total_allocations_and_reallocations": 93648
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 217.001125,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 13,
+          "live_requested_heap_bytes": 1983,
+          "peak_requested_heap_bytes": 108720757,
+          "phase": "dropped",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 157418000,
+            "peak_rss_bytes": 160153600,
+            "physical_footprint_bytes": 10699184,
+            "rss_bytes": 75153408
+          },
+          "total_allocations_and_reallocations": 93678
+        }
+      ]
+    },
+    {
+      "arguments": [
+        "plain",
+        "short",
+        2000000,
+        "document"
+      ],
+      "exit_code": 0,
+      "samples": [
+        {
+          "encoding": "utf8",
+          "fixture_revision": 1,
+          "format": "plain",
+          "history_policy": "default",
+          "operation": "document",
+          "scope": "Rust requested heap and macOS self TASK_VM_INFO; mock shaping, no AppKit",
+          "shape": "short",
+          "source_bytes": 2000000,
+          "syntax": "disabled",
+          "type_sizes": {
+            "Block": 32,
+            "BlockProperties": 104,
+            "CharacterProperties": 160,
+            "ProvenanceSpan": 32,
+            "StyleSpan": 200
+          }
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 0.02875,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 11,
+          "live_requested_heap_bytes": 1909,
+          "peak_requested_heap_bytes": 3435,
+          "phase": "baseline",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 1802576,
+            "peak_rss_bytes": 2588672,
+            "physical_footprint_bytes": 1769808,
+            "rss_bytes": 2588672
+          },
+          "total_allocations_and_reallocations": 36
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 0.5337080000000001,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 12,
+          "live_requested_heap_bytes": 2001909,
+          "peak_requested_heap_bytes": 2001909,
+          "phase": "source_ready",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 3801424,
+            "peak_rss_bytes": 4653056,
+            "physical_footprint_bytes": 3801424,
+            "rss_bytes": 4653056
+          },
+          "total_allocations_and_reallocations": 66
+        },
+        {
+          "can_undo": false,
+          "elapsed_ms": 192.806916,
+          "hard_lines": 1000001,
+          "history_additional_bytes": 0,
+          "history_estimate_bytes": 147161818,
+          "history_live_state_bytes": 147161818,
+          "history_nodes": 1,
+          "live_allocations": 331627,
+          "live_requested_heap_bytes": 129442858,
+          "peak_requested_heap_bytes": 190666044,
+          "phase": "opened",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 277627480,
+            "peak_rss_bytes": 279232512,
+            "physical_footprint_bytes": 169132608,
+            "rss_bytes": 229081088
+          },
+          "total_allocations_and_reallocations": 488120
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 193.164166,
+          "hard_lines": 1000001,
+          "history_additional_bytes": 28775,
+          "history_estimate_bytes": 147188539,
+          "history_live_state_bytes": 147159764,
+          "history_nodes": 2,
+          "live_allocations": 331814,
+          "live_requested_heap_bytes": 129469452,
+          "peak_requested_heap_bytes": 190666044,
+          "phase": "one_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 277627480,
+            "peak_rss_bytes": 279232512,
+            "physical_footprint_bytes": 169280064,
+            "rss_bytes": 229982208
+          },
+          "total_allocations_and_reallocations": 488902
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 193.30704100000003,
+          "hard_lines": 1000002,
+          "history_additional_bytes": 57970,
+          "history_estimate_bytes": 147215693,
+          "history_live_state_bytes": 147157723,
+          "history_nodes": 3,
+          "live_allocations": 332016,
+          "live_requested_heap_bytes": 129496382,
+          "peak_requested_heap_bytes": 190666044,
+          "phase": "newline_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 277627480,
+            "peak_rss_bytes": 279232512,
+            "physical_footprint_bytes": 169411136,
+            "rss_bytes": 230146048
+          },
+          "total_allocations_and_reallocations": 489686
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 217.201416,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 13,
+          "live_requested_heap_bytes": 1982,
+          "peak_requested_heap_bytes": 190666044,
+          "phase": "dropped",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 277627480,
+            "peak_rss_bytes": 279232512,
+            "physical_footprint_bytes": 68108816,
+            "rss_bytes": 186941440
+          },
+          "total_allocations_and_reallocations": 489716
+        }
+      ]
+    },
+    {
+      "arguments": [
+        "plain",
+        "long",
+        1048576,
+        "document"
+      ],
+      "exit_code": 0,
+      "samples": [
+        {
+          "encoding": "utf8",
+          "fixture_revision": 1,
+          "format": "plain",
+          "history_policy": "default",
+          "operation": "document",
+          "scope": "Rust requested heap and macOS self TASK_VM_INFO; mock shaping, no AppKit",
+          "shape": "long",
+          "source_bytes": 1048576,
+          "syntax": "disabled",
+          "type_sizes": {
+            "Block": 32,
+            "BlockProperties": 104,
+            "CharacterProperties": 160,
+            "ProvenanceSpan": 32,
+            "StyleSpan": 200
+          }
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 0.024333,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 11,
+          "live_requested_heap_bytes": 1908,
+          "peak_requested_heap_bytes": 3433,
+          "phase": "baseline",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 1802576,
+            "peak_rss_bytes": 2588672,
+            "physical_footprint_bytes": 1769808,
+            "rss_bytes": 2588672
+          },
+          "total_allocations_and_reallocations": 36
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 0.11458299999999999,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 12,
+          "live_requested_heap_bytes": 1050484,
+          "peak_requested_heap_bytes": 1050484,
+          "phase": "source_ready",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 2834768,
+            "peak_rss_bytes": 3686400,
+            "physical_footprint_bytes": 2834768,
+            "rss_bytes": 3686400
+          },
+          "total_allocations_and_reallocations": 66
+        },
+        {
+          "can_undo": false,
+          "elapsed_ms": 10.982917,
+          "hard_lines": 1,
+          "history_additional_bytes": 0,
+          "history_estimate_bytes": 2476569,
+          "history_live_state_bytes": 2476569,
+          "history_nodes": 1,
+          "live_allocations": 1900,
+          "live_requested_heap_bytes": 2386537,
+          "peak_requested_heap_bytes": 5376147,
+          "phase": "opened",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 8700288,
+            "peak_rss_bytes": 10665984,
+            "physical_footprint_bytes": 8700288,
+            "rss_bytes": 10665984
+          },
+          "total_allocations_and_reallocations": 2094
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 12.740958000000001,
+          "hard_lines": 1,
+          "history_additional_bytes": 14225,
+          "history_estimate_bytes": 2490804,
+          "history_live_state_bytes": 2476579,
+          "history_nodes": 2,
+          "live_allocations": 2002,
+          "live_requested_heap_bytes": 2400683,
+          "peak_requested_heap_bytes": 5376147,
+          "phase": "one_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 9945472,
+            "peak_rss_bytes": 12648448,
+            "physical_footprint_bytes": 9945472,
+            "rss_bytes": 12648448
+          },
+          "total_allocations_and_reallocations": 2667
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 14.224374999999998,
+          "hard_lines": 2,
+          "history_additional_bytes": 31028,
+          "history_estimate_bytes": 2506493,
+          "history_live_state_bytes": 2475465,
+          "history_nodes": 3,
+          "live_allocations": 2105,
+          "live_requested_heap_bytes": 2416333,
+          "peak_requested_heap_bytes": 5376147,
+          "phase": "newline_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 10109312,
+            "peak_rss_bytes": 12828672,
+            "physical_footprint_bytes": 10109312,
+            "rss_bytes": 12828672
+          },
+          "total_allocations_and_reallocations": 3269
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 14.301542000000001,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 13,
+          "live_requested_heap_bytes": 1981,
+          "peak_requested_heap_bytes": 5376147,
+          "phase": "dropped",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 10109312,
+            "peak_rss_bytes": 12877824,
+            "physical_footprint_bytes": 10109312,
+            "rss_bytes": 12877824
+          },
+          "total_allocations_and_reallocations": 3299
+        }
+      ]
+    },
+    {
+      "arguments": [
+        "plain",
+        "lines",
+        4194304,
+        "views"
+      ],
+      "exit_code": 0,
+      "samples": [
+        {
+          "encoding": "utf8",
+          "fixture_revision": 1,
+          "format": "plain",
+          "history_policy": "default",
+          "operation": "views",
+          "scope": "Rust requested heap and macOS self TASK_VM_INFO; mock shaping, no AppKit",
+          "shape": "lines",
+          "source_bytes": 4194304,
+          "syntax": "disabled",
+          "type_sizes": {
+            "Block": 32,
+            "BlockProperties": 104,
+            "CharacterProperties": 160,
+            "ProvenanceSpan": 32,
+            "StyleSpan": 200
+          }
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 0.027208,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 11,
+          "live_requested_heap_bytes": 1906,
+          "peak_requested_heap_bytes": 3429,
+          "phase": "baseline",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 1802576,
+            "peak_rss_bytes": 2588672,
+            "physical_footprint_bytes": 1769808,
+            "rss_bytes": 2588672
+          },
+          "total_allocations_and_reallocations": 36
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 2.5324169999999997,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 12,
+          "live_requested_heap_bytes": 4196210,
+          "peak_requested_heap_bytes": 4196210,
+          "phase": "source_ready",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 6013288,
+            "peak_rss_bytes": 6848512,
+            "physical_footprint_bytes": 6013288,
+            "rss_bytes": 6848512
+          },
+          "total_allocations_and_reallocations": 66
+        },
+        {
+          "can_undo": false,
+          "elapsed_ms": 51.396208,
+          "hard_lines": 32769,
+          "history_additional_bytes": 0,
+          "history_estimate_bytes": 13695537,
+          "history_live_state_bytes": 13695537,
+          "history_nodes": 1,
+          "live_allocations": 17896,
+          "live_requested_heap_bytes": 13061351,
+          "peak_requested_heap_bytes": 27196017,
+          "phase": "opened",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 40878488,
+            "peak_rss_bytes": 42876928,
+            "physical_footprint_bytes": 40878488,
+            "rss_bytes": 42876928
+          },
+          "total_allocations_and_reallocations": 23270
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 51.653166999999996,
+          "hard_lines": 32769,
+          "history_additional_bytes": 30926,
+          "history_estimate_bytes": 13718073,
+          "history_live_state_bytes": 13687147,
+          "history_nodes": 2,
+          "live_allocations": 18069,
+          "live_requested_heap_bytes": 13087137,
+          "peak_requested_heap_bytes": 27196017,
+          "phase": "one_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 41075096,
+            "peak_rss_bytes": 43827200,
+            "physical_footprint_bytes": 41075096,
+            "rss_bytes": 43827200
+          },
+          "total_allocations_and_reallocations": 24021
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 52.203041999999996,
+          "hard_lines": 32770,
+          "history_additional_bytes": 52096,
+          "history_estimate_bytes": 15127474,
+          "history_live_state_bytes": 15075378,
+          "history_nodes": 3,
+          "live_allocations": 18257,
+          "live_requested_heap_bytes": 14047147,
+          "peak_requested_heap_bytes": 27196017,
+          "phase": "newline_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 42140056,
+            "peak_rss_bytes": 44924928,
+            "physical_footprint_bytes": 42140056,
+            "rss_bytes": 44924928
+          },
+          "total_allocations_and_reallocations": 24782
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 58.724417,
+          "hard_lines": 32770,
+          "history_additional_bytes": 52096,
+          "history_estimate_bytes": 15127474,
+          "history_live_state_bytes": 15075378,
+          "history_nodes": 3,
+          "live_allocations": 29716,
+          "live_requested_heap_bytes": 21942175,
+          "peak_requested_heap_bytes": 27196017,
+          "phase": "first_view",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 55247256,
+            "peak_rss_bytes": 59047936,
+            "physical_footprint_bytes": 55247256,
+            "rss_bytes": 59047936
+          },
+          "total_allocations_and_reallocations": 73625
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 64.26870799999999,
+          "hard_lines": 32770,
+          "history_additional_bytes": 52096,
+          "history_estimate_bytes": 15127474,
+          "history_live_state_bytes": 15075378,
+          "history_nodes": 3,
+          "live_allocations": 40855,
+          "live_requested_heap_bytes": 28662461,
+          "peak_requested_heap_bytes": 31675727,
+          "phase": "second_view",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 64831920,
+            "peak_rss_bytes": 68616192,
+            "physical_footprint_bytes": 64831920,
+            "rss_bytes": 68616192
+          },
+          "total_allocations_and_reallocations": 122439
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 141.60245799999998,
+          "hard_lines": 32770,
+          "history_additional_bytes": 52096,
+          "history_estimate_bytes": 15127474,
+          "history_live_state_bytes": 15075378,
+          "history_nodes": 3,
+          "live_allocations": 40320,
+          "live_requested_heap_bytes": 31242085,
+          "peak_requested_heap_bytes": 37355544,
+          "phase": "scroll_and_wrap_toggles",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 88490416,
+            "peak_rss_bytes": 92618752,
+            "physical_footprint_bytes": 88490416,
+            "rss_bytes": 92618752
+          },
+          "total_allocations_and_reallocations": 998103
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 143.157792,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 622,
+          "live_requested_heap_bytes": 76481,
+          "peak_requested_heap_bytes": 37355544,
+          "phase": "dropped",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 88490416,
+            "peak_rss_bytes": 92618752,
+            "physical_footprint_bytes": 88490416,
+            "rss_bytes": 92618752
+          },
+          "total_allocations_and_reallocations": 998133
+        }
+      ]
+    },
+    {
+      "arguments": [
+        "code",
+        "lines",
+        4194304,
+        "views"
+      ],
+      "exit_code": 0,
+      "samples": [
+        {
+          "encoding": "utf8",
+          "fixture_revision": 1,
+          "format": "code",
+          "history_policy": "default",
+          "operation": "views",
+          "scope": "Rust requested heap and macOS self TASK_VM_INFO; mock shaping, no AppKit",
+          "shape": "lines",
+          "source_bytes": 4194304,
+          "syntax": "disabled",
+          "type_sizes": {
+            "Block": 32,
+            "BlockProperties": 104,
+            "CharacterProperties": 160,
+            "ProvenanceSpan": 32,
+            "StyleSpan": 200
+          }
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 0.027459,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 11,
+          "live_requested_heap_bytes": 1905,
+          "peak_requested_heap_bytes": 3427,
+          "phase": "baseline",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 1802576,
+            "peak_rss_bytes": 2588672,
+            "physical_footprint_bytes": 1769808,
+            "rss_bytes": 2588672
+          },
+          "total_allocations_and_reallocations": 36
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 2.502084,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 12,
+          "live_requested_heap_bytes": 4196209,
+          "peak_requested_heap_bytes": 4196209,
+          "phase": "source_ready",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 6013288,
+            "peak_rss_bytes": 6848512,
+            "physical_footprint_bytes": 6013288,
+            "rss_bytes": 6848512
+          },
+          "total_allocations_and_reallocations": 66
+        },
+        {
+          "can_undo": false,
+          "elapsed_ms": 52.048625,
+          "hard_lines": 32769,
+          "history_additional_bytes": 0,
+          "history_estimate_bytes": 13791073,
+          "history_live_state_bytes": 13791073,
+          "history_nodes": 1,
+          "live_allocations": 18305,
+          "live_requested_heap_bytes": 13107766,
+          "peak_requested_heap_bytes": 27196016,
+          "phase": "opened",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 41664920,
+            "peak_rss_bytes": 43941888,
+            "physical_footprint_bytes": 41664920,
+            "rss_bytes": 43941888
+          },
+          "total_allocations_and_reallocations": 24064
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 52.296667,
+          "hard_lines": 32769,
+          "history_additional_bytes": 30926,
+          "history_estimate_bytes": 13813609,
+          "history_live_state_bytes": 13782683,
+          "history_nodes": 2,
+          "live_allocations": 18478,
+          "live_requested_heap_bytes": 13133552,
+          "peak_requested_heap_bytes": 27196016,
+          "phase": "one_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 41812376,
+            "peak_rss_bytes": 44761088,
+            "physical_footprint_bytes": 41812376,
+            "rss_bytes": 44761088
+          },
+          "total_allocations_and_reallocations": 24832
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 52.823042,
+          "hard_lines": 32770,
+          "history_additional_bytes": 52384,
+          "history_estimate_bytes": 15222722,
+          "history_live_state_bytes": 15170338,
+          "history_nodes": 3,
+          "live_allocations": 18666,
+          "live_requested_heap_bytes": 14093562,
+          "peak_requested_heap_bytes": 27196016,
+          "phase": "newline_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 43073944,
+            "peak_rss_bytes": 46055424,
+            "physical_footprint_bytes": 43073944,
+            "rss_bytes": 46055424
+          },
+          "total_allocations_and_reallocations": 25610
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 58.916792,
+          "hard_lines": 32770,
+          "history_additional_bytes": 52384,
+          "history_estimate_bytes": 15222722,
+          "history_live_state_bytes": 15170338,
+          "history_nodes": 3,
+          "live_allocations": 29629,
+          "live_requested_heap_bytes": 20884649,
+          "peak_requested_heap_bytes": 27196016,
+          "phase": "first_view",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 56050072,
+            "peak_rss_bytes": 60080128,
+            "physical_footprint_bytes": 56050072,
+            "rss_bytes": 60080128
+          },
+          "total_allocations_and_reallocations": 73992
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 64.765417,
+          "hard_lines": 32770,
+          "history_additional_bytes": 52384,
+          "history_estimate_bytes": 15222722,
+          "history_live_state_bytes": 15170338,
+          "history_nodes": 3,
+          "live_allocations": 40301,
+          "live_requested_heap_bytes": 26321078,
+          "peak_requested_heap_bytes": 29334578,
+          "phase": "second_view",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 65847728,
+            "peak_rss_bytes": 69877760,
+            "physical_footprint_bytes": 65847728,
+            "rss_bytes": 69877760
+          },
+          "total_allocations_and_reallocations": 123043
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 145.069375,
+          "hard_lines": 32770,
+          "history_additional_bytes": 52384,
+          "history_estimate_bytes": 15222722,
+          "history_live_state_bytes": 15170338,
+          "history_nodes": 3,
+          "live_allocations": 40235,
+          "live_requested_heap_bytes": 31234081,
+          "peak_requested_heap_bytes": 37348412,
+          "phase": "scroll_and_wrap_toggles",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 89964976,
+            "peak_rss_bytes": 94289920,
+            "physical_footprint_bytes": 89964976,
+            "rss_bytes": 94289920
+          },
+          "total_allocations_and_reallocations": 1006097
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 146.611292,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 636,
+          "live_requested_heap_bytes": 77190,
+          "peak_requested_heap_bytes": 37348412,
+          "phase": "dropped",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 89964976,
+            "peak_rss_bytes": 94289920,
+            "physical_footprint_bytes": 89964976,
+            "rss_bytes": 94289920
+          },
+          "total_allocations_and_reallocations": 1006128
+        }
+      ]
+    },
+    {
+      "arguments": [
+        "plain",
+        "lines",
+        4194304,
+        "flat"
+      ],
+      "exit_code": 0,
+      "samples": [
+        {
+          "encoding": "utf8",
+          "fixture_revision": 1,
+          "format": "plain",
+          "history_policy": "default",
+          "operation": "flat",
+          "scope": "Rust requested heap and macOS self TASK_VM_INFO; mock shaping, no AppKit",
+          "shape": "lines",
+          "source_bytes": 4194304,
+          "syntax": "disabled",
+          "type_sizes": {
+            "Block": 32,
+            "BlockProperties": 104,
+            "CharacterProperties": 160,
+            "ProvenanceSpan": 32,
+            "StyleSpan": 200
+          }
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 0.032958,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 11,
+          "live_requested_heap_bytes": 1905,
+          "peak_requested_heap_bytes": 3427,
+          "phase": "baseline",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 1802576,
+            "peak_rss_bytes": 2588672,
+            "physical_footprint_bytes": 1769808,
+            "rss_bytes": 2588672
+          },
+          "total_allocations_and_reallocations": 36
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 2.540292,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 12,
+          "live_requested_heap_bytes": 4196209,
+          "peak_requested_heap_bytes": 4196209,
+          "phase": "source_ready",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 6013288,
+            "peak_rss_bytes": 6848512,
+            "physical_footprint_bytes": 6013288,
+            "rss_bytes": 6848512
+          },
+          "total_allocations_and_reallocations": 66
+        },
+        {
+          "can_undo": false,
+          "elapsed_ms": 53.15620800000001,
+          "hard_lines": 32769,
+          "history_additional_bytes": 0,
+          "history_estimate_bytes": 13695537,
+          "history_live_state_bytes": 13695537,
+          "history_nodes": 1,
+          "live_allocations": 17896,
+          "live_requested_heap_bytes": 13061350,
+          "peak_requested_heap_bytes": 27196016,
+          "phase": "opened",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 41533848,
+            "peak_rss_bytes": 43532288,
+            "physical_footprint_bytes": 41533848,
+            "rss_bytes": 43532288
+          },
+          "total_allocations_and_reallocations": 23270
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 53.425667000000004,
+          "hard_lines": 32769,
+          "history_additional_bytes": 30830,
+          "history_estimate_bytes": 13718169,
+          "history_live_state_bytes": 13687339,
+          "history_nodes": 2,
+          "live_allocations": 18069,
+          "live_requested_heap_bytes": 13087136,
+          "peak_requested_heap_bytes": 27196016,
+          "phase": "one_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 41746840,
+            "peak_rss_bytes": 44498944,
+            "physical_footprint_bytes": 41746840,
+            "rss_bytes": 44498944
+          },
+          "total_allocations_and_reallocations": 24021
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 54.072375,
+          "hard_lines": 32769,
+          "history_additional_bytes": 30830,
+          "history_estimate_bytes": 13718169,
+          "history_live_state_bytes": 13687339,
+          "history_nodes": 2,
+          "live_allocations": 18070,
+          "live_requested_heap_bytes": 17281464,
+          "peak_requested_heap_bytes": 27196016,
+          "phase": "flat_text_read",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 45973912,
+            "peak_rss_bytes": 48726016,
+            "physical_footprint_bytes": 45973912,
+            "rss_bytes": 48726016
+          },
+          "total_allocations_and_reallocations": 24053
+        },
+        {
+          "can_undo": true,
+          "elapsed_ms": 54.597333,
+          "hard_lines": 32770,
+          "history_additional_bytes": 4246337,
+          "history_estimate_bytes": 19321907,
+          "history_live_state_bytes": 15075570,
+          "history_nodes": 3,
+          "live_allocations": 18258,
+          "live_requested_heap_bytes": 18241474,
+          "peak_requested_heap_bytes": 27196016,
+          "phase": "newline_edit_default_history",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 46678424,
+            "peak_rss_bytes": 49463296,
+            "physical_footprint_bytes": 46678424,
+            "rss_bytes": 49463296
+          },
+          "total_allocations_and_reallocations": 24814
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 55.313500000000005,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 13,
+          "live_requested_heap_bytes": 1978,
+          "peak_requested_heap_bytes": 27196016,
+          "phase": "dropped",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 46678424,
+            "peak_rss_bytes": 49496064,
+            "physical_footprint_bytes": 46678424,
+            "rss_bytes": 49496064
+          },
+          "total_allocations_and_reallocations": 24844
+        }
+      ]
+    },
+    {
+      "arguments": [
+        "plain",
+        "lines",
+        104857600,
+        "open"
+      ],
+      "exit_code": 0,
+      "samples": [
+        {
+          "encoding": "utf8",
+          "fixture_revision": 1,
+          "format": "plain",
+          "history_policy": "default",
+          "operation": "open",
+          "scope": "Rust requested heap and macOS self TASK_VM_INFO; mock shaping, no AppKit",
+          "shape": "lines",
+          "source_bytes": 104857600,
+          "syntax": "disabled",
+          "type_sizes": {
+            "Block": 32,
+            "BlockProperties": 104,
+            "CharacterProperties": 160,
+            "ProvenanceSpan": 32,
+            "StyleSpan": 200
+          }
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 0.028875,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 11,
+          "live_requested_heap_bytes": 1907,
+          "peak_requested_heap_bytes": 3429,
+          "phase": "baseline",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 1802576,
+            "peak_rss_bytes": 2588672,
+            "physical_footprint_bytes": 1769808,
+            "rss_bytes": 2588672
+          },
+          "total_allocations_and_reallocations": 36
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 64.18729200000001,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 12,
+          "live_requested_heap_bytes": 104859507,
+          "peak_requested_heap_bytes": 104859507,
+          "phase": "source_ready",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 106725808,
+            "peak_rss_bytes": 107511808,
+            "physical_footprint_bytes": 106725808,
+            "rss_bytes": 107511808
+          },
+          "total_allocations_and_reallocations": 66
+        },
+        {
+          "can_undo": false,
+          "elapsed_ms": 1341.324,
+          "hard_lines": 819201,
+          "history_additional_bytes": 0,
+          "history_estimate_bytes": 350940465,
+          "history_live_state_bytes": 350940465,
+          "history_nodes": 1,
+          "live_allocations": 443752,
+          "live_requested_heap_bytes": 332487912,
+          "peak_requested_heap_bytes": 688855666,
+          "phase": "opened",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 911262776,
+            "peak_rss_bytes": 912539648,
+            "physical_footprint_bytes": 548324168,
+            "rss_bytes": 571408384
+          },
+          "total_allocations_and_reallocations": 573182
+        },
+        {
+          "can_undo": null,
+          "elapsed_ms": 1372.905542,
+          "hard_lines": null,
+          "history_additional_bytes": null,
+          "history_estimate_bytes": null,
+          "history_live_state_bytes": null,
+          "history_nodes": null,
+          "live_allocations": 13,
+          "live_requested_heap_bytes": 1980,
+          "peak_requested_heap_bytes": 688855666,
+          "phase": "dropped",
+          "process": {
+            "compressed_bytes": 0,
+            "peak_physical_footprint_bytes": 911262776,
+            "peak_rss_bytes": 912539648,
+            "physical_footprint_bytes": 83657400,
+            "rss_bytes": 455475200
+          },
+          "total_allocations_and_reallocations": 573211
+        }
+      ]
+    }
+  ]
+}

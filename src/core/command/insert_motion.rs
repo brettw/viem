@@ -7,12 +7,57 @@
 use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
+use crate::document::HardLineSnapshot;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InsertMotionError {
     OutOfBounds { offset: usize, length: usize },
     NotGraphemeBoundary(usize),
     InvertedSessionFloor { floor: usize, caret: usize },
+}
+
+fn validate_snapshot_boundary(snapshot: &HardLineSnapshot, offset: usize) -> Result<(), InsertMotionError> {
+    if offset > snapshot.text_length() {
+        return Err(InsertMotionError::OutOfBounds { offset, length: snapshot.text_length() });
+    }
+    if !snapshot.is_grapheme_boundary(offset) { return Err(InsertMotionError::NotGraphemeBoundary(offset)); }
+    Ok(())
+}
+
+/// Inspect only the preceding whitespace/word through bounded UTF-8 chunks.
+/// A single unusually large grapheme may require a larger local chunk.
+pub(super) fn ctrl_w_delete_range_snapshot(
+    snapshot: &HardLineSnapshot, line: Range<usize>, caret: usize,
+) -> Result<Range<usize>, InsertMotionError> {
+    validate_snapshot_boundary(snapshot, caret)?;
+    let mut at = caret;
+    let mut word_class = None;
+    while at > line.start {
+        let mut start = at.saturating_sub(4096).max(line.start);
+        while start > line.start && snapshot.byte_chunk_at(start).first().is_some_and(|byte| byte & 0xc0 == 0x80) {
+            start -= 1;
+        }
+        if !snapshot.is_grapheme_boundary(start) {
+            start = snapshot.previous_grapheme_boundary(start).unwrap_or(line.start).max(line.start);
+        }
+        let text = snapshot.slice_utf8(start..at).map_err(|_| InsertMotionError::NotGraphemeBoundary(start))?;
+        for (relative, grapheme) in text.grapheme_indices(true).rev() {
+            let class = classify_grapheme(grapheme);
+            if word_class.is_some_and(|word| word != class) { return Ok(at..caret); }
+            if class != GraphemeClass::Space { word_class = Some(class); }
+            at = start + relative;
+        }
+    }
+    Ok(at..caret)
+}
+
+pub(super) fn ctrl_u_delete_range_since_snapshot(
+    snapshot: &HardLineSnapshot, line: Range<usize>, caret: usize, session_floor: usize,
+) -> Result<Range<usize>, InsertMotionError> {
+    validate_snapshot_boundary(snapshot, caret)?;
+    validate_snapshot_boundary(snapshot, session_floor)?;
+    if session_floor > caret { return Err(InsertMotionError::InvertedSessionFloor { floor: session_floor, caret }); }
+    Ok(line.start.max(session_floor)..caret)
 }
 
 /// Vim Insert-mode `Ctrl-W`: delete intervening whitespace and one preceding
@@ -205,14 +250,7 @@ fn classified_graphemes(text: &str, range: Range<usize>) -> Vec<ClassifiedGraphe
         .grapheme_indices(true)
         .map(|(relative, grapheme)| {
             let start = range.start + relative;
-            let first = grapheme.chars().next().expect("nonempty grapheme");
-            let class = if grapheme.chars().all(char::is_whitespace) {
-                GraphemeClass::Space
-            } else if first.is_alphanumeric() || first == '_' {
-                GraphemeClass::Keyword
-            } else {
-                GraphemeClass::Punctuation
-            };
+            let class = classify_grapheme(grapheme);
             ClassifiedGrapheme {
                 range: start..start + grapheme.len(),
                 class,
@@ -221,10 +259,34 @@ fn classified_graphemes(text: &str, range: Range<usize>) -> Vec<ClassifiedGraphe
         .collect()
 }
 
+fn classify_grapheme(grapheme: &str) -> GraphemeClass {
+    let first = grapheme.chars().next().expect("nonempty grapheme");
+    if grapheme.chars().all(char::is_whitespace) { GraphemeClass::Space }
+    else if first.is_alphanumeric() || first == '_' { GraphemeClass::Keyword }
+    else { GraphemeClass::Punctuation }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::document::{Document, Encoding, FileFormat, Format};
+
+    #[test]
+    fn snapshot_delete_motions_match_unicode_oracle_across_chunk_boundaries() {
+        for text in ["one e\u{301} 🇺🇸👩🏽‍💻 !!  ".repeat(300),
+            format!("{}{}{}", "a".repeat(9000), " ".repeat(5000), "β_ζ".repeat(3000))] {
+            let document = Document::new(&text);
+            let snapshot = document.hard_line_snapshot();
+            for caret in text.grapheme_indices(true).map(|(at, _)| at)
+                .step_by(97).chain(std::iter::once(text.len())) {
+                assert_eq!(super::ctrl_w_delete_range_snapshot(&snapshot, 0..text.len(), caret),
+                    super::ctrl_w_delete_range(&text, 0..text.len(), caret));
+                assert_eq!(super::ctrl_u_delete_range_since_snapshot(&snapshot, 0..text.len(), caret, 0),
+                    super::ctrl_u_delete_range_since(&text, 0..text.len(), caret, 0));
+            }
+            assert!(!document.projection().compatibility_text_is_materialized());
+        }
+    }
 
     fn hard_line(text: &str, caret: usize) -> Range<usize> {
         let document = Document::new(text);

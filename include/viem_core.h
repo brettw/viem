@@ -8,9 +8,9 @@ extern "C" {
 #endif
 
 #define VIEM_CORE_ABI_VERSION 5u
-#define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2 2u
+#define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3 3u
 #define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION \
-  VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2
+  VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3
 
 typedef uint64_t ViemCoreHandle;
 /* Owned immutable command-turn effects; zero means no effects. */
@@ -570,11 +570,11 @@ typedef struct ViemShapeStyleRunV1 {
 
 /*
  * Provider-owned opaque render resource. identifier is an integer token, not
- * a native pointer for core to dereference. The provider keeps the token valid
- * for owner/threading while metrics_generation remains current and the owning
- * view remains attached. It may retire the token when that generation becomes
- * stale or when the view is removed/core is destroyed. The ABI has no
- * retain/release transfer; a caller must not retain a stale or detached token.
+ * a native pointer for core to dereference. Response arenas pin resources until
+ * the next shape call. Core retains an independent fragment lease shared by
+ * caches and snapshots. Tokens remain usable while leased and their generation
+ * is current. Borrowed frontend exports remain tied to their exact layout.
+ * Lease release remains valid after metrics invalidation or view removal.
  */
 typedef struct ViemRenderRunHandleV1 {
   uint64_t owner;
@@ -672,11 +672,21 @@ typedef struct ViemShapeResponseV1 {
 
 /*
  * A response echoes the request's text_start..text_end ownership interior.
- * Under provider ABI v2, returned cluster ends may extend into context_after;
+ * Under provider ABI v3, returned cluster ends may extend into context_after;
  * response bounds do not expand to include those cluster tails.
  */
 
 #define VIEM_SHAPE_RESPONSE_V1_SIZE ((uint32_t)sizeof(ViemShapeResponseV1))
+
+/* One retained fragment lease. Resources stay valid until release, or a
+ * metrics-generation change. Response resources are pinned until the next
+ * shape_batch call. retain does not invalidate response storage. Release may
+ * run on any thread and after view detach: marshal native destruction onto
+ * the required executor, and do not call back into core. Both callbacks are
+ * required when has_render_run_policy is true. NULL from retain is failure. */
+typedef void *(*ViemRetainRenderRunsCallback)(
+    void *context, const ViemRenderRunHandleV1 *handles, uint64_t count);
+typedef void (*ViemReleaseRenderRunsCallback)(void *lease);
 
 typedef uint64_t (*ViemMetricsGenerationCallback)(void *context);
 typedef uint32_t (*ViemShapeBatchCallback)(
@@ -689,11 +699,12 @@ typedef uint32_t (*ViemShapeBatchCallback)(
  * valid until the view is removed or its core is
  * successfully destroyed. VIEM_STATUS_CORE_BUSY means destruction did not
  * occur and does not end these lifetimes. Every response pointer returned by
- * shape_batch must remain readable until the next provider callback for that
- * view; core copies all values immediately. Opaque render-run tokens instead
- * follow the generation/view lifetime documented on ViemRenderRunHandleV1.
+ * shape_batch must remain readable until the next shape_batch call for that
+ * view; core copies all values immediately. Retaining a fragment lease does
+ * not invalidate response storage. Opaque render-run tokens follow the lease
+ * and generation lifetime documented on ViemRenderRunHandleV1.
  *
- * A successful ABI-v2 response affirms that its ownership interior is stable
+ * A successful ABI-v3 response affirms that its ownership interior is stable
  * under arbitrary text outside the supplied bounded context. A provider that
  * cannot make that guarantee returns VIEM_STATUS_UNSTABLE_SHAPING_CONTEXT from
  * shape_batch instead of returning partial or uncacheable measurements. Core
@@ -711,6 +722,8 @@ typedef struct ViemTextMeasurementProviderV1 {
   uint32_t reserved;
   ViemMetricsGenerationCallback metrics_generation;
   ViemShapeBatchCallback shape_batch;
+  ViemRetainRenderRunsCallback retain_render_runs;
+  ViemReleaseRenderRunsCallback release_render_runs;
 } ViemTextMeasurementProviderV1;
 
 #define VIEM_TEXT_MEASUREMENT_PROVIDER_V1_SIZE \

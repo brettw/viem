@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 
 /// Target maximum size of a formatted-text leaf.
@@ -19,6 +19,8 @@ use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 /// split, and a single scalar is at most four bytes, so initial construction
 /// can always honor this bound.
 pub const FORMATTED_TEXT_LEAF_BYTES: usize = 4 * 1024;
+/// Separate backing chunks cap storage pinned by a surviving sliced leaf.
+const FORMATTED_TEXT_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FormattedTextDiffStats {
@@ -223,7 +225,33 @@ pub struct FormattedTextTree {
     root: Option<Arc<Node>>,
 }
 
+/// Disposable cache identity that keeps no text or child nodes alive. The weak
+/// control block prevents address reuse until the identity itself is dropped.
+#[derive(Clone, Debug)]
+pub(crate) struct FormattedTextSnapshotIdentity(Option<Weak<Node>>);
+
+impl PartialEq for FormattedTextSnapshotIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(left), Some(right)) => Weak::ptr_eq(left, right),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for FormattedTextSnapshotIdentity {}
+
+impl FormattedTextSnapshotIdentity {
+    pub(crate) fn retained_identity_bytes(&self) -> usize {
+        self.0.as_ref().map_or(0, |_| std::mem::size_of::<Node>() + 2 * std::mem::size_of::<usize>())
+    }
+}
+
 impl FormattedTextTree {
+    pub(crate) fn snapshot_identity(&self) -> FormattedTextSnapshotIdentity {
+        FormattedTextSnapshotIdentity(self.root.as_ref().map(Arc::downgrade))
+    }
     pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
         fn visit(node: &Arc<Node>, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
             visitor.arc(node, |visitor| match node.as_ref() {
@@ -296,27 +324,27 @@ impl FormattedTextTree {
             return Ok(Self::new());
         }
 
-        let buffer_id = next_buffer_id()?;
-        let mut leaves = Vec::with_capacity(
-            text.len()
-                .checked_add(FORMATTED_TEXT_LEAF_BYTES - 1)
-                .ok_or(FormattedTextError::ArithmeticOverflow)?
-                / FORMATTED_TEXT_LEAF_BYTES,
-        );
-        let mut start = 0;
-        while start < text.len() {
-            let mut end = start
-                .checked_add(FORMATTED_TEXT_LEAF_BYTES)
-                .unwrap_or(text.len())
-                .min(text.len());
-            while end > start && !text.is_char_boundary(end) {
-                end -= 1;
+        let mut leaves = Vec::with_capacity(text.len().div_ceil(FORMATTED_TEXT_LEAF_BYTES));
+        let mut buffer_start = 0;
+        while buffer_start < text.len() {
+            let mut buffer_end = buffer_start.saturating_add(FORMATTED_TEXT_BUFFER_BYTES).min(text.len());
+            while !text.is_char_boundary(buffer_end) { buffer_end -= 1; }
+            // A small caller-owned buffer can be shared directly; large inputs
+            // are detached into bounded allocations before publication.
+            let buffer: Arc<str> = if buffer_start == 0 && buffer_end == text.len() {
+                text.clone()
+            } else {
+                Arc::from(&text[buffer_start..buffer_end])
+            };
+            let buffer_id = next_buffer_id()?;
+            let mut start = 0;
+            while start < buffer.len() {
+                let mut end = start.saturating_add(FORMATTED_TEXT_LEAF_BYTES).min(buffer.len());
+                while !buffer.is_char_boundary(end) { end -= 1; }
+                leaves.push(new_leaf(buffer_id, buffer.clone(), start..end)?);
+                start = end;
             }
-            if end == start {
-                return Err(FormattedTextError::UnicodeBoundaryResolutionFailed);
-            }
-            leaves.push(new_leaf(buffer_id, text.clone(), start..end)?);
-            start = end;
+            buffer_start = buffer_end;
         }
 
         Ok(Self {
@@ -1748,6 +1776,36 @@ fn count_line_breaks_before(node: &Node, offset: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn disposable_snapshot_identity_does_not_retain_text_or_child_nodes() {
+        let original = super::FormattedTextTree::try_from_text("x".repeat(1_048_576)).unwrap();
+        let identity = original.snapshot_identity();
+        assert_eq!(identity, original.clone().snapshot_identity());
+        assert_eq!(std::sync::Arc::strong_count(original.root.as_ref().unwrap()), 1);
+        let replacement = original.splice(500_000..500_001, "y").unwrap();
+        assert_ne!(identity, replacement.snapshot_identity());
+        drop(original);
+        assert!(identity.0.as_ref().unwrap().upgrade().is_none());
+        assert_eq!(replacement.slice(500_000..500_001).unwrap(), "y");
+    }
+    #[test]
+    fn deleting_large_text_releases_unreferenced_backing_chunks() {
+        let text = "x".repeat(super::FORMATTED_TEXT_BUFFER_BYTES * 16);
+        let original = super::FormattedTextTree::try_from_text(text).unwrap();
+        let surviving = original.splice(1..original.byte_len() - 1, "").unwrap();
+        drop(original);
+        let mut buffers = std::collections::HashMap::new();
+        fn visit(node: &super::Node, buffers: &mut std::collections::HashMap<usize, usize>) {
+            match node {
+                super::Node::Leaf(leaf) => { buffers.insert(std::sync::Arc::as_ptr(&leaf.buffer).cast::<u8>() as usize, leaf.buffer.len()); }
+                super::Node::Branch(branch) => { visit(&branch.left, buffers); visit(&branch.right, buffers); }
+            }
+        }
+        visit(surviving.root.as_ref().unwrap(), &mut buffers);
+        assert_eq!(surviving.slice(0..2).unwrap(), "xx");
+        assert_eq!(buffers.values().sum::<usize>(), super::FORMATTED_TEXT_BUFFER_BYTES * 2);
+    }
+
     use super::*;
     use unicode_segmentation::UnicodeSegmentation;
 

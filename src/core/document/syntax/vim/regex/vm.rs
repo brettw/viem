@@ -414,6 +414,13 @@ pub(super) struct Continuation {
     result: Option<VimRegexProgress>,
 }
 
+impl Continuation {
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.frames.capacity() * std::mem::size_of::<Frame>()
+            + self.alternatives.capacity() * std::mem::size_of::<Thread>()
+    }
+}
+
 fn case_equal(a: char, b: char) -> bool {
     // A single Unicode scalar has a small, table-bounded simple-fold closure.
     let mut class =

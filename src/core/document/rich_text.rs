@@ -232,14 +232,7 @@ impl<'a> Builder<'a> {
         {
             style = self.style_sheet.base_paragraph.clone();
         }
-        Block {
-            id: 0,
-            range: start..self.text.len(),
-            kind: self.kind.clone(),
-            style,
-            direct_paragraph: self.paragraph.clone(),
-            direct_default_character: self.defaults.clone(),
-        }
+        Block::new(0, start..self.text.len(), self.kind.clone(), style, super::BlockDirectFormatting::shared(self.paragraph.clone(), self.defaults.clone()))
     }
     fn finish_line(&mut self) {
         self.blocks.push(self.current_block(self.line_start));

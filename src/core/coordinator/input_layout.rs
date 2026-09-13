@@ -39,12 +39,13 @@ impl<P: TextMeasurementProvider> Core<P> {
             let Some(requested) = self.input_layout_region(view_id, &demand)? else {
                 return Err(LayoutMotionError::OutsideMaterializedCoverage(demand).into());
             };
-            if previous_request.as_ref() == Some(&requested) {
+            let request_identity = (requested.clone(), demand.horizontal_focus(), demand.requires_complete_horizontal_geometry());
+            if previous_request.as_ref() == Some(&request_identity) {
                 // Preserve the typed failure if a provider cannot make more
                 // geometry available; never publish the tentative command.
                 return Err(LayoutMotionError::OutsideMaterializedCoverage(demand).into());
             }
-            previous_request = Some(requested.clone());
+            previous_request = Some(request_identity);
             self.satisfy_input_layout_demand(view_id, &demand, requested)?;
             layout_changed = true;
         }
@@ -64,6 +65,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             .get(&view_id)
             .ok_or(CoreError::UnknownView(view_id))?;
         let snapshot = view.layout.snapshot().ok_or(LayoutError::NoRows)?;
+        if demand.horizontal_focus().is_some() {
+            return Ok(Some(demand.requested_hard_lines()));
+        }
         let top = view.layout.viewport_top();
         let bottom = top + view.layout.height();
         let flow = view.layout.paragraph_flow();
@@ -135,10 +139,13 @@ impl<P: TextMeasurementProvider> Core<P> {
             update_viewport_anchor(&self.document, view);
             view.viewport_anchor
         };
+        let mut region = ViewportLayoutRegion::new(requested, top, height)?;
+        if let Some((offset, x)) = demand.horizontal_focus() { region = region.with_horizontal_focus(offset, x); }
+        if demand.requires_complete_horizontal_geometry() { region = region.with_complete_horizontal_geometry(); }
         let request = self.prepare_view_layout_job(
             view_id,
             LayoutJobPriority::NewlyExposedRows,
-            LayoutJobRegion::Viewport(ViewportLayoutRegion::new(requested, top, height)?),
+            LayoutJobRegion::Viewport(region),
             LayoutCancellationToken::new(),
         )?;
         let candidate = {
@@ -157,6 +164,7 @@ impl<P: TextMeasurementProvider> Core<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::LineMode;
     use crate::layout::MockTextMeasurementProvider;
 
     fn key(key: Key) -> CoreEvent {
@@ -170,6 +178,106 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n"),
         )
+    }
+
+    fn assert_source(core: &Core<MockTextMeasurementProvider>, expected: &str) {
+        let actual = core.document().source_bytes();
+        assert_eq!(actual.len(), expected.len(), "source byte length");
+        assert_eq!(actual.iter().zip(expected.bytes()).position(|(left, right)| *left != right), None,
+            "first differing source byte");
+    }
+
+    #[test]
+    fn wrapped_giant_word_after_new_short_line_keeps_two_views_bounded() {
+        let mut document = Document::new(format!("before {} after", "a".repeat(2 * 1024 * 1024)));
+        document.insert(0, "x").unwrap();
+        document.insert(1, "\n").unwrap();
+        let expected_len = document.projection().text_tree().byte_len();
+        let mut core = Core::new(document);
+        let views = [core.add_view(MockTextMeasurementProvider::new(), 320.0, 100.0),
+            core.add_view(MockTextMeasurementProvider::new(), 220.0, 100.0)];
+        for view in views {
+            let layout = core.layout(view).unwrap();
+            assert!(layout.wrap());
+            assert!(layout.last_error().is_none(), "{:?}", layout.last_error());
+            let snapshot = layout.snapshot().unwrap();
+            assert_eq!(snapshot.rows.len(), 4, "short line, prefix, overflow word, and tail");
+            assert_eq!(snapshot.rows.last().unwrap().text_range.end, expected_len);
+            assert!(snapshot.rows.iter().all(|row| row.clusters.len() < 5_000));
+        }
+        let view = views[0];
+        for wrap in [false, true] {
+            core.handle(view, CoreEvent::SetWrap(wrap)).unwrap();
+            let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+            assert!(snapshot.rows.iter().all(|row| row.clusters.len() < 5_000));
+        }
+        core.handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource)).unwrap();
+        for character in "j$".chars() {
+            let result = core.handle_with_layout(view, key(Key::Char(character))).unwrap();
+            assert_eq!(result.command.unwrap().status, CommandStatus::Complete);
+        }
+        assert_eq!(core.command_state(view).unwrap().cursor(), expected_len - 1);
+        assert!(core.layout(view).unwrap().snapshot().unwrap().rows.iter().all(|row| row.clusters.len() < 5_000));
+    }
+
+    #[test]
+    fn giant_unwrapped_rows_refill_scroll_cursor_and_vertical_demand_without_dense_geometry() {
+        let line = "AV fi word ".repeat(12_000);
+        let mut core = Core::new(Document::new(format!("{line}\n{line}\nshort")));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 320.0, 100.0);
+        core.handle(view, CoreEvent::SetWrap(false)).unwrap();
+        let second = core.add_view(MockTextMeasurementProvider::new(), 220.0, 100.0);
+        core.handle(second, CoreEvent::SetWrap(false)).unwrap();
+        for left in [100_000.0, 500_000.0, 0.0] {
+            core.handle(view, CoreEvent::SetViewportOrigin { left, top: None }).unwrap();
+            let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+            assert!(snapshot.rows.iter().all(|row| row.clusters.len() < 6_000));
+            assert!(snapshot.hit_test(crate::layout::LayoutPoint { x: left + 100.0, y: snapshot.rows[0].y + 1.0 }).is_ok());
+            assert_eq!(core.layout(second).unwrap().viewport_left(), 0.0);
+        }
+        for motion in ["60000l", "gj", "gk", "$", "0"] {
+            for character in motion.chars() {
+                let outcome = core.handle_with_layout(view, key(Key::Char(character))).unwrap();
+                assert!(matches!(outcome.command.unwrap().status, CommandStatus::Complete | CommandStatus::Pending));
+            }
+            let commands = core.command_state(view).unwrap();
+            let position = commands.visual_position().unwrap_or(crate::command::layout_motion::VisualPosition { text_offset: commands.cursor(), affinity: commands.boundary_affinity() });
+            let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+            assert!(snapshot.logical_endpoint_geometry(position.text_offset, position.affinity).is_ok(), "{motion}: {}", position.text_offset);
+            assert!(snapshot.rows.iter().all(|row| row.clusters.len() < 6_000));
+        }
+        for character in "iX".chars() { core.handle_with_layout(view, key(Key::Char(character))).unwrap(); }
+        core.handle_with_layout(view, key(Key::Escape)).unwrap();
+        core.handle_with_layout(view, key(Key::Char('u'))).unwrap();
+        assert_source(&core, &format!("{line}\n{line}\nshort"));
+        assert!(core.layout(view).unwrap().last_error().is_none());
+        assert!(core.layout(second).unwrap().last_error().is_none());
+    }
+
+    #[test]
+    fn giant_unwrapped_visual_block_edits_refine_complete_rows_before_changing_source() {
+        let line = "ab ".repeat(24_000);
+        let source = format!("{line}\n{line}");
+        let mut core = Core::new(Document::new(source.clone()));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 320.0, 100.0);
+        core.handle(view, CoreEvent::SetWrap(false)).unwrap();
+        assert!(core.layout(view).unwrap().snapshot().unwrap().has_horizontal_materialization());
+        core.handle_with_layout(view, key(Key::Ctrl('v'))).unwrap();
+        for character in "6000ljd".chars() {
+            let output = core.handle_with_layout(view, key(Key::Char(character))).unwrap();
+            assert!(matches!(output.command.unwrap().status, CommandStatus::Complete | CommandStatus::Pending));
+        }
+        let suffix = &line[6001..];
+        assert_source(&core, &format!("{suffix}\n{suffix}"));
+        core.handle_with_layout(view, key(Key::Char('u'))).unwrap();
+        assert_source(&core, &source);
+        for character in "gg0".chars() { core.handle_with_layout(view, key(Key::Char(character))).unwrap(); }
+        // Normal-mode block put must also refine the full destination geometry,
+        // even though no active Visual Block state remains to request it.
+        let output = core.handle_with_layout(view, key(Key::Char('P'))).unwrap();
+        assert_eq!(output.command.unwrap().status, CommandStatus::Complete);
+        let prefix = &line[..6001];
+        assert_source(&core, &format!("{prefix}{line}\n{prefix}{line}"));
     }
 
     #[test]

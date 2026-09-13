@@ -30,7 +30,7 @@ impl Document {
             .bytes_in(source.clone())
             .ok_or(DocumentError::AmbiguousProjection)?;
         let decoded = self.encoding().decode_region(&bytes, source.start)?;
-        let normalized = line_endings::normalize(&decoded, self.file_format());
+        let normalized = line_endings::normalize_literal(&decoded, self.file_format());
         let end = normalized
             .endings
             .last()
@@ -142,7 +142,7 @@ impl Document {
                     length: self.source_byte_len(),
                 })?;
         let decoded = self.encoding().decode_region(&bytes, range.start)?;
-        Ok(line_endings::normalize(&decoded, self.file_format()).text)
+        Ok(line_endings::normalize_literal(&decoded, self.file_format()).text)
     }
     /// Explicit row deletion removes complete items structurally. Adapters
     /// retain the surrounding list when only part of a wrapped item is covered.

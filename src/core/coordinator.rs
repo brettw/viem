@@ -2028,12 +2028,28 @@ impl<P: TextMeasurementProvider> Core<P> {
         &mut self,
         view_id: ViewId,
         priority: LayoutJobPriority,
-        region: LayoutJobRegion,
+        mut region: LayoutJobRegion,
         cancellation: LayoutCancellationToken,
     ) -> Result<crate::layout::LayoutJobRequest, CoreError> {
         self.poll_syntax();
         if !self.views.contains_key(&view_id) {
             return Err(CoreError::UnknownView(view_id));
+        }
+        if let LayoutJobRegion::Viewport(viewport) = &region {
+            if !viewport.has_horizontal_focus() {
+                let view = &self.views[&view_id];
+                let position = view.commands.visual_position();
+                let offset = position.map_or(view.commands.cursor(), |position| position.text_offset);
+                let desired_x = view.commands.desired_x().or_else(|| {
+                    view.layout.snapshot()?.logical_endpoint_geometry(offset, view.commands.boundary_affinity()).ok().map(|geometry| geometry.rect.x)
+                });
+                region = LayoutJobRegion::Viewport(viewport.clone().with_horizontal_focus(offset, desired_x));
+            }
+        }
+        if self.views[&view_id].commands.active_visual_block_endpoint_offsets().is_some() {
+            if let LayoutJobRegion::Viewport(viewport) = region {
+                region = LayoutJobRegion::Viewport(viewport.with_complete_horizontal_geometry());
+            }
         }
         let document_revision = self.document.revision();
         let requirements = {
@@ -2111,11 +2127,14 @@ impl<P: TextMeasurementProvider> Core<P> {
         cancellation: LayoutCancellationToken,
     ) -> Result<crate::layout::LayoutJobRequest, CoreError> {
         let (viewport_top, viewport_height) = self.validate_view_layout_demand(view_id, demand)?;
-        let region = LayoutJobRegion::Viewport(ViewportLayoutRegion::new(
+        let mut viewport = ViewportLayoutRegion::new(
             demand.requested_hard_lines(),
             viewport_top,
             viewport_height,
-        )?);
+        )?;
+        if let Some((offset, x)) = demand.horizontal_focus() { viewport = viewport.with_horizontal_focus(offset, x); }
+        if demand.requires_complete_horizontal_geometry() { viewport = viewport.with_complete_horizontal_geometry(); }
+        let region = LayoutJobRegion::Viewport(viewport);
         self.prepare_view_layout_job(view_id, priority, region, cancellation)
     }
 
@@ -2748,6 +2767,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             .synchronize_document_hard_line_count(hard_line_count, document_is_stale)
             .map_err(LayoutError::from)?;
 
+        // Horizontal materialization uses the requested origin during capture;
+        // publication remains atomic with the staged vertical viewport.
+        staged_layout.set_viewport_left(left)?;
+
         let viewport_height = staged_layout.height().max(f32::EPSILON);
         let requested_top = requested_top.max(0.0);
         let target_line = target_hit.map_or(hard_line_count - 1, |hit| hit.hard_line());
@@ -2938,6 +2961,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                             != requirements.measurement_environment_id
                         || snapshot.metrics_generation != requirements.metrics_generation
                         || !snapshot.coverage.contains_text_offset(cursor)
+                        || !snapshot.horizontal_text_is_materialized(cursor)
+                        || (visual_block_endpoints.is_some() && snapshot.has_horizontal_materialization())
                         || visual_block_endpoints.is_some_and(|(anchor, active)| {
                             !snapshot.coverage.contains_text_offset(anchor)
                                 || !snapshot.coverage.contains_text_offset(active)
@@ -5189,11 +5214,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                 if let Some(top) = top {
                     self.materialize_requested_viewport(view_id, left, top)?;
                 } else {
-                    self.views
-                        .get_mut(&view_id)
-                        .expect("view existence checked above")
-                        .layout
-                        .set_viewport_left(left)?;
+                    let sparse = self.views[&view_id].layout.snapshot().is_some_and(|snapshot| snapshot.has_horizontal_materialization());
+                    if sparse {
+                        self.materialize_requested_viewport(view_id, left, previous_top)?;
+                    } else {
+                        self.views.get_mut(&view_id).expect("view existence checked above").layout.set_viewport_left(left)?;
+                    }
                 }
                 self.rematerialize_active_composition(view_id, false)?;
                 let view = self
@@ -5212,6 +5238,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 })
             }
             CoreEvent::Input(input) => {
+                let was_visual_block = self.views[&view_id].commands.active_visual_block_endpoint_offsets().is_some();
                 let (requires_layout, layout_intent) = {
                     let target_view = self
                         .views
@@ -5356,10 +5383,13 @@ impl<P: TextMeasurementProvider> Core<P> {
                 }
                 let cursor_moved = command.cursor_moved;
                 let history_navigation = command.history_navigation;
+                // Search prompts temporarily change mode while retaining the
+                // rectangle and its exact layout. Release dense geometry only
+                // when the command actually discards that selection.
                 let command_requests_relayout =
                     planned_presentation.as_ref().is_some_and(|requests| {
                         requests.contains(&CommandPresentationRequest::Relayout)
-                    });
+                    }) || (was_visual_block && target_view.commands.visual_block().is_none());
                 let command_requests_reveal = planned_presentation
                     .as_ref()
                     .map_or(changed || cursor_moved, |requests| {
@@ -6160,7 +6190,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             };
             outcome.layout_changed = true;
             let requested = demand.requested_hard_lines();
-            if last_requested.as_ref() == Some(&requested) {
+            let request_identity = (requested, demand.horizontal_focus(), demand.requires_complete_horizontal_geometry());
+            if last_requested.as_ref() == Some(&request_identity) {
                 if let Some(command) = outcome.command.as_mut() {
                     command.status = CommandStatus::Error(
                         "compound replay layout demand did not expand coverage".into(),
@@ -6168,7 +6199,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 }
                 return outcome;
             }
-            last_requested = Some(requested);
+            last_requested = Some(request_identity);
             if let Err(error) = self.satisfy_replay_layout_demand(view_id, &demand) {
                 if let Some(command) = outcome.command.as_mut() {
                     command.status = CommandStatus::Error(format!(

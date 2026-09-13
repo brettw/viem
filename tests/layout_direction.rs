@@ -63,9 +63,17 @@ fn first_strong_edit_changes_the_gutter_and_reuses_unchanged_line_shaping() {
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
     let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
     engine.set_cache_capacity(1_100);
+    // Isolate edit invalidation with both prose and all 1,000 distinct list
+    // ordinals warm. The default decoration byte budget deliberately evicts
+    // some ordinals even when the entry allowance is raised.
+    engine.set_shape_cache_byte_budgets(32 * 1024 * 1024, 2 * 1024 * 1024);
     let mut view = ViewLayout::new(200., 200.);
     engine.relayout(&document, &mut view).unwrap();
     let original_x = view.snapshot().unwrap().rows[1].paragraph_content_x;
+    for cache in [engine.shaping_cache_statistics(), engine.decoration_shaping_cache_statistics()] {
+        assert_eq!(cache.fragment_count, 1_000);
+        assert_eq!(cache.eviction_count, 0);
+    }
     assert_eq!(original_x, leading_x(&document, true));
     let shaped = engine.provider().request_calls();
     let at = document.text().find("שלום").unwrap();

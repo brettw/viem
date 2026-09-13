@@ -67,13 +67,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub const VIEM_CORE_ABI_VERSION: u32 = 5;
 
 /// Adds paragraph base direction in the request's fixed-layout extension slot
-/// and the context-owned cluster contract: shape the concatenated context and
-/// interior, then return whole clusters whose logical start is in the stable
-/// interior.
-pub const VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2: u32 = 2;
+/// and the context-owned cluster contract, plus explicit fragment resource
+/// leases so evicting cached shaping can release native draw data.
+pub const VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3: u32 = 3;
 /// Current version of the injected text-measurement provider vtable.
 pub const VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION: u32 =
-    VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2;
+    VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3;
 
 /// Opaque process-local controller/core token. Zero is always invalid.
 pub type ViemCoreHandle = u64;
@@ -782,11 +781,11 @@ pub const VIEM_SHAPE_STYLE_RUN_V1_SIZE: u32 = size_of::<ViemShapeStyleRunV1>() a
 ///
 /// `identifier` is an integer token, never a native pointer for core to
 /// dereference. Core only compares, caches, and transports the value. The
-/// provider MUST keep it valid for its declared owner and threading rule while
-/// `metrics_generation` remains current and the owning view remains attached.
-/// It MAY retire the token as soon as either condition stops being true. No
-/// retain or release crosses the ABI; callers MUST NOT retain a token after its
-/// generation becomes stale or its view is removed/core is destroyed.
+/// provider pins callback response resources until the next shape call. Core
+/// retains one independent lease per returned fragment, shared by its caches
+/// and snapshots. The token remains usable while leased and its generation is
+/// current. Borrowed frontend exports must not outlive their exact layout.
+/// Releasing a lease is valid even after its generation or view is retired.
 pub struct ViemRenderRunHandleV1 {
     pub owner: u64,
     pub identifier: u64,
@@ -918,6 +917,15 @@ impl Default for ViemShapeResponseV1 {
 
 pub const VIEM_SHAPE_RESPONSE_V1_SIZE: u32 = size_of::<ViemShapeResponseV1>() as u32;
 
+/// Retain the resource identifiers in one shaped fragment. The returned opaque
+/// lease has its own lifetime and must remain releasable after view removal.
+pub type ViemRetainRenderRunsCallback = unsafe extern "C" fn(
+    context: *mut c_void, handles: *const ViemRenderRunHandleV1, count: u64,
+) -> *mut c_void;
+/// May be invoked on any thread. The provider marshals native destruction to
+/// its required executor. This callback must never call back into the core.
+pub type ViemReleaseRenderRunsCallback = unsafe extern "C" fn(lease: *mut c_void);
+
 pub type ViemMetricsGenerationCallback = unsafe extern "C" fn(context: *mut c_void) -> u64;
 pub type ViemShapeBatchCallback = unsafe extern "C" fn(
     context: *mut c_void,
@@ -932,7 +940,7 @@ pub type ViemShapeBatchCallback = unsafe extern "C" fn(
 /// valid until that view is removed or its core is successfully destroyed. A
 /// destroy call returning [`ViemStatus::CoreBusy`] has not destroyed the core
 /// and does not end that lifetime. Render-run tokens have the separate
-/// generation-scoped lifetime documented on [`ViemRenderRunHandleV1`]. A
+/// lease and generation lifetime documented on [`ViemRenderRunHandleV1`]. A
 /// successful callback affirms stable ownership interiors. A provider
 /// unable to make that bounded-context guarantee returns
 /// [`ViemStatus::UnstableShapingContext`]; core caches and installs none of that
@@ -951,6 +959,8 @@ pub struct ViemTextMeasurementProviderV1 {
     pub reserved: u32,
     pub metrics_generation: Option<ViemMetricsGenerationCallback>,
     pub shape_batch: Option<ViemShapeBatchCallback>,
+    pub retain_render_runs: Option<ViemRetainRenderRunsCallback>,
+    pub release_render_runs: Option<ViemReleaseRenderRunsCallback>,
 }
 
 pub const VIEM_TEXT_MEASUREMENT_PROVIDER_V1_SIZE: u32 =
@@ -2586,6 +2596,8 @@ struct CTextMeasurementProvider {
     render_run_policy: Option<RenderRunPolicy>,
     metrics_generation_callback: ViemMetricsGenerationCallback,
     shape_batch_callback: ViemShapeBatchCallback,
+    retain_render_runs_callback: Option<ViemRetainRenderRunsCallback>,
+    release_render_runs_callback: Option<ViemReleaseRenderRunsCallback>,
 }
 
 impl CTextMeasurementProvider {
@@ -2621,6 +2633,10 @@ impl CTextMeasurementProvider {
             .metrics_generation
             .ok_or(ViemStatus::InvalidProvider)?;
         let shape_batch_callback = provider.shape_batch.ok_or(ViemStatus::InvalidProvider)?;
+        if render_run_policy.is_some()
+            && (provider.retain_render_runs.is_none() || provider.release_render_runs.is_none()) {
+            return Err(ViemStatus::InvalidProvider);
+        }
         Ok(Self {
             context: provider.context as usize,
             measurement_environment_id: MeasurementEnvironmentId(
@@ -2630,11 +2646,25 @@ impl CTextMeasurementProvider {
             render_run_policy,
             metrics_generation_callback,
             shape_batch_callback,
+            retain_render_runs_callback: provider.retain_render_runs,
+            release_render_runs_callback: provider.release_render_runs,
         })
     }
 
     fn context(self) -> *mut c_void {
         self.context as *mut c_void
+    }
+}
+
+struct CRenderResourceLease {
+    context: usize,
+    release: ViemReleaseRenderRunsCallback,
+}
+impl Drop for CRenderResourceLease {
+    fn drop(&mut self) {
+        // SAFETY: The provider transfers one independent lease to core and
+        // accepts its exactly-once release from any thread, even after detach.
+        unsafe { (self.release)(self.context as *mut c_void) };
     }
 }
 
@@ -2827,7 +2857,24 @@ impl TextMeasurementProvider for CTextMeasurementProvider {
             .map(|response| {
                 // SAFETY: Successful callbacks guarantee that every returned
                 // pointer/count pair remains readable while core copies it.
-                unsafe { shaped_fragment_from_ffi(response) }
+                let mut fragment = unsafe { shaped_fragment_from_ffi(response) }?;
+                let handles: Vec<_> = fragment.clusters.iter().filter_map(|cluster|
+                    cluster.render_run.as_ref().map(render_run_to_ffi)).collect();
+                if !handles.is_empty() {
+                    let retain = self.retain_render_runs_callback.ok_or_else(||
+                        measurement_failure("render resources require a retain callback"))?;
+                    let release = self.release_render_runs_callback.ok_or_else(||
+                        measurement_failure("render resources require a release callback"))?;
+                    // SAFETY: Handles have been copied and validated, and provider
+                    // response resources remain pinned until the next shape call.
+                    let context = unsafe { retain(self.context(), handles.as_ptr(), handles.len() as u64) };
+                    if context.is_null() { return Err(measurement_failure("provider could not retain render resources")); }
+                    let lease: Arc<dyn Send + Sync> = Arc::new(CRenderResourceLease { context: context as usize, release });
+                    for handle in fragment.clusters.iter_mut().filter_map(|cluster|cluster.render_run.as_mut()) {
+                        handle.retain_resource(Arc::clone(&lease));
+                    }
+                }
+                Ok(fragment)
             })
             .collect()
     }
@@ -2975,6 +3022,7 @@ unsafe fn shaped_fragment_from_ffi(
     if response.struct_size < VIEM_SHAPE_RESPONSE_V1_SIZE || response.reserved != 0 {
         return Err(measurement_failure("shaping response prefix is too small"));
     }
+    let mut fonts = std::collections::BTreeMap::new();
     let clusters = unsafe {
         provider_slice(
             response.clusters,
@@ -2983,7 +3031,7 @@ unsafe fn shaped_fragment_from_ffi(
         )?
     }
     .iter()
-    .map(|cluster| unsafe { shaped_cluster_from_ffi(cluster) })
+    .map(|cluster| unsafe { shaped_cluster_from_ffi(cluster, &mut fonts) })
     .collect::<Result<Vec<_>, _>>()?;
     let visual_order = unsafe {
         provider_slice(
@@ -3024,6 +3072,7 @@ unsafe fn shaped_fragment_from_ffi(
 
 unsafe fn shaped_cluster_from_ffi(
     cluster: &ViemShapedClusterV1,
+    fonts: &mut std::collections::BTreeMap<String, Arc<str>>,
 ) -> Result<ShapedCluster, MeasurementError> {
     if cluster.struct_size < VIEM_SHAPED_CLUSTER_V1_SIZE || cluster.reserved != 0 {
         return Err(measurement_failure("shaped-cluster prefix is too small"));
@@ -3056,16 +3105,17 @@ unsafe fn shaped_cluster_from_ffi(
                     "render-run response reserved field is nonzero",
                 ));
             }
-            Ok(RenderRunHandle {
-                owner: RenderRunOwner(cluster.render_run.owner),
-                identifier: cluster.render_run.identifier,
-                metrics_generation: MetricsGeneration(cluster.render_run.metrics_generation),
-                threading: render_threading_from_response(cluster.render_run.threading)?,
-            })
+            Ok(RenderRunHandle::new(
+                RenderRunOwner(cluster.render_run.owner), cluster.render_run.identifier,
+                MetricsGeneration(cluster.render_run.metrics_generation),
+                render_threading_from_response(cluster.render_run.threading)?,
+            ))
         })
         .transpose()?;
     let bidi_level = u8::try_from(cluster.bidi_level)
         .map_err(|_| measurement_failure("bidi level exceeds u8"))?;
+    let font = unsafe { provider_utf8(cluster.fallback_font, "fallback font")? };
+    let fallback_font = Arc::clone(fonts.entry(font).or_insert_with_key(|name| Arc::from(name.as_str())));
     Ok(ShapedCluster {
         text_range: checked_response_offset(cluster.text_start)?
             ..checked_response_offset(cluster.text_end)?,
@@ -3074,7 +3124,7 @@ unsafe fn shaped_cluster_from_ffi(
         typographic_bounds: shaped_bounds_from_ffi(cluster.typographic_bounds),
         ink_bounds: shaped_bounds_from_ffi(cluster.ink_bounds),
         bidi_level,
-        fallback_font: unsafe { provider_utf8(cluster.fallback_font, "fallback font")? },
+        fallback_font,
         caret_stops,
         render_run,
     })
@@ -4676,7 +4726,7 @@ fn render_threading_to_ffi(threading: RenderRunThreading) -> u32 {
     }
 }
 
-fn render_run_to_ffi(render_run: RenderRunHandle) -> ViemRenderRunHandleV1 {
+fn render_run_to_ffi(render_run: &RenderRunHandle) -> ViemRenderRunHandleV1 {
     ViemRenderRunHandleV1 {
         owner: render_run.owner.0,
         identifier: render_run.identifier,
@@ -5748,7 +5798,7 @@ fn visual_block_status(error: VisualBlockError) -> ViemStatus {
         VisualBlockError::WrongDocument { .. }
         | VisualBlockError::WrongDocumentRevision { .. }
         | VisualBlockError::StaleLayout { .. } => ViemStatus::StaleRevision,
-        VisualBlockError::EndpointNotInLayout(_) | VisualBlockError::EmptyLayout => {
+        VisualBlockError::EndpointNotInLayout(_) | VisualBlockError::EmptyLayout | VisualBlockError::NeedsLayout(_) => {
             ViemStatus::OutsideLayoutCoverage
         }
         VisualBlockError::NonGraphemeBoundary(_) => ViemStatus::NotGraphemeBoundary,
@@ -6147,7 +6197,7 @@ fn export_layout_snapshot(
         let first_cluster = checked_export_count(clusters.len())?;
         let first_caret = checked_export_count(carets.len())?;
         for cluster in &row.clusters {
-            let (flags, render_run) = cluster.render_run.map_or_else(
+            let (flags, render_run) = cluster.render_run.as_ref().map_or_else(
                 || (0, ViemRenderRunHandleV1::default()),
                 |render_run| {
                     (
@@ -7832,7 +7882,7 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
                             reserved: 0.0,
                             typographic_bounds: layout_rect_to_ffi(item.typographic_bounds),
                             ink_bounds: layout_rect_to_ffi(item.ink_bounds),
-                            render_run: item.render_run.map(render_run_to_ffi).unwrap_or_default(),
+                            render_run: item.render_run.as_ref().map(render_run_to_ffi).unwrap_or_default(),
                             paint: text_paint_to_ffi(&item.paint),
                         });
                         bytes.extend_from_slice(item.text.as_bytes());
@@ -11416,6 +11466,34 @@ mod tests {
         ViemStatus::Ok as u32
     }
 
+    unsafe extern "C" fn paint_test_retain_render_runs(
+        _context: *mut c_void, _handles: *const ViemRenderRunHandleV1, _count: u64,
+    ) -> *mut c_void { std::ptr::NonNull::<u8>::dangling().as_ptr().cast() }
+    unsafe extern "C" fn paint_test_release_render_runs(_lease: *mut c_void) {}
+
+    #[test]
+    fn render_resource_lease_releases_once_after_final_snapshot_handle() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use crate::layout::RenderRunHandle;
+        unsafe extern "C" fn release(context: *mut c_void) {
+            // SAFETY: This test transferred one boxed Arc to the lease.
+            let count = unsafe { Box::from_raw(context.cast::<Arc<AtomicUsize>>()) };
+            count.fetch_add(1, Ordering::SeqCst);
+        }
+        let count = Arc::new(AtomicUsize::new(0));
+        let context = Box::into_raw(Box::new(Arc::clone(&count))) as usize;
+        let lease: Arc<dyn Send + Sync> = Arc::new(super::CRenderResourceLease { context, release });
+        let mut handle = RenderRunHandle::new(RenderRunOwner(1), 2, MetricsGeneration(3), RenderRunThreading::AnyThread);
+        handle.retain_resource(Arc::clone(&lease));
+        let retained_snapshot = handle.clone();
+        drop(lease);
+        drop(handle);
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        std::thread::spawn(move || drop(retained_snapshot)).join().unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
     fn paint_test_provider(
         storage: &mut PaintTestProviderStorage,
         environment: u64,
@@ -11431,6 +11509,8 @@ mod tests {
             }),
             metrics_generation_callback: paint_test_metrics_generation,
             shape_batch_callback: paint_test_shape_batch,
+            retain_render_runs_callback: Some(paint_test_retain_render_runs),
+            release_render_runs_callback: Some(paint_test_release_render_runs),
         }
     }
 
@@ -12617,6 +12697,8 @@ mod tests {
             }),
             metrics_generation_callback: paint_test_metrics_generation,
             shape_batch_callback: paint_test_shape_batch,
+            retain_render_runs_callback: Some(paint_test_retain_render_runs),
+            release_render_runs_callback: Some(paint_test_release_render_runs),
         };
         let mut core = Core::new(document);
         let view = core.add_view(provider, 800.0, 600.0);

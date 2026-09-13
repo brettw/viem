@@ -111,7 +111,7 @@ pub enum ListStyle {
     Numbered,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Block {
     /// Stable within the owning document across projection revisions. The
     /// projector initially emits zero as a private provisional value; a
@@ -119,24 +119,109 @@ pub struct Block {
     /// before publishing the projection.
     pub id: u64,
     pub range: Range<usize>,
+    /// Non-positional declarations share one immutable allocation, including
+    /// one static allocation for the default paragraph in literal documents.
+    pub attributes: Arc<BlockAttributes>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BlockAttributes {
     pub kind: BlockKind,
     pub style: StyleId,
-    /// Sparse paragraph-layout declarations applied after the named paragraph
-    /// style chain.
+    /// Absent for the overwhelmingly common inherited paragraph. Nonempty
+    /// declarations are immutable and shared by projection/history clones.
+    pub direct_formatting: Option<Arc<BlockDirectFormatting>>,
+}
+
+impl Block {
+    pub fn new(id: u64, range: Range<usize>, kind: BlockKind, style: StyleId,
+        direct_formatting: Option<Arc<BlockDirectFormatting>>) -> Self {
+        if kind == BlockKind::Paragraph && style.0 == "Paragraph" && direct_formatting.is_none() {
+            return Self::paragraph(id, range);
+        }
+        Self { id, range, attributes: Arc::new(BlockAttributes { kind, style, direct_formatting }) }
+    }
+
+    pub fn paragraph(id: u64, range: Range<usize>) -> Self {
+        static DEFAULT: OnceLock<Arc<BlockAttributes>> = OnceLock::new();
+        Self { id, range, attributes: DEFAULT.get_or_init(|| Arc::new(BlockAttributes {
+            kind: BlockKind::Paragraph, style: "Paragraph".into(), direct_formatting: None,
+        })).clone() }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BlockDirectFormatting {
     pub direct_paragraph: BlockProperties,
-    /// Sparse default-character declarations inherited by this block's
-    /// content before named character styles and inline direct formatting.
     pub direct_default_character: CharacterProperties,
 }
 
+impl BlockDirectFormatting {
+    pub fn shared(
+        direct_paragraph: BlockProperties,
+        direct_default_character: CharacterProperties,
+    ) -> Option<Arc<Self>> {
+        if direct_paragraph == BlockProperties::default()
+            && direct_default_character == CharacterProperties::default()
+        {
+            None
+        } else {
+            Some(Arc::new(Self { direct_paragraph, direct_default_character }))
+        }
+    }
+}
+
+impl std::ops::Deref for Block {
+    type Target = BlockAttributes;
+
+    fn deref(&self) -> &Self::Target { &self.attributes }
+}
+
+impl std::ops::DerefMut for Block {
+    fn deref_mut(&mut self) -> &mut Self::Target { Arc::make_mut(&mut self.attributes) }
+}
+
+impl std::ops::Deref for BlockAttributes {
+    type Target = BlockDirectFormatting;
+
+    fn deref(&self) -> &Self::Target {
+        static EMPTY: OnceLock<BlockDirectFormatting> = OnceLock::new();
+        self.direct_formatting.as_deref().unwrap_or_else(|| EMPTY.get_or_init(Default::default))
+    }
+}
+
+impl std::ops::DerefMut for BlockAttributes {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(self.direct_formatting.get_or_insert_with(|| Arc::new(BlockDirectFormatting::default())))
+    }
+}
+
+impl PartialEq for Block {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.range == other.range && self.attributes == other.attributes
+    }
+}
+
+impl PartialEq for BlockAttributes {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.style == other.style && **self == **other
+    }
+}
+
 impl RangedItem for Block {
-    fn owned_heap_bytes(&self) -> usize {
-        self.style.0.capacity() + 16 + self.direct_default_character.owned_heap_bytes()
+    fn visit_shared_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+        visitor.arc_once(&self.attributes, |visitor| {
+            visitor.owned(Arc::as_ptr(&self.attributes) as usize, 0, self.style.0.capacity() + 16);
+            if let Some(properties) = &self.direct_formatting {
+                visitor.arc(properties, |visitor| {
+                    visitor.owned(Arc::as_ptr(properties) as usize, 0,
+                        properties.direct_default_character.owned_heap_bytes());
+                });
+            }
+        });
     }
 
-    fn range(&self) -> &Range<usize> {
-        &self.range
-    }
+    fn range(&self) -> &Range<usize> { &self.range }
 
     fn with_range(&self, range: Range<usize>) -> Self {
         let mut shifted = self.clone();
@@ -539,6 +624,11 @@ impl HardLineSnapshot {
 
     pub fn text_length(&self) -> usize {
         self.text_tree.byte_len()
+    }
+
+    /// Borrow the remainder of one bounded tree leaf without flattening.
+    pub(crate) fn byte_chunk_at(&self, offset: usize) -> &[u8] {
+        self.text_tree.byte_chunk_at(offset)
     }
 
     /// Number of UTF-16 code units in this exact formatted snapshot.
@@ -1295,6 +1385,9 @@ pub struct FormattedDocument {
     flow_blocks: Option<OrderedRangeStore<Block>>,
     styles: IntervalRangeStore<StyleSpan>,
     provenance: IntervalRangeStore<ProvenanceSpan>,
+    /// Literal runs are divisible encoding mappings; rich contributors retain
+    /// their existing indivisible/relational meaning.
+    literal_encoding: Option<super::Encoding>,
     source_boundaries: IntervalRangeStore<SourceTextBoundary>,
     source_ordered: bool,
     decoding_diagnostics: IntervalRangeStore<DecodingDiagnostic>,
@@ -1315,6 +1408,7 @@ impl PartialEq for FormattedDocument {
             && self.flow_blocks == other.flow_blocks
             && self.styles == other.styles
             && self.provenance == other.provenance
+            && self.literal_encoding == other.literal_encoding
             && self.decoding_diagnostics == other.decoding_diagnostics
             && self.style_sheet == other.style_sheet
             && self.document_style == other.document_style
@@ -1431,6 +1525,7 @@ impl FormattedDocument {
             flow_blocks: None,
             styles: IntervalRangeStore::new(styles),
             provenance: IntervalRangeStore::new(provenance),
+            literal_encoding: None,
             source_boundaries,
             source_ordered,
             decoding_diagnostics: IntervalRangeStore::new(decoding_diagnostics),
@@ -1930,14 +2025,7 @@ impl FormattedDocument {
         );
         let mappings = build_edit_mappings(previous.text().len(), self.text().len(), edits)?;
         for old in &old_lines {
-            let block = Block {
-                id: old.id,
-                range: old.range.clone(),
-                kind: BlockKind::Paragraph,
-                style: "Paragraph".into(),
-                direct_paragraph: BlockProperties::default(),
-                direct_default_character: CharacterProperties::default(),
-            };
+            let block = Block::new(old.id, old.range.clone(), BlockKind::Paragraph, "Paragraph".into(), None);
             let target = if let Some(witness) =
                 block_identity_witness(previous.text(), &block, &mappings)?
             {
@@ -1986,7 +2074,11 @@ impl FormattedDocument {
         let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
         self.blocks = OrderedRangeStore::new(blocks);
         let next_id = self.assign_initial_hard_line_ids(next_id)?;
-        self.reconcile_flow_block_ids(None, &[], next_id)
+        let next_id = self.reconcile_flow_block_ids(None, &[], next_id)?;
+        // Initial validation used the construction string. Literal snapshots
+        // publish only bounded text buffers; a legacy flat read remains lazy.
+        if self.literal_encoding.is_some() { self.flat_text = Arc::new(OnceLock::new()); }
+        Ok(next_id)
     }
 
     fn reconcile_flow_block_ids(
@@ -2050,8 +2142,7 @@ impl FormattedDocument {
         }
         for (candidate, old) in blocks.iter_mut().zip(&previous_blocks) {
             candidate.id = old.id;
-            candidate.direct_paragraph = old.direct_paragraph.clone();
-            candidate.direct_default_character = old.direct_default_character.clone();
+            candidate.direct_formatting = old.direct_formatting.clone();
             if previous
                 .style_sheet
                 .configuration_deleted(&candidate.style, true)
@@ -2090,8 +2181,7 @@ impl FormattedDocument {
         self.install_unchanged_block_ids(previous)?;
         let mut blocks = self.blocks.to_vec();
         for (block, parsed) in blocks.iter_mut().zip(parsed_blocks) {
-            block.direct_paragraph = parsed.direct_paragraph;
-            block.direct_default_character = parsed.direct_default_character;
+            block.direct_formatting = parsed.direct_formatting.clone();
             if previous
                 .style_sheet
                 .configuration_deleted(&block.style, true)
@@ -2196,8 +2286,7 @@ impl FormattedDocument {
                 // join. Iteration is in document order, so the first ID wins.
                 let target = &mut blocks[target];
                 target.id = old.id;
-                target.direct_paragraph = old.direct_paragraph.clone();
-                target.direct_default_character = old.direct_default_character.clone();
+                target.direct_formatting = old.direct_formatting.clone();
             }
         }
 
@@ -2250,8 +2339,7 @@ impl FormattedDocument {
         let next_id = self.install_reconciled_block_ids(previous, edits, position_map, next_id)?;
         let mut blocks = self.blocks.to_vec();
         for (block, parsed) in blocks.iter_mut().zip(parsed_blocks) {
-            block.direct_paragraph = parsed.direct_paragraph;
-            block.direct_default_character = parsed.direct_default_character;
+            block.direct_formatting = parsed.direct_formatting.clone();
             if previous
                 .style_sheet
                 .configuration_deleted(&block.style, true)
@@ -2336,8 +2424,7 @@ impl FormattedDocument {
                     })
                     .ok_or(BlockIdentityError::InvalidProjection)?;
                 block.id = line.id;
-                block.direct_paragraph = source.direct_paragraph.clone();
-                block.direct_default_character = source.direct_default_character.clone();
+                block.direct_formatting = source.direct_formatting.clone();
             }
             self.style_sheet = previous.style_sheet.clone();
             self.document_style = previous.document_style.clone();
@@ -2373,8 +2460,7 @@ impl FormattedDocument {
             let source = previous_blocks
                 .get(source_index)
                 .ok_or(BlockIdentityError::InvalidProjection)?;
-            candidate.direct_paragraph = source.direct_paragraph.clone();
-            candidate.direct_default_character = source.direct_default_character.clone();
+            candidate.direct_formatting = source.direct_formatting.clone();
             candidate.id = match origin {
                 TransferredLineOrigin::Existing(_) => source.id,
                 TransferredLineOrigin::Copied(_) => 0,
@@ -2456,6 +2542,25 @@ impl FormattedDocument {
         if source_offset < self.source_content_start {
             return Err(SourceToTextError::InteriorBom {
                 source_range: 0..self.source_content_start,
+            });
+        }
+
+        if self.literal_encoding.is_some() {
+            let span = self.literal_span_for_source(source_offset)
+                .ok_or(SourceToTextError::UnmappedBoundary { source_offset })?;
+            if let Some(formatted) = self.literal_text_in_span(&span, source_offset) {
+                return self.checked_source_mapping(source_offset, formatted, affinity, relation);
+            }
+            let span = self.literal_source_unit(&span, source_offset);
+            let opaque = self.has_decoding_diagnostic_overlapping(&span.formatted);
+            return Err(if opaque {
+                SourceToTextError::InteriorOpaqueUnit {
+                    source_range: span.source, formatted_range: span.formatted,
+                }
+            } else {
+                SourceToTextError::InteriorMappedUnit {
+                    source_range: span.source, formatted_range: span.formatted,
+                }
             });
         }
 
@@ -2792,11 +2897,134 @@ impl FormattedDocument {
     }
 
     pub(crate) fn provenance_for_region(&self, range: &Range<usize>) -> Vec<ProvenanceSpan> {
-        self.provenance.query_overlapping(range)
+        self.provenance.query_overlapping(range).into_iter()
+            .map(|span| self.clip_literal_span(span, range)).collect()
     }
 
     pub(crate) fn provenance_touching(&self, range: &Range<usize>) -> Vec<ProvenanceSpan> {
-        self.provenance.query_touching(range)
+        self.provenance.query_touching(range).into_iter()
+            .map(|span| self.clip_literal_span(span, range)).collect()
+    }
+
+    fn clip_literal_span(&self, span: ProvenanceSpan, range: &Range<usize>) -> ProvenanceSpan {
+        if self.literal_encoding.is_none() { return span; }
+        let start = span.formatted.start.max(range.start);
+        let end = span.formatted.end.min(range.end);
+        if let Some((source_start, source_end)) = self.literal_source_in_span(&span, start)
+            .zip(self.literal_source_in_span(&span, end)) {
+            ProvenanceSpan { formatted: start..end, source: source_start..source_end }
+        } else { span }
+    }
+
+    fn literal_source_in_span(&self, span: &ProvenanceSpan, at: usize) -> Option<usize> {
+        if at == span.formatted.start { return Some(span.source.start); }
+        if at == span.formatted.end { return Some(span.source.end); }
+        let encoding = self.literal_encoding?;
+        if encoding == super::Encoding::Utf8 && span.formatted.len() == span.source.len() {
+            return (span.formatted.contains(&at) && self.text.is_char_boundary(at).ok()?)
+                .then_some(span.source.start + at - span.formatted.start);
+        }
+        let text = self.text.slice(span.formatted.clone()).ok()?;
+        if encoding.encoded_text_len(&text) != span.source.len() { return None; }
+        let prefix = text.get(..at.checked_sub(span.formatted.start)?)?;
+        Some(span.source.start + encoding.encoded_text_len(prefix))
+    }
+
+    fn literal_text_in_span(&self, span: &ProvenanceSpan, source: usize) -> Option<usize> {
+        if source == span.source.start { return Some(span.formatted.start); }
+        if source == span.source.end { return Some(span.formatted.end); }
+        let encoding = self.literal_encoding?;
+        if encoding == super::Encoding::Utf8 && span.formatted.len() == span.source.len() {
+            let at = span.formatted.start.checked_add(source.checked_sub(span.source.start)?)?;
+            return (source < span.source.end && self.text.is_char_boundary(at).ok()?).then_some(at);
+        }
+        let text = self.text.slice(span.formatted.clone()).ok()?;
+        if encoding.encoded_text_len(&text) != span.source.len() { return None; }
+        let mut at = span.source.start;
+        for (offset, ch) in text.char_indices() {
+            if at == source { return Some(span.formatted.start + offset); }
+            at += encoding.scalar_source_width(ch);
+            if at > source { return None; }
+        }
+        None
+    }
+
+    fn literal_span_for_source(&self, source: usize) -> Option<ProvenanceSpan> {
+        self.literal_encoding?;
+        let index = self.source_boundaries.partition_point_start(source);
+        let boundary = self.source_boundaries.get(index).filter(|at| at.source.start == source)
+            .or_else(|| index.checked_sub(1).and_then(|at| self.source_boundaries.get(at)))?;
+        self.provenance.query_touching(&(boundary.formatted..boundary.formatted)).into_iter()
+            .find(|span| span.source.start <= source && source <= span.source.end)
+    }
+
+    fn literal_source_unit(&self, span: &ProvenanceSpan, source: usize) -> ProvenanceSpan {
+        let Some(encoding) = self.literal_encoding else { return span.clone(); };
+        let Ok(text) = self.text.slice(span.formatted.clone()) else { return span.clone(); };
+        if encoding.encoded_text_len(&text) != span.source.len() { return span.clone(); }
+        let mut at = span.source.start;
+        for (offset, ch) in text.char_indices() {
+            let end = at + encoding.scalar_source_width(ch);
+            if at < source && source < end {
+                return ProvenanceSpan {
+                    formatted: span.formatted.start + offset..span.formatted.start + offset + ch.len_utf8(),
+                    source: at..end,
+                };
+            }
+            at = end;
+        }
+        span.clone()
+    }
+
+    /// Expand a literal edit to existing bounded mapping-run boundaries. This
+    /// projection window is independent of user grapheme selection boundaries.
+    pub(crate) fn literal_projection_extent(&self, range: &Range<usize>) -> Option<(Range<usize>, Range<usize>)> {
+        self.literal_encoding?;
+        if range.start > range.end || range.end > self.text.byte_len() { return None; }
+        if self.text.byte_len() == 0 {
+            return Some((0..0, self.source_content_start..self.source_content_start));
+        }
+        let first = self.provenance.query_touching(&(range.start..range.start)).into_iter().next()?;
+        let last = self.provenance.query_touching(&(range.end..range.end)).into_iter().last()?;
+        Some((first.formatted.start..last.formatted.end, first.source.start..last.source.end))
+    }
+
+    /// Regional batches are applied from right to left. Assign their fresh
+    /// paragraph identities in final document order, just as one projection
+    /// does, while visiting only blocks touched by the inserted regions.
+    pub(crate) fn order_new_literal_block_ids(
+        &mut self, previous_length: usize, edits: &[TextEdit], first_id: u64,
+    ) -> Result<(), BlockIdentityError> {
+        if self.literal_encoding.is_none() || self.blocks.len() != self.hard_lines.len() {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+        let mappings = build_edit_mappings(previous_length, self.text.byte_len(), edits)?;
+        let mut fresh = std::collections::BTreeMap::new();
+        for mapping in mappings {
+            for block in self.blocks.query_touching(&mapping.new) {
+                if block.id >= first_id {
+                    let index = self.blocks.index_touching_point(block.range.start)
+                        .ok_or(BlockIdentityError::InvalidProjection)?;
+                    fresh.insert(index, block);
+                }
+            }
+        }
+        let mut stats = RangeSpliceStats::default();
+        for (ordinal, (index, mut block)) in fresh.into_iter().enumerate() {
+            let id = first_id.checked_add(ordinal as u64).ok_or(BlockIdentityError::Exhausted)?;
+            if block.id == id { continue; }
+            let mut line = self.hard_lines.get(index).ok_or(BlockIdentityError::InvalidProjection)?;
+            if line.id != block.id || line.range != block.range {
+                return Err(BlockIdentityError::InvalidProjection);
+            }
+            block.id = id;
+            line.id = id;
+            self.blocks = self.blocks.splice(index..index + 1, vec![block], 0, 0, &mut stats)
+                .ok_or(BlockIdentityError::InvalidProjection)?;
+            self.hard_lines = self.hard_lines.splice(index..index + 1, vec![line], 0, 0, &mut stats)
+                .ok_or(BlockIdentityError::InvalidProjection)?;
+        }
+        Ok(())
     }
 
     /// Source-contained contributors, including content reordered by a format
@@ -2824,6 +3052,25 @@ impl FormattedDocument {
         source: usize,
         downstream: bool,
     ) -> Option<usize> {
+        if self.literal_encoding.is_some() {
+            if let Some(span) = self.literal_span_for_source(source) {
+                if let Some(point) = self.literal_text_in_span(&span, source) { return Some(point); }
+                // Presentation-only recovery from an interior encoding unit.
+                let text = self.text.slice(span.formatted.clone()).ok()?;
+                let encoding = self.literal_encoding?;
+                if encoding.encoded_text_len(&text) == span.source.len() {
+                    let mut at = span.source.start;
+                    for (offset, ch) in text.char_indices() {
+                        let end = at + encoding.scalar_source_width(ch);
+                        if source < end {
+                            return Some(span.formatted.start + offset + if downstream { ch.len_utf8() } else { 0 });
+                        }
+                        at = end;
+                    }
+                }
+                return Some(if downstream { span.formatted.end } else { span.formatted.start });
+            }
+        }
         let index = self.source_boundaries.partition_point_start(source);
         let following = self.source_boundaries.get(index);
         if following
@@ -3092,7 +3339,7 @@ impl FormattedDocument {
             Some((offset, &text[offset..at]))
         });
         graphemes.map(move |(offset, item)| {
-            let source = if ordered_ends && !spans.is_empty() {
+            let source = if self.literal_encoding.is_none() && ordered_ends && !spans.is_empty() {
                 let (following, preceding) = boundary(offset);
                 let start = following
                     .or(preceding)
@@ -3116,6 +3363,9 @@ impl FormattedDocument {
             return None;
         }
         if range.is_empty() {
+            if self.literal_encoding.is_some() {
+                return self.source_boundary(range.start, Side::Downstream).map(|at| at..at);
+            }
             return super::source_edit::insertion_point(self, range.start, None).map(|at| at..at);
         }
         let start = self.source_boundary(range.start, Side::Downstream)?;
@@ -3200,6 +3450,9 @@ impl FormattedDocument {
         }
 
         let adjacent = self.provenance.query_touching(&(at..at));
+        if self.literal_encoding.is_some() {
+            return adjacent.iter().find_map(|span| self.literal_source_in_span(span, at));
+        }
         let preceding = adjacent
             .iter()
             .rev()
@@ -3433,8 +3686,7 @@ fn inherit_split_direct_assignments(
         .iter_mut()
         .filter(|candidate| candidate.range.end <= mapped_end)
     {
-        candidate.direct_paragraph = old.direct_paragraph.clone();
-        candidate.direct_default_character = old.direct_default_character.clone();
+        candidate.direct_formatting = old.direct_formatting.clone();
     }
     Ok(())
 }
@@ -3743,7 +3995,7 @@ pub(crate) fn splice_line_local_projection(
         && old_formatted.end <= previous_region_blocks[0].range.end
         && regional.blocks.len() == 1
         && regional.blocks.as_slice()[0].style == previous_region_blocks[0].style;
-    if !partial_preserved_block
+    if !partial_preserved_block && !literal_topology
         && !source_paragraphs
         && (previous_region_blocks
             .first()
@@ -3784,14 +4036,56 @@ pub(crate) fn splice_line_local_projection(
             block.range = shift_region_range(&block.range, old_formatted.start)?;
             block.id = 0;
         }
+        if let (Some(first), Some(old)) = (regional_blocks.first_mut(), previous_region_blocks.first()) {
+            first.range.start = old.range.start;
+        }
+        if let (Some(last), Some(old)) = (regional_blocks.last_mut(), previous_region_blocks.last()) {
+            last.range.end = old.range.end - old_formatted.end + new_formatted_end;
+        }
         let mappings = build_edit_mappings(previous.text.byte_len(), target_text.byte_len(), edits)?;
         for old in &previous_region_blocks {
-            let mapped = first_surviving_byte(&old.range, &mappings)
-                .map(|at| map_surviving_byte(at, &mappings))
-                .unwrap_or_else(|| map_old_boundary_before(old.range.start, &mappings));
-            let Ok(at) = mapped else { continue; };
+            if old.direct_formatting.is_some() {
+                let local = mappings.iter().zip(edits).filter(|(mapping, _)| {
+                    mapping.old.end >= old.range.start && mapping.old.start <= old.range.end
+                }).collect::<Vec<_>>();
+                if local.iter().any(|(mapping, edit)| old.range.start <= mapping.old.start
+                    && mapping.old.end <= old.range.end && edit.replacement.contains('\n'))
+                    && !local.iter().any(|(mapping, _)|
+                        mapping.old.start < old.range.start && old.range.start < mapping.old.end
+                        || mapping.old.start < old.range.end && old.range.end < mapping.old.end) {
+                    let start = map_old_boundary_before(old.range.start, &mappings)?;
+                    let mut end = map_old_boundary_before(old.range.end, &mappings)?;
+                    for (mapping, _) in &local {
+                        if mapping.old.is_empty() && mapping.old.start == old.range.end { end = end.max(mapping.new.end); }
+                    }
+                    for block in regional_blocks.iter_mut().filter(|block| start <= block.range.start && block.range.end <= end) {
+                        block.direct_formatting = old.direct_formatting.clone();
+                    }
+                }
+            }
+            let follows_break = old.range.end < previous.text.byte_len()
+                && previous.text.byte_chunk_at(old.range.end).first() == Some(&b'\n');
+            let precedes_break = old.range.start > 0
+                && previous.text.byte_chunk_at(old.range.start - 1).first() == Some(&b'\n');
+            let witness = first_surviving_byte(&old.range, &mappings).map(|at| (at, false))
+                .or_else(|| if follows_break {
+                    first_surviving_byte(&(old.range.end..old.range.end + 1), &mappings).map(|at| (at, false))
+                } else if precedes_break {
+                    first_surviving_byte(&(old.range.start - 1..old.range.start), &mappings).map(|at| (at, true))
+                } else { None });
+            let at = if let Some((witness, after_break)) = witness {
+                map_surviving_byte(witness, &mappings)? + usize::from(after_break)
+            } else if old.range.is_empty() && follows_break {
+                let Some(mapping) = mappings.iter().find(|mapping| !mapping.old.is_empty()
+                    && mapping.old.start <= old.range.end && old.range.end < mapping.old.end) else { continue; };
+                mapping.new.start
+            } else if previous.blocks.len() == 1 { regional_blocks[0].range.start }
+            else { continue; };
             let index = regional_blocks.partition_point(|block| block.range.start <= at).saturating_sub(1);
-            if let Some(block) = regional_blocks.get_mut(index).filter(|block| block.id == 0 && at <= block.range.end) { block.id = old.id; }
+            if let Some(block) = regional_blocks.get_mut(index).filter(|block| block.id == 0 && at <= block.range.end) {
+                block.id = old.id;
+                block.direct_formatting = old.direct_formatting.clone();
+            }
         }
         *next_projected_block_id = allocate_unassigned_block_ids(&mut regional_blocks, *next_projected_block_id)?;
     } else if source_paragraphs {
@@ -3831,8 +4125,7 @@ pub(crate) fn splice_line_local_projection(
                 old_line.id
             };
             used.insert(candidate.id);
-            candidate.direct_paragraph = old.direct_paragraph.clone();
-            candidate.direct_default_character = old.direct_default_character.clone();
+            candidate.direct_formatting = old.direct_formatting.clone();
             if previous
                 .style_sheet
                 .configuration_deleted(&candidate.style, true)
@@ -3848,8 +4141,7 @@ pub(crate) fn splice_line_local_projection(
                     old.range.start..old.range.end - old_formatted.len() + regional.text().len();
             }
             candidate.id = old.id;
-            candidate.direct_paragraph = old.direct_paragraph.clone();
-            candidate.direct_default_character = old.direct_default_character.clone();
+            candidate.direct_formatting = old.direct_formatting.clone();
             if previous
                 .style_sheet
                 .configuration_deleted(&candidate.style, true)
@@ -3883,7 +4175,7 @@ pub(crate) fn splice_line_local_projection(
         regional_lines.iter().enumerate().map(|(index, line)| {
             Ok(HardLine {
                 id: regional_blocks[index].id,
-                range: shift_region_range(&line.range, old_formatted.start)?,
+                range: regional_blocks[index].range.clone(),
                 separator_length: if index + 1 == regional_lines.len() { old_lines.last().unwrap().separator_length } else { line.separator_length },
             })
         }).collect::<Result<Vec<_>, BlockIdentityError>>()?
@@ -4037,8 +4329,13 @@ pub(crate) fn splice_line_local_projection(
         None
     };
 
-    let style_indices = contained_interval_indices(&previous.styles, &old_formatted)?;
-    let regional_styles = regional
+    let literal_mapping = previous.literal_encoding.is_some() && regional.literal_encoding == previous.literal_encoding;
+    let style_indices = if literal_mapping {
+        let first = previous.styles.query_overlapping(&old_formatted).iter()
+            .map(|span| span.range.start).min().unwrap_or(old_formatted.start);
+        previous.styles.partition_point_start(first)..previous.styles.partition_point_start(old_formatted.end)
+    } else { contained_interval_indices(&previous.styles, &old_formatted)? };
+    let mut regional_styles = regional
         .styles
         .as_slice()
         .iter()
@@ -4049,6 +4346,24 @@ pub(crate) fn splice_line_local_projection(
             })
         })
         .collect::<Result<Vec<_>, BlockIdentityError>>()?;
+    if literal_mapping {
+        for span in previous.styles.get_range(&style_indices).ok_or(BlockIdentityError::InvalidProjection)? {
+            if span.range.start < old_formatted.start {
+                regional_styles.push(StyleSpan {
+                    range: span.range.start..span.range.end.min(old_formatted.start),
+                    application: span.application.clone(),
+                });
+            }
+            if span.range.end > old_formatted.end {
+                let range = span.range.start.max(old_formatted.end)..span.range.end;
+                regional_styles.push(StyleSpan {
+                    range: shift_range_i128(&range, new_formatted_end as i128 - old_formatted.end as i128)
+                        .ok_or(BlockIdentityError::InvalidProjection)?,
+                    application: span.application,
+                });
+            }
+        }
+    }
     let styles = previous
         .styles
         .splice(
@@ -4060,24 +4375,34 @@ pub(crate) fn splice_line_local_projection(
         )
         .ok_or(BlockIdentityError::InvalidProjection)?;
 
-    let provenance_indices = contained_interval_indices(&previous.provenance, &old_formatted)?;
+    let provenance_indices = if literal_mapping {
+        let mut first = previous.provenance.partition_point_start(old_formatted.start);
+        if first > 0 && previous.provenance.get(first - 1).is_some_and(|span| span.formatted.end > old_formatted.start) {
+            first -= 1;
+        }
+        first..previous.provenance.partition_point_start(old_formatted.end)
+    } else { contained_interval_indices(&previous.provenance, &old_formatted)? };
     let old_provenance = previous
         .provenance
         .get_range(&provenance_indices)
         .ok_or(BlockIdentityError::InvalidProjection)?;
-    if old_provenance
+    if !literal_mapping && old_provenance
         .iter()
         .any(|span| span.source.start < old_source.start || span.source.end > old_source.end)
     {
         return Err(BlockIdentityError::InvalidProjection);
     }
+    let mapping_source = if literal_mapping {
+        old_provenance.first().map_or(old_source.start, |span| span.source.start)
+            ..old_provenance.last().map_or(old_source.end, |span| span.source.end)
+    } else { old_source.clone() };
     validate_source_neighbors(
         &previous.provenance,
         &provenance_indices,
-        &old_source,
+        &mapping_source,
         |span| &span.source,
     )?;
-    let regional_provenance = regional
+    let mut regional_provenance = regional
         .provenance
         .as_slice()
         .iter()
@@ -4088,6 +4413,22 @@ pub(crate) fn splice_line_local_projection(
             })
         })
         .collect::<Result<Vec<_>, BlockIdentityError>>()?;
+    if literal_mapping {
+        if let Some(first) = old_provenance.first().filter(|span| span.formatted.start < old_formatted.start) {
+            let prefix = previous.clip_literal_span(first.clone(), &(first.formatted.start..old_formatted.start));
+            if prefix.formatted.end != old_formatted.start { return Err(BlockIdentityError::InvalidProjection); }
+            regional_provenance.insert(0, prefix);
+        }
+        if let Some(last) = old_provenance.last().filter(|span| span.formatted.end > old_formatted.end) {
+            let suffix = previous.clip_literal_span(last.clone(), &(old_formatted.end..last.formatted.end));
+            if suffix.formatted.start != old_formatted.end { return Err(BlockIdentityError::InvalidProjection); }
+            let formatted = shift_range_i128(&suffix.formatted, new_formatted_end as i128 - old_formatted.end as i128)
+                .ok_or(BlockIdentityError::InvalidProjection)?;
+            let source = shift_range_i128(&suffix.source, new_source.end as i128 - old_source.end as i128)
+                .ok_or(BlockIdentityError::InvalidProjection)?;
+            regional_provenance.push(ProvenanceSpan { formatted, source });
+        }
+    }
     // A source-reordered projection needs full reprojection when an edit can
     // shift its two orderings differently. Ordinary text/rich paragraphs
     // splice both persistent indexes without walking the untouched suffix.
@@ -4098,7 +4439,7 @@ pub(crate) fn splice_line_local_projection(
     regional_boundaries.extend(
         previous
             .source_boundaries
-            .query_touching(&(old_source.start..old_source.start))
+            .query_touching(&(mapping_source.start..mapping_source.start))
             .into_iter()
             .filter(|boundary| boundary.formatted <= old_formatted.start),
     );
@@ -4106,18 +4447,19 @@ pub(crate) fn splice_line_local_projection(
     regional_boundaries.extend(
         previous
             .source_boundaries
-            .query_touching(&(old_source.end..old_source.end))
+            .query_touching(&(mapping_source.end..mapping_source.end))
             .into_iter()
             .filter(|boundary| boundary.formatted >= old_formatted.end)
             .filter_map(|boundary| {
-                boundary.with_transform(new_source.end..new_source.end, formatted_delta, None)
+                let source = shift_range_i128(&boundary.source, new_source.end as i128 - old_source.end as i128)?;
+                boundary.with_transform(source, formatted_delta, None)
             }),
     );
     normalize_source_boundaries(&mut regional_boundaries);
     let boundary_indices = previous
         .source_boundaries
-        .partition_point_start(old_source.start)
-        ..old_source
+        .partition_point_start(mapping_source.start)
+        ..mapping_source
             .end
             .checked_add(1)
             .map_or(previous.source_boundaries.len(), |end| {
@@ -4245,6 +4587,7 @@ pub(crate) fn splice_line_local_projection(
         flow_blocks,
         styles,
         provenance,
+        literal_encoding: regional.literal_encoding,
         source_boundaries,
         source_ordered: true,
         decoding_diagnostics,
@@ -4437,7 +4780,7 @@ pub(super) fn project_plain(
             })
         })
         .collect();
-    FormattedDocument::from_parts(
+    let mut projection = FormattedDocument::from_parts(
         revision,
         normalized.text.clone(),
         blocks_for_hard_line_ranges(&hard_lines),
@@ -4447,7 +4790,9 @@ pub(super) fn project_plain(
         StyleSheet::default(),
         source_content_start,
         source_content_end,
-    )
+    );
+    projection.literal_encoding = Some(normalized.encoding);
+    projection
 }
 
 fn normalized_hard_line_ranges(normalized: &NormalizedText) -> Vec<Range<usize>> {
@@ -4467,14 +4812,7 @@ fn blocks_for_hard_line_ranges(ranges: &[Range<usize>]) -> Vec<Block> {
     ranges
         .iter()
         .cloned()
-        .map(|range| Block {
-            id: 0,
-            range,
-            kind: BlockKind::Paragraph,
-            style: "Paragraph".into(),
-            direct_paragraph: BlockProperties::default(),
-            direct_default_character: CharacterProperties::default(),
-        })
+        .map(|range| Block::paragraph(0, range))
         .collect()
 }
 
@@ -4726,17 +5064,10 @@ fn project_markdown_lines(
                     }
                 }
                 {
-                    builder.blocks.push(Block {
-                        id: 0,
-                        range: output_start..builder.output.len(),
-                        kind: markdown_presented_kind(
+                    builder.blocks.push(Block::new(0, output_start..builder.output.len(), markdown_presented_kind(
                             context.map_or(BlockKind::Paragraph, |context| context.kind.clone()),
                             preserve_markers,
-                        ),
-                        style: if quoted { "Block quote" } else { "Code Block" }.into(),
-                        direct_paragraph: BlockProperties::default(),
-                        direct_default_character: CharacterProperties::default(),
-                    });
+                        ), if quoted { "Block quote" } else { "Code Block" }.into(), None));
                 }
             } else {
                 let body_at = input_lines
@@ -4749,17 +5080,10 @@ fn project_markdown_lines(
                     formatted: output_start..output_start,
                     source: source_at..source_at,
                 });
-                builder.blocks.push(Block {
-                    id: 0,
-                    range: output_start..output_start,
-                    kind: markdown_presented_kind(
+                builder.blocks.push(Block::new(0, output_start..output_start, markdown_presented_kind(
                         context.map_or(BlockKind::Paragraph, |context| context.kind.clone()),
                         preserve_markers,
-                    ),
-                    style: if quoted { "Block quote" } else { "Code Block" }.into(),
-                    direct_paragraph: BlockProperties::default(),
-                    direct_default_character: CharacterProperties::default(),
-                });
+                    ), if quoted { "Block quote" } else { "Code Block" }.into(), None));
             }
             if let Some(ending) = normalized.endings.get(after - 1) {
                 hard_breaks.push(builder.output.len());
@@ -4811,14 +5135,7 @@ fn project_markdown_lines(
                 StyleId(format!("{}{}", if ordered { "NumberedList" } else { "BulletedList" }, u16::from(level).min(3) + 1))
             }
         }};
-        builder.blocks.push(Block {
-            id: 0,
-            range: output_start..output_end,
-            kind,
-            style,
-            direct_paragraph: BlockProperties::default(),
-            direct_default_character: CharacterProperties::default(),
-        });
+        builder.blocks.push(Block::new(0, output_start..output_end, kind, style, None));
         if let Some(ending) = normalized.endings.get(line_index) {
             hard_breaks.push(builder.output.len());
             builder.emit_unit_at(ending.normalized.start);
@@ -5360,6 +5677,137 @@ mod tests {
     use crate::document::history::History;
     use crate::document::line_endings::{normalize, FileFormat};
     use crate::document::{Encoding, Splice};
+
+    #[test]
+    fn compact_literal_mapping_matches_dense_oracle_at_every_source_boundary() {
+        for encoding in [Encoding::Utf8, Encoding::Latin1, Encoding::Utf16Le, Encoding::Utf16Be] {
+            let body = if encoding == Encoding::Latin1 { "aé\r\nz\rb\n" } else { "aé😀e\u{301}\r\nz\rb\n" };
+            let mut bytes = encoding.bom_bytes().to_vec();
+            bytes.extend(encoding.encode_fragment(body).unwrap());
+            match encoding {
+                Encoding::Utf8 => bytes.extend([0xff, b'x', 0xe2, 0x82]),
+                Encoding::Utf16Le => bytes.extend([0x00, 0xd8, b'x', 0, 0x91]),
+                Encoding::Utf16Be => bytes.extend([0xd8, 0x00, 0, b'x', 0x91]),
+                Encoding::Latin1 => (),
+            }
+            let decoded = encoding.decode(&bytes).unwrap();
+            for format in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
+                let compact = super::super::line_endings::normalize_literal(&decoded, format);
+                let dense = normalize(&decoded, format);
+                let compact = project_plain(&compact, Revision(7), decoded.bom_len, bytes.len());
+                let dense = project_plain(&dense, Revision(7), decoded.bom_len, bytes.len());
+                assert_eq!(compact.text(), dense.text());
+                for source in 0..=bytes.len() {
+                    for affinity in [BoundaryAffinity::Upstream, BoundaryAffinity::Downstream] {
+                        assert_eq!(compact.map_source_boundary(Revision(7), source, affinity),
+                            dense.map_source_boundary(Revision(7), source, affinity), "{encoding:?} {format:?} source={source}");
+                    }
+                }
+                let boundaries = compact.text().char_indices().map(|(at, _)| at)
+                    .chain(std::iter::once(compact.text().len())).collect::<Vec<_>>();
+                for &start in &boundaries {
+                    for &end in boundaries.iter().filter(|&&end| end >= start) {
+                        assert_eq!(compact.source_range(start..end), dense.source_range(start..end));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn many_literal_hard_lines_do_not_create_scalar_or_line_mapping_tables() {
+        let source = "x\n".repeat(100_000);
+        let document = crate::document::Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::PlainText).unwrap();
+        let projection = document.projection();
+        assert_eq!(projection.hard_line_count(), 100_001);
+        assert!(projection.provenance.len() <= source.len().div_ceil(super::super::encoding::MAPPING_CHUNK_BYTES));
+        assert!(projection.source_boundaries.len() <= projection.provenance.len() * 2);
+        assert_eq!(projection.source_range(12345..12346), Some(12345..12346));
+    }
+
+    #[test]
+    fn compact_literal_edit_windows_match_dense_source_patches_across_chunks() {
+        for encoding in [Encoding::Utf8, Encoding::Latin1, Encoding::Utf16Le, Encoding::Utf16Be] {
+            for file_format in [FileFormat::Unix, FileFormat::Dos] {
+                let body = if encoding == Encoding::Latin1 { "éabcd\r\n" } else { "é😀e\u{301}abcd\r\n" };
+                let mut source = encoding.bom_bytes().to_vec();
+                source.extend(encoding.encode_fragment(&body.repeat(900)).unwrap());
+                let mut document = crate::document::Document::from_bytes_with_file_format(
+                    source.clone(), encoding, Format::PlainText, file_format).unwrap();
+                let mut seed = 31_u64;
+                for step in 0..24 {
+                    let decoded = encoding.decode(&source).unwrap();
+                    let normalized = normalize(&decoded, file_format);
+                    let oracle = project_plain(&normalized, document.revision(), decoded.bom_len, source.len());
+                    let boundaries = oracle.text().char_indices().map(|(at, _)| at)
+                        .chain(std::iter::once(oracle.text().len()))
+                        .filter(|&at| oracle.is_logical_grapheme_boundary(at).unwrap()).collect::<Vec<_>>();
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let index = seed as usize % boundaries.len();
+                    let end = (index + step % 3).min(boundaries.len() - 1);
+                    let range = boundaries[index]..boundaries[end];
+                    let replacement = if step % 5 == 0 { "\n" } else { "é" };
+                    let patch = oracle.source_range(range.clone()).unwrap();
+                    let physical = if replacement == "\n" && file_format == FileFormat::Dos { "\r\n" } else { replacement };
+                    source.splice(patch, encoding.encode_fragment(physical).unwrap());
+                    document.replace(range, replacement).unwrap();
+                    assert_eq!(document.source_bytes(), source, "{encoding:?} {file_format:?} step={step}");
+                    let decoded = encoding.decode(&source).unwrap();
+                    let normalized = normalize(&decoded, file_format);
+                    assert_eq!(document.text(), normalized.text);
+                    let source_at = source.len() / 2;
+                    let reopened = project_plain(&normalized, document.revision(), decoded.bom_len, source.len());
+                    assert_eq!(document.projection().map_source_boundary(document.revision(), source_at, BoundaryAffinity::Downstream),
+                        reopened.map_source_boundary(document.revision(), source_at, BoundaryAffinity::Downstream));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn inherited_blocks_are_compact_and_direct_formatting_is_copy_on_write() {
+        assert_eq!(std::mem::size_of::<Block>(), 32);
+        let original = Block::paragraph(1, 0..1);
+        let another = Block::paragraph(2, 2..3);
+        assert!(Arc::ptr_eq(&original.attributes, &another.attributes));
+        let mut styled = original.clone();
+        assert!(Arc::ptr_eq(&original.attributes, &styled.attributes));
+        styled.style = "Heading1".into();
+        styled.kind = BlockKind::Heading(1);
+        styled.direct_default_character.size = Some(24.0);
+        styled.direct_paragraph.spacing_before = Some(2.0);
+        assert!(original.direct_formatting.is_none());
+        assert_eq!(original.style.0, "Paragraph");
+        assert_eq!(original.kind, BlockKind::Paragraph);
+        assert!(!Arc::ptr_eq(&original.attributes, &styled.attributes));
+        assert_eq!(original.direct_default_character.size, None);
+        let mut changed = styled.clone();
+        assert!(Arc::ptr_eq(styled.direct_formatting.as_ref().unwrap(), changed.direct_formatting.as_ref().unwrap()));
+        changed.direct_default_character.size = Some(30.0);
+        assert_eq!(styled.direct_default_character.size, Some(24.0));
+        assert_eq!(changed.direct_default_character.size, Some(30.0));
+        assert_eq!(changed.direct_paragraph.spacing_before, Some(2.0));
+        let mut explicit_empty = original.clone();
+        explicit_empty.direct_default_character.size = None;
+        assert_eq!(explicit_empty, original);
+    }
+
+    #[test]
+    fn literal_blocks_share_attributes_across_open_edits_and_history() {
+        use crate::document::Document;
+        for format in [Format::PlainText, Format::Code] {
+            let mut document = Document::from_bytes(b"a\n".repeat(10_000), Encoding::Utf8, format).unwrap();
+            let initial = document.projection().blocks.get(0).unwrap();
+            for index in [1, 5000, 10_000] {
+                assert!(Arc::ptr_eq(&initial.attributes, &document.projection().blocks.get(index).unwrap().attributes));
+            }
+            document.insert(3, "x\ny").unwrap();
+            assert_eq!(initial.kind, BlockKind::Paragraph);
+            assert_eq!(initial.style.0, "Paragraph");
+            assert!(document.undo());
+            assert!(Arc::ptr_eq(&initial.attributes, &document.projection().blocks.get(0).unwrap().attributes));
+        }
+    }
 
     fn markdown_at(source: &str, revision: Revision) -> FormattedDocument {
         let decoded = Encoding::Utf8.decode(source.as_bytes()).unwrap();

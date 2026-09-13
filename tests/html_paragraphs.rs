@@ -213,7 +213,14 @@ fn large_document_split_preserves_unaffected_identities_and_cached_shaping() {
     let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
     let mut view = ViewLayout::new(600.0, 300.0);
     engine.set_cache_capacity(10_010);
+    // This test isolates edit invalidation with every distinct paragraph warm.
+    // Configure both limits: the default 32 MiB budget evicts some of these
+    // 10,000 fragments independently of the larger entry allowance.
+    engine.set_shape_cache_byte_budgets(64 * 1024 * 1024, 1024 * 1024);
     engine.relayout(&document, &mut view).unwrap();
+    let cache = engine.shaping_cache_statistics();
+    assert_eq!(cache.fragment_count, 10_000);
+    assert_eq!(cache.eviction_count, 0);
     let shaped = engine.provider().request_calls();
     enter(&mut document, at);
     assert_eq!(document.projection().blocks()[9001].id, before);

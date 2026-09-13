@@ -77,7 +77,6 @@ pub(super) fn ordered_lines(
     let mut records = Vec::with_capacity(source_lines.len());
     for index in source_lines.clone() {
         let range = snapshot.line(index).unwrap().content_range();
-        let whole = &snapshot.text()[range.clone()];
         let key_range = if let Some(regex) = &regex {
             match regex.find(&input, range.start, range.end, &mut work)? {
                 Some(matched) if options.match_only => matched.range(),
@@ -85,22 +84,29 @@ pub(super) fn ordered_lines(
                 None => range.start..range.start,
             }
         } else {
-            range
+            range.clone()
         };
-        let text = &snapshot.text()[key_range];
+        let text = snapshot
+            .slice_utf8(key_range)
+            .expect("validated sort key boundaries");
         let key = if let Some(radix) = options.radix {
-            Key::Number(integer_key(text, radix))
+            Key::Number(integer_key(&text, radix))
         } else {
             Key::Text(if options.ignore_case {
                 text.to_lowercase()
             } else {
-                text.into()
+                text
             })
         };
-        let identity = if options.ignore_case {
-            whole.to_lowercase()
+        let identity = if options.unique {
+            let whole = snapshot.slice_utf8(range).expect("hard-line boundaries");
+            if options.ignore_case {
+                whole.to_lowercase()
+            } else {
+                whole
+            }
         } else {
-            whole.into()
+            String::new()
         };
         records.push((index, key, identity));
     }

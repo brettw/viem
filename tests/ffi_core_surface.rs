@@ -510,6 +510,11 @@ unsafe extern "C" fn unstable_context_shape_batch(
     ViemStatus::UnstableShapingContext as u32
 }
 
+unsafe extern "C" fn fake_retain_render_runs(
+    _context: *mut c_void, _handles: *const ViemRenderRunHandleV1, _count: u64,
+) -> *mut c_void { ptr::NonNull::<u8>::dangling().as_ptr().cast() }
+unsafe extern "C" fn fake_release_render_runs(_lease: *mut c_void) {}
+
 fn provider(
     context: *mut c_void,
     shape_batch: ViemShapeBatchCallback,
@@ -526,6 +531,8 @@ fn provider(
         reserved: 0,
         metrics_generation: Some(fake_metrics_generation),
         shape_batch: Some(shape_batch),
+        retain_render_runs: Some(fake_retain_render_runs),
+        release_render_runs: Some(fake_release_render_runs),
     }
 }
 
@@ -3859,7 +3866,7 @@ fn provider_key_utf8_pointer_and_enum_failures_are_rejected_without_state_change
     assert_eq!(view, 0);
 
     invalid_provider = provider(context_pointer, fake_shape_batch);
-    for version in [0, 1, VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION + 1] {
+    for version in [0, 1, 2, VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION + 1] {
         invalid_provider.abi_version = version;
         assert_eq!(
             unsafe {
@@ -3874,6 +3881,15 @@ fn provider_key_utf8_pointer_and_enum_failures_are_rejected_without_state_change
             ViemStatus::InvalidProvider
         );
 
+    }
+
+    for missing_retain in [true, false] {
+        invalid_provider = provider(context_pointer, fake_shape_batch);
+        if missing_retain { invalid_provider.retain_render_runs = None; }
+        else { invalid_provider.release_render_runs = None; }
+        assert_eq!(unsafe { viem_core_view_add(core.handle, &options, &invalid_provider,
+            &mut view, &mut outcome) }, ViemStatus::InvalidProvider);
+        assert_eq!(view, 0);
     }
 
     invalid_provider = provider(context_pointer, fake_shape_batch);
@@ -3954,7 +3970,7 @@ fn provider_key_utf8_pointer_and_enum_failures_are_rejected_without_state_change
 }
 
 #[test]
-fn abi_v2_crossing_cluster_and_unstable_context_contract_are_explicit() {
+fn provider_crossing_cluster_and_unstable_context_contract_are_explicit() {
     let mut source = vec![b'x'; 4095];
     source.extend_from_slice(b"fitail");
     let core = create_core(&source, ViemDocumentOptions::default());
@@ -3967,10 +3983,10 @@ fn abi_v2_crossing_cluster_and_unstable_context_contract_are_explicit() {
     };
     let mut view = 0;
     let mut outcome = ViemCoreOutcomeV1::default();
-    let v2 = provider(context_pointer, fake_shape_batch);
+    let current = provider(context_pointer, fake_shape_batch);
 
     assert_eq!(
-        unsafe { viem_core_view_add(core.handle, &options, &v2, &mut view, &mut outcome) },
+        unsafe { viem_core_view_add(core.handle, &options, &current, &mut view, &mut outcome) },
         ViemStatus::Ok
     );
     assert!(context.saw_crossing_cluster_tail);
@@ -4634,10 +4650,10 @@ _Static_assert(offsetof(ViemDirectStyleEditV1, value) == {direct_style_value}, "
 static ViemStatus (*direct_style)(ViemCoreHandle, ViemViewId, const ViemDirectStyleEditV1 *, ViemCoreOutcomeV1 *) = viem_core_view_edit_direct_style;
 static ViemStatus (*decoration_state)(ViemCoreHandle, ViemViewId, uint32_t, uint32_t *) = viem_core_view_decoration_state;
 _Static_assert(VIEM_ENCODING_DETECT == 0u, "automatic encoding choice");
-_Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2 == 2u,
-    "provider ABI v2");
+_Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3 == 3u,
+    "provider ABI v3");
 _Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION ==
-    VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2, "current provider ABI");
+    VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3, "current provider ABI");
 _Static_assert(VIEM_STATUS_UNSTABLE_SHAPING_CONTEXT == 26u,
     "bounded-context refusal status");
 _Static_assert(VIEM_STATUS_LAYOUT_UNAVAILABLE == 28u,

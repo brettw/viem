@@ -250,6 +250,7 @@ fn generate(
                 Format::HtmlSource => "html",
                 Format::Rtf => "rtf",
                 Format::PlainText => "plain",
+                Format::Code => "code",
             };
             queue.push_back(Action::Format {
                 view,

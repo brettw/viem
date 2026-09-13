@@ -17,12 +17,18 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Range;
 use std::sync::Arc;
-use unicode_linebreak::{linebreaks, split_at_safe};
+use super::unicode_breaks::LineBreakState;
 use unicode_segmentation::UnicodeSegmentation;
+
+#[path = "unwrapped.rs"]
+mod unwrapped;
+use unwrapped::{HorizontalMaterialization, UnwrappedSummaryCache};
 
 pub(super) const MAX_SHAPE_FRAGMENT_BYTES: usize = 4096;
 pub(super) const SHAPING_CONTEXT_BYTES: usize = 32;
 const DEFAULT_CACHE_ENTRIES: usize = 2048;
+const DEFAULT_SHAPE_CACHE_BYTES: usize = 32 * 1024 * 1024;
+const DEFAULT_DECORATION_SHAPE_CACHE_BYTES: usize = 1024 * 1024;
 const DEFAULT_ESTIMATED_HARD_LINE_HEIGHT: f64 = 16.0;
 const DEFAULT_REGIONAL_CACHE_HARD_LINES: usize = 2048;
 const DEFAULT_REGIONAL_CACHE_VISUAL_ROWS: usize = 8192;
@@ -336,7 +342,7 @@ pub struct PositionedCluster {
     /// Absolute ink bounds, which may extend outside the row's line advance.
     pub ink_bounds: LayoutRect,
     pub bidi_level: u8,
-    pub fallback_font: String,
+    pub fallback_font: Arc<str>,
     pub render_run: Option<RenderRunHandle>,
 }
 
@@ -481,6 +487,7 @@ pub struct LayoutSnapshot {
     /// This remains distinct from provider caret stops because an indivisible
     /// shaping cluster may contain several legal logical edit boundaries.
     grapheme_boundaries: Vec<usize>,
+    horizontal_materialization: Option<HorizontalMaterialization>,
 }
 
 /// Exact layout for one hard line. Row `y` values are relative to the start of
@@ -561,6 +568,7 @@ pub struct RegionalLayoutSnapshot {
     diagnostics: Vec<ShapingDiagnostic>,
     grapheme_boundaries: Vec<usize>,
     work_statistics: LayoutWorkStatistics,
+    horizontal_materialization: Option<HorizontalMaterialization>,
 }
 
 impl RegionalLayoutSnapshot {
@@ -648,6 +656,14 @@ impl RegionalLayoutSnapshot {
         self.work_statistics
     }
 
+    pub(crate) fn covers_horizontal_viewport(&self, left: f32, width: f32) -> bool {
+        self.horizontal_materialization.as_ref().is_none_or(|sparse| {
+            sparse.rows.iter().all(|(_, _, bands)| {
+                bands.iter().any(|band| band.start <= left && left + width <= band.end)
+            })
+        })
+    }
+
     pub fn next_long_line_checkpoint(&self) -> Option<&LongLineLayoutCheckpoint> {
         self.lines
             .iter()
@@ -703,6 +719,14 @@ impl RegionalLayoutSnapshot {
             self.lines[0].text_coverage.start = first.text_range.start;
         }
         self.lines[0].rows = rows;
+        if let Some(previous_sparse) = previous.and_then(|region| region.horizontal_materialization.as_ref()) {
+            if let Some(sparse) = &mut self.horizontal_materialization {
+                sparse.rows.extend(previous_sparse.rows.iter().cloned());
+            } else { self.horizontal_materialization = Some(previous_sparse.clone()); }
+        }
+        if let Some(sparse) = &mut self.horizontal_materialization {
+            sparse.rows.retain(|(line, fragment, _)| self.lines[0].rows.iter().any(|row| row.hard_line_index == *line && row.fragment_index == *fragment));
+        }
         paints.extend(self.paint_runs.iter().filter_map(|run| {
             let mut run = run.clone();
             run.text_range.start = run.text_range.start.max(owned.start);
@@ -755,6 +779,14 @@ impl RegionalLayoutSnapshot {
         let start = self.lines[0].rows.first().unwrap().text_range.start;
         self.lines[0].text_coverage.start = start;
         self.lines.extend(following.lines.iter().cloned());
+        if let Some(following_sparse) = &following.horizontal_materialization {
+            if let Some(sparse) = &mut self.horizontal_materialization {
+                debug_assert!(sparse.text.shares_root_with(&following_sparse.text));
+                sparse.rows.extend(following_sparse.rows.iter().cloned());
+            } else {
+                self.horizontal_materialization = Some(following_sparse.clone());
+            }
+        }
         self.hard_lines.end = following.hard_lines.end;
         self.paint_runs.extend(following.paint_runs.iter().cloned());
         self.paint_runs.retain_mut(|run| {
@@ -948,6 +980,29 @@ struct PreparedRegionalInstall {
 }
 
 impl LayoutSnapshot {
+    /// Whether a row has exact geometry at this horizontal location. A sparse
+    /// unwrapped row must request refinement instead of snapping across a gap.
+    pub fn horizontal_geometry_is_materialized(&self, row_index: usize, x: f32) -> bool {
+        let Some(row) = self.rows.get(row_index) else { return false; };
+        let Some((_, _, bands)) = self.horizontal_materialization.as_ref()
+            .and_then(|sparse| sparse.rows.iter().find(|(line, fragment, _)| *line == row.hard_line_index && *fragment == row.fragment_index))
+        else { return true; };
+        bands.iter().any(|band| band.start <= x && x <= band.end)
+            || row.clusters.first().is_some_and(|cluster| x <= cluster.x)
+            || row.clusters.last().is_some_and(|cluster| x >= cluster.x + cluster.advance)
+    }
+
+    pub fn has_horizontal_materialization(&self) -> bool {
+        self.horizontal_materialization.is_some()
+    }
+
+    pub(crate) fn horizontal_text_is_materialized(&self, offset: usize) -> bool {
+        self.horizontal_materialization.is_none() || self.rows.iter().any(|row| {
+            row.carets.iter().any(|caret| caret.point.text_offset == offset)
+                || row.clusters.iter().any(|cluster| cluster.text_range.start <= offset && offset <= cluster.text_range.end)
+        })
+    }
+
     pub fn hit_test(&self, point: LayoutPoint) -> Result<CaretPoint, LayoutError> {
         if !point.x.is_finite() || !point.y.is_finite() {
             return Err(LayoutError::InvalidGeometry);
@@ -970,6 +1025,10 @@ impl LayoutSnapshot {
             }
         }
         let row = self.closest_row(point.y).ok_or(LayoutError::NoRows)?;
+        let row_index = self.rows.iter().position(|candidate| std::ptr::eq(candidate, row)).unwrap();
+        if !self.horizontal_geometry_is_materialized(row_index, point.x) {
+            return Err(LayoutError::OutsideMaterializedCoverage);
+        }
         row.carets
             .iter()
             .min_by(|left, right| {
@@ -1002,6 +1061,9 @@ impl LayoutSnapshot {
                     is_cluster_fallback: false,
                 });
             }
+        }
+        if !self.horizontal_text_is_materialized(point.text_offset) {
+            return Err(LayoutError::OutsideMaterializedCoverage);
         }
         Err(LayoutError::NotACaretStop {
             text_offset: point.text_offset,
@@ -1049,6 +1111,9 @@ impl LayoutSnapshot {
                     is_cluster_fallback: true,
                 });
             }
+        }
+        if !self.horizontal_text_is_materialized(text_offset) {
+            return Err(LayoutError::OutsideMaterializedCoverage);
         }
         Err(LayoutError::NotACaretStop { text_offset })
     }
@@ -1206,7 +1271,11 @@ impl LayoutSnapshot {
             return Err(LayoutError::OutsideMaterializedCoverage);
         }
         for offset in [start.offset(), end.offset()] {
-            if self.grapheme_boundaries.binary_search(&offset).is_err() {
+            let valid = if let Some(sparse) = &self.horizontal_materialization {
+                self.rows.iter().any(|row| offset == row.hard_line_range.start || offset == row.hard_line_range.end)
+                    || sparse.text.is_grapheme_boundary(offset).unwrap_or(false)
+            } else { self.grapheme_boundaries.binary_search(&offset).is_ok() };
+            if !valid {
                 return Err(LayoutError::InvalidGraphemeBoundary {
                     text_offset: offset,
                 });
@@ -1283,6 +1352,10 @@ fn layout_epsilon(value: f32) -> f32 {
 pub(crate) struct LayoutJobViewConfiguration {
     width: f32,
     height: f32,
+    viewport_left: f32,
+    pub(super) horizontal_focus_offset: Option<usize>,
+    pub(super) horizontal_desired_x: Option<f32>,
+    pub(super) regional_viewport_top: f32,
     insets: EdgeInsets,
     wrap: bool,
     scale: f32,
@@ -1738,6 +1811,10 @@ impl ViewLayout {
         LayoutJobViewConfiguration {
             width: self.width,
             height: self.height,
+            viewport_left: self.viewport_left,
+            horizontal_focus_offset: None,
+            horizontal_desired_x: None,
+            regional_viewport_top: 0.0,
             insets: self.insets,
             wrap: self.wrap,
             scale: self.scale,
@@ -1935,7 +2012,7 @@ impl ViewLayout {
             if line.height_is_exact {
                 next_index.set_exact_heights(line.hard_line_index, &[line.height])?;
             }
-            if line.text_coverage == line.hard_line_range {
+            if line.text_coverage == line.hard_line_range && region.horizontal_materialization.is_none() {
                 next_cache.insert(line.clone());
             }
         }
@@ -2116,6 +2193,7 @@ fn partial_snapshot_from_region(
         diagnostics: region.diagnostics.clone(),
         text_len: region.document_text_len,
         grapheme_boundaries: region.grapheme_boundaries.clone(),
+        horizontal_materialization: region.horizontal_materialization.clone(),
     })
 }
 
@@ -2385,9 +2463,6 @@ pub enum LayoutError {
     LongLineSliceNeedsMoreText {
         text_offset: usize,
     },
-    UnstableLineBreakContext {
-        text_offset: usize,
-    },
     NotACaretStop {
         text_offset: usize,
     },
@@ -2429,7 +2504,7 @@ struct RelativeCluster {
     typographic_bounds: ShapedBounds,
     ink_bounds: ShapedBounds,
     bidi_level: u8,
-    fallback_font: String,
+    fallback_font: Arc<str>,
     caret_stops: Vec<ClusterCaretStop>,
     render_run: Option<RenderRunHandle>,
 }
@@ -2464,7 +2539,121 @@ struct ShapeCacheEntry {
     metrics_generation: MetricsGeneration,
     purpose: ShapePurpose,
     render_run_policy: Option<RenderRunPolicy>,
-    fragment: RelativeFragment,
+    fragment: Arc<RelativeFragment>,
+}
+
+/// Retained shaping payload accounting, excluding allocator bookkeeping and
+/// native render resources owned by the provider. Main text and decoration
+/// caches have independent budgets so list ordinals cannot evict prose.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ShapingCacheStatistics {
+    pub fragment_count: usize,
+    pub estimated_bytes: usize,
+    pub eviction_count: u64,
+}
+
+struct ShapeCache {
+    entries: VecDeque<(ShapeCacheEntry, usize)>,
+    estimated_bytes: usize,
+    max_entries: usize,
+    max_bytes: usize,
+    eviction_count: u64,
+}
+
+impl ShapeCache {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            entries: VecDeque::new(),
+            estimated_bytes: 0,
+            max_entries: DEFAULT_CACHE_ENTRIES,
+            max_bytes,
+            eviction_count: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries = VecDeque::new();
+        self.estimated_bytes = 0;
+    }
+
+    fn evict_oldest(&mut self) {
+        if let Some((_, bytes)) = self.entries.pop_front() {
+            self.estimated_bytes -= bytes;
+            self.eviction_count = self.eviction_count.saturating_add(1);
+        }
+    }
+
+    fn enforce_limits(&mut self) {
+        while self.entries.len() > self.max_entries || self.estimated_bytes > self.max_bytes {
+            self.evict_oldest();
+        }
+    }
+
+    fn insert(&mut self, entry: ShapeCacheEntry) {
+        let bytes = entry.estimated_bytes();
+        // A single expensive result remains usable by its current layout but
+        // must not consume the off-screen cache or flush useful smaller hits.
+        if self.max_entries == 0 || bytes > self.max_bytes {
+            return;
+        }
+        while self.entries.len() >= self.max_entries
+            || self.estimated_bytes > self.max_bytes - bytes
+        {
+            self.evict_oldest();
+        }
+        self.estimated_bytes += bytes;
+        self.entries.push_back((entry, bytes));
+    }
+
+    fn statistics(&self) -> ShapingCacheStatistics {
+        ShapingCacheStatistics {
+            fragment_count: self.entries.len(),
+            estimated_bytes: self.estimated_bytes,
+            eviction_count: self.eviction_count,
+        }
+    }
+}
+
+impl ShapeCacheEntry {
+    fn estimated_bytes(&self) -> usize {
+        fn style_heap(style: &ResolvedTextStyle) -> usize {
+            style.font_families.capacity() * std::mem::size_of::<String>()
+                + style.font_families.iter().map(String::capacity).sum::<usize>()
+                + style.language.as_ref().map_or(0, String::capacity)
+                + style.script.as_ref().map_or(0, String::capacity)
+                + style.features.capacity() * std::mem::size_of::<OpenTypeFeature>()
+        }
+        let fragment = &self.fragment;
+        let mut bytes = std::mem::size_of::<(Self, usize)>()
+            + self.text.capacity()
+            + self.context_before.capacity()
+            + self.context_after.capacity()
+            + self.style_runs.capacity() * std::mem::size_of::<ShapeStyleRun>()
+            + style_heap(&self.default_style)
+            + std::mem::size_of::<RelativeFragment>()
+            + 2 * std::mem::size_of::<usize>() // Arc control words
+            + fragment.clusters.capacity() * std::mem::size_of::<RelativeCluster>()
+            + fragment.visual_order.capacity() * std::mem::size_of::<usize>()
+            + fragment.diagnostics.capacity() * std::mem::size_of::<RelativeDiagnostic>();
+        for run in &self.style_runs {
+            bytes = bytes.saturating_add(style_heap(&run.style));
+        }
+        let mut fonts = BTreeSet::new();
+        for cluster in &fragment.clusters {
+            bytes = bytes.saturating_add(
+                cluster.caret_stops.capacity() * std::mem::size_of::<ClusterCaretStop>(),
+            );
+            if fonts.insert(cluster.fallback_font.as_ptr()) {
+                bytes = bytes.saturating_add(
+                    cluster.fallback_font.len() + 2 * std::mem::size_of::<usize>(),
+                );
+            }
+        }
+        for diagnostic in &fragment.diagnostics {
+            bytes = bytes.saturating_add(diagnostic.message.capacity());
+        }
+        bytes
+    }
 }
 
 struct PendingShape<'a> {
@@ -2543,9 +2732,9 @@ impl<'a> LayoutRunControl<'a> {
 pub struct LayoutEngine<P: TextMeasurementProvider> {
     provider: P,
     next_layout_revision: u64,
-    shape_cache: VecDeque<ShapeCacheEntry>,
-    decoration_shape_cache: VecDeque<ShapeCacheEntry>,
-    cache_capacity: usize,
+    shape_cache: ShapeCache,
+    decoration_shape_cache: ShapeCache,
+    unwrapped_summary_cache: UnwrappedSummaryCache,
 }
 
 impl<P: TextMeasurementProvider> LayoutEngine<P> {
@@ -2553,9 +2742,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         Self {
             provider,
             next_layout_revision: 1,
-            shape_cache: VecDeque::new(),
-            decoration_shape_cache: VecDeque::new(),
-            cache_capacity: DEFAULT_CACHE_ENTRIES,
+            shape_cache: ShapeCache::new(DEFAULT_SHAPE_CACHE_BYTES),
+            decoration_shape_cache: ShapeCache::new(DEFAULT_DECORATION_SHAPE_CACHE_BYTES),
+            unwrapped_summary_cache: UnwrappedSummaryCache::default(),
         }
     }
 
@@ -2570,16 +2759,31 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
     pub fn clear_caches(&mut self) {
         self.shape_cache.clear();
         self.decoration_shape_cache.clear();
+        self.unwrapped_summary_cache.clear();
     }
 
     pub fn set_cache_capacity(&mut self, capacity: usize) {
-        self.cache_capacity = capacity;
-        while self.shape_cache.len() > capacity {
-            self.shape_cache.pop_front();
-        }
-        while self.decoration_shape_cache.len() > capacity {
-            self.decoration_shape_cache.pop_front();
-        }
+        self.shape_cache.max_entries = capacity;
+        self.decoration_shape_cache.max_entries = capacity;
+        self.shape_cache.enforce_limits();
+        self.decoration_shape_cache.enforce_limits();
+    }
+
+    /// Bound owned shaping payload independently of fragment count. Reducing
+    /// a budget immediately evicts old entries, without retiring live layouts.
+    pub fn set_shape_cache_byte_budgets(&mut self, text: usize, decorations: usize) {
+        self.shape_cache.max_bytes = text;
+        self.decoration_shape_cache.max_bytes = decorations;
+        self.shape_cache.enforce_limits();
+        self.decoration_shape_cache.enforce_limits();
+    }
+
+    pub fn shaping_cache_statistics(&self) -> ShapingCacheStatistics {
+        self.shape_cache.statistics()
+    }
+
+    pub fn decoration_shaping_cache_statistics(&self) -> ShapingCacheStatistics {
+        self.decoration_shape_cache.statistics()
     }
 
     /// Coordinator convenience entry point. Errors remain observable on the
@@ -2809,6 +3013,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     || checkpoint.hard_line_index != line.hard_line_index
                     || checkpoint.hard_line_range != line.full_range
                     || checkpoint.next_text_offset != line.work_range.start
+                    || (view.wrap
+                        && checkpoint.last_candidate_break != Some(line.work_range.start))
                     || !checkpoint.completed_height.is_finite()
                     || checkpoint.completed_height < 0.0
                     || !checkpoint.cumulative_advance.is_finite()
@@ -2819,6 +3025,11 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     )
                     .into());
                 }
+            } else if line.work_range.start != line.full_range.start {
+                return Err(LayoutError::MalformedMeasurement(
+                    "a partial hard line requires an exact break checkpoint",
+                )
+                .into());
             }
         }
         let requested_end = first_hard_line + line_slices.len();
@@ -3002,7 +3213,6 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     &region_text[local_context_ranges[line_offset].clone()],
                     line_slice.shaping_context_range.start,
                     line_slice.work_range.start,
-                    line_slice.shaping_context_range.start == line_slice.full_range.start,
                     &control,
                 )?
             } else {
@@ -3287,6 +3497,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             diagnostics,
             grapheme_boundaries,
             work_statistics,
+            horizontal_materialization: None,
         };
         control.checkpoint()?;
         self.next_layout_revision = layout_revision.0.wrapping_add(1).max(1);
@@ -3708,6 +3919,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             diagnostics,
             text_len: text.len(),
             grapheme_boundaries: logical_grapheme_boundaries(text, 0, control)?,
+            horizontal_materialization: None,
         };
         let height_index = view
             .height_index_for_snapshot(&snapshot)
@@ -3841,7 +4053,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         row.baseline,
                     ),
                     ink_bounds: position_shaped_bounds(cluster.ink_bounds, x, row.baseline),
-                    render_run: cluster.render_run,
+                    render_run: cluster.render_run.clone(),
                     paint: paragraph.marker_paint.clone(),
                     font_size: style.size * scale,
                 });
@@ -4020,7 +4232,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         metrics_generation,
                         purpose,
                         render_run_policy: Some(render_run_policy),
-                        fragment: relative,
+                        fragment: Arc::new(relative),
                     });
                     output[item.output_index] = Some(response);
                 }
@@ -4049,8 +4261,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         metrics_generation: MetricsGeneration,
         purpose: ShapePurpose,
         render_run_policy: Option<RenderRunPolicy>,
-    ) -> Option<RelativeFragment> {
-        let position = self.shape_cache.iter().position(|entry| {
+    ) -> Option<Arc<RelativeFragment>> {
+        let position = self.shape_cache.entries.iter().position(|(entry, _)| {
             entry.text == text
                 && entry.context_before == context_before
                 && entry.context_after == context_after
@@ -4063,20 +4275,14 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 && entry.purpose == purpose
                 && entry.render_run_policy == render_run_policy
         })?;
-        let entry = self.shape_cache.remove(position)?;
-        let result = entry.fragment.clone();
-        self.shape_cache.push_back(entry);
+        let entry = self.shape_cache.entries.remove(position)?;
+        let result = Arc::clone(&entry.0.fragment);
+        self.shape_cache.entries.push_back(entry);
         Some(result)
     }
 
     fn cache_insert(&mut self, entry: ShapeCacheEntry) {
-        if self.cache_capacity == 0 {
-            return;
-        }
-        while self.shape_cache.len() >= self.cache_capacity {
-            self.shape_cache.pop_front();
-        }
-        self.shape_cache.push_back(entry);
+        self.shape_cache.insert(entry);
     }
 }
 
@@ -4096,7 +4302,7 @@ impl RelativeFragment {
                     typographic_bounds: cluster.typographic_bounds,
                     ink_bounds: cluster.ink_bounds,
                     bidi_level: cluster.bidi_level,
-                    fallback_font: cluster.fallback_font.clone(),
+                    fallback_font: Arc::clone(&cluster.fallback_font),
                     caret_stops: cluster
                         .caret_stops
                         .iter()
@@ -4106,7 +4312,7 @@ impl RelativeFragment {
                             affinity: caret.affinity,
                         })
                         .collect(),
-                    render_run: cluster.render_run,
+                    render_run: cluster.render_run.clone(),
                 })
                 .collect(),
             visual_order: fragment.visual_order.clone(),
@@ -4141,7 +4347,7 @@ impl RelativeFragment {
                 typographic_bounds: cluster.typographic_bounds,
                 ink_bounds: cluster.ink_bounds,
                 bidi_level: cluster.bidi_level,
-                fallback_font: cluster.fallback_font.clone(),
+                fallback_font: Arc::clone(&cluster.fallback_font),
                 caret_stops: cluster
                     .caret_stops
                     .iter()
@@ -4151,7 +4357,7 @@ impl RelativeFragment {
                         affinity: caret.affinity,
                     })
                     .collect(),
-                render_run: cluster.render_run,
+                render_run: cluster.render_run.clone(),
             })
             .collect::<Vec<_>>();
         let text_range = origin..origin + self.ownership_len;
@@ -4282,7 +4488,7 @@ fn validate_response(
         match (
             request.purpose,
             request.render_run_policy,
-            cluster.render_run,
+            cluster.render_run.as_ref(),
         ) {
             (ShapePurpose::MetricsOnly, _, Some(_)) => {
                 return Err(LayoutError::MalformedMeasurement(
@@ -4494,7 +4700,7 @@ fn position_row(
     let mut ascent = 0.0_f32;
     let mut descent = 0.0_f32;
     let mut leading = 0.0_f32;
-    let mut row_width = 0.0_f32;
+    let mut precise_row_width = 0.0_f64;
     for (index, cluster) in logical_clusters.iter().enumerate() {
         if index % CANCELLATION_CLUSTER_BATCH == 0 {
             control.checkpoint()?;
@@ -4502,15 +4708,16 @@ fn position_row(
         ascent = ascent.max(cluster.metrics.ascent);
         descent = descent.max(cluster.metrics.descent);
         leading = leading.max(cluster.metrics.leading);
-        row_width += cluster.advance;
+        precise_row_width += f64::from(cluster.advance);
     }
     let natural_height = ascent + descent + leading;
+    let row_width = precise_row_width as f32;
     let line_advance = line_advance(natural_height, line_spacing);
     let text_range = logical_clusters.first().unwrap().text_range.start
         ..logical_clusters.last().unwrap().text_range.end;
     let order = reorder_for_bidi(logical_clusters, control)?;
     let left = aligned_row_x(paragraph_box, row_width, alignment, right_to_left);
-    let mut x = left;
+    let mut x = f64::from(left);
     let mut clusters = Vec::with_capacity(logical_clusters.len());
     let mut carets = Vec::new();
 
@@ -4519,7 +4726,7 @@ fn position_row(
             control.checkpoint()?;
         }
         let cluster = &logical_clusters[logical_index];
-        let cluster_x = x;
+        let cluster_x = x as f32;
         clusters.push(PositionedCluster {
             text_range: cluster.text_range.clone(),
             x: cluster_x,
@@ -4532,7 +4739,7 @@ fn position_row(
             ink_bounds: position_shaped_bounds(cluster.ink_bounds, cluster_x, y + ascent),
             bidi_level: cluster.bidi_level,
             fallback_font: cluster.fallback_font.clone(),
-            render_run: cluster.render_run,
+            render_run: cluster.render_run.clone(),
         });
         for caret in &cluster.caret_stops {
             let point = CaretPoint {
@@ -4548,7 +4755,7 @@ fn position_row(
                 row_index,
             });
         }
-        x += cluster.advance;
+        x += f64::from(cluster.advance);
     }
     control.checkpoint()?;
     carets.sort_by(|left, right| {
@@ -4911,20 +5118,23 @@ fn unicode_line_break_opportunities(
 ) -> Result<BTreeSet<usize>, LayoutComputationError> {
     control.checkpoint()?;
     let mut result = BTreeSet::new();
-    // `unicode_linebreak` implements the default UAX #14 algorithm and emits
-    // UTF-8 byte boundaries. Keep them in the formatted document's absolute
-    // coordinate space; wrapping later accepts an opportunity only when it is
-    // also the end of a legal shaping cluster.
-    for (index, (offset, _opportunity)) in linebreaks(line).enumerate() {
+    // Keep portable Unicode decisions in absolute UTF-8 coordinates. Wrapping
+    // accepts an opportunity only at the end of a legal shaping cluster.
+    // Check cancellation by consumed input, including an unbreakable giant word.
+    let mut state = LineBreakState::new();
+    for (index, (offset, character)) in line.char_indices().enumerate() {
         if index % CANCELLATION_CLUSTER_BATCH == 0 {
             control.checkpoint()?;
         }
-        let absolute = origin
-            .checked_add(offset)
-            .ok_or(LayoutError::InvalidTextOffset(origin))?;
-        result.insert(absolute);
+        if state.push(character).is_some() {
+            let absolute = origin
+                .checked_add(offset)
+                .ok_or(LayoutError::InvalidTextOffset(origin))?;
+            result.insert(absolute);
+        }
     }
     control.checkpoint()?;
+    result.insert(origin.checked_add(line.len()).ok_or(LayoutError::InvalidTextOffset(origin))?);
     Ok(result)
 }
 
@@ -4932,28 +5142,19 @@ fn unicode_line_break_opportunities_for_slice(
     captured: &str,
     capture_origin: usize,
     work_start: usize,
-    capture_starts_hard_line: bool,
     control: &LayoutRunControl<'_>,
 ) -> Result<BTreeSet<usize>, LayoutComputationError> {
     let local_work_start = work_start
         .checked_sub(capture_origin)
         .filter(|offset| *offset <= captured.len() && captured.is_char_boundary(*offset))
         .ok_or(LayoutError::InvalidTextOffset(work_start))?;
-    let safe_start = if local_work_start == 0 {
-        0
-    } else {
-        let (discardable_prefix, _) = split_at_safe(&captured[..local_work_start]);
-        if discardable_prefix.is_empty() && !capture_starts_hard_line {
-            return Err(LayoutError::UnstableLineBreakContext {
-                text_offset: work_start,
-            }
-            .into());
-        }
-        discardable_prefix.len()
-    };
+    // Slice validation requires either the hard-line start or a checkpoint at
+    // an actual emitted break. These are exact restart boundaries for UAX #14.
+    // Shaping still uses its captured context; breaking needs no prefix copy,
+    // heuristic safe suffix, or scan back through an arbitrarily long run.
     unicode_line_break_opportunities(
-        &captured[safe_start..],
-        capture_origin + safe_start,
+        &captured[local_work_start..],
+        work_start,
         control,
     )
 }
@@ -5635,7 +5836,7 @@ mod tests {
         );
         assert!(row.clusters.iter().all(|cluster| {
             cluster
-                .render_run
+                .render_run.as_ref()
                 .is_some_and(|run| run.metrics_generation == MetricsGeneration(1))
         }));
         let ink = row.ink_bounds().unwrap();
@@ -5662,7 +5863,7 @@ mod tests {
         );
         assert!((snapshot.rows[0].ascent - 24.0 * 0.78).abs() < 0.001);
         assert!((snapshot.rows[1].ascent - 14.0 * 0.78).abs() < 0.001);
-        assert_eq!(snapshot.rows[0].clusters[0].fallback_font, "SF Pro");
+        assert_eq!(snapshot.rows[0].clusters[0].fallback_font.as_ref(), "SF Pro");
     }
 
     #[test]
@@ -5751,7 +5952,7 @@ mod tests {
         engine.relayout(&document, &mut view).unwrap();
         assert!((view.snapshot().unwrap().rows[0].ascent - 10.0 * 0.78).abs() < 0.001);
         assert_eq!(
-            view.snapshot().unwrap().rows[0].clusters[0].fallback_font,
+            view.snapshot().unwrap().rows[0].clusters[0].fallback_font.as_ref(),
             "View Override"
         );
 
@@ -5759,7 +5960,7 @@ mod tests {
         engine.relayout(&document, &mut view).unwrap();
         assert!((view.snapshot().unwrap().rows[0].ascent - 14.0 * 0.78).abs() < 0.001);
         assert_eq!(
-            view.snapshot().unwrap().rows[0].clusters[0].fallback_font,
+            view.snapshot().unwrap().rows[0].clusters[0].fallback_font.as_ref(),
             "SF Pro"
         );
     }
@@ -5780,14 +5981,7 @@ mod tests {
             },
             CharacterProperties::default(),
         );
-        let blocks = [Block {
-            id: 41,
-            range: 0..document.text().len(),
-            kind: BlockKind::Paragraph,
-            style: paragraph_style,
-            direct_paragraph: BlockProperties::default(),
-            direct_default_character: CharacterProperties::default(),
-        }];
+        let blocks = [Block::new(41, 0..document.text().len(), BlockKind::Paragraph, paragraph_style, None)];
         let styles = resolve_fixture_styles(document.text(), &blocks, &sheet);
         let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
         let mut view = ViewLayout::new(120.0, 300.0);
@@ -5883,30 +6077,9 @@ mod tests {
             },
         );
         let blocks = [
-            Block {
-                id: 1,
-                range: 0..1,
-                kind: BlockKind::Paragraph,
-                style: doubled,
-                direct_paragraph: BlockProperties::default(),
-                direct_default_character: CharacterProperties::default(),
-            },
-            Block {
-                id: 2,
-                range: 2..3,
-                kind: BlockKind::Paragraph,
-                style: minimum,
-                direct_paragraph: BlockProperties::default(),
-                direct_default_character: CharacterProperties::default(),
-            },
-            Block {
-                id: 3,
-                range: 4..4,
-                kind: BlockKind::Paragraph,
-                style: empty,
-                direct_paragraph: BlockProperties::default(),
-                direct_default_character: CharacterProperties::default(),
-            },
+            Block::new(1, 0..1, BlockKind::Paragraph, doubled, None),
+            Block::new(2, 2..3, BlockKind::Paragraph, minimum, None),
+            Block::new(3, 4..4, BlockKind::Paragraph, empty, None),
         ];
         let styles = resolve_fixture_styles(text, &blocks, &sheet);
         let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
@@ -5976,22 +6149,8 @@ mod tests {
             CharacterProperties::default(),
         );
         let blocks = [
-            Block {
-                id: 10,
-                range: 0..2,
-                kind: BlockKind::Paragraph,
-                style: rtl_start,
-                direct_paragraph: BlockProperties::default(),
-                direct_default_character: CharacterProperties::default(),
-            },
-            Block {
-                id: 11,
-                range: 3..5,
-                kind: BlockKind::Paragraph,
-                style: rtl_end,
-                direct_paragraph: BlockProperties::default(),
-                direct_default_character: CharacterProperties::default(),
-            },
+            Block::new(10, 0..2, BlockKind::Paragraph, rtl_start, None),
+            Block::new(11, 3..5, BlockKind::Paragraph, rtl_end, None),
         ];
         let styles = resolve_fixture_styles(text, &blocks, &sheet);
         let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
@@ -6030,14 +6189,7 @@ mod tests {
             },
             CharacterProperties::default(),
         );
-        let block = |style| Block {
-            id: 1,
-            range: 0..2,
-            kind: BlockKind::Paragraph,
-            style,
-            direct_paragraph: BlockProperties::default(),
-            direct_default_character: CharacterProperties::default(),
-        };
+        let block = |style| Block::new(1, 0..2, BlockKind::Paragraph, style, None);
         let left_styles = resolve_fixture_styles(text, &[block(left_to_right)], &sheet);
         let right_styles = resolve_fixture_styles(text, &[block(right_to_left)], &sheet);
         let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
@@ -6962,6 +7114,62 @@ mod tests {
     }
 
     #[test]
+    fn shaped_payload_budgets_bound_repeated_large_document_regions() {
+        let document = Document::new("");
+        let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
+        let mut view = ViewLayout::new(600.0, 100.0);
+        let budget = 2 * 1024 * 1024;
+        engine.set_shape_cache_byte_budgets(budget, 1024);
+        // Visit one MiB of distinct text through 256 small windows. This
+        // exercises the real shaper's per-grapheme arrays, unlike a provider
+        // that summarizes an entire fragment as one cluster.
+        for region in 0..256 {
+            let mut text = format!("region {region:04} ");
+            text.push_str(&"AV fi word ".repeat(410));
+            engine.relayout_text(document.id(), document.revision(), &text, &mut view).unwrap();
+            let statistics = engine.shaping_cache_statistics();
+            assert!(statistics.estimated_bytes <= budget);
+            assert!(statistics.fragment_count > 0);
+            assert!(view.last_error().is_none());
+        }
+        assert!(engine.shaping_cache_statistics().eviction_count > 0);
+        let rows = view.snapshot().unwrap().rows.clone();
+        engine.set_shape_cache_byte_budgets(0, 0);
+        assert_eq!(engine.shaping_cache_statistics().estimated_bytes, 0);
+        assert_eq!(engine.shaping_cache_statistics().fragment_count, 0);
+        assert_eq!(view.snapshot().unwrap().rows, rows, "eviction changed the installed geometry");
+    }
+
+    #[test]
+    fn cache_hits_share_fragments_and_intern_fallback_names() {
+        let (document, mut engine, mut view) = lay_out("AV fi ordinary words", 600.0);
+        let (cached, bytes) = engine.shape_cache.entries.front().unwrap().clone();
+        let hit = engine.cache_lookup(
+            &cached.text, &cached.context_before, &cached.context_after,
+            &cached.style_runs, &cached.default_style, cached.paragraph_base_direction,
+            f32::from_bits(cached.scale_bits), cached.measurement_environment_id,
+            cached.metrics_generation, cached.purpose, cached.render_run_policy,
+        ).unwrap();
+        assert!(Arc::ptr_eq(&cached.fragment, &hit));
+        let fonts = &hit.clusters;
+        assert!(fonts.len() > 1);
+        for cluster in &fonts[1..] {
+            if cluster.fallback_font == fonts[0].fallback_font {
+                assert!(Arc::ptr_eq(&cluster.fallback_font, &fonts[0].fallback_font));
+            }
+        }
+        // An entry larger than the current byte allowance is not admitted,
+        // but its current layout remains fully functional.
+        engine.set_shape_cache_byte_budgets(bytes - 1, 0);
+        engine.relayout(&document, &mut view).unwrap();
+        assert_eq!(engine.shaping_cache_statistics().fragment_count, 0);
+        assert!(view.snapshot().unwrap().caret_point(0, BoundaryAffinity::Downstream).is_ok());
+        engine.provider_mut().set_metrics_generation(MetricsGeneration(2));
+        engine.relayout(&document, &mut view).unwrap();
+        assert_eq!(view.snapshot().unwrap().metrics_generation, MetricsGeneration(2));
+    }
+
+    #[test]
     fn metrics_generation_invalidates_width_independent_shape_cache() {
         let (document, mut engine, mut view) = lay_out("abc", 100.0);
         assert_eq!(engine.provider().request_calls(), 1);
@@ -6979,7 +7187,7 @@ mod tests {
             .iter()
             .all(|cluster| {
                 cluster
-                    .render_run
+                    .render_run.as_ref()
                     .is_some_and(|run| run.metrics_generation == MetricsGeneration(2))
             }));
     }
@@ -7021,7 +7229,7 @@ mod tests {
         assert!(view.snapshot().unwrap().rows[0]
             .clusters
             .iter()
-            .all(|cluster| cluster.render_run.is_some_and(|handle| {
+            .all(|cluster| cluster.render_run.as_ref().is_some_and(|handle| {
                 handle.owner == policy.owner && handle.threading == policy.threading
             })));
     }

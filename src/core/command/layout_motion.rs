@@ -104,9 +104,16 @@ pub struct LayoutDemand {
     materialized_hard_lines: Range<usize>,
     requested_hard_lines: Range<usize>,
     minimum_additional_visual_rows: usize,
+    horizontal_focus_offset: Option<usize>,
+    horizontal_x_bits: Option<u32>,
+    complete_horizontal_geometry: bool,
 }
 
 impl LayoutDemand {
+    pub fn requires_complete_horizontal_geometry(&self) -> bool { self.complete_horizontal_geometry }
+    pub fn horizontal_focus(&self) -> Option<(usize, Option<f32>)> {
+        self.horizontal_focus_offset.map(|offset| (offset, self.horizontal_x_bits.map(f32::from_bits)))
+    }
     pub fn document_id(&self) -> DocumentId {
         self.document_id
     }
@@ -264,6 +271,9 @@ pub fn move_visual_rows(
     };
     let target_row = shift_row_index(snapshot, current_row, row_delta)?;
     let row = &snapshot.rows[target_row];
+    if !snapshot.horizontal_geometry_is_materialized(target_row, x) {
+        return Err(horizontal_demand(snapshot, current.text_offset, Some(x)));
+    }
     let target = nearest_caret(row, x).ok_or(LayoutMotionError::EmptyLayout)?;
     let mut position = position_of(target);
     if position.text_offset == row.text_range.start && !row.text_range.is_empty() {
@@ -385,6 +395,9 @@ pub fn screen_motion(
             }
         }
     };
+    if !snapshot.horizontal_geometry_is_materialized(target_row, x) {
+        return Err(horizontal_demand(snapshot, current.text_offset, Some(x)));
+    }
     let target =
         nearest_caret(&snapshot.rows[target_row], x).ok_or(LayoutMotionError::EmptyLayout)?;
     Ok(ScreenMotionResult {
@@ -426,6 +439,9 @@ fn locate(
         }) {
             return Ok((row_index, caret));
         }
+    }
+    if !snapshot.horizontal_text_is_materialized(position.text_offset) {
+        return Err(horizontal_demand(snapshot, position.text_offset, None));
     }
     Err(if snapshot.rows.is_empty() {
         LayoutMotionError::EmptyLayout
@@ -643,7 +659,29 @@ fn outside_materialized_coverage(
         materialized_hard_lines: materialized,
         requested_hard_lines: requested_start..requested_end,
         minimum_additional_visual_rows,
+        horizontal_focus_offset: None,
+        horizontal_x_bits: None,
+        complete_horizontal_geometry: false,
     })
+}
+
+fn horizontal_demand(snapshot: &LayoutSnapshot, offset: usize, x: Option<f32>) -> LayoutMotionError {
+    let materialized = snapshot.coverage.hard_lines();
+    LayoutMotionError::OutsideMaterializedCoverage(LayoutDemand {
+        document_id: snapshot.document_id, document_revision: snapshot.document_revision,
+        layout_revision: snapshot.revision, configuration_generation: snapshot.configuration_generation,
+        metrics_generation: snapshot.metrics_generation, edge: LayoutDemandEdge::Both,
+        materialized_hard_lines: materialized.clone(), requested_hard_lines: materialized,
+        minimum_additional_visual_rows: 0,
+        horizontal_focus_offset: Some(offset), horizontal_x_bits: x.map(f32::to_bits),
+        complete_horizontal_geometry: false,
+    })
+}
+
+pub(crate) fn complete_horizontal_demand(snapshot: &LayoutSnapshot, offset: usize) -> LayoutMotionError {
+    let LayoutMotionError::OutsideMaterializedCoverage(mut demand) = horizontal_demand(snapshot, offset, None) else { unreachable!() };
+    demand.complete_horizontal_geometry = true;
+    LayoutMotionError::OutsideMaterializedCoverage(demand)
 }
 
 fn validate_viewport(viewport: Viewport) -> Result<(), LayoutMotionError> {

@@ -13,8 +13,11 @@ pub use conversion::{ConversionLoss, ConversionWarning, FormatOperation};
 mod encoding;
 mod edit_boundary;
 mod formatted_text;
+pub(crate) use formatted_text::FormattedTextSnapshotIdentity;
 mod history;
 mod history_memory;
+#[cfg(test)]
+mod large_file_tests;
 mod html;
 mod html5_tree;
 mod html_direct;
@@ -96,7 +99,7 @@ pub use position::{
     SourcePoint, SourceRange, Splice, TextAnchor, TextRange, UnresolvableAnchor,
 };
 pub use projection::{
-    Block, BlockKind, Format, FormattedDocument, FormattedPayloadError, FormattedTextPayload,
+    Block, BlockDirectFormatting, BlockKind, Format, FormattedDocument, FormattedPayloadError, FormattedTextPayload,
     HardLineInfo, HardLineQueryError, HardLineSnapshot, ListStyle, ProjectedSourceBoundary,
     ProvenanceSpan, SourceBoundaryRelation, SourceToTextError, StyleSpan,
 };
@@ -133,7 +136,7 @@ pub use transfer::HardLineTransfer;
 use encoding::DecodedText;
 use formatted_text::LogicalGraphemeSnapshot;
 use history::History;
-use line_endings::{normalize, open_interpretation};
+use line_endings::{normalize, normalize_literal, open_interpretation};
 use persistence::{ArtifactWriteResult, PendingArtifactWrite, PendingArtifactWriteKind};
 use projection::{project, BlockIdentityError};
 use source::SourceSnapshot;
@@ -184,7 +187,7 @@ impl DocumentOpenWorkStatistics {
             source_decode_passes: 1,
             decoded_source_bytes,
             decoded_utf8_bytes,
-            projected_formatted_bytes: projection.text().len(),
+            projected_formatted_bytes: projection.text_tree().byte_len(),
             projected_hard_lines: projection.hard_line_count(),
         }
     }
@@ -2338,7 +2341,11 @@ fn build_state_from_decoded_with_configuration(
     revision: Revision,
     configuration: Option<&StyleSheet>,
 ) -> Result<DocumentState, DocumentError> {
-    let normalized = normalize(&decoded, file_format);
+    let normalized = if format.is_literal() {
+        normalize_literal(&decoded, file_format)
+    } else {
+        normalize(&decoded, file_format)
+    };
     let source_content_start = decoded.bom_len;
     let source_content_end = decoded
         .source_boundary(decoded.text.len())
@@ -2411,6 +2418,37 @@ fn ranges_overlap(first: &Range<usize>, second: &Range<usize>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn style_defaults_refresh_both_memory_ledgers_without_creating_history() {
+        let mut defaults: serde_json::Value = serde_json::from_slice(
+            &super::Document::new("").export_style_defaults().unwrap(),
+        ).unwrap();
+        for style in defaults["block_styles"].as_array_mut().unwrap() {
+            if style["id"] == "Document" {
+                style["character"]["font_families"] = serde_json::json!(["Georgia"]);
+                style["character"]["size"] = 31.into();
+            }
+        }
+        let defaults = serde_json::to_vec(&defaults).unwrap();
+        for (format, source) in [
+            (super::Format::PlainText, "Text"),
+            (super::Format::Code, "Text"),
+            (super::Format::Markdown, "Text"),
+            (super::Format::MarkdownSource, "Text"),
+            (super::Format::Html, "<p style='font-size:20pt'>Text</p><!--keep-->"),
+            (super::Format::HtmlSource, "<p>Text</p><!--keep-->"),
+            (super::Format::Rtf, r"{\rtf1\fs40 Text}"),
+        ] {
+            let mut document = super::Document::from_bytes(
+                source.as_bytes().to_vec(), super::Encoding::Utf8, format,
+            ).unwrap();
+            document.initialize_style_defaults(&defaults).unwrap();
+            document.history.assert_memory_matches_full_recount_without_refresh();
+            document.history.assert_current_only_memory_baseline();
+            assert!(document.history_status().additional_history_memory_bytes <= 4096, "{format:?}");
+        }
+    }
+
     #[test]
     fn retained_memory_ledger_matches_fresh_recount_after_groups_branches_and_pruning() {
         let bytes: Vec<_> = "éπa"
@@ -3761,6 +3799,29 @@ mod tests {
             .collect()
     }
 
+    fn assert_same_provenance_mapping(left: &Document, right: &Document) {
+        assert_eq!(left.source_byte_len(), right.source_byte_len());
+        let length = left.source_byte_len();
+        let stride = if length > 10_000 { 97 } else { 1 };
+        let mut points = (0..=length).step_by(stride).collect::<std::collections::BTreeSet<_>>();
+        points.insert(length);
+        for projection in [left.projection(), right.projection()] {
+            for span in projection.provenance() {
+                for at in [span.source.start, span.source.end] {
+                    points.extend([at.saturating_sub(1), at, (at + 1).min(length)]);
+                }
+            }
+        }
+        for source in points {
+            for affinity in [BoundaryAffinity::Upstream, BoundaryAffinity::Downstream] {
+                let lookup = |document: &Document| document.projection()
+                    .map_source_boundary(document.revision(), source, affinity)
+                    .map(|point| (point.formatted_offset, point.affinity, point.relation));
+                assert_eq!(lookup(left), lookup(right), "source={source}, {affinity:?}");
+            }
+        }
+    }
+
     #[test]
     fn plain_block_ids_survive_edits_splits_joins_and_deletes() {
         let mut document = Document::new("alpha\nbeta\ngamma");
@@ -4217,10 +4278,7 @@ mod tests {
             Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::PlainText)
                 .unwrap();
         assert_eq!(document.text(), reopened.text());
-        assert_eq!(
-            document.projection().provenance(),
-            reopened.projection().provenance()
-        );
+        assert_same_provenance_mapping(&document, &reopened);
         assert_eq!(
             document.state().source_hard_lines,
             reopened.state().source_hard_lines
@@ -4265,11 +4323,7 @@ mod tests {
                 let reopened = Document::from_bytes(document.source_bytes(), encoding, format)
                     .expect("regional candidate remains reopenable");
                 assert_eq!(document.text(), reopened.text(), "{format:?} {encoding:?}");
-                assert_eq!(
-                    document.projection().provenance(),
-                    reopened.projection().provenance(),
-                    "{format:?} {encoding:?}"
-                );
+                assert_same_provenance_mapping(&document, &reopened);
                 assert_eq!(
                     document.projection().style_spans(),
                     reopened.projection().style_spans(),
@@ -4354,11 +4408,7 @@ mod tests {
 
             let reopened =
                 Document::from_bytes(document.source_bytes(), encoding, Format::PlainText).unwrap();
-            assert_eq!(
-                document.projection().provenance(),
-                reopened.projection().provenance(),
-                "{encoding:?}"
-            );
+            assert_same_provenance_mapping(&document, &reopened);
             let diagnostic_coordinates = |document: &Document| {
                 document
                     .decoding_diagnostics()
@@ -4386,7 +4436,7 @@ mod tests {
     }
 
     #[test]
-    fn hard_line_topology_edits_report_full_projection_fallback() {
+    fn literal_hard_line_topology_edits_keep_projection_regional() {
         let document = Document::new("first\nsecond\nthird");
         let request = ModelRequest::ApplyTextEdits {
             document: document.id(),
@@ -4396,11 +4446,11 @@ mod tests {
         let prepared = document.prepare_model_request(request).unwrap();
         assert_eq!(
             prepared.summary().projection_work().scope(),
-            ProjectionWorkScope::FullDocument
+            ProjectionWorkScope::RegionalHardLines
         );
         assert_eq!(
             prepared.summary().projection_work().projected_hard_lines(),
-            4
+            2
         );
     }
 

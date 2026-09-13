@@ -559,14 +559,7 @@ fn structural_flow_paragraphs(
                 .filter(|(at, _)| *at < end || start == end);
             let mut block = witness
                 .map(|(_, index)| semantic.blocks()[*index].clone())
-                .unwrap_or_else(|| Block {
-                    id: 0,
-                    range: start..end,
-                    kind: BlockKind::Paragraph,
-                    style: semantic.style_sheet().base_paragraph.clone(),
-                    direct_paragraph: Default::default(),
-                    direct_default_character: Default::default(),
-                });
+                .unwrap_or_else(|| Block::new(0, start..end, BlockKind::Paragraph, semantic.style_sheet().base_paragraph.clone(), None));
             block.id = 0;
             block.range = start..end;
             // Literal list tags already remain visible. Preserve list geometry

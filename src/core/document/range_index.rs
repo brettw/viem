@@ -22,6 +22,8 @@ pub(super) const RANGE_INDEX_LEAF_ITEMS: usize = 64;
 pub(super) trait RangedItem {
     fn owned_heap_bytes(&self) -> usize { 0 }
 
+    fn visit_shared_memory(&self, _visitor: &mut super::history_memory::MemoryVisitor<'_>) {}
+
     fn range(&self) -> &Range<usize>;
 
     fn with_range(&self, range: Range<usize>) -> Self;
@@ -389,7 +391,10 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
     fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
         fn visit<T: RangedItem>(node: &Arc<RangeNode<T>>, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
             visitor.arc(node, |visitor| match &node.kind {
-                RangeNodeKind::Leaf(items) => visitor.vector(items, items.iter().map(RangedItem::owned_heap_bytes).sum()),
+                RangeNodeKind::Leaf(items) => {
+                    visitor.vector(items, items.iter().map(RangedItem::owned_heap_bytes).sum());
+                    for item in items { item.visit_shared_memory(visitor); }
+                },
                 RangeNodeKind::Branch { left, right, .. } => {
                     visit(left, visitor);
                     visit(right, visitor);
@@ -401,7 +406,10 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
         // retained. It is a separate root, so refreshing history can discover
         // it without revisiting the immutable range tree.
         if let Some(flat) = self.compatibility_flat.get() {
-            visitor.arc(flat, |visitor| visitor.vector(flat, flat.iter().map(RangedItem::owned_heap_bytes).sum()));
+            visitor.arc(flat, |visitor| {
+                visitor.vector(flat, flat.iter().map(RangedItem::owned_heap_bytes).sum());
+                for item in flat.iter() { item.visit_shared_memory(visitor); }
+            });
         }
     }
 

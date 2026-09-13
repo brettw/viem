@@ -222,13 +222,43 @@ pub struct RenderRunOwner(pub u64);
 /// Opaque render data with an explicit owner, access rule, and generation
 /// lifetime. A frontend must reject or retire the handle when its owner or
 /// metrics generation is no longer current.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct RenderRunHandle {
     pub owner: RenderRunOwner,
     pub identifier: u64,
     pub metrics_generation: MetricsGeneration,
     pub threading: RenderRunThreading,
+    // The last cache/snapshot reference releases the provider's native resource.
+    // One lease is shared by all handles in a bounded shaping fragment.
+    lease: Option<std::sync::Arc<dyn Send + Sync>>,
 }
+
+impl RenderRunHandle {
+    pub fn new(owner: RenderRunOwner, identifier: u64, metrics_generation: MetricsGeneration,
+        threading: RenderRunThreading) -> Self {
+        Self { owner, identifier, metrics_generation, threading, lease: None }
+    }
+
+    pub(crate) fn retain_resource(&mut self, lease: std::sync::Arc<dyn Send + Sync>) {
+        self.lease = Some(lease);
+    }
+}
+
+impl std::fmt::Debug for RenderRunHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderRunHandle").field("owner", &self.owner)
+            .field("identifier", &self.identifier).field("metrics_generation", &self.metrics_generation)
+            .field("threading", &self.threading).finish()
+    }
+}
+
+impl PartialEq for RenderRunHandle {
+    fn eq(&self, other: &Self) -> bool {
+        self.owner == other.owner && self.identifier == other.identifier
+            && self.metrics_generation == other.metrics_generation && self.threading == other.threading
+    }
+}
+impl Eq for RenderRunHandle {}
 
 /// Resource policy declared by the shaping provider and copied into every
 /// render-data request. Returned handles must match it exactly.
@@ -276,7 +306,9 @@ pub struct ShapedCluster {
     /// Ink bounds relative to the cluster's visual-left baseline.
     pub ink_bounds: ShapedBounds,
     pub bidi_level: u8,
-    pub fallback_font: String,
+    /// Shared provider font identity. A shaped fragment normally uses only a
+    /// handful of fonts; it must not allocate the same name per grapheme.
+    pub fallback_font: std::sync::Arc<str>,
     pub caret_stops: Vec<ClusterCaretStop>,
     /// Present when render data was requested. Metrics-only shaping must not
     /// retain a provider resource.

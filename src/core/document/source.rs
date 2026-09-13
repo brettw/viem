@@ -9,6 +9,8 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
+const SOURCE_BUFFER_BYTES: usize = 64 * 1024;
+
 static NEXT_SOURCE_SNAPSHOT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Identity of one immutable source revision, retained independently of any
@@ -93,17 +95,7 @@ impl SourceSnapshot {
     }
 
     pub(crate) fn new(bytes: Vec<u8>) -> Self {
-        let root = if bytes.is_empty() {
-            None
-        } else {
-            let len = bytes.len();
-            Some(Arc::new(Node::Leaf(Piece {
-                bytes: Arc::from(bytes),
-                start: 0,
-                len,
-                generated_text: false,
-            })))
-        };
+        let root = tree_from_bytes(&bytes, false);
         Self { identity: SourceSnapshotIdentity::fresh(), root }
     }
 
@@ -141,6 +133,89 @@ impl SourceSnapshot {
         let suffix = shared_source_edge(self, next, true, &mut stats)
             .min(self.len().min(next.len()) - prefix);
         (Some((prefix..self.len() - suffix, prefix..next.len() - suffix)), stats)
+    }
+
+    /// Return disjoint byte changes, keeping unchanged immutable pieces between
+    /// distant edits out of history-navigation replacement buffers. Shared
+    /// backing identity, rather than coincidentally equal text, aligns interior
+    /// ranges. Crossing/repeated pieces may produce a conservative larger gap.
+    /// Only piece metadata inside the changed hull is retained temporarily.
+    pub(crate) fn changed_extents(&self, next: &Self) -> Vec<(Range<usize>, Range<usize>)> {
+        let Some((old, new)) = self.changed_extent(next) else { return Vec::new(); };
+        if old.is_empty() || new.is_empty() { return vec![(old, new)]; }
+
+        #[derive(Clone, Copy)]
+        struct PieceRange { buffer: usize, start: usize, end: usize, document: usize }
+        fn collect(node: &Node, at: usize, range: &Range<usize>, into: &mut Vec<PieceRange>) {
+            if at >= range.end || at + node.len() <= range.start { return; }
+            match node {
+                Node::Leaf(piece) => {
+                    let begin = at.max(range.start);
+                    let end = (at + piece.len).min(range.end);
+                    into.push(PieceRange {
+                        buffer: Arc::as_ptr(&piece.bytes) as *const u8 as usize,
+                        start: piece.start + begin - at,
+                        end: piece.start + end - at,
+                        document: begin,
+                    });
+                }
+                Node::Branch { left, right, .. } => {
+                    collect(left, at, range, into);
+                    collect(right, at + left.len(), range, into);
+                }
+            }
+        }
+        let mut previous = Vec::new();
+        let mut following = Vec::new();
+        collect(self.root.as_deref().expect("nonempty source"), 0, &old, &mut previous);
+        collect(next.root.as_deref().expect("nonempty source"), 0, &new, &mut following);
+        // A repeated/moved buffer can overlap many pieces. Bound the work and
+        // scratch metadata in that unusual case; one exact hull remains valid.
+        let match_limit = (previous.len() + following.len()).saturating_mul(4);
+        let mut by_buffer = std::collections::HashMap::<usize, Vec<(PieceRange, usize)>>::new();
+        for piece in previous { by_buffer.entry(piece.buffer).or_default().push((piece, 0)); }
+        for pieces in by_buffer.values_mut() {
+            pieces.sort_unstable_by_key(|(piece, _)| piece.start);
+            let mut maximum_end = 0;
+            for (piece, prefix_end) in pieces {
+                maximum_end = maximum_end.max(piece.end);
+                *prefix_end = maximum_end;
+            }
+        }
+        let mut changes = Vec::new();
+        let mut old_at = old.start;
+        let mut new_at = new.start;
+        let mut visited_matches = 0;
+        for piece in following {
+            let Some(candidates) = by_buffer.get(&piece.buffer) else { continue; };
+            let begin = candidates.partition_point(|(_, prefix_end)| *prefix_end <= piece.start);
+            let end = candidates.partition_point(|(previous, _)| previous.start < piece.end);
+            let mut matches = Vec::new();
+            for (previous, _) in &candidates[begin..end] {
+                visited_matches += 1;
+                if visited_matches > match_limit { return vec![(old, new)]; }
+                let start = previous.start.max(piece.start);
+                let end = previous.end.min(piece.end);
+                if start < end {
+                    matches.push((piece.document + start - piece.start,
+                        previous.document + start - previous.start, end - start));
+                }
+            }
+            matches.sort_unstable();
+            for (new_start, old_start, length) in matches {
+                let skip = old_at.saturating_sub(old_start).max(new_at.saturating_sub(new_start));
+                if skip >= length { continue; }
+                let old_start = old_start + skip;
+                let new_start = new_start + skip;
+                if old_at < old_start || new_at < new_start {
+                    changes.push((old_at..old_start, new_at..new_start));
+                }
+                old_at = old_start + length - skip;
+                new_at = new_start + length - skip;
+            }
+        }
+        if old_at < old.end || new_at < new.end { changes.push((old_at..old.end, new_at..new.end)); }
+        changes
     }
 
     /// Materialize only one validated byte range. Splitting a persistent rope
@@ -210,15 +285,13 @@ impl SourceSnapshot {
             return Some(self.clone());
         }
         let length = replacement.len();
-        let bytes: Arc<[u8]> = Arc::from(replacement);
+
         let mut inserted = None;
         let mut at = 0;
         for range in generated.iter().cloned().chain(std::iter::once(length..length)) {
             for (range, generated_text) in [(at..range.start, false), (range.clone(), true)] {
                 if !range.is_empty() {
-                    inserted = concat(inserted, Some(Arc::new(Node::Leaf(Piece {
-                        bytes: bytes.clone(), start: range.start, len: range.len(), generated_text,
-                    }))));
+                    inserted = concat(inserted, tree_from_bytes(&replacement[range], generated_text));
                 }
             }
             at = range.end;
@@ -236,7 +309,11 @@ impl SourceSnapshot {
         // not on every edit.  Keeping the implementation here makes the
         // physical byte sequence, rather than a derived projection, the sole
         // authority for the result.
-        SourceArtifactDigest::from_bytes(&self.bytes())
+        let mut digest = Sha256::new();
+        if let Some(root) = &self.root {
+            root.visit_bytes(&mut |bytes| digest.update(bytes));
+        }
+        SourceArtifactDigest(digest.finish())
     }
 
     /// Visit every immutable byte-buffer allocation reachable from this
@@ -280,17 +357,7 @@ impl SourceSnapshot {
 
         let (before, rest) = split(self.root.clone(), start);
         let (_, after) = split(rest, end - start);
-        let inserted = if replacement.is_empty() {
-            None
-        } else {
-            let len = replacement.len();
-            Some(Arc::new(Node::Leaf(Piece {
-                bytes: Arc::from(replacement),
-                start: 0,
-                len,
-                generated_text,
-            })))
-        };
+        let inserted = tree_from_bytes(&replacement, generated_text);
         Some(Self {
             identity: SourceSnapshotIdentity::fresh(),
             root: concat(concat(before, inserted), after),
@@ -403,6 +470,16 @@ impl Node {
         }
     }
 
+    fn visit_bytes(&self, visitor: &mut dyn FnMut(&[u8])) {
+        match self {
+            Self::Leaf(piece) => visitor(&piece.bytes[piece.start..piece.start + piece.len]),
+            Self::Branch { left, right, .. } => {
+                left.visit_bytes(visitor);
+                right.visit_bytes(visitor);
+            }
+        }
+    }
+
     fn append_to(&self, output: &mut Vec<u8>) {
         match self {
             Self::Leaf(piece) => {
@@ -429,9 +506,37 @@ impl Node {
     }
 }
 
-// Compact SHA-256 implementation used to retain an exact physical-artifact
-// fingerprint without adding a persistence dependency to the portable core.
-fn sha256(input: &[u8]) -> [u8; 32] {
+/// Bound backing allocations independently of rope pieces, so keeping a tiny
+/// surviving slice does not pin a whole deleted or replaced artifact.
+fn tree_from_bytes(bytes: &[u8], generated_text: bool) -> Option<Arc<Node>> {
+    fn balanced(nodes: &[Arc<Node>]) -> Option<Arc<Node>> {
+        match nodes.len() {
+            0 => None,
+            1 => Some(nodes[0].clone()),
+            length => {
+                let middle = length / 2;
+                Some(branch(balanced(&nodes[..middle]).unwrap(), balanced(&nodes[middle..]).unwrap()))
+            }
+        }
+    }
+    let leaves: Vec<_> = bytes.chunks(SOURCE_BUFFER_BYTES).map(|bytes| {
+        Arc::new(Node::Leaf(Piece {
+            bytes: Arc::from(bytes), start: 0, len: bytes.len(), generated_text,
+        }))
+    }).collect();
+    balanced(&leaves)
+}
+
+// SHA-256 consumes source pieces directly and retains one partial block.
+struct Sha256 {
+    state: [u32; 8],
+    pending: [u8; 64],
+    used: usize,
+    length: u64,
+}
+
+impl Sha256 {
+    fn new() -> Self {
     const INITIAL: [u32; 8] = [
         0x6a09_e667,
         0xbb67_ae85,
@@ -442,6 +547,48 @@ fn sha256(input: &[u8]) -> [u8; 32] {
         0x1f83_d9ab,
         0x5be0_cd19,
     ];
+        Self { state: INITIAL, pending: [0; 64], used: 0, length: 0 }
+    }
+
+    fn update(&mut self, mut input: &[u8]) {
+        self.length = self.length.wrapping_add(input.len() as u64);
+        if self.used > 0 {
+            let count = input.len().min(64 - self.used);
+            self.pending[self.used..self.used + count].copy_from_slice(&input[..count]);
+            self.used += count;
+            input = &input[count..];
+            if self.used == 64 {
+                self.compress(&self.pending.clone());
+                self.used = 0;
+            }
+        }
+        while input.len() >= 64 {
+            self.compress(&input[..64]);
+            input = &input[64..];
+        }
+        if !input.is_empty() {
+            self.pending[..input.len()].copy_from_slice(input);
+            self.used = input.len();
+        }
+    }
+
+    fn finish(mut self) -> [u8; 32] {
+        self.pending[self.used] = 0x80;
+        self.pending[self.used + 1..].fill(0);
+        if self.used >= 56 {
+            self.compress(&self.pending.clone());
+            self.pending.fill(0);
+        }
+        self.pending[56..].copy_from_slice(&self.length.wrapping_mul(8).to_be_bytes());
+        self.compress(&self.pending.clone());
+        let mut output = [0; 32];
+        for (chunk, word) in output.chunks_exact_mut(4).zip(self.state) {
+            chunk.copy_from_slice(&word.to_be_bytes());
+        }
+        output
+    }
+
+    fn compress(&mut self, block: &[u8]) {
     const K: [u32; 64] = [
         0x428a_2f98,
         0x7137_4491,
@@ -508,17 +655,6 @@ fn sha256(input: &[u8]) -> [u8; 32] {
         0xbef9_a3f7,
         0xc671_78f2,
     ];
-
-    let bit_len = (input.len() as u64).wrapping_mul(8);
-    let block_count = (input.len() + 9).div_ceil(64);
-    let mut padded = vec![0_u8; block_count * 64];
-    padded[..input.len()].copy_from_slice(input);
-    padded[input.len()] = 0x80;
-    let length_offset = padded.len() - 8;
-    padded[length_offset..].copy_from_slice(&bit_len.to_be_bytes());
-
-    let mut state = INITIAL;
-    for block in padded.chunks_exact(64) {
         let mut words = [0_u32; 64];
         for (index, bytes) in block.chunks_exact(4).enumerate() {
             words[index] = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
@@ -534,7 +670,7 @@ fn sha256(input: &[u8]) -> [u8; 32] {
                 .wrapping_add(small_one);
         }
 
-        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = state;
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = self.state;
         for index in 0..64 {
             let big_one = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
             let choose = (e & f) ^ ((!e) & g);
@@ -555,21 +691,21 @@ fn sha256(input: &[u8]) -> [u8; 32] {
             b = a;
             a = temporary_one.wrapping_add(temporary_two);
         }
-        state[0] = state[0].wrapping_add(a);
-        state[1] = state[1].wrapping_add(b);
-        state[2] = state[2].wrapping_add(c);
-        state[3] = state[3].wrapping_add(d);
-        state[4] = state[4].wrapping_add(e);
-        state[5] = state[5].wrapping_add(f);
-        state[6] = state[6].wrapping_add(g);
-        state[7] = state[7].wrapping_add(h);
+        self.state[0] = self.state[0].wrapping_add(a);
+        self.state[1] = self.state[1].wrapping_add(b);
+        self.state[2] = self.state[2].wrapping_add(c);
+        self.state[3] = self.state[3].wrapping_add(d);
+        self.state[4] = self.state[4].wrapping_add(e);
+        self.state[5] = self.state[5].wrapping_add(f);
+        self.state[6] = self.state[6].wrapping_add(g);
+        self.state[7] = self.state[7].wrapping_add(h);
     }
+}
 
-    let mut output = [0_u8; 32];
-    for (chunk, word) in output.chunks_exact_mut(4).zip(state) {
-        chunk.copy_from_slice(&word.to_be_bytes());
-    }
-    output
+fn sha256(input: &[u8]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(input);
+    digest.finish()
 }
 
 fn branch(left: Arc<Node>, right: Arc<Node>) -> Arc<Node> {
@@ -851,6 +987,34 @@ mod tests {
     }
 
     #[test]
+    fn large_deleted_source_releases_unreferenced_backing_chunks() {
+        let source = SourceSnapshot::new(vec![b'x'; 16 * SOURCE_BUFFER_BYTES]);
+        let survivor = source.replace(1, source.len() - 1, Vec::new()).unwrap();
+        drop(source);
+        let mut buffers = std::collections::HashMap::new();
+        survivor.visit_retained_buffers(&mut |identity, bytes| { buffers.insert(identity, bytes); });
+        assert_eq!(survivor.bytes(), b"xx");
+        assert_eq!(buffers.values().sum::<usize>(), 2 * SOURCE_BUFFER_BYTES);
+    }
+
+    #[test]
+    fn streaming_digest_matches_flat_bytes_across_piece_and_padding_boundaries() {
+        for length in [0, 1, 55, 56, 63, 64, 65, 127, SOURCE_BUFFER_BYTES + 65] {
+            let bytes: Vec<_> = (0..length).map(|at| (at % 251) as u8).collect();
+            let expected = SourceArtifactDigest::from_bytes(&bytes);
+            for chunk in [1, 7, 63, 64, 65, 1024] {
+                let mut digest = Sha256::new();
+                for slice in bytes.chunks(chunk) { digest.update(slice); }
+                assert_eq!(SourceArtifactDigest(digest.finish()), expected);
+            }
+            let source = SourceSnapshot::new(bytes);
+            assert_eq!(source.artifact_digest(), expected);
+            let changed = source.replace(length / 2, length / 2, b"inserted".to_vec()).unwrap();
+            assert_eq!(changed.artifact_digest(), SourceArtifactDigest::from_bytes(&changed.bytes()));
+        }
+    }
+
+    #[test]
     fn artifact_digest_uses_exact_serialized_bytes() {
         let digest = SourceArtifactDigest::from_bytes(b"abc");
         assert_eq!(
@@ -930,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn large_source_shapes_patch_by_sharing_the_original_allocation() {
+    fn large_source_shapes_patch_by_sharing_unchanged_backing_chunks() {
         for bytes in ["x\n".repeat(1_000_000).into_bytes(), vec![b'x'; 2_000_000]] {
             let original = SourceSnapshot::new(bytes);
             let middle = 1_000_000;
@@ -946,13 +1110,16 @@ mod tests {
             original.visit_retained_buffers(&mut |identity, length| {
                 original_buffers.insert(identity, length);
             });
-            let original_identity = *original_buffers.keys().next().unwrap();
             let mut changed_buffers = std::collections::HashMap::new();
             changed.visit_retained_buffers(&mut |identity, length| {
                 changed_buffers.insert(identity, length);
             });
-            assert_eq!(changed_buffers.get(&original_identity), Some(&2_000_000));
-            assert_eq!(changed_buffers.len(), 2);
+            assert!(original_buffers.len() > 1);
+            for (identity, length) in &original_buffers {
+                assert_eq!(changed_buffers.get(identity), Some(length));
+                assert!(*length <= SOURCE_BUFFER_BYTES);
+            }
+            assert_eq!(changed_buffers.len(), original_buffers.len() + 1);
         }
     }
 
@@ -979,13 +1146,8 @@ mod tests {
             changed.visit_retained_buffers(&mut |identity, length| {
                 retained.insert(identity, length);
             });
-            assert_eq!(
-                retained
-                    .values()
-                    .filter(|length| **length == SOURCE_BYTES)
-                    .count(),
-                1
-            );
+            assert_eq!(retained.values().sum::<usize>(), SOURCE_BYTES + 5);
+            assert!(retained.values().all(|length| *length <= SOURCE_BUFFER_BYTES));
             assert_eq!(retained.values().filter(|length| **length == 5).count(), 1);
         }
 
@@ -1041,6 +1203,46 @@ mod tests {
                 assert_eq!(repaired, new_bytes);
             }
         }
+        let mut repaired = old.bytes();
+        let changes = old.changed_extents(new);
+        for pair in changes.windows(2) {
+            assert!(pair[0].0.end <= pair[1].0.start);
+            assert!(pair[0].1.end <= pair[1].1.start);
+        }
+        for (removed, inserted) in changes.into_iter().rev() {
+            repaired.splice(removed, new.bytes_in(inserted).unwrap());
+        }
+        assert_eq!(repaired, new_bytes);
+    }
+
+    #[test]
+    fn sparse_source_diff_retains_shared_pieces_between_distant_changes() {
+        let original = SourceSnapshot::new(b"unchanged source content\n".repeat(100_000));
+        let right = original.len() - 23;
+        for (removed, replacement) in [(0, b"insert".as_slice()), (3, b"Z".as_slice()), (7, b"".as_slice())] {
+            let changed = original.replace(right, right + removed, replacement.to_vec()).unwrap()
+                .replace(11, 11 + removed, replacement.to_vec()).unwrap();
+            for (old, new) in [(&original, &changed), (&changed, &original)] {
+                let changes = old.changed_extents(new);
+                assert_eq!(changes.len(), 2, "{changes:?}");
+                assert!(changes.iter().map(|(old, _)| old.len()).sum::<usize>() <= 14);
+                assert!(changes.iter().map(|(_, new)| new.len()).sum::<usize>() <= 14);
+                assert_diff_reconstructs(old, new);
+            }
+        }
+    }
+
+    #[test]
+    fn sparse_source_diff_handles_shared_piece_reordering_and_repetition() {
+        let original = SourceSnapshot::new(b"abcdEFGHijklMNOP".to_vec());
+        let (first, rest) = split(original.root.clone(), 4);
+        let (middle, last) = split(rest, 8);
+        for root in [concat(concat(last.clone(), middle.clone()), first.clone()),
+            concat(concat(first.clone(), middle.clone()), first.clone())] {
+            let changed = SourceSnapshot { identity: SourceSnapshotIdentity::fresh(), root };
+            assert_diff_reconstructs(&original, &changed);
+            assert_diff_reconstructs(&changed, &original);
+        }
     }
 
     #[test]
@@ -1093,7 +1295,8 @@ mod tests {
                         let (removed, inserted) = extent.expect("the edit changes artifact length or bytes");
                         assert!(removed.len() <= row.len() * 2, "{removed:?}");
                         assert!(inserted.len() <= row.len() * 2, "{inserted:?}");
-                        assert!(stats.nodes_visited < 40, "{line_count}: {stats:?}");
+                        // Bounded backing chunks add a logarithmic tree path at each edge.
+                        assert!(stats.nodes_visited < 128, "{line_count}: {stats:?}");
                         assert!(stats.bytes_compared <= row.len() * 2, "{line_count}: {stats:?}");
                         assert_eq!(new.bytes_in(inserted.clone()).unwrap().len(), inserted.len());
                     }

@@ -74,6 +74,7 @@ impl Default for VimLoadLimits {
 }
 #[derive(Clone, Debug)]
 pub struct VimProgram {
+    retained_bytes: usize,
     rules: Vec<Rule>,
     links: BTreeMap<String, String>,
     clusters: BTreeMap<String, Vec<String>>,
@@ -483,6 +484,25 @@ impl VimSession {
             failures: Vec::new(),
         }
     }
+    pub(crate) fn retained_bytes(&self) -> usize {
+        let cached = self.cache.iter().map(|cache| cache.bytes
+            + cache.runs.capacity().saturating_sub(cache.runs.len()) * std::mem::size_of::<SyntaxRun>()).sum::<usize>();
+        let pending = self.job.as_ref().map_or(0, |job| {
+            job.run_bytes
+                + job.runs.capacity().saturating_sub(job.runs.len()) * std::mem::size_of::<SyntaxRun>()
+                + job.frames.capacity() * std::mem::size_of::<Frame>()
+                + job.frames.iter().filter_map(|frame| frame.region.as_ref()).map(|region| region.memory_usage()).sum::<usize>()
+                + job.guard.capacity() * std::mem::size_of::<usize>()
+                + job.probes.as_ref().map_or(0, |probes| {
+                    probes.items.capacity() * std::mem::size_of::<Probe>()
+                        + probes.active.as_ref().map_or(0, VimRegexContinuation::retained_bytes)
+                        + probes.oneline.as_ref().and_then(|check| check.active.as_ref()).map_or(0, VimRegexContinuation::retained_bytes)
+                })
+        });
+        self.program.retained_bytes.saturating_add(self.checkpoints.memory_usage())
+            .saturating_add(cached).saturating_add(pending)
+    }
+
     /// Abandon private in-flight work after a scheduler's aggregate repair
     /// budget expires. Valid published checkpoints remain available to a
     /// subsequent viewport request with a different recovery policy.

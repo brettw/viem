@@ -248,6 +248,39 @@ struct CoreTextMeasurementProviderTests {
     #expect(result.clusters.allSatisfy { $0.hasRenderRun == 0 })
   }
 
+  @Test("Fragment leases bound native resources and survive response replacement")
+  func renderResourceLeases() throws {
+    let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 145)
+    let table = provider.makeProviderTable()
+    let retain = try #require(table.retain_render_runs)
+    let release = try #require(table.release_render_runs)
+    var kept: [(lease: UnsafeMutableRawPointer, handles: [ViemRenderRunHandleV1])] = []
+    defer { for item in kept { release(item.lease) } }
+    for index in 0..<512 {
+      let result = try shape(provider: provider, text: "lease \(index) 👩🏽‍💻",
+        globalStart: UInt64(index * 64), purpose: UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
+        fontSize: Float(10 + index % 24))
+      let handles = result.clusters.filter { $0.hasRenderRun == 1 }.map(\.renderRun)
+      let lease = try #require(handles.withUnsafeBufferPointer {
+        retain(table.context, $0.baseAddress, UInt64($0.count))
+      })
+      kept.append((lease, handles))
+      if kept.count > 4 { release(kept.removeFirst().lease) }
+      #expect(provider.renderRegistry.resourceCountForTesting < 128)
+      #expect(provider.renderRegistry.estimatedBytesForTesting < 128 * 1024)
+      for item in kept {
+        #expect(item.handles.allSatisfy { provider.renderRegistry.contains(
+          identifier: $0.identifier, metricsGeneration: $0.metrics_generation) })
+      }
+    }
+    // End the last response lifetime while keeping the four snapshot leases.
+    _ = try shape(provider: provider, text: "metrics only", globalStart: 0)
+    #expect(provider.renderRegistry.resourceCountForTesting > 0)
+    for item in kept { release(item.lease) }; kept.removeAll()
+    #expect(provider.renderRegistry.resourceCountForTesting == 0)
+    #expect(provider.renderRegistry.estimatedBytesForTesting == 0)
+  }
+
   @Test("changing metrics generation retires render handles")
   func generationLifetime() throws {
     let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 45)
@@ -271,6 +304,68 @@ struct CoreTextMeasurementProviderTests {
         identifier: handle.identifier,
         metricsGeneration: handle.metrics_generation
       ))
+  }
+
+  @Test("detached native leases release on a worker after their provider is gone")
+  func detachedLeaseOutlivesProvider() throws {
+    var provider: CoreTextMeasurementProvider? = CoreTextMeasurementProvider(measurementEnvironmentID: 146)
+    weak var weakProvider = provider
+    weak var weakRegistry = provider?.renderRegistry
+    let table = try #require(provider).makeProviderTable()
+    let retain = try #require(table.retain_render_runs)
+    let release = try #require(table.release_render_runs)
+    let result = try shape(provider: #require(provider), text: "detached 👩🏽‍💻", globalStart: 0,
+      purpose: UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA))
+    let handles = result.clusters.filter { $0.hasRenderRun == 1 }.map(\.renderRun)
+    let lease = try #require(handles.withUnsafeBufferPointer {
+      retain(table.context, $0.baseAddress, UInt64($0.count))
+    })
+    provider?.retireResources()
+    #expect(provider?.retainedResponseArenaCountForTesting == 0)
+    #expect(weakRegistry?.resourceCountForTesting == 0)
+    provider = nil
+    #expect(weakProvider == nil)
+    #expect(weakRegistry != nil) // The independent lease alone owns the registry.
+    let released = DispatchSemaphore(value: 0)
+    let address = UInt(bitPattern: lease)
+    DispatchQueue.global(qos: .userInitiated).async {
+      release(UnsafeMutableRawPointer(bitPattern: address))
+      released.signal()
+    }
+    #expect(released.wait(timeout: .now() + 2) == .success)
+    #expect(weakRegistry == nil)
+  }
+
+  @Test("late pre-detach leases cannot release a reused provider's new resources")
+  func detachedLeaseCannotRetireNewGeneration() throws {
+    let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 147)
+    let table = provider.makeProviderTable()
+    let retain = try #require(table.retain_render_runs)
+    let release = try #require(table.release_render_runs)
+    func retainedShape() throws -> (UnsafeMutableRawPointer, [ViemRenderRunHandleV1]) {
+      let result = try shape(provider: provider, text: "same glyphs", globalStart: 0,
+        purpose: UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA))
+      let handles = result.clusters.filter { $0.hasRenderRun == 1 }.map(\.renderRun)
+      return (try #require(handles.withUnsafeBufferPointer {
+        retain(table.context, $0.baseAddress, UInt64($0.count))
+      }), handles)
+    }
+    let (oldLease, oldHandles) = try retainedShape()
+    provider.retireResources()
+    let (newLease, newHandles) = try retainedShape()
+    defer { release(newLease) }
+    #expect(oldHandles[0].metrics_generation != newHandles[0].metrics_generation)
+    // End the new response pins. Only the new fragment lease now owns these.
+    _ = try shape(provider: provider, text: "metrics only", globalStart: 0)
+    let released = DispatchSemaphore(value: 0)
+    let address = UInt(bitPattern: oldLease)
+    DispatchQueue.global(qos: .userInitiated).async {
+      release(UnsafeMutableRawPointer(bitPattern: address))
+      released.signal()
+    }
+    #expect(released.wait(timeout: .now() + 2) == .success)
+    #expect(newHandles.allSatisfy { provider.renderRegistry.contains(
+      identifier: $0.identifier, metricsGeneration: $0.metrics_generation) })
   }
 
   @Test("asynchronous metrics invalidation retains the current response storage")

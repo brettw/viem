@@ -1,6 +1,7 @@
 //! The versioned Viem pattern language. Thompson transitions come from the
 //! Unicode regex compiler; this bounded VM supplies semantic hard-line
 //! assertions instead of conflating literal LF content with document breaks.
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt;
 use std::ops::Range;
@@ -9,7 +10,7 @@ use std::sync::{
     Arc, Mutex, OnceLock,
 };
 
-use crate::document::{DocumentId, HardLineSnapshot, Revision};
+use crate::document::{DocumentId, HardLineInfo, HardLineSnapshot, Revision};
 use regex_automata::{
     nfa::thompson::{self, State, NFA},
     util::{look::Look, primitives::StateID, syntax},
@@ -128,48 +129,170 @@ impl RegexMatch {
     }
 }
 
+/// A search borrows persistent text and line indexes. Its workspace is bounded
+/// by the regex program, not by the document's byte or hard-line count.
 pub struct RegexInput<'a> {
     snapshot: &'a HardLineSnapshot,
-    text: &'a str,
-    starts: Vec<bool>,
-    ends: Vec<bool>,
-    breaks: Vec<usize>,
+    cursor: RefCell<InputCursor<'a>>,
 }
 impl<'a> RegexInput<'a> {
     pub fn new(snapshot: &'a HardLineSnapshot) -> Self {
-        let text = snapshot.text();
-        let mut starts = vec![false; text.len() + 1];
-        let mut ends = starts.clone();
-        let mut breaks = Vec::new();
-        for line in snapshot
-            .lines(0..snapshot.line_count())
-            .expect("current full line span")
-        {
-            let range = line.content_range();
-            starts[range.start] = true;
-            ends[range.end] = true;
-            if let Some(separator) = line.separator_range() {
-                breaks.push(separator.start);
-            }
-        }
         Self {
             snapshot,
-            text,
-            starts,
-            ends,
-            breaks,
+            cursor: RefCell::new(InputCursor::new(snapshot)),
         }
     }
     pub fn snapshot(&self) -> &HardLineSnapshot {
         self.snapshot
     }
-    pub fn text(&self) -> &str {
-        self.text
-    }
     pub fn hard_break_offsets(&self, range: Range<usize>) -> impl Iterator<Item = usize> + '_ {
-        let start = self.breaks.partition_point(|at| *at < range.start);
-        let end = self.breaks.partition_point(|at| *at < range.end);
-        self.breaks[start..end].iter().copied()
+        let mut lines = LineCursor::new(self.snapshot);
+        // Most replacement captures contain no break. Avoid copying a batch
+        // of unrelated hard lines just to establish that common case.
+        let mut first_line = self.snapshot.line_at_offset(range.start).ok();
+        let mut at = range.start;
+        std::iter::from_fn(move || {
+            while at < range.end {
+                let separator = if let Some(line) = first_line.take() {
+                    line.separator_range()?
+                } else {
+                    lines.at(at)?.separator_range()?
+                };
+                at = separator.end;
+                if separator.start >= range.end {
+                    return None;
+                }
+                if separator.start >= range.start {
+                    return Some(separator.start);
+                }
+            }
+            None
+        })
+    }
+}
+
+const LINE_BATCH: usize = 128;
+struct LineCursor<'a> {
+    snapshot: &'a HardLineSnapshot,
+    batch: Vec<HardLineInfo>,
+}
+impl<'a> LineCursor<'a> {
+    fn new(snapshot: &'a HardLineSnapshot) -> Self {
+        Self {
+            snapshot,
+            batch: Vec::new(),
+        }
+    }
+    fn at(&mut self, at: usize) -> Option<&HardLineInfo> {
+        let index = self
+            .batch
+            .partition_point(|line| line.content_range().end < at);
+        if index < self.batch.len() && self.batch[index].content_range().start <= at {
+            return self.batch.get(index);
+        }
+        let index = self.snapshot.line_at_offset(at).ok()?.index();
+        self.batch = self
+            .snapshot
+            .lines(index..(index + LINE_BATCH).min(self.snapshot.line_count()))
+            .ok()?;
+        self.batch.first()
+    }
+}
+
+// Look assertions inspect at most the immediately adjacent Unicode scalars.
+// Keep four bytes of overlap on each side of the scan position. Byte transitions
+// read this bounded window directly; only refills traverse persistent tree leaves.
+const LOOK_CONTEXT: usize = 4;
+const SCAN_BYTES: usize = 4096;
+struct InputCursor<'a> {
+    snapshot: &'a HardLineSnapshot,
+    bytes: [u8; SCAN_BYTES + 2 * LOOK_CONTEXT],
+    start: usize,
+    end: usize,
+    lines: LineCursor<'a>,
+    #[cfg(test)]
+    chunk_reads: usize,
+}
+impl<'a> InputCursor<'a> {
+    fn new(snapshot: &'a HardLineSnapshot) -> Self {
+        Self {
+            snapshot,
+            bytes: [0; SCAN_BYTES + 2 * LOOK_CONTEXT],
+            start: 0,
+            end: 0,
+            lines: LineCursor::new(snapshot),
+            #[cfg(test)]
+            chunk_reads: 0,
+        }
+    }
+    fn ensure(&mut self, at: usize) {
+        let length = self.snapshot.text_length();
+        let before = at.saturating_sub(LOOK_CONTEXT);
+        let after = at.saturating_add(LOOK_CONTEXT).min(length);
+        if self.start <= before && after <= self.end {
+            return;
+        }
+        self.start = before;
+        self.end = (before + self.bytes.len()).min(length);
+        let mut offset = before;
+        while offset < self.end {
+            let chunk = self.snapshot.byte_chunk_at(offset);
+            #[cfg(test)]
+            {
+                self.chunk_reads += 1;
+            }
+            let count = chunk.len().min(self.end - offset);
+            self.bytes[offset - before..offset - before + count].copy_from_slice(&chunk[..count]);
+            offset += count;
+        }
+    }
+    fn byte(&mut self, at: usize) -> Option<u8> {
+        if at >= self.snapshot.text_length() {
+            return None;
+        }
+        self.ensure(at);
+        Some(self.bytes[at - self.start])
+    }
+    fn is_char_boundary(&mut self, at: usize) -> bool {
+        at == self.snapshot.text_length() || self.byte(at).is_some_and(|byte| byte & 0xC0 != 0x80)
+    }
+    fn boundary_without_refill(&self, at: usize) -> bool {
+        if at == self.snapshot.text_length() {
+            return true;
+        }
+        let byte = if self.start <= at && at < self.end {
+            Some(self.bytes[at - self.start])
+        } else {
+            self.snapshot.byte_chunk_at(at).first().copied()
+        };
+        byte.is_some_and(|byte| byte & 0xc0 != 0x80)
+    }
+    fn matches_look(&mut self, nfa: &NFA, look: Look, at: usize) -> bool {
+        match look {
+            Look::Start => at == 0,
+            Look::End => at == self.snapshot.text_length(),
+            Look::StartLF | Look::EndLF => {
+                if !self.is_char_boundary(at) {
+                    return false;
+                }
+                self.lines.at(at).is_some_and(|line| {
+                    let range = line.content_range();
+                    at == if look == Look::StartLF {
+                        range.start
+                    } else {
+                        range.end
+                    }
+                })
+            }
+            _ => {
+                self.ensure(at);
+                nfa.look_matcher().matches(
+                    look,
+                    &self.bytes[..self.end - self.start],
+                    at - self.start,
+                )
+            }
+        }
     }
 }
 
@@ -270,11 +393,13 @@ impl CompiledRegex {
         end: usize,
         work: &mut RegexWork,
     ) -> Result<Option<RegexMatch>, RegexError> {
-        if start > end
-            || end > input.text.len()
-            || !input.text.is_char_boundary(start)
-            || !input.text.is_char_boundary(end)
-        {
+        if start > end || end > input.snapshot.text_length() {
+            return Err(RegexError::StaleProjection);
+        }
+        // Reuse the scan window across repeated matches. Substitution and
+        // backward search must not refill a whole window for each short match.
+        let mut cursor = input.cursor.borrow_mut();
+        if !cursor.is_char_boundary(start) || !cursor.boundary_without_refill(end) {
             return Err(RegexError::StaleProjection);
         }
         let mut current = Threads::new(self.nfa.states().len());
@@ -283,16 +408,17 @@ impl CompiledRegex {
         let mut found = None;
         for at in start..=end {
             work.tick()?;
-            if found.is_none() && input.text.is_char_boundary(at) {
+            if found.is_none() && cursor.is_char_boundary(at) {
                 self.closure(
                     &mut current,
                     self.nfa.start_anchored(),
                     slots.clone(),
-                    input,
+                    &mut cursor,
                     at,
                     work,
                 )?;
             }
+            let byte = (at < end).then(|| cursor.byte(at).expect("byte before search end"));
             for thread in &current.active {
                 work.tick()?;
                 let target = match self.nfa.state(thread.state) {
@@ -301,16 +427,23 @@ impl CompiledRegex {
                         break;
                     }
                     State::ByteRange { trans }
-                        if at < end && trans.matches(input.text.as_bytes(), at) =>
+                        if byte.is_some_and(|byte| trans.matches_byte(byte)) =>
                     {
                         Some(trans.next)
                     }
-                    State::Sparse(trans) if at < end => trans.matches(input.text.as_bytes(), at),
-                    State::Dense(trans) if at < end => trans.matches(input.text.as_bytes(), at),
+                    State::Sparse(trans) => byte.and_then(|byte| trans.matches_byte(byte)),
+                    State::Dense(trans) => byte.and_then(|byte| trans.matches_byte(byte)),
                     _ => None,
                 };
                 if let Some(target) = target {
-                    self.closure(&mut next, target, thread.slots.clone(), input, at + 1, work)?;
+                    self.closure(
+                        &mut next,
+                        target,
+                        thread.slots.clone(),
+                        &mut cursor,
+                        at + 1,
+                        work,
+                    )?;
                 }
             }
             if found.is_some() && next.active.is_empty() {
@@ -370,7 +503,7 @@ impl CompiledRegex {
         threads: &mut Threads,
         state: StateID,
         slots: Vec<Option<usize>>,
-        input: &RegexInput<'_>,
+        input: &mut InputCursor<'_>,
         at: usize,
         work: &mut RegexWork,
     ) -> Result<(), RegexError> {
@@ -385,14 +518,7 @@ impl CompiledRegex {
             match self.nfa.state(thread.state) {
                 State::Fail => {}
                 State::Look { look, next } => {
-                    let pass = match look {
-                        Look::StartLF => input.starts.get(at).copied().unwrap_or(false),
-                        Look::EndLF => input.ends.get(at).copied().unwrap_or(false),
-                        _ => self
-                            .nfa
-                            .look_matcher()
-                            .matches(*look, input.text.as_bytes(), at),
-                    };
+                    let pass = input.matches_look(&self.nfa, *look, at);
                     if pass {
                         thread.state = *next;
                         stack.push(thread);
@@ -784,5 +910,200 @@ impl Default for SearchOptions {
 impl SearchOptions {
     pub fn case_insensitive(self, pattern: &str) -> Result<bool, RegexError> {
         Ok(self.ignorecase && !(self.smartcase && has_smartcase_uppercase(pattern)?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{Document, Encoding, FileFormat, Format};
+
+    fn edited_document(text: &str) -> Document {
+        let mut document = Document::new(format!("{text}!"));
+        document.delete(text.len()..text.len() + 1).unwrap();
+        assert!(!document.projection().compatibility_text_is_materialized());
+        document
+    }
+
+    #[test]
+    fn tree_regex_captures_match_flat_oracle_across_windows() {
+        let limits = RegexLimits::default();
+        let patterns = [
+            r"\A",
+            r"\z",
+            r"^",
+            r"$",
+            r"\b",
+            r"\B",
+            r"\b\w+\b",
+            r"(é|𐐀|😀)(\w*)",
+            r"(?s:é.*?終)",
+            r"(?i:é)(?P<tail>\w+)",
+            r"(?:xyz|終)?",
+            r"[^\w\n]+",
+            r"\n終$",
+            r"a+?",
+            r"(a*)(a?)",
+        ];
+        for padding in [4089, 4090, 4091, 4092, 4093, 4094, 4095, 4096] {
+            let text = format!(
+                "{} é𐐀😀e\u{301}_xyz\n終\n{} é終",
+                " ".repeat(padding),
+                "a".repeat(4101)
+            );
+            let document = edited_document(&text);
+            let snapshot = document.hard_line_snapshot();
+            let input = RegexInput::new(&snapshot);
+            for pattern in patterns {
+                let compiled = CompiledRegex::compile(pattern, false, limits).unwrap();
+                let oracle = regex::RegexBuilder::new(pattern)
+                    .multi_line(true)
+                    .build()
+                    .unwrap();
+                for start in [0, padding, padding + 1, text.len()] {
+                    let found = compiled
+                        .find(&input, start, text.len(), &mut RegexWork::new(limits))
+                        .unwrap();
+                    let expected = oracle.captures_at(&text, start);
+                    let captures = found.map(|matched| matched.captures);
+                    let expected = expected.map(|captures| {
+                        captures
+                            .iter()
+                            .map(|m| m.map(|m| m.start()..m.end()))
+                            .collect::<Vec<_>>()
+                    });
+                    assert_eq!(
+                        captures, expected,
+                        "pattern {pattern:?}, padding {padding}, start {start}"
+                    );
+                }
+            }
+            assert!(!document.projection().compatibility_text_is_materialized());
+        }
+    }
+
+    #[test]
+    fn window_look_context_matches_whole_utf8_at_every_byte() {
+        let text = format!("{}\r\n_é𐐀😀e\u{301} 𐐀\r\n", "x".repeat(4088));
+        let document = edited_document(&text);
+        let snapshot = document.hard_line_snapshot();
+        let mut cursor = InputCursor::new(&snapshot);
+        let nfa = NFA::new("").unwrap();
+        let looks = [
+            Look::Start,
+            Look::End,
+            Look::StartCRLF,
+            Look::EndCRLF,
+            Look::WordAscii,
+            Look::WordAsciiNegate,
+            Look::WordUnicode,
+            Look::WordUnicodeNegate,
+            Look::WordStartAscii,
+            Look::WordEndAscii,
+            Look::WordStartUnicode,
+            Look::WordEndUnicode,
+            Look::WordStartHalfAscii,
+            Look::WordEndHalfAscii,
+            Look::WordStartHalfUnicode,
+            Look::WordEndHalfUnicode,
+        ];
+        for at in 0..=text.len() {
+            for look in looks {
+                assert_eq!(
+                    cursor.matches_look(&nfa, look, at),
+                    nfa.look_matcher().matches(look, text.as_bytes(), at),
+                    "{look:?} at {at}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn range_search_keeps_document_anchors_and_semantic_line_endings() {
+        let mut document = Document::from_bytes_with_file_format(
+            b"first\nliteral\rtarget\rlast!".to_vec(),
+            Encoding::Utf8,
+            Format::PlainText,
+            FileFormat::Mac,
+        )
+        .unwrap();
+        let end = document.projection().text_tree().byte_len();
+        document.delete(end - 1..end).unwrap();
+        let snapshot = document.hard_line_snapshot();
+        let input = RegexInput::new(&snapshot);
+        let limits = RegexLimits::default();
+        for (pattern, start, end, expected) in [
+            (r"^literal", 0, snapshot.text_length(), None),
+            (r"^target$", 0, snapshot.text_length(), Some(14..20)),
+            (r"\A", 14, 20, None),
+            (r"\z", 14, 20, None),
+            (r"^target$", 14, 20, Some(14..20)),
+        ] {
+            let regex = CompiledRegex::compile(pattern, false, limits).unwrap();
+            let found = regex
+                .find(&input, start, end, &mut RegexWork::new(limits))
+                .unwrap();
+            assert_eq!(found.map(|matched| matched.range()), expected, "{pattern}");
+        }
+        assert_eq!(
+            input
+                .hard_break_offsets(0..snapshot.text_length())
+                .collect::<Vec<_>>(),
+            vec![13, 20]
+        );
+        assert_eq!(
+            input.hard_break_offsets(14..20).collect::<Vec<_>>(),
+            Vec::<usize>::new()
+        );
+        assert!(!document.projection().compatibility_text_is_materialized());
+    }
+
+    #[test]
+    fn repeated_short_matches_reuse_the_tree_scan_window() {
+        let document = edited_document(&"a ".repeat(10_000));
+        let snapshot = document.hard_line_snapshot();
+        let input = RegexInput::new(&snapshot);
+        let limits = RegexLimits::default();
+        let regex = CompiledRegex::compile("a", false, limits).unwrap();
+        let matches = regex
+            .find_all(
+                &input,
+                0..snapshot.text_length(),
+                &mut RegexWork::new(limits),
+            )
+            .unwrap();
+        assert_eq!(matches.len(), 10_000);
+        assert!(input.cursor.borrow().chunk_reads < 30);
+        assert!(!document.projection().compatibility_text_is_materialized());
+    }
+
+    #[test]
+    fn large_search_does_not_flatten_or_look_up_each_byte() {
+        let mut text = "line\n".repeat(200_000);
+        text.push_str("needle終");
+        let document = edited_document(&text);
+        let snapshot = document.hard_line_snapshot();
+        let mut cursor = InputCursor::new(&snapshot);
+        for at in 0..snapshot.text_length() {
+            assert!(cursor.byte(at).is_some());
+        }
+        assert!(
+            cursor.chunk_reads < snapshot.text_length() / 1000,
+            "{} tree reads",
+            cursor.chunk_reads
+        );
+        let limits = RegexLimits::default();
+        let regex = CompiledRegex::compile(r"^needle終$", false, limits).unwrap();
+        let matched = regex
+            .find(
+                &RegexInput::new(&snapshot),
+                0,
+                snapshot.text_length(),
+                &mut RegexWork::new(limits),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(matched.range(), 1_000_000..1_000_009);
+        assert!(!document.projection().compatibility_text_is_materialized());
     }
 }

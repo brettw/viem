@@ -1,6 +1,9 @@
 use super::{DocumentError, Revision};
 use std::ops::Range;
 
+/// Bounds local conversion work and mapping metadata independently of lines.
+pub(crate) const MAPPING_CHUNK_BYTES: usize = 4096;
+
 /// Encoding of the authoritative textual source artifact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Encoding {
@@ -60,6 +63,20 @@ pub(crate) struct DecodedSpan {
 }
 
 impl Encoding {
+    pub(crate) fn scalar_source_width(self, ch: char) -> usize {
+        match self {
+            Self::Utf8 => ch.len_utf8(),
+            Self::Latin1 => 1,
+            Self::Utf16Le | Self::Utf16Be => ch.len_utf16() * 2,
+        }
+    }
+
+    pub(crate) fn encoded_text_len(self, text: &str) -> usize {
+        match self {
+            Self::Utf8 => text.len(),
+            _ => text.chars().map(|ch| self.scalar_source_width(ch)).sum(),
+        }
+    }
     /// Select the initial textual encoding without interpreting or rewriting
     /// the authoritative source bytes.
     ///
@@ -191,6 +208,24 @@ fn decode_known_valid_utf8(valid: &str) -> DecodedText {
 }
 
 impl DecodedText {
+    /// Compatibility iteration for format parsers: scalar records are values
+    /// produced on demand, never a second retained table.
+    pub(crate) fn scalar_spans(&self) -> impl Iterator<Item = DecodedSpan> + '_ {
+        self.spans.iter().flat_map(move |span| {
+            self.text[span.decoded.clone()].char_indices().scan(span.source.start, move |source, (at, ch)| {
+                let width = if span.diagnostic.is_some() { span.source.len() }
+                    else { self.encoding.scalar_source_width(ch) };
+                let result = DecodedSpan {
+                    decoded: span.decoded.start + at..span.decoded.start + at + ch.len_utf8(),
+                    source: *source..*source + width,
+                    diagnostic: span.diagnostic,
+                };
+                *source += width;
+                Some(result)
+            })
+        })
+    }
+
     /// Map an exact decoded UTF-8 boundary back into source bytes. At the
     /// beginning this deliberately returns the first byte after a BOM.
     pub(crate) fn source_boundary(&self, decoded: usize) -> Option<usize> {
@@ -214,11 +249,14 @@ impl DecodedText {
         {
             return Some(self.spans[following].source.start);
         }
-        following
+        let span = following
             .checked_sub(1)
             .and_then(|index| self.spans.get(index))
-            .filter(|span| span.decoded.end == decoded)
-            .map(|span| span.source.end)
+            .filter(|span| decoded <= span.decoded.end)?;
+        if decoded == span.decoded.end { return Some(span.source.end); }
+        if span.diagnostic.is_some() { return None; }
+        let prefix = self.text.get(span.decoded.start..decoded)?;
+        Some(span.source.start + self.encoding.encoded_text_len(prefix))
     }
 }
 
@@ -273,14 +311,31 @@ fn push_valid_utf8(
     source_start: usize,
     valid: &str,
 ) {
-    for (relative, ch) in valid.char_indices() {
-        let decoded_start = text.len();
-        text.push(ch);
-        spans.push(DecodedSpan {
-            decoded: decoded_start..text.len(),
-            source: source_start + relative..source_start + relative + ch.len_utf8(),
+    let decoded_start = text.len();
+    text.push_str(valid);
+    let mut relative = 0;
+    while relative < valid.len() {
+        let mut end = (relative + MAPPING_CHUNK_BYTES).min(valid.len());
+        while !valid.is_char_boundary(end) { end -= 1; }
+        push_regular_span(spans, DecodedSpan {
+            decoded: decoded_start + relative..decoded_start + end,
+            source: source_start + relative..source_start + end,
             diagnostic: None,
         });
+        relative = end;
+    }
+}
+
+fn push_regular_span(spans: &mut Vec<DecodedSpan>, span: DecodedSpan) {
+    if let Some(last) = spans.last_mut().filter(|last| {
+        last.diagnostic.is_none() && last.decoded.end == span.decoded.start
+            && last.source.end == span.source.start
+            && span.decoded.end - last.decoded.start <= MAPPING_CHUNK_BYTES
+    }) {
+        last.decoded.end = span.decoded.end;
+        last.source.end = span.source.end;
+    } else {
+        spans.push(span);
     }
 }
 
@@ -301,11 +356,11 @@ fn push_opaque(
 
 fn decode_latin1(bytes: &[u8]) -> DecodedText {
     let mut text = String::with_capacity(bytes.len());
-    let mut spans = Vec::with_capacity(bytes.len());
+    let mut spans = Vec::new();
     for (source_start, byte) in bytes.iter().copied().enumerate() {
         let decoded_start = text.len();
         text.push(char::from(byte));
-        spans.push(DecodedSpan {
+        push_regular_span(&mut spans, DecodedSpan {
             decoded: decoded_start..text.len(),
             source: source_start..source_start + 1,
             diagnostic: None,
@@ -402,7 +457,7 @@ fn decode_utf16(
 
         let decoded_start = text.len();
         text.push(ch);
-        spans.push(DecodedSpan {
+        push_regular_span(&mut spans, DecodedSpan {
             decoded: decoded_start..text.len(),
             source: source..source + width,
             diagnostic: None,
@@ -421,6 +476,35 @@ fn decode_utf16(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn regular_encoding_mappings_are_bounded_runs_with_exact_scalar_boundaries() {
+        for encoding in [Encoding::Utf8, Encoding::Latin1, Encoding::Utf16Le, Encoding::Utf16Be] {
+            let small = if encoding == Encoding::Latin1 { "aé\r\nÿ" } else { "aé😀e\u{301}\r\n" };
+            let text = small.repeat(20_000);
+            let bytes = encoding.encode_fragment(&text).unwrap();
+            let decoded = encoding.decode(&bytes).unwrap();
+            assert_eq!(decoded.text, text);
+            assert!(decoded.spans.len() <= text.len().div_ceil(MAPPING_CHUNK_BYTES - 4));
+            assert!(decoded.spans.iter().all(|span| span.decoded.len() <= MAPPING_CHUNK_BYTES));
+            let mut source = 0;
+            for span in decoded.scalar_spans() {
+                assert_eq!(span.source.start, source);
+                if span.decoded.start < 100 || span.decoded.start % 127 == 0 {
+                    assert_eq!(decoded.source_boundary(span.decoded.start), Some(source));
+                }
+                let ch = decoded.text[span.decoded.clone()].chars().next().unwrap();
+                source += encoding.scalar_source_width(ch);
+                assert_eq!(span.source.end, source);
+                if span.decoded.start < 100 {
+                    for interior in span.decoded.start + 1..span.decoded.end {
+                        assert_eq!(decoded.source_boundary(interior), None);
+                    }
+                }
+            }
+            assert_eq!(decoded.source_boundary(text.len()), Some(bytes.len()));
+        }
+    }
 
     #[test]
     fn latin1_is_iso_8859_1_not_windows_1252() {

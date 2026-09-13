@@ -507,6 +507,25 @@ impl BackendProvider {
 }
 
 impl SyntaxProvider for BackendProvider {
+    fn retained_bytes(&self) -> usize {
+        let primary = self.primary.as_ref().map_or(0, |session| {
+            session.native_allocation_metrics().retained_bytes.saturating_add(session.retained_input_bytes())
+        });
+        let fallback = self.fallback.as_ref().map_or(0, VimSession::retained_bytes);
+        let children = self.children.iter().map(|child| {
+            child.session.as_ref().map_or(0, |session| session.native_allocation_metrics().retained_bytes
+                .saturating_add(session.retained_input_bytes()))
+                .saturating_add(child.fallback.as_ref().map_or(0, VimSession::retained_bytes))
+                .saturating_add(child.cache.as_ref().map_or(0, |cache| cache.runs.capacity() * std::mem::size_of::<SyntaxRun>()
+                    + cache.runs.iter().map(|run| run.name.0.capacity() + run.origin.capacity()).sum::<usize>()))
+        }).sum::<usize>();
+        // Worker configuration/capped/fallback inputs may outlive a completed
+        // parser. Conservative shared-input charges favor eviction under pressure.
+        let inputs = [&self.input, &self.fallback_input].into_iter().flatten()
+            .map(|input| input.byte_len().saturating_add(input.text_tree().leaf_count().saturating_mul(256))).sum::<usize>();
+        primary.saturating_add(fallback).saturating_add(children).saturating_add(inputs)
+    }
+
     fn analyze(&mut self, request: &SyntaxRequest, cancelled: &AtomicBool) -> SyntaxResult {
         if request.configuration.registry_generation != treesitter::package_registry_generation() {
             return SyntaxResult::missing(
@@ -550,6 +569,8 @@ impl SyntaxProvider for BackendProvider {
                 }
             }
         }
+        let child_native = self.children.iter().filter_map(|child| child.session.as_ref())
+            .map(|session| session.native_allocation_metrics().retained_bytes).sum::<usize>();
         let Some(primary) = &mut self.primary else {
             return self.fallback(request, cancelled);
         };
@@ -568,6 +589,7 @@ impl SyntaxProvider for BackendProvider {
             MAX_TOTAL_PARSE_PROGRESS
         };
         let budget = TreeSitterBudget {
+            max_native_bytes: TreeSitterBudget::default().max_native_bytes.saturating_sub(child_native),
             max_progress_callbacks: TreeSitterBudget::default()
                 .max_progress_callbacks
                 .min(total_progress_limit.saturating_sub(self.parse_progress)),
@@ -592,7 +614,7 @@ impl SyntaxProvider for BackendProvider {
                 if exhausted {
                     self.primary_capped = true;
                     if let Some(primary) = &mut self.primary {
-                        primary.abandon();
+                        primary.discard();
                     }
                     self.primary_failure =
                         Some("Tree-sitter repair exhausted the buffer work budget".into());
@@ -641,6 +663,7 @@ impl SyntaxProvider for BackendProvider {
                 result
             }
             Err(error) => {
+                if let Some(primary) = &mut self.primary { primary.discard(); }
                 self.primary_failure = Some(error.to_string());
                 self.primary_capped = true;
                 self.capped_parse = Some(CappedQuery {

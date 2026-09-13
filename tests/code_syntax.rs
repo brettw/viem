@@ -345,10 +345,26 @@ fn code_newline_edges_unicode_and_existing_highlights_match_a_fresh_projection()
                 let fresh =
                     Document::from_bytes(document.source_bytes(), encoding, Format::Code).unwrap();
                 assert_eq!(document.text(), fresh.text());
-                assert_eq!(
-                    document.projection().provenance(),
-                    fresh.projection().provenance()
-                );
+                // Regional edits can split compact mapping runs differently
+                // from cold construction; compare their exact relation.
+                for source in 0..=document.source_byte_len() {
+                    for affinity in [
+                        viem_core::document::BoundaryAffinity::Upstream,
+                        viem_core::document::BoundaryAffinity::Downstream,
+                    ] {
+                        let lookup = |document: &Document| {
+                            document
+                                .projection()
+                                .map_source_boundary(document.revision(), source, affinity)
+                                .map(|point| (point.formatted_offset, point.affinity, point.relation))
+                        };
+                        assert_eq!(
+                            lookup(&document),
+                            lookup(&fresh),
+                            "source={source}, {affinity:?}"
+                        );
+                    }
+                }
                 assert!(document.undo());
                 assert_eq!(document.source_bytes(), original);
             }

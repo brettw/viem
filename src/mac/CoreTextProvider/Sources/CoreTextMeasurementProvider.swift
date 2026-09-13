@@ -131,7 +131,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   public func makeProviderTable() -> ViemTextMeasurementProviderV1 {
     var table = ViemTextMeasurementProviderV1()
     table.struct_size = UInt32(MemoryLayout<ViemTextMeasurementProviderV1>.size)
-    table.abi_version = UInt32(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V2)
+    table.abi_version = UInt32(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3)
     table.context = Unmanaged.passUnretained(self).toOpaque()
     table.measurement_environment_id = measurementEnvironmentID
     table.threading = UInt32(VIEM_PROVIDER_THREADING_ANY_WORKER)
@@ -141,6 +141,8 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     table.reserved = 0
     table.metrics_generation = viemCoreTextMetricsGeneration
     table.shape_batch = viemCoreTextShapeBatch
+    table.retain_render_runs = viemCoreTextRetainRenderRuns
+    table.release_render_runs = viemCoreTextReleaseRenderRuns
     return table
   }
 
@@ -171,7 +173,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     // this nil; importantly, it runs in the same unlocked region as Core Text.
     shapingDidBegin?()
 
-    let arena = ResponseArena()
+    let arena = ResponseArena(registry: renderRegistry, generation: callbackGeneration)
     var shaped: [ViemShapeResponseV1] = []
     shaped.reserveCapacity(Int(requestCount))
 
@@ -318,9 +320,11 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
           let identifier = renderRegistry.install(
             result.renderResource,
             preferredIdentifier: result.renderIdentifier,
-            generation: callbackGeneration
+            generation: callbackGeneration,
+            pin: true
           )
         else { throw ProviderError(Status.providerFailure) }
+        arena.retainInstalledResource(identifier)
         cluster.has_render_run = 1
         cluster.render_run.owner = request.render_run_owner
         cluster.render_run.identifier = identifier
@@ -1119,6 +1123,13 @@ private func stableHash(_ bytes: [UInt8]) -> UInt64 {
 }
 
 private final class ResponseArena {
+  private let registry: CoreTextRenderRegistry
+  private let generation: UInt64
+  private var installedIdentifiers: [UInt64] = []
+  init(registry: CoreTextRenderRegistry, generation: UInt64) {
+    self.registry = registry; self.generation = generation
+  }
+  func retainInstalledResource(_ identifier: UInt64) { installedIdentifiers.append(identifier) }
   private var bytes: [(UnsafeMutablePointer<UInt8>, Int)] = []
   private var carets: [(UnsafeMutablePointer<ViemClusterCaretStopV1>, Int)] = []
   private var clusters: [(UnsafeMutablePointer<ViemShapedClusterV1>, Int)] = []
@@ -1126,6 +1137,7 @@ private final class ResponseArena {
   private var diagnostics: [(UnsafeMutablePointer<ViemShapingDiagnosticV1>, Int)] = []
 
   deinit {
+    registry.releaseResponseResources(identifiers: installedIdentifiers, generation: generation)
     for (pointer, count) in bytes {
       pointer.deinitialize(count: count)
       pointer.deallocate()
@@ -1188,4 +1200,24 @@ private final class ResponseArena {
     allocations.append((pointer, values.count))
     return UnsafePointer(pointer)
   }
+}
+
+private func viemCoreTextRetainRenderRuns(
+  _ context: UnsafeMutableRawPointer?, _ handles: UnsafePointer<ViemRenderRunHandleV1>?,
+  _ count: UInt64
+) -> UnsafeMutableRawPointer? {
+  guard let context, let handles, count > 0, count <= UInt64(Int.max) else { return nil }
+  let provider = Unmanaged<CoreTextMeasurementProvider>.fromOpaque(context).takeUnretainedValue()
+  let values = UnsafeBufferPointer(start: handles, count: Int(count))
+  let generation = values[0].metrics_generation
+  guard values.allSatisfy({ $0.owner == provider.renderRunOwner && $0.metrics_generation == generation
+    && $0.threading == UInt32(VIEM_RENDER_THREADING_FRONTEND_MAIN) && $0.reserved == 0 }),
+    let lease = provider.renderRegistry.retain(identifiers: values.map(\.identifier), generation: generation)
+  else { return nil }
+  return Unmanaged.passRetained(lease).toOpaque()
+}
+
+private func viemCoreTextReleaseRenderRuns(_ context: UnsafeMutableRawPointer?) {
+  guard let context else { return }
+  Unmanaged<RenderResourceLease>.fromOpaque(context).release()
 }

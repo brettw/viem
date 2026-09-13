@@ -19,6 +19,9 @@ pub const MAX_CACHED_RUN_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_QUEUE_BUFFERS: usize = 128;
 pub const WORKER_COUNT: usize = 2;
 pub const MAX_IDLE_PROVIDER_SESSIONS: usize = 8;
+/// Shared retained analysis, including frozen text inputs, across idle sessions.
+/// Native active work remains subject to the separate cooperative native cap.
+pub const MAX_IDLE_PROVIDER_BYTES: usize = 512 * 1024 * 1024;
 pub const MAX_CONTINUATION_SLICES: usize = 4096;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -90,6 +93,10 @@ impl SyntaxResult {
 /// Platform integrations use the same immutable coverage contract. Mutable
 /// sessions are exclusively worker-owned and may not call back into a core.
 pub trait SyntaxProvider: Send {
+    /// Conservative retained allocation charge for worker-owned state. Called
+    /// outside mailbox locks; stateless providers have no retained allocations.
+    fn retained_bytes(&self) -> usize { 0 }
+
     fn analyze(&mut self, request: &SyntaxRequest, cancellation: &AtomicBool) -> SyntaxResult;
 }
 /// A factory executes on a syntax worker. Platform adapters can return a
@@ -112,6 +119,7 @@ type Mailbox = Arc<Mutex<Slot>>;
 struct IdleProvider {
     mailbox: Weak<Mutex<Slot>>,
     provider: Box<dyn SyntaxProvider>,
+    bytes: usize,
 }
 struct Pool {
     queue: Mutex<VecDeque<Weak<Mutex<Slot>>>>,
@@ -147,17 +155,22 @@ impl Pool {
         &self,
         mailbox: &Mailbox,
         provider: Box<dyn SyntaxProvider>,
-    ) -> Option<IdleProvider> {
+        bytes: usize,
+    ) -> Vec<IdleProvider> {
         let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
         idle.push_back(IdleProvider {
             mailbox: Arc::downgrade(mailbox),
             provider,
+            bytes,
         });
-        if idle.len() > MAX_IDLE_PROVIDER_SESSIONS {
-            idle.pop_front()
-        } else {
-            None
+        let mut retained = idle.iter().map(|entry| entry.bytes).sum::<usize>();
+        let mut retired = Vec::new();
+        while idle.len() > MAX_IDLE_PROVIDER_SESSIONS || retained > MAX_IDLE_PROVIDER_BYTES {
+            let Some(entry) = idle.pop_front() else { break; };
+            retained = retained.saturating_sub(entry.bytes);
+            retired.push(entry);
         }
+        retired
     }
     fn retire_closed(&self) {
         let retired = {
@@ -278,6 +291,14 @@ impl Pool {
                     "Syntax provider returned invalid snapshot coverage",
                 );
             }
+            let provider_bytes = provider.as_ref().map_or(0, |provider| provider.retained_bytes());
+            // A continuation too large to retain cannot make progress by
+            // repeatedly rebuilding a fresh session on every worker slice.
+            if provider_bytes > MAX_IDLE_PROVIDER_BYTES {
+                provider = None;
+                result.continuation = false;
+                result.diagnostics.push("Syntax session exceeded retained memory budget".into());
+            }
             let mut slot = mailbox.lock().unwrap_or_else(|e| e.into_inner());
             slot.running = false;
             slot.active = None;
@@ -288,7 +309,7 @@ impl Pool {
             }
             // Publish idle session ownership before admitting a continuation.
             // Another worker cannot take this mailbox before both are ready.
-            let retired = provider.and_then(|provider| self.retain_provider(&mailbox, provider));
+            let retired = provider.map(|provider| self.retain_provider(&mailbox, provider, provider_bytes)).unwrap_or_default();
             if !cancellation.load(Ordering::Acquire) {
                 if result.continuation {
                     slot.continuation_slices += 1;
@@ -574,6 +595,37 @@ mod tests {
             FormattedTextTree::try_from_text("x\n".repeat(1000)).unwrap(),
         )
     }
+    #[test]
+    fn retained_provider_pool_evicts_by_bytes_and_reuses_surviving_sessions() {
+        struct SizedProvider(usize);
+        impl SyntaxProvider for SizedProvider {
+            fn retained_bytes(&self) -> usize { self.0 }
+            fn analyze(&mut self, request: &SyntaxRequest, _: &AtomicBool) -> SyntaxResult {
+                SyntaxResult::missing(request, "fixture")
+            }
+        }
+        let local = Pool { queue: Mutex::new(VecDeque::new()), available: Condvar::new(),
+            idle: Mutex::new(VecDeque::new()) };
+        let factory: Factory = Arc::new(|| Box::new(SizedProvider(0)));
+        let first = SyntaxService::with_factory(factory.clone());
+        let second = SyntaxService::with_factory(factory.clone());
+        let third = SyntaxService::with_factory(factory);
+        let size = MAX_IDLE_PROVIDER_BYTES / 2;
+        assert!(local.retain_provider(&first.mailbox, Box::new(SizedProvider(size)), size).is_empty());
+        assert!(local.retain_provider(&second.mailbox, Box::new(SizedProvider(size)), size).is_empty());
+        let evicted = local.retain_provider(&third.mailbox, Box::new(SizedProvider(1)), 1);
+        assert_eq!(evicted.len(), 1);
+        assert!(local.take_provider(&first.mailbox).is_none());
+        assert_eq!(local.take_provider(&second.mailbox).unwrap().retained_bytes(), size);
+        assert_eq!(local.take_provider(&third.mailbox).unwrap().retained_bytes(), 1);
+        drop(evicted);
+        assert!(local.idle.lock().unwrap().is_empty());
+        let oversized = MAX_IDLE_PROVIDER_BYTES + 1;
+        let evicted = local.retain_provider(&first.mailbox, Box::new(SizedProvider(oversized)), oversized);
+        assert_eq!(evicted.len(), 1);
+        assert!(local.idle.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn suspended_provider_never_blocks_requests_supersession_or_publication() {
         let _registry = super::super::treesitter::package_registry_test_guard();

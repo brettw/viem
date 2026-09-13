@@ -19,7 +19,7 @@ use super::measurement::{
     MeasurementEnvironmentId, MetricsGeneration, ProviderThreading, TextMeasurementProvider,
 };
 use super::style::{DocumentLayoutStyles, DocumentStyleError};
-use crate::document::{Document, DocumentId, FormattedTextError, Revision};
+use crate::document::{Document, DocumentId, FormattedTextError, FormattedTextTree, Revision};
 use std::ops::Range;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
@@ -68,6 +68,9 @@ pub struct ViewportLayoutRegion {
     viewport_top: f32,
     viewport_height: f32,
     long_line_checkpoint: Option<LongLineLayoutCheckpoint>,
+    horizontal_focus_offset: Option<usize>,
+    horizontal_desired_x: Option<f32>,
+    complete_horizontal_geometry: bool,
 }
 
 impl ViewportLayoutRegion {
@@ -95,6 +98,9 @@ impl ViewportLayoutRegion {
             viewport_top,
             viewport_height,
             long_line_checkpoint: None,
+            horizontal_focus_offset: None,
+            horizontal_desired_x: None,
+            complete_horizontal_geometry: false,
         })
     }
 
@@ -128,6 +134,21 @@ impl ViewportLayoutRegion {
 
     pub fn long_line_checkpoint(&self) -> Option<&LongLineLayoutCheckpoint> {
         self.long_line_checkpoint.as_ref()
+    }
+
+    pub fn with_horizontal_focus(mut self, offset: usize, desired_x: Option<f32>) -> Self {
+        self.horizontal_focus_offset = Some(offset);
+        self.horizontal_desired_x = desired_x.filter(|value| value.is_finite());
+        self
+    }
+
+    pub(crate) fn has_horizontal_focus(&self) -> bool { self.horizontal_focus_offset.is_some() }
+
+    /// Rectangular edits currently inspect every intervening shaping cluster.
+    /// Request their complete row geometry before resolving a source change.
+    pub fn with_complete_horizontal_geometry(mut self) -> Self {
+        self.complete_horizontal_geometry = true;
+        self
     }
 }
 
@@ -249,6 +270,20 @@ pub enum LayoutComputationScope {
 
 #[derive(Clone, Debug)]
 enum CapturedLayoutInput {
+    UnwrappedViewport {
+        text: FormattedTextTree,
+        line_ranges: Vec<Range<usize>>,
+        following_line_range: Option<Range<usize>>,
+        document_hard_line_count: usize,
+        styles: Arc<DocumentLayoutStyles>,
+    },
+    StreamingOverflowSlice {
+        tree: FormattedTextTree,
+        line_slice: HardLineLayoutSlice,
+        document_hard_line_count: usize,
+        following_line_range: Option<Range<usize>>,
+        styles: Arc<DocumentLayoutStyles>,
+    },
     Regional {
         text: Arc<str>,
         text_origin: usize,
@@ -375,10 +410,12 @@ impl LayoutJobRequest {
         self.projection_text_len
     }
 
-    /// Number of UTF-8 bytes retained by this request for layout computation.
-    /// Both hard-line and viewport requests retain only their regional text.
+    /// Bytes copied into this request's owned text buffer. Streaming requests
+    /// share the immutable formatted tree instead and therefore report zero.
     pub fn captured_text_len(&self) -> usize {
         match &self.input {
+            CapturedLayoutInput::UnwrappedViewport { .. }
+            | CapturedLayoutInput::StreamingOverflowSlice { .. } => 0,
             CapturedLayoutInput::Regional { text, .. }
             | CapturedLayoutInput::LongHardLineSlice { text, .. } => text.len(),
         }
@@ -386,6 +423,14 @@ impl LayoutJobRequest {
 
     pub fn capture_statistics(&self) -> LayoutJobCaptureStatistics {
         match &self.input {
+            CapturedLayoutInput::UnwrappedViewport { styles, .. }
+            | CapturedLayoutInput::StreamingOverflowSlice { styles, .. } => LayoutJobCaptureStatistics {
+                regional_text_bytes: 0,
+                document_shaping_style_runs: styles.shaping_runs.len(),
+                document_paint_style_runs: styles.paint_runs.len(),
+                document_paragraph_styles: styles.paragraphs.len(),
+                view_override_style_runs: self.captured_view.retained_override_style_run_count(),
+            },
             CapturedLayoutInput::Regional { text, styles, .. }
             | CapturedLayoutInput::LongHardLineSlice { text, styles, .. } => {
                 LayoutJobCaptureStatistics {
@@ -571,34 +616,12 @@ fn bounded_long_line_work_end(
     if bounded_end == hard_line_end {
         return Ok(bounded_end);
     }
-    let tree = document.projection().text_tree();
-    let mut probe_end = bounded_end;
-    loop {
-        if cancellation.is_cancelled() {
-            return Err(LayoutJobError::Cancelled);
-        }
-        probe_end = bounded_context_end(document, probe_end, hard_line_end);
-        let mut probe = tree.slice(start..probe_end)?;
-        if paragraph_flow {
-            probe = flow_text(probe, start, &[start..hard_line_end]);
-        }
-        if let Some((offset, _)) = unicode_linebreak::linebreaks(&probe)
-            .find(|(offset, _)| *offset < probe.len())
-        {
-            // Ordinary text keeps its bounded work slice. An oversized word
-            // must reach its first actual break so one complete row can be
-            // published; treating the capture boundary as a break changes text.
-            return Ok(bounded_end.max(start + offset));
-        }
-        if probe_end == hard_line_end {
-            return Ok(hard_line_end);
-        }
-        let next = start.saturating_add((probe_end - start).saturating_mul(2));
-        probe_end = next.min(hard_line_end);
-        while !tree.is_char_boundary(probe_end)? {
-            probe_end -= 1;
-        }
-    }
+    let first_break = super::line_breaks::first_line_break(
+        document.projection().text_tree(), start..hard_line_end, paragraph_flow, cancellation,
+    )?;
+    // Ordinary text keeps a bounded work slice. An oversized first word must
+    // reach its actual break so the worker can publish a complete overflow row.
+    Ok(bounded_end.max(first_break))
 }
 
 fn grapheme_bounded_long_line_work_end(
@@ -755,7 +778,32 @@ where
         && view.wrap()
         && (checkpoint.is_some() || line_ranges[0].len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
 
-    let (input, captured_view) = if use_long_line_slice {
+    // Multi-line viewport capture shares the tree whenever one line is
+    // enormous; the worker wraps its ordinary lines and streams oversized rows.
+    // Single wrapped-line continuations retain the explicit resumable protocol.
+    let giant_line = line_ranges.iter().any(|line| line.len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
+    let stream_wrapped_region = view.wrap() && checkpoint.is_none()
+        && (line_ranges.len() > 1 || (giant_line
+            && super::line_breaks::first_line_break(document.projection().text_tree(), line_ranges[0].clone(), false, &cancellation)? == line_ranges[0].end));
+    let use_unwrapped_viewport = (!view.wrap() || stream_wrapped_region) && !view.paragraph_flow()
+        && matches!(&region, LayoutJobRegion::Viewport(viewport) if !viewport.complete_horizontal_geometry)
+        && giant_line;
+    let (input, mut captured_view) = if use_unwrapped_viewport {
+        let text_origin = line_ranges.first().unwrap().start;
+        let text_end = line_ranges.last().unwrap().end;
+        let following_line_range = if range.end < hard_line_count {
+            Some(document_line_range(document, range.end, false)?)
+        } else { None };
+        let style_end = following_style_end(document, following_line_range.as_ref(), text_end)?;
+        let mut styles = DocumentLayoutStyles::resolve_region(document.projection(), text_origin..style_end)?;
+        styles.apply_source_quote_policy(document.format(), false);
+        let styles = retain_regional_styles(styles, &line_ranges, following_line_range.as_ref());
+        (
+            CapturedLayoutInput::UnwrappedViewport { text: document.projection().text_tree().clone(), line_ranges,
+                following_line_range, document_hard_line_count: hard_line_count, styles: Arc::new(styles) },
+            view.capture_for_regional_layout_job(text_origin..text_end),
+        )
+    } else if use_long_line_slice {
         let full_range = line_ranges[0].clone();
         if let Some(checkpoint) = &checkpoint {
             validate_long_line_checkpoint(
@@ -780,11 +828,14 @@ where
         let context_start = bounded_context_start(document, work_start, full_range.start);
         let context_end = bounded_context_end(document, work_end, full_range.end);
         let capture_range = context_start..context_end;
-        let text = document
-            .projection()
-            .text_tree()
-            .slice(capture_range.clone())?;
-        let following_line_range = if work_end == full_range.end && range.end < hard_line_count {
+        let stream_overflow = !view.paragraph_flow()
+            && matches!(&region, LayoutJobRegion::Viewport(viewport) if !viewport.complete_horizontal_geometry)
+            && work_end - work_start > MAX_LONG_LINE_LAYOUT_SLICE_BYTES
+            && super::line_breaks::first_line_break(document.projection().text_tree(), work_start..full_range.end, false, &cancellation)? == work_end;
+        let text = if stream_overflow { None } else {
+            Some(document.projection().text_tree().slice(capture_range.clone())?)
+        };
+        let following_line_range = if (work_end == full_range.end || stream_overflow) && range.end < hard_line_count {
             Some(document_line_range(
                 document,
                 range.end,
@@ -793,7 +844,10 @@ where
         } else {
             None
         };
-        let style_end = following_style_end(document, following_line_range.as_ref(), context_end)?;
+        // The rare width-fit fallback can complete the remaining paragraph.
+        // Retain its immutable style metadata, while the text stays in the tree.
+        let style_capture_range = if stream_overflow { context_start..full_range.end } else { capture_range.clone() };
+        let style_end = following_style_end(document, following_line_range.as_ref(), style_capture_range.end)?;
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }
@@ -809,7 +863,7 @@ where
             style_ranges.extend(following_line_range.clone());
             resolve_flow_paragraph_styles(document.projection(), &mut styles, &style_ranges)?;
             (
-                flow_text(text, context_start, std::slice::from_ref(&full_range)),
+                Some(flow_text(text.expect("flow uses captured text"), context_start, std::slice::from_ref(&full_range))),
                 styles,
             )
         } else {
@@ -817,27 +871,36 @@ where
         };
         let styles = retain_regional_styles(
             styles,
-            std::slice::from_ref(&capture_range),
+            std::slice::from_ref(&style_capture_range),
             following_line_range.as_ref(),
         );
-        let captured_view = view.capture_for_regional_layout_job(capture_range.clone());
-        (
-            CapturedLayoutInput::LongHardLineSlice {
-                text: Arc::from(text),
-                text_origin: context_start,
-                line_slice: HardLineLayoutSlice {
-                    full_range,
-                    work_range: work_start..work_end,
-                    shaping_context_range: capture_range,
-                    hard_line_index: range.start,
-                    checkpoint,
-                },
+        let captured_view = view.capture_for_regional_layout_job(style_capture_range);
+        let line_slice = HardLineLayoutSlice {
+            full_range,
+            work_range: work_start..work_end,
+            shaping_context_range: capture_range,
+            hard_line_index: range.start,
+            checkpoint,
+        };
+        let input = if stream_overflow {
+            CapturedLayoutInput::StreamingOverflowSlice {
+                tree: document.projection().text_tree().clone(),
+                line_slice,
                 document_hard_line_count: hard_line_count,
                 following_line_range,
                 styles: Arc::new(styles),
-            },
-            captured_view,
-        )
+            }
+        } else {
+            CapturedLayoutInput::LongHardLineSlice {
+                text: Arc::from(text.expect("ordinary slice captured its text")),
+                text_origin: context_start,
+                line_slice,
+                document_hard_line_count: hard_line_count,
+                following_line_range,
+                styles: Arc::new(styles),
+            }
+        };
+        (input, captured_view)
     } else {
         let text_origin = line_ranges
             .first()
@@ -896,6 +959,12 @@ where
             captured_view,
         )
     };
+    if let LayoutJobRegion::Viewport(viewport) = &region {
+        let prefix = view.hard_line_prefix_height(range.start).map_or(0.0, |height| height.height() as f32);
+        captured_view.regional_viewport_top = (viewport.viewport_top - prefix).max(0.0);
+        captured_view.horizontal_focus_offset = viewport.horizontal_focus_offset;
+        captured_view.horizontal_desired_x = viewport.horizontal_desired_x;
+    }
     before_registration();
     // This CAS is the preparation acceptance point. If cancellation happened
     // while capture was running, it wins the token's atomic modification order
@@ -1079,6 +1148,23 @@ pub fn compute_layout_job<P: TextMeasurementProvider>(
     }
 
     let snapshot = match &request.input {
+        CapturedLayoutInput::UnwrappedViewport { text, line_ranges, following_line_range, document_hard_line_count, styles } => {
+            match engine.layout_unwrapped_viewport_cancellable(request.document_id, request.document_revision, text, line_ranges,
+                request.region.hard_lines().start, *document_hard_line_count, following_line_range.clone(), styles,
+                &request.captured_view, &request.cancellation) {
+                Ok(snapshot) => snapshot,
+                Err(LayoutComputationError::Cancelled) => return Err(LayoutJobError::Cancelled),
+                Err(LayoutComputationError::Layout(error)) => return Err(LayoutJobError::Layout(error)),
+            }
+        }
+        CapturedLayoutInput::StreamingOverflowSlice { tree, line_slice, document_hard_line_count, following_line_range, styles } => {
+            match engine.layout_overflow_slice_cancellable(request.document_id, request.document_revision, tree, line_slice,
+                *document_hard_line_count, following_line_range.clone(), styles, &request.captured_view, &request.cancellation) {
+                Ok(snapshot) => snapshot,
+                Err(LayoutComputationError::Cancelled) => return Err(LayoutJobError::Cancelled),
+                Err(LayoutComputationError::Layout(error)) => return Err(LayoutJobError::Layout(error)),
+            }
+        }
         CapturedLayoutInput::Regional {
             text,
             text_origin,
@@ -1197,6 +1283,7 @@ pub struct InstalledLayoutJob {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LayoutJobInstallRejection {
     Cancelled,
+    OutsideHorizontalCoverage,
     WrongDocument {
         expected: DocumentId,
         actual: DocumentId,
@@ -1284,6 +1371,12 @@ pub fn install_layout_job(
             expected: view.active_layout_job(),
             actual: candidate.job_id,
         });
+    }
+    let region = match &candidate.product {
+        LayoutJobProduct::RegionalHardLines(region) | LayoutJobProduct::PartialViewport(region) => region,
+    };
+    if !region.covers_horizontal_viewport(view.viewport_left(), view.width()) {
+        return Err(LayoutJobInstallRejection::OutsideHorizontalCoverage);
     }
 
     let job_id = candidate.job_id;
@@ -1526,7 +1619,7 @@ mod tests {
                             typographic_bounds: bounds,
                             ink_bounds: bounds,
                             bidi_level: 0,
-                            fallback_font: "Aggregate LTR".to_owned(),
+                            fallback_font: "Aggregate LTR".into(),
                             caret_stops: vec![
                                 ClusterCaretStop {
                                     text_offset: request.text_range.start,
@@ -1539,12 +1632,9 @@ mod tests {
                                     affinity: super::super::BoundaryAffinity::Upstream,
                                 },
                             ],
-                            render_run: request.render_run_policy.map(|policy| RenderRunHandle {
-                                owner: policy.owner,
-                                identifier: index as u64 + 1,
-                                metrics_generation: request.metrics_generation,
-                                threading: policy.threading,
-                            }),
+                            render_run: request.render_run_policy.map(|policy| RenderRunHandle::new(
+                                policy.owner, index as u64 + 1,
+                                request.metrics_generation, policy.threading)),
                         })
                         .into_iter()
                         .collect::<Vec<_>>();
@@ -2477,7 +2567,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_megabyte_unwrapped_line_uses_bounded_shape_and_scan_checkpoints() {
+    fn multi_megabyte_unwrapped_line_streams_and_retains_only_horizontal_geometry() {
         const LONG_LINE_BYTES: usize = 2 * 1024 * 1024;
         let document = Document::new("x".repeat(LONG_LINE_BYTES));
         let mut engine = LayoutEngine::new(FragmentAggregateProvider::default());
@@ -2494,17 +2584,15 @@ mod tests {
             LayoutCancellationToken::new(),
         )
         .unwrap();
-        assert_eq!(request.captured_text_len(), LONG_LINE_BYTES);
+        assert_eq!(request.captured_text_len(), 0, "capture must share the immutable tree");
 
         let candidate =
             compute_layout_job(&mut engine, &request, LayoutExecutionContext::WorkerPool).unwrap();
         let regional = candidate.regional_snapshot();
         let work = regional.work_statistics();
-        assert_eq!(work.segmented_text_bytes(), LONG_LINE_BYTES);
-        assert_eq!(
-            work.shaping_fragment_count(),
-            LONG_LINE_BYTES / MAX_SHAPE_FRAGMENT_BYTES
-        );
+        assert!(work.segmented_text_bytes() >= LONG_LINE_BYTES);
+        assert!(work.segmented_text_bytes() <= LONG_LINE_BYTES + MAX_SHAPE_FRAGMENT_BYTES * 4);
+        assert!(work.shaping_fragment_count() >= LONG_LINE_BYTES / MAX_SHAPE_FRAGMENT_BYTES);
         assert_eq!(
             work.maximum_shaping_fragment_bytes(),
             MAX_SHAPE_FRAGMENT_BYTES
@@ -2513,8 +2601,8 @@ mod tests {
             engine.provider().maximum_request_bytes,
             MAX_SHAPE_FRAGMENT_BYTES
         );
-        assert_eq!(engine.provider().shaped_bytes, LONG_LINE_BYTES);
-        assert_eq!(work.wrapped_cluster_count(), work.shaping_fragment_count());
+        assert!(engine.provider().shaped_bytes <= LONG_LINE_BYTES + MAX_SHAPE_FRAGMENT_BYTES * 4);
+        assert!(regional.lines()[0].rows()[0].clusters.len() <= 4);
         assert!(work.maximum_wrap_checkpoint_clusters() <= CANCELLATION_CLUSTER_BATCH);
         assert!(work.maximum_position_checkpoint_clusters() <= CANCELLATION_CLUSTER_BATCH);
         assert_eq!(regional.lines()[0].rows().len(), 1);
@@ -2528,6 +2616,108 @@ mod tests {
         )
         .unwrap();
         assert!(view.maximum_viewport_left().unwrap() > LONG_LINE_BYTES as f32 / 2.0);
+        assert!(view.snapshot().unwrap().has_horizontal_materialization());
+        assert!(view.regional_cached_ranges().is_empty());
+        assert_eq!(view.snapshot().unwrap().caret_point(LONG_LINE_BYTES / 2, super::super::BoundaryAffinity::Downstream),
+            Err(LayoutError::OutsideMaterializedCoverage));
+    }
+
+    #[test]
+    fn mixed_short_and_giant_viewport_lines_share_text_but_explicit_complete_geometry_does_not() {
+        for giant in ["a".repeat(80_000), "word ".repeat(20_000)] {
+            let document = Document::new(format!("short\n{giant}\ntail"));
+            let engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+            let requirements = inspect_layout_provider(&engine);
+            let mut view = ViewLayout::new(120.0, 80.0);
+            let request = prepare_layout_job(&document, &mut view, requirements, LayoutJobId(1), LayoutJobPriority::ChangedVisibleRows,
+                viewport(0..3, 0.0, 80.0), LayoutCancellationToken::new()).unwrap();
+            assert_eq!(request.captured_text_len(), 0);
+            assert!(matches!(request.input, CapturedLayoutInput::UnwrappedViewport { .. }));
+            let complete = LayoutJobRegion::Viewport(ViewportLayoutRegion::new(0..3, 0.0, 80.0).unwrap().with_complete_horizontal_geometry());
+            let request = prepare_layout_job(&document, &mut view, requirements, LayoutJobId(2), LayoutJobPriority::ChangedVisibleRows,
+                complete, LayoutCancellationToken::new()).unwrap();
+            assert_eq!(request.captured_text_len(), document.projection().text_tree().byte_len());
+            assert!(!document.projection().compatibility_text_is_materialized());
+        }
+    }
+
+    #[test]
+    fn giant_word_inside_paragraph_captures_tree_for_overflow_continuation() {
+        let word_bytes = 2 * 1024 * 1024;
+        let document = Document::new(format!("prefix {} tail\nfollowing", "a".repeat(word_bytes)));
+        let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+        let requirements = inspect_layout_provider(&engine);
+        let mut view = ViewLayout::new(120.0, 80.0);
+        let first = prepare_layout_job(&document, &mut view, requirements, LayoutJobId(1), LayoutJobPriority::ChangedVisibleRows,
+            viewport(0..1, 0.0, 80.0), LayoutCancellationToken::new()).unwrap();
+        assert!(first.captured_text_len() <= MAX_LONG_LINE_LAYOUT_SLICE_BYTES + LONG_LINE_CAPTURE_CONTEXT_BYTES * 2);
+        let first = compute_layout_job(&mut engine, &first, LayoutExecutionContext::WorkerPool).unwrap();
+        let checkpoint = first.next_long_line_checkpoint().unwrap().clone();
+        assert_eq!(checkpoint.next_text_offset(), 7);
+        let resumed = prepare_layout_job(&document, &mut view, requirements, LayoutJobId(2), LayoutJobPriority::ChangedVisibleRows,
+            LayoutJobRegion::Viewport(ViewportLayoutRegion::resume_long_line(checkpoint.clone(), 0.0, 80.0).unwrap()),
+            LayoutCancellationToken::new()).unwrap();
+        assert_eq!(resumed.captured_text_len(), 0);
+        assert_eq!(resumed.capture_statistics().regional_text_bytes(), 0);
+        match &resumed.input {
+            CapturedLayoutInput::StreamingOverflowSlice { line_slice, following_line_range, .. } => {
+                assert_eq!(line_slice.work_range, 7..word_bytes + 8);
+                assert_eq!(line_slice.full_range, 0..word_bytes + 12);
+                assert!(following_line_range.is_some(), "width-fit fallback retains the following paragraph");
+            }
+            _ => panic!("giant word continuation must share the text tree"),
+        }
+        assert!(!document.projection().compatibility_text_is_materialized());
+        view.resize(90.0, 80.0);
+        assert!(matches!(prepare_layout_job(&document, &mut view, requirements, LayoutJobId(3), LayoutJobPriority::ChangedVisibleRows,
+            LayoutJobRegion::Viewport(ViewportLayoutRegion::resume_long_line(checkpoint, 0.0, 80.0).unwrap()), LayoutCancellationToken::new()),
+            Err(LayoutJobError::InvalidLongLineCheckpoint(_))));
+    }
+
+    #[test]
+    fn streamed_overflow_between_prefix_and_tail_matches_complete_row_geometry() {
+        let text = format!("prefix {} tail", "AVfi".repeat(24_000));
+        let document = Document::new(text);
+        let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+        let requirements = inspect_layout_provider(&engine);
+        let mut view = ViewLayout::new(120.0, 80.0);
+        let mut checkpoint = None;
+        let mut rows = Vec::new();
+        for job in 1..=5 {
+            let region = checkpoint.take().map_or_else(|| viewport(0..1, 0.0, 80.0), |checkpoint| {
+                LayoutJobRegion::Viewport(ViewportLayoutRegion::resume_long_line(checkpoint, 0.0, 80.0).unwrap())
+            });
+            let request = prepare_layout_job(&document, &mut view, requirements, LayoutJobId(job), LayoutJobPriority::ChangedVisibleRows,
+                region, LayoutCancellationToken::new()).unwrap();
+            let candidate = compute_layout_job(&mut engine, &request, LayoutExecutionContext::WorkerPool).unwrap();
+            let line = &candidate.regional_snapshot().lines()[0];
+            rows.extend(line.rows().iter().cloned());
+            checkpoint = line.next_checkpoint().cloned();
+            if checkpoint.is_none() { assert!(line.height_is_exact()); break; }
+        }
+        assert!(checkpoint.is_none());
+        assert_eq!(rows.len(), 3);
+        assert!(rows[1].clusters.len() < 5000);
+        let mut full_engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+        let mut full_view = ViewLayout::new(120.0, 80.0);
+        full_engine.relayout(&document, &mut full_view).unwrap();
+        let complete = &full_view.snapshot().unwrap().rows;
+        assert_eq!(rows.len(), complete.len());
+        for (row, expected) in rows.iter().zip(complete) {
+            assert_eq!(row.text_range, expected.text_range);
+            assert_eq!(row.hard_line_range, expected.hard_line_range);
+            assert_eq!(row.fragment_index, expected.fragment_index);
+            assert_eq!(row.wrapped_from_previous, expected.wrapped_from_previous);
+            assert_eq!(row.wraps_to_next, expected.wraps_to_next);
+            assert_eq!(row.y, expected.y);
+            assert_eq!(row.baseline, expected.baseline);
+            assert_eq!(row.width, expected.width);
+            for cluster in &row.clusters {
+                let actual = expected.clusters.iter().find(|candidate| candidate.text_range == cluster.text_range).unwrap();
+                assert_eq!(cluster.x, actual.x);
+                assert_eq!(cluster.advance, actual.advance);
+            }
+        }
     }
 
     #[test]

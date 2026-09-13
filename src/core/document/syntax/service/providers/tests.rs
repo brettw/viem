@@ -345,6 +345,8 @@ fn native_wide_root_repair_exhaustion_uses_fallback_without_repaint_retry() {
     let repair_ms = repair_started.elapsed().as_secs_f64() * 1000.;
     assert_eq!(output.coverage, Coverage::Missing);
     assert!(provider.primary_capped);
+    assert!(provider.primary.as_ref().unwrap().completed().is_none(),
+        "a capped repair must release its unusable whole-file tree");
     assert!(provider.parse_progress <= MAX_TOTAL_REPAIR_PROGRESS + 1);
     let slices = provider.parse_slices;
     assert!(output.diagnostics.iter().any(|d| d.contains("budget")));

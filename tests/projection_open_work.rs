@@ -88,8 +88,10 @@ fn large_open_reports_one_linear_decode_pass() {
 #[test]
 fn full_projection_fallback_accounts_for_one_candidate_decode() {
     for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
-        let source = encode_with_bom("alpha\nbeta", encoding);
-        let document = Document::from_bytes(source, encoding, Format::PlainText).unwrap();
+        // Literal newline edits now use regional projection. Use a rich
+        // adapter here to keep exercising the full-candidate decode path.
+        let source = encode_with_bom("<pre>alpha\nbeta</pre>", encoding);
+        let document = Document::from_bytes(source, encoding, Format::Html).unwrap();
         let prepared = document
             .prepare_model_request(ModelRequest::ApplyTextEdits {
                 document: document.id(),
