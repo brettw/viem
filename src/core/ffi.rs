@@ -1758,6 +1758,8 @@ pub const VIEM_VIEW_PRESENTATION_VISUAL_ANCHOR_AFFINITY_EXACT: u32 = 1 << 1;
 pub const VIEM_VIEW_PRESENTATION_HAS_VISUAL_BLOCK: u32 = 1 << 2;
 pub const VIEM_VIEW_PRESENTATION_HAS_COMMAND_LINE: u32 = 1 << 3;
 pub const VIEM_VIEW_PRESENTATION_HAS_DESIRED_X: u32 = 1 << 4;
+/// Route the next input to the core before native editing shortcuts.
+pub const VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING: u32 = 1 << 5;
 
 /// Current controller presentation state. Linear Visual anchors do not retain
 /// a visual affinity, so their affinity field is zero unless the exact flag is
@@ -6315,6 +6317,9 @@ fn summarize_view_presentation(
     // the cell a frontend draws.
     let caret = state.caret_target(core.document());
     let mut flags = 0;
+    if state.literal_input_pending() {
+        flags |= VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING;
+    }
     let mut cursor_offset = state.cursor();
     let mut cursor_affinity = state.boundary_affinity();
     let mut visual_anchor_offset = 0;

@@ -15,6 +15,7 @@ const MAX_TAG_BYTES: usize = 8192;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct InputAssistance {
+    pub(super) literal: bool,
     smart_quotes: bool,
     tag: Option<AutoTag>,
 }
@@ -112,7 +113,22 @@ impl CommandInterpreter {
         affinity: BoundaryAffinity,
         value: &RegisterValue,
     ) -> Result<RegisterValue, DocumentError> {
-        if document.format().is_code() || !self.smart_quotes() || !value.text.contains(['\'', '"']) {
+        self.assist_input_payload_with_literals(document, range, affinity, value, &[])
+    }
+
+    pub(super) fn assist_input_payload_with_literals(
+        &self,
+        document: &Document,
+        range: std::ops::Range<usize>,
+        affinity: BoundaryAffinity,
+        value: &RegisterValue,
+        literal_ranges: &[std::ops::Range<usize>],
+    ) -> Result<RegisterValue, DocumentError> {
+        if self.input_assistance.literal
+            || document.format().is_code()
+            || !self.smart_quotes()
+            || !value.text.contains(['\'', '"'])
+        {
             return Ok(value.clone());
         }
         let transformed = (|| {
@@ -125,7 +141,19 @@ impl CommandInterpreter {
                 Ok((text, Some(fragment)))
             } else {
                 document
-                    .transform_text_input(range, affinity, &value.text, smart_quote)
+                    .transform_text_input_indexed(
+                        range,
+                        affinity,
+                        &value.text,
+                        |at, character, previous| {
+                            let index = literal_ranges.partition_point(|range| range.end <= at);
+                            if literal_ranges.get(index).is_some_and(|range| range.contains(&at)) {
+                                character
+                            } else {
+                                smart_quote(character, previous)
+                            }
+                        },
+                    )
                     .map(|text| (text, None))
             }
         })();

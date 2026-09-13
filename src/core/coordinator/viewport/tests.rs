@@ -149,6 +149,87 @@ fn typing_keeps_an_off_center_caret_and_scroll_stable_in_a_large_code_document()
 }
 
 #[test]
+fn incomplete_regional_coverage_does_not_scroll_a_visible_editing_row_to_the_bottom() {
+    let (mut core, view) = fixture(96.);
+    let before = baseline(&core, view);
+    let top = core.layout(view).unwrap().viewport_top();
+    let request = core.prepare_view_layout_job(
+        view, LayoutJobPriority::ChangedVisibleRows,
+        LayoutJobRegion::Viewport(ViewportLayoutRegion::new(9_990..10_001, top, 240.).unwrap()),
+        LayoutCancellationToken::new(),
+    ).unwrap();
+    let mut worker = LayoutEngine::new(MockTextMeasurementProvider::new());
+    let candidate = compute_layout_job(&mut worker, &request, LayoutExecutionContext::WorkerPool).unwrap();
+    core.install_view_layout_job(view, candidate).unwrap();
+    assert!((baseline(&core, view) - before).abs() < 0.05,
+        "a regional layout boundary is not the document end: expected {before}, got {}", baseline(&core, view));
+    assert!(viewport_extension_needed(&core.views[&view]).1,
+        "retain the missing coverage so the coordinator can request it");
+    let calls = core.views[&view].engine.provider().request_calls();
+    for character in "typing".chars() {
+        core.handle(view, CoreEvent::Input(InputEvent::Text(character.to_string()))).unwrap();
+        assert!((baseline(&core, view) - before).abs() < 0.05);
+        let layout = core.layout(view).unwrap();
+        assert!(layout.snapshot().unwrap().coverage.vertical_range().unwrap().end
+            >= layout.viewport_top() + layout.height());
+        assert!(layout.snapshot().unwrap().coverage.hard_lines().len() < 128);
+    }
+    assert!(core.views[&view].engine.provider().request_calls() - calls < 128);
+}
+
+#[test]
+fn appending_at_a_visible_hard_line_end_preserves_its_screen_position() {
+    for wrap in [true, false] {
+        let (mut core, view) = fixture(96.);
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        core.handle(view, CoreEvent::SetWrap(wrap)).unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('A')))).unwrap();
+        let row = caret_row(&core, view);
+        core.handle(view, CoreEvent::SetViewportOrigin {
+            left: 0., top: Some(row.baseline - 96.),
+        }).unwrap();
+        let before = baseline(&core, view);
+        for character in "tail".chars() {
+            core.handle(view, CoreEvent::Input(InputEvent::Text(character.to_string()))).unwrap();
+            assert!((baseline(&core, view) - before).abs() < 0.05,
+                "wrap={wrap}: appending should not scroll a visible row from {before} to {}", baseline(&core, view));
+        }
+    }
+}
+
+#[test]
+fn typing_near_a_wrapped_checkpoint_boundary_fills_the_viewport_without_scrolling() {
+    for offset in [MAX_LONG_LINE_LAYOUT_SLICE_BYTES - 40, MAX_LONG_LINE_LAYOUT_SLICE_BYTES + 40] {
+        let document = Document::new("ordinary words ".repeat(14_000));
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 400., 240.);
+        core.handle(view, CoreEvent::PlaceCursor {
+            document_revision: core.document.revision(),
+            text_offset: offset,
+            affinity: BoundaryAffinity::Downstream, extend_selection: false,
+        }).unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('i')))).unwrap();
+        let row = caret_row(&core, view);
+        core.views.get_mut(&view).unwrap().layout.set_viewport_top(row.baseline - 96.).unwrap();
+        let before = baseline(&core, view);
+        let calls = core.views[&view].engine.provider().request_calls();
+        for character in "edit".chars() {
+            core.handle(view, CoreEvent::Input(InputEvent::Text(character.to_string()))).unwrap();
+            assert!((baseline(&core, view) - before).abs() < 0.05);
+            let layout = core.layout(view).unwrap();
+            let snapshot = layout.snapshot().unwrap();
+            let coverage = snapshot.coverage.vertical_range().unwrap();
+            assert!(coverage.start <= layout.viewport_top());
+            assert!(coverage.end >= layout.viewport_top() + layout.height(),
+                "checkpoint coverage ends at {}, before viewport bottom {}", coverage.end, layout.viewport_top() + layout.height());
+            assert!(snapshot.rows.last().unwrap().text_range.end - snapshot.rows[0].text_range.start
+                <= MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
+        }
+        assert!(core.views[&view].engine.provider().request_calls() - calls < 1200);
+    }
+}
+
+#[test]
 fn syntax_metric_changes_preserve_the_caret_baseline_and_layout_only_its_neighborhood() {
     let (mut core, view) = fixture(96.);
     let original = baseline(&core, view);
@@ -482,6 +563,30 @@ fn newline_respects_bottom_margin_without_moving_an_already_visible_row() {
             .min(layout.height() - 28. - (row_ink_bottom(&row) - row.baseline));
         assert!((baseline(&core, view) - expected).abs() < 0.05);
         assert_row_above_margin(&core, view, 28.);
+    }
+}
+
+#[test]
+fn typing_respects_the_top_margin_and_leaves_rows_inside_both_margins_in_place() {
+    for screen_baseline in [20., 80., 180.] {
+        let (mut core, view) = fixture(screen_baseline);
+        core.set_view_insets(view, crate::layout::EdgeInsets {
+            top: 28., bottom: 28., ..Default::default()
+        }).unwrap();
+        let row = caret_row(&core, view);
+        core.handle(view, CoreEvent::SetViewportOrigin {
+            left: 0., top: Some(row.baseline - screen_baseline),
+        }).unwrap();
+        let expected = screen_baseline.max(28. + row.baseline - row.reveal_bounds().start);
+        for character in "edit".chars() {
+            core.handle(view, CoreEvent::Input(InputEvent::Text(character.to_string()))).unwrap();
+            assert!((baseline(&core, view) - expected).abs() < 0.05,
+                "only a row outside the margins should move: expected {expected}, got {}", baseline(&core, view));
+            let layout = core.layout(view).unwrap();
+            let bounds = caret_row(&core, view).reveal_bounds();
+            assert!(bounds.start >= layout.viewport_top() + 28. - 0.05);
+            assert!(bounds.end <= layout.viewport_top() + layout.height() - 28. + 0.05);
+        }
     }
 }
 

@@ -203,13 +203,25 @@ impl Document {
         text: &str,
         mut quote: impl FnMut(char, Option<char>) -> char,
     ) -> Result<String, DocumentError> {
+        self.transform_text_input_indexed(range, affinity, text, |_, character, previous| {
+            quote(character, previous)
+        })
+    }
+
+    /// Like `transform_text_input`, exposing each original input byte offset
+    /// so an editing intention can protect explicitly literal characters.
+    pub(crate) fn transform_text_input_indexed(
+        &self,
+        range: Range<usize>,
+        affinity: BoundaryAffinity,
+        text: &str,
+        mut quote: impl FnMut(usize, char, Option<char>) -> char,
+    ) -> Result<String, DocumentError> {
         self.validate_range(&range)?;
         if self.format().is_code() || !text.contains(['\'', '"']) {
             return Ok(text.to_owned());
         }
-        if self.format().is_source_view()
-            && text.chars().nth(1).is_some()
-        {
+        if self.format().is_source_view() && text.chars().nth(1).is_some() {
             let mut preview = self.scratch_document();
             if preview.replace(range.clone(), text).is_ok()
                 && preview
@@ -221,7 +233,7 @@ impl Document {
                     == Some(text)
             {
                 let previous = self.input_prose_previous(range.start, affinity)?;
-                return rewrite_quotes(
+                return rewrite_quotes_indexed(
                     text,
                     previous,
                     |offset, _| {
@@ -255,7 +267,7 @@ impl Document {
             .grapheme_indices(true)
             .map(|(offset, _)| offset)
             .collect::<Vec<_>>();
-        rewrite_quotes(
+        rewrite_quotes_indexed(
             text,
             previous,
             |offset, _| {
@@ -287,7 +299,12 @@ impl Document {
         text: &str,
         mut quote: impl FnMut(char, Option<char>) -> char,
     ) -> Result<String, DocumentError> {
-        self.transform_source_quote_input(source_range, text, false, &mut quote)
+        self.transform_source_quote_input(
+            source_range,
+            text,
+            false,
+            &mut |_, character, previous| quote(character, previous),
+        )
     }
 
     fn transform_source_quote_input(
@@ -295,7 +312,7 @@ impl Document {
         source_range: Range<usize>,
         text: &str,
         logical_breaks: bool,
-        quote: &mut impl FnMut(char, Option<char>) -> char,
+        quote: &mut impl FnMut(usize, char, Option<char>) -> char,
     ) -> Result<String, DocumentError> {
         if self.format().is_code() || !text.contains(['\'', '"']) {
             return Ok(text.to_owned());
@@ -371,7 +388,7 @@ impl Document {
         } else {
             BTreeMap::new()
         };
-        rewrite_quotes(
+        rewrite_quotes_indexed(
             text,
             previous,
             |offset, grapheme| {
@@ -399,9 +416,20 @@ impl Document {
 /// Each edit covers a complete grapheme even when a quote has combining marks.
 pub(super) fn rewrite_quotes(
     text: &str,
+    previous: Option<char>,
+    context: impl FnMut(usize, &str) -> Result<QuoteContext, DocumentError>,
+    quote: &mut impl FnMut(char, Option<char>) -> char,
+) -> Result<(String, Vec<TextEdit>), DocumentError> {
+    rewrite_quotes_indexed(text, previous, context, &mut |_, character, previous| {
+        quote(character, previous)
+    })
+}
+
+fn rewrite_quotes_indexed(
+    text: &str,
     mut previous: Option<char>,
     mut context: impl FnMut(usize, &str) -> Result<QuoteContext, DocumentError>,
-    quote: &mut impl FnMut(char, Option<char>) -> char,
+    quote: &mut impl FnMut(usize, char, Option<char>) -> char,
 ) -> Result<(String, Vec<TextEdit>), DocumentError> {
     let mut output = String::with_capacity(text.len());
     let mut edits = Vec::new();
@@ -413,7 +441,7 @@ pub(super) fn rewrite_quotes(
             QuoteContext::Prose
         };
         let start = output.len();
-        for character in grapheme.chars() {
+        for (relative, character) in grapheme.char_indices() {
             if let QuoteContext::SourceProse(value) = context {
                 if matches!(character, '\'' | '"') {
                     previous = previous_quote
@@ -425,7 +453,7 @@ pub(super) fn rewrite_quotes(
             let replacement = if matches!(character, '\'' | '"')
                 && matches!(context, QuoteContext::Prose | QuoteContext::SourceProse(_))
             {
-                quote(character, previous)
+                quote(offset + relative, character, previous)
             } else {
                 character
             };

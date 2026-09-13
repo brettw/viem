@@ -82,14 +82,65 @@ final class EVViewMarginIntegrationTests: XCTestCase {
         }
     }
 
-    private func fixture(style: NSScroller.Style) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVViewPreferences) {
+    func testTypingOnAnAlreadyVisibleRowNeverMovesTheDisplayedRows() throws {
+        for type in [EVDocument.plainTextType, EVDocument.codeType] {
+            for atLineEnd in [false, true] {
+                let (backend, surface, _) = try fixture(style: .legacy, typeName: type)
+                if type == EVDocument.codeType {
+                    let styles = try EVCodeStyleSession(configuration: backend.configuration)
+                    try styles.edit(key: .baseParagraph, expected: styles.snapshot().identity,
+                        mutation: .setDeclaration(.characterSize, .float(32)))
+                    surface.refreshPresentation()
+                }
+                let view = surface.editorView
+                let noReplacement = NSRange(location: NSNotFound, length: 0)
+                view.insertText("40G", replacementRange: noReplacement)
+                view.insertText(atLineEnd ? "A" : "lli", replacementRange: noReplacement)
+                let rowBeforeScroll = try activeRow(surface)
+                surface.requestVerticalViewport(top: CGFloat(rowBeforeScroll.baseline) - 90)
+                let before = try activeRow(surface)
+                let viewport = surface.viewportState.top
+                let baseline = before.baseline - viewport
+                let displayedRows = try XCTUnwrap(surface.layoutSnapshot).rows.filter {
+                    $0.y >= viewport && $0.y + $0.ascent + $0.descent <= viewport + 160
+                }.map { ($0.hard_line_index, $0.baseline - viewport) }
+                XCTAssertEqual(baseline, 90, accuracy: 0.1)
+                XCTAssertGreaterThan(before.y - viewport, 28)
+                XCTAssertLessThan(before.y + before.ascent + before.descent - viewport, 132)
+                for character in "xyz" {
+                    view.insertText(String(character), replacementRange: noReplacement)
+                    let after = try activeRow(surface)
+                    if abs(after.baseline - before.baseline) < 0.01 {
+                        XCTAssertEqual(surface.viewportState.top, viewport, accuracy: 0.1,
+                            "Unchanged document coordinates must retain the numeric viewport origin")
+                    }
+                    XCTAssertEqual(after.baseline - surface.viewportState.top, baseline, accuracy: 0.1,
+                        "\(type), lineEnd=\(atLineEnd): the same row must stay at its original screen position")
+                    let rows = try XCTUnwrap(surface.layoutSnapshot).rows
+                    for (line, screenBaseline) in displayedRows {
+                        let row = try XCTUnwrap(rows.first { $0.hard_line_index == line })
+                        XCTAssertEqual(row.baseline - surface.viewportState.top, screenBaseline, accuracy: 0.1,
+                            "Typing must also leave the other displayed rows stationary")
+                    }
+                }
+            }
+        }
+    }
+
+    private func activeRow(_ surface: EVEditorSurfaceController) throws -> ViemVisualRowV1 {
+        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+        let offset = surface.viewPresentation.cursor_utf8_offset
+        return try XCTUnwrap(snapshot.rows.last { $0.text_start <= offset && offset <= $0.text_end })
+    }
+
+    private func fixture(style: NSScroller.Style, typeName: String? = nil) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVViewPreferences) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-bottom-viewport-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let configuration = EVConfigurationStore(directory: directory)
         let preferences = EVViewPreferences(configuration: configuration)
         let backend = EVCoreDocumentBackend(configuration: configuration)
         try backend.read(source: Data(Array(repeating: "HHHHMMMM", count: 100).joined(separator: "\n").utf8),
-            typeName: EVDocument.plainTextType)
+            typeName: typeName ?? EVDocument.plainTextType)
         let surface = EVEditorSurfaceController(backend: backend, viewPreferences: preferences)
         surface.view = EVEditorView(surface: surface, scrollbarStyleProvider: { style })
         surface.editorView.editingPreferences = EVEditingPreferences(configuration: configuration)

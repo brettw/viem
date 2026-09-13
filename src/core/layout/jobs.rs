@@ -1110,6 +1110,13 @@ impl LayoutJobCandidate {
         }
     }
 
+    pub(crate) fn prepend_long_line_slice(&mut self, preceding: &RegionalLayoutSnapshot) {
+        match &mut self.product {
+            LayoutJobProduct::RegionalHardLines(region)
+            | LayoutJobProduct::PartialViewport(region) => region.prepend_long_line_slice(preceding),
+        }
+    }
+
     pub(crate) fn append_following_viewport_tail(
         &mut self,
         following: Option<&RegionalLayoutSnapshot>,
@@ -2318,7 +2325,7 @@ mod tests {
 
     #[test]
     fn horizontal_scroll_during_a_job_is_not_a_layout_dependency() {
-        let document = Document::new(format!("{}\nshort", "W".repeat(40)));
+        let document = Document::new(format!("{}\nshort\nshort\nshort", "W".repeat(40)));
         let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
         let requirements = inspect_layout_provider(&engine);
         let mut view = ViewLayout::new(100.0, 40.0);
@@ -2332,7 +2339,7 @@ mod tests {
             requirements,
             LayoutJobId(1),
             LayoutJobPriority::NewlyExposedRows,
-            viewport(1..2, 16.0, 24.0),
+            viewport(1..4, 16.0, 40.0),
             LayoutCancellationToken::new(),
         )
         .unwrap();
@@ -2359,7 +2366,7 @@ mod tests {
 
     #[test]
     fn partial_viewport_ignores_a_matching_exact_offscreen_document_width() {
-        let document = Document::new(format!("{}\nshort", "W".repeat(40)));
+        let document = Document::new(format!("{}\nshort\nshort\nshort", "W".repeat(40)));
         let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
         let requirements = inspect_layout_provider(&engine);
         let mut view = ViewLayout::new(100.0, 40.0);
@@ -2375,7 +2382,7 @@ mod tests {
             requirements,
             LayoutJobId(1),
             LayoutJobPriority::NewlyExposedRows,
-            viewport(1..2, 16.0, 24.0),
+            viewport(1..4, 16.0, 40.0),
             LayoutCancellationToken::new(),
         )
         .unwrap();
@@ -3070,7 +3077,7 @@ mod tests {
 
     #[test]
     fn hard_line_refinement_before_partial_viewport_repositions_it_atomically() {
-        let document = Document::new("zero\none\ntwo");
+        let document = Document::new("zero\none\ntwo\nthree");
         let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
         let requirements = inspect_layout_provider(&engine);
         let mut view = ViewLayout::new(120.0, 20.0);

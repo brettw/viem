@@ -1855,12 +1855,17 @@ state. Color changes require only repainting. View margins inset content in
 document coordinates and are additive with
 source-authored canvas padding. Margin changes preserve viewport anchors and
 invalidate only affected view geometry, keeping large-document layout local.
-The bottom view margin contributes to the document's scroll extent and reserves
-space below the active row when revealing a caret or input-method selection.
-It is not a paint clip: scrolled content continues to draw through that area
-to the status line. Reveal uses the smallest scroll that places the row's ink
-and typographic bounds above the margin. If the row and margin cannot both fit,
-reduce the reserved area enough to show the row; physically oversized rows keep
+The top and bottom view margins define the vertical area for keeping an active
+row visible. If the row's ink and typographic bounds already lie inside that
+area, typing MUST leave the displayed rows stationary, including when appending
+at a hard-line end. Revealing a row is a no-op in that case; it MUST NOT align
+the row to the bottom or recenter it. Only a row outside the area permits the
+smallest scroll needed to bring it inside. A cached layout region's boundary
+is not a document edge and MUST NOT clamp a preserved viewport.
+The bottom margin also contributes to the document's scroll extent. Margins
+are not paint clips: scrolled content continues to draw through them to the
+status line. If the row and margins cannot both fit, reduce the reserved area
+enough to show the row; physically oversized rows keep
 the baseline-priority policy below. At document end, scroll extent includes the
 last row's full ink and natural height before adding bottom padding, even when
 exact line spacing advances by less than that height.
@@ -2880,6 +2885,39 @@ retains this typed operand distinction.
 
 The `=` operator initially performs deterministic indentation defined by core
 configuration. It must not invoke a language-specific formatter implicitly.
+
+#### Literal-next input
+
+In Insert, Replace, and command-line input, Ctrl-V and Ctrl-Q quote the next
+input using Vim's literal-next grammar. Normal and Visual mode retain their
+Visual Block entry/toggle behavior. Pending literal input is portable command
+state; frontends route it before native editing shortcuts and expose its state
+through the view presentation.
+
+Quoted Tab inserts U+0009 regardless of `expandtab`, `softtabstop`, or `smarttab`.
+Quoted control characters insert their values without executing editing
+commands: Escape stays in the current input mode, and Return inserts literal
+CR rather than a structural break. With Mac line endings, quoted CR inserts
+literal LF content, following Vim. Quoted LF and NUL insert U+0000. Viem stores
+that actual scalar in both documents and command lines instead of copying
+Vim's internal LF-as-NUL representation. Supported named special keys insert
+their key notation, such as `<Left>`, `<BS>`, and `<Del>`; raw Ctrl-H and DEL
+remain distinct control characters. In Replace mode a named key's notation
+consumes only one original grapheme.
+
+Numeric entry accepts up to three decimal digits, `o`/`O` plus three octal
+digits, `x`/`X` plus two hexadecimal digits, `u` plus four hexadecimal digits,
+or `U` plus eight hexadecimal digits. A non-digit after entered digits commits
+the value and is handled normally; with no digits after a radix prefix, the
+next input is quoted. Byte-valued decimal and octal entry clamp values above
+255. Unicode entry rejects surrogate values and values above U+10FFFF rather
+than creating invalid UTF-8.
+
+Quoted input bypasses automatic indentation, comment continuation, smart
+quotes, and HTML typing assistance, while retaining normal source projection
+verification and atomic failure for unrepresentable content. It belongs to the
+current Insert/Replace undo group; counts, dot repeat, macro replay, and Replace
+Backspace retain the literal intent rather than reapplying typing assistance.
 
 The `gq` and `gw` operators are specified under **Hard-line reflow** below.
 They are implemented in `src/core/document/reflow.rs` (portable formatter)

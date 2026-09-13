@@ -837,6 +837,76 @@ impl RegionalLayoutSnapshot {
         self.prepend_adjacent_region(&preceding);
     }
 
+    /// Join consecutive bounded slices of one wrapped hard line. The later
+    /// slice owns the updated height/checkpoint, while both retain their exact
+    /// row coordinates and paint coverage.
+    pub(crate) fn prepend_long_line_slice(&mut self, preceding: &Self) {
+        debug_assert_eq!(self.lines.len(), 1);
+        debug_assert_eq!(preceding.hard_lines.end, self.hard_lines.end);
+        debug_assert_eq!(preceding.document_revision, self.document_revision);
+        debug_assert_eq!(preceding.configuration_generation, self.configuration_generation);
+        debug_assert_eq!(preceding.measurement_environment_id, self.measurement_environment_id);
+        debug_assert_eq!(preceding.metrics_generation, self.metrics_generation);
+        let owned = self.lines[0].text_coverage.clone();
+        let prior = preceding.lines.last().expect("a regional snapshot has rows");
+        debug_assert_eq!(prior.hard_line_index, self.lines[0].hard_line_index);
+        debug_assert_eq!(prior.text_coverage.end, owned.start);
+        // This join is requested only when the viewport crosses the slice
+        // boundary. Keep a viewport on each side, rather than retaining a
+        // whole extra 64 KiB slice merely to paint a handful of adjacent rows.
+        let boundary = self.lines[0].rows[0].y;
+        let retained_top = boundary - self.viewport_height;
+        let retained_bottom = boundary + self.viewport_height;
+        self.lines[0].rows.retain(|row| row.reveal_bounds().start <= retained_bottom);
+        self.lines[0].rows.splice(0..0, prior.rows.iter()
+            .filter(|row| row.reveal_bounds().end >= retained_top).cloned());
+        self.lines[0].text_coverage = self.lines[0].rows[0].text_range.start
+            ..self.lines[0].rows.last().expect("retained boundary rows").text_range.end;
+        self.lines.splice(0..0, preceding.lines[..preceding.lines.len() - 1].iter().cloned());
+        self.hard_lines.start = preceding.hard_lines.start;
+        let prior_start = preceding.lines[0].text_coverage.start;
+        let mut paints = preceding.paint_runs.iter().filter_map(|run| {
+            let mut run = run.clone();
+            run.text_range.start = run.text_range.start.max(prior_start);
+            run.text_range.end = run.text_range.end.min(prior.text_coverage.end);
+            (run.text_range.start < run.text_range.end).then_some(run)
+        }).collect::<Vec<_>>();
+        paints.extend(self.paint_runs.iter().filter_map(|run| {
+            let mut run = run.clone();
+            run.text_range.start = run.text_range.start.max(owned.start);
+            run.text_range.end = run.text_range.end.min(owned.end);
+            (run.text_range.start < run.text_range.end).then_some(run)
+        }));
+        self.paint_runs = paints;
+        self.grapheme_boundaries.extend(preceding.grapheme_boundaries.iter().copied());
+        self.grapheme_boundaries.sort_unstable();
+        self.grapheme_boundaries.dedup();
+        self.diagnostics.splice(0..0, preceding.diagnostics.iter().cloned());
+        if let Some(previous_sparse) = &preceding.horizontal_materialization {
+            if let Some(sparse) = &mut self.horizontal_materialization {
+                debug_assert!(sparse.text.shares_root_with(&previous_sparse.text));
+                sparse.rows.splice(0..0, previous_sparse.rows.iter().cloned());
+            } else {
+                self.horizontal_materialization = Some(previous_sparse.clone());
+            }
+        }
+        let retained = self.lines[0].text_coverage.start
+            ..self.lines.last().expect("retained lines").text_coverage.end;
+        self.paint_runs.retain_mut(|run| {
+            run.text_range.start = run.text_range.start.max(retained.start);
+            run.text_range.end = run.text_range.end.min(retained.end);
+            run.text_range.start < run.text_range.end
+        });
+        self.grapheme_boundaries.retain(|at| retained.start <= *at && *at <= retained.end);
+        self.diagnostics.retain(|entry| entry.text_range.start <= retained.end
+            && retained.start <= entry.text_range.end);
+        if let Some(sparse) = &mut self.horizontal_materialization {
+            sparse.rows.retain(|(line, fragment, _)| self.lines.iter().any(|retained| {
+                retained.rows.iter().any(|row| row.hard_line_index == *line && row.fragment_index == *fragment)
+            }));
+        }
+    }
+
     /// Join the old paragraph's visible tail to the newly inserted paragraph.
     /// Both inputs were captured and shaped independently within bounded slices.
     pub(crate) fn prepend_adjacent_region(&mut self, preceding: &Self) {
@@ -1642,15 +1712,15 @@ impl ViewLayout {
         self.height
     }
 
-    /// Height available for keeping an editing row above the application
-    /// bottom margin. The margin remains paintable viewport space and also
-    /// contributes to the document's scroll extent. If a row plus the margin
-    /// cannot fit, reserve only the space left after that row; a row taller
-    /// than the viewport uses the caller's baseline-visibility fallback.
-    pub(crate) fn reveal_height(&self, row_height: f32) -> f32 {
-        (self.height - self.insets.bottom)
-            .max(row_height.min(self.height))
-            .max(0.0)
+    /// Viewport-relative vertical interval available for an editing row.
+    /// Margins remain paintable space. If the row and both margins cannot
+    /// fit, proportionally reduce the reserved margins to leave room for the
+    /// row; an oversized row uses the caller's baseline-visibility fallback.
+    pub(crate) fn reveal_vertical_range(&self, row_height: f32) -> Range<f32> {
+        let margin_budget = (self.height - row_height.min(self.height)).max(0.0);
+        let margins = self.insets.top + self.insets.bottom;
+        let factor = if margins > margin_budget { margin_budget / margins } else { 1.0 };
+        self.insets.top * factor..self.height - self.insets.bottom * factor
     }
 
     /// Horizontal presentation offset in document layout coordinates.
@@ -2165,17 +2235,29 @@ impl ViewLayout {
     }
 
     fn clamp_viewport_top(&self, requested: f32) -> f32 {
+        let requested = requested.max(0.0);
         let Some(snapshot) = self.snapshot.as_ref() else {
-            return requested.max(0.0);
+            return requested;
         };
-        if let Some(coverage) = snapshot.coverage.vertical_range() {
-            return requested.clamp(
-                coverage.start,
-                (coverage.end - self.height).max(coverage.start),
-            );
-        }
-        let first_y = snapshot.rows.first().map_or(0.0, |row| row.y);
-        requested.clamp(first_y, (snapshot.total_height - self.height).max(first_y))
+        // Materialization boundaries are not document edges. Clamping to a
+        // short regional snapshot silently scrolls a visible editing row to
+        // its bottom and hides the missing coverage from the coordinator.
+        let document_bottom = if snapshot.total_height_is_exact {
+            Some(snapshot.total_height)
+        } else {
+            match &snapshot.coverage {
+                LayoutCoverage::FullDocument { .. } => Some(snapshot.total_height),
+                LayoutCoverage::PartialHardLines { hard_lines, document_hard_line_count,
+                    text_ranges, vertical_range, .. }
+                    if hard_lines.end == *document_hard_line_count
+                        && text_ranges.last().is_some_and(|range| range.end == snapshot.text_len) =>
+                {
+                    Some(vertical_range.end)
+                }
+                _ => None,
+            }
+        };
+        document_bottom.map_or(requested, |bottom| requested.min((bottom - self.height).max(0.0)))
     }
 
     fn clamp_viewport_left(&self, requested: f32) -> f32 {
@@ -2243,7 +2325,8 @@ fn partial_snapshot_from_region(
                 "a materialized viewport must contain visual rows",
             ),
         )?;
-        if let Some(last) = region.lines.last().filter(|line| line.height_is_exact) {
+        if let Some(last) = region.lines.last().filter(|line| line.height_is_exact
+            && line.text_coverage.end == line.hard_line_range.end) {
             end = height_as_layout_unit(
                 height_index.prefix_height(last.hard_line_index)?.height() + last.height,
             )?;

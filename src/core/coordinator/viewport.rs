@@ -75,6 +75,10 @@ fn capture_baseline_anchor<P: TextMeasurementProvider>(
     });
     let geometry = snapshot
         .logical_endpoint_geometry(position.text_offset, position.affinity)
+        .or_else(|_| snapshot.logical_endpoint_geometry(position.text_offset, match position.affinity {
+            BoundaryAffinity::Upstream => BoundaryAffinity::Downstream,
+            BoundaryAffinity::Downstream => BoundaryAffinity::Upstream,
+        }))
         .ok()?;
     let row = &snapshot.rows[geometry.row_index];
     let top = view.layout.viewport_top();
@@ -130,7 +134,7 @@ pub(super) fn reveal_caret_row<P: TextMeasurementProvider>(
 }
 
 /// Source-backed and composed layouts share one row reveal policy. Reserve
-/// the application bottom margin without reducing painting or materialization
+/// the application margins without reducing painting or materialization
 /// coverage, and include the complete row's typography and ink.
 pub(super) fn reveal_layout_row_at(
     layout: &mut ViewLayout,
@@ -147,16 +151,17 @@ pub(super) fn reveal_layout_row_at(
     let row = &snapshot.rows[geometry.row_index];
     let bounds = row.reveal_bounds();
     let (top, bottom) = (bounds.start, bounds.end);
-    let height = layout.reveal_height(bottom - top);
+    let visible = layout.reveal_vertical_range(bottom - top);
+    let height = visible.end - visible.start;
     let current = layout.viewport_top();
     let requested = if bottom - top > height {
         // No viewport can contain an oversized row. Keep its baseline visible
         // without oscillating between mutually impossible top/bottom reveals.
-        current.clamp((row.baseline - height).max(0.0), row.baseline.max(0.0))
-    } else if top < current {
-        top
-    } else if bottom > current + height {
-        bottom - height
+        current.clamp((row.baseline - visible.end).max(0.0), (row.baseline - visible.start).max(0.0))
+    } else if top < current + visible.start {
+        top - visible.start
+    } else if bottom > current + visible.end {
+        bottom - visible.end
     } else {
         current
     };

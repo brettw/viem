@@ -2506,15 +2506,24 @@ impl<P: TextMeasurementProvider> Core<P> {
             let requirements = inspect_layout_provider(&view.engine);
             view.long_line_checkpoints
                 .discard_stale(&self.document, &view.layout, requirements);
-            let checkpoint = view
+            let mut checkpoint = view
                 .long_line_checkpoints
                 .before(line_start..line_end, focus_offset);
+            if let Some(current) = &checkpoint {
+                // Retain enough of the preceding slice to paint the viewport
+                // when the editing row falls just after a checkpoint boundary.
+                checkpoint = view.long_line_checkpoints.before_height(
+                    line_start..line_end,
+                    (current.completed_height() - view.layout.height()).max(0.0),
+                );
+            }
             (
                 checkpoint,
                 view.layout.viewport_top(),
                 view.layout.height().max(f32::EPSILON),
             )
         };
+        let mut preceding_tail = None;
         loop {
             let work_start = checkpoint
                 .as_ref()
@@ -2540,6 +2549,28 @@ impl<P: TextMeasurementProvider> Core<P> {
             };
             let coverage = candidate.regional_snapshot().lines()[0].text_coverage();
             if coverage.start <= focus_offset && focus_offset <= coverage.end {
+                if let Some(preceding) = &preceding_tail {
+                    let rows = candidate.regional_snapshot().lines()[0].rows();
+                    let row = rows.iter().find(|row| row.text_range.start <= focus_offset
+                        && focus_offset <= row.text_range.end).expect("focus lies in the candidate");
+                    let view = &self.views[&view_id];
+                    let desired_top = if intent != ImmediateLayoutIntent::RevealCaret {
+                        preserved_anchor.map(|anchor| match anchor.reference {
+                            ViewportAnchorReference::Baseline => row.baseline,
+                            ViewportAnchorReference::RowTop => row.y,
+                        } + anchor.offset_from_reference)
+                    } else { None }.unwrap_or_else(|| {
+                        let bounds = row.reveal_bounds();
+                        let visible = view.layout.reveal_vertical_range(bounds.end - bounds.start);
+                        let prefix = view.layout.hard_line_prefix_height(focus_line)
+                            .expect("validated focus line").height() as f32;
+                        (top - prefix).min(bounds.start - visible.start)
+                            .max(bounds.end - visible.end)
+                    });
+                    if rows[0].y > desired_top {
+                        candidate.prepend_long_line_slice(preceding);
+                    }
+                }
                 let caret = self.views[&view_id].commands.cursor();
                 let following_line = focus_line + 1;
                 if intent == ImmediateLayoutIntent::PreserveViewportAndRevealCaret
@@ -2579,19 +2610,45 @@ impl<P: TextMeasurementProvider> Core<P> {
                         }
                     }
                 }
-                self.install_view_layout_job(view_id, candidate)?;
-                let view = self
-                    .views
-                    .get_mut(&view_id)
-                    .expect("layout view remains attached");
-                if intent != ImmediateLayoutIntent::RevealCaret {
-                    view.viewport_anchor = preserved_anchor;
-                    restore_viewport_anchor(view)?;
+                loop {
+                    let preceding = candidate.regional_snapshot().clone();
+                    let continuation = candidate.next_long_line_checkpoint().cloned();
+                    self.install_view_layout_job(view_id, candidate)?;
+                    let view = self.views.get_mut(&view_id).expect("layout view remains attached");
+                    if intent != ImmediateLayoutIntent::RevealCaret {
+                        view.viewport_anchor = preserved_anchor;
+                        restore_viewport_anchor(view)?;
+                    }
+                    if intent != ImmediateLayoutIntent::PreserveViewport {
+                        viewport::reveal_caret_row(view)?;
+                    }
+                    update_viewport_anchor(&self.document, view);
+                    let top = view.layout.viewport_top();
+                    let bottom = top + view.layout.height();
+                    let snapshot = view.layout.snapshot().expect("installed long-line layout");
+                    if snapshot.coverage.vertical_range().is_none_or(|coverage| bottom <= coverage.end) {
+                        break;
+                    }
+                    let region = if let Some(checkpoint) = continuation {
+                        ViewportLayoutRegion::resume_long_line(checkpoint, top, height)?
+                    } else {
+                        let following = preceding.hard_lines().end;
+                        if following >= self.document.projection().presentation_line_count(flow) { break; }
+                        ViewportLayoutRegion::new(following..following + 1, top, height)?
+                    };
+                    let same_line = region.long_line_checkpoint().is_some();
+                    let request = self.prepare_view_layout_job(
+                        view_id, LayoutJobPriority::ChangedVisibleRows,
+                        LayoutJobRegion::Viewport(region), LayoutCancellationToken::new(),
+                    )?;
+                    let view = self.views.get_mut(&view_id).expect("validated editing view");
+                    candidate = compute_layout_job(&mut view.engine, &request, view.immediate_layout_context)?;
+                    if same_line {
+                        candidate.prepend_long_line_slice(&preceding);
+                    } else {
+                        candidate.prepend_adjacent_region(&preceding);
+                    }
                 }
-                if intent != ImmediateLayoutIntent::PreserveViewport {
-                    viewport::reveal_caret_row(view)?;
-                }
-                update_viewport_anchor(&self.document, view);
                 return Ok(true);
             }
             let next = candidate
@@ -2606,6 +2663,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .expect("layout view remains attached")
                 .long_line_checkpoints
                 .insert(&self.document, next.clone());
+            candidate.retain_viewport_tail(preceding_tail.as_ref());
+            preceding_tail = Some(candidate.regional_snapshot().clone());
             checkpoint = Some(next);
         }
     }
@@ -4963,6 +5022,20 @@ impl<P: TextMeasurementProvider> Core<P> {
         let Some(plan) = emitted_replay else {
             return Ok(outcome);
         };
+        if let ReplayPlan::LiteralTerminator(input) = plan {
+            // Numeric literal input can finish with a visual motion. Publish
+            // the inserted scalar first so that motion resolves in the new
+            // layout. It is still the same physical key and must not be
+            // recorded twice or introduce a compound-replay undo boundary.
+            let mut accumulator = CoreOutcomeAccumulator::new(outcome);
+            let recording_was_suppressed = self.views.get_mut(&view_id).expect("input view remains attached")
+                .commands.set_macro_recording_suppressed(true);
+            let continued = self.dispatch_replay_input(view_id, input, clipboard_context.as_ref());
+            self.views.get_mut(&view_id).expect("input view remains attached")
+                .commands.set_macro_recording_suppressed(recording_was_suppressed);
+            accumulator.merge(continued)?;
+            return Ok(accumulator.finish());
+        }
         if self.replay_undo_floor.is_some() {
             debug_assert!(self.queued_replay.is_none());
             self.queued_replay = Some(plan);
@@ -6876,6 +6949,7 @@ fn splice_paragraph_styles(
 
 fn replay_frame(plan: ReplayPlan) -> ReplayFrame {
     match plan {
+        ReplayPlan::LiteralTerminator(_) => unreachable!("literal input continues before compound replay"),
         ReplayPlan::Macro(plan) => ReplayFrame::Macro {
             plan,
             iteration: 0,

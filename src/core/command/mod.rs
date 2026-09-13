@@ -13,6 +13,7 @@ pub mod insert_motion;
 pub mod layout_motion;
 mod reflow;
 mod indentation;
+mod literal_input;
 mod whitespace;
 pub use whitespace::VisibleWhitespaceSetting;
 pub mod regex_v1;
@@ -830,6 +831,7 @@ struct EditSessionProgram {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum EditSessionStep {
+    LiteralText(String),
     AssistedText(String),
     TypingStyle(typing_style::TypingStyle),
     Text(RegisterValue),
@@ -970,6 +972,7 @@ struct VisualBlockInsertSession {
     revision: Revision,
     rows: Vec<VisualBlockInsertRow>,
     payload: String,
+    literal_ranges: Vec<Range<usize>>,
     count: usize,
     register: Option<char>,
     replaced: Option<RegisterValue>,
@@ -1051,6 +1054,7 @@ enum VisualBlockRepeatAction {
     Insert {
         kind: VisualBlockInsertKind,
         payload: String,
+        literal_ranges: Vec<Range<usize>>,
         application_count: usize,
         register: Option<char>,
     },
@@ -1086,6 +1090,7 @@ pub(crate) struct ExNormalTarget {
 /// continuation from crossing the public controller boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ReplayPlan {
+    LiteralTerminator(InputEvent),
     Macro(MacroReplayPlan),
     ExNormal(ExNormalReplayPlan),
 }
@@ -1252,6 +1257,7 @@ pub struct CommandInterpreter {
     insert_session: Option<InsertSession>,
     typing_style: typing_style::TypingStyle,
     input_assistance: input_assistance::InputAssistance,
+    literal_input: Option<literal_input::LiteralInput>,
     visual_block_insert: Option<VisualBlockInsertSession>,
     replaying: bool,
     last_find: Option<FindState>,
@@ -1262,6 +1268,7 @@ pub struct CommandInterpreter {
     recording: Option<(char, Vec<InputEvent>)>,
     last_macro: Option<char>,
     compound_replay_depth: usize,
+    macro_recording_suppressed: bool,
     /// Core-facing dispatch asks compound commands to emit a replay plan.
     /// Direct `CommandInterpreter` users retain the legacy headless executor
     /// while the coordinator remains the product execution boundary.
@@ -1365,6 +1372,7 @@ impl CommandInterpreter {
             insert_session: None,
             typing_style: Default::default(),
             input_assistance: Default::default(),
+            literal_input: None,
             visual_block_insert: None,
             replaying: false,
             last_find: None,
@@ -1375,6 +1383,7 @@ impl CommandInterpreter {
             recording: None,
             last_macro: None,
             compound_replay_depth: 0,
+            macro_recording_suppressed: false,
             plan_compound_replay: false,
             pending_replay: None,
             insert_normal_once: None,
@@ -1973,6 +1982,10 @@ impl CommandInterpreter {
         true
     }
 
+    pub(crate) fn set_macro_recording_suppressed(&mut self, suppressed: bool) -> bool {
+        std::mem::replace(&mut self.macro_recording_suppressed, suppressed)
+    }
+
     pub(crate) fn end_replay_frame(&mut self) {
         debug_assert!(self.compound_replay_depth > 0);
         self.compound_replay_depth = self.compound_replay_depth.saturating_sub(1);
@@ -2021,6 +2034,7 @@ impl CommandInterpreter {
         event: &InputEvent,
         clipboard: Option<&ClipboardCommandContext>,
     ) -> bool {
+        if self.handles_literal_input(event) { return false; }
         if matches!(event, InputEvent::Key(Key::SelectAll)) {
             return false;
         }
@@ -2708,7 +2722,7 @@ impl CommandInterpreter {
     ) -> Result<CommandOutput, DocumentError> {
         let model_checkpoint = document.begin_command_checkpoint();
         let checkpoint = self.clone();
-        if matches!(
+        if !self.literal_input_pending() && matches!(
             &event,
             InputEvent::Key(
                 Key::Left
@@ -2896,7 +2910,7 @@ impl CommandInterpreter {
             });
         }
 
-        if matches!(&event, InputEvent::Key(Key::SelectAll)) {
+        if self.handles_literal_input(&event) || matches!(&event, InputEvent::Key(Key::SelectAll)) {
             return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
         }
         if (matches!(self.mode, Mode::Insert | Mode::Replace)
@@ -3745,6 +3759,11 @@ impl CommandInterpreter {
         // Keeping this synchronized makes `:set wrap?` accurate even when the
         // host changed wrapping outside the Ex command line.
         self.wrap = context.wrap;
+        if self.handles_literal_input(&event) {
+            let output = self.dispatch_event(document, event)?;
+            self.finish_non_layout_dispatch(&output);
+            return Ok(output);
+        }
         if let InputEvent::Text(input) = &event {
             if self.mode == Mode::VisualBlock && self.pending == Pending::ReplaceVisualBlock {
                 self.pending = Pending::None;
@@ -3819,7 +3838,8 @@ impl CommandInterpreter {
     }
 
     pub(crate) fn restore_failed_command(&mut self, checkpoint: Self) {
-        let cancel_pending = checkpoint.pending != Pending::None || checkpoint.register_pending;
+        let cancel_pending = checkpoint.pending != Pending::None || checkpoint.register_pending
+            || checkpoint.literal_input_pending();
         *self = checkpoint;
         if cancel_pending {
             self.clear_pending();
@@ -3836,7 +3856,7 @@ impl CommandInterpreter {
             && self.mode == Mode::Normal
             && self.pending == Pending::None
             && *event == InputEvent::Key(Key::Char('q'));
-        if self.compound_replay_depth == 0 && !stops_recording {
+        if self.compound_replay_depth == 0 && !self.macro_recording_suppressed && !stops_recording {
             if let Some((_, events)) = self.recording.as_mut() {
                 events.push(event.clone());
             }
@@ -3873,6 +3893,7 @@ impl CommandInterpreter {
         document: &Document,
         input: &str,
     ) -> Option<CommandOutput> {
+        if self.literal_input_pending() { return None; }
         if self.mode == Mode::CommandLine {
             if let Some(state) = self.command_line_state.as_mut() {
                 state.buffer.insert(input);
@@ -3933,6 +3954,7 @@ impl CommandInterpreter {
         document: &Document,
         key: Key,
     ) -> Option<CommandOutput> {
+        if self.handles_literal_input(&InputEvent::Key(key)) { return None; }
         let key = self.clipboard_copy_alias_key(key);
         if matches!(key, Key::DocumentStart | Key::DocumentEnd)
             && matches!(self.mode, Mode::Normal | Mode::VisualCharacter | Mode::VisualLine)
@@ -6441,6 +6463,7 @@ impl CommandInterpreter {
             revision: document.revision(),
             rows,
             payload: String::new(),
+            literal_ranges: Vec::new(),
             count,
             register: requested_register,
             replaced,
@@ -6772,6 +6795,7 @@ impl CommandInterpreter {
                 VisualBlockRepeatAction::Insert {
                     kind,
                     payload,
+                    literal_ranges,
                     application_count,
                     register,
                 } => {
@@ -6779,10 +6803,10 @@ impl CommandInterpreter {
                     let mut output =
                         self.begin_visual_block_insert(document, context, kind, application_count)?;
                     if output.status == CommandStatus::Complete {
-                        self.visual_block_insert
-                            .as_mut()
-                            .expect("successful block-repeat insert installs a session")
-                            .payload = payload;
+                        let session = self.visual_block_insert.as_mut()
+                            .expect("successful block-repeat insert installs a session");
+                        session.payload = payload;
+                        session.literal_ranges = literal_ranges;
                         output.merge(self.finish_visual_block_insert(document)?);
                     }
                     Ok(output)
@@ -7873,6 +7897,7 @@ impl CommandInterpreter {
         document: &mut Document,
         input: String,
     ) -> Result<CommandOutput, DocumentError> {
+        if self.literal_input_pending() { return self.handle_literal_text(document, &input); }
         if let Some(output) = self.try_handle_controller_only_text(document, &input) {
             return Ok(output);
         }
@@ -7976,6 +8001,9 @@ impl CommandInterpreter {
         document: &mut Document,
         key: Key,
     ) -> Result<CommandOutput, DocumentError> {
+        if self.handles_literal_input(&InputEvent::Key(key)) {
+            return self.handle_literal_key(document, key);
+        }
         if key == Key::SelectAll {
             let mut output = if self.visual_block_insert.is_some() {
                 self.finish_visual_block_insert(document)?
@@ -9893,7 +9921,7 @@ impl CommandInterpreter {
                     .as_mut()
                     .expect("deferred block insert checked above");
                 if let Some((start, _)) = session.payload.grapheme_indices(true).last() {
-                    session.payload.truncate(start);
+                    session.truncate_payload(start);
                 }
                 Ok(CommandOutput::complete())
             }
@@ -9907,7 +9935,7 @@ impl CommandInterpreter {
                     0..session.payload.len(),
                     session.payload.len(),
                 ) {
-                    Ok(range) => session.payload.replace_range(range, ""),
+                    Ok(range) => session.truncate_payload(range.start),
                     Err(error) => {
                         return Ok(CommandOutput {
                             status: CommandStatus::Error(format!(
@@ -9923,8 +9951,7 @@ impl CommandInterpreter {
                 self.visual_block_insert
                     .as_mut()
                     .expect("deferred block insert checked above")
-                    .payload
-                    .clear();
+                    .truncate_payload(0);
                 Ok(CommandOutput::complete())
             }
             Key::Ctrl('r' | 'R') => {
@@ -10016,18 +10043,27 @@ impl CommandInterpreter {
         let edits = edits.into_iter().map(|edit| {
             let value = RegisterValue::try_new(edit.replacement, RegisterKind::Characterwise, Vec::new())
                 .expect("deferred block input is literal text");
-            let value = self.assist_input_payload(
-                document, edit.range.clone(), BoundaryAffinity::Downstream, &value,
+            let literal_ranges = session.repeated_literal_ranges(value.text.len());
+            let value = self.assist_input_payload_with_literals(
+                document, edit.range.clone(), BoundaryAffinity::Downstream, &value, &literal_ranges,
             )?;
             Ok(TextEdit::new(edit.range, value.text))
         }).collect::<Result<Vec<_>, DocumentError>>()?;
         let inserted = edits.iter().find(|edit| !edit.replacement.is_empty())
             .map(|edit| inserted_input_unit(
-                &RegisterValue::characterwise(&edit.replacement), &session.payload,
+                &RegisterValue::try_new(&edit.replacement, RegisterKind::Characterwise, Vec::new())
+                    .expect("deferred input contains only literal content"),
+                &session.payload,
             ));
         let before = document.revision();
         // Deferred collection commits once, here, regardless of row count.
-        apply_block_edits(document, edits)?;
+        // A quoted return in Mac fileformat is LF content, not a hard break.
+        let lines = document.hard_line_snapshot();
+        document.apply_formatted_payload_edits(edits.into_iter().map(|edit| {
+            let payload = FormattedTextPayload::new(&lines, edit.replacement, Vec::new())
+                .expect("deferred input contains only literal content");
+            FormattedPayloadEdit::new(edit.range, payload)
+        }).collect())?;
         let changed = document.revision() != before;
         if session.kind == VisualBlockInsertKind::Change {
             if let Some(replaced) = session.replaced {
@@ -10058,6 +10094,7 @@ impl CommandInterpreter {
                     action: VisualBlockRepeatAction::Insert {
                         kind: session.kind,
                         payload: session.payload.clone(),
+                        literal_ranges: session.literal_ranges.clone(),
                         application_count: session.count,
                         register: session.register,
                     },
@@ -10598,6 +10635,9 @@ impl CommandInterpreter {
             return Ok(());
         }
         for step in &program.steps {
+            if let EditSessionStep::LiteralText(value) = step {
+                document.encoding().encode_fragment(value)?;
+            }
             if let EditSessionStep::AssistedText(value) = step {
                 document.encoding().encode_fragment(value)?;
             }
@@ -10629,7 +10669,7 @@ impl CommandInterpreter {
         let text_bytes = program.steps.iter().try_fold(0usize, |total, step| {
             let length = match step {
                 EditSessionStep::Text(value) => value.text.len(),
-                EditSessionStep::AssistedText(value) => value.len(),
+                EditSessionStep::AssistedText(value) | EditSessionStep::LiteralText(value) => value.len(),
                 _ => 0,
             };
             total.checked_add(length)
@@ -10703,6 +10743,7 @@ impl CommandInterpreter {
                 }
                 for step in &program.steps {
                     let next = match step {
+                        EditSessionStep::LiteralText(value) => self.insert_quoted_text(document, value)?,
                         EditSessionStep::TypingStyle(value) => {
                             self.typing_style = Default::default();
                             if let Some(named) = &value.named {
@@ -13442,6 +13483,7 @@ impl CommandInterpreter {
     }
 
     fn clear_pending(&mut self) {
+        self.literal_input = None;
         self.clipboard_copy_as_seen = false;
         self.count = None;
         self.count_overflowed = false;
@@ -19689,6 +19731,7 @@ mod tests {
             action: VisualBlockRepeatAction::Insert {
                 kind: VisualBlockInsertKind::Insert,
                 payload: "😀".to_owned(),
+                literal_ranges: Vec::new(),
                 application_count: 1,
                 register: None,
             },

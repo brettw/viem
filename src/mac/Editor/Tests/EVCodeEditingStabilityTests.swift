@@ -90,12 +90,14 @@ final class EVCodeEditingStabilityTests: XCTestCase {
 
         let styled = try caretState(fixture)
         let height = try XCTUnwrap(fixture.surface.layoutSnapshot).info.viewport_height
+        let margins = EVViewPreferences(configuration: fixture.configuration).margins
         let ascentFromRowTop = styled.row.baseline - styled.row.y
         let belowBaseline = styled.row.line_advance - ascentFromRowTop
-        let nearestVisibleBaseline = min(max(priorBaseline, ascentFromRowTop), height - belowBaseline)
+        let nearestVisibleBaseline = min(max(priorBaseline, Float(margins.top) + ascentFromRowTop),
+                                         height - Float(margins.bottom) - belowBaseline)
         XCTAssertEqual(styled.screenBaseline, nearestVisibleBaseline, accuracy: 0.5,
-                       "Only the smallest scroll needed to reveal the taller caret row is allowed")
-        XCTAssertEqual(styled.row.y - fixture.surface.viewportState.top, 0, accuracy: 0.5)
+                       "Only the smallest scroll needed to reveal the taller caret row inside the margins is allowed")
+        XCTAssertEqual(styled.row.y - fixture.surface.viewportState.top, Float(margins.top), accuracy: 0.5)
         try assertCurrentBoundedLayout(fixture)
     }
 

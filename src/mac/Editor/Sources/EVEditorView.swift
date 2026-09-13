@@ -1247,6 +1247,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         surface.dismissCommandOutput()
         guard let session = surface.session else { return }
         customCaretBlinkController.restartAfterActivity()
+        if routeLiteralInput(event) { return }
         let shortcutModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         if event.keyCode == 100, shortcutModifiers.isEmpty {
             surface.perform(menuCommand: .editStyles, sender: event)
@@ -1310,6 +1311,36 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             return
         }
         interpretKeyEvents([event])
+    }
+
+    private var literalInputPending: Bool {
+        (surface?.viewPresentation.flags ?? 0)
+            & UInt32(VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING) != 0
+    }
+
+    /// Quoted input belongs to the core before native selection, navigation,
+    /// formatting, or Escape handling can consume it.
+    private func routeLiteralInput(_ event: NSEvent) -> Bool {
+        guard literalInputPending, !compositionActive,
+              !event.modifierFlags.contains(.command),
+              let surface, let session = surface.session else { return false }
+        if event.modifierFlags.contains(.control),
+           let scalar = event.charactersIgnoringModifiers?.unicodeScalars.first,
+           scalar.value <= 0x7F {
+            // macOS can report a control value for a printed key such as
+            // Ctrl-2 (NUL). Preserve that value while keeping it a normalized
+            // control key, so it also works as a numeric-input terminator.
+            let native = event.characters?.unicodeScalars.first?.value ?? scalar.value
+            let codepoint = native < 0x20 ? native + 0x40 : native == 0x7F ? 0x3F : scalar.value
+            surface.performInput {
+                _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: codepoint)
+            }
+        } else if let kind = specialKeyKind(for: event) {
+            surface.performInput { _ = try session.sendKey(kind: kind) }
+        } else {
+            interpretKeyEvents([event])
+        }
+        return true
     }
 
     override func doCommand(by selector: Selector) {
@@ -1383,6 +1414,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             }
 
         case UInt32(VIEM_MODE_COMMAND_LINE):
+            if literalInputPending, replacementRange.location == NSNotFound {
+                surface.performInput { _ = try session.sendText(value) }
+                return
+            }
             guard let commandLine = surface.commandLine else { return }
             let range: Range<Int>
             if replacementRange.location == NSNotFound { range = commandLine.selectedUTF8Range }

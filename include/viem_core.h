@@ -1327,6 +1327,8 @@ typedef struct ViemLayoutCaretGeometryV1 {
 #define VIEM_VIEW_PRESENTATION_HAS_VISUAL_BLOCK (1u << 2)
 #define VIEM_VIEW_PRESENTATION_HAS_COMMAND_LINE (1u << 3)
 #define VIEM_VIEW_PRESENTATION_HAS_DESIRED_X (1u << 4)
+/* Route the next input to the core before native editing shortcuts. */
+#define VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING (1u << 5)
 
 /*
  * Linear Visual anchors have no retained visual affinity, so the anchor
