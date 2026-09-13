@@ -109,19 +109,22 @@ public struct EVVisibleWhitespaceOptions: Codable, Equatable, Sendable {
 public struct EVWhitespacePresentationOptions: Codable, Equatable, Sendable {
   public var codeWhitespace = EVWhitespaceWidth.paragraphEn
   public var otherWhitespace = EVWhitespaceWidth.spaces
+  public var codeWrappedLineIndent = 4
   public var visibleWhitespace = EVVisibleWhitespaceOptions()
   public init() {}
 
   public var isValid: Bool {
-    visibleWhitespace.style.isValid && EVListcharsSettings.validationError(visibleWhitespace.listchars) == nil
+    (0...1024).contains(codeWrappedLineIndent)
+      && visibleWhitespace.style.isValid && EVListcharsSettings.validationError(visibleWhitespace.listchars) == nil
   }
 
-  private enum CodingKeys: String, CodingKey { case codeWhitespace, otherWhitespace, visibleWhitespace }
+  private enum CodingKeys: String, CodingKey { case codeWhitespace, otherWhitespace, codeWrappedLineIndent, visibleWhitespace }
   public init(from decoder: Decoder) throws {
     self.init()
     let values = try decoder.container(keyedBy: CodingKeys.self)
     codeWhitespace = try values.decodeIfPresentStrict(EVWhitespaceWidth.self, forKey: .codeWhitespace) ?? codeWhitespace
     otherWhitespace = try values.decodeIfPresentStrict(EVWhitespaceWidth.self, forKey: .otherWhitespace) ?? otherWhitespace
+    codeWrappedLineIndent = try values.decodeIfPresentStrict(Int.self, forKey: .codeWrappedLineIndent) ?? codeWrappedLineIndent
     visibleWhitespace = try values.decodeIfPresentStrict(EVVisibleWhitespaceOptions.self, forKey: .visibleWhitespace) ?? visibleWhitespace
   }
 }

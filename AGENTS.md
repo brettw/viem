@@ -2431,6 +2431,9 @@ source, syntax, unrelated style assignments, or width-independent shaping.
 - If no legal word boundary fits, the complete unbreakable segment overflows
   to the right through its next legal break or hard-line end. Neither grapheme
   boundaries nor internal layout-cache boundaries may split that segment.
+- Code continuation rows use the configured wrapped-line margin specified
+  under Code wrapped-line indentation. This changes the row's content
+  box while retaining the same Unicode line-break policy.
 - Changing the window size, side insets, gutter width, zoom, or any other value
   that changes usable text width MUST reflow the text for that view.
 - Resize reflow MUST update visible rows synchronously for the next frame. It
@@ -3024,6 +3027,56 @@ layout, caret/selection geometry and exact snapshot identities. Changes to
 the applicable font metrics, width basis or tabstop invalidate affected layout
 and checkpoints. Large documents must retain bounded viewport layout and reuse
 unchanged regions. A marker toggle must not change the resulting geometry.
+
+#### Code wrapped-line indentation
+
+Settings > Editing > Indentation and tabs includes **Wrapped line indent
+(Code)**, persisted as `editing.whitespacePresentation.codeWrappedLineIndent`
+in the existing versioned `config.json` authority. It is a whole number from
+0 through 1024, with a fixed default of **4**, twice the shipped indentation
+default of two. Missing values use four. Changing `shiftwidth` or `tabstop`
+does not change this setting's value. Negative, fractional, malformed, null,
+Boolean, and overflowing values are rejected atomically without changing the
+prior settings or configuration bytes. Settings changes update existing and
+future views through the live whitespace-presentation configuration.
+
+The margin applies only when `Format::is_code()` and the view's `wrap` option
+are both true. The first visual row keeps its existing content box. Every
+continuation row starts at the hard line's content origin plus the measured
+advance of its original leading ASCII space/tab prefix, plus the configured
+number of Code whitespace units. All continuation rows use this same origin;
+the indentation does not accumulate. Zero retains the original line's measured
+indentation and adds no extra units. A soft wrap does not establish a new
+leading-whitespace prefix.
+
+Original prefix measurement uses the existing Code whitespace policy, including
+mixed spaces and tabs. Each additional unit in Use paragraph en occupies half
+the default Paragraph font size, excluding character styles and tracking. In
+Use spaces, each additional unit uses the space advance of the original hard
+line's first character's effective font and tracking, falling back to the
+default Paragraph style for an empty line. Both measurements follow view zoom
+and the applicable font metrics generation.
+
+The continuation indentation is a paragraph-like layout margin. It synthesizes
+no text, whitespace markers, caret stops, or selectable content. Actual source
+whitespace stays editable and visible under the existing marker policy. Source
+bytes, dirty state, document undo history, registers, clipboard, search, and
+accessibility text are unchanged by the setting. Continuation hit testing,
+selection, caret geometry, and vertical motion use the shifted content box.
+
+The margin reduces continuation-row usable width and is not clamped for deeply
+indented lines or narrow windows. Existing Unicode word wrapping and complete
+unbreakable-segment overflow still apply when no segment fits; indentation does
+not introduce syntax-specific break opportunities or character wrapping.
+Full, regional, and streamed long-line layout MUST agree. Original indentation
+measurements participate in bounded wrap checkpoints, so later viewport work
+does not repeatedly rescan an arbitrarily long prefix. Changes to the setting,
+original prefix, applicable font metrics, Code width basis, or tabstop invalidate
+the affected wrap plans, checkpoints, and height geometry while reusing
+unchanged width-independent shaping and unrelated hard lines. Tests cover
+both width bases, mixed indentation, styled fonts, zero and maximum values,
+format/wrap exclusion, geometry and source preservation, settings validation,
+cache invalidation, multiple views, and bounded large-document layout.
 
 #### Visible whitespace
 

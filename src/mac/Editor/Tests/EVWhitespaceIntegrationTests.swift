@@ -112,6 +112,64 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
         }
     }
 
+    func testCodeWrappedIndentUpdatesBothViewsWithoutAddingTextOrMarginGeometry() throws {
+        let source = "\t" + String(repeating: "alpha beta gamma ", count: 12) + "end"
+        let (backend, first, preferences) = try fixture(source, type: EVDocument.codeType)
+        let second = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        second.loadViewIfNeeded()
+        second.editorView.editingPreferences = preferences
+        second.view.frame = NSRect(x: 0, y: 0, width: 500, height: 240)
+        second.viewDidLayout()
+        _ = try XCTUnwrap(second.session).resize(width: 500, height: 240)
+        second.refreshPresentation()
+        var options = preferences.whitespacePresentation
+        options.visibleWhitespace.listchars = "tab:>-,space:·,trail:*"
+        XCTAssertTrue(preferences.setWhitespacePresentation(options))
+        let before = try [first, second].map { try XCTUnwrap($0.layoutSnapshot) }
+        let state = backend.persistenceState
+        let revision = try backend.revision()
+        XCTAssertEqual(options.codeWrappedLineIndent, 4)
+        XCTAssertEqual(options.codeWhitespace, .paragraphEn)
+        for snapshot in before { XCTAssertGreaterThan(snapshot.rows.count, 1) }
+
+        options.codeWrappedLineIndent = 6
+        XCTAssertTrue(preferences.setWhitespacePresentation(options))
+        for (surface, previous) in zip([first, second], before) {
+            let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+            let originalFirstRow = try XCTUnwrap(previous.rows.first)
+            let firstRow = try XCTUnwrap(snapshot.rows.first)
+            let previousContinuation = try XCTUnwrap(previous.rows.dropFirst().first)
+            let continuation = try XCTUnwrap(snapshot.rows.dropFirst().first)
+            let tab = try XCTUnwrap(previous.clusters.first)
+            let unit = tab.advance / Float(preferences.indentation.tabstop)
+            XCTAssertGreaterThan(unit, 0)
+            XCTAssertEqual(firstRow.paragraph_content_x, originalFirstRow.paragraph_content_x)
+            XCTAssertEqual(firstRow.width, originalFirstRow.width, accuracy: 0.01)
+            XCTAssertEqual(firstRow.text_end, originalFirstRow.text_end)
+            XCTAssertEqual(continuation.paragraph_content_x - previousContinuation.paragraph_content_x,
+                2 * unit, accuracy: 0.01)
+            for (rowIndex, row) in snapshot.rows.enumerated().dropFirst() {
+                XCTAssertEqual(row.paragraph_content_x,
+                    firstRow.paragraph_content_x + tab.advance + 6 * unit, accuracy: 0.01)
+                for cluster in snapshot.clusters where cluster.row_index == row.row_index {
+                    XCTAssertGreaterThanOrEqual(cluster.x, row.paragraph_content_x - 0.01)
+                }
+                for caret in snapshot.carets where caret.row_index == row.row_index {
+                    XCTAssertGreaterThanOrEqual(caret.x, row.paragraph_content_x - 0.01)
+                }
+                for marker in snapshot.whitespace.markers where marker.rowIndex == rowIndex {
+                    XCTAssertGreaterThanOrEqual(marker.x, CGFloat(row.paragraph_content_x) - 0.01)
+                }
+            }
+            XCTAssertFalse(snapshot.whitespace.markers.isEmpty)
+            XCTAssertFalse(surface.canUndo || surface.canRedo)
+        }
+        XCTAssertEqual(backend.persistenceState, state)
+        XCTAssertEqual(try backend.revision(), revision)
+        XCTAssertEqual(try backend.formattedText(), source)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.codeType), Data(source.utf8))
+    }
+
     func testCompositionMarkersUseTheOverlaySnapshotAndCancellationRetainsSource() throws {
         let (backend, surface, _) = try fixture("base ")
         let session = try XCTUnwrap(surface.session)

@@ -54,7 +54,10 @@ pub(super) fn first_line_break(
             } else {
                 character
             };
-            if state.push(character).is_some() {
+            // Unicode line-break opportunities can occur inside an extended
+            // grapheme (for example after a space followed by a combining
+            // mark). A captured/streamed row must end at a legal text boundary.
+            if state.push(character).is_some() && tree.is_grapheme_boundary(offset)? {
                 return Ok(at + local);
             }
         }
@@ -70,6 +73,15 @@ pub(super) fn first_line_break(
 mod tests {
     use super::*;
     use crate::document::Document;
+
+    #[test]
+    fn streamed_breaks_do_not_split_a_space_with_combining_marks() {
+        let tree = FormattedTextTree::try_from_text(" \u{301}x next").unwrap();
+        assert_eq!(
+            first_line_break(&tree, 0..tree.byte_len(), false, &LayoutCancellationToken::default()).unwrap(),
+            5,
+        );
+    }
 
     #[test]
     fn giant_words_inside_paragraphs_scan_without_flat_text_or_break_vectors() {

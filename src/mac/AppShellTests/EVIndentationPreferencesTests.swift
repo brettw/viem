@@ -20,6 +20,7 @@ final class EVIndentationPreferencesTests: XCTestCase {
     XCTAssertTrue(store.indentation.continueCommentsOnEnter && store.indentation.continueCommentsOnOpenLine)
     XCTAssertEqual(store.whitespacePresentation.codeWhitespace, .paragraphEn)
     XCTAssertEqual(store.whitespacePresentation.otherWhitespace, .spaces)
+    XCTAssertEqual(store.whitespacePresentation.codeWrappedLineIndent, 4)
     XCTAssertTrue(store.whitespacePresentation.visibleWhitespace.enabled)
     XCTAssertEqual(store.whitespacePresentation.visibleWhitespace.listchars, "tab:>-,trail:*,extends:>,precedes:<")
     XCTAssertEqual(store.whitespacePresentation.visibleWhitespace.style.foreground?.blue ?? 0, 139 / 255, accuracy: 0.000001)
@@ -29,8 +30,10 @@ final class EVIndentationPreferencesTests: XCTestCase {
     indentation.softtabstop = -1
     indentation.autoindent = false
     try store.setIndentation(indentation)
+    XCTAssertEqual(store.whitespacePresentation.codeWrappedLineIndent, 4)
     var whitespace = store.whitespacePresentation
     whitespace.otherWhitespace = .paragraphEn
+    whitespace.codeWrappedLineIndent = 6
     whitespace.visibleWhitespace.listchars = "tab:>-,leadtab:>.,space:·,eol:$"
     try store.setWhitespacePresentation(whitespace)
     let reopened = EVConfigurationStore(directory: directory)
@@ -39,6 +42,7 @@ final class EVIndentationPreferencesTests: XCTestCase {
     let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("config.json"))) as? [String: Any])
     let editing = try XCTUnwrap(json["editing"] as? [String: Any])
     XCTAssertNotNil((editing["indentation"] as? [String: Any])?["continueCommentsOnOpenLine"])
+    XCTAssertEqual((editing["whitespacePresentation"] as? [String: Any])?["codeWrappedLineIndent"] as? Int, 6)
   }
 
   func testPartialDefaultsRejectNullAndInvalidConfigurationWithoutOverwriting() throws {
@@ -47,6 +51,13 @@ final class EVIndentationPreferencesTests: XCTestCase {
       #""indentation":{"shiftwidth":-1}"#, #""indentation":{"softtabstop":-2}"#,
       #""indentation":{"autoindent":null}"#, #""indentation":{"expandtab":1}"#,
       #""whitespacePresentation":{"codeWhitespace":"pixels"}"#,
+      #""whitespacePresentation":{"codeWrappedLineIndent":-1}"#,
+      #""whitespacePresentation":{"codeWrappedLineIndent":1025}"#,
+      #""whitespacePresentation":{"codeWrappedLineIndent":1.5}"#,
+      #""whitespacePresentation":{"codeWrappedLineIndent":null}"#,
+      #""whitespacePresentation":{"codeWrappedLineIndent":true}"#,
+      #""whitespacePresentation":{"codeWrappedLineIndent":"4"}"#,
+      #""whitespacePresentation":{"codeWrappedLineIndent":18446744073709551616}"#,
       #""whitespacePresentation":{"visibleWhitespace":{"listchars":"tab:>"}}"#,
       #""whitespacePresentation":{"visibleWhitespace":{"style":{"size":0}}}"#,
     ] {
@@ -68,7 +79,38 @@ final class EVIndentationPreferencesTests: XCTestCase {
     XCTAssertEqual(store.indentation.shiftwidth, 0)
     XCTAssertEqual(store.indentation.tabstop, 2)
     XCTAssertEqual(store.whitespacePresentation.codeWhitespace, .paragraphEn)
+    XCTAssertEqual(store.whitespacePresentation.codeWrappedLineIndent, 4)
     XCTAssertFalse(store.whitespacePresentation.visibleWhitespace.enabled)
+  }
+
+  func testWrappedLineIndentUpdatesLiveAndRejectsInvalidValuesAtomically() throws {
+    let (directory, store) = fixture()
+    let center = NotificationCenter()
+    let preferences = EVEditingPreferences(configuration: store, center: center)
+    let other = EVEditingPreferences(configuration: EVConfigurationStore(directory: directory))
+    var changes = 0
+    let observer = center.addObserver(forName: .viemEditingPreferencesDidChange, object: nil, queue: .main) { _ in changes += 1 }
+    defer { center.removeObserver(observer) }
+    var options = preferences.whitespacePresentation
+    for (index, value) in [0, 1024].enumerated() {
+      options.codeWrappedLineIndent = value
+      XCTAssertTrue(preferences.setWhitespacePresentation(options))
+      XCTAssertEqual(other.whitespacePresentation.codeWrappedLineIndent, value)
+      XCTAssertEqual(EVConfigurationStore(directory: directory).whitespacePresentation.codeWrappedLineIndent, value)
+      XCTAssertEqual(changes, index + 1)
+      XCTAssertTrue(preferences.setWhitespacePresentation(options))
+      XCTAssertEqual(changes, index + 1)
+    }
+    let file = directory.appendingPathComponent("config.json")
+    let before = try Data(contentsOf: file)
+    for value in [-1, 1025, Int.max] {
+      options.codeWrappedLineIndent = value
+      XCTAssertFalse(preferences.setWhitespacePresentation(options))
+      XCTAssertEqual(preferences.whitespacePresentation.codeWrappedLineIndent, 1024)
+      XCTAssertEqual(other.whitespacePresentation.codeWrappedLineIndent, 1024)
+      XCTAssertEqual(changes, 2)
+      XCTAssertEqual(try Data(contentsOf: file), before)
+    }
   }
 
   func testKnownStylePropertiesCanBeClearedWhileUnknownNestedKeysSurvive() throws {
@@ -153,6 +195,19 @@ final class EVIndentationPreferencesTests: XCTestCase {
     shift.stringValue = "0"
     shift.sendAction(shift.action, to: shift.target)
     XCTAssertEqual(preferences.indentation.shiftwidth, 0)
+    let wrappedIndent = try field("Wrapped line indent (Code)")
+    XCTAssertEqual(wrappedIndent.stringValue, "4")
+    for input in ["-1", "1.5", "1025", "abc", "", "18446744073709551616"] {
+      wrappedIndent.stringValue = input
+      wrappedIndent.sendAction(wrappedIndent.action, to: wrappedIndent.target)
+      XCTAssertEqual(wrappedIndent.stringValue, "4")
+      XCTAssertEqual(preferences.whitespacePresentation.codeWrappedLineIndent, 4)
+    }
+    for value in [0, 1024] {
+      wrappedIndent.stringValue = String(value)
+      wrappedIndent.sendAction(wrappedIndent.action, to: wrappedIndent.target)
+      XCTAssertEqual(preferences.whitespacePresentation.codeWrappedLineIndent, value)
+    }
     for name in EVListcharsSettings.names { _ = try field("Visible whitespace \(name)") }
     let trail = try field("Visible whitespace trail")
     XCTAssertEqual(trail.stringValue, "*")

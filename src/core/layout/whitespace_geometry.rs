@@ -2,6 +2,129 @@
 use super::*;
 
 impl<P: TextMeasurementProvider> LayoutEngine<P> {
+    /// Measure layout-only margin units with the hard line's original font
+    /// context. The shaped space stays in the measurement cache, not the row.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn code_wrap_extra_indent(
+        &mut self,
+        line_start: usize,
+        view: &LayoutJobViewConfiguration,
+        whitespace_style: &ResolvedTextStyle,
+        default_style: &ResolvedTextStyle,
+        style_runs: &[ShapeStyleRun],
+        document_id: DocumentId,
+        revision: Revision,
+        control: &LayoutRunControl<'_>,
+    ) -> Result<f32, LayoutComputationError> {
+        if view.whitespace.options.code_wrapped_line_indent == 0 {
+            return Ok(0.0);
+        }
+        let style = if view.whitespace.basis() == super::super::WhitespaceBasis::ParagraphEn {
+            whitespace_style
+        } else {
+            let index = style_runs.partition_point(|run| run.text_range.end <= line_start);
+            style_runs
+                .get(index)
+                .filter(|run| run.text_range.start <= line_start)
+                .map_or(default_style, |run| &run.style)
+        };
+        Ok(self.whitespace_unit(
+            &view.whitespace,
+            style,
+            view.scale,
+            document_id,
+            revision,
+            control,
+        )? * view.whitespace.options.code_wrapped_line_indent as f32)
+    }
+
+    /// A huge tab prefix may span several independently wrapped slices. Read
+    /// and shape only that prefix in bounded fragments once; its total margin
+    /// is then carried by the ordinary exact long-line checkpoint.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn code_leading_indent_from_tree(
+        &mut self,
+        tree: &crate::document::FormattedTextTree,
+        line: &Range<usize>,
+        view: &LayoutJobViewConfiguration,
+        whitespace_unit: f32,
+        default_style: &ResolvedTextStyle,
+        style_runs: &[ShapeStyleRun],
+        document_id: DocumentId,
+        revision: Revision,
+        control: &LayoutRunControl<'_>,
+    ) -> Result<(f64, LayoutWorkStatistics), LayoutComputationError> {
+        let mut prefix_end = line.start;
+        while prefix_end < line.end {
+            control.checkpoint()?;
+            let chunk = tree.byte_chunk_at(prefix_end);
+            let chunk = &chunk[..chunk
+                .len()
+                .min(line.end - prefix_end)
+                .min(MAX_SHAPE_FRAGMENT_BYTES)];
+            let count = chunk
+                .iter()
+                .take_while(|&&byte| byte == b' ' || byte == b'\t')
+                .count();
+            prefix_end += count;
+            if count == 0 || count < chunk.len() {
+                break;
+            }
+        }
+        if !tree
+            .is_grapheme_boundary(prefix_end)
+            .map_err(|_| LayoutError::InvalidTextOffset(prefix_end))?
+        {
+            prefix_end = tree
+                .previous_grapheme_boundary(prefix_end)
+                .map_err(|_| LayoutError::InvalidTextOffset(prefix_end))?
+                .ok_or(LayoutError::InvalidTextOffset(prefix_end))?;
+        }
+        let mut at = line.start;
+        let mut advance = 0.0;
+        let mut statistics = LayoutWorkStatistics::default();
+        while at < prefix_end {
+            control.checkpoint()?;
+            let end = (at + MAX_SHAPE_FRAGMENT_BYTES).min(prefix_end);
+            let mut fragment = self.shape_unwrapped_fragment(
+                document_id,
+                revision,
+                tree,
+                at..end,
+                line,
+                default_style,
+                style_runs,
+                TextDirection::LeftToRight,
+                view,
+                control,
+            )?;
+            let text = tree
+                .slice(at..end)
+                .map_err(|_| LayoutError::InvalidTextOffset(at))?;
+            (_, advance, _) = self.layout_whitespace_clusters(
+                &mut fragment.clusters,
+                &text,
+                at,
+                &view.whitespace,
+                whitespace_unit,
+                default_style,
+                style_runs,
+                view.scale,
+                document_id,
+                revision,
+                control,
+                true,
+                advance,
+            )?;
+            statistics.segmented_text_bytes += end - at;
+            statistics.shaping_fragment_count += 1;
+            statistics.maximum_shaping_fragment_bytes =
+                statistics.maximum_shaping_fragment_bytes.max(end - at);
+            at = end;
+        }
+        Ok((advance, statistics))
+    }
+
     pub(super) fn whitespace_unit(
         &mut self,
         config: &WhitespaceConfiguration,
@@ -114,6 +237,18 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         }
         Ok((leading, advance, tab_units))
     }
+}
+
+pub(super) fn leading_indent_advance(clusters: &[ShapedCluster], text: &str, origin: usize) -> f64 {
+    clusters
+        .iter()
+        .take_while(|cluster| {
+            text[cluster.text_range.start - origin..cluster.text_range.end - origin]
+                .bytes()
+                .all(|byte| byte == b' ' || byte == b'\t')
+        })
+        .map(|cluster| f64::from(cluster.advance))
+        .sum()
 }
 
 pub(super) fn attach_whitespace_units(row: &mut VisualRow, units: &BTreeMap<usize, f32>) {

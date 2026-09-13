@@ -126,6 +126,7 @@ public final class EVConfigurationStore {
     try update(section: "editing", values: ["indentation": object])
   }
   public func setWhitespacePresentation(_ options: EVWhitespacePresentationOptions) throws {
+    guard (0...1024).contains(options.codeWrappedLineIndent) else { throw invalid("Wrapped line indent (Code) must be a whole number from 0 to 1024") }
     guard options.isValid else { throw invalid(EVListcharsSettings.validationError(options.visibleWhitespace.listchars) ?? "Invalid Visible whitespace style") }
     if let error = EVEditingPreferences.validateWhitespacePresentation?(options) { throw invalid(error) }
     var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(options)) as! [String: Any]
@@ -313,6 +314,7 @@ public final class EVConfigurationStore {
       }
       if let raw = editing["whitespacePresentation"] {
         let value = try JSONDecoder().decode(EVWhitespacePresentationOptions.self, from: JSONSerialization.data(withJSONObject: raw, options: .fragmentsAllowed))
+        guard (0...1024).contains(value.codeWrappedLineIndent) else { throw invalid("Wrapped line indent (Code) must be a whole number from 0 to 1024") }
         guard value.isValid else { throw invalid(EVListcharsSettings.validationError(value.visibleWhitespace.listchars) ?? "Invalid Visible whitespace style") }
       }
     }

@@ -386,6 +386,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       [label("Tab stop"), indentationField("tabstop"), label("1–1024 columns")],
       [label("Shift width"), indentationField("shiftwidth"), label("0 uses tab stop")],
       [label("Soft tab stop"), indentationField("softtabstop"), label("−1 uses shift width; 0 disables")],
+      [label("Wrapped line indent (Code)"), indentationField("codeWrappedLineIndent"), label("0–1024 Code whitespace units")],
     ])
     numbers.columnSpacing = 10
     numbers.rowSpacing = 8
@@ -395,7 +396,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     ])
     widths.columnSpacing = 10
     widths.rowSpacing = 8
-    let explanation = NSTextField(wrappingLabelWithString: "Defaults apply to new and inheriting documents. Changing these settings leaves existing text unchanged. Paragraph en uses half the paragraph font size for whitespace width.")
+    let explanation = NSTextField(wrappingLabelWithString: "Defaults apply to new and inheriting documents. Changing these settings leaves existing text unchanged. Paragraph en uses half the paragraph font size for whitespace width. Wrapped line indent uses the Code whitespace width.")
     explanation.textColor = .secondaryLabelColor
     explanation.font = .systemFont(ofSize: 12)
     let indentation = section("Indentation and tabs", views: [numbers] + switches + [widths, explanation])
@@ -435,7 +436,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     field.delegate = self
     field.target = self
     field.action = #selector(changeIndentationNumber(_:))
-    field.setAccessibilityLabel("Indentation \(name)")
+    field.setAccessibilityLabel(name == "codeWrappedLineIndent" ? "Wrapped line indent (Code)" : "Indentation \(name)")
     field.widthAnchor.constraint(equalToConstant: 75).isActive = true
     indentationFields[name] = field
     return field
@@ -463,6 +464,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     indentationFields["shiftwidth"]?.stringValue = String(options.shiftwidth)
     indentationFields["softtabstop"]?.stringValue = String(options.softtabstop)
     let presentation = editingPreferences.whitespacePresentation
+    indentationFields["codeWrappedLineIndent"]?.stringValue = String(presentation.codeWrappedLineIndent)
     whitespacePopups["codeWhitespace"]?.selectItem(at: presentation.codeWhitespace == .spaces ? 0 : 1)
     whitespacePopups["otherWhitespace"]?.selectItem(at: presentation.otherWhitespace == .spaces ? 0 : 1)
     visibleWhitespaceCheckbox?.state = presentation.visibleWhitespace.enabled ? .on : .off
@@ -490,8 +492,19 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   }
 
   @objc private func changeIndentationNumber(_ sender: NSTextField) {
-    var options = editingPreferences.indentation
     let input = sender.stringValue.trimmingCharacters(in: .whitespaces)
+    if sender.identifier?.rawValue == "codeWrappedLineIndent" {
+      guard let number = Int(input), (0...1024).contains(number) else {
+        refreshEditingPreferences(error: "Wrapped line indent (Code) must be a whole number from 0 to 1024.")
+        return
+      }
+      var options = editingPreferences.whitespacePresentation
+      options.codeWrappedLineIndent = number
+      editingPreferences.setWhitespacePresentation(options)
+      refreshEditingPreferences()
+      return
+    }
+    var options = editingPreferences.indentation
     guard let number = Int32(input), (-1...1024).contains(number) else {
       refreshEditingPreferences(error: "Enter a whole number within the field's allowed range.")
       return

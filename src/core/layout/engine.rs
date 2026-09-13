@@ -29,6 +29,10 @@ mod whitespace_geometry;
 use whitespace_geometry::attach_whitespace_units;
 
 #[cfg(test)]
+#[path = "code_wrap_tests.rs"]
+mod code_wrap_tests;
+
+#[cfg(test)]
 #[path = "adjacent_regions_tests.rs"]
 mod adjacent_regions_tests;
 
@@ -52,6 +56,8 @@ const CANCELLATION_TEXT_SCAN_BYTES: usize = 64 * 1024;
 /// future cache admission.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LongLineLayoutCheckpoint {
+    /// Original hard-line indentation plus the extra continuation margin.
+    pub(super) code_wrap_indent: f32,
     pub(super) whitespace_leading: bool,
     pub(super) document_id: DocumentId,
     pub(super) document_revision: Revision,
@@ -77,7 +83,8 @@ impl LongLineLayoutCheckpoint {
         full_range: Range<usize>,
         unchanged_end: usize,
     ) -> Option<Self> {
-        if full_range.start != self.hard_line_range.start
+        if (self.whitespace_leading && self.code_wrap_indent > 0.0)
+            || full_range.start != self.hard_line_range.start
             || self.next_text_offset > unchanged_end
             || self.next_text_offset > full_range.end
         {
@@ -1601,7 +1608,11 @@ impl ViewLayout {
         if tabstop == 0 || tabstop > 1024 { return Err(ListCharsError("tabstop must be between 1 and 1024".into())); }
         let next = WhitespaceConfiguration { options, format, tabstop };
         if self.whitespace != next {
-            let geometry_changed = self.whitespace.basis() != next.basis() || self.whitespace.tabstop != next.tabstop;
+            let geometry_changed = self.whitespace.basis() != next.basis()
+                || self.whitespace.tabstop != next.tabstop
+                || (self.wrap && (self.whitespace.format.is_code() != next.format.is_code()
+                    || (next.format.is_code() && self.whitespace.options.code_wrapped_line_indent
+                        != next.options.code_wrapped_line_indent)));
             self.whitespace = next;
             self.bump_configuration(geometry_changed);
         }
@@ -2874,6 +2885,8 @@ struct LineParagraphLayout {
 
 #[derive(Clone, Debug)]
 pub(crate) struct HardLineLayoutSlice {
+    /// Only initial partial Code lines need a tree for unusually long indents.
+    pub indentation_tree: Option<crate::document::FormattedTextTree>,
     pub full_range: Range<usize>,
     pub work_range: Range<usize>,
     pub shaping_context_range: Range<usize>,
@@ -3113,6 +3126,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             .iter()
             .enumerate()
             .map(|(offset, range)| HardLineLayoutSlice {
+                indentation_tree: None,
                 full_range: range.clone(),
                 work_range: range.clone(),
                 shaping_context_range: range.clone(),
@@ -3215,6 +3229,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     || checkpoint.completed_height < 0.0
                     || !checkpoint.cumulative_advance.is_finite()
                     || checkpoint.cumulative_advance < 0.0
+                    || !checkpoint.code_wrap_indent.is_finite()
+                    || checkpoint.code_wrap_indent < 0.0
                 {
                     return Err(LayoutError::MalformedMeasurement(
                         "long-line checkpoint does not match captured dependencies",
@@ -3379,6 +3395,11 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 &control,
             )?;
             let whitespace_leading = line_slice.checkpoint.as_ref().map_or(true, |c| c.whitespace_leading);
+            let line_default_style = if view.default_style_is_override {
+                &default_style
+            } else {
+                &paragraph.style.default_shaping_style
+            };
             let (_, _, tab_units) = self.layout_whitespace_clusters(&mut clusters, region_text, text_origin, &view.whitespace, whitespace_unit,
                 if view.default_style_is_override { &default_style } else { &paragraph.style.default_shaping_style }, style_runs,
                 view.scale, document_id, document_revision, &control,
@@ -3409,6 +3430,45 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 )
             } else {
                 continuation_box
+            };
+            let code_wrap_indent = if view.wrap && view.whitespace.format.is_code() {
+                if let Some(checkpoint) = &line_slice.checkpoint {
+                    checkpoint.code_wrap_indent
+                } else {
+                    let leading = if extends_past_work
+                        && region_text[local_line_ranges[line_offset].clone()].bytes()
+                            .all(|byte| byte == b' ' || byte == b'\t')
+                    {
+                        let tree = line_slice.indentation_tree.as_ref().ok_or(
+                            LayoutError::MalformedMeasurement("a partial Code indent requires its text snapshot"),
+                        )?;
+                        let (leading, prefix_statistics) = self.code_leading_indent_from_tree(tree, &line_slice.full_range, view,
+                            whitespace_unit, line_default_style, style_runs,
+                            document_id, document_revision, &control)?;
+                        work_statistics.segmented_text_bytes += prefix_statistics.segmented_text_bytes;
+                        work_statistics.shaping_fragment_count += prefix_statistics.shaping_fragment_count;
+                        work_statistics.maximum_shaping_fragment_bytes = work_statistics.maximum_shaping_fragment_bytes
+                            .max(prefix_statistics.maximum_shaping_fragment_bytes);
+                        leading
+                    } else {
+                        whitespace_geometry::leading_indent_advance(&clusters, region_text, text_origin)
+                    };
+                    let extra = self.code_wrap_extra_indent(line_slice.full_range.start, view,
+                        &document_styles.whitespace_shaping_style, line_default_style, style_runs,
+                        document_id, document_revision, &control)?;
+                    (leading + f64::from(extra)) as f32
+                }
+            } else {
+                0.0
+            };
+            if !code_wrap_indent.is_finite() {
+                return Err(LayoutError::InvalidGeometry.into());
+            }
+            let continuation_box = code_continuation_box(continuation_box, code_wrap_indent, right_to_left);
+            let first_row_box = if line_slice.checkpoint.is_some() {
+                continuation_box
+            } else {
+                first_row_box
             };
             let breaks = if view.wrap {
                 unicode_line_break_opportunities_for_slice(
@@ -3617,6 +3677,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 .map(|cluster| f64::from(cluster.advance))
                 .sum::<f64>();
             let next_checkpoint = extends_past_work.then(|| LongLineLayoutCheckpoint {
+                code_wrap_indent,
                 whitespace_leading: whitespace_leading && region_text[line_range.start - text_origin..text_coverage_end - text_origin].bytes().all(|b| b == b' ' || b == b'\t'),
                 document_id,
                 document_revision,
@@ -3900,6 +3961,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let mut fragment_cursor = 0;
         let whitespace_style = document_styles.as_ref().map_or(&default_style, |styles| &styles.whitespace_shaping_style);
         let whitespace_unit = whitespace_style.size * view.scale * 0.5;
+        let whitespace_view = view.capture_layout_job_with_style_runs(Vec::new());
         let mut rows = Vec::new();
         let mut y = content_insets.top;
         let mut previous_paragraph_index = None;
@@ -3927,6 +3989,11 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             fragment_cursor += count;
             let (mut clusters, empty_metrics) =
                 flatten_line_fragments(line_range, line_fragments, control)?;
+            let line_default_style = if view.default_style_is_override {
+                &default_style
+            } else {
+                &paragraph.style.default_shaping_style
+            };
             let (_, _, tab_units) = self.layout_whitespace_clusters(&mut clusters, text, 0, &view.whitespace, whitespace_unit,
                 if view.default_style_is_override { &default_style } else { &paragraph.style.default_shaping_style }, &style_runs,
                 view.scale, document_id, document_revision, control, true, 0.0)?;
@@ -3949,6 +4016,19 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     &clusters,
                     right_to_left,
                 )
+            } else {
+                continuation_box
+            };
+            let continuation_box = if view.wrap && view.whitespace.format.is_code() {
+                let leading = whitespace_geometry::leading_indent_advance(&clusters, text, 0);
+                let extra = self.code_wrap_extra_indent(line_range.start, &whitespace_view,
+                    whitespace_style, line_default_style, &style_runs,
+                    document_id, document_revision, control)?;
+                let indent = (leading + f64::from(extra)) as f32;
+                if !indent.is_finite() {
+                    return Err(LayoutError::InvalidGeometry.into());
+                }
+                code_continuation_box(continuation_box, indent, right_to_left)
             } else {
                 continuation_box
             };
@@ -5195,6 +5275,15 @@ fn paragraph_row_boxes(
         row_box(first_left, first_right),
         row_box(continuation_left, continuation_right),
     )
+}
+
+/// A continuation indent is paragraph margin geometry, never text or a run.
+fn code_continuation_box(base: ParagraphRowBox, indent: f32, right_to_left: bool) -> ParagraphRowBox {
+    if right_to_left {
+        row_box(base.x, base.x + base.width - indent)
+    } else {
+        row_box(base.x + indent, base.x + base.width)
+    }
 }
 
 /// List labels occupy an outside gutter. The measured label width determines

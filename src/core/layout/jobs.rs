@@ -690,6 +690,38 @@ fn bounded_context_end(document: &Document, work_end: usize, hard_line_end: usiz
     end
 }
 
+/// Find the end of an ASCII space/tab prefix without copying its text. Large
+/// immutable leaves still check cancellation after at most 4096 consumed bytes.
+pub(crate) fn ascii_indentation_end(
+    tree: &FormattedTextTree,
+    range: Range<usize>,
+    cancellation: &dyn LayoutCancellationProbe,
+) -> Result<usize, LayoutJobError> {
+    if range.start > range.end || range.end > tree.byte_len() {
+        return Err(LayoutJobError::InvalidRegion(
+            "indentation scan requires an ordered text range",
+        ));
+    }
+    let mut at = range.start;
+    while at < range.end {
+        let chunk = tree.byte_chunk_at(at);
+        let chunk = &chunk[..chunk.len().min(range.end - at)];
+        for batch in chunk.chunks(4096) {
+            if cancellation.is_cancelled() {
+                return Err(LayoutJobError::Cancelled);
+            }
+            if let Some(offset) = batch.iter().position(|byte| !matches!(byte, b' ' | b'\t')) {
+                return Ok(at + offset);
+            }
+            at += batch.len();
+        }
+    }
+    if cancellation.is_cancelled() {
+        return Err(LayoutJobError::Cancelled);
+    }
+    Ok(at)
+}
+
 /// Capture a revision-bound request and make it the only current layout job
 /// for this view. Replacing an older request is O(1); its scheduler-owned token
 /// should also be cancelled so retained inputs are released promptly.
@@ -846,7 +878,18 @@ where
         };
         // The rare width-fit fallback can complete the remaining paragraph.
         // Retain its immutable style metadata, while the text stays in the tree.
-        let style_capture_range = if stream_overflow { context_start..full_range.end } else { capture_range.clone() };
+        let indentation_tree = (checkpoint.is_none()
+            && document.format().is_code()
+            && view.wrap()
+            && work_end < full_range.end)
+            .then(|| document.projection().text_tree().clone());
+        let mut style_capture_range = if stream_overflow { context_start..full_range.end } else { capture_range.clone() };
+        if let Some(tree) = &indentation_tree {
+            // Initial slices entirely inside a giant indentation prefix need
+            // all of its styles for measurement, but retain only bounded text.
+            let indentation_end = ascii_indentation_end(tree, full_range.clone(), &cancellation)?;
+            style_capture_range.end = style_capture_range.end.max(indentation_end);
+        }
         let style_end = following_style_end(document, following_line_range.as_ref(), style_capture_range.end)?;
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
@@ -876,6 +919,7 @@ where
         );
         let captured_view = view.capture_for_regional_layout_job(style_capture_range);
         let line_slice = HardLineLayoutSlice {
+            indentation_tree,
             full_range,
             work_range: work_start..work_end,
             shaping_context_range: capture_range,

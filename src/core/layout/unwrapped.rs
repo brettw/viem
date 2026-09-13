@@ -32,6 +32,7 @@ struct FragmentSummary {
 
 #[derive(PartialEq)]
 struct SummaryKey {
+    code_wrap: bool,
     whitespace_style: ResolvedTextStyle,
     whitespace_basis: super::super::WhitespaceBasis,
     whitespace_tabstop: u32,
@@ -52,6 +53,7 @@ struct SummaryKey {
 
 struct LineSummary {
     whitespace_unit: f32,
+    leading_indent_width: f64,
     fragments: Vec<FragmentSummary>,
     runs: Vec<DirectionRun>,
     metrics: TextMetrics,
@@ -348,6 +350,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 work_range: start..end,
                 shaping_context_range: context(tree, &(start..end), full_range)?,
                 hard_line_index,
+                indentation_tree: (checkpoint.is_none()
+                    && view.wrap
+                    && view.whitespace.format.is_code())
+                .then(|| tree.clone()),
                 checkpoint,
             };
             let mut part = if end - start > super::super::jobs::MAX_LONG_LINE_LAYOUT_SLICE_BYTES
@@ -433,7 +439,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         }
     }
 
-    fn shape_unwrapped_fragment(
+    pub(super) fn shape_unwrapped_fragment(
         &mut self,
         document_id: DocumentId,
         revision: Revision,
@@ -493,6 +499,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             cancellation,
             None,
         )
+        .map(|(region, _)| region)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -508,7 +515,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         view: &LayoutJobViewConfiguration,
         cancellation: &dyn LayoutCancellationProbe,
     ) -> Result<RegionalLayoutSnapshot, LayoutComputationError> {
-        let mut region = self.layout_streamed_rows_cancellable(
+        let (mut region, code_wrap_indent) = self.layout_streamed_rows_cancellable(
             document_id,
             document_revision,
             tree,
@@ -578,6 +585,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             &paragraph.style,
             right_to_left,
         );
+        let code_wrap_indent = code_wrap_indent.unwrap_or(0.0);
+        let continuation = if view.wrap && view.whitespace.format.is_code() {
+            code_continuation_box(continuation, code_wrap_indent, right_to_left)
+        } else {
+            continuation
+        };
         let line = &mut region.lines[0];
         let row = &mut line.rows[0];
         translate_row_vertically(row, delta).map_err(LayoutError::from)?;
@@ -592,10 +605,18 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             line.height + f64::from(delta)
         };
         line.height_is_exact = !extends;
-        let whitespace_leading = slice.checkpoint.as_ref().map_or(true, |c| c.whitespace_leading)
-            && tree.slice(slice.work_range.clone()).map_err(text_error)?.bytes().all(|b| b == b' ' || b == b'\t');
+        let whitespace_leading = slice
+            .checkpoint
+            .as_ref()
+            .map_or(true, |c| c.whitespace_leading)
+            && tree
+                .slice(slice.work_range.clone())
+                .map_err(text_error)?
+                .bytes()
+                .all(|b| b == b' ' || b == b'\t');
         line.next_checkpoint = extends.then(|| LongLineLayoutCheckpoint {
             whitespace_leading,
+            code_wrap_indent,
             document_id,
             document_revision,
             configuration_generation: view.configuration_generation,
@@ -637,7 +658,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         view: &LayoutJobViewConfiguration,
         cancellation: &dyn LayoutCancellationProbe,
         overflow_slice: Option<&HardLineLayoutSlice>,
-    ) -> Result<RegionalLayoutSnapshot, LayoutComputationError> {
+    ) -> Result<(RegionalLayoutSnapshot, Option<f32>), LayoutComputationError> {
         let control = LayoutRunControl::cancellable(cancellation);
         let measurement_environment_id = self.provider.measurement_environment_id();
         let metrics_generation = self.provider.metrics_generation();
@@ -665,6 +686,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let mut horizontal_rows = Vec::new();
         let mut diagnostics = Vec::new();
         let mut statistics = LayoutWorkStatistics::default();
+        let mut overflow_code_wrap_indent = None;
         for (line_offset, line_range) in line_ranges.iter().enumerate() {
             control.checkpoint()?;
             let hard_line_index = first_hard_line + line_offset;
@@ -747,11 +769,17 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 base_direction(tree, full_range.clone(), &paragraph.style, &control)?
             };
             let summary_key = SummaryKey {
+                code_wrap: view.wrap && view.whitespace.format.is_code(),
                 whitespace_style: styles.whitespace_shaping_style.clone(),
                 whitespace_basis: view.whitespace.basis(),
                 whitespace_tabstop: view.whitespace.tabstop,
-                whitespace_leading: overflow_slice.and_then(|s| s.checkpoint.as_ref()).map_or(true, |c| c.whitespace_leading),
-                whitespace_advance: overflow_slice.and_then(|s| s.checkpoint.as_ref()).map_or(0.0, |c| c.cumulative_advance).to_bits(),
+                whitespace_leading: overflow_slice
+                    .and_then(|s| s.checkpoint.as_ref())
+                    .map_or(true, |c| c.whitespace_leading),
+                whitespace_advance: overflow_slice
+                    .and_then(|s| s.checkpoint.as_ref())
+                    .map_or(0.0, |c| c.cumulative_advance)
+                    .to_bits(),
                 text: tree.snapshot_identity(),
                 line: line_range.clone(),
                 context_line: full_range.clone(),
@@ -781,6 +809,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 let mut marker_end = line_range.start;
                 let mut whitespace_leading = summary_key.whitespace_leading;
                 let mut whitespace_advance = f64::from_bits(summary_key.whitespace_advance);
+                let mut leading_indent_width = 0.0;
+                let mut measuring_leading_indent = whitespace_leading;
                 while at < line_range.end {
                     control.checkpoint()?;
                     let end = chunk_end(tree, at, line_range.end)?;
@@ -799,9 +829,21 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     let initial_whitespace = (whitespace_leading, whitespace_advance);
                     let actual_end = fragment.clusters.last().map_or(end, |c| c.text_range.end);
                     let whitespace_text = tree.slice(at..actual_end).map_err(text_error)?;
-                    (whitespace_leading, whitespace_advance, _) = self.layout_whitespace_clusters(&mut fragment.clusters, &whitespace_text, at,
-                        &view.whitespace, whitespace_unit, shaping_style, style_runs, view.scale, document_id, document_revision, &control,
-                        whitespace_leading, whitespace_advance)?;
+                    (whitespace_leading, whitespace_advance, _) = self.layout_whitespace_clusters(
+                        &mut fragment.clusters,
+                        &whitespace_text,
+                        at,
+                        &view.whitespace,
+                        whitespace_unit,
+                        shaping_style,
+                        style_runs,
+                        view.scale,
+                        document_id,
+                        document_revision,
+                        &control,
+                        whitespace_leading,
+                        whitespace_advance,
+                    )?;
                     let run_start = runs.len();
                     for cluster in &fragment.clusters {
                         if cluster.text_range.start != expected
@@ -813,6 +855,15 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                             .into());
                         }
                         expected = cluster.text_range.end;
+                        if measuring_leading_indent {
+                            let spelling = &whitespace_text
+                                [cluster.text_range.start - at..cluster.text_range.end - at];
+                            measuring_leading_indent =
+                                spelling.bytes().all(|byte| byte == b' ' || byte == b'\t');
+                            if measuring_leading_indent {
+                                leading_indent_width += f64::from(cluster.advance);
+                            }
+                        }
                         metrics.ascent = metrics.ascent.max(cluster.metrics.ascent);
                         metrics.descent = metrics.descent.max(cluster.metrics.descent);
                         metrics.leading = metrics.leading.max(cluster.metrics.leading);
@@ -866,8 +917,32 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         LayoutError::MalformedMeasurement("streamed line is incomplete").into(),
                     );
                 }
+                if summary_key.code_wrap
+                    && measuring_leading_indent
+                    && line_range.start == full_range.start
+                    && line_range.end < full_range.end
+                {
+                    // The first overflowing segment can end within an enormous
+                    // indentation prefix. Cache the complete prefix measurement
+                    // so every later row still uses the original line's margin.
+                    let (complete_indent_width, prefix_statistics) = self
+                        .code_leading_indent_from_tree(
+                            tree,
+                            full_range,
+                            view,
+                            whitespace_unit,
+                            shaping_style,
+                            style_runs,
+                            document_id,
+                            document_revision,
+                            &control,
+                        )?;
+                    leading_indent_width = complete_indent_width;
+                    add_statistics(&mut statistics, prefix_statistics);
+                }
                 let summary = Arc::new(LineSummary {
                     whitespace_unit,
+                    leading_indent_width,
                     fragments,
                     runs,
                     metrics,
@@ -892,6 +967,29 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 &paragraph.style,
                 right_to_left,
             );
+            let code_wrap_indent = if view.wrap && view.whitespace.format.is_code() {
+                if let Some(checkpoint) = overflow_slice.and_then(|slice| slice.checkpoint.as_ref())
+                {
+                    checkpoint.code_wrap_indent
+                } else {
+                    let extra_indent = self.code_wrap_extra_indent(
+                        full_range.start,
+                        view,
+                        &styles.whitespace_shaping_style,
+                        shaping_style,
+                        style_runs,
+                        document_id,
+                        document_revision,
+                        &control,
+                    )?;
+                    (summary.leading_indent_width + f64::from(extra_indent)) as f32
+                }
+            } else {
+                0.0
+            };
+            if overflow_slice.is_some() {
+                overflow_code_wrap_indent = Some(code_wrap_indent);
+            }
             let first_box = if paragraph
                 .style
                 .list_marker_range
@@ -917,7 +1015,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             } else {
                 first_box
             };
-            let paragraph_box = if paragraph.is_first_hard_line {
+            let paragraph_box = if view.wrap
+                && view.whitespace.format.is_code()
+                && overflow_slice.is_some_and(|slice| slice.checkpoint.is_some())
+            {
+                code_continuation_box(continuation_box, code_wrap_indent, right_to_left)
+            } else if paragraph.is_first_hard_line {
                 first_box
             } else {
                 continuation_box
@@ -1003,11 +1106,28 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     view,
                     &control,
                 )?;
-                let actual_end = fragment.clusters.last().map_or(summary.text.end, |c| c.text_range.end);
-                let whitespace_text = tree.slice(summary.text.start..actual_end).map_err(text_error)?;
-                let (_, _, tab_units) = self.layout_whitespace_clusters(&mut fragment.clusters, &whitespace_text, summary.text.start,
-                    &view.whitespace, whitespace_unit, shaping_style, style_runs, view.scale, document_id, document_revision, &control,
-                    summary.whitespace_leading, summary.whitespace_advance)?;
+                let actual_end = fragment
+                    .clusters
+                    .last()
+                    .map_or(summary.text.end, |c| c.text_range.end);
+                let whitespace_text = tree
+                    .slice(summary.text.start..actual_end)
+                    .map_err(text_error)?;
+                let (_, _, tab_units) = self.layout_whitespace_clusters(
+                    &mut fragment.clusters,
+                    &whitespace_text,
+                    summary.text.start,
+                    &view.whitespace,
+                    whitespace_unit,
+                    shaping_style,
+                    style_runs,
+                    view.scale,
+                    document_id,
+                    document_revision,
+                    &control,
+                    summary.whitespace_leading,
+                    summary.whitespace_advance,
+                )?;
                 statistics.segmented_text_bytes += summary.text.len();
                 statistics.shaping_fragment_count += 1;
                 for run in &runs[summary.runs.clone()] {
@@ -1136,36 +1256,39 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         self.next_layout_revision = self
             .next_layout_revision
             .max(layout_revision.0.wrapping_add(1).max(1));
-        Ok(RegionalLayoutSnapshot {
-            whitespace_unit,
-            revision: layout_revision,
-            document_id,
-            document_revision,
-            configuration_generation: view.configuration_generation,
-            measurement_environment_id,
-            metrics_generation,
-            hard_lines: first_hard_line..first_hard_line + lines.len(),
-            document_hard_line_count,
-            document_text_len: tree.byte_len(),
-            viewport_width: view.width,
-            viewport_height: view.height,
-            usable_width,
-            content_insets,
-            document_insets: styles.document_insets,
-            document_style_revision: Some(styles.style_sheet_revision),
-            canvas_background: styles.canvas_background,
-            canvas_background_is_default: styles.canvas_background_is_default,
-            default_paint: styles.default_paint.clone(),
-            paint_runs: styles.paint_runs.clone(),
-            lines,
-            diagnostics,
-            grapheme_boundaries: Vec::new(),
-            work_statistics: statistics,
-            horizontal_materialization: Some(HorizontalMaterialization {
-                text: tree.clone(),
-                rows: horizontal_rows,
-            }),
-        })
+        Ok((
+            RegionalLayoutSnapshot {
+                whitespace_unit,
+                revision: layout_revision,
+                document_id,
+                document_revision,
+                configuration_generation: view.configuration_generation,
+                measurement_environment_id,
+                metrics_generation,
+                hard_lines: first_hard_line..first_hard_line + lines.len(),
+                document_hard_line_count,
+                document_text_len: tree.byte_len(),
+                viewport_width: view.width,
+                viewport_height: view.height,
+                usable_width,
+                content_insets,
+                document_insets: styles.document_insets,
+                document_style_revision: Some(styles.style_sheet_revision),
+                canvas_background: styles.canvas_background,
+                canvas_background_is_default: styles.canvas_background_is_default,
+                default_paint: styles.default_paint.clone(),
+                paint_runs: styles.paint_runs.clone(),
+                lines,
+                diagnostics,
+                grapheme_boundaries: Vec::new(),
+                work_statistics: statistics,
+                horizontal_materialization: Some(HorizontalMaterialization {
+                    text: tree.clone(),
+                    rows: horizontal_rows,
+                }),
+            },
+            overflow_code_wrap_indent,
+        ))
     }
 }
 
@@ -1365,6 +1488,62 @@ mod tests {
             .unwrap()
             .logical_endpoint_geometry(100_000, BoundaryAffinity::Downstream)
             .is_ok());
+    }
+
+    #[test]
+    fn wrapped_code_sparse_overflow_retains_the_original_line_margin() {
+        use crate::document::{Encoding, Format};
+        let text = format!(
+            " \tfirst {} {} end\nfollowing",
+            "a".repeat(80_000),
+            "b".repeat(80_000)
+        );
+        let document =
+            Document::from_bytes(text.into_bytes(), Encoding::Utf8, Format::Code).unwrap();
+        let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+        let mut view = ViewLayout::new(240.0, 240.0);
+        for (job, indent) in [(1, 4), (2, 8)] {
+            let options = WhitespacePresentationOptions {
+                code_wrapped_line_indent: indent,
+                ..Default::default()
+            };
+            view.set_whitespace_presentation(options, Format::Code, 2)
+                .unwrap();
+            let mut complete = view.clone();
+            let mut reference_engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+            reference_engine.relayout(&document, &mut complete).unwrap();
+            materialize(&document, &mut engine, &mut view, job, 0);
+            let actual = view.snapshot().unwrap();
+            let expected = complete.snapshot().unwrap();
+            assert_eq!(actual.rows.len(), expected.rows.len());
+            assert!(actual.rows.len() >= 3);
+            assert!(actual.rows[1].paragraph_content_x > actual.rows[0].paragraph_content_x);
+            for (actual, expected) in actual.rows.iter().zip(&expected.rows) {
+                assert_eq!(actual.text_range, expected.text_range);
+                assert_eq!(actual.paragraph_content_x, expected.paragraph_content_x);
+                assert_eq!(
+                    actual.paragraph_content_width,
+                    expected.paragraph_content_width
+                );
+                for cluster in &actual.clusters {
+                    let index = expected
+                        .clusters
+                        .binary_search_by_key(&cluster.text_range.start, |candidate| {
+                            candidate.text_range.start
+                        })
+                        .unwrap();
+                    assert_eq!(cluster.x, expected.clusters[index].x);
+                }
+            }
+            assert!(
+                actual
+                    .rows
+                    .iter()
+                    .map(|row| row.clusters.len())
+                    .sum::<usize>()
+                    < 10_000
+            );
+        }
     }
 
     #[test]

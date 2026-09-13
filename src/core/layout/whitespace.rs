@@ -41,6 +41,8 @@ impl Default for VisibleWhitespaceOptions {
 pub struct WhitespacePresentationOptions {
     pub code_whitespace: WhitespaceBasis,
     pub other_whitespace: WhitespaceBasis,
+    /// Extra leading-width units reserved as a margin on wrapped Code rows.
+    pub code_wrapped_line_indent: u32,
     pub visible_whitespace: VisibleWhitespaceOptions,
 }
 impl Default for WhitespacePresentationOptions {
@@ -48,12 +50,18 @@ impl Default for WhitespacePresentationOptions {
         Self {
             code_whitespace: WhitespaceBasis::ParagraphEn,
             other_whitespace: WhitespaceBasis::Spaces,
+            code_wrapped_line_indent: 4,
             visible_whitespace: Default::default(),
         }
     }
 }
 impl WhitespacePresentationOptions {
     pub fn validate(&self) -> Result<(), ListCharsError> {
+        if self.code_wrapped_line_indent > 1024 {
+            return Err(ListCharsError(
+                "Code wrapped line indent must be between 0 and 1024".into(),
+            ));
+        }
         ListChars::parse(&self.visible_whitespace.listchars)?;
         let sheet = crate::document::StyleSheet::default();
         sheet

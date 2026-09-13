@@ -33,6 +33,12 @@ fn settings_json_is_validated_before_any_buffer_changes() {
         r#"{"visibleWhitespace":{"listchars":"trail:界"}}"#,
         r#"{"visibleWhitespace":{"style":{"size":-1}}}"#,
         r#"{"codeWhitespace":null}"#,
+        r#"{"codeWrappedLineIndent":-1}"#,
+        r#"{"codeWrappedLineIndent":1025}"#,
+        r#"{"codeWrappedLineIndent":null}"#,
+        r#"{"codeWrappedLineIndent":true}"#,
+        r#"{"codeWrappedLineIndent":1.5}"#,
+        r#"{"codeWrappedLineIndent":"4"}"#,
     ] {
         assert_eq!(
             unsafe { viem_validate_whitespace_presentation(json.as_ptr(), json.len() as u64) },
@@ -51,6 +57,8 @@ fn settings_json_is_validated_before_any_buffer_changes() {
     }
     for json in [
         "{}",
+        r#"{"codeWrappedLineIndent":0}"#,
+        r#"{"codeWrappedLineIndent":1024}"#,
         r#"{"visibleWhitespace":{"listchars":"tab:>-,trail:*","style":{"foreground":{"red":0,"green":0,"blue":0.5,"alpha":1}}}}"#,
     ] {
         assert_eq!(

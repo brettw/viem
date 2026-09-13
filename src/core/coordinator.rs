@@ -3499,6 +3499,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 replaced.end + offset - marked.end
             }
         };
+        let cancellation = LayoutCancellationToken::new();
         loop {
             let work_start = checkpoint
                 .as_ref()
@@ -3510,6 +3511,20 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .map_err(DocumentError::FormattedTextStorage)?;
             if flow {
                 text = text.replace('\n', " ");
+            }
+            let indentation_tree = (checkpoint.is_none()
+                && self.document.format().is_code()
+                && composed_layout.wrap()
+                && work_end < full_range.end)
+                .then(|| tree.clone());
+            let mut style_capture = capture.clone();
+            if let Some(tree) = &indentation_tree {
+                let indentation_end = crate::layout::ascii_indentation_end(
+                    tree,
+                    full_range.clone(),
+                    &cancellation,
+                )?;
+                style_capture.end = style_capture.end.max(indentation_end);
             }
             let following_base =
                 (work_end == full_range.end && line_index + 1 < line_count).then(|| {
@@ -3533,7 +3548,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 })
                 .transpose()
                 .map_err(DocumentError::FormattedTextStorage)?
-                .unwrap_or_else(|| to_base(capture.end, true));
+                .unwrap_or_else(|| to_base(style_capture.end, true));
             let mut styles = DocumentLayoutStyles::resolve_region_with_flow(
                 self.document.projection(),
                 to_base(capture.start, false)..style_end,
@@ -3556,7 +3571,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 ranges.extend(following.clone());
                 crate::layout::flow_paragraph_styles(&mut styles, &ranges);
             }
-            let captured_view = composed_layout.capture_for_regional_layout_job(capture.clone());
+            let captured_view = composed_layout.capture_for_regional_layout_job(style_capture);
             let job_id = self.allocate_layout_job_id()?;
             if !composed_layout.begin_layout_job(job_id) {
                 return Err(CoreError::IdentifierExhausted(
@@ -3575,6 +3590,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     &text,
                     capture.start,
                     &[crate::layout::HardLineLayoutSlice {
+                        indentation_tree,
                         full_range: full_range.clone(),
                         work_range: work_start..work_end,
                         shaping_context_range: capture,
@@ -3586,7 +3602,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     following,
                     &styles,
                     &captured_view,
-                    &LayoutCancellationToken::new(),
+                    &cancellation,
                 )
                 .map_err(|error| match error {
                     LayoutComputationError::Layout(error) => CoreError::Layout(error),
