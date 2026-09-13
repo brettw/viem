@@ -317,9 +317,9 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         for (property, well) in wells {
             let resolved = definition?.properties[property]
             if property == .characterForeground && (resolved?.usesThemeDefault == true || resolved == nil) {
-                well.setCommittedColor(EVStyleColor(red: Float(theme.foreground.red), green: Float(theme.foreground.green), blue: Float(theme.foreground.blue), alpha: Float(theme.foreground.alpha)), displayColor: theme.foreground.color)
-            } else if case let .color(value)? = resolved?.effective { well.setCommittedColor(value) }
-            else { well.setCommittedColor(EVStyleColorPaletteController.transparent) }
+                well.color = theme.foreground.color
+            } else if case let .color(value)? = resolved?.effective { well.color = value.appKitColor }
+            else { well.color = .clear }
             well.isEnabled = isOverridden(property)
             setHelp(well, property)
         }
@@ -512,7 +512,6 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
 
     private func color(_ property: EVStyleProperty, title: String) -> NSView {
         let well = EVStyleColorWell(frame: .zero)
-        well.includesTransparent = property == .characterBackground
         well.target = self
         well.action = #selector(colorChanged(_:))
         well.tag = Int(property.rawValue)
@@ -622,7 +621,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         else { send([.setDeclaration(property, .boolean(sender.state == .on))]) }
     }
     @objc private func colorChanged(_ sender: NSColorWell) {
-        guard let property = EVStyleProperty(rawValue: UInt32(sender.tag)), let rgb = sender.color.usingColorSpace(.deviceRGB) else { return }
+        guard let property = EVStyleProperty(rawValue: UInt32(sender.tag)), let rgb = sender.color.usingColorSpace(.sRGB) else { return }
         let color = EVStyleColor(red: Float(rgb.redComponent), green: Float(rgb.greenComponent), blue: Float(rgb.blueComponent), alpha: Float(rgb.alphaComponent))
             .normalizedForNativePicker(format: sourceFormat)
         send([.setDeclaration(property, .color(color))])

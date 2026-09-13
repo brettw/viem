@@ -4027,11 +4027,11 @@ property without an editor control):
 - a native font-face picker (Regular, Light, Bold, Italic, etc.) and separate
   Bold and Italic toggles, with no generic numeric weight/slant fields;
 - native foreground/background color wells, including Default/Inherited;
-  their compact picker always shows the current color swatch and exact value,
-  marks a matching palette choice, and retains a visible current-color entry
-  for custom colors outside the palette. **More Colors…** opens the native
-  color panel initialized to that current color. Merely opening the picker
-  must not change an already enabled property or create an undo entry;
+  clicking either well opens the full native macOS **Colors** window directly,
+  initialized to the current effective color, including custom colors and
+  transparency. The native current-color preview, controls, and saved palettes
+  remain available. Merely opening the picker must not change an already
+  enabled property or create an undo entry;
 - underline and strike decoration;
 - writing-direction override;
 - an original SVG feature button opening the selected font’s supported OpenType
@@ -4122,9 +4122,10 @@ their supported signed ranges. Held autorepeat is one continuous undo gesture.
   representative surrounding text. A Paragraph style preview shows preceding,
   current, and following paragraphs so font, indentation, alignment, line
   spacing, and before/after spacing are visible together.
-- A pop-up or button choice is one undo unit. Continuous gestures such as color
-  dragging, stepping, or scrubbing apply live but coalesce into one undo unit
-  per gesture. Contiguous typing in a text field applies each valid change live
+- A pop-up or button choice is one undo unit. The native Colors window commits
+  each completed color gesture as one undo unit. Continuous gestures such as
+  stepping or scrubbing apply live but coalesce into one undo unit per gesture.
+  Contiguous typing in a text field applies each valid change live
   while coalescing according to the core's text-input undo grouping rules.
 - An incomplete or invalid intermediate text-field value remains visibly local
   to that control and does not mutate core. Show an inline validation state and

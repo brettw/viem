@@ -5,83 +5,109 @@ import XCTest
 
 @MainActor
 final class EVStyleColorWellTests: XCTestCase {
-    func testOpeningPaletteDisplaysExactCustomColorAndSelectingCurrentDoesNotEdit() throws {
+    func testOpeningNativePanelShowsCustomColorWithoutEditingOrAddingUndo() throws {
         let (backend, surface, editor, window) = try makeEditor()
-        defer { window.orderOut(nil); withExtendedLifetime(surface) {} }
+        defer { closeColorPanel(); window.orderOut(nil); withExtendedLifetime(surface) {} }
         let original = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterForeground]
         let custom = EVStyleColor(red: 0.12345679, green: 0.25, blue: 0.5, alpha: 0.4)
         XCTAssertTrue(editor.setPropertyForTesting(.characterForeground, value: .color(custom)))
         let before = try backend.styleSheetSnapshot()
         let bytes = try backend.serializedSource(typeName: EVDocument.htmlType)
         let well = try colorWell("Text color", in: editor.view)
-        try openPalette(well)
-        let palette = try XCTUnwrap(well.paletteController)
-        XCTAssertEqual(palette.currentColor, custom)
-        XCTAssertEqual(palette.currentValueLabel.stringValue, "RGBA 0.12345679, 0.25, 0.5, 0.4")
-        XCTAssertEqual(palette.currentSwatch.swatchColor, custom)
-        XCTAssertEqual(palette.currentSwatch.state, .on)
-        XCTAssertTrue(palette.choiceButtons.allSatisfy { $0.state == .off })
-        XCTAssertNil(palette.transparentButton)
-        XCTAssertEqual(try backend.styleSheetSnapshot(), before)
-        XCTAssertTrue(surface.canUndo)
-        palette.currentSwatch.performClick(nil)
-        XCTAssertNil(well.palettePopover)
+        NSColorPanel.shared.color = .yellow
+
+        try openColorPanel(well)
+        try assertColor(NSColorPanel.shared.color, equals: custom)
+        try assertColor(well.color, equals: custom)
+        try openColorPanel(well)
         XCTAssertEqual(try backend.styleSheetSnapshot(), before)
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), bytes)
+
+        well.dismissColorControls()
         surface.perform(menuCommand: .undo, sender: nil)
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterForeground], original)
-        XCTAssertFalse(surface.canUndo, "Opening and selecting the current color add no undo step")
+        XCTAssertFalse(surface.canUndo, "Opening the native panel adds no undo step or color-space round-trip edit")
     }
 
-    func testPresetSelectionCommitsOnceAndReopeningChecksTheCommittedColor() throws {
+    func testNativePanelSelectionCommitsOnceAndReopeningShowsCommittedColor() throws {
         let (backend, surface, editor, window) = try makeEditor()
-        defer { window.orderOut(nil); withExtendedLifetime(surface) {} }
+        defer { closeColorPanel(); window.orderOut(nil); withExtendedLifetime(surface) {} }
         let before = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterForeground]
+        XCTAssertFalse(surface.canUndo)
         let well = try colorWell("Text color", in: editor.view)
-        try openPalette(well)
-        let gray = try choice("Gray", in: XCTUnwrap(well.paletteController))
-        gray.performClick(nil)
-        XCTAssertNil(well.palettePopover)
-        let expected = EVStyleColor(red: 128 / 255, green: 128 / 255, blue: 128 / 255, alpha: 1)
+        try openColorPanel(well)
+        let expected = EVStyleColor(red: 0.25, green: 0.5, blue: 0.75, alpha: 1)
+
+        NSColorPanel.shared.color = expected.appKitColor
+
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterForeground]?.declared, .color(expected))
-        XCTAssertEqual(well.displayedColor, expected)
+        try assertColor(well.color, equals: expected)
         XCTAssertTrue(surface.canUndo)
-        try openPalette(well)
-        let palette = try XCTUnwrap(well.paletteController)
-        XCTAssertEqual(palette.currentValueLabel.stringValue, "#808080")
-        XCTAssertEqual(try choice("Gray", in: palette).state, .on)
-        XCTAssertEqual(palette.choiceButtons.filter { $0.state == .on }.count, 1)
-        palette.currentSwatch.performClick(nil)
+        well.dismissColorControls()
+        NSColorPanel.shared.color = .red
+        let committed = try backend.styleSheetSnapshot()
+        try openColorPanel(well)
+        try assertColor(NSColorPanel.shared.color, equals: expected)
+        XCTAssertEqual(try backend.styleSheetSnapshot(), committed)
+        well.dismissColorControls()
         surface.perform(menuCommand: .undo, sender: nil)
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterForeground], before)
-        XCTAssertFalse(surface.canUndo, "One palette choice is one undo step; opening and current-color clicks add none")
+        XCTAssertFalse(surface.canUndo, "One native panel choice is one undo step")
     }
 
-    func testRTFPaletteReflectsNormalizedNativeColorAndSupportsTransparentBackground() throws {
+    func testSwitchingFromTextToBackgroundColorSeedsCurrentColorWithoutEditingText() throws {
+        let (backend, surface, editor, window) = try makeEditor()
+        defer { closeColorPanel(); window.orderOut(nil); withExtendedLifetime(surface) {} }
+        let foreground = EVStyleColor(red: 1, green: 0, blue: 0, alpha: 1)
+        let background = EVStyleColor(red: 0, green: 0.5, blue: 0.25, alpha: 0.5)
+        XCTAssertTrue(editor.setPropertyForTesting(.characterForeground, value: .color(foreground)))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterBackground, value: .color(background)))
+        let textWell = try colorWell("Text color", in: editor.view)
+        let backgroundWell = try colorWell("Background color", in: editor.view)
+        try openColorPanel(textWell)
+        let before = try backend.styleSheetSnapshot()
+
+        try openColorPanel(backgroundWell)
+
+        XCTAssertFalse(textWell.isActive)
+        try assertColor(NSColorPanel.shared.color, equals: background)
+        XCTAssertEqual(try backend.styleSheetSnapshot(), before)
+        let chosen = EVStyleColor(red: 0.25, green: 0.5, blue: 0.75, alpha: 0.5)
+        NSColorPanel.shared.color = chosen.appKitColor
+        let definition = try XCTUnwrap(backend.styleSheetSnapshot().definition(for: .baseParagraph))
+        XCTAssertEqual(definition.properties[.characterForeground]?.declared, .color(foreground))
+        XCTAssertEqual(definition.properties[.characterBackground]?.declared, .color(chosen))
+    }
+
+    func testRTFPanelNormalizesColorAndOffersTransparentBackground() throws {
         let (backend, surface, editor, window) = try makeEditor(typeName: EVDocument.rtfType, source: #"{\rtf1 Text}"#)
-        defer { window.orderOut(nil); withExtendedLifetime(surface) {} }
+        defer { closeColorPanel(); window.orderOut(nil); withExtendedLifetime(surface) {} }
         let well = try colorWell("Background color", in: editor.view)
-        well.color = NSColor(deviceRed: 0.75, green: 0.25, blue: 0.125, alpha: 0.4)
-        XCTAssertTrue(well.sendAction(try XCTUnwrap(well.action), to: well.target))
+        try openColorPanel(well)
+        XCTAssertTrue(NSColorPanel.shared.showsAlpha)
+
+        NSColorPanel.shared.color = NSColor(srgbRed: 0.75, green: 0.25, blue: 0.125, alpha: 0.4)
+
         let expected = EVStyleColor(red: 191 / 255, green: 64 / 255, blue: 32 / 255, alpha: 1)
-        XCTAssertEqual(well.displayedColor, expected)
+        try assertColor(well.color, equals: expected)
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterBackground]?.declared, .color(expected))
-        try openPalette(well)
-        let palette = try XCTUnwrap(well.paletteController)
-        XCTAssertEqual(palette.currentColor, expected)
-        XCTAssertEqual(palette.currentValueLabel.stringValue, "#BF4020")
-        try XCTUnwrap(palette.transparentButton).performClick(nil)
-        XCTAssertEqual(well.displayedColor, EVStyleColorPaletteController.transparent)
-        XCTAssertEqual(editor.inspection.diagnostic, "")
-        try openPalette(well)
-        XCTAssertEqual(well.paletteController?.transparentButton?.state, .on)
-        XCTAssertEqual(well.paletteController?.currentValueLabel.stringValue, "#00000000")
         well.dismissColorControls()
+        try openColorPanel(well)
+        try assertColor(NSColorPanel.shared.color, equals: expected)
+
+        NSColorPanel.shared.color = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0)
+
+        let transparent = EVStyleColor(red: 0, green: 0, blue: 0, alpha: 0)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterBackground]?.declared, .color(transparent))
+        XCTAssertEqual(editor.inspection.diagnostic, "")
+        well.dismissColorControls()
+        try openColorPanel(well)
+        try assertColor(NSColorPanel.shared.color, equals: transparent)
     }
 
-    func testFirstClickOnInheritedWellEnablesOverrideAndOpensPalette() throws {
+    func testFirstClickOnInheritedWellEnablesOverrideAndOpensNativePanel() throws {
         let (backend, surface, editor, window) = try makeEditor(typeName: EVDocument.markdownType, source: "# Heading\n\nBody")
-        defer { window.orderOut(nil); withExtendedLifetime(surface) {} }
+        defer { closeColorPanel(); window.orderOut(nil); withExtendedLifetime(surface) {} }
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(heading)
         let well = try colorWell("Background color", in: editor.view)
@@ -93,79 +119,58 @@ final class EVStyleColorWellTests: XCTestCase {
         let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: location,
             modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
             eventNumber: 1, clickCount: 1, pressure: 1))
+
         hit.mouseDown(with: event)
+
         XCTAssertTrue(well.isEnabled)
-        XCTAssertTrue(well.palettePopover?.isShown == true)
-        XCTAssertEqual(well.paletteController?.currentColor, EVStyleColorPaletteController.transparent)
+        XCTAssertTrue(well.isActive)
+        XCTAssertTrue(NSColorPanel.shared.isVisible)
+        let transparent = EVStyleColor(red: 0, green: 0, blue: 0, alpha: 0)
+        try assertColor(NSColorPanel.shared.color, equals: transparent)
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterBackground]?.declared,
-            .color(EVStyleColorPaletteController.transparent))
+            .color(transparent))
         XCTAssertFalse(editor.hasActiveStyleEditGroupForTesting)
-        well.dismissColorControls()
     }
 
-    func testPaletteFollowsCommittedChangesAndClosesOnStyleOrReadOnlyTransition() throws {
+    func testStyleAndReadOnlyTransitionsDisconnectNativePanel() throws {
         let (backend, surface, editor, window) = try makeEditor(typeName: EVDocument.markdownType, source: "# Heading\n\nBody")
-        defer { window.orderOut(nil); withExtendedLifetime(surface) {} }
+        defer { closeColorPanel(); window.orderOut(nil); withExtendedLifetime(surface) {} }
         let well = try colorWell("Text color", in: editor.view)
-        try openPalette(well)
-        let popover = try XCTUnwrap(well.palettePopover)
+        try openColorPanel(well)
+
+        editor.selectStyle(EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1")))
+
+        XCTAssertFalse(well.isActive)
+        let afterRetarget = try backend.styleSheetSnapshot()
+        NSColorPanel.shared.color = .magenta
+        XCTAssertEqual(try backend.styleSheetSnapshot(), afterRetarget,
+                       "A panel opened for the previous style must not edit the newly selected style")
+        editor.selectStyle(EVStyleKey.baseParagraph)
         let custom = EVStyleColor(red: 0.12345679, green: 0.8765432, blue: 0.33333334, alpha: 0.44444445)
         XCTAssertTrue(editor.setPropertyForTesting(.characterForeground, value: .color(custom)))
-        XCTAssertTrue(well.palettePopover === popover)
-        let palette = try XCTUnwrap(well.paletteController)
-        XCTAssertEqual(palette.currentColor, custom)
-        XCTAssertEqual(popover.contentSize, palette.preferredContentSize)
-        palette.view.layoutSubtreeIfNeeded()
-        XCTAssertTrue(palette.view.bounds.contains(palette.view.convert(palette.currentValueLabel.bounds, from: palette.currentValueLabel)))
-        editor.selectStyle(EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1")))
-        XCTAssertNil(well.palettePopover)
-        editor.selectStyle(EVStyleKey.baseParagraph)
-        try openPalette(well)
+        try openColorPanel(well)
+        try assertColor(NSColorPanel.shared.color, equals: custom)
         let owner = try XCTUnwrap(well.target as? EVCompactStyleControls)
         let definition = try XCTUnwrap(backend.styleSheetSnapshot().definition(for: .baseParagraph))
         let readOnly = EVStyleDefinition(key: definition.key, name: definition.name, kind: definition.kind,
             origin: definition.origin, flags: definition.flags, capabilities: [], parentID: definition.parentID,
             nextStyleID: definition.nextStyleID, properties: definition.properties)
-        owner.configure(readOnly)
-        XCTAssertNil(well.palettePopover)
-        XCTAssertFalse(well.isEnabled)
-        well.showPalette(nil)
-        XCTAssertNil(well.palettePopover)
-    }
 
-    func testPaletteLayoutAndCurrentColorRemainVisibleInLightAndDarkAppearance() throws {
-        let (_, surface, editor, window) = try makeEditor()
-        defer { window.orderOut(nil); withExtendedLifetime(surface) {} }
-        let custom = EVStyleColor(red: 0.12345679, green: 0.8765432, blue: 0.33333334, alpha: 0.44444445)
-        XCTAssertTrue(editor.setPropertyForTesting(.characterBackground, value: .color(custom)))
-        let well = try colorWell("Background color", in: editor.view)
-        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-            window.appearance = try XCTUnwrap(NSAppearance(named: appearance))
-            try openPalette(well)
-            let palette = try XCTUnwrap(well.paletteController)
-            palette.view.layoutSubtreeIfNeeded()
-            XCTAssertEqual(palette.choiceButtons.count, 24)
-            for control in descendants(of: palette.view).compactMap({ $0 as? NSControl }) {
-                XCTAssertTrue(palette.view.bounds.contains(palette.view.convert(control.bounds, from: control)),
-                    "All color choices and the exact current value fit in the compact popup")
-            }
-            XCTAssertEqual(palette.currentValueLabel.stringValue, EVStyleColorPaletteController.description(of: custom))
-            if let directory = ProcessInfo.processInfo.environment["VIEM_STYLE_EDITOR_SCREENSHOT_DIR"] {
-                let capture = try XCTUnwrap(palette.view.window?.contentView)
-                capture.displayIfNeeded()
-                let bitmap = try XCTUnwrap(capture.bitmapImageRepForCachingDisplay(in: capture.bounds))
-                capture.cacheDisplay(in: capture.bounds, to: bitmap)
-                let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-                try png.write(to: URL(fileURLWithPath: directory, isDirectory: true)
-                    .appendingPathComponent("style-color-palette-\(appearance.rawValue).png"))
-            }
-            well.dismissColorControls()
-        }
+        owner.configure(readOnly)
+
+        XCTAssertFalse(well.isActive)
+        XCTAssertFalse(well.isEnabled)
+        let afterReadOnly = try backend.styleSheetSnapshot()
+        NSColorPanel.shared.color = .cyan
+        well.showColorPanel()
+        XCTAssertFalse(well.isActive)
+        XCTAssertEqual(try backend.styleSheetSnapshot(), afterReadOnly)
     }
 
     private func makeEditor(typeName requestedTypeName: String? = nil, source: String = "<p>Text</p>") throws
         -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController, NSWindow) {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-color-palette-\(UUID().uuidString)")
+        closeColorPanel()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-color-panel-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let typeName = requestedTypeName ?? EVDocument.htmlType
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
@@ -190,11 +195,24 @@ final class EVStyleColorWellTests: XCTestCase {
     private func colorWell(_ label: String, in root: NSView) throws -> EVStyleColorWell {
         try XCTUnwrap(descendants(of: root).compactMap { $0 as? EVStyleColorWell }.first { $0.accessibilityLabel() == label })
     }
-    private func choice(_ name: String, in palette: EVStyleColorPaletteController) throws -> NSButton {
-        try XCTUnwrap(palette.choiceButtons.first { $0.accessibilityLabel() == name })
-    }
-    private func openPalette(_ well: EVStyleColorWell) throws {
+    private func openColorPanel(_ well: EVStyleColorWell) throws {
         XCTAssertTrue(well.sendAction(try XCTUnwrap(well.pulldownAction), to: well.pulldownTarget))
-        XCTAssertTrue(well.palettePopover?.isShown == true)
+        XCTAssertTrue(well.isActive)
+        XCTAssertTrue(NSColorPanel.shared.isVisible)
+        XCTAssertFalse(NSColorPanel.shared.isContinuous)
+    }
+    private func assertColor(_ color: NSColor, equals expected: EVStyleColor,
+                             file: StaticString = #filePath, line: UInt = #line) throws {
+        let rgb = try XCTUnwrap(color.usingColorSpace(.sRGB), file: file, line: line)
+        XCTAssertEqual(rgb.redComponent, CGFloat(expected.red), accuracy: 0.000001, file: file, line: line)
+        XCTAssertEqual(rgb.greenComponent, CGFloat(expected.green), accuracy: 0.000001, file: file, line: line)
+        XCTAssertEqual(rgb.blueComponent, CGFloat(expected.blue), accuracy: 0.000001, file: file, line: line)
+        XCTAssertEqual(rgb.alphaComponent, CGFloat(expected.alpha), accuracy: 0.000001, file: file, line: line)
+    }
+    private func closeColorPanel() {
+        EVStyleColorWell.deactivatePanelOwner()
+        NSColorPanel.shared.setTarget(nil)
+        NSColorPanel.shared.setAction(nil)
+        NSColorPanel.shared.orderOut(nil)
     }
 }

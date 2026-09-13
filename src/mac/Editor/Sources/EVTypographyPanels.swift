@@ -82,7 +82,7 @@ final class EVTypographyPanels: NSObject {
   @objc private func changeColor(_ sender: NSColorPanel) {
     guard !isConfiguringColorPanel,
       let surface = colorSurface, let session = surface.session, let selection = colorSelection,
-      let color = sender.color.usingColorSpace(.deviceRGB)
+      let color = sender.color.usingColorSpace(.sRGB)
     else { return }
     let property = colorProperty
     surface.performInput {

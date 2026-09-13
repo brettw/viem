@@ -595,7 +595,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         let editor = EVStyleEditorViewController()
         editor.retarget(document: surface, styleKey: .baseParagraph)
         let well = try control(NSColorWell.self, label: "Text color", in: editor.view)
-        well.color = NSColor(deviceRed: 0.75, green: 0.25, blue: 0.125, alpha: 0.4)
+        well.color = NSColor(srgbRed: 0.75, green: 0.25, blue: 0.125, alpha: 0.4)
         XCTAssertTrue(well.sendAction(try XCTUnwrap(well.action), to: well.target))
         XCTAssertEqual(editor.inspection.diagnostic, "")
         let expected = EVStyleColor(red: 191 / 255, green: 64 / 255, blue: 32 / 255, alpha: 1)

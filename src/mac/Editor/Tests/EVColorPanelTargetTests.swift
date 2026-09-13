@@ -11,7 +11,7 @@ final class EVColorPanelTargetTests: XCTestCase {
         let panel = NSColorPanel.shared
         let styleBefore = try fixture.styleBackend.styleSheetSnapshot()
         let directBefore = try fixture.directBackend.serializedSource(typeName: EVDocument.htmlType)
-        fixture.well.showMoreColors()
+        fixture.well.showColorPanel()
         XCTAssertTrue(fixture.well.isActive)
 
         EVTypographyPanels.shared.showColors(for: fixture.directSurface, highlight: false)
@@ -19,7 +19,7 @@ final class EVColorPanelTargetTests: XCTestCase {
                        "The direct panel must disconnect the previously active style well before seeding its color")
         XCTAssertEqual(try fixture.styleBackend.styleSheetSnapshot(), styleBefore)
         XCTAssertEqual(try fixture.directBackend.serializedSource(typeName: EVDocument.htmlType), directBefore)
-        panel.color = NSColor(deviceRed: 0.25, green: 0.5, blue: 0.75, alpha: 1)
+        panel.color = NSColor(srgbRed: 0.25, green: 0.5, blue: 0.75, alpha: 1)
 
         XCTAssertEqual(try fixture.styleBackend.styleSheetSnapshot(), styleBefore,
                        "A direct text color gesture must not edit a named style in another document")
@@ -42,12 +42,12 @@ final class EVColorPanelTargetTests: XCTestCase {
         let directBefore = try fixture.directBackend.recoverySnapshot()
         let styleBefore = try fixture.styleBackend.styleSheetSnapshot()
 
-        fixture.well.showMoreColors()
+        fixture.well.showColorPanel()
         XCTAssertTrue(fixture.well.isActive)
         XCTAssertEqual(try fixture.directBackend.recoverySnapshot(), directBefore,
                        "Seeding the style color must not invoke the panel's previous direct-formatting target")
         XCTAssertEqual(try fixture.styleBackend.styleSheetSnapshot(), styleBefore)
-        panel.color = NSColor(deviceRed: 0.25, green: 0.5, blue: 0.75, alpha: 1)
+        panel.color = NSColor(srgbRed: 0.25, green: 0.5, blue: 0.75, alpha: 1)
 
         XCTAssertEqual(try fixture.directBackend.recoverySnapshot(), directBefore,
                        "Only the active style well owns the next panel gesture")

@@ -200,8 +200,10 @@ struct EVStyleColor: Equatable {
     let alpha: Float
 
     var appKitColor: NSColor {
+        // Use the same portable RGB space when displaying and reading colors;
+        // calibrated/device RGB conversion would change their source values.
         NSColor(
-            calibratedRed: CGFloat(red),
+            srgbRed: CGFloat(red),
             green: CGFloat(green),
             blue: CGFloat(blue),
             alpha: CGFloat(alpha)
