@@ -371,7 +371,18 @@ extension EVDocumentWindowController {
     case .checkTime:
       document.checkForExternalChanges { change in completion(.success(change?.message ?? "File unchanged.")) }
     case .split:
-      split(document, path: request.path, completion: completion)
+      split(document, path: request.path, initialHeightRows: request.initialHeightRows, completion: completion)
+    case .newPane:
+      do {
+        let next = EVDocument()
+        try next.read(from: Data(), ofType: EVDocument.plainTextType)
+        next.fileType = EVDocument.plainTextType
+        NSDocumentController.shared.addDocument(next)
+        addPane(document: next, initialHeightRows: request.initialHeightRows)
+        completion(.success(nil))
+      } catch {
+        completion(.failure(error))
+      }
     case .write:
       if request.path != nil || request.hardLineRange != nil {
         writeAlternate(document, request: request, closeAfter: false, completion: completion)
@@ -691,11 +702,11 @@ extension EVDocumentWindowController {
   }
 
   fileprivate func split(
-    _ source: EVDocument, path: String?,
+    _ source: EVDocument, path: String?, initialHeightRows: Int? = nil,
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
   ) {
     guard let path else {
-      addPane(document: source)
+      addPane(document: source, initialHeightRows: initialHeightRows)
       completion(.success(nil))
       return
     }
@@ -705,7 +716,7 @@ extension EVDocumentWindowController {
     }
     openPaneDocument(url, fallback: source.fileType) { [weak self] opened, error in
       if let opened {
-        self?.addPane(document: opened)
+        self?.addPane(document: opened, initialHeightRows: initialHeightRows)
         completion(.success(nil))
       } else {
         completion(.failure(error ?? EVDocumentHostError.unsupportedRequest))
@@ -806,8 +817,11 @@ extension EVDocumentWindowController {
     return pane
   }
 
-  fileprivate func addPane(document: EVDocument) {
+  fileprivate func addPane(document: EVDocument, initialHeightRows: Int? = nil) {
     paneContainer.insert(makePane(document: document))
+    if let rows = initialHeightRows {
+      paneContainer.perform(.setHeight(rows: rows))
+    }
     updateActiveDocumentChrome()
   }
 
@@ -1023,10 +1037,12 @@ final class EVDocumentContentViewController: NSViewController,
     )
   }
 
+  var statusBarHeight: CGFloat { statusBar.isHidden ? 0 : EVStatusBarView.preferredHeight }
+
   func layoutContent() {
     loadViewIfNeeded()
     let bounds = view.bounds
-    let statusHeight = statusBar.isHidden ? 0 : EVStatusBarView.preferredHeight
+    let statusHeight = statusBarHeight
     let editorView = editorSurface.viewController.view
     statusBar.frame = NSRect(
       x: bounds.minX,

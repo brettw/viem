@@ -150,7 +150,7 @@ struct EVExHostEffect: Equatable {
     let flags: UInt32
     /// One VIEM_WINDOW_* value when `kind` is a window request.
     let windowCommand: UInt32
-    /// The count or one-based pane index a window request carried.
+    /// Window count/index, or initial row height for split/new-pane requests.
     let windowCount: UInt64?
     let documentID: UInt64
     let documentRevision: UInt64

@@ -152,6 +152,7 @@ public struct EVDocumentPersistenceState: Equatable, Sendable {
 public struct EVDocumentHostRequest: Equatable, Sendable {
   public enum Kind: Equatable, Sendable {
     case split
+    case newPane
     case edit
     case editNewWindow
     case printWorkingDirectory
@@ -173,6 +174,8 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
   public let force: Bool
   public let path: String?
   public let hardLineRange: ClosedRange<UInt64>?
+  /// Initial text-area height of a new pane, measured in its visual rows.
+  public let initialHeightRows: Int?
 
   public init(
     kind: Kind,
@@ -180,7 +183,8 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     documentRevision: UInt64,
     force: Bool = false,
     path: String? = nil,
-    hardLineRange: ClosedRange<UInt64>? = nil
+    hardLineRange: ClosedRange<UInt64>? = nil,
+    initialHeightRows: Int? = nil
   ) {
     self.kind = kind
     self.documentID = documentID
@@ -188,6 +192,7 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     self.force = force
     self.path = path
     self.hardLineRange = hardLineRange
+    self.initialHeightRows = initialHeightRows
   }
 }
 
@@ -273,7 +278,7 @@ public enum EVDocumentHostError: LocalizedError, Equatable {
 }
 
 /// One `CTRL-W` window effect. Panes are ordered top to bottom, and an index
-/// is one-based, matching the count a user types before the prefix.
+/// is one-based, matching the combined count around the prefix.
 public enum EVWindowRequest: Equatable, Sendable {
   case focusDown(count: Int)
   case focusUp(count: Int)

@@ -233,6 +233,8 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_KEY_DOCUMENT_START 17u
 #define VIEM_KEY_DOCUMENT_END 18u
 #define VIEM_KEY_SHIFT_ENTER 19u
+#define VIEM_KEY_WORD_LEFT 20u
+#define VIEM_KEY_WORD_RIGHT 21u
 
 #define VIEM_COMMAND_STATUS_NONE 0u
 #define VIEM_COMMAND_STATUS_COMPLETE 1u
@@ -293,6 +295,7 @@ typedef struct ViemFormattedPointInfoV1 {
 /* A CTRL-W window effect. window_command names it; window_count carries its
    count or one-based pane index when VIEM_EX_FRONTEND_HAS_COUNT is set. */
 #define VIEM_EX_FRONTEND_WINDOW 22u
+#define VIEM_EX_FRONTEND_NEW_PANE 23u
 
 #define VIEM_WINDOW_FOCUS_DOWN 1u
 #define VIEM_WINDOW_FOCUS_UP 2u
@@ -496,7 +499,8 @@ typedef struct ViemExFrontendRequestV1 {
   uint64_t option_count;
   uint64_t first_payload;
   uint64_t payload_count;
-  /* Meaningful only with VIEM_EX_FRONTEND_HAS_COUNT. */
+  /* With VIEM_EX_FRONTEND_HAS_COUNT: window count/index, or initial row
+     height for SPLIT and NEW_PANE. */
   uint64_t window_count;
 } ViemExFrontendRequestV1;
 
@@ -1329,6 +1333,8 @@ typedef struct ViemLayoutCaretGeometryV1 {
 #define VIEM_VIEW_PRESENTATION_HAS_DESIRED_X (1u << 4)
 /* Route the next input to the core before native editing shortcuts. */
 #define VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING (1u << 5)
+/* Route prompt register selectors to core, including native text events. */
+#define VIEM_VIEW_PRESENTATION_COMMAND_LINE_REGISTER_PENDING (1u << 6)
 
 /*
  * Linear Visual anchors have no retained visual affinity, so the anchor

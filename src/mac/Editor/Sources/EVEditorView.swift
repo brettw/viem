@@ -1318,10 +1318,15 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             & UInt32(VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING) != 0
     }
 
+    private var corePromptInputPending: Bool {
+        literalInputPending || (surface?.viewPresentation.flags ?? 0)
+            & UInt32(VIEM_VIEW_PRESENTATION_COMMAND_LINE_REGISTER_PENDING) != 0
+    }
+
     /// Quoted input belongs to the core before native selection, navigation,
     /// formatting, or Escape handling can consume it.
     private func routeLiteralInput(_ event: NSEvent) -> Bool {
-        guard literalInputPending, !compositionActive,
+        guard corePromptInputPending, !compositionActive,
               !event.modifierFlags.contains(.command),
               let surface, let session = surface.session else { return false }
         if event.modifierFlags.contains(.control),
@@ -1414,7 +1419,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             }
 
         case UInt32(VIEM_MODE_COMMAND_LINE):
-            if literalInputPending, replacementRange.location == NSNotFound {
+            if corePromptInputPending, replacementRange.location == NSNotFound {
                 surface.performInput { _ = try session.sendText(value) }
                 return
             }
@@ -1472,8 +1477,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 ? VIEM_KEY_BACK_TAB : VIEM_KEY_TAB)
         case 51: UInt32(VIEM_KEY_BACKSPACE)
         case 117: UInt32(VIEM_KEY_DELETE)
-        case 123: UInt32(VIEM_KEY_LEFT)
-        case 124: UInt32(VIEM_KEY_RIGHT)
+        case 123: UInt32(event.modifierFlags.contains(.control) ? VIEM_KEY_WORD_LEFT : VIEM_KEY_LEFT)
+        case 124: UInt32(event.modifierFlags.contains(.control) ? VIEM_KEY_WORD_RIGHT : VIEM_KEY_RIGHT)
         case 125: UInt32(VIEM_KEY_DOWN)
         case 126: UInt32(VIEM_KEY_UP)
         case 115: UInt32(event.modifierFlags.contains(.control) ? VIEM_KEY_DOCUMENT_START : VIEM_KEY_HOME)

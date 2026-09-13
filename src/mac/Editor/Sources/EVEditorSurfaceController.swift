@@ -1450,6 +1450,7 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         let kind: EVDocumentHostRequest.Kind
         switch effect.kind {
         case UInt32(VIEM_EX_FRONTEND_SPLIT): kind = .split
+        case UInt32(VIEM_EX_FRONTEND_NEW_PANE): kind = .newPane
         case UInt32(VIEM_EX_FRONTEND_EDIT): kind = .edit
         case UInt32(VIEM_EX_FRONTEND_EDIT_NEW_WINDOW): kind = .editNewWindow
         case UInt32(VIEM_EX_FRONTEND_PWD): kind = .printWorkingDirectory
@@ -1478,13 +1479,23 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         default:
             throw EVCoreFrontendError.invalidHostEffect
         }
+        let initialHeightRows: Int?
+        if let count = effect.windowCount {
+            guard kind == .split || kind == .newPane,
+                  let rows = Int(exactly: count), rows > 0
+            else { throw EVCoreFrontendError.invalidHostEffect }
+            initialHeightRows = rows
+        } else {
+            initialHeightRows = nil
+        }
         return EVDocumentHostRequest(
             kind: kind,
             documentID: effect.documentID,
             documentRevision: effect.documentRevision,
             force: force,
             path: path,
-            hardLineRange: effect.hardLineRange
+            hardLineRange: effect.hardLineRange,
+            initialHeightRows: initialHeightRows
         )
     }
 

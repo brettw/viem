@@ -676,6 +676,8 @@ fn macro_events_as_put_value(events: &[InputEvent]) -> Option<RegisterValue> {
                 | Key::Delete
                 | Key::Left
                 | Key::Right
+                | Key::WordLeft
+                | Key::WordRight
                 | Key::Up
                 | Key::Down
                 | Key::Home
@@ -720,6 +722,8 @@ fn macro_events_as_register_value(events: &[InputEvent]) -> RegisterValue {
             InputEvent::Key(Key::Delete) => text.push_str("<Del>"),
             InputEvent::Key(Key::Left) => text.push_str("<Left>"),
             InputEvent::Key(Key::Right) => text.push_str("<Right>"),
+            InputEvent::Key(Key::WordLeft) => text.push_str("<C-Left>"),
+            InputEvent::Key(Key::WordRight) => text.push_str("<C-Right>"),
             InputEvent::Key(Key::Up) => text.push_str("<Up>"),
             InputEvent::Key(Key::Down) => text.push_str("<Down>"),
             InputEvent::Key(Key::Home) => text.push_str("<Home>"),

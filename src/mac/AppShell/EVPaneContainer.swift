@@ -52,7 +52,7 @@ final class EVPaneContainer: NSViewController, NSSplitViewDelegate {
     let count = panes.count
     switch request {
     case let .focusDown(step):
-      focusPane(at: min(current + step, count - 1))
+      focusPane(at: current + min(step, count - 1 - current))
     case let .focusUp(step):
       focusPane(at: max(current - step, 0))
     case let .focusNext(index):
@@ -170,14 +170,14 @@ final class EVPaneContainer: NSViewController, NSSplitViewDelegate {
     let current = activeIndex
     var heights = panes.map(\.view.frame.height)
     let delta = CGFloat(rows) * activeRowHeight()
-    let minimum = minimumPaneHeight()
-    let target = max(minimum, heights[current] + delta)
+    let minimums = minimumPaneHeights()
+    let target = max(minimums[current], heights[current] + delta)
     var remaining = target - heights[current]
     guard remaining != 0 else { return }
     // Take from, or give back to, the neighbours nearest the focused pane.
     let order = neighbourOrder(around: current)
     for index in order where remaining != 0 {
-      let available = remaining > 0 ? heights[index] - minimum : .greatestFiniteMagnitude
+      let available = remaining > 0 ? heights[index] - minimums[index] : .greatestFiniteMagnitude
       let change = remaining > 0 ? min(remaining, max(0, available)) : remaining
       heights[index] -= change
       heights[current] += change
@@ -189,17 +189,21 @@ final class EVPaneContainer: NSViewController, NSSplitViewDelegate {
   private func setActiveHeight(rows: Int?) {
     guard panes.count > 1 else { return }
     let current = activeIndex
-    let minimum = minimumPaneHeight()
-    let total = split.bounds.height - split.dividerThickness * CGFloat(panes.count - 1)
-    let largest = max(minimum, total - minimum * CGFloat(panes.count - 1))
-    let target = rows.map { max(minimum, CGFloat($0) * activeRowHeight()) } ?? largest
-    resizeActive(byRows: 0)
+    let minimums = minimumPaneHeights()
+    let total = max(0, split.bounds.height - split.dividerThickness * CGFloat(panes.count - 1))
+    let othersMinimum = minimums.enumerated().reduce(CGFloat(0)) { result, entry in
+      result + (entry.offset == current ? 0 : entry.element)
+    }
+    let largest = max(minimums[current], total - othersMinimum)
+    // A row count describes the editor area, excluding its status bar.
+    let pane = panes[current]
+    let target = rows.map { max(minimums[current], CGFloat($0) * activeRowHeight() + pane.statusBarHeight) } ?? largest
     var heights = panes.map(\.view.frame.height)
     let delta = min(target, largest) - heights[current]
     guard delta != 0 else { return }
     var remaining = delta
     for index in neighbourOrder(around: current) where remaining != 0 {
-      let available = remaining > 0 ? heights[index] - minimum : .greatestFiniteMagnitude
+      let available = remaining > 0 ? heights[index] - minimums[index] : .greatestFiniteMagnitude
       let change = remaining > 0 ? min(remaining, max(0, available)) : remaining
       heights[index] -= change
       heights[current] += change
@@ -227,7 +231,18 @@ final class EVPaneContainer: NSViewController, NSSplitViewDelegate {
     return order
   }
 
-  private func minimumPaneHeight() -> CGFloat { EVStatusBarView.preferredHeight + 1 }
+  /// Keep one actual visual row and the visible status bar in every pane.
+  /// If the whole window cannot fit those minima, divide the available space
+  /// proportionally; height commands must still never create negative frames.
+  private func minimumPaneHeights() -> [CGFloat] {
+    let desired = panes.map { pane in
+      max(1, pane.editorSurface.visualRowHeight ?? EVStatusBarView.preferredHeight) + pane.statusBarHeight
+    }
+    let available = max(0, split.bounds.height - split.dividerThickness * CGFloat(panes.count - 1))
+    let required = desired.reduce(0, +)
+    guard required > available else { return desired }
+    return desired.map { $0 * available / required }
+  }
 
   /// Lay out exact pane heights top to bottom. Divider positions are measured
   /// from the split view's top edge.
@@ -325,12 +340,12 @@ final class EVPaneContainer: NSViewController, NSSplitViewDelegate {
     _ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
     ofSubviewAt dividerIndex: Int
   ) -> CGFloat {
-    proposedMinimumPosition + 100
+    proposedMinimumPosition + minimumPaneHeights()[dividerIndex]
   }
   func splitView(
     _ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat,
     ofSubviewAt dividerIndex: Int
   ) -> CGFloat {
-    proposedMaximumPosition - 100
+    proposedMaximumPosition - minimumPaneHeights()[dividerIndex + 1]
   }
 }

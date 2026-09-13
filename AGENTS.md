@@ -3302,7 +3302,37 @@ wrapping or font metrics. Their ranges retain provenance for reverse edits.
 
 Required behavior includes ordinary Unicode text input, Escape/Ctrl-[, Enter,
 Tab, Backspace, Forward Delete, arrow movement, Home/End, Page Up/Down,
-`Ctrl-W`, `Ctrl-U`, `Ctrl-R {register}`, and `Ctrl-O {normal-command}`.
+`Ctrl-W`, `Ctrl-U`, `Ctrl-R {register}`, `Ctrl-O {normal-command}`,
+`Ctrl-E`, `Ctrl-Y`, `Ctrl-G u`, and `Ctrl-G U`.
+
+Control-key aliases are portable command policy. In Insert/Replace and prompts,
+Ctrl-H is Backspace, Ctrl-I is Tab, and Ctrl-J/M is Enter. In Normal/Visual,
+Ctrl-H is Left, Ctrl-J/N is Down, Ctrl-P is Up, and Ctrl-M is Enter; physical
+Tab is the newer-jump command Ctrl-I. Ctrl-Left/Right move by word, including
+Insert/Replace and prompt input. Native modifiers MUST survive input routing.
+Literal-next input and pending register operands retain the original key
+identity before aliases are resolved. Ctrl-[ cancels like Escape in every mode.
+
+Ctrl-C cancels pending command grammar or leaves Insert/Replace, Visual, and
+prompt input. It retains edits already entered and suppresses unfinished Insert
+entry-count expansion. During deferred block insertion, it retains insertion
+on the first row only; a block change still deletes its complete selected area.
+During Insert/Replace Ctrl-O, Ctrl-C ends the suspended insertion in Normal
+mode, retains its completed text and repeat recipe, and closes its session.
+
+Ctrl-E/Y copy one complete extended grapheme from the next/previous hard line
+at the caret's tab-expanded logical column. Tab stops and Unicode widths use
+the same portable column definitions as indentation; fonts, character styles,
+and soft wrapping do not affect which character is copied. A column inside a
+tab or wide grapheme selects that entire item. Missing lines/columns are no-ops.
+Copied tabs remain hard tabs even with expandtab, and copied text bypasses
+typing assistance. Copying reads only the current prefix and neighbouring line.
+Counts and dot repeat retain the copied value; macros reexecute the command.
+
+Replace Ctrl-W/U restore overwritten text through the same source-preserving
+replacement journal as Backspace. They remove newly appended text normally,
+remain one atomic command in the current undo group, and replay as semantic
+word/line operations at their destination.
 
 macOS marked-text/IME composition is required. An active composition is a
 temporary marked range, updates visually as one composition, and commits as a
@@ -3439,6 +3469,12 @@ The following grouping rules are required:
 - An explicit cursor move in Insert or Replace mode closes the current unit
   before moving. Later text starts a new unit without requiring the user to
   leave the mode.
+- Ctrl-G u closes the current unit without leaving Insert/Replace or discarding
+  its repeat recipe. Ctrl-G U preserves the unit and repeat recipe through the
+  immediately following Left/Right movement within the same hard line. Any
+  intervening input cancels the join; other movements retain their
+  usual undo boundaries. Dot/count replay stays one undo unit even
+  when the recorded program contains explicit undo breaks.
 - `Ctrl-O` closes the current Insert/Replace unit before executing its one
   Normal command. A change made by that command is a separate unit, and later
   inserted text starts another unit.
@@ -3577,6 +3613,18 @@ dismisses the output and is processed normally. Output also dismisses after
 30 seconds. Selecting, navigating, and copying output do not dismiss it or
 extend the timeout; output cannot be cut, deleted, or edited.
 
+Ctrl-R selects a register for insertion into Ex or search prompts. Ctrl-R
+Ctrl-R and Ctrl-R Ctrl-O insert literally; the ordinary form interprets supported
+prompt-editing controls while keeping prompt terminators and Tab literal.
+Register expansion never submits a command or edits the underlying document.
+Ctrl-R Ctrl-W/A/L insert the word, WORD, or hard line at the document caret.
+The `/` and `:` selectors insert the last search and last submitted Ex command;
+existing text, clipboard, last-insert, and filename registers remain available.
+Semantic register hard breaks become literal CR in the prompt; literal LF
+content retains its identity. Esc/Ctrl-C during register selection cancel that
+selection and retain the prompt. Recursive expansion is bounded. Unsupported
+expression, alternate-file, and filename/path-object selectors report an error.
+
 Filename arguments to `:edit`/`:E`, `:write`, `:saveas`, `:wq`, `:xit`,
 `:split`/`:vsplit`, and `:cd`/`:chdir` support Rust-backed prefix completion.
 Tab selects the first case-insensitive alphabetical match and cycles forward;
@@ -3708,9 +3756,11 @@ keeps the window and its unsaved content available for a later close attempt.
 
 #### Window commands
 
-`CTRL-W` is a Normal and Visual mode window prefix. A count is typed before
-`CTRL-W`, as in Vim; digits after the prefix are not a window command. Escape
-cancels a pending prefix without effect. Panes are ordered top to bottom, and
+`CTRL-W` is a Normal and every Visual mode window prefix, including Visual Block.
+Counts may occur before or after the prefix; when both occur their product is
+used, with checked overflow. Escape/Ctrl-[ and Ctrl-C cancel a pending prefix
+without effect. `CTRL-W :` opens the Ex prompt, retaining a Visual range when
+applicable. Panes are ordered top to bottom, and
 that order is the only geometry these commands address.
 
 Focus commands, which never change pane order or content:
@@ -3729,6 +3779,7 @@ Focus commands, which never change pane order or content:
 - `CTRL-W h`, `CTRL-W l`, `CTRL-W <Left>`, `CTRL-W <Right>`: accepted and do
   nothing. A stacked layout never has a left or right neighbour, which is also
   what Vim does when one is absent.
+  `CTRL-W CTRL-H`, `CTRL-W <BS>`, and `CTRL-W CTRL-L` are equivalent aliases.
 
 Order commands, which move panes without changing which one is focused:
 
@@ -3746,13 +3797,16 @@ Lifecycle commands reuse the existing Ex behavior exactly: `CTRL-W s`,
 same way, as `:vsplit` does; `CTRL-W n` and `CTRL-W CTRL-N` open a new empty
 pane; `CTRL-W q` and `CTRL-W CTRL-Q` quit the pane; `CTRL-W c` closes it; and
 `CTRL-W o` and `CTRL-W CTRL-O` close the other panes.
+An explicit split/new-pane count sets the new pane's initial height in visual
+rows, constrained by the window's available space and minimum pane sizes.
+Opening a new pane does not replace or discard the active document.
 
 Size commands change pane heights in whole visual rows of the focused pane,
 taking space from or returning it to its neighbours without changing the total:
 
 - `CTRL-W +` and `CTRL-W -`: grow or shrink the focused pane by the count,
   default one row.
-- `CTRL-W _`: set the focused pane to the count in rows, or as tall as the
+- `CTRL-W _` and `CTRL-W CTRL-_`: set the focused pane to the count in rows, or as tall as the
   window allows without a count.
 - `CTRL-W =`: give every pane an equal share.
 

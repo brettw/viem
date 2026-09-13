@@ -19,7 +19,8 @@ final class EVWindowCommandTests: XCTestCase {
     }()
     var statusBarState = EVStatusBarState()
     var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
-    var visualRowHeight: CGFloat? { 20 }
+    var rowHeight: CGFloat = 20
+    var visualRowHeight: CGFloat? { rowHeight }
     func perform(menuCommand _: EVMenuCommand, sender _: Any?) {}
     func presentation(for _: EVMenuCommand) -> EVMenuItemPresentation { .enabled }
   }
@@ -208,6 +209,46 @@ final class EVWindowCommandTests: XCTestCase {
     send(.equalizeHeights)
     let equal = heights()
     XCTAssertEqual(equal[0], equal[1], accuracy: 2)
+  }
+
+  func testExtremeHeightCountsPreserveEachNeighboursOwnVisualRow() throws {
+    let (controller, backend, document) = try makeWindow(panes: 3)
+    defer { document.close() }
+    let order = stackedSurfaces(controller, backend)
+    order[1].rowHeight = 130
+    order[2].rowHeight = 170
+    controller.perform(windowRequests: [.focusTop, .setHeight(rows: Int.max)], from: controller.editorSurface)
+    for surface in order {
+      XCTAssertGreaterThanOrEqual(surface.viewController.view.bounds.height + 1, surface.rowHeight)
+    }
+    controller.perform(windowRequests: [.shrink(rows: Int.max)], from: controller.editorSurface)
+    XCTAssertEqual(order[0].viewController.view.bounds.height, order[0].rowHeight, accuracy: 1)
+    controller.perform(windowRequests: [.grow(rows: Int.max)], from: controller.editorSurface)
+    for surface in order {
+      XCTAssertGreaterThanOrEqual(surface.viewController.view.bounds.height + 1, surface.rowHeight)
+    }
+    controller.perform(windowRequests: [.focusDown(count: Int.max)], from: controller.editorSurface)
+    XCTAssertEqual(focusedIndex(controller, backend), 2, "a large count clamps without integer overflow")
+  }
+
+  func testHeightCommandsInAnUndersizedWindowKeepFiniteNonnegativeFrames() {
+    let surfaces = [Surface(), Surface(), Surface()]
+    let panes = surfaces.map { EVDocumentContentViewController(editorSurface: $0) }
+    let container = EVPaneContainer(first: panes[0])
+    container.loadViewIfNeeded()
+    container.view.frame = NSRect(x: 0, y: 0, width: 400, height: 40)
+    for pane in panes.dropFirst() { container.insert(pane) }
+    for request in [EVWindowRequest.setHeight(rows: Int.max), .shrink(rows: Int.max), .grow(rows: Int.max), .equalizeHeights] {
+      container.perform(request)
+      for pane in panes {
+        XCTAssertTrue(pane.view.frame.height.isFinite)
+        XCTAssertGreaterThanOrEqual(pane.view.frame.height, 0)
+        XCTAssertTrue(pane.editorSurface.viewController.view.bounds.height.isFinite)
+        XCTAssertGreaterThanOrEqual(pane.editorSurface.viewController.view.bounds.height, 0)
+      }
+      let height = panes.reduce(CGFloat(0)) { $0 + $1.view.frame.height }
+      XCTAssertLessThanOrEqual(height, container.view.bounds.height + 1)
+    }
   }
 
   func testCloseOthersLeavesOnlyTheFocusedPane() throws {

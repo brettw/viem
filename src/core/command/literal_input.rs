@@ -57,6 +57,8 @@ impl CommandInterpreter {
         self.literal_input_pending()
             || (matches!(self.mode, Mode::Insert | Mode::Replace | Mode::CommandLine)
                 && !self.register_pending
+                && !self.insert_control_g_pending()
+                && !self.command_line_register_pending()
                 && matches!(event, InputEvent::Key(Key::Ctrl('v' | 'V' | 'q' | 'Q'))))
     }
 
@@ -322,6 +324,8 @@ fn literal_key_text(key: Key) -> Option<String> {
         Key::ShiftEnter => "<S-CR>".into(),
         Key::Left => "<Left>".into(),
         Key::Right => "<Right>".into(),
+        Key::WordLeft => "<C-Left>".into(),
+        Key::WordRight => "<C-Right>".into(),
         Key::Up => "<Up>".into(),
         Key::Down => "<Down>".into(),
         Key::Home => "<Home>".into(),

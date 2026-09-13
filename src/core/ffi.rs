@@ -372,6 +372,8 @@ pub const VIEM_KEY_BACK_TAB: u32 = 16;
 pub const VIEM_KEY_DOCUMENT_START: u32 = 17;
 pub const VIEM_KEY_DOCUMENT_END: u32 = 18;
 pub const VIEM_KEY_SHIFT_ENTER: u32 = 19;
+pub const VIEM_KEY_WORD_LEFT: u32 = 20;
+pub const VIEM_KEY_WORD_RIGHT: u32 = 21;
 
 pub const VIEM_COMMAND_STATUS_NONE: u32 = 0;
 pub const VIEM_COMMAND_STATUS_COMPLETE: u32 = 1;
@@ -433,6 +435,7 @@ pub const VIEM_EX_FRONTEND_CHECKTIME: u32 = 21;
 /// carries its count or one-based pane index when `VIEM_EX_FRONTEND_HAS_COUNT`
 /// is set.
 pub const VIEM_EX_FRONTEND_WINDOW: u32 = 22;
+pub const VIEM_EX_FRONTEND_NEW_PANE: u32 = 23;
 
 pub const VIEM_WINDOW_FOCUS_DOWN: u32 = 1;
 pub const VIEM_WINDOW_FOCUS_UP: u32 = 2;
@@ -700,7 +703,8 @@ pub struct ViemExFrontendRequestV1 {
     pub option_count: u64,
     pub first_payload: u64,
     pub payload_count: u64,
-    /// Meaningful only with `VIEM_EX_FRONTEND_HAS_COUNT`.
+    /// With `VIEM_EX_FRONTEND_HAS_COUNT`: window count/index, or initial row
+    /// height for SPLIT and NEW_PANE.
     pub window_count: u64,
 }
 
@@ -1760,6 +1764,8 @@ pub const VIEM_VIEW_PRESENTATION_HAS_COMMAND_LINE: u32 = 1 << 3;
 pub const VIEM_VIEW_PRESENTATION_HAS_DESIRED_X: u32 = 1 << 4;
 /// Route the next input to the core before native editing shortcuts.
 pub const VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING: u32 = 1 << 5;
+/// Route prompt register selectors to core, including native text events.
+pub const VIEM_VIEW_PRESENTATION_COMMAND_LINE_REGISTER_PENDING: u32 = 1 << 6;
 
 /// Current controller presentation state. Linear Visual anchors do not retain
 /// a visual affinity, so their affinity field is zero unless the exact flag is
@@ -3601,9 +3607,20 @@ fn export_ex_frontend_request(
                 output.kind = VIEM_EX_FRONTEND_CD;
                 set_ex_path(&mut output, strings, path.as_deref())?;
             }
-            ExFileRequest::Split { path } => {
+            ExFileRequest::Split { path, height } => {
                 output.kind = VIEM_EX_FRONTEND_SPLIT;
                 set_ex_path(&mut output, strings, path.as_deref())?;
+                if let Some(height) = height {
+                    output.flags |= VIEM_EX_FRONTEND_HAS_COUNT;
+                    output.window_count = checked_export_count(*height)?;
+                }
+            }
+            ExFileRequest::NewPane { height } => {
+                output.kind = VIEM_EX_FRONTEND_NEW_PANE;
+                if let Some(height) = height {
+                    output.flags |= VIEM_EX_FRONTEND_HAS_COUNT;
+                    output.window_count = checked_export_count(*height)?;
+                }
             }
             ExFileRequest::Edit { path, force } => {
                 output.kind = VIEM_EX_FRONTEND_EDIT;
@@ -4187,6 +4204,8 @@ fn parse_key(input: ViemKeyInputV1) -> Result<Key, ViemStatus> {
         VIEM_KEY_DELETE => special(Key::Delete),
         VIEM_KEY_LEFT => special(Key::Left),
         VIEM_KEY_RIGHT => special(Key::Right),
+        VIEM_KEY_WORD_LEFT => special(Key::WordLeft),
+        VIEM_KEY_WORD_RIGHT => special(Key::WordRight),
         VIEM_KEY_UP => special(Key::Up),
         VIEM_KEY_DOWN => special(Key::Down),
         VIEM_KEY_HOME => special(Key::Home),
@@ -6319,6 +6338,9 @@ fn summarize_view_presentation(
     let mut flags = 0;
     if state.literal_input_pending() {
         flags |= VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING;
+    }
+    if state.command_line_register_pending() {
+        flags |= VIEM_VIEW_PRESENTATION_COMMAND_LINE_REGISTER_PENDING;
     }
     let mut cursor_offset = state.cursor();
     let mut cursor_affinity = state.boundary_affinity();

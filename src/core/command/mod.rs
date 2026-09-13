@@ -14,6 +14,8 @@ pub mod layout_motion;
 mod reflow;
 mod indentation;
 mod literal_input;
+mod insert_controls;
+mod input_keys;
 mod whitespace;
 pub use whitespace::VisibleWhitespaceSetting;
 pub mod regex_v1;
@@ -23,6 +25,7 @@ pub mod window;
 
 mod command_line_completion;
 mod command_line_edit;
+mod command_line_register;
 mod filename_candidates;
 mod input_assistance;
 #[cfg(test)]
@@ -164,6 +167,8 @@ pub enum Key {
     Delete,
     Left,
     Right,
+    WordLeft,
+    WordRight,
     Up,
     Down,
     Home,
@@ -606,8 +611,7 @@ enum Pending {
     /// Uppercase `Z` starts the save-and-close command; lowercase z is viewport grammar.
     SaveQuit,
     Operator(PendingOperator),
-    /// `CTRL-W` was typed. Vim reads a window command's count before the
-    /// prefix, so it is captured here and digits afterwards are not commands.
+    /// Count before `CTRL-W`; `self.count` collects the count after it.
     Window {
         count: Option<usize>,
     },
@@ -782,6 +786,7 @@ impl CommandLineBuffer {
 struct CommandLineState {
     kind: CommandLineKind,
     buffer: CommandLineBuffer,
+    register_insert: Option<command_line_register::RegisterInsertion>,
     return_mode: Mode,
     count: usize,
     operator: Option<PendingOperator>,
@@ -831,6 +836,9 @@ struct EditSessionProgram {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum EditSessionStep {
+    CopiedCharacter(String),
+    UndoBreak,
+    JoinedHorizontalMove(isize),
     LiteralText(String),
     AssistedText(String),
     TypingStyle(typing_style::TypingStyle),
@@ -973,6 +981,7 @@ struct VisualBlockInsertSession {
     rows: Vec<VisualBlockInsertRow>,
     payload: String,
     literal_ranges: Vec<Range<usize>>,
+    cancel_collection: bool,
     count: usize,
     register: Option<char>,
     replaced: Option<RegisterValue>,
@@ -1055,6 +1064,7 @@ enum VisualBlockRepeatAction {
         kind: VisualBlockInsertKind,
         payload: String,
         literal_ranges: Vec<Range<usize>>,
+        cancel_collection: bool,
         application_count: usize,
         register: Option<char>,
     },
@@ -1199,6 +1209,7 @@ pub(crate) struct BufferCommandState {
     marks: BTreeMap<char, usize>,
     search_history: Vec<String>,
     ex_history: Vec<String>,
+    last_command_line: Option<String>,
     ex_state: ExExecutionState,
     fileformats: Vec<FileFormat>,
     search_options: regex_v1::SearchOptions,
@@ -1244,6 +1255,7 @@ pub struct CommandInterpreter {
     command_line_state: Option<CommandLineState>,
     search_history: Vec<String>,
     ex_history: Vec<String>,
+    last_command_line: Option<String>,
     ex_state: ExExecutionState,
     wrap: bool,
     line_mode: LineMode,
@@ -1258,6 +1270,7 @@ pub struct CommandInterpreter {
     typing_style: typing_style::TypingStyle,
     input_assistance: input_assistance::InputAssistance,
     literal_input: Option<literal_input::LiteralInput>,
+    insert_controls: insert_controls::InsertControls,
     visual_block_insert: Option<VisualBlockInsertSession>,
     replaying: bool,
     last_find: Option<FindState>,
@@ -1359,6 +1372,7 @@ impl CommandInterpreter {
             command_line_state: None,
             search_history: Vec::new(),
             ex_history: Vec::new(),
+            last_command_line: None,
             ex_state: ExExecutionState::default(),
             wrap: false,
             line_mode: LineMode::Visual,
@@ -1373,6 +1387,7 @@ impl CommandInterpreter {
             typing_style: Default::default(),
             input_assistance: Default::default(),
             literal_input: None,
+            insert_controls: Default::default(),
             visual_block_insert: None,
             replaying: false,
             last_find: None,
@@ -1411,6 +1426,7 @@ impl CommandInterpreter {
                 .collect(),
             search_history: self.search_history.clone(),
             ex_history: self.ex_history.clone(),
+            last_command_line: self.last_command_line.clone(),
             ex_state: self.ex_state.clone(),
             fileformats: self.fileformats.clone(),
             search_options: self.search_options,
@@ -1428,6 +1444,7 @@ impl CommandInterpreter {
         self.marks.clone_from(&state.marks);
         self.search_history.clone_from(&state.search_history);
         self.ex_history.clone_from(&state.ex_history);
+        self.last_command_line.clone_from(&state.last_command_line);
         self.ex_state.clone_from(&state.ex_state);
         self.fileformats.clone_from(&state.fileformats);
         self.search_options = state.search_options;
@@ -2034,6 +2051,13 @@ impl CommandInterpreter {
         event: &InputEvent,
         clipboard: Option<&ClipboardCommandContext>,
     ) -> bool {
+        let normalized = match event {
+            InputEvent::Key(key) => Some(InputEvent::Key(self.normalized_input_key(*key))),
+            InputEvent::Text(_) => None,
+        };
+        let event = normalized.as_ref().unwrap_or(event);
+        if self.is_cancel_input(event) || self.is_register_cancel_input(event) { return false; }
+        if self.insert_control_g_pending() { return false; }
         if self.handles_literal_input(event) { return false; }
         if matches!(event, InputEvent::Key(Key::SelectAll)) {
             return false;
@@ -2046,6 +2070,9 @@ impl CommandInterpreter {
                     .is_some_and(|state| state.return_mode == Mode::VisualBlock);
         }
         if self.visual_block_insert.is_some() {
+            return false;
+        }
+        if matches!(self.pending, Pending::Window { .. }) {
             return false;
         }
         if self.line_mode == LineMode::Visual
@@ -2170,6 +2197,12 @@ impl CommandInterpreter {
     /// Visual modes also acquire layout for pending grammar; those prefixes must
     /// not reveal the caret before the eventual command chooses its target.
     pub(crate) fn layout_input_preserves_viewport(&self, event: &InputEvent) -> bool {
+        let normalized = match event {
+            InputEvent::Key(key) => Some(InputEvent::Key(self.normalized_input_key(*key))),
+            InputEvent::Text(_) => None,
+        };
+        let event = normalized.as_ref().unwrap_or(event);
+        if self.is_cancel_input(event) { return false; }
         if self.register_pending || self.count_overflowed || self.visual_block_insert.is_some() {
             return true;
         }
@@ -2720,6 +2753,7 @@ impl CommandInterpreter {
         document: &mut Document,
         event: InputEvent,
     ) -> Result<CommandOutput, DocumentError> {
+        let event = self.normalized_input_event(event);
         let model_checkpoint = document.begin_command_checkpoint();
         let checkpoint = self.clone();
         if !self.literal_input_pending() && matches!(
@@ -2727,6 +2761,8 @@ impl CommandInterpreter {
             InputEvent::Key(
                 Key::Left
                     | Key::Right
+                    | Key::WordLeft
+                    | Key::WordRight
                     | Key::Up
                     | Key::Down
                     | Key::Home
@@ -2901,6 +2937,7 @@ impl CommandInterpreter {
         context: &CommandContext<'_>,
         event: InputEvent,
     ) -> Result<CommandResolution, DocumentError> {
+        let event = self.normalized_input_event(event);
         if context.document_id() != context.document().id()
             || context.document_revision() != context.document().revision()
         {
@@ -2910,7 +2947,10 @@ impl CommandInterpreter {
             });
         }
 
-        if self.handles_literal_input(&event) || matches!(&event, InputEvent::Key(Key::SelectAll)) {
+        if self.handles_literal_input(&event) || self.is_cancel_input(&event)
+            || self.insert_control_g_pending()
+            || (self.mode == Mode::Replace && matches!(&event, InputEvent::Key(Key::Ctrl('w' | 'W' | 'u' | 'U'))))
+            || matches!(&event, InputEvent::Key(Key::SelectAll)) {
             return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
         }
         if (matches!(self.mode, Mode::Insert | Mode::Replace)
@@ -2981,7 +3021,11 @@ impl CommandInterpreter {
         let document = context.document();
         let mut next = self.clone();
         next.record_event(event);
+        let previous_clipboard = (next.mode == Mode::CommandLine).then(|| std::mem::replace(
+            &mut next.clipboard_context, context.clipboard().cloned().unwrap_or_default(),
+        ));
         let mut output = next.try_handle_controller_only_event(document, event)?;
+        if let Some(previous) = previous_clipboard { next.clipboard_context = previous; }
         next.finish_non_layout_dispatch(&output);
         next.finish_explicit_register_prefix(&output);
         next.finish_clipboard_writes(&mut output);
@@ -3746,6 +3790,7 @@ impl CommandInterpreter {
         event: InputEvent,
         context: &mut LayoutCommandContext<'_>,
     ) -> Result<CommandOutput, DocumentError> {
+        let event = self.normalized_input_event(event);
         self.record_event(&event);
         if context.snapshot.document_id != document.id()
             || context.snapshot.document_revision != document.revision()
@@ -3759,7 +3804,7 @@ impl CommandInterpreter {
         // Keeping this synchronized makes `:set wrap?` accurate even when the
         // host changed wrapping outside the Ex command line.
         self.wrap = context.wrap;
-        if self.handles_literal_input(&event) {
+        if self.handles_literal_input(&event) || self.is_cancel_input(&event) || self.is_register_cancel_input(&event) || self.insert_control_g_pending() {
             let output = self.dispatch_event(document, event)?;
             self.finish_non_layout_dispatch(&output);
             return Ok(output);
@@ -3851,6 +3896,13 @@ impl CommandInterpreter {
     }
 
     fn record_event(&mut self, event: &InputEvent) {
+        // Ctrl-G U applies only to the immediately following horizontal key.
+        // This transition runs for typed plans as well as legacy execution.
+        if !matches!(event, InputEvent::Key(Key::Left | Key::Right))
+            && !matches!(event, InputEvent::Text(text) if text.is_empty())
+        {
+            self.insert_controls.join_next_horizontal = false;
+        }
         self.reopened_group_after_insert_normal_once = false;
         let stops_recording = self.recording.is_some()
             && self.mode == Mode::Normal
@@ -3895,6 +3947,9 @@ impl CommandInterpreter {
     ) -> Option<CommandOutput> {
         if self.literal_input_pending() { return None; }
         if self.mode == Mode::CommandLine {
+            if self.command_line_register_pending() {
+                return Some(self.handle_command_line_register_text(document, input));
+            }
             if let Some(state) = self.command_line_state.as_mut() {
                 state.buffer.insert(input);
             }
@@ -3955,6 +4010,8 @@ impl CommandInterpreter {
         key: Key,
     ) -> Option<CommandOutput> {
         if self.handles_literal_input(&InputEvent::Key(key)) { return None; }
+        if let Some(output) = self.cancel_register_operand(key) { return Some(output); }
+        if let Some(output) = self.try_handle_window_key(document, key) { return Some(output); }
         let key = self.clipboard_copy_alias_key(key);
         if matches!(key, Key::DocumentStart | Key::DocumentEnd)
             && matches!(self.mode, Mode::Normal | Mode::VisualCharacter | Mode::VisualLine)
@@ -3964,7 +4021,7 @@ impl CommandInterpreter {
             return Some(self.move_to_document_edge(document, key == Key::DocumentEnd));
         }
         match self.mode {
-            Mode::CommandLine => self.try_handle_controller_only_command_line_key(key),
+            Mode::CommandLine => self.try_handle_controller_only_command_line_key(document, key),
             Mode::Normal => self.try_handle_controller_only_normal_key(document, key),
             Mode::VisualCharacter | Mode::VisualLine => {
                 self.try_handle_controller_only_visual_key(document, key)
@@ -3973,7 +4030,10 @@ impl CommandInterpreter {
         }
     }
 
-    fn try_handle_controller_only_command_line_key(&mut self, key: Key) -> Option<CommandOutput> {
+    fn try_handle_controller_only_command_line_key(&mut self, document: &Document, key: Key) -> Option<CommandOutput> {
+        if let Some(output) = self.handle_command_line_register_key(document, key) {
+            return Some(output);
+        }
         if let Some(output) = self.handle_filename_completion_key(key) {
             return Some(output);
         }
@@ -4019,6 +4079,17 @@ impl CommandInterpreter {
                     state.buffer.cursor =
                         next_grapheme_boundary(&state.buffer.input, state.buffer.cursor)
                             .unwrap_or(state.buffer.input.len());
+                }
+                CommandOutput::pending()
+            }
+            Key::WordLeft | Key::WordRight => {
+                if let Some(state) = self.command_line_state.as_mut() {
+                    state.buffer.selection_anchor = None;
+                    state.buffer.cursor = if key == Key::WordLeft {
+                        move_word_backward(&state.buffer.input, state.buffer.cursor, true, 1)
+                    } else {
+                        move_word_forward(&state.buffer.input, state.buffer.cursor, true, 1)
+                    };
                 }
                 CommandOutput::pending()
             }
@@ -4243,10 +4314,7 @@ impl CommandInterpreter {
                     _ => CommandOutput::unsupported("find expects text"),
                 });
             }
-            Pending::Window { count } => {
-                self.pending = Pending::None;
-                return Some(self.execute_window_command(key, count));
-            }
+            Pending::Window { .. } => unreachable!("window prefix handled before mode dispatch"),
             Pending::SetMark => {
                 self.pending = Pending::None;
                 return Some(match key {
@@ -4559,10 +4627,7 @@ impl CommandInterpreter {
                 self.pending = Pending::None;
                 return Some(output);
             }
-            Pending::Window { count } => {
-                self.pending = Pending::None;
-                return Some(self.execute_window_command(key, count));
-            }
+            Pending::Window { .. } => unreachable!("window prefix handled before mode dispatch"),
             Pending::VisualTextObject { scope, count } => {
                 self.pending = Pending::None;
                 return Some(match key {
@@ -4835,6 +4900,7 @@ impl CommandInterpreter {
         key: Key,
         context: &mut LayoutCommandContext<'_>,
     ) -> Result<Option<CommandOutput>, DocumentError> {
+        if let Some(output) = self.try_handle_window_key(document, key) { return Ok(Some(output)); }
         let key = self.clipboard_copy_alias_key(key);
         if let Some(output) = self.try_mode_line_key(document, key)? {
             return Ok(Some(output));
@@ -6464,6 +6530,7 @@ impl CommandInterpreter {
             rows,
             payload: String::new(),
             literal_ranges: Vec::new(),
+            cancel_collection: false,
             count,
             register: requested_register,
             replaced,
@@ -6796,6 +6863,7 @@ impl CommandInterpreter {
                     kind,
                     payload,
                     literal_ranges,
+                    cancel_collection,
                     application_count,
                     register,
                 } => {
@@ -6807,6 +6875,7 @@ impl CommandInterpreter {
                             .expect("successful block-repeat insert installs a session");
                         session.payload = payload;
                         session.literal_ranges = literal_ranges;
+                        session.cancel_collection = cancel_collection;
                         output.merge(self.finish_visual_block_insert(document)?);
                     }
                     Ok(output)
@@ -7733,6 +7802,7 @@ impl CommandInterpreter {
         context: &mut LayoutCommandContext<'_>,
         motion: InsertLayoutMotion,
     ) -> CommandOutput {
+        self.insert_controls.join_next_horizontal = false;
         document.end_edit_group();
         self.invalidate_replace_restoration();
         self.publish_last_insert_fragment();
@@ -7898,6 +7968,14 @@ impl CommandInterpreter {
         input: String,
     ) -> Result<CommandOutput, DocumentError> {
         if self.literal_input_pending() { return self.handle_literal_text(document, &input); }
+        if self.insert_control_g_pending() {
+            return self.handle_insert_control_text(document, &input);
+        }
+        // A bulk Text event can contain the Ctrl-G U operand and more text;
+        // the recursive continuation consumes the newly installed join flag.
+        if !input.is_empty() {
+            self.insert_controls.join_next_horizontal = false;
+        }
         if let Some(output) = self.try_handle_controller_only_text(document, &input) {
             return Ok(output);
         }
@@ -8004,6 +8082,12 @@ impl CommandInterpreter {
         if self.handles_literal_input(&InputEvent::Key(key)) {
             return self.handle_literal_key(document, key);
         }
+        let key = self.normalized_input_key(key);
+        if let Some(output) = self.cancel_register_operand(key) { return Ok(output); }
+        if self.is_cancel_input(&InputEvent::Key(key)) { return self.cancel_input(document); }
+        if self.insert_control_g_pending() {
+            return self.handle_insert_control_key(document, key);
+        }
         if key == Key::SelectAll {
             let mut output = if self.visual_block_insert.is_some() {
                 self.finish_visual_block_insert(document)?
@@ -8034,6 +8118,8 @@ impl CommandInterpreter {
             Key::Escape
                 | Key::Left
                 | Key::Right
+                | Key::WordLeft
+                | Key::WordRight
                 | Key::Up
                 | Key::Down
                 | Key::Home
@@ -8292,12 +8378,19 @@ impl CommandInterpreter {
     ///
     /// Window commands change no document text, so they create no undo unit,
     /// touch no register, and are not repeated by `.`.
-    fn execute_window_command(&mut self, key: Key, count: Option<usize>) -> CommandOutput {
+    fn execute_window_command(&mut self, document: &Document, key: Key, count: Option<usize>) -> CommandOutput {
         use window::{window_command, WindowCommand};
         let request = match window_command(key, count) {
             WindowCommand::Request(request) => ExFrontendRequest::Window(request),
             WindowCommand::File(request) => ExFrontendRequest::File(request),
             WindowCommand::Accepted => return CommandOutput::complete(),
+            WindowCommand::Prompt => {
+                if matches!(self.mode, Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock) {
+                    return self.enter_visual_ex(document);
+                }
+                self.enter_command_line(CommandLineKind::Ex);
+                return CommandOutput { mode_changed: true, ..CommandOutput::pending() };
+            }
             WindowCommand::Unsupported => {
                 return CommandOutput::unsupported(format!("window command {key:?}"))
             }
@@ -9796,6 +9889,12 @@ impl CommandInterpreter {
             }
             Key::Tab | Key::BackTab => self.insert_tab(document),
             Key::Ctrl('t' | 'T') => self.insert_shift(document, false),
+            Key::Ctrl('g' | 'G') => {
+                self.insert_controls.g_pending = true;
+                Ok(CommandOutput::pending())
+            }
+            Key::Ctrl('e' | 'E') => self.copy_adjacent_character(document, true),
+            Key::Ctrl('y' | 'Y') => self.copy_adjacent_character(document, false),
             Key::Ctrl('d' | 'D') => self.insert_shift(document, true),
             Key::Ctrl('r' | 'R') => {
                 self.register_pending = true;
@@ -9804,8 +9903,10 @@ impl CommandInterpreter {
             Key::Ctrl('w' | 'W') => self.insert_delete_motion(document, EditSessionStep::DeleteWord),
             Key::Ctrl('u' | 'U') => self.insert_delete_motion(document, EditSessionStep::DeleteToLineStart),
             Key::Ctrl('o' | 'O') => {
+                self.insert_controls = Default::default();
                 document.end_edit_group();
                 self.invalidate_replace_restoration();
+                self.publish_insert_repeat_before_normal_command();
                 self.publish_last_insert_fragment();
                 let placement = if self.mode == Mode::Replace {
                     InsertPlacement::Replace
@@ -9842,7 +9943,10 @@ impl CommandInterpreter {
                 }
             }
             Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End
-            | Key::DocumentStart | Key::DocumentEnd => {
+            | Key::DocumentStart | Key::DocumentEnd | Key::WordLeft | Key::WordRight => {
+                if let Some(output) = self.join_insert_horizontal_move(document, key) {
+                    return Ok(output);
+                }
                 document.end_edit_group();
                 self.invalidate_replace_restoration();
                 self.publish_last_insert_fragment();
@@ -9865,6 +9969,8 @@ impl CommandInterpreter {
                     let motion = match key {
                     Key::Left => Motion::InsertionHorizontal(-1),
                     Key::Right => Motion::InsertionHorizontal(1),
+                    Key::WordLeft => Motion::WordBackward(false),
+                    Key::WordRight => Motion::WordForward(false),
                     Key::Up => Motion::Vertical(-1),
                     Key::Down => Motion::Vertical(1),
                     _ => unreachable!(),
@@ -9891,6 +9997,9 @@ impl CommandInterpreter {
         if matches!(key, Key::Escape | Key::Ctrl('[')) {
             self.register_pending = false;
             return self.finish_visual_block_insert(document);
+        }
+        if !self.register_pending && matches!(key, Key::Ctrl('e' | 'E' | 'y' | 'Y')) {
+            return self.copy_adjacent_character(document, matches!(key, Key::Ctrl('e' | 'E')));
         }
         if self.register_pending {
             self.register_pending = false;
@@ -9965,6 +10074,8 @@ impl CommandInterpreter {
             | Key::Delete
             | Key::Left
             | Key::Right
+            | Key::WordLeft
+            | Key::WordRight
             | Key::Up
             | Key::Down
             | Key::Home
@@ -10037,7 +10148,13 @@ impl CommandInterpreter {
                 )
             }
             VisualBlockInsertKind::Change => {
-                block_session_replacement_edits(&session.rows, &payload)
+                if session.cancel_collection {
+                    session.rows.iter().enumerate().flat_map(|(index, row)| {
+                        block_session_replacement_edits(std::slice::from_ref(row), if index == 0 { &payload } else { "" })
+                    }).collect()
+                } else {
+                    block_session_replacement_edits(&session.rows, &payload)
+                }
             }
         };
         let edits = edits.into_iter().map(|edit| {
@@ -10095,6 +10212,7 @@ impl CommandInterpreter {
                         kind: session.kind,
                         payload: session.payload.clone(),
                         literal_ranges: session.literal_ranges.clone(),
+                        cancel_collection: session.cancel_collection,
                         application_count: session.count,
                         register: session.register,
                     },
@@ -10148,6 +10266,9 @@ impl CommandInterpreter {
         document: &mut Document,
         step: EditSessionStep,
     ) -> Result<CommandOutput, DocumentError> {
+        if self.mode == Mode::Replace {
+            return self.replace_delete_motion(document, step);
+        }
         self.invalidate_replace_restoration();
         match self.insert_delete_motion_range(document, &step) {
             Ok(range) => self.delete_insert_mode_range(document, range, step),
@@ -10635,7 +10756,7 @@ impl CommandInterpreter {
             return Ok(());
         }
         for step in &program.steps {
-            if let EditSessionStep::LiteralText(value) = step {
+            if let EditSessionStep::LiteralText(value) | EditSessionStep::CopiedCharacter(value) = step {
                 document.encoding().encode_fragment(value)?;
             }
             if let EditSessionStep::AssistedText(value) = step {
@@ -10669,7 +10790,8 @@ impl CommandInterpreter {
         let text_bytes = program.steps.iter().try_fold(0usize, |total, step| {
             let length = match step {
                 EditSessionStep::Text(value) => value.text.len(),
-                EditSessionStep::AssistedText(value) | EditSessionStep::LiteralText(value) => value.len(),
+                EditSessionStep::AssistedText(value) | EditSessionStep::LiteralText(value)
+                | EditSessionStep::CopiedCharacter(value) => value.len(),
                 _ => 0,
             };
             total.checked_add(length)
@@ -10743,6 +10865,11 @@ impl CommandInterpreter {
                 }
                 for step in &program.steps {
                     let next = match step {
+                        EditSessionStep::CopiedCharacter(value) => self.insert_copied_character(document, value)?,
+                        EditSessionStep::UndoBreak => CommandOutput::complete(),
+                        EditSessionStep::JoinedHorizontalMove(direction) => {
+                            self.move_joined_insert_horizontal(document, *direction)
+                        }
                         EditSessionStep::LiteralText(value) => self.insert_quoted_text(document, value)?,
                         EditSessionStep::TypingStyle(value) => {
                             self.typing_style = Default::default();
@@ -11963,6 +12090,7 @@ impl CommandInterpreter {
         self.command_line_state = Some(CommandLineState {
             kind,
             buffer: CommandLineBuffer::default(),
+            register_insert: None,
             return_mode,
             count: 1,
             operator: None,
@@ -12050,6 +12178,7 @@ impl CommandInterpreter {
                         ..CommandOutput::complete()
                     });
                 }
+                self.last_command_line = Some(command.clone());
                 let output = self.execute_ex_command(document, &command);
                 if !matches!(
                     output.status,
@@ -13352,11 +13481,11 @@ impl CommandInterpreter {
                 last_grapheme_on_line(text(), &lines, position)
             }
             Motion::InsertionLineEnd => line_end(&lines, self.cursor),
-            Motion::WordForward(big) => normalize_normal_cursor(
-                text(),
-                &lines,
-                move_word_forward(text(), self.cursor, big, count),
-            ),
+            Motion::WordForward(big) => {
+                let target = move_word_forward(text(), self.cursor, big, count);
+                if matches!(self.mode, Mode::Insert | Mode::Replace) { target }
+                else { normalize_normal_cursor(text(), &lines, target) }
+            },
             Motion::WordEnd(big) => move_word_end(text(), self.cursor, big, count),
             Motion::WordBackward(big) => move_word_backward(text(), self.cursor, big, count),
             Motion::WordEndBackward(big) => move_word_end_backward(text(), self.cursor, big, count),
@@ -13483,6 +13612,7 @@ impl CommandInterpreter {
     }
 
     fn clear_pending(&mut self) {
+        self.insert_controls = Default::default();
         self.literal_input = None;
         self.clipboard_copy_as_seen = false;
         self.count = None;
@@ -19732,6 +19862,7 @@ mod tests {
                 kind: VisualBlockInsertKind::Insert,
                 payload: "😀".to_owned(),
                 literal_ranges: Vec::new(),
+                cancel_collection: false,
                 application_count: 1,
                 register: None,
             },
