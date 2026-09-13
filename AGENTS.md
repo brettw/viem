@@ -3606,10 +3606,12 @@ document close. Crash leftovers remain available for recovery.
 ### Native macOS editing affordances
 
 Home and End are interpreted through AppKit's native key bindings. Native
-line-beginning/end selectors obey the current Visual or Physical Source line
-policy and target the same line positions as `^` and `$`, including Insert and
-Replace modes. Native document-beginning/end selectors retain document-edge
-behavior. Do not hardcode physical Home/End key codes over user system bindings.
+line-beginning/end selectors and paragraph-beginning/end selectors used by
+custom Home/End bindings are aliases for Viem's Home/End motions. They obey
+the current Visual or Physical Source line policy and target the same line
+positions as `^` and `$`, including Insert and Replace modes. Native
+document-beginning/end selectors retain document-edge behavior. Do not
+hardcode physical Home/End key codes over user system bindings.
 
 The macOS frontend supports mouse placement/drag selection, scroll gestures,
 standard copy/cut/paste/select-all menu items, drag selection auto-scroll, and

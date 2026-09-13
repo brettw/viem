@@ -67,51 +67,72 @@ import XCTest
     }
 
     func testHomeAndEndUseAppKitKeyBindingsAndControlKeysStayExplicit() throws {
-        let (_, surface, session, window) = try makeSurface("first\nmiddle\nlast")
+        let source = "first\nmiddle\nlast"
+        let (backend, surface, session, window) = try makeSurface(source)
         let view = KeyBindingEditorView(surface: surface)
-        for documentBinding in [false, true] {
-            surface.performInput {
-                _ = try session.sendKey(kind: UInt32(VIEM_KEY_DOCUMENT_START))
-                _ = try session.sendText("jll")
+        for insertMode in [false, true] {
+            for binding in KeyBindingEditorView.Binding.allCases {
+                surface.performInput {
+                    _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+                    _ = try session.sendKey(kind: UInt32(VIEM_KEY_DOCUMENT_START))
+                    _ = try session.sendText("jll")
+                    if insertMode { _ = try session.sendText("i") }
+                }
+                view.binding = binding
+                view.keyDown(with: try key(119, control: false))
+                let endOffset = binding == .document ? 17 : 12
+                XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(endOffset - (insertMode ? 0 : 1)))
+                view.keyDown(with: try key(115, control: false))
+                XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, binding == .document ? 0 : 6)
+                XCTAssertEqual(surface.viewPresentation.mode, UInt32(insertMode ? VIEM_MODE_INSERT : VIEM_MODE_NORMAL))
             }
-            view.useDocumentBindings = documentBinding
-            view.keyDown(with: try key(119, control: false))
-            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, documentBinding ? 16 : 11)
-            view.keyDown(with: try key(115, control: false))
-            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, documentBinding ? 0 : 6)
+            let interpretedCount = view.interpretedKeys.count
+            view.keyDown(with: try key(119, control: true))
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, insertMode ? 17 : 16)
+            XCTAssertEqual(view.interpretedKeys.count, interpretedCount)
         }
-        XCTAssertEqual(view.interpretedKeys, [119, 115, 119, 115])
-        view.keyDown(with: try key(119, control: true))
-        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 16)
-        XCTAssertEqual(view.interpretedKeys.count, 4)
+        XCTAssertEqual(view.interpretedKeys, Array(repeating: [UInt16(119), 115], count: 6).flatMap { $0 })
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), Data(source.utf8))
+        XCTAssertFalse(backend.persistenceState.isDirty)
+        XCTAssertFalse(surface.canUndo)
+        XCTAssertEqual(surface.statusBarState.message, "")
         withExtendedLifetime(window) {}
     }
 
-    func testMarkdownInsertLineSelectorsFollowWrappedRowsAndPhysicalMode() throws {
+    func testMarkdownInsertLineAndParagraphSelectorsFollowWrappedRowsAndPhysicalMode() throws {
         let source = "one two three four five six seven eight nine ten eleven twelve\nTail"
-        let (_, surface, session, window) = try makeSurface(source, width: 240, typeName: EVDocument.markdownType)
-        let row = try XCTUnwrap(surface.layoutSnapshot?.rows.dropFirst().first)
-        XCTAssertGreaterThan(row.text_start, 0)
-        XCTAssertLessThan(row.text_end, UInt64(source.utf8.count - 5))
-        surface.performInput {
-            let layout = try XCTUnwrap(surface.layoutSnapshot)
-            let geometry = try session.caretGeometry(offset: row.text_start + 1,
-                affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM), in: layout.info)
-            _ = try session.placeCursor(geometry.point, extendSelection: false)
-            _ = try session.sendText("i")
+        let selectors = [
+            (#selector(NSResponder.moveToBeginningOfLine(_:)), #selector(NSResponder.moveToEndOfLine(_:))),
+            (#selector(NSResponder.moveToBeginningOfParagraph(_:)), #selector(NSResponder.moveToEndOfParagraph(_:))),
+        ]
+        for (beginning, end) in selectors {
+            let (backend, surface, session, window) = try makeSurface(source, width: 240, typeName: EVDocument.markdownType)
+            let row = try XCTUnwrap(surface.layoutSnapshot?.rows.dropFirst().first)
+            XCTAssertGreaterThan(row.text_start, 0)
+            XCTAssertLessThan(row.text_end, UInt64(source.utf8.count - 5))
+            surface.performInput {
+                let layout = try XCTUnwrap(surface.layoutSnapshot)
+                let geometry = try session.caretGeometry(offset: row.text_start + 1,
+                    affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM), in: layout.info)
+                _ = try session.placeCursor(geometry.point, extendSelection: false)
+                _ = try session.sendText("i")
+            }
+            surface.editorView.doCommand(by: beginning)
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, row.text_start)
+            surface.editorView.doCommand(by: end)
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, row.text_end)
+            XCTAssertEqual(surface.viewPresentation.cursor_affinity, UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM))
+            surface.performInput { try session.setLineMode(.physicalSource) }
+            surface.editorView.doCommand(by: beginning)
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 0)
+            surface.editorView.doCommand(by: end)
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(source.utf8.count - 5))
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+            XCTAssertFalse(backend.persistenceState.isDirty)
+            XCTAssertFalse(surface.canUndo)
+            withExtendedLifetime(window) {}
         }
-        surface.editorView.doCommand(by: #selector(NSResponder.moveToBeginningOfLine(_:)))
-        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, row.text_start)
-        surface.editorView.doCommand(by: #selector(NSResponder.moveToEndOfLine(_:)))
-        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, row.text_end)
-        XCTAssertEqual(surface.viewPresentation.cursor_affinity, UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM))
-        surface.performInput { try session.setLineMode(.physicalSource) }
-        surface.editorView.doCommand(by: #selector(NSResponder.moveToBeginningOfLine(_:)))
-        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 0)
-        surface.editorView.doCommand(by: #selector(NSResponder.moveToEndOfLine(_:)))
-        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(source.utf8.count - 5))
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
-        withExtendedLifetime(window) {}
     }
 
     func testShiftVExportsOnlyTheDisplayedRowInVisualLineMode() throws {
@@ -134,21 +155,30 @@ import XCTest
 }
 
 @MainActor private final class KeyBindingEditorView: EVEditorView {
+    enum Binding: CaseIterable {
+        case line, paragraph, document
+    }
+
     var interpretedKeys: [UInt16] = []
-    var useDocumentBindings = false
+    var binding = Binding.line
 
     override func interpretKeyEvents(_ eventArray: [NSEvent]) {
         for event in eventArray {
             interpretedKeys.append(event.keyCode)
             let selector: Selector
-            if useDocumentBindings {
+            switch binding {
+            case .document:
                 selector = event.keyCode == 115
                     ? #selector(NSResponder.scrollToBeginningOfDocument(_:))
                     : #selector(NSResponder.scrollToEndOfDocument(_:))
-            } else {
+            case .line:
                 selector = event.keyCode == 115
                     ? #selector(NSResponder.moveToBeginningOfLine(_:))
                     : #selector(NSResponder.moveToEndOfLine(_:))
+            case .paragraph:
+                selector = event.keyCode == 115
+                    ? #selector(NSResponder.moveToBeginningOfParagraph(_:))
+                    : #selector(NSResponder.moveToEndOfParagraph(_:))
             }
             doCommand(by: selector)
         }

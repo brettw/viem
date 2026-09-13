@@ -130,11 +130,11 @@ final class EVTextInputClientTests: XCTestCase {
         XCTAssertTrue(view.hasMarkedText())
         XCTAssertTrue(session.hasActiveComposition)
 
-        for keyCode: UInt16 in [123, 51, 117, 36, 48] {
+        for keyCode: UInt16 in [123, 51, 117, 36, 48, 115, 119] {
             view.keyDown(with: keyEvent(keyCode: keyCode))
         }
 
-        XCTAssertEqual(view.inputContextHandledKeyCodes, [123, 51, 117, 36, 48])
+        XCTAssertEqual(view.inputContextHandledKeyCodes, [123, 51, 117, 36, 48, 115, 119])
         XCTAssertTrue(view.interpretedKeyCodes.isEmpty)
 
         view.inputContextConsumesEvents = false
