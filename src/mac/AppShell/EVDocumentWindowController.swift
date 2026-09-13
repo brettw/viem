@@ -22,8 +22,17 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   public var editorSurface: any EVEditorSurface { paneContainer.activePane.editorSurface }
   var documentContentController: EVDocumentContentViewController { paneContainer.activePane }
   public var activeDocument: EVDocument? { paneContainer.activePane.document }
+  public func documentURL(for surface: any EVEditorSurface) -> URL? {
+    paneContainer.panes.first(where: { $0.editorSurface === surface })?.document?.fileURL
+  }
   private let paneContainer: EVPaneContainer
   private static var instances: [EVWeakDocumentWindow] = []
+  static var hasOpenDocumentWindows: Bool {
+    instances.contains { $0.value.map { !$0.isClosed } ?? false }
+  }
+  var commandDidCloseWindow: () -> Void = {
+    (NSApplication.shared.delegate as? EVApplicationDelegate)?.terminateAfterCommandClose()
+  }
   private var isClosed = false
   private var closeQueue: [EVDocument] = []
   private var closeReviewCompletion: ((Bool) -> Void)?
@@ -454,6 +463,7 @@ extension EVDocumentWindowController {
         return
       }
       for candidate in documents { candidate.close() }
+      commandDidCloseWindow()
       completion(.success(nil))
 
     case .writeAll:
@@ -539,11 +549,10 @@ extension EVDocumentWindowController {
       let writesCurrent = document.fileURL.map { EVDocumentIdentity.sameFile($0, destination) } ?? false
       if writesCurrent, !snapshot.isCompleteSource, !request.force { throw EVDocumentHostError.partialWriteRequiresForce }
       let target = EVDocumentIdentity.canonicalURL(destination)
-      try document.validateExternalWrite(to: target, force: request.force)
-      let expectedFile = request.force ? nil : (writesCurrent ? document.fileBaseline : nil)
-      DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-        let result = Result { try EVExFileWriter.write(snapshot.data, to: target, force: request.force || writesCurrent, expected: expectedFile) }
-        DispatchQueue.main.async {
+      let authorization = try document.authorizeExternalWrite(to: target)
+      writeAuthorizedSnapshot(snapshot.data, document: document, to: target,
+        force: request.force || writesCurrent || authorization.overwriteApproved,
+        expected: authorization.fingerprint) { [weak self] result in
           do {
             try result.get()
             if writesCurrent || adoptBinding { document.recordRecentDocument(target) }
@@ -562,9 +571,29 @@ extension EVDocumentWindowController {
             }
             completion(.success("\(destination.path) written"))
           } catch { completion(.failure(error)) }
-        }
       }
     } catch { completion(.failure(error)) }
+  }
+
+  /// If the destination changes while a background writer prepares its temporary
+  /// file, return to the document actor for a choice and retry the same snapshot.
+  private func writeAuthorizedSnapshot(
+    _ data: Data, document: EVDocument, to target: URL, force: Bool,
+    expected: EVFileFingerprint, completion: @escaping @MainActor (Result<Void, Error>) -> Void
+  ) {
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      let result = Result { try EVExFileWriter.write(data, to: target, force: force, expected: expected) }
+      DispatchQueue.main.async {
+        if case .failure(let error) = result, error is EVExternalFileError {
+          do {
+            let accepted = try document.authorizeExternalWrite(to: target, since: expected)
+            guard let self else { completion(.failure(CocoaError(.userCancelled))); return }
+            self.writeAuthorizedSnapshot(data, document: document, to: target,
+              force: force || accepted.overwriteApproved, expected: accepted.fingerprint, completion: completion)
+          } catch { completion(.failure(error)) }
+        } else { completion(result) }
+      }
+    }
   }
 
   fileprivate func save(
@@ -750,6 +779,7 @@ extension EVDocumentWindowController {
       updateActiveDocumentChrome()
     } else {
       close()
+      commandDidCloseWindow()
     }
   }
 
@@ -917,10 +947,14 @@ final class EVDocumentContentViewController: NSViewController,
 
     editorSurface.statusBarStateDidChange = { [weak self] state in
       guard let self else { return }
+      let outputHadFocus = self.statusBar.isCommandOutputFocused
       self.statusBar.apply(state)
+      if outputHadFocus, state.commandOutput == nil || state.commandLine != nil {
+        self.viewIfLoaded?.window?.makeFirstResponder(self.editorSurface.viewController.view)
+      }
       // The command line lives in the status line, so a hidden status line
       // still has to appear while one is active.
-      let needed = self.showsStatusBar || state.commandLine != nil
+      let needed = self.showsStatusBar || state.commandLine != nil || state.commandOutput != nil
       if self.statusBar.isHidden == needed {
         self.statusBar.isHidden = !needed
         self.layoutContent()
@@ -940,6 +974,12 @@ final class EVDocumentContentViewController: NSViewController,
     statusBar.commandLineDidSelect = { [weak self] offset, extending in
       guard let self else { return }
       self.editorSurface.selectCommandLine(atUTF8Offset: offset, extending: extending)
+    }
+    statusBar.commandOutputDidDismiss = { [weak self] in
+      self?.editorSurface.dismissCommandOutput()
+    }
+    statusBar.commandOutputDidReceiveKey = { [weak self] event in
+      self?.editorSurface.handleStatusMessageKey(event)
     }
   }
 
@@ -965,7 +1005,8 @@ final class EVDocumentContentViewController: NSViewController,
     root.addSubview(statusBar)
 
     statusBar.apply(editorSurface.statusBarState)
-    statusBar.isHidden = !showsStatusBar
+    statusBar.isHidden = !showsStatusBar && editorSurface.statusBarState.commandLine == nil
+      && editorSurface.statusBarState.commandOutput == nil
     view = root
     layoutContent()
   }
@@ -1021,7 +1062,8 @@ final class EVDocumentContentViewController: NSViewController,
 
   @objc func toggleStatusBar(_ sender: Any?) {
     showsStatusBar.toggle()
-    statusBar.isHidden = !showsStatusBar
+    statusBar.isHidden = !showsStatusBar && editorSurface.statusBarState.commandLine == nil
+      && editorSurface.statusBarState.commandOutput == nil
     layoutContent()
     try? EVConfigurationStore.shared.setShowStatusBar(showsStatusBar)
   }

@@ -2801,6 +2801,14 @@ impl FormattedDocument {
         self.styles.query_overlapping(range)
     }
 
+    pub(super) fn append_link_styles(&mut self, spans: Vec<StyleSpan>) {
+        if spans.is_empty() { return; }
+        let mut styles = self.styles.to_vec();
+        styles.extend(spans);
+        styles.sort_by_key(|span| span.range.start);
+        self.styles = IntervalRangeStore::new(styles);
+    }
+
     /// Includes point annotations at an empty editable boundary, located in
     /// `O(log n + k)` without materializing the complete style collection.
     pub(crate) fn style_spans_touching(&self, range: &Range<usize>) -> Vec<StyleSpan> {
@@ -4886,6 +4894,25 @@ fn project_markdown(
             &quote_context,
         );
         let flows = super::paragraph_flow::flow_ranges(&cooked, &cooked_soft);
+        // Source keeps physical lines, while inline link labels/destinations
+        // may cross a soft source break within the same paragraph. Recognize
+        // those intervals without changing any source-visible text or blocks.
+        let mut multiline_links = Vec::new();
+        for flow in &flows {
+            if !cooked.text[flow.clone()].contains('\n') { continue; }
+            if projected.blocks_for_region(flow).iter().any(|block| block.style.0 == "Code Block") {
+                continue;
+            }
+            for link in super::links::markdown_links_in(&cooked.text, flow.clone()) {
+                if cooked.text[link.range.clone()].contains('\n') {
+                    multiline_links.push(StyleSpan {
+                        range: link.range,
+                        application: StyleApplication::Automatic("Link".into()),
+                    });
+                }
+            }
+        }
+        projected.append_link_styles(multiline_links);
         let mut paragraphs: Vec<Block> = Vec::new();
         let mut flow_index = 0;
         for block in projected.blocks() {
@@ -5360,6 +5387,23 @@ impl<'a> MarkdownBuilder<'a> {
                 }
                 self.emit_range(at, at + length);
                 at += length;
+                continue;
+            }
+
+            if let Some(link) = super::links::markdown_inline_at(self.source_text, at, end) {
+                let output_start = self.output.len();
+                if self.preserve_markers {
+                    self.emit_range(link.range.start, link.range.end);
+                } else {
+                    self.parse_inline_depth(link.label.start, link.label.end, depth + 1);
+                }
+                if output_start < self.output.len() {
+                    self.styles.push(StyleSpan {
+                        range: output_start..self.output.len(),
+                        application: StyleApplication::Automatic("Link".into()),
+                    });
+                }
+                at = link.range.end;
                 continue;
             }
 

@@ -536,3 +536,37 @@ pub(super) fn rich_text_batch_patches(
     }
     Ok(patches)
 }
+
+/// Add only syntax bytes not already owned by translated source patches.
+pub(super) fn append_uncovered_deletions(
+    delimiter: &Range<usize>,
+    patches: &[super::SourcePatch],
+    support: &mut Vec<super::SourcePatch>,
+) {
+    let mut remaining = vec![delimiter.clone()];
+    for patch in patches.iter().chain(support.iter()) {
+        remaining = remaining
+            .into_iter()
+            .flat_map(|range| {
+                let overlap =
+                    range.start.max(patch.range().start)..range.end.min(patch.range().end);
+                if overlap.start >= overlap.end {
+                    return vec![range];
+                }
+                let mut parts = Vec::new();
+                if range.start < overlap.start {
+                    parts.push(range.start..overlap.start);
+                }
+                if overlap.end < range.end {
+                    parts.push(overlap.end..range.end);
+                }
+                parts
+            })
+            .collect();
+    }
+    support.extend(
+        remaining
+            .into_iter()
+            .map(|range| super::SourcePatch::primary(range, Vec::new())),
+    );
+}

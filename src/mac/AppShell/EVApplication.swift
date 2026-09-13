@@ -32,6 +32,9 @@ final class EVApplicationDelegate: NSObject,
     private let configuration: EVConfigurationStore
     var documentFactory: () -> EVDocument = { EVDocument() }
     var mainWindow: () -> NSWindow? = { NSApplication.shared.mainWindow }
+    var applicationWindows: () -> [NSWindow] = { NSApplication.shared.windows }
+    var hasOpenDocumentWindows: () -> Bool = { EVDocumentWindowController.hasOpenDocumentWindows }
+    var terminateApplication: () -> Void = { NSApplication.shared.terminate(nil) }
     var recordRecentDocument: (URL) -> Void
 
     init(configuration: EVConfigurationStore? = nil) {
@@ -60,6 +63,23 @@ final class EVApplicationDelegate: NSObject,
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    /// Only a successful editor quit command requests this check. Defer until
+    /// AppKit has finished closing the window and the command has completed.
+    /// No flag survives to affect a later stoplight/menu window close.
+    func terminateAfterCommandClose() {
+        guard hasNoOpenWindows else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.hasNoOpenWindows else { return }
+            self.terminateApplication()
+        }
+    }
+
+    private var hasNoOpenWindows: Bool {
+        !hasOpenDocumentWindows() && !applicationWindows().contains {
+            !($0 is NSPanel) && ($0.isVisible || $0.isMiniaturized)
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

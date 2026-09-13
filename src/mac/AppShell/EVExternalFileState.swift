@@ -1,13 +1,14 @@
 import AppKit
 import CryptoKit
+import Darwin
 
 public enum EVExternalFileChange: Equatable, Sendable {
   case modified, replaced, deleted, unreadable(String)
   public var message: String {
     switch self {
-    case .modified: "The file changed outside Viem. Your buffer is unchanged. Reload with :e! or use :w! to overwrite."
-    case .replaced: "The file was replaced outside Viem. Your buffer is unchanged. Reload with :e! or use :w! to overwrite."
-    case .deleted: "The file was deleted outside Viem. Your buffer is unchanged. Use :w! to recreate it."
+    case .modified: "The file changed outside Viem. Your buffer is unchanged. Reload with :e! or save to choose whether to replace the file."
+    case .replaced: "The file was replaced outside Viem. Your buffer is unchanged. Reload with :e! or save to choose whether to replace the file."
+    case .deleted: "The file was deleted outside Viem. Your buffer is unchanged. Save to choose whether to recreate it."
     case let .unreadable(reason): "The file could not be checked: \(reason). Your buffer is unchanged."
     }
   }
@@ -28,9 +29,53 @@ struct EVFileFingerprint: Equatable, Sendable {
       device: (attributes?[.systemNumber] as? NSNumber)?.uint64Value,
       inode: (attributes?[.systemFileNumber] as? NSNumber)?.uint64Value)
   }
+  static let readChunkSize = 1024 * 1024
+
   static func read(_ url: URL) throws -> Self {
-    do { return bytes(try Data(contentsOf: url, options: .mappedIfSafe), at: url) }
-    catch let error as CocoaError where error.code == .fileReadNoSuchFile { return Self(digest: nil, device: nil, inode: nil) }
+    guard url.isFileURL else { throw CocoaError(.fileReadUnsupportedScheme) }
+    let (descriptor, openError) = try url.withUnsafeFileSystemRepresentation { path -> (Int32, Int32) in
+      guard let path else { throw CocoaError(.fileReadInvalidFileName) }
+      let descriptor = Darwin.open(path, O_RDONLY | O_CLOEXEC)
+      return (descriptor, errno)
+    }
+    if descriptor < 0 {
+      if openError == ENOENT { return Self(digest: nil, device: nil, inode: nil) }
+      throw NSError(domain: NSPOSIXErrorDomain, code: Int(openError),
+        userInfo: [NSFilePathErrorKey: url.path])
+    }
+    let file = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    defer { try? file.close() }
+    return try read(from: file)
+  }
+
+  /// Consumes a newly opened descriptor using one reusable buffer. Descriptor
+  /// metadata identifies the bytes actually hashed even if the pathname is
+  /// replaced during the read. The caller retains ownership of the descriptor.
+  static func read(from file: FileHandle) throws -> Self {
+    let descriptor = file.fileDescriptor
+    var metadata = stat()
+    guard fstat(descriptor, &metadata) == 0 else {
+      throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+    }
+    guard metadata.st_mode & S_IFMT != S_IFDIR else {
+      throw NSError(domain: NSPOSIXErrorDomain, code: Int(EISDIR))
+    }
+    var hash = SHA256()
+    var buffer = [UInt8](repeating: 0, count: readChunkSize)
+    try buffer.withUnsafeMutableBytes { bytes in
+      while true {
+        let count = Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+        if count == 0 { break }
+        if count < 0 {
+          let code = errno
+          if code == EINTR { continue }
+          throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+        }
+        hash.update(bufferPointer: UnsafeRawBufferPointer(start: bytes.baseAddress, count: count))
+      }
+    }
+    return Self(digest: Data(hash.finalize()),
+      device: UInt64(truncatingIfNeeded: metadata.st_dev), inode: UInt64(metadata.st_ino))
   }
   func change(from previous: Self) -> EVExternalFileChange? {
     if digest == nil { return previous.digest == nil ? nil : .deleted }
@@ -38,6 +83,11 @@ struct EVFileFingerprint: Equatable, Sendable {
     if digest != previous.digest { return .modified }
     return nil
   }
+}
+
+struct EVExternalWriteAuthorization {
+  let fingerprint: EVFileFingerprint
+  let overwriteApproved: Bool
 }
 
 @MainActor
@@ -75,27 +125,63 @@ extension EVDocument {
     }
   }
 
-  /// Host preflight is synchronous only for the explicit write operation.
-  /// Alternate new destinations use their own overwrite policy; this guard
-  /// protects a file whose prior contents are known to the buffer.
-  func validateExternalWrite(to url: URL, force: Bool) throws {
-    guard !force, let baseline = fileBaseline, let current = fileURL ?? fileBaselineURL,
-          current.standardizedFileURL == url.standardizedFileURL || EVDocumentIdentity.sameFile(current, url)
-    else { return }
-    let change: EVExternalFileChange?
-    do { change = try EVFileFingerprint.read(url).change(from: baseline) }
-    catch { change = .unreadable(error.localizedDescription) }
+  /// Every explicit write checks the destination, including forced Ex writes.
+  /// A force flag controls read-only/existing-destination policy; it never
+  /// silently authorizes loss of changes made after the document was loaded.
+  /// Returning the accepted state also lets the actual writer detect a change
+  /// while its immutable snapshot was queued or its temporary file was built.
+  func authorizeExternalWrite(to url: URL) throws -> EVExternalWriteAuthorization {
+    let observed: EVFileFingerprint
+    do { observed = try EVFileFingerprint.read(url) }
+    catch {
+      externalFileChange = .unreadable(error.localizedDescription)
+      // An unreadable destination cannot be safely verified or replaced.
+      throw EVExternalFileError.changed(externalFileChange!)
+    }
+    let baseline: EVFileFingerprint?
+    if let current = fileURL ?? fileBaselineURL,
+       current.standardizedFileURL == url.standardizedFileURL || EVDocumentIdentity.sameFile(current, url) {
+      baseline = fileBaseline
+    } else {
+      // A Save As destination may already be open in a different buffer.
+      baseline = EVDocumentIdentity.existingDocument(at: url)?.fileBaseline
+    }
+    let change = baseline.flatMap { observed.change(from: $0) }
     externalFileChange = change
-    if let change { throw EVExternalFileError.changed(change) }
+    if let change {
+      guard confirmExternalOverwrite(change) else { throw CocoaError(.userCancelled) }
+      return EVExternalWriteAuthorization(fingerprint: observed, overwriteApproved: true)
+    }
+    return EVExternalWriteAuthorization(fingerprint: observed, overwriteApproved: false)
+  }
+
+  /// A late change is a different disk state, so it needs a fresh choice.
+  /// The state already accepted by Save Anyway does not prompt a second time.
+  func authorizeExternalWrite(to url: URL, since expected: EVFileFingerprint) throws -> EVExternalWriteAuthorization {
+    let observed = try EVFileFingerprint.read(url)
+    if let change = observed.change(from: expected) {
+      externalFileChange = change
+      guard confirmExternalOverwrite(change) else { throw CocoaError(.userCancelled) }
+      return EVExternalWriteAuthorization(fingerprint: observed, overwriteApproved: true)
+    }
+    return EVExternalWriteAuthorization(fingerprint: observed, overwriteApproved: false)
   }
 
   func confirmExternalOverwrite(_ change: EVExternalFileChange) -> Bool {
     if let handler = externalSaveDecisionHandler { return handler(change) }
     let alert = NSAlert()
+    alert.alertStyle = .critical
     alert.messageText = "The file changed outside Viem."
-    alert.informativeText = "Saving will replace the current file with this buffer’s contents."
-    alert.addButton(withTitle: "Overwrite")
+    let explanation: String
+    switch change {
+    case .modified: explanation = "The file has been modified since Viem last read or saved it."
+    case .replaced: explanation = "The file has been replaced since Viem last read or saved it."
+    case .deleted: explanation = "The file has been deleted since Viem last read or saved it."
+    case let .unreadable(reason): explanation = "The file cannot be checked: \(reason)."
+    }
+    alert.informativeText = "\(explanation) Save Anyway replaces the file on disk with this buffer’s contents, recreating it if necessary. Cancel keeps both versions unchanged."
     alert.addButton(withTitle: "Cancel")
-    return alert.runModal() == .alertFirstButtonReturn
+    alert.addButton(withTitle: "Save Anyway")
+    return alert.runModal() == .alertSecondButtonReturn
   }
 }

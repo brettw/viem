@@ -252,6 +252,25 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
         XCTAssertTrue(saveAs.force)
     }
 
+    func testUppercaseZZUsesExactSaveQuitRequestAndReportsSaveFailure() throws {
+        let (_, surface, session) = try makeSurface("body")
+        let host = DocumentHost()
+        host.result = .failure(EVDocumentHostError.saveCancelledOrFailed)
+        surface.documentHostEffectHandler = host
+
+        try sendKeys("ZZ", through: session)
+
+        let request = try XCTUnwrap(host.requests.last?.first)
+        XCTAssertEqual(host.requests.count, 1)
+        XCTAssertEqual(request.kind, .writeQuit)
+        XCTAssertEqual(request.documentID, surface.documentState.document_id)
+        XCTAssertEqual(request.documentRevision, surface.documentState.document_revision)
+        XCTAssertFalse(request.force)
+        XCTAssertEqual(try commandOutput(from: surface),
+            EVDocumentHostError.saveCancelledOrFailed.localizedDescription)
+        XCTAssertEqual(surface.formattedText, "body")
+    }
+
     func testHostFailureIsRenderedAndWriteQuitRemainsOneTypedRequest() throws {
         let (_, surface, session) = try makeSurface("body")
         let host = DocumentHost()
@@ -319,16 +338,8 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
 
     private func commandOutput(from surface: EVEditorSurfaceController, file: StaticString = #filePath, line: UInt = #line) throws -> String {
         let output = try XCTUnwrap(surface.commandOutput, file: file, line: line)
-        let bar = surface.editorView.commandOutputBar
-        XCTAssertFalse(bar.isHidden, file: file, line: line)
-        XCTAssertFalse(bar.textView.isEditable, file: file, line: line)
-        XCTAssertTrue(bar.textView.isSelectable, file: file, line: line)
-        XCTAssertEqual(bar.textView.string, output, file: file, line: line)
-        XCTAssertEqual(surface.statusBarState.message, "", "output is not duplicated in the status bar", file: file, line: line)
-        let close = try XCTUnwrap(bar.subviews.compactMap { $0 as? NSButton }.first, file: file, line: line)
-        XCTAssertEqual(close.accessibilityLabel(), "Close command output", file: file, line: line)
-        XCTAssertFalse(close.isHidden, file: file, line: line)
-        XCTAssertNotNil(close.image, file: file, line: line)
+        XCTAssertEqual(surface.statusBarState.commandOutput, output, file: file, line: line)
+        XCTAssertEqual(surface.statusBarState.message, "", file: file, line: line)
         return output
     }
 

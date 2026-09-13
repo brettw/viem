@@ -309,8 +309,8 @@ struct CoreTextMeasurementProviderTests {
   @Test("detached native leases release on a worker after their provider is gone")
   func detachedLeaseOutlivesProvider() throws {
     var provider: CoreTextMeasurementProvider? = CoreTextMeasurementProvider(measurementEnvironmentID: 146)
-    weak var weakProvider = provider
-    weak var weakRegistry = provider?.renderRegistry
+    weak let weakProvider = provider
+    weak let weakRegistry = provider?.renderRegistry
     let table = try #require(provider).makeProviderTable()
     let retain = try #require(table.retain_render_runs)
     let release = try #require(table.release_render_runs)

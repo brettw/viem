@@ -19,8 +19,14 @@ import XCTest
         try backend.read(source: Data("document".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
-        window.contentViewController = surface
-        surface.loadViewIfNeeded(); surface.view.frame = NSRect(x: 0, y: 0, width: 600, height: 400); surface.viewDidLayout()
+        let container = NSViewController()
+        container.view = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
+        window.contentViewController = container
+        container.addChild(surface)
+        surface.loadViewIfNeeded()
+        surface.view.frame = NSRect(x: 0, y: EVStatusBarView.preferredHeight, width: 600, height: 400 - EVStatusBarView.preferredHeight)
+        container.view.addSubview(surface.view)
+        surface.viewDidLayout()
         window.makeFirstResponder(surface.editorView)
         // A real pane pairs the editor with a status line, which now renders
         // and hit-tests the command line.
@@ -28,7 +34,13 @@ import XCTest
         statusBar.frame = NSRect(x: 0, y: 0, width: 600, height: EVStatusBarView.preferredHeight)
         window.contentView?.addSubview(statusBar)
         statusBar.apply(surface.statusBarState)
-        surface.statusBarStateDidChange = { [weak statusBar] state in statusBar?.apply(state) }
+        surface.statusBarStateDidChange = { [weak statusBar, weak surface, weak window] state in
+            let outputFocused = statusBar?.isCommandOutputFocused == true
+            statusBar?.apply(state)
+            if outputFocused, state.commandOutput == nil { window?.makeFirstResponder(surface?.view) }
+        }
+        statusBar.commandOutputDidDismiss = { [weak surface] in surface?.dismissCommandOutput() }
+        statusBar.commandOutputDidReceiveKey = { [weak surface] event in surface?.handleStatusMessageKey(event) }
         statusBar.commandLineDidSelect = { [weak surface] offset, extending in
             surface?.selectCommandLine(atUTF8Offset: offset, extending: extending)
         }
@@ -84,24 +96,106 @@ import XCTest
         XCTAssertEqual(try backend.formattedText(), "document")
         withExtendedLifetime(window) {}
     }
-    func testCommandOutputIsSelectablePersistentClosableAndColonReplacesIt() throws {
-        let (_, surface, session, window) = try makeSurface()
+    private func outputTextView(in bar: EVStatusBarView) throws -> NSTextView {
+        try XCTUnwrap(bar.subviews.compactMap { ($0 as? NSScrollView)?.documentView as? NSTextView }.first)
+    }
+
+    func testCommandOutputUsesStatusLineWithoutMovingDocumentAndDismissesOnInput() throws {
+        let (backend, surface, session, window) = try makeSurface()
+        let bar = try statusBar(in: window)
+        let frame = surface.view.frame
+        let viewport = surface.editorView.layoutViewportSize
+        let text = try outputTextView(in: bar)
         surface.publishHostMessage("first\nsecond")
-        XCTAssertFalse(surface.editorView.commandOutputBar.isHidden)
-        XCTAssertFalse(surface.editorView.commandOutputBar.textView.isEditable)
-        XCTAssertTrue(surface.editorView.commandOutputBar.textView.isSelectable)
+        XCTAssertEqual(surface.statusBarState.commandOutput, "first\nsecond")
+        XCTAssertFalse(text.isHiddenOrHasHiddenAncestor)
+        XCTAssertFalse(text.isEditable)
+        XCTAssertTrue(text.isSelectable)
+        XCTAssertEqual(surface.view.frame, frame)
+        XCTAssertEqual(surface.editorView.layoutViewportSize, viewport)
         surface.performInput { _ = try session.sendText("l") }
-        XCTAssertEqual(surface.commandOutput, "first\nsecond")
+        XCTAssertNil(surface.commandOutput)
+        XCTAssertTrue(text.isHiddenOrHasHiddenAncestor)
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 1)
+        surface.publishHostMessage("new")
         surface.performInput { _ = try session.sendText(":") }
         XCTAssertNil(surface.commandOutput)
-        XCTAssertTrue(surface.editorView.commandOutputBar.isHidden)
-        surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
-        surface.publishHostMessage("new")
-        surface.dismissCommandOutput()
-        XCTAssertNil(surface.commandOutput)
+        XCTAssertEqual(surface.commandLine?.prompt, ":")
+        XCTAssertEqual(try backend.formattedText(), "document")
+        XCTAssertEqual(surface.view.frame, frame)
         withExtendedLifetime(window) {}
     }
-    func testNativeOptionWarningsAndExErrorsReachPersistentOutput() throws {
+
+    func testOutputSelectionCopiesExactMultilineUnicodeAndSurvivesPresentationRefresh() throws {
+        let (backend, surface, _, window) = try makeSurface()
+        let bar = try statusBar(in: window)
+        let text = try outputTextView(in: bar)
+        let message = "café 🙂\nsecond line"
+        surface.publishHostMessage(message)
+        window.makeFirstResponder(text)
+        surface.perform(menuCommand: .selectAll, sender: nil)
+        XCTAssertTrue(surface.presentation(for: .copy).isEnabled)
+        XCTAssertFalse(surface.presentation(for: .cut).isEnabled)
+        let selected = text.selectedRange()
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        // NSTextView advertises its supported pasteboard spelling (currently
+        // NSStringPboardType); requesting .string directly bypasses that native
+        // negotiation and fails even for an ordinary stock NSTextView.
+        XCTAssertTrue(text.writeSelection(to: pasteboard, types: text.writablePasteboardTypes))
+        XCTAssertEqual(pasteboard.string(forType: .string), message)
+        surface.refreshStatusBarActivity()
+        XCTAssertEqual(text.selectedRange(), selected)
+        XCTAssertEqual(surface.commandOutput, message)
+        surface.perform(menuCommand: .cut, sender: nil)
+        XCTAssertEqual(text.string, message)
+        XCTAssertEqual(try backend.formattedText(), "document")
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "l",
+            charactersIgnoringModifiers: "l", isARepeat: false, keyCode: 37))
+        text.keyDown(with: event)
+        XCTAssertNil(surface.commandOutput)
+        XCTAssertTrue(window.firstResponder === surface.editorView)
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 1)
+        XCTAssertEqual(try backend.formattedText(), "document")
+    }
+
+    func testOutputTimeoutUsesNewMessageDeadlineAndPreservesOtherFocus() throws {
+        let (_, surface, _, window) = try makeSurface()
+        let bar = try statusBar(in: window)
+        let text = try outputTextView(in: bar)
+        var now: TimeInterval = 100
+        surface.commandOutputClock = { now }
+        surface.publishHostMessage("old")
+        XCTAssertEqual(surface.commandOutputDeadline, 130)
+        surface.expireCommandOutput(at: 129.9)
+        XCTAssertEqual(surface.commandOutput, "old")
+        now = 120
+        surface.publishHostMessage("new")
+        XCTAssertEqual(surface.commandOutputDeadline, 150)
+        surface.expireCommandOutput(at: 130)
+        XCTAssertEqual(surface.commandOutput, "new")
+        window.makeFirstResponder(text)
+        surface.expireCommandOutput(at: 150)
+        XCTAssertNil(surface.commandOutput)
+        XCTAssertNil(surface.commandOutputDeadline)
+        XCTAssertTrue(window.firstResponder === surface.editorView)
+        surface.publishHostMessage("last")
+        let other = NSTextField(frame: NSRect(x: 0, y: 0, width: 80, height: 24))
+        window.contentView?.addSubview(other)
+        window.makeFirstResponder(other)
+        let previousResponder = window.firstResponder
+        surface.expireCommandOutput(at: 200)
+        XCTAssertTrue(window.firstResponder === previousResponder)
+        surface.publishHostMessage("close me")
+        let close = try XCTUnwrap(bar.subviews.compactMap { $0 as? NSButton }
+            .first { $0.accessibilityLabel() == "Close command output" })
+        close.performClick(nil)
+        XCTAssertNil(surface.commandOutput)
+        XCTAssertNil(surface.commandOutputDeadline)
+    }
+    func testNativeOptionWarningsAndExErrorsReachStatusOutput() throws {
         let (_, surface, session, window) = try makeSurface()
         surface.performInput { _ = try session.sendText(":s bar.txt"); _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
         XCTAssertTrue(surface.commandOutput?.contains(":saveas <file>") == true)
@@ -110,7 +204,7 @@ import XCTest
         surface.performInput { _ = try session.setEncoding(UInt32(VIEM_ENCODING_LATIN1), expected: state) }
         XCTAssertNotNil(surface.commandOutput)
         XCTAssertTrue(surface.commandOutput?.lowercased().contains("replac") == true)
-        XCTAssertFalse(surface.editorView.commandOutputBar.isHidden)
+        XCTAssertEqual(surface.statusBarState.commandOutput, surface.commandOutput)
         XCTAssertEqual(surface.statusBarState.message, "")
         withExtendedLifetime(window) {}
     }

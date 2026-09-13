@@ -102,7 +102,7 @@ final class EVDocumentScrollbars: NSView {
                 guard let self, let scroller, self.onScroll != nil,
                       scroller.isEnabled,
                       axis == .vertical || self.horizontalAvailable else { return false }
-                self.performScrollAction(axis: axis, part: increment ? .incrementLine : .decrementLine, value: 0)
+                self.performLineScroll(axis: axis, increment: increment)
                 NSAccessibility.post(element: scroller, notification: .valueChanged)
                 return true
             }
@@ -261,6 +261,14 @@ final class EVDocumentScrollbars: NSView {
         guard requested.isFinite else { return }
         noteScrollActivity()
         onScroll?(axis, min(1, max(0, requested)))
+    }
+
+    private func performLineScroll(axis: Axis, increment: Bool) {
+        let state = axis == .vertical ? verticalState : horizontalState
+        guard state.maximum.isFinite, state.maximum > 0 else { return }
+        let line = state.lineStep.isFinite ? max(1, state.lineStep) : 1
+        let delta = Double(line / state.maximum) * (increment ? 1 : -1)
+        performScrollAction(axis: axis, part: .knob, value: state.normalizedPosition + delta)
     }
 
     func setTracking(_ tracking: Bool, axis: Axis) {

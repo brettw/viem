@@ -497,6 +497,13 @@ Stale identities and incomplete provenance are not resolved by deleting the
 nearest source hull. User-facing errors describe the unsupported
 edit or format constraint; they never expose an "unambiguous source range" error.
 
+Deleting valid visible Markdown text, including the last character of an inline
+code span and selections across physical or visual rows, MUST remain possible.
+The translation owns supporting delimiter removal, merging adjacent code spans,
+and preserving retained folded spaces when deleting text changes how the source
+is parsed. Those repairs remain minimal explicit patches in the same verified,
+undoable transaction; candidate verification is never bypassed.
+
 ### Complexity and API requirements
 
 Resolving or comparing points and finding a hard-line boundary in one snapshot
@@ -1210,6 +1217,32 @@ syntax may affect neither display nor editing, but it is never discarded.
   effective supported properties, opaque-content anchors, and source
   well-formedness expectations satisfy the intention.
 
+### Links in Markdown and HTML
+
+Markdown inline links `[label](destination)` and HTML anchors with `href`
+contribute an automatic Link character style, blue and underlined by default.
+The style remains editable in the format's style sheet; explicit authored
+character styles and direct declarations take precedence over its defaults.
+Markdown WYSIWYG shows
+the formatted label; Markdown Source styles the entire inline link construct.
+HTML WYSIWYG styles visible anchor contents; HTML Source styles only the content
+between the anchor tags, excluding the opening and closing anchor tags.
+Recognition is passive and keeps source bytes unchanged. Inline and fenced code
+do not acquire Markdown link styling. Escaped punctuation, balanced destination
+parentheses, angle destinations, optional titles, and character references are
+recognized without fetching their targets. Reference-style Markdown links and
+autolinks are outside this initial inline-link feature.
+
+Right-clicking actual link content puts Open link first in the edit context
+menu, followed by a divider. Keyboard context menus use the current caret.
+Opening revalidates the exact document revision and resolves the destination
+from current source; stale menus cannot open an old target. Native URL APIs
+open HTTP, HTTPS, and file destinations in the default web browser, with relative
+destinations resolved against the containing document's URL. No destination is
+passed to a shell. Existing percent escapes are preserved, additional invalid
+URI bytes are encoded once, and control characters or executable URL schemes
+are rejected. Other document interaction does not launch links.
+
 ### HTML adapter
 
 #### Parsing, preservation, and active content
@@ -1322,7 +1355,8 @@ The initial supported Character-property mappings are:
 - `font-weight` -> numeric weight;
 - `font-style` -> slant;
 - `color` and `background-color` -> foreground and background color;
-- `text-decoration-line` -> underline and strike decoration;
+- `text-decoration-line`, and the `text-decoration` shorthand when its value is
+  only `none`, `underline`, and/or `line-through`, -> underline and strike decoration;
 - `letter-spacing` -> letter spacing;
 - `vertical-align`, for supported length, `super`, and `sub` values -> baseline
   shift;
@@ -2514,9 +2548,10 @@ Leaving Insert mode preserves a final empty hard line/paragraph and places the
 Normal block caret at its existing empty boundary. It must not move backward
 over the preceding paragraph separator.
 
-When an editor view is not the active first responder, its caret is a
-nonblinking hollow outline in the same geometry instead of a filled block,
-vertical insertion indicator, or underline. An active caret blinks according to
+An active caret requires the focused text surface, active window, and active
+application. When any of these is inactive, its caret is a nonblinking hollow
+outline at 75% opacity, retaining the current mode's block, thin insertion, or
+underline geometry. An active caret blinks according to
 the platform's text-cursor and accessibility preferences where those are
 available. Processing a key or changing the caret position makes it visible and
 restarts the applicable idle/blink behavior.
@@ -3291,8 +3326,11 @@ Backspace/Delete, history Up/Down, Escape, and Enter. Prompt text supports
 mouse selection, Shift+arrow selection, and the native Cut/Copy/Paste/Select All
 commands. Prompt edits use validated prompt identity and never target the
 document behind the prompt. Command output replaces the prompt with selectable,
-read-only text and an explicit close button. A new `:` replaces that output with
-an editable prompt; ordinary editor input dismisses the output.
+read-only text and an explicit close button at the left of the status line.
+A new `:` replaces that output with an editable prompt; ordinary editor input
+dismisses the output and is processed normally. Output also dismisses after
+30 seconds. Selecting, navigating, and copying output do not dismiss it or
+extend the timeout; output cannot be cut, deleted, or edited.
 
 Filename arguments to `:edit`/`:E`, `:write`, `:saveas`, `:wq`, `:xit`,
 `:split`/`:vsplit`, and `:cd`/`:chdir` support Rust-backed prefix completion.
@@ -3320,10 +3358,27 @@ relative file requests. `:update` writes only a modified buffer. `:s` remains
 substitute; filename-like misuse reports `:w` and `:saveas` as the save commands.
 `:checktime` and window activation compare the bound artifact with the exact
 last-loaded/saved fingerprint off the main thread. Changed, replaced, deleted,
-or unreadable files produce non-destructive output. Ordinary saves guard against
-external overwrite; `:e!` explicitly reloads and `:w!` authorizes overwrite or
-recreation. A successful reload/save refreshes the baseline. Native saves may
-ask for an explicit overwrite choice; automatic checks never reload a buffer.
+or unreadable files produce non-destructive output. Every explicit save path,
+including native Save/Save As, close-review saves, `:write`, `:saveas`, `:wq`,
+`:xit`, `:update`, `:wall`, and forced `!` variants, checks the destination before
+writing. Changes since the last load/save require a modal error dialog offering
+Cancel (the default) or Save Anyway. `!` does not bypass this external-change
+confirmation. A successful reload/save refreshes the baseline. Automatic checks
+never reload a buffer; `:e!` explicitly reloads. A queued write rechecks its
+accepted fingerprint before publishing; a further change needs another choice.
+This narrows races with other writers but is not a filesystem compare-and-swap.
+
+Normal-mode `ZZ` requests one full save followed by closing the active view.
+It ignores a count and register prefix, changes no registers or undo history,
+and has no operator-pending form. Escape cancels the uppercase `Z` prefix.
+Read-only rejection, save cancellation, stale snapshot acknowledgement, or any
+write failure reports the failure and MUST keep the document/view open.
+Successful `ZZ`, `:quit`, `:qall`, `:wq`, and `:xit` commands (including their
+abbreviations and supported force/range/path variants) terminate the application
+when their close leaves no document windows or other ordinary application
+windows open. Closing only a split pane does not terminate. Stoplight and other
+non-command window closes do not request application termination; a previous
+command close must not change that policy for a later ordinary close.
 
 The editor provides a native contextual Cut/Copy/Paste menu through right-click,
 Control-click, and keyboard contextual-menu access. Wheel deltas use AppKit's
@@ -3489,6 +3544,15 @@ the window edge on the leading side, while the command text itself obeys the
 corner inset below. The command line keeps its own caret, marked-text
 underline, and selection highlight, and scrolls horizontally to keep its caret
 visible.
+
+Command output uses that same status area and retains the caret position widget,
+but uses the normal status foreground and background colors. Its X close button
+is left of the selectable, read-only text. Long or multiline output scrolls
+inside the existing status-line height; it never introduces a document overlay
+or changes the size of an already-visible status line. A hidden status line
+appears while a prompt or output needs it, then follows the visibility preference
+again. Closing or expiring output returns focus to the editor only if the output
+held focus; it never activates another window or interrupts another control.
 
 A window with rounded corners clips the ends of a status line. Inset every
 status line's contents, including the command line's text, by the width of the
@@ -4838,7 +4902,8 @@ assumption through the C ABI or into `src/core`.
   from the exact `CaretPoint` geometry. Keep it a thin insertion indicator; do
   not resize it to implement Normal or Visual mode blocks.
 - Set `displayMode` to `.automatic` while its text-input surface is the active
-  first responder and the applicable mode uses a vertical caret. Set it to
+  first responder in the key window of the active application and the applicable
+  mode uses a vertical caret. Set it to
   `.hidden` in Normal, Visual, or Replace mode, when the view resigns first
   responder, and whenever the portable inactive-outline presentation is used.
 - Preserve the native indicator's system blinking, dictation effects, input
@@ -5430,7 +5495,7 @@ preserving source bytes. An explicit HTML-to-Markdown or Markdown-to-HTML
 conversion instead translates the formatted text and representable styling to
 new source syntax as one undoable transaction, including source-visible variants.
 This explicitly requested conversion may replace the entire source and reports
-lost unsupported information through the command output bar. It is distinct
+lost unsupported information through command output in the status line. It is distinct
 from no-op saves and ordinary local edits, which remain lossless.
 Mode/format changes preserve each view's insertion cursor and visible text as
 closely as possible. Unchanged source provenance and explicit conversion
@@ -5443,7 +5508,7 @@ and stays before newly exposed closing syntax; downstream follows subsequent
 content. This conversion policy does not change ordinary typing associations.
 Encoding selection transcodes source syntax and verifies the new projection.
 An explicit conversion to Latin-1 may replace unrepresentable scalars with `?`,
-reporting the count in the output bar; undo restores the exact original bytes.
+reporting the count in the status line; undo restores the exact original bytes.
 Ordinary typing in an existing Latin-1 document remains strict and must never
 silently substitute. Line-ending selection delegates
 to the shared conversion component. RTF disables the generic encoding and

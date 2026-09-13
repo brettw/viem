@@ -57,6 +57,8 @@ fn tag_with_properties(
     if let Some(css) = tag.attribute("style") {
         html::apply_css(css, &mut character, &mut paragraph);
     }
+    let clearing_masked_bold = clear.contains(&StyleProperty::CharacterWeight)
+        && character.weight.is_some() && character.bold.is_none();
     clear_character(
         &mut character,
         &clear
@@ -84,8 +86,7 @@ fn tag_with_properties(
             .collect(),
     )?;
     if (matches!(name.as_str(), "b" | "strong")
-        && (clear.contains(&StyleProperty::CharacterWeight)
-            || clear.contains(&StyleProperty::CharacterBold)))
+        && (clear.contains(&StyleProperty::CharacterBold) || clearing_masked_bold))
         || (matches!(name.as_str(), "i" | "em") && clear.contains(&StyleProperty::CharacterSlant))
         || (name == "u" && clear.contains(&StyleProperty::CharacterUnderline))
         || (matches!(name.as_str(), "s" | "strike" | "del")
@@ -252,11 +253,8 @@ pub(super) fn clear_character_patches(
         };
         let mut original = CharacterProperties::default();
         let mut block = BlockProperties::default();
-        if let Some(css) = tag.attribute("style") {
-            html::apply_css(css, &mut original, &mut block);
-        }
         if matches!(tag.name.as_str(), "b" | "strong") {
-            original.weight = Some(700);
+            original.bold = Some(true);
         }
         if matches!(tag.name.as_str(), "i" | "em") {
             original.slant = Some(FontSlant::Italic);
@@ -266,6 +264,9 @@ pub(super) fn clear_character_patches(
         }
         if matches!(tag.name.as_str(), "s" | "strike" | "del") {
             original.strikethrough = Some(true);
+        }
+        if let Some(css) = tag.attribute("style") {
+            html::apply_css(css, &mut original, &mut block);
         }
         if tag.attribute("lang").is_some() {
             original.language = Some("x".into());

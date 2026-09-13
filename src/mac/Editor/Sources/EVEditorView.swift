@@ -131,6 +131,14 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private var lastTextInputSelectionState: EVTextInputSelectionState?
     private var textInputGeometryUpdateActive = false
     private(set) var isActiveTextSurface = false
+    // Injectable like the blink clock: an AppKit unit-test process does not
+    // own the foreground application's activation lifecycle.
+    var applicationIsActive: () -> Bool = { NSApp.isActive }
+    var isCaretActive: Bool {
+        isActiveTextSurface && window?.isKeyWindow == true && applicationIsActive()
+    }
+    private var caretFocusObservers: [NSObjectProtocol] = []
+    var openLinkURL: (URL, @escaping @MainActor (Error?) -> Void) -> Void = EVLinkOpener.open
     private var caretAppearanceObserver: NSObjectProtocol?
     private var editingPreferencesObserver: NSObjectProtocol?
     private weak var configuredEditingSession: EVCoreViewSession?
@@ -157,7 +165,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         customCaretBlinkController.presentation
     }
     var isInactiveCommandLineCaretOutlineVisible: Bool {
-        !isActiveTextSurface && commandLineRenderState() != nil
+        !isCaretActive && commandLineRenderState() != nil
     }
     private var compositionActive: Bool { surface != nil && markedTextTarget != nil }
 
@@ -202,9 +210,22 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             }
         }
         synchronizeEditingPreferences()
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                     NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
+            caretFocusObservers.append(NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if let changedWindow = notification.object as? NSWindow, changedWindow !== self.window { return }
+                    self.refreshCaretActivity()
+                }
+            })
+        }
     }
 
     deinit {
+        for observer in caretFocusObservers { NotificationCenter.default.removeObserver(observer) }
         if let caretAppearanceObserver {
             NotificationCenter.default.removeObserver(caretAppearanceObserver)
         }
@@ -271,6 +292,18 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         super.viewWillMove(toWindow: newWindow)
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        refreshCaretActivity()
+    }
+
+    private func refreshCaretActivity() {
+        updateCustomCaretPresentation()
+        updateInsertionIndicator()
+        needsDisplay = true
+        surface?.refreshStatusBarActivity()
+    }
+
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         EVCaretAppearanceResolver.shared.noteEffectiveAppearanceChange()
@@ -305,32 +338,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         superview?.subviews.lazy.compactMap { $0 as? EVStatusBarView }.first
     }
 
-    private(set) lazy var commandOutputBar: EVCommandOutputBar = {
-        let bar = EVCommandOutputBar(frame: .zero)
-        bar.isHidden = true
-        bar.autoresizingMask = [.width, .minYMargin]
-        bar.close = { [weak self] in self?.surface?.dismissCommandOutput() }
-        bar.beginCommand = { [weak self] in
-            guard let self, let surface = self.surface, let session = surface.session else { return }
-            self.window?.makeFirstResponder(self)
-            surface.performInput {
-                if [UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE)].contains(surface.viewPresentation.mode) {
-                    _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
-                }
-                _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 58)
-            }
-        }
-        addSubview(bar)
-        return bar
-    }()
-
     func applyPresentation() {
-        if let output = surface?.commandOutput, surface?.commandLine?.prompt == nil {
-            let height = min(bounds.height / 3, CGFloat(min(6, output.split(separator: "\n", omittingEmptySubsequences: false).count)) * 16 + 16)
-            commandOutputBar.frame = NSRect(x: 0, y: bounds.maxY - height, width: bounds.width, height: height)
-            commandOutputBar.show(output)
-            commandOutputBar.isHidden = false
-        } else { commandOutputBar.isHidden = true }
         synchronizeEditingPreferences()
         reconcileMarkedTextWithCore()
         updateDocumentScrollbars()
@@ -367,7 +375,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             return
         }
         let presentation = surface.viewPresentation
-        guard isCustomCaretMode(presentation.mode) else {
+        guard isCustomCaretMode(presentation.mode)
+                || (presentation.mode == UInt32(VIEM_MODE_INSERT) && !isCaretActive) else {
             lastCustomCaretState = nil
             customCaretBlinkController.stop()
             return
@@ -380,7 +389,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             cursorUTF8Offset: presentation.cursor_utf8_offset,
             affinity: presentation.cursor_affinity
         )
-        let active = isActiveTextSurface
+        let active = isCaretActive
         if !customCaretBlinkController.isStarted {
             customCaretBlinkController.start(active: active)
         } else {
@@ -1145,9 +1154,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func layoutDocumentScrollbars() {
-        let bottom = commandOutputBar.isHidden ? bounds.maxY : commandOutputBar.frame.minY
         documentScrollbars.frame = NSRect(x: bounds.minX, y: bounds.minY,
-            width: bounds.width, height: max(0, bottom - bounds.minY))
+            width: bounds.width, height: bounds.height)
         documentScrollbars.needsLayout = true
     }
 
@@ -1225,6 +1233,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     override func keyDown(with event: NSEvent) {
         guard let surface else { return }
+        surface.dismissCommandOutput()
         guard let session = surface.session else { return }
         customCaretBlinkController.restartAfterActivity()
         let shortcutModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
@@ -1508,13 +1517,59 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
 
     override func menu(for event: NSEvent) -> NSMenu? {
+        surface?.dismissCommandOutput()
         let menu = NSMenu(title: "Edit")
+        if let target = linkMenuTarget(for: event) {
+            let item = NSMenuItem(title: "Open link", action: #selector(openLink(_:)), keyEquivalent: "")
+            item.image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
+            item.target = self
+            item.representedObject = target
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
         for (title, action) in [("Cut", #selector(cutDocumentSelection(_:))), ("Copy", #selector(copyDocumentSelection(_:))), ("Paste", #selector(pasteIntoDocument(_:))), ("Paste and Match Style", #selector(pastePlainTextIntoDocument(_:))), ("Select All", #selector(selectAll(_:)))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             menu.addItem(item)
         }
         return menu
+    }
+
+    private func linkMenuTarget(for event: NSEvent) -> EVLinkMenuTarget? {
+        guard let surface, let session = surface.session, let snapshot = surface.layoutSnapshot else { return nil }
+        let target: EVLinkMenuTarget
+        if event.type == .keyDown {
+            let presentation = surface.viewPresentation
+            target = EVLinkMenuTarget(documentID: presentation.document_id,
+                                      revision: presentation.document_revision,
+                                      offset: presentation.cursor_utf8_offset)
+        } else {
+            let local = convert(event.locationInWindow, from: nil)
+            let point = layoutPoint(fromViewPoint: local)
+            // Hit testing alone snaps distant whitespace to the nearest caret.
+            // Only actual link glyphs should acquire the special context menu.
+            guard snapshot.clusters.contains(where: { clusterRect($0).contains(local) }),
+                  let caret = try? session.hitTest(point, in: snapshot.info) else { return nil }
+            var offset = caret.text_offset
+            if let cluster = snapshot.clusters.first(where: { clusterRect($0).contains(local) }),
+               offset >= cluster.text_end { offset = cluster.text_start }
+            target = EVLinkMenuTarget(documentID: caret.document_id,
+                                      revision: caret.document_revision, offset: offset)
+        }
+        guard (try? surface.backend.linkDestination(at: target)) != nil else { return nil }
+        return target
+    }
+
+    @objc func openLink(_ sender: NSMenuItem) {
+        guard let surface, let target = sender.representedObject as? EVLinkMenuTarget else { return }
+        do {
+            guard let destination = try surface.backend.linkDestination(at: target) else { return }
+            let base = surface.documentHostEffectHandler?.documentURL(for: surface)
+            let url = try EVLinkOpener.destinationURL(destination, relativeTo: base)
+            openLinkURL(url) { [weak surface] error in
+                if let error { surface?.report(error) }
+            }
+        } catch { surface.report(error) }
     }
 
     private func showEditorContextMenu(_ event: NSEvent) {
@@ -1526,6 +1581,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     // MARK: - Pointer and scrolling
 
     override func mouseDown(with event: NSEvent) {
+        surface?.dismissCommandOutput()
         if event.modifierFlags.contains(.control) { showEditorContextMenu(event); return }
         stopDragAutoscroll()
         window?.makeFirstResponder(self)
@@ -2863,10 +2919,20 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
+    static func inactiveCaretRect(_ rect: NSRect, mode: UInt32) -> NSRect {
+        if mode == UInt32(VIEM_MODE_INSERT) {
+            return NSRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height)
+        }
+        if mode == UInt32(VIEM_MODE_REPLACE) {
+            return NSRect(x: rect.minX, y: rect.maxY - 2, width: rect.width, height: 2)
+        }
+        return rect
+    }
+
     private func drawCustomCaret(_ snapshot: EVLayoutExport, in context: CGContext) {
         guard let surface else { return }
         let mode = surface.viewPresentation.mode
-        let active = isActiveTextSurface
+        let active = isCaretActive
         if mode == UInt32(VIEM_MODE_COMMAND_LINE) { return }
         if active && mode == UInt32(VIEM_MODE_INSERT) { return }
 
@@ -2886,7 +2952,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
 
         if customPresentation == .inactiveOutline {
-            color.setStroke()
+            rect = Self.inactiveCaretRect(rect, mode: mode)
+            color.withAlphaComponent(0.75).setStroke()
             let outline = rect.insetBy(dx: 0.5, dy: 0.5)
             NSBezierPath(rect: outline).stroke()
             return
@@ -3033,7 +3100,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             return
         }
         let mode = surface.viewPresentation.mode
-        let active = isActiveTextSurface
+        let active = isCaretActive
         guard mode == UInt32(VIEM_MODE_INSERT), active,
               var rect = caretRect(
                   offset: presentationCaretUTF8Offset,

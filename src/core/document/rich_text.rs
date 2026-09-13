@@ -376,6 +376,7 @@ fn character_edit_verified_with_queries(
         observe_queries(blocks.len(), spans.len());
         let block = blocks.iter().find(|block| block.range.contains(&offset))?;
         let mut direct = CharacterProperties::default();
+        let mut link_defaults = CharacterProperties::default();
         let mut named = None;
         for span in spans.iter().filter(|span| span.range.contains(&offset))
         {
@@ -383,6 +384,10 @@ fn character_edit_verified_with_queries(
                 StyleApplication::Direct(layer) => overlay(&mut direct, layer),
                 StyleApplication::Named(style) => named = Some(style),
                 StyleApplication::SourcePreservedWhitespace => {}
+                StyleApplication::Automatic(id) if id.0 == "Link" => {
+                    overlay(&mut link_defaults,
+                        &document.style_sheet().automatic_character_properties(id).ok()?);
+                }
                 StyleApplication::Semantic(_)
                 | StyleApplication::Automatic(_)
                 | StyleApplication::SourceSyntax
@@ -402,13 +407,15 @@ fn character_edit_verified_with_queries(
             }
             overlay(&mut direct, &properties);
         }
+        let mut defaults = block.direct_default_character.clone();
+        defaults.merge_declarations(&link_defaults);
         document
             .style_sheet()
             .resolve_assigned_paragraph_style(
                 document.document_style(),
                 &block.style,
                 &block.direct_paragraph,
-                &block.direct_default_character,
+                &defaults,
                 named,
                 &direct,
             )

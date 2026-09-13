@@ -220,6 +220,7 @@ pub(super) fn project_with_configuration(
                     span.range.start <= provenance.formatted.start
                         && provenance.formatted.end <= span.range.end
                         && span.application != StyleApplication::SourcePreservedWhitespace
+                        && span.application != StyleApplication::Automatic("Link".into())
                 })
                 .map(|span| span.application),
         );
@@ -279,6 +280,10 @@ pub(super) fn project_with_configuration(
         }
     }
     styles.extend(syntax_spans(&input.text));
+    styles.extend(super::links::html_links(&input.text).into_iter().map(|link| StyleSpan {
+        range: link.range,
+        application: StyleApplication::Automatic("Link".into()),
+    }));
     // A physical source hard line is a cache unit. Keep every decoration
     // interval inside one such unit, including the real newline item.
     let mut line_boundaries = input

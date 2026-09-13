@@ -583,63 +583,45 @@ pub(super) fn delimiter_ranges(
     document: &Document,
     source: &Range<usize>,
 ) -> Result<Option<(Range<usize>, Range<usize>)>, DocumentError> {
-    let decoded = document.encoding().decode(&document.source_bytes())?;
-    let input = super::line_endings::normalize(&decoded, document.file_format());
-    let Some(start) = input
-        .units
-        .iter()
-        .find(|unit| unit.source.start == source.start)
-        .map(|unit| unit.normalized.start)
-    else {
-        return Ok(None);
+    let tick = document.encoding().encode_fragment("`")?;
+    let space = document.encoding().encode_fragment(" ")?;
+    let slash = document.encoding().encode_fragment("\\")?;
+    let width = tick.len();
+    let matches = |at: usize, spelling: &[u8]| {
+        document
+            .state()
+            .source
+            .bytes_in(at..at + spelling.len())
+            .as_deref()
+            == Some(spelling)
     };
-    let Some(end) = input
-        .units
-        .iter()
-        .find(|unit| unit.source.end == source.end)
-        .map(|unit| unit.normalized.end)
-    else {
-        return Ok(None);
-    };
-    let bytes = input.text.as_bytes();
-    let mut left = start;
-    let mut right = end;
-    if left > 0 && bytes[left - 1] == b' ' {
-        left -= 1;
+    let mut left = source.start;
+    let mut right = source.end;
+    if left >= width && matches(left - width, &space) {
+        left -= width;
     }
-    if bytes.get(right) == Some(&b' ') {
-        right += 1;
+    if matches(right, &space) {
+        right += width;
     }
     let open_end = left;
     let close_start = right;
-    while left > 0 && bytes[left - 1] == b'`' {
-        left -= 1;
+    while left >= width && matches(left - width, &tick) {
+        left -= width;
     }
-    // A prose escape consumes the first backtick independently of the code
-    // opener that follows it (for example, \``body`). It is not part of the
-    // matched delimiter and must remain outside an assignment/removal patch.
-    if left < open_end
-        && bytes[..left]
-            .iter()
-            .rev()
-            .take_while(|byte| **byte == b'\\')
-            .count()
-            % 2
-            == 1
-    {
-        left += 1;
+    let mut escaped = left;
+    while escaped >= width && matches(escaped - width, &slash) {
+        escaped -= width;
     }
-    while bytes.get(right) == Some(&b'`') {
-        right += 1;
+    if left < open_end && (left - escaped) / width % 2 == 1 {
+        left += width;
+    }
+    while matches(right, &tick) {
+        right += width;
     }
     if open_end == left || open_end - left != right - close_start {
         return Ok(None);
     }
-    let builder = super::rich_text::Builder::new(&input, Revision(0));
-    Ok(Some((
-        builder.source_range(left..start),
-        builder.source_range(end..right),
-    )))
+    Ok(Some((left..source.start, source.end..right)))
 }
 
 /// An entirely consumed inline code span also owns its delimiters. Keeping an
@@ -658,13 +640,209 @@ pub(super) fn selected_inline_delimiters(
         {
             continue;
         }
-        let source = projection.source_range(span.range.clone())
+        let source = projection
+            .source_range(span.range.clone())
             .ok_or(DocumentError::AmbiguousProjection)?;
         if let Some((opening, closing)) = delimiter_ranges(document, &source)? {
             ranges.extend([opening, closing]);
         }
     }
     Ok(ranges)
+}
+
+/// Backtick syntax must remain paired after every text/payload translation.
+/// Remove empty spans, join newly adjacent spans, and update required padding;
+/// retained body bytes stay outside these supporting syntax patches.
+pub(super) fn preserve_edited_inline_delimiters(
+    document: &Document,
+    edits: &[super::TextEdit],
+    patches: &mut Vec<super::SourcePatch>,
+) -> Result<(), DocumentError> {
+    struct Run {
+        opening: Range<usize>,
+        closing: Range<usize>,
+        body: String,
+        width: usize,
+    }
+    let mut spans = edits
+        .iter()
+        .flat_map(|edit| {
+            let band = edit.range.start.saturating_sub(1)
+                ..(edit.range.end + 1).min(document.projection().text_tree().byte_len());
+            document.projection().style_spans_for_region(&band)
+        })
+        .filter(|span| span.application == StyleApplication::Semantic(SemanticInlineStyle::Code))
+        .collect::<Vec<_>>();
+    spans.sort_by_key(|span| (span.range.start, span.range.end));
+    spans.dedup_by(|left, right| left.range == right.range);
+    let mut runs = Vec::new();
+    let mut support = Vec::new();
+    for span in spans {
+        if span.range.is_empty() {
+            continue;
+        }
+        let content = document
+            .projection()
+            .source_range(span.range.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let Some((opening, closing)) = delimiter_ranges(document, &content)? else {
+            continue;
+        };
+        // Fence conversions and explicit code-typing rewrites own their syntax.
+        if patches.iter().any(|patch| {
+            !patch.replacement().is_empty()
+                && (patch.range().start < content.start && opening.start < patch.range().end
+                    || patch.range().start < closing.end && content.end < patch.range().end)
+        }) {
+            continue;
+        }
+        let body = edited_source_fragment(document, &content, patches)?;
+        if body.is_empty() {
+            super::source_edit::append_uncovered_deletions(&opening, patches, &mut support);
+            super::source_edit::append_uncovered_deletions(&closing, patches, &mut support);
+            continue;
+        }
+        let body = document
+            .encoding()
+            .decode_region(&body, content.start)?
+            .text;
+        let body = body.replace(document.file_format().spelling(), " ");
+        let bytes = document
+            .state()
+            .source
+            .bytes_in(opening.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let marker = document
+            .encoding()
+            .decode_region(&bytes, opening.start)?
+            .text;
+        let width = marker.bytes().take_while(|byte| *byte == b'`').count();
+        runs.push(Run {
+            opening,
+            closing,
+            body,
+            width,
+        });
+    }
+    // Empty-span cleanup can be the only syntax between two surviving spans.
+    patches.extend(support);
+    let mut support = Vec::new();
+    let mut first = 0;
+    while first < runs.len() {
+        let mut end = first + 1;
+        while end < runs.len() {
+            let gap = runs[end - 1].closing.end..runs[end].opening.start;
+            if gap.start > gap.end || !edited_source_fragment(document, &gap, patches)?.is_empty() {
+                break;
+            }
+            end += 1;
+        }
+        let group = &runs[first..end];
+        first = end;
+        let body = group
+            .iter()
+            .map(|run| run.body.as_str())
+            .collect::<String>();
+        if group.len() == 1 {
+            let run = &group[0];
+            let read = |range: &Range<usize>| {
+                let bytes = document
+                    .state()
+                    .source
+                    .bytes_in(range.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                document
+                    .encoding()
+                    .decode_region(&bytes, range.start)
+                    .map(|decoded| decoded.text)
+            };
+            let opening = read(&run.opening)?;
+            let closing = read(&run.closing)?;
+            let left_pad = opening.trim_start_matches('`');
+            let right_pad = closing.trim_end_matches('`');
+            let raw = format!("{left_pad}{body}{right_pad}");
+            let projected = if raw.starts_with(' ')
+                && raw.ends_with(' ')
+                && !raw.chars().all(|character| character == ' ')
+            {
+                &raw[1..raw.len() - 1]
+            } else {
+                &raw
+            };
+            if projected == body
+                && !raw.starts_with('`')
+                && !raw.ends_with('`')
+                && !raw
+                    .split(|character| character != '`')
+                    .any(|ticks| ticks.len() == run.width)
+            {
+                // Optional original padding and a longer marker are preserved
+                // whenever the surviving body still has its exact spelling.
+                continue;
+            }
+        }
+        let width = group.iter().map(|run| run.width).max().unwrap().max(
+            body.split(|character| character != '`')
+                .map(str::len)
+                .max()
+                .unwrap_or(0)
+                + 1,
+        );
+        let marker = "`".repeat(width);
+        let pad = if body.starts_with('`')
+            || body.ends_with('`')
+            || body.starts_with(' ') && body.ends_with(' ') && !body.trim().is_empty()
+        {
+            " "
+        } else {
+            ""
+        };
+        for (range, syntax) in [
+            (&group[0].opening, format!("{marker}{pad}")),
+            (&group.last().unwrap().closing, format!("{pad}{marker}")),
+        ] {
+            let replacement = document.encoding().encode_fragment(&syntax)?;
+            if document.state().source.bytes_in(range.clone()).as_deref()
+                != Some(replacement.as_slice())
+            {
+                support.push(super::SourcePatch::primary(range.clone(), replacement));
+            }
+        }
+        for pair in group.windows(2) {
+            super::source_edit::append_uncovered_deletions(&pair[0].closing, patches, &mut support);
+            super::source_edit::append_uncovered_deletions(&pair[1].opening, patches, &mut support);
+        }
+    }
+    patches.extend(support);
+    Ok(())
+}
+
+fn edited_source_fragment(
+    document: &Document,
+    content: &Range<usize>,
+    patches: &[super::SourcePatch],
+) -> Result<Vec<u8>, DocumentError> {
+    let mut body = document
+        .state()
+        .source
+        .bytes_in(content.clone())
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let mut relevant = patches
+        .iter()
+        .filter(|patch| {
+            patch.range().start < content.end && content.start < patch.range().end
+                || patch.range().is_empty()
+                    && content.start <= patch.range().start
+                    && patch.range().start <= content.end
+        })
+        .collect::<Vec<_>>();
+    relevant.sort_by_key(|patch| (patch.range().start, patch.range().end));
+    for patch in relevant.into_iter().rev() {
+        let start = patch.range().start.max(content.start) - content.start;
+        let end = patch.range().end.min(content.end) - content.start;
+        body.splice(start..end, patch.replacement().iter().copied());
+    }
+    Ok(body)
 }
 
 /// Remove code appearance from a subrange while retaining literal code on both

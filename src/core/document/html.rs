@@ -1007,7 +1007,9 @@ pub(super) fn project_tokens_with_configuration(
             }
         }
     }
-    builder.finish(start, end)
+    let mut result = builder.finish(start, end);
+    super::links::style_html_links(&mut result, input);
+    result
 }
 
 /// Author list changes by replacing only paragraph delimiters and inserting
@@ -2083,7 +2085,7 @@ pub(super) fn apply_css(
                     character.background = Some(c);
                 }
             }
-            "text-decoration-line" => {
+            "text-decoration" | "text-decoration-line" => {
                 let words = lower.split_ascii_whitespace().collect::<Vec<_>>();
                 if !words.is_empty()
                     && (words == ["none"]

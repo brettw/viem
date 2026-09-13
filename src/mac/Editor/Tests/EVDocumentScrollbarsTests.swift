@@ -81,8 +81,6 @@ final class EVDocumentScrollbarsTests: XCTestCase {
         for (part, value, expected) in [
             (NSScroller.Part.decrementPage, 0, 0.025),
             (.incrementPage, 0, 0.475),
-            (.decrementLine, 0, 0.225),
-            (.incrementLine, 0, 0.275),
             (.knob, 0.76, 0.76),
             (.knobSlot, 2, 1),
             (.noPart, -1, 0),
@@ -97,9 +95,9 @@ final class EVDocumentScrollbarsTests: XCTestCase {
         let beforeAccessibility = requests.count
         XCTAssertTrue(bars.verticalScroller.accessibilityPerformIncrement())
         XCTAssertEqual(requests.count, beforeAccessibility + 1)
-        XCTAssertGreaterThan(requests.last?.1 ?? 0, vertical().normalizedPosition)
+        XCTAssertEqual(requests.last?.1 ?? -1, 0.275, accuracy: 0.0001)
         XCTAssertTrue(bars.verticalScroller.accessibilityPerformDecrement())
-        XCTAssertLessThan(requests.last?.1 ?? 1, vertical().normalizedPosition)
+        XCTAssertEqual(requests.last?.1 ?? -1, 0.225, accuracy: 0.0001)
         bars.verticalScroller.setAccessibilityValue(NSNumber(value: 0.65))
         XCTAssertEqual(requests.last?.1 ?? -1, 0.65, accuracy: 0.001)
         let count = requests.count

@@ -6652,3 +6652,32 @@ fn view_presentation_exports_what_the_caret_occupies() {
     assert_eq!(presentation.caret_utf8_start, 4);
     assert_eq!(presentation.caret_utf8_end, presentation.caret_utf8_start);
 }
+
+#[test]
+fn link_destination_ffi_checks_snapshot_boundaries_and_output_aliases() {
+    let core = create_core("[café](https://example.com/é) tail".as_bytes(), ViemDocumentOptions {
+        format: VIEM_FORMAT_MARKDOWN,
+        ..ViemDocumentOptions::default()
+    });
+    let state = document_state(&core);
+    let mut required = 0;
+    let mut found = 0;
+    let query = |offset, revision, output, capacity, required, found| unsafe {
+        viem_core_copy_link_destination(core.handle, state.document_id, revision,
+            offset, output, capacity, required, found)
+    };
+    assert_eq!(query(0, core.revision, ptr::null_mut(), 0, &mut required, &mut found), ViemStatus::BufferTooSmall);
+    assert_eq!(found, 1);
+    let mut bytes = vec![0; required as usize];
+    assert_eq!(query(0, core.revision, bytes.as_mut_ptr(), bytes.len() as u64, &mut required, &mut found), ViemStatus::Ok);
+    assert_eq!(String::from_utf8(bytes).unwrap(), "https://example.com/é");
+    assert_eq!(query(5, core.revision, ptr::null_mut(), 0, &mut required, &mut found), ViemStatus::Ok);
+    assert_eq!((required, found), (0, 0));
+    assert_eq!(query(4, core.revision, ptr::null_mut(), 0, &mut required, &mut found), ViemStatus::NotGraphemeBoundary);
+    assert_eq!(query(0, core.revision + 1, ptr::null_mut(), 0, &mut required, &mut found), ViemStatus::StaleRevision);
+    let alias = &mut required as *mut u64;
+    assert_eq!(query(0, core.revision, alias.cast(), 8, alias, &mut found), ViemStatus::InvalidArgument);
+    assert_eq!(query(0, core.revision, ptr::null_mut(), 0, ptr::null_mut(), &mut found), ViemStatus::NullPointer);
+    assert_eq!(unsafe { viem_core_copy_link_destination(core.handle, state.document_id + 1,
+        core.revision, 0, ptr::null_mut(), 0, &mut required, &mut found) }, ViemStatus::InvalidArgument);
+}

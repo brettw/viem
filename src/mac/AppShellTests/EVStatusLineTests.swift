@@ -174,6 +174,48 @@ final class EVStatusLineTests: XCTestCase {
     let inside = try XCTUnwrap(bar.commandCaretRect())
     XCTAssertLessThan(inside.minX, caret.minX)
   }
+
+  func testOutputUsesNormalColorsWithLeftCloseAndNeverCoversPosition() throws {
+    for width in [260.0, 600.0] {
+      let bar = makeBar(width: width)
+      bar.apply(EVStatusBarState(
+        location: "Ln 12, Col 34", commandOutput: String(repeating: "long output 🙂 ", count: 40)))
+      bar.layoutSubtreeIfNeeded()
+      let location = try locationWidget(bar)
+      let text = bar.outputTextView
+      let scroll = try XCTUnwrap(text.enclosingScrollView)
+      let close = try XCTUnwrap(bar.subviews.compactMap { $0 as? NSButton }
+        .first { $0.accessibilityLabel() == "Close command output" })
+      XCTAssertTrue(try modeLabel(bar).isHiddenOrHasHiddenAncestor)
+      XCTAssertFalse(location.isHiddenOrHasHiddenAncestor)
+      XCTAssertFalse(text.isHiddenOrHasHiddenAncestor)
+      XCTAssertFalse(text.isEditable)
+      XCTAssertTrue(text.isSelectable)
+      XCTAssertLessThan(close.frame.maxX, scroll.frame.minX)
+      XCTAssertEqual(close.frame.minX, EVStatusBarView.contentInset, accuracy: 0.5)
+      XCTAssertLessThanOrEqual(scroll.frame.maxX, bar.commandAreaRect.maxX)
+      XCTAssertLessThan(scroll.frame.maxX, location.frame.minX)
+      XCTAssertEqual(bar.frame.height, EVStatusBarView.preferredHeight)
+      XCTAssertEqual(text.textColor, EVThemeStore.shared.theme.statusForeground.color)
+      XCTAssertFalse(bar.isCommandCaretShowing)
+      var dismissed = false
+      bar.commandOutputDidDismiss = { dismissed = true }
+      close.performClick(nil)
+      XCTAssertTrue(dismissed)
+      bar.apply(EVStatusBarState(location: "Ln 12, Col 34"))
+      XCTAssertTrue(text.isHiddenOrHasHiddenAncestor)
+    }
+  }
+
+  func testCommandPromptTakesPriorityOverOutput() throws {
+    let bar = makeBar()
+    bar.apply(EVStatusBarState(
+      commandLine: EVStatusCommandLine(prompt: ":", text: "w", cursorUTF8Offset: 1),
+      commandOutput: "previous output", isActive: true))
+    bar.layoutSubtreeIfNeeded()
+    XCTAssertTrue(bar.outputTextView.isHiddenOrHasHiddenAncestor)
+    XCTAssertNotNil(bar.commandCaretRect())
+  }
 }
 
 /// A hidden status line still has to appear while a command line is active,
@@ -220,6 +262,13 @@ final class EVStatusLineVisibilityTests: XCTestCase {
 
     surface.publish(EVStatusBarState())
     XCTAssertTrue(statusBar.isHidden, "it hides again when the command line ends")
+    XCTAssertEqual(surface.viewController.view.frame.height, editorHeight, accuracy: 0.5)
+    surface.publish(EVStatusBarState(commandOutput: "file written"))
+    XCTAssertFalse(statusBar.isHidden)
+    XCTAssertEqual(surface.viewController.view.frame.height,
+      editorHeight - EVStatusBarView.preferredHeight, accuracy: 0.5)
+    surface.publish(EVStatusBarState())
+    XCTAssertTrue(statusBar.isHidden)
     XCTAssertEqual(surface.viewController.view.frame.height, editorHeight, accuracy: 0.5)
     pane.toggleStatusBar(nil)
     XCTAssertFalse(statusBar.isHidden)

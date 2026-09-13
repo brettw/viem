@@ -2902,8 +2902,10 @@ impl Document {
     fn validate_formatted_replacement_characters(&self, text: &str) -> Result<(), DocumentError> {
         // HTML tokenization replaces U+0000, including numeric references.
         // Source-visible editing may retain raw NUL without interpreting it.
-        let unrepresentable = if self.format() == Format::Html && text.contains('\0') {
-            Some('\0')
+        let unrepresentable = if self.format() == Format::Html {
+            // HTML preprocessing replaces literal CR; its whitespace rules
+            // also normalize a character-reference CR to space, even in pre.
+            text.chars().find(|character| matches!(character, '\0' | '\r'))
         } else if self.file_format() == FileFormat::Mac
             && matches!(
                 self.format(),
@@ -2914,7 +2916,7 @@ impl Document {
             // The shared line-ending stage consumes every literal source CR
             // before these projections run. Plain/source modes and the current
             // Markdown adapter have no escape that can recreate a literal CR.
-            // HTML and RTF can recreate it with &#13; and \u13? respectively.
+            // RTF can recreate it with \u13?; HTML cannot represent exact CR.
             Some('\r')
         } else {
             None
@@ -3228,7 +3230,7 @@ impl Document {
             let in_code = self
                 .projection()
                 .markdown_replacement_begins_in_code(&run.formatted);
-            let syntax = if in_code && !segment.contains('`') {
+            let syntax = if in_code {
                 segment
             } else {
                 self.escape_markdown_source_text(run.source.start, &segment)?

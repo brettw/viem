@@ -988,6 +988,7 @@ fn style_runs(
             let mut direct = CharacterProperties::default();
             let mut semantic = CharacterProperties::default();
             let mut automatic = CharacterProperties::default();
+            let mut link_defaults = CharacterProperties::default();
             let mut named = None;
             let mut paragraph_style = &block.style;
             let mut defaults = &block.direct_default_character;
@@ -1000,18 +1001,22 @@ fn style_runs(
                         named = Some(id);
                     }
                     StyleApplication::Automatic(id) => {
-                        let mut chain = Vec::new();
-                        let mut next = Some(id);
-                        while let Some(id) = next {
-                            let style = projection
-                                .style_sheet()
-                                .character_style(id)
-                                .ok_or(DocumentError::UnsupportedFormatting)?;
-                            chain.push(&style.properties);
-                            next = style.based_on.as_ref();
-                        }
-                        for properties in chain.into_iter().rev() {
-                            super::super::rich_text::overlay(&mut automatic, properties);
+                        if id.0 == "Link" {
+                            let properties = projection.style_sheet().automatic_character_properties(id)
+                                .map_err(|_| DocumentError::UnsupportedFormatting)?;
+                            super::super::rich_text::overlay(&mut link_defaults, &properties);
+                        } else {
+                            let mut chain = Vec::new();
+                            let mut next = Some(id);
+                            while let Some(id) = next {
+                                let style = projection.style_sheet().character_style(id)
+                                    .ok_or(DocumentError::UnsupportedFormatting)?;
+                                chain.push(&style.properties);
+                                next = style.based_on.as_ref();
+                            }
+                            for properties in chain.into_iter().rev() {
+                                super::super::rich_text::overlay(&mut automatic, properties);
+                            }
                         }
                     }
                     StyleApplication::Direct(properties) => {
@@ -1035,13 +1040,15 @@ fn style_runs(
             }
             super::super::rich_text::overlay(&mut semantic, &direct);
             super::super::rich_text::overlay(&mut semantic, &automatic);
+            let mut defaults = defaults.clone();
+            super::super::rich_text::overlay(&mut defaults, &link_defaults);
             let style = projection
                 .style_sheet()
                 .resolve_assigned_paragraph_style(
                     projection.document_style(),
                     paragraph_style,
                     &block.direct_paragraph,
-                    defaults,
+                    &defaults,
                     named,
                     &semantic,
                 )

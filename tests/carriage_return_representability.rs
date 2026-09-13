@@ -142,7 +142,7 @@ fn html_exact_literal_cr_is_rejected_atomically_in_every_mode_and_encoding() {
                 let history = document.history_status();
                 assert_eq!(
                     document.insert(1, "\r"),
-                    Err(DocumentError::VerificationFailed)
+                    Err(DocumentError::UnrepresentableFormattedCharacter { format: Format::Html, character: '\r' })
                 );
                 assert_eq!(document.source_bytes(), original);
                 assert_eq!(document.text(), "AB");

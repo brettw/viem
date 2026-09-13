@@ -60,7 +60,11 @@ pub(super) fn joining_patches(
             previous.end = previous.end.max(source.end);
         } else { merged.push(source); }
     }
-    let syntax = document.escape_markdown_source_text(merged[0].start, replacement)?;
+    let syntax = if projection.markdown_replacement_begins_in_code(range) {
+        replacement.to_owned()
+    } else {
+        document.escape_markdown_source_text(merged[0].start, replacement)?
+    };
     let replacement = document.encoding().encode_fragment(&syntax)?;
     Ok(Some(merged.into_iter().enumerate().map(|(index, source)| {
         SourcePatch::primary(source, if index == 0 { replacement.clone() } else { Vec::new() })

@@ -20,11 +20,17 @@ final class EVExternalFileChangeTests: XCTestCase {
     var persistenceState = EVDocumentPersistenceState(documentID: 1, documentRevision: 0)
     let sourceFormat = EVSourceFormat.plainText
     var data = Data()
+    var beforeSaveSnapshot: (() -> Void)?
     func makeEditorSurface() -> any EVEditorSurface { Surface() }
     func read(source: Data, typeName: String) throws { data = source }
     func serializedSource(typeName: String) throws -> Data { data }
     func nativeSaveSnapshot(typeName: String) throws -> EVDocumentSaveSnapshot {
-      EVDocumentSaveSnapshot(data: data, documentID: persistenceState.documentID, documentRevision: persistenceState.documentRevision)
+      beforeSaveSnapshot?()
+      return EVDocumentSaveSnapshot(data: data, documentID: persistenceState.documentID, documentRevision: persistenceState.documentRevision)
+    }
+    func nativeSaveSnapshot(typeName: String, hardLineRange: ClosedRange<UInt64>) throws -> EVDocumentSaveSnapshot {
+      EVDocumentSaveSnapshot(data: Data("selected source".utf8), documentID: persistenceState.documentID,
+        documentRevision: persistenceState.documentRevision, isCompleteSource: false)
     }
     func acknowledgeNativeSave(_ snapshot: EVDocumentSaveSnapshot) throws {
       persistenceState.isDirty = false; persistenceStateDidChange?(persistenceState)
@@ -56,11 +62,14 @@ final class EVExternalFileChangeTests: XCTestCase {
     try Data("external".utf8).write(to: url, options: .atomic)
     XCTAssertEqual(check(document), .replaced)
     XCTAssertEqual(backend.data, Data("local edits".utf8)); XCTAssertTrue(backend.persistenceState.isDirty)
-    XCTAssertThrowsError(try document.validateExternalWrite(to: url, force: false))
-    XCTAssertNoThrow(try document.validateExternalWrite(to: url, force: true))
+    document.externalSaveDecisionHandler = { _ in false }
+    XCTAssertThrowsError(try document.authorizeExternalWrite(to: url))
+    document.externalSaveDecisionHandler = { _ in true }
+    XCTAssertNoThrow(try document.authorizeExternalWrite(to: url))
     try FileManager.default.removeItem(at: url)
     XCTAssertEqual(check(document), .deleted)
-    XCTAssertThrowsError(try document.validateExternalWrite(to: url, force: false))
+    document.externalSaveDecisionHandler = { _ in false }
+    XCTAssertThrowsError(try document.authorizeExternalWrite(to: url))
     XCTAssertEqual(backend.data, Data("local edits".utf8))
   }
   func testMetadataPreservingChangeIsDetectedAndStaleCheckCannotReplaceNewBaseline() throws {
@@ -93,37 +102,162 @@ final class EVExternalFileChangeTests: XCTestCase {
     }
     wait(for: [command], timeout: 5)
   }
-  func testMenuSaveCanCancelConflictAndForcedExSaveReplacesOnlyAfterAuthorization() throws {
+  func testNativeSaveSaveAsAndSaveToRequireOneChoiceAndKeepDirtyOnCancel() throws {
+    for operation in [NSDocument.SaveOperationType.saveOperation, .saveAsOperation, .saveToOperation] {
+      let (document, backend, url) = try fixture()
+      try Data("external".utf8).write(to: url, options: .atomic)
+      backend.data = Data("local".utf8); backend.persistenceState.isDirty = true
+      var prompts = 0
+      document.externalSaveDecisionHandler = { change in
+        XCTAssertEqual(change, .replaced); prompts += 1; return false
+      }
+      let cancelled = expectation(description: "cancel native conflict")
+      document.save(to: url, ofType: EVDocument.plainTextType, for: operation) { error in
+        XCTAssertEqual((error as? CocoaError)?.code, .userCancelled); cancelled.fulfill()
+      }
+      wait(for: [cancelled], timeout: 5)
+      XCTAssertEqual(prompts, 1)
+      XCTAssertEqual(try Data(contentsOf: url), Data("external".utf8))
+      XCTAssertTrue(backend.persistenceState.isDirty)
+      document.externalSaveDecisionHandler = { _ in prompts += 1; return true }
+      let saved = expectation(description: "save anyway native")
+      document.save(to: url, ofType: EVDocument.plainTextType, for: operation) { error in
+        XCTAssertNil(error); saved.fulfill()
+      }
+      wait(for: [saved], timeout: 5)
+      XCTAssertEqual(prompts, 2, "One decision per save attempt, including the actual write")
+      XCTAssertEqual(try Data(contentsOf: url), Data("local".utf8))
+      XCTAssertEqual(backend.persistenceState.isDirty, operation == .saveToOperation)
+    }
+  }
+
+  func testAllExSaveRoutesIncludingForceCancelWithoutWritingOrClosing() throws {
+    for kind in [EVDocumentHostRequest.Kind.write, .saveAs, .writeQuit, .xit, .writeAll] {
+      for forced in [false, true] {
+        for explicitPath in [false, true] {
+          if kind == .saveAs && !explicitPath || kind == .writeAll && explicitPath { continue }
+          let (document, backend, url) = try fixture()
+          let window = EVDocumentWindowController(document: document, editorSurface: Surface())
+          document.addWindowController(window)
+          window.showWindow(nil)
+          defer { window.close() }
+          backend.data = Data("local".utf8); backend.persistenceState.isDirty = true
+          try Data("external".utf8).write(to: url, options: .atomic)
+          var prompts = 0
+          document.externalSaveDecisionHandler = { _ in prompts += 1; return false }
+          let request = EVDocumentHostRequest(kind: kind, documentID: 1, documentRevision: 0,
+            force: forced, path: explicitPath ? url.path : nil)
+          let cancelled = expectation(description: "cancel \(kind), force \(forced), explicit \(explicitPath)")
+          window.perform(documentHostRequests: [request]) { result in
+            if case .success = result { XCTFail("Cancelled save must fail") }
+            cancelled.fulfill()
+          }
+          wait(for: [cancelled], timeout: 5)
+          XCTAssertEqual(prompts, 1)
+          XCTAssertTrue(window.window?.isVisible ?? false)
+          XCTAssertTrue(backend.persistenceState.isDirty)
+          XCTAssertEqual(try Data(contentsOf: url), Data("external".utf8))
+
+          document.externalSaveDecisionHandler = { _ in prompts += 1; return true }
+          let saved = expectation(description: "save anyway \(kind)")
+          window.perform(documentHostRequests: [request]) { result in
+            if case .failure(let error) = result { XCTFail(error.localizedDescription) }
+            saved.fulfill()
+          }
+          wait(for: [saved], timeout: 5)
+          XCTAssertEqual(prompts, 2, "Save Anyway accepts this disk state once")
+          XCTAssertEqual(try Data(contentsOf: url), Data("local".utf8))
+          XCTAssertFalse(backend.persistenceState.isDirty)
+          XCTAssertNil(check(document))
+          if kind == .writeQuit || kind == .xit { XCTAssertFalse(window.window?.isVisible ?? true) }
+        }
+      }
+    }
+  }
+
+  func testForcedRangedWriteQuitStillAsksAndDoesNotCloseOnCancel() throws {
     let (document, backend, url) = try fixture()
-    try Data("external".utf8).write(to: url, options: .atomic)
+    let window = EVDocumentWindowController(document: document, editorSurface: Surface())
+    document.addWindowController(window); window.showWindow(nil)
+    defer { window.close() }
     backend.data = Data("local".utf8); backend.persistenceState.isDirty = true
-    document.externalSaveDecisionHandler = { _ in false }
-    let cancelled = expectation(description: "cancel conflict")
-    document.save(to: url, ofType: EVDocument.plainTextType, for: .saveOperation) { error in
-      XCTAssertNotNil(error); cancelled.fulfill()
+    try Data("external".utf8).write(to: url, options: .atomic)
+    var prompts = 0
+    document.externalSaveDecisionHandler = { _ in prompts += 1; return false }
+    let request = EVDocumentHostRequest(kind: .writeQuit, documentID: 1, documentRevision: 0,
+      force: true, hardLineRange: 0...0)
+    let completed = expectation(description: "cancel forced ranged write")
+    window.perform(documentHostRequests: [request]) { result in
+      if case .success = result { XCTFail("The cancelled ranged write must fail") }
+      completed.fulfill()
     }
-    wait(for: [cancelled], timeout: 5)
+    wait(for: [completed], timeout: 5)
+    XCTAssertEqual(prompts, 1)
+    XCTAssertTrue(window.window?.isVisible ?? false)
+    XCTAssertTrue(backend.persistenceState.isDirty)
     XCTAssertEqual(try Data(contentsOf: url), Data("external".utf8))
-    let rejected = expectation(description: "reject unforced Ex")
-    document.saveHostRevision(documentID: 1, documentRevision: 0, to: url, ofType: EVDocument.plainTextType, for: .saveOperation) { error in
-      XCTAssertTrue(error is EVExternalFileError); rejected.fulfill()
+  }
+
+  func testRetargetedSymbolicLinkStillChecksTheLoadedFingerprint() throws {
+    let (document, _, original) = try fixture()
+    let directory = original.deletingLastPathComponent()
+    let alias = directory.appendingPathComponent("alias.txt")
+    let replacement = directory.appendingPathComponent("replacement.txt")
+    try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: original)
+    document.fileURL = alias
+    try Data("replacement".utf8).write(to: replacement)
+    try FileManager.default.removeItem(at: alias)
+    try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: replacement)
+    var prompts = 0
+    document.externalSaveDecisionHandler = { change in
+      XCTAssertEqual(change, .replaced); prompts += 1; return false
     }
-    wait(for: [rejected], timeout: 5)
-    let forced = expectation(description: "forced Ex saves")
-    document.saveHostRevision(documentID: 1, documentRevision: 0, force: true, to: url, ofType: EVDocument.plainTextType, for: .saveOperation) { error in
-      XCTAssertNil(error); forced.fulfill()
+    XCTAssertThrowsError(try document.authorizeExternalWrite(to: alias))
+    XCTAssertThrowsError(try document.authorizeExternalWrite(to: EVDocumentIdentity.canonicalURL(alias)))
+    XCTAssertEqual(prompts, 2)
+    XCTAssertEqual(try Data(contentsOf: replacement), Data("replacement".utf8))
+  }
+
+  func testNativeWriterRechecksAfterSnapshotPreparation() throws {
+    let (document, backend, url) = try fixture()
+    backend.data = Data("local".utf8); backend.persistenceState.isDirty = true
+    backend.beforeSaveSnapshot = { try! Data("late external write".utf8).write(to: url, options: .atomic) }
+    var prompts = 0
+    document.externalSaveDecisionHandler = { _ in prompts += 1; return false }
+    let completed = expectation(description: "late native conflict")
+    document.save(to: url, ofType: EVDocument.plainTextType, for: .saveOperation) { error in
+      XCTAssertEqual((error as? CocoaError)?.code, .userCancelled); completed.fulfill()
     }
-    wait(for: [forced], timeout: 5)
-    XCTAssertEqual(try Data(contentsOf: url), Data("local".utf8)); XCTAssertNil(check(document))
+    wait(for: [completed], timeout: 5)
+    XCTAssertEqual(prompts, 1)
+    XCTAssertEqual(try Data(contentsOf: url), Data("late external write".utf8))
+    XCTAssertTrue(backend.persistenceState.isDirty)
+  }
+
+  func testDeletedFileAndFurtherQueuedChangesRequireDistinctChoices() throws {
+    let (document, backend, url) = try fixture()
+    backend.data = Data("local".utf8)
     try FileManager.default.removeItem(at: url)
-    XCTAssertEqual(check(document), .deleted)
-    let recreated = expectation(description: "forced Ex recreates deleted source")
-    document.saveHostRevision(documentID: 1, documentRevision: 0, force: true, to: url, ofType: EVDocument.plainTextType, for: .saveOperation) { error in
-      XCTAssertNil(error); recreated.fulfill()
+    var choices: [EVExternalFileChange] = []
+    document.externalSaveDecisionHandler = { choices.append($0); return true }
+    let accepted = try document.authorizeExternalWrite(to: url)
+    XCTAssertEqual(choices, [.deleted])
+    _ = try document.authorizeExternalWrite(to: url, since: accepted.fingerprint)
+    XCTAssertEqual(choices.count, 1)
+    try Data("new writer".utf8).write(to: url)
+    document.externalSaveDecisionHandler = { choices.append($0); return false }
+    XCTAssertThrowsError(try document.authorizeExternalWrite(to: url, since: accepted.fingerprint))
+    XCTAssertEqual(choices.count, 2)
+    XCTAssertEqual(try Data(contentsOf: url), Data("new writer".utf8))
+    try FileManager.default.removeItem(at: url)
+    document.externalSaveDecisionHandler = { choices.append($0); return true }
+    let saved = expectation(description: "recreate deleted current file")
+    document.saveHostRevision(documentID: 1, documentRevision: 0, force: true,
+      to: url, ofType: EVDocument.plainTextType, for: .saveOperation) { error in
+      XCTAssertNil(error); saved.fulfill()
     }
-    wait(for: [recreated], timeout: 5)
+    wait(for: [saved], timeout: 5)
     XCTAssertEqual(try Data(contentsOf: url), Data("local".utf8))
-    XCTAssertNil(document.externalFileChange)
     XCTAssertNil(check(document))
   }
 }

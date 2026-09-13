@@ -86,6 +86,8 @@ public final class EVDocument: NSDocument {
     private struct ActiveSave {
         let snapshot: EVDocumentSaveSnapshot
         let sourceFormat: EVSourceFormat
+        let destination: URL
+        var expectedFile: EVFileFingerprint
     }
 
     private var activeSave: ActiveSave?
@@ -457,11 +459,9 @@ public final class EVDocument: NSDocument {
         }
         let snapshot: EVDocumentSaveSnapshot
         let sourceFormat: EVSourceFormat
+        let expectedFile: EVFileFingerprint
         do {
-            do { try validateExternalWrite(to: url, force: false) }
-            catch EVExternalFileError.changed(let change) {
-                guard confirmExternalOverwrite(change) else { throw CocoaError(.userCancelled) }
-            }
+            expectedFile = try authorizeExternalWrite(to: url).fingerprint
             sourceFormat = try Self.validateSerializationType(
                 typeName,
                 currentFormat: editorBackend.sourceFormat
@@ -475,6 +475,7 @@ public final class EVDocument: NSDocument {
         save(
             snapshot: snapshot,
             sourceFormat: sourceFormat,
+            expectedFile: expectedFile,
             to: url,
             ofType: typeName,
             for: saveOperation,
@@ -497,6 +498,7 @@ public final class EVDocument: NSDocument {
         guard !(isReadOnly || editorBackend.persistenceState.isReadOnly) || force else { completionHandler(EVRecoveryError.readOnly); return }
         let snapshot: EVDocumentSaveSnapshot
         let sourceFormat: EVSourceFormat
+        let expectedFile: EVFileFingerprint
         do {
             sourceFormat = try Self.validateSerializationType(
                 typeName,
@@ -509,7 +511,7 @@ public final class EVDocument: NSDocument {
                 completionHandler(EVDocumentHostError.staleRequest)
                 return
             }
-            try validateExternalWrite(to: url, force: force)
+            expectedFile = try authorizeExternalWrite(to: url).fingerprint
         } catch {
             completionHandler(error)
             return
@@ -518,6 +520,7 @@ public final class EVDocument: NSDocument {
         save(
             snapshot: snapshot,
             sourceFormat: sourceFormat,
+            expectedFile: expectedFile,
             to: url,
             ofType: typeName,
             for: saveOperation,
@@ -528,13 +531,15 @@ public final class EVDocument: NSDocument {
     private func save(
         snapshot: EVDocumentSaveSnapshot,
         sourceFormat: EVSourceFormat,
+        expectedFile: EVFileFingerprint,
         to url: URL,
         ofType typeName: String,
         for saveOperation: NSDocument.SaveOperationType,
         completionHandler: @escaping (Error?) -> Void
     ) {
 
-        activeSave = ActiveSave(snapshot: snapshot, sourceFormat: sourceFormat)
+        activeSave = ActiveSave(snapshot: snapshot, sourceFormat: sourceFormat,
+            destination: url, expectedFile: expectedFile)
         super.save(
             to: url,
             ofType: typeName,
@@ -579,6 +584,21 @@ public final class EVDocument: NSDocument {
                 completionHandler(error)
             }
         }
+    }
+
+    public override nonisolated func writeSafely(
+        to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType
+    ) throws {
+        try onMainActor {
+            if var save = self.activeSave, EVDocumentIdentity.sameFile(save.destination, url) {
+                save.expectedFile = try self.authorizeExternalWrite(to: url, since: save.expectedFile).fingerprint
+                self.activeSave = save
+            } else {
+                // Direct NSDocument write callers use the same external-change policy.
+                _ = try self.authorizeExternalWrite(to: url)
+            }
+        }
+        try super.writeSafely(to: url, ofType: typeName, for: saveOperation)
     }
 
     private static func establishesSavePoint(_ operation: NSDocument.SaveOperationType) -> Bool {

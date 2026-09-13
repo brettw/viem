@@ -5,6 +5,285 @@ use crate::document::{line_endings, paragraph_flow, BlockKind};
 use std::collections::BTreeSet;
 use std::ops::Range;
 
+/// A consumed physical break also owns the following line's hidden quote or
+/// list-continuation prefix. Otherwise that prefix becomes visible mid-line.
+pub(super) fn preserve_deleted_source_prefixes(
+    document: &Document,
+    edits: &[TextEdit],
+    patches: &mut Vec<SourcePatch>,
+) -> Result<(), DocumentError> {
+    let mut support = Vec::new();
+    for edit in edits.iter().filter(|edit| !edit.range.is_empty()) {
+        let band = edit.range.start.saturating_sub(1)
+            ..(edit.range.end + 1).min(document.projection().text_tree().byte_len());
+        for span in document.projection().provenance_for_region(&band) {
+            if span.source.is_empty() {
+                continue;
+            }
+            let visible = document
+                .projection()
+                .text_tree()
+                .slice(span.formatted.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            if visible != " " && visible != "\n" {
+                continue;
+            }
+            let blocks = document.projection().blocks_for_region(&span.formatted);
+            if blocks.iter().any(|block| block.style.0 == "Code Block") {
+                continue;
+            }
+            let bytes = document
+                .state()
+                .source
+                .bytes_in(span.source.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let decoded = document
+                .encoding()
+                .decode_region(&bytes, span.source.start)?;
+            let normalized = line_endings::normalize(&decoded, document.file_format());
+            for ending in normalized.endings {
+                // Retained-break replacements keep their physical prefix.
+                if !patches.iter().any(|patch| {
+                    patch.range.start <= ending.source.start
+                        && ending.source.end <= patch.range.end
+                        && !document
+                            .encoding()
+                            .decode_region(&patch.replacement, patch.range.start)
+                            .is_ok_and(|decoded| {
+                                decoded.text.contains(document.file_format().spelling())
+                            })
+                }) {
+                    continue;
+                }
+                let Some(line) = document
+                    .state()
+                    .source_hard_lines
+                    .line_at_offset(ending.source.end)
+                    .and_then(|index| document.state().source_hard_lines.get(index))
+                else {
+                    continue;
+                };
+                let bytes = document
+                    .state()
+                    .source
+                    .bytes_in(line.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let decoded = document.encoding().decode_region(&bytes, line.start)?;
+                let mut prefix = super::super::markdown_quotes::prefix(&decoded.text);
+                if blocks
+                    .iter()
+                    .any(|block| matches!(block.kind, BlockKind::ListItem { .. }))
+                {
+                    prefix += super::super::markdown_blocks::marker_prefix_length(
+                        &decoded.text[prefix..],
+                    )
+                    .unwrap_or_else(|| {
+                        decoded.text[prefix..].len()
+                            - decoded.text[prefix..].trim_start_matches([' ', '\t']).len()
+                    });
+                }
+                if prefix > 0 {
+                    let end = line.start
+                        + document
+                            .encoding()
+                            .encode_fragment(&decoded.text[..prefix])?
+                            .len();
+                    super::super::source_edit::append_uncovered_deletions(
+                        &(line.start..end),
+                        patches,
+                        &mut support,
+                    );
+                }
+            }
+        }
+    }
+    patches.extend(support);
+    Ok(())
+}
+
+/// Deleting a physical-line body can expose a formerly folded newline or
+/// list-prefix whitespace. Preserve each retained visible space as an entity
+/// only when the locally reparsed source would otherwise consume it.
+pub(super) fn preserve_deleted_boundary_spaces(
+    document: &Document,
+    edits: &[TextEdit],
+    patches: &mut Vec<SourcePatch>,
+) -> Result<(), DocumentError> {
+    let projection = document.projection();
+    let mut seen = BTreeSet::new();
+    for edit in edits.iter().filter(|edit| !edit.range.is_empty()) {
+        let band = edit.range.start.saturating_sub(1)
+            ..(edit.range.end + 1).min(projection.text_tree().byte_len());
+        for span in projection.provenance_for_region(&band) {
+            let visible = projection
+                .text_tree()
+                .slice(span.formatted.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            if !seen.insert((span.source.start, span.source.end))
+                || span.source.is_empty()
+                || edits.iter().any(|edit| {
+                    edit.range.start < span.formatted.end && span.formatted.start < edit.range.end
+                })
+                || visible != " " && visible != "\n"
+                || projection.markdown_replacement_begins_in_code(&span.formatted)
+                || patches.iter().any(|patch| {
+                    patch.range.start < span.source.end && span.source.start < patch.range.end
+                })
+            {
+                continue;
+            }
+            let replacement = if visible == "\n" {
+                // Joining later content can absorb an earlier inline break
+                // into the following paragraph separator. A following break
+                // may instead legitimately acquire the newly empty body's
+                // source contributor; preserve_join_boundaries owns that side.
+                if edit.range.end <= span.formatted.start { continue; }
+                let bytes = document
+                    .state()
+                    .source
+                    .bytes_in(span.source.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let decoded = document
+                    .encoding()
+                    .decode_region(&bytes, span.source.start)?;
+                let raw = line_endings::normalize(&decoded, document.file_format());
+                if raw.text != "  \n" && raw.text != "\\\n" {
+                    continue;
+                }
+                format!("<br>{}", document.file_format().spelling())
+            } else {
+                "&#32;".to_owned()
+            };
+            let Some(candidate) =
+                project_local_candidate(document, &band, &span.source, patches, false)?
+            else {
+                continue;
+            };
+            let projected = super::super::projection::project(
+                &candidate.normalized,
+                super::Format::Markdown,
+                document.revision(),
+                0,
+                candidate.source_len,
+            );
+            let delta = candidate
+                .patches
+                .iter()
+                .filter(|patch| patch.range.end <= span.source.start)
+                .map(|patch| patch.replacement.len() as isize - patch.range.len() as isize)
+                .sum::<isize>();
+            let start = (span.source.start - candidate.source_start)
+                .checked_add_signed(delta)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let end = start + span.source.len();
+            let survives = projected.provenance().iter().any(|unit| {
+                unit.source.start == start
+                    && end <= unit.source.end
+                    && projected
+                        .text_tree()
+                        .slice(unit.formatted.clone())
+                        .as_deref()
+                        == Ok(visible.as_str())
+            });
+            if !survives {
+                patches.push(SourcePatch::primary(
+                    span.source,
+                    document.encoding().encode_fragment(&replacement)?,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Once an entire continuation body is gone, its old indentation is no
+/// longer list syntax and would become literal text on the remaining row.
+pub(super) fn remove_empty_continuation_prefixes(
+    document: &Document,
+    edits: &[TextEdit],
+    patches: &mut Vec<SourcePatch>,
+) -> Result<(), DocumentError> {
+    let mut seen = BTreeSet::new();
+    let mut support = Vec::new();
+    for edit in edits.iter().filter(|edit| !edit.range.is_empty()) {
+        if !document
+            .projection()
+            .blocks_for_region(&edit.range)
+            .iter()
+            .any(|block| {
+                matches!(block.kind, BlockKind::ListItem { .. }) && block.style.0 != "Code Block"
+            })
+        {
+            continue;
+        }
+        for span in document.projection().provenance_for_region(&edit.range) {
+            let Some(line) = document
+                .state()
+                .source_hard_lines
+                .line_at_offset(span.source.start)
+                .and_then(|index| document.state().source_hard_lines.get(index))
+            else {
+                continue;
+            };
+            if !seen.insert(line.start) {
+                continue;
+            }
+            let bytes = document
+                .state()
+                .source
+                .bytes_in(line.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let decoded = document.encoding().decode_region(&bytes, line.start)?;
+            let prefix = decoded.text.len() - decoded.text.trim_start_matches([' ', '\t']).len();
+            if prefix == 0
+                || super::super::markdown_blocks::marker_prefix_length(&decoded.text).is_some()
+            {
+                continue;
+            }
+            let normalized = line_endings::normalize(&decoded, document.file_format());
+            let end = normalized
+                .endings
+                .last()
+                .map_or(line.end, |ending| ending.source.start);
+            let body_start = line.start
+                + document
+                    .encoding()
+                    .encode_fragment(&decoded.text[..prefix])?
+                    .len();
+            if body_start >= end
+                || document
+                    .projection()
+                    .provenance_contained_in_source(&(line.start..body_start))
+                    .iter()
+                    .any(|span| !span.formatted.is_empty())
+            {
+                continue;
+            }
+            let mut uncovered = Vec::new();
+            super::super::source_edit::append_uncovered_deletions(
+                &(body_start..end),
+                patches,
+                &mut uncovered,
+            );
+            if uncovered.is_empty()
+                && !patches.iter().any(|patch| {
+                    !patch.replacement.is_empty()
+                        && patch.range.start < end
+                        && body_start < patch.range.end
+                })
+            {
+                super::super::source_edit::append_uncovered_deletions(
+                    &(line.start..body_start),
+                    patches,
+                    &mut support,
+                );
+            }
+        }
+    }
+    patches.extend(support);
+    Ok(())
+}
+
 /// A new source line must not reinterpret retained text as block syntax or
 /// turn an existing folded source break into another hard boundary. Preserve
 /// only those exposed contributors; authored text keeps its own translation.
@@ -313,6 +592,8 @@ struct LocalCandidate<'a> {
     source_start: usize,
     patches: Vec<&'a SourcePatch>,
     flowed: line_endings::NormalizedText,
+    normalized: line_endings::NormalizedText,
+    source_len: usize,
 }
 
 impl LocalCandidate<'_> {
@@ -427,6 +708,8 @@ fn project_local_candidate<'a>(
         source_start: band.start,
         patches: local,
         flowed,
+        normalized,
+        source_len: bytes.len(),
     }))
 }
 

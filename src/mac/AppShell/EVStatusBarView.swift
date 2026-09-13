@@ -39,9 +39,14 @@ public final class EVStatusBarView: NSView {
   public var optionDidChange: ((EVStatusBarOption) -> Void)?
   /// A click inside the command area, as a UTF-8 offset into its text.
   public var commandLineDidSelect: ((Int, Bool) -> Void)?
+  public var commandOutputDidDismiss: (() -> Void)?
+  public var commandOutputDidReceiveKey: ((NSEvent) -> Void)?
   private let formatSelect = EVStatusSelect()
   private let leftGroup = NSStackView()
   private let commandCaret = NSTextInsertionIndicator(frame: .zero)
+  private let outputScroll = NSScrollView()
+  let outputTextView = EVStatusOutputTextView()
+  private let outputCloseButton = NSButton()
 
   public override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -89,6 +94,37 @@ public final class EVStatusBarView: NSView {
     addSubview(leftGroup)
     addSubview(locationLabel)
     addSubview(commandCaret)
+    outputTextView.isEditable = false
+    outputTextView.isSelectable = true
+    outputTextView.isRichText = false
+    outputTextView.drawsBackground = false
+    outputTextView.textContainerInset = .zero
+    outputTextView.textContainer?.lineFragmentPadding = 0
+    outputTextView.textContainer?.widthTracksTextView = false
+    outputTextView.textContainer?.containerSize = NSSize(
+      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    outputTextView.isHorizontallyResizable = true
+    outputTextView.isVerticallyResizable = true
+    outputTextView.maxSize = NSSize(
+      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    outputTextView.didReceiveEditorKey = { [weak self] event in
+      self?.commandOutputDidReceiveKey?(event)
+    }
+    outputTextView.setAccessibilityLabel("Command output")
+    outputScroll.documentView = outputTextView
+    outputScroll.drawsBackground = false
+    outputScroll.borderType = .noBorder
+    outputScroll.hasHorizontalScroller = false
+    outputScroll.hasVerticalScroller = false
+    addSubview(outputScroll)
+    outputCloseButton.image = NSImage(
+      systemSymbolName: "xmark", accessibilityDescription: "Close command output")
+    outputCloseButton.imagePosition = .imageOnly
+    outputCloseButton.isBordered = false
+    outputCloseButton.target = self
+    outputCloseButton.action = #selector(dismissCommandOutput(_:))
+    outputCloseButton.setAccessibilityLabel("Close command output")
+    addSubview(outputCloseButton)
     heightConstraint = heightAnchor.constraint(equalToConstant: Self.preferredHeight)
     let inset = Self.contentInset
     NSLayoutConstraint.activate([
@@ -131,12 +167,46 @@ public final class EVStatusBarView: NSView {
       string: currentState.location,
       attributes: [.font: theme.statusFont, .foregroundColor: theme.statusForeground.color])
     formatSelect.applyTheme(theme)
+    outputTextView.font = commandFont
+    outputTextView.textColor = theme.statusForeground.color
+    outputTextView.insertionPointColor = .clear
+    outputCloseButton.contentTintColor = theme.statusForeground.color
     heightConstraint.constant = Self.preferredHeight
     needsDisplay = true
   }
 
   @objc private func toggleLineMode() {
     optionDidChange?(.lineMode(currentState.lineMode == .visual ? .physicalSource : .visual))
+  }
+
+  @objc private func dismissCommandOutput(_ sender: Any?) { commandOutputDidDismiss?() }
+
+  public var isCommandOutputFocused: Bool {
+    !outputScroll.isHidden && window?.firstResponder === outputTextView
+  }
+
+  /// Native menu commands must copy the selected message, even though the
+  /// application menu normally routes editor commands through the core.
+  public func commandOutputPresentation(for command: EVMenuCommand) -> EVMenuItemPresentation? {
+    guard isCommandOutputFocused else { return nil }
+    switch command {
+    case .copy, .copySource:
+      return EVMenuItemPresentation(isEnabled: outputTextView.selectedRange().length > 0)
+    case .selectAll: return .enabled
+    case .cut, .delete: return .disabled
+    default: return nil
+    }
+  }
+
+  public func performCommandOutputAction(_ command: EVMenuCommand) -> Bool {
+    guard isCommandOutputFocused else { return false }
+    switch command {
+    case .copy, .copySource: outputTextView.copy(nil)
+    case .selectAll: outputTextView.selectAll(nil)
+    case .cut, .delete: break // Output is read-only, including menu actions.
+    default: return false
+    }
+    return true
   }
 
   @available(*, unavailable)
@@ -240,11 +310,10 @@ public final class EVStatusBarView: NSView {
       x: Self.contentInset, y: 0,
       width: max(0, area.width - Self.contentInset), height: area.height)).setClip()
     rendered.draw(at: origin)
-    // An inactive pane outlines the caret cell instead of blinking one.
+    // Preserve the thin command caret's geometry when outlining it steadily.
     if !currentState.isActive {
-      var outline = commandCaretFrame(command)
-      outline.size.width = ceil(max((" " as NSString).size(withAttributes: [.font: font]).width, 1))
-      foreground.setStroke()
+      let outline = commandCaretFrame(command)
+      foreground.withAlphaComponent(0.75).setStroke()
       NSBezierPath(rect: outline.insetBy(dx: 0.5, dy: 0.5)).stroke()
     }
     NSGraphicsContext.restoreGraphicsState()
@@ -292,12 +361,33 @@ public final class EVStatusBarView: NSView {
 
   public override func layout() {
     super.layout()
+    let area = commandAreaRect
+    let inset = Self.contentInset
+    let buttonWidth = min(20, max(0, area.width - inset))
+    outputCloseButton.frame = NSRect(
+      x: inset, y: 0, width: buttonWidth, height: bounds.height)
+    let textStart = min(area.maxX, outputCloseButton.frame.maxX + 6)
+    let font = commandFont
+    let lineHeight = ceil(font.ascender - font.descender + font.leading)
+    outputScroll.frame = NSRect(
+      x: textStart, y: floor((bounds.height - lineHeight) / 2),
+      width: max(0, area.maxX - textStart), height: lineHeight)
+    outputTextView.minSize = outputScroll.contentSize
+    outputTextView.sizeToFit()
     updateCommandCaret()
   }
 
   public func apply(_ state: EVStatusBarState) {
     currentState = state
-    leftGroup.isHidden = state.commandLine != nil
+    let showingOutput = state.commandLine == nil && state.commandOutput != nil
+    leftGroup.isHidden = state.commandLine != nil || showingOutput
+    outputScroll.isHidden = !showingOutput
+    outputCloseButton.isHidden = !showingOutput
+    if let output = state.commandOutput, outputTextView.string != output {
+      outputTextView.string = output
+      outputTextView.setSelectedRange(NSRange(location: 0, length: 0))
+      outputTextView.scrollRangeToVisible(NSRange(location: 0, length: 0))
+    }
     modeLabel.stringValue = state.mode
     messageLabel.stringValue = state.message
     locationLabel.title = state.location
@@ -321,6 +411,8 @@ public final class EVStatusBarView: NSView {
     formatSelect.setAccessibilityLabel("Format: \(state.format)")
     if let command = state.commandLine {
       setAccessibilityLabel("Command line: \(command.displayText)")
+    } else if let output = state.commandOutput {
+      setAccessibilityLabel("Command output: \(output)")
     } else {
       setAccessibilityLabel("Editor status")
     }
@@ -339,6 +431,35 @@ public final class EVStatusBarView: NSView {
     let image = NSImage(data: Data(svg.utf8))
     image?.isTemplate = true
     return image
+  }
+}
+
+/// Selection and copying stay native. All ordinary typing returns to the
+/// editor without making the message editable or consuming the first key.
+@MainActor
+final class EVStatusOutputTextView: NSTextView {
+  var didReceiveEditorKey: ((NSEvent) -> Void)?
+
+  override func keyDown(with event: NSEvent) {
+    let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+    let commandSelection = modifiers == .command
+      && ["a", "c"].contains(event.charactersIgnoringModifiers?.lowercased() ?? "")
+    let navigation = [115, 116, 119, 121, 123, 124, 125, 126].contains(Int(event.keyCode))
+    if commandSelection || navigation {
+      super.keyDown(with: event)
+    } else {
+      didReceiveEditorKey?(event)
+    }
+  }
+
+  override func menu(for event: NSEvent) -> NSMenu? {
+    let menu = NSMenu()
+    let copy = menu.addItem(withTitle: "Copy", action: #selector(copy(_:)), keyEquivalent: "")
+    copy.target = self
+    let selectAll = menu.addItem(
+      withTitle: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
+    selectAll.target = self
+    return menu
   }
 }
 

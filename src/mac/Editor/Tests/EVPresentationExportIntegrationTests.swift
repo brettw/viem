@@ -65,6 +65,15 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
         XCTAssertTrue(surface.editorView.isCommandLineInsertionIndicatorVisible)
         XCTAssertFalse(surface.editorView.isDocumentInsertionIndicatorVisible)
 
+        let focusWindow = try XCTUnwrap(window as? EVTestFocusWindow)
+        focusWindow.setKeyWindowForTesting(false)
+        XCTAssertTrue(window.firstResponder === surface.editorView)
+        XCTAssertFalse(surface.editorView.isCommandLineInsertionIndicatorVisible)
+        XCTAssertTrue(surface.editorView.isInactiveCommandLineCaretOutlineVisible)
+        focusWindow.setKeyWindowForTesting(true)
+        XCTAssertTrue(surface.editorView.isCommandLineInsertionIndicatorVisible)
+        XCTAssertFalse(surface.editorView.isInactiveCommandLineCaretOutlineVisible)
+
         XCTAssertTrue(window.makeFirstResponder(nil))
         XCTAssertFalse(surface.editorView.isCommandLineInsertionIndicatorVisible)
         XCTAssertTrue(surface.editorView.isInactiveCommandLineCaretOutlineVisible)
@@ -214,9 +223,9 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 520, height: 260)
         surface.viewDidLayout()
-        let window = NSWindow(
+        let window = EVTestFocusWindow(
             contentRect: surface.view.bounds,
-            styleMask: .borderless,
+            styleMask: [.titled],
             backing: .buffered,
             defer: false
         )
@@ -232,6 +241,8 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
         surface.statusBarStateDidChange = { [weak statusBar] state in statusBar?.apply(state) }
         window.contentView = container
         statusBar.layoutSubtreeIfNeeded()
+        surface.editorView.applicationIsActive = { true }
+        window.setKeyWindowForTesting(true)
         return (surface, try XCTUnwrap(surface.session), window)
     }
 

@@ -131,6 +131,8 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         let backend = Backend(data: Data("unsaved".utf8))
         let (document, controller) = makeController(backend: backend, fileURL: url)
         var recordedURLs: [URL] = []
+        var commandCloses = 0
+        controller.commandDidCloseWindow = { commandCloses += 1 }
         document.recordRecentDocument = { recordedURLs.append($0) }
         controller.showWindow(nil)
         defer { controller.close() }
@@ -147,6 +149,7 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         XCTAssertEqual(backend.events, ["snapshot"])
         XCTAssertTrue(backend.acknowledgements.isEmpty)
         XCTAssertTrue(controller.window?.isVisible ?? false)
+        XCTAssertEqual(commandCloses, 0)
         XCTAssertTrue(recordedURLs.isEmpty, "A failed write cannot enter recent files")
     }
 
@@ -433,6 +436,52 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         XCTAssertTrue(backend.persistenceState.isDirty)
         XCTAssertTrue(document.isDocumentEdited)
         XCTAssertTrue(recordedURLs.isEmpty, "Writing an unopened range copy does not add a recent document")
+    }
+
+    func testSuccessfulQuitVariantsNotifyApplicationOnlyAfterClosingWindow() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for kind in [EVDocumentHostRequest.Kind.quit, .xit, .writeQuit, .quitAll] {
+            let url = directory.appendingPathComponent("\(kind).txt")
+            try Data("old".utf8).write(to: url)
+            let backend = Backend(data: Data("saved".utf8), dirty: false)
+            let (_, controller) = makeController(backend: backend, fileURL: url)
+            controller.showWindow(nil)
+            defer { controller.close() }
+            var closes = 0
+            controller.commandDidCloseWindow = { [weak controller] in
+                XCTAssertFalse(controller?.window?.isVisible ?? true)
+                closes += 1
+            }
+            let done = expectation(description: "\(kind) finished")
+            controller.perform(documentHostRequests: [request(kind, backend: backend)]) {
+                if case let .failure(error) = $0 { XCTFail("\(error)") }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 5)
+            XCTAssertEqual(closes, 1, "\(kind)")
+        }
+    }
+
+    func testSplitPaneQuitAndOrdinaryWindowCloseDoNotRequestApplicationQuit() {
+        let backend = Backend(data: Data("clean".utf8), dirty: false)
+        let (_, controller) = makeController(backend: backend)
+        controller.showWindow(nil)
+        var closes = 0
+        controller.commandDidCloseWindow = { closes += 1 }
+        for kind in [EVDocumentHostRequest.Kind.split, .quit] {
+            let done = expectation(description: "\(kind) finished")
+            controller.perform(documentHostRequests: [request(kind, backend: backend)]) {
+                if case let .failure(error) = $0 { XCTFail("\(error)") }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 1)
+        }
+        XCTAssertEqual(controller.paneCount, 1)
+        XCTAssertTrue(controller.window?.isVisible ?? false)
+        XCTAssertEqual(closes, 0)
+        controller.close()
+        XCTAssertEqual(closes, 0)
     }
 
     private func makeController(

@@ -620,6 +620,7 @@ fn resolve_character_at(
     let mut semantic = CharacterProperties::default();
     let mut direct = CharacterProperties::default();
     let mut automatic = CharacterProperties::default();
+    let mut link_defaults = CharacterProperties::default();
     let mut source_block = block.clone();
     for span in active {
         match &span.application {
@@ -627,17 +628,20 @@ fn resolve_character_at(
             | StyleApplication::SourceRawText
             | StyleApplication::SourcePreservedWhitespace => {}
             StyleApplication::Automatic(id) => {
-                let mut chain = Vec::new();
-                let mut current = Some(id);
-                while let Some(id) = current {
-                    let style = sheet
-                        .character_style(id)
-                        .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?;
-                    chain.push(&style.properties);
-                    current = style.based_on.as_ref();
-                }
-                for properties in chain.into_iter().rev() {
-                    merge_character_properties(&mut automatic, properties);
+                if id.0 == "Link" {
+                    merge_character_properties(&mut link_defaults, &sheet.automatic_character_properties(id)?);
+                } else {
+                    let mut chain = Vec::new();
+                    let mut current = Some(id);
+                    while let Some(id) = current {
+                        let style = sheet.character_style(id)
+                            .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?;
+                        chain.push(&style.properties);
+                        current = style.based_on.as_ref();
+                    }
+                    for properties in chain.into_iter().rev() {
+                        merge_character_properties(&mut automatic, properties);
+                    }
                 }
             }
             StyleApplication::SourceParagraph { style, defaults } => {
@@ -664,6 +668,12 @@ fn resolve_character_at(
     // formatting wins property-by-property, independent of source-span order.
     merge_character_properties(&mut semantic, &direct);
     merge_character_properties(&mut semantic, &automatic);
+    // Link is a content-derived default. Authored character styles and direct
+    // formatting still win; source/code syntax overlays retain their existing
+    // priority. Keep it out of the authored typing-style cascade.
+    if link_defaults != CharacterProperties::default() {
+        merge_character_properties(&mut source_block.direct_default_character, &link_defaults);
+    }
 
     sheet
         .resolve_assigned_paragraph_style(

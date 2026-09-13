@@ -2312,6 +2312,11 @@ ViemStatus viem_core_set_code_filename_associations_json(ViemCoreHandle core, co
 /* selection: Automatic=0, None=1, Language=2. Only Language takes a nonempty name. */
 ViemStatus viem_core_set_code_language(ViemCoreHandle core, uint32_t selection, const uint8_t *language, uint64_t length);
 ViemStatus viem_core_redetect_code_language(ViemCoreHandle core, const uint8_t *filename, uint64_t length);
+/* Exact snapshot, two-pass UTF-8. Outputs must be disjoint. found distinguishes
+ * no link from a link with an empty destination. No source or view mutation. */
+ViemStatus viem_core_copy_link_destination(ViemCoreHandle core,
+    uint64_t document_id, uint64_t revision, uint64_t text_offset,
+    uint8_t *output, uint64_t capacity, uint64_t *required, uint8_t *found);
 /* Application default for textwidth (positive). Buffer :set overrides survive. */
 ViemStatus viem_core_set_text_width_default(ViemCoreHandle core, uint32_t width);
 ViemStatus viem_core_poll_syntax(ViemCoreHandle core, uint8_t *changed);

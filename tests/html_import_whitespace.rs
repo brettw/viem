@@ -172,7 +172,7 @@ fn exact_cr_insertion_is_rejected_atomically_when_html_cannot_reproject_it() {
         let before = document.revision();
         assert_eq!(
             document.insert(1, "\r"),
-            Err(DocumentError::VerificationFailed)
+            Err(DocumentError::UnrepresentableFormattedCharacter { format: Format::Html, character: '\r' })
         );
         assert_eq!(document.text(), "ab");
         assert_eq!(document.source_bytes(), source.as_bytes());

@@ -46,7 +46,7 @@ final class EVRecoveryStoreTests: XCTestCase {
         let staging = directory.appendingPathComponent(".viem-recovery-\(store.owner.uuidString)-2.tmp")
         try Data().write(to: staging)
         let rejected = expectation(description: "staging collision rejected")
-        store.write(snapshot("new")) { error in XCTAssertNotNil(error); rejected.fulfill() }
+        store.write(snapshot("new"), completion: { error in XCTAssertNotNil(error); rejected.fulfill() })
         wait(for: [rejected], timeout: 3)
         XCTAssertEqual(try Data(contentsOf: store.url), previous)
         XCTAssertEqual(try Data(contentsOf: staging), Data())
@@ -87,7 +87,7 @@ final class EVRecoveryStoreTests: XCTestCase {
         let bytes = try foreign.encoded()
         try bytes.write(to: store.url, options: .atomic)
         let failed = expectation(description: "ownership rejected")
-        store.write(snapshot("ours")) { error in XCTAssertNotNil(error); failed.fulfill() }
+        store.write(snapshot("ours"), completion: { error in XCTAssertNotNil(error); failed.fulfill() })
         wait(for: [failed], timeout: 2)
         store.closeAndRemove(); store.drainForTesting()
         XCTAssertEqual(try Data(contentsOf: store.url), bytes)

@@ -599,6 +599,8 @@ enum Pending {
         count: usize,
         count_explicit: bool,
     },
+    /// Uppercase `Z` starts the save-and-close command; lowercase z is viewport grammar.
+    SaveQuit,
     Operator(PendingOperator),
     /// `CTRL-W` was typed. Vim reads a window command's count before the
     /// prefix, so it is captured here and digits afterwards are not commands.
@@ -2164,7 +2166,8 @@ impl CommandInterpreter {
                     Pending::SetMark
                     | Pending::MacroRecord
                     | Pending::MacroPlay { .. }
-                    | Pending::Window { .. } => true,
+                    | Pending::Window { .. }
+                    | Pending::SaveQuit => true,
                     Pending::G { .. } => {
                         !matches!(
                             *key,
@@ -4095,6 +4098,23 @@ impl CommandInterpreter {
                 }
                 return Some(output);
             }
+            Pending::SaveQuit => {
+                self.clear_pending();
+                return Some(match key {
+                    Key::Char('Z') if document.is_read_only() => CommandOutput {
+                        status: CommandStatus::ExError(ExCommandError::Execute(ExExecuteError::ReadOnly)),
+                        ..CommandOutput::complete()
+                    },
+                    Key::Char('Z') => {
+                        let mut outcome = ExOutcome::default();
+                        outcome.frontend_requests.push(ExFrontendRequest::File(
+                            ex_execute::ExFileRequest::WriteQuit { path: None, force: false, range: None },
+                        ));
+                        CommandOutput { ex_outcome: Some(outcome), ..CommandOutput::complete() }
+                    }
+                    _ => CommandOutput::unsupported(format!("Z{key:?}")),
+                });
+            }
             Pending::Z { .. } => {
                 if matches!(key, Key::Char('t' | 'z' | 'b')) {
                     return None;
@@ -4258,6 +4278,11 @@ impl CommandInterpreter {
                     count_explicit: explicit_count.is_some(),
                     register,
                 };
+                CommandOutput::pending()
+            }
+            Key::Char('Z') => {
+                self.requested_register = None;
+                self.pending = Pending::SaveQuit;
                 CommandOutput::pending()
             }
             Key::Char('z') => {
@@ -8056,6 +8081,7 @@ impl CommandInterpreter {
                     _ => CommandOutput::unsupported(format!("z{key:?}")),
                 });
             }
+            Pending::SaveQuit => unreachable!("save-and-quit prefix is controller-only"),
             Pending::Operator(operator) => {
                 return self.handle_operator_key(document, key, operator);
             }
@@ -18382,6 +18408,53 @@ mod tests {
         key(&mut commands, &mut document, Key::Enter);
         assert_eq!(commands.register('0').unwrap().text, "two\n");
         assert_eq!(commands.register('"').unwrap().text, "two\n");
+    }
+
+    #[test]
+    fn uppercase_zz_emits_one_save_quit_without_changing_registers_or_undo() {
+        for prefix in ["", "3", "\"a", "\"a3"] {
+            let mut document = Document::new("one two");
+            let mut commands = CommandInterpreter::new();
+            key(&mut commands, &mut document, Key::Char('x'));
+            let deleted = commands.register('"').unwrap().clone();
+            let source = document.source_bytes();
+            keys(&mut commands, &mut document, prefix);
+            let pending = key(&mut commands, &mut document, Key::Char('Z'));
+            assert_eq!(pending.status, CommandStatus::Pending);
+            let output = key(&mut commands, &mut document, Key::Char('Z'));
+            assert_eq!(output.status, CommandStatus::Complete);
+            assert_eq!(output.ex_outcome.unwrap().frontend_requests, vec![
+                ExFrontendRequest::File(ex_execute::ExFileRequest::WriteQuit {
+                    path: None, force: false, range: None,
+                }),
+            ]);
+            assert_eq!(document.source_bytes(), source);
+            assert_eq!(commands.register('"').unwrap(), &deleted);
+            assert_eq!(commands.mode(), Mode::Normal);
+            key(&mut commands, &mut document, Key::Char('u'));
+            assert_eq!(document.text(), "one two", "ZZ creates no undo entry");
+        }
+    }
+
+    #[test]
+    fn uppercase_zz_rejects_operator_pending_cancels_and_obeys_read_only() {
+        let mut document = Document::new("one two");
+        let mut commands = CommandInterpreter::new();
+        key(&mut commands, &mut document, Key::Char('Z'));
+        assert_eq!(key(&mut commands, &mut document, Key::Escape).status, CommandStatus::Cancelled);
+        key(&mut commands, &mut document, Key::Char('d'));
+        assert!(key(&mut commands, &mut document, Key::Char('Z')).ex_outcome.is_none());
+        assert_eq!(document.text(), "one two");
+        key(&mut commands, &mut document, Key::Escape);
+        key(&mut commands, &mut document, Key::Char('Z'));
+        let unsupported = key(&mut commands, &mut document, Key::Char('x'));
+        assert!(matches!(unsupported.status, CommandStatus::Unsupported(_)));
+        assert_eq!(document.text(), "one two");
+        document.set_read_only(true);
+        key(&mut commands, &mut document, Key::Char('Z'));
+        let failure = key(&mut commands, &mut document, Key::Char('Z'));
+        assert_eq!(failure.status, CommandStatus::ExError(ExCommandError::Execute(ExExecuteError::ReadOnly)));
+        assert!(failure.ex_outcome.is_none());
     }
 
     #[test]

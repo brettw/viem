@@ -42,6 +42,7 @@ mod rtf_structure;
 mod rtf_styles;
 pub use lists::{ListIdentity, ListItemNode, ListNode, ListStructure};
 mod line_endings;
+mod links;
 mod persistence;
 mod pipeline;
 mod position;

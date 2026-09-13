@@ -115,7 +115,7 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
     let before = try XCTUnwrap(surface.layoutSnapshot)
     let source = try surface.backend.serializedSource(typeName: "public.plain-text")
     let state = surface.backend.persistenceState
-    var midnight = EVTheme.midnight
+    let midnight = EVTheme.midnight
     EVThemeStore.shared.update(midnight)
     let after = try XCTUnwrap(surface.layoutSnapshot)
     XCTAssertTrue(before.info.identity.isSameLayout(as: after.info.identity))

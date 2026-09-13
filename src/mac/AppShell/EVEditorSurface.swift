@@ -51,6 +51,8 @@ public struct EVStatusBarState: Equatable, Sendable {
   /// While this is set, the command line replaces the status line's left
   /// group. The caret position widget stays.
   public var commandLine: EVStatusCommandLine?
+  /// Read-only command output occupying the same area, in normal status colors.
+  public var commandOutput: String?
   /// Whether this pane holds the text focus. The command caret blinks only in
   /// the active pane and is outlined elsewhere.
   public var isActive: Bool
@@ -63,6 +65,7 @@ public struct EVStatusBarState: Equatable, Sendable {
     lineMode: EVLineMode = .visual,
     locationIsFragment: Bool = false,
     commandLine: EVStatusCommandLine? = nil,
+    commandOutput: String? = nil,
     isActive: Bool = false
   ) {
     self.mode = mode
@@ -71,6 +74,7 @@ public struct EVStatusBarState: Equatable, Sendable {
     self.format = format
     self.lineMode = lineMode
     self.commandLine = commandLine
+    self.commandOutput = commandOutput
     self.isActive = isActive
     self.locationIsFragment = locationIsFragment
   }
@@ -192,6 +196,7 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
 /// window immediately.
 @MainActor
 public protocol EVDocumentHostEffectHandling: AnyObject {
+  func documentURL(for surface: any EVEditorSurface) -> URL?
   func perform(
     documentHostRequests: [EVDocumentHostRequest],
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
@@ -211,6 +216,7 @@ public protocol EVDocumentHostEffectHandling: AnyObject {
 }
 
 extension EVDocumentHostEffectHandling {
+  public func documentURL(for surface: any EVEditorSurface) -> URL? { nil }
   public func perform(windowRequests: [EVWindowRequest], from surface: any EVEditorSurface) {}
 
   public func openDroppedFiles(
@@ -308,6 +314,9 @@ public protocol EVEditorSurface: AnyObject {
   func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation
   func perform(statusOption: EVStatusBarOption)
   func showDocumentMessage(_ message: String)
+  func dismissCommandOutput()
+  /// Resume editor input after leaving the selectable status message.
+  func handleStatusMessageKey(_ event: NSEvent)
 
   /// Place the command-line caret, which the status line hit-tested against
   /// its own rendering. Offsets are UTF-8 within the command-line text.
@@ -319,6 +328,8 @@ extension EVEditorSurface {
   public func perform(statusOption: EVStatusBarOption) {}
   public func selectCommandLine(atUTF8Offset offset: Int, extending: Bool) {}
   public func showDocumentMessage(_ message: String) {}
+  public func dismissCommandOutput() {}
+  public func handleStatusMessageKey(_ event: NSEvent) {}
 }
 
 /// One source-backed document/buffer. Multiple surfaces may share it.

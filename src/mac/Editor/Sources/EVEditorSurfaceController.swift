@@ -29,6 +29,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     var layoutPaint: EVLayoutPaintExport?
     private(set) var commandLine: EVCommandLineExport?
     private(set) var commandOutput: String?
+    static let commandOutputDuration: TimeInterval = 30
+    var commandOutputClock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    private(set) var commandOutputDeadline: TimeInterval?
+    private var commandOutputTimer: Timer?
     private(set) var visualSelection: EVVisualSelectionExport?
     private(set) var viewPresentation = ViemViewPresentationV1()
     private(set) var viewportState = ViemViewportStateV1()
@@ -104,6 +108,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     deinit {
+        commandOutputTimer?.invalidate()
         if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
         if let viewPreferencesObserver { NotificationCenter.default.removeObserver(viewPreferencesObserver) }
     }
@@ -128,6 +133,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     public override func loadView() {
         view = EVEditorView(surface: self)
         refreshPresentation()
+        if !lastErrorMessage.isEmpty { publishHostMessage(lastErrorMessage) }
     }
 
     public override func viewDidLayout() {
@@ -309,7 +315,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             layoutTextSlices = nextLayoutTextSlices
             compositionTextSlices = nextCompositionTextSlices
             commandLine = nextCommandLine
-            if nextCommandLine.prompt != nil { commandOutput = nil }
+            if nextCommandLine.prompt != nil { clearCommandOutput() }
             visualSelection = nextVisualSelection
             presentationRefreshCount &+= 1
             updateStatusBar()
@@ -356,6 +362,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     func performInput(_ operation: () throws -> Void) {
+        clearCommandOutput()
         do {
             lastErrorMessage = ""
             let refreshCountBeforeInput = presentationRefreshCount
@@ -397,6 +404,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     func requestVerticalViewport(top: CGFloat) {
+        dismissCommandOutput()
         guard let session else { return }
         guard refreshGeometryBeforeScrolling() else { return }
         do {
@@ -437,6 +445,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     public func perform(menuCommand: EVMenuCommand, sender: Any?) {
+        if isViewLoaded, editorView.statusBar?.performCommandOutputAction(menuCommand) == true { return }
+        dismissCommandOutput()
         guard let session else { return }
         if let change = menuCommand.formatChange {
             guard presentation(for: menuCommand).isEnabled else { return }
@@ -626,6 +636,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     public func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation {
+        if isViewLoaded, let presentation = editorView.statusBar?.commandOutputPresentation(for: menuCommand) {
+            return presentation
+        }
         if let change = menuCommand.formatChange {
             return EVMenuItemPresentation(
                 isEnabled: session != nil && ((backend.sourceFormat == .code || change.format == .code)
@@ -1226,7 +1239,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                     selectedDisplayRange: $0.selectedDisplayRange
                 )
             },
-            isActive: editorView.isActiveTextSurface
+            commandOutput: commandOutput,
+            isActive: editorView.isCaretActive
         )
         statusBarStateDidChange?(statusBarState)
     }
@@ -1549,17 +1563,52 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             .replacingOccurrences(of: "\t", with: "^I")
     }
 
-    func dismissCommandOutput() {
+    private func clearCommandOutput() {
         commandOutput = nil
-        if isViewLoaded { editorView.applyPresentation(); editorView.window?.makeFirstResponder(editorView) }
+        commandOutputDeadline = nil
+        commandOutputTimer?.invalidate()
+        commandOutputTimer = nil
+    }
+
+    public func dismissCommandOutput() {
+        guard commandOutput != nil else { return }
+        clearCommandOutput()
+        updateStatusBar()
+    }
+
+    /// The deadline is checked separately from scheduling so a stale timer
+    /// cannot dismiss a replacement message, and tests need no real-time wait.
+    func expireCommandOutput(at now: TimeInterval) {
+        guard let deadline = commandOutputDeadline, now >= deadline else { return }
+        dismissCommandOutput()
+    }
+
+    public func handleStatusMessageKey(_ event: NSEvent) {
+        dismissCommandOutput()
+        editorView.window?.makeFirstResponder(editorView)
+        if event.characters == ":",
+           event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+           [UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE)].contains(viewPresentation.mode) {
+            performInput { _ = try session?.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
+        }
+        editorView.keyDown(with: event)
     }
 
     public func showDocumentMessage(_ message: String) { publishHostMessage(message) }
 
     func publishHostMessage(_ message: String) {
+        clearCommandOutput()
         commandOutput = message
+        commandOutputDeadline = commandOutputClock() + Self.commandOutputDuration
+        let timer = Timer(timeInterval: Self.commandOutputDuration, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.expireCommandOutput(at: self.commandOutputClock())
+            }
+        }
+        commandOutputTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
         lastErrorMessage = ""
         updateStatusBar()
-        if isViewLoaded { editorView.applyPresentation() }
     }
 }

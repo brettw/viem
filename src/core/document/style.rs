@@ -1128,18 +1128,48 @@ impl StyleSheet {
         self.block_styles.values()
     }
 
+    /// Content-derived links retain their semantic interval when the user
+    /// deletes their optional appearance. Other undefined style references
+    /// remain errors; deletion does not silently repair an invalid sheet.
+    pub(crate) fn automatic_character_properties(
+        &self,
+        id: &StyleId,
+    ) -> Result<CharacterProperties, StyleError> {
+        if id.0 == "Link"
+            && self.character_style(id).is_none()
+            && self.configuration_deleted(id, false)
+        {
+            return Ok(CharacterProperties::default());
+        }
+        let mut chain = Vec::new();
+        let mut current = Some(id);
+        while let Some(id) = current {
+            let style = self.character_style(id)
+                .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?;
+            chain.push(&style.properties);
+            current = style.based_on.as_ref();
+        }
+        let mut result = CharacterProperties::default();
+        for properties in chain.into_iter().rev() {
+            result.merge_declarations(properties);
+        }
+        Ok(result)
+    }
+
     /// Prose defaults approximate the common one-em collapsed HTML
     /// paragraph gap using two half-em sides in Viem's additive spacing model.
     /// Plain text and RTF retain their adapter-specific defaults.
     pub(crate) fn for_format(format: super::Format) -> Self {
         let mut sheet = Self::default();
-        if matches!(
-            format,
-            super::Format::Markdown
-                | super::Format::MarkdownSource
-                | super::Format::Html
-                | super::Format::HtmlSource
-        ) {
+        if format.is_markdown() || format.is_html() {
+            sheet.character_styles.insert("Link".into(), CharacterStyle {
+                id: "Link".into(), based_on: None,
+                properties: CharacterProperties {
+                    foreground: Some(Color { red: 0.0, green: 0.0, blue: 1.0, alpha: 1.0 }),
+                    underline: Some(true), ..Default::default()
+                },
+            });
+            sheet.character_metadata.insert("Link".into(), StyleDefinitionMetadata::generated("Link"));
             let paragraph = sheet.block_styles.get_mut(&sheet.base_paragraph).unwrap();
             paragraph.block.spacing_before = Some(7.0);
             paragraph.block.spacing_after = Some(7.0);

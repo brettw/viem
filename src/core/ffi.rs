@@ -13261,6 +13261,46 @@ pub unsafe extern "C" fn viem_core_copy_syntax_style_names(
     })
 }
 
+/// Resolve an authored link at an exact formatted snapshot point. No link is
+/// represented by found=0; an empty destination remains a link with found=1.
+/// # Safety
+/// All output regions must be aligned, writable, and mutually disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_copy_link_destination(
+    handle: ViemCoreHandle,
+    document_id: u64,
+    revision: u64,
+    text_offset: u64,
+    output: *mut u8,
+    capacity: u64,
+    required: *mut u64,
+    found: *mut u8,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[
+            typed_pointer_region(output, capacity)?,
+            typed_pointer_region(required, 1)?,
+            typed_pointer_region(found, 1)?,
+        ])?;
+        let destination = with_core(handle, |core| {
+            let document = core.document();
+            if document.id().0 != document_id { return Err(ViemStatus::InvalidArgument); }
+            validate_revision(document, revision)?;
+            let offset = usize::try_from(text_offset).map_err(|_| ViemStatus::LengthOverflow)?;
+            let point = document.text_point(offset).map_err(document_status)?;
+            document.link_at(point).map_err(document_status)
+        })?;
+        let bytes = destination.as_deref().unwrap_or("").as_bytes();
+        unsafe {
+            required.write(bytes.len() as u64);
+            found.write(u8::from(destination.is_some()));
+        }
+        if capacity < bytes.len() as u64 { return Err(ViemStatus::BufferTooSmall); }
+        unsafe { copy_output(bytes, output); }
+        Ok(())
+    })
+}
+
 /// Two-pass JSON export of sparse defaults plus explicit document declarations.
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_export_style_defaults(
