@@ -494,14 +494,16 @@ fn markdown_source_opening_fence_prefix_can_be_replaced() {
 }
 
 #[test]
-fn markdown_source_fence_edit_requires_explicit_source_intent_when_breaks_reinterpret() {
-    use viem_core::document::{DocumentError, ModelRequest, ModelTransactionError, TextEdit};
+fn markdown_source_fence_edit_reparses_immediately_through_either_path() {
+    use viem_core::document::{ModelRequest, TextEdit};
 
-    // Removing the old opener makes the old closer open an unclosed code block:
-    // its following paragraph separator becomes two literal code breaks. In
-    // the second case, old code blank rows also become folded prose separators.
-    // A formatted TextEdit must not silently change these unselected breaks;
-    // a physical source edit explicitly permits reparsing their interpretation.
+    // Markdown Source keeps delimiters editable, and editing one reparses and
+    // updates formatting immediately. Removing the old opener makes the old
+    // closer open an unclosed code block: its following paragraph separator
+    // becomes two literal code breaks. In the second case, old code blank rows
+    // also become folded prose separators. Editing the delimiter through the
+    // formatted text and through explicit physical source must commit the same
+    // minimal patch and reach the same authoritative reprojection.
     for (source, before_text, after_text) in [
         (
             "```\na\n```\n\nTail.",
@@ -514,52 +516,43 @@ fn markdown_source_fence_edit_requires_explicit_source_intent_when_breaks_reinte
             "\\`\nline one\nli\r two\n```\n\nTail.",
         ),
     ] {
+        let mut expected_source = source.to_owned();
+        expected_source.replace_range(0..2, "\\");
         for encoding in [
             Encoding::Utf8,
             Encoding::Latin1,
             Encoding::Utf16Le,
             Encoding::Utf16Be,
         ] {
-            let original = encode(source, encoding);
-            let mut document = Document::from_bytes_with_file_format(
-                original.clone(),
-                encoding,
-                Format::MarkdownSource,
-                FileFormat::Unix,
-            )
-            .unwrap();
-            assert_eq!(document.text(), before_text);
-            let projection = document.projection().clone();
-            let revision = document.revision();
-            let history = document.history_status();
-            let error = document
-                .prepare_model_request(ModelRequest::ApplyTextEdits {
-                    document: document.id(),
-                    revision,
-                    edits: vec![TextEdit::new(0..2, "\\")],
-                })
-                .unwrap_err();
-            assert_eq!(
-                error,
-                ModelTransactionError::Document(DocumentError::VerificationFailed),
-                "{source:?} {encoding:?}"
-            );
-            assert_eq!(document.source_bytes(), original);
-            assert_eq!(document.projection(), &projection);
-            assert_eq!(document.revision(), revision);
-            assert_eq!(document.history_status(), history);
-
-            let prepared = document
-                .prepare_model_request(ModelRequest::ReplacePhysicalSource {
-                    document: document.id(),
-                    revision,
-                    range: 0..encode("``", encoding).len(),
-                    replacement: "\\".into(),
-                })
-                .unwrap_or_else(|error| panic!("{source:?} {encoding:?}: {error:?}"));
-            let mut expected_source = source.to_owned();
-            expected_source.replace_range(0..2, "\\");
-            assert_fence_prefix_edit(&mut document, prepared, &expected_source, after_text);
+            for formatted in [true, false] {
+                let mut document = Document::from_bytes_with_file_format(
+                    encode(source, encoding),
+                    encoding,
+                    Format::MarkdownSource,
+                    FileFormat::Unix,
+                )
+                .unwrap();
+                assert_eq!(document.text(), before_text);
+                let revision = document.revision();
+                let request = if formatted {
+                    ModelRequest::ApplyTextEdits {
+                        document: document.id(),
+                        revision,
+                        edits: vec![TextEdit::new(0..2, "\\")],
+                    }
+                } else {
+                    ModelRequest::ReplacePhysicalSource {
+                        document: document.id(),
+                        revision,
+                        range: 0..encode("``", encoding).len(),
+                        replacement: "\\".into(),
+                    }
+                };
+                let prepared = document.prepare_model_request(request).unwrap_or_else(|error| {
+                    panic!("{source:?} {encoding:?} formatted={formatted}: {error:?}")
+                });
+                assert_fence_prefix_edit(&mut document, prepared, &expected_source, after_text);
+            }
         }
     }
 }

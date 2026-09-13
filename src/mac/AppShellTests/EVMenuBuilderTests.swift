@@ -44,20 +44,40 @@ final class EVMenuBuilderTests: XCTestCase {
         }
     }
 
-    func testTopLevelMenuOrderMatchesSpecification() {
+    func testTopLevelMenuOrderMatchesSpecification() throws {
         let owner = Owner()
+        let application = NSApplication.shared
+        // AppKit binds the Window, Services, and Help menus to whichever menus
+        // the installed main menu owns, so a menu that was never installed
+        // keeps whatever an earlier test left behind. Install this one the way
+        // the shell does, and put back what was there.
+        let previousMain = application.mainMenu
+        let previousWindows = application.windowsMenu
+        let previousHelp = application.helpMenu
+        let previousServices = application.servicesMenu
+        defer {
+            application.mainMenu = previousMain
+            application.windowsMenu = previousWindows
+            application.helpMenu = previousHelp
+            application.servicesMenu = previousServices
+        }
         let builder = EVMenuBuilder(owner: owner)
-        let menu = builder.buildMainMenu(for: NSApplication.shared)
+        let menu = builder.buildMainMenu(for: application)
+        application.mainMenu = menu
 
         XCTAssertEqual(menu.items.map(\.title), [
             "Viem", "File", "Edit", "Format", "Paragraph", "Character", "View", "Window", "Help",
         ])
-        XCTAssertTrue(NSApplication.shared.windowsMenu === menu.item(withTitle: "Window")?.submenu)
-        XCTAssertTrue(NSApplication.shared.helpMenu === menu.item(withTitle: "Help")?.submenu)
-        XCTAssertTrue(
-            NSApplication.shared.servicesMenu
-                === menu.item(withTitle: "Viem")?.submenu?.item(withTitle: "Services")?.submenu
-        )
+        XCTAssertTrue(application.windowsMenu === menu.item(withTitle: "Window")?.submenu)
+        XCTAssertTrue(application.helpMenu === menu.item(withTitle: "Help")?.submenu)
+        // The builder attaches a Services submenu under the application menu
+        // and offers it to AppKit. AppKit registers a Services menu once per
+        // process and ignores every later one, so its identity cannot be
+        // asserted from a test that is not the first to build a menu.
+        let services = try XCTUnwrap(
+            menu.item(withTitle: "Viem")?.submenu?.item(withTitle: "Services")?.submenu)
+        XCTAssertEqual(services.title, "Services")
+        XCTAssertEqual(application.servicesMenu?.title, "Services")
     }
 
     func testFormatMenusRouteEachTargetAndOperationThroughTheResponderChain() throws {
