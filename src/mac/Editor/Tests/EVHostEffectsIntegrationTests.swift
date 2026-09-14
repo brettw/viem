@@ -252,6 +252,29 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
         XCTAssertTrue(saveAs.force)
     }
 
+    func testArgumentRequestsPreserveCountCaseWritePathAndInitialLine() throws {
+        let (_, surface, session) = try makeSurface("body")
+        let host = DocumentHost()
+        surface.documentHostEffectHandler = host
+
+        try sendEx("3wN! +123 copy file.txt", through: session)
+        let writePrevious = try XCTUnwrap(host.requests.last?.first)
+        XCTAssertEqual(writePrevious.kind, .navigateArgument)
+        XCTAssertEqual(writePrevious.argumentNavigation,
+            EVArgumentNavigation(target: .previous, count: 3, writeFirst: true, line: 123))
+        XCTAssertEqual(writePrevious.path, "copy file.txt")
+        XCTAssertTrue(writePrevious.force)
+        XCTAssertEqual(writePrevious.documentID, surface.documentState.document_id)
+        XCTAssertEqual(writePrevious.documentRevision, surface.documentState.document_revision)
+
+        try sendEx("n", through: session)
+        XCTAssertEqual(host.requests.last?.first?.argumentNavigation,
+            EVArgumentNavigation(target: .next))
+        try sendEx("argument 2 +", through: session)
+        XCTAssertEqual(host.requests.last?.first?.argumentNavigation,
+            EVArgumentNavigation(target: .index, count: 2, line: 0))
+    }
+
     func testUppercaseZZUsesExactSaveQuitRequestAndReportsSaveFailure() throws {
         let (_, surface, session) = try makeSurface("body")
         let host = DocumentHost()

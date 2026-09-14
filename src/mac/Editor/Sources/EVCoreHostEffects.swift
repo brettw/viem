@@ -161,6 +161,7 @@ struct EVExHostEffect: Equatable {
     let registers: [EVExRegisterEffect]
     let jumps: [EVExJumpEffect]
     let textLines: [EVExTextLineEffect]
+    var argumentNavigation: EVArgumentNavigation? = nil
 }
 
 struct EVHostEffectBatch: Equatable {
@@ -402,6 +403,20 @@ private extension EVRawEffectBatch {
             guard range == nil || request.hard_line_start <= request.hard_line_end else {
                 throw EVCoreFrontendError.invalidHostEffect
             }
+            let argumentNavigation: EVArgumentNavigation?
+            if request.kind == UInt32(VIEM_EX_FRONTEND_ARGUMENT) {
+                guard let target = EVArgumentNavigation.Target(rawValue: request.argument_command),
+                      request.argument_count > 0
+                else { throw EVCoreFrontendError.invalidHostEffect }
+                argumentNavigation = EVArgumentNavigation(
+                    target: target, count: request.argument_count,
+                    writeFirst: request.flags & UInt32(VIEM_EX_FRONTEND_WRITE_FIRST) != 0,
+                    line: request.flags & UInt32(VIEM_EX_FRONTEND_HAS_LINE) != 0
+                        ? request.argument_line : nil
+                )
+            } else {
+                argumentNavigation = nil
+            }
             return EVExHostEffect(
                 kind: request.kind,
                 flags: request.flags,
@@ -416,7 +431,8 @@ private extension EVRawEffectBatch {
                 marks: try marks(for: request),
                 registers: try registers(for: request),
                 jumps: try jumps(for: request),
-                textLines: try textLines(for: request)
+                textLines: try textLines(for: request),
+                argumentNavigation: argumentNavigation
             )
         }
 

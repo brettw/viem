@@ -1516,6 +1516,7 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         switch effect.kind {
         case UInt32(VIEM_EX_FRONTEND_SPLIT): kind = .split
         case UInt32(VIEM_EX_FRONTEND_NEW_PANE): kind = .newPane
+        case UInt32(VIEM_EX_FRONTEND_ARGUMENT): kind = .navigateArgument
         case UInt32(VIEM_EX_FRONTEND_EDIT): kind = .edit
         case UInt32(VIEM_EX_FRONTEND_EDIT_NEW_WINDOW): kind = .editNewWindow
         case UInt32(VIEM_EX_FRONTEND_PWD): kind = .printWorkingDirectory
@@ -1560,7 +1561,8 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             force: force,
             path: path,
             hardLineRange: effect.hardLineRange,
-            initialHeightRows: initialHeightRows
+            initialHeightRows: initialHeightRows,
+            argumentNavigation: effect.argumentNavigation
         )
     }
 

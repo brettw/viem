@@ -14,7 +14,7 @@ final class EVViewPreferencesTests: XCTestCase {
     let config = configuration()
     let center = NotificationCenter()
     let preferences = EVViewPreferences(configuration: config, center: center)
-    XCTAssertEqual(preferences.margins, EVViewMargins(top: 28, left: 30, bottom: 28, right: 30))
+    XCTAssertEqual(preferences.margins, EVViewMargins(top: 10, left: 10, bottom: 10, right: 10))
     var notifications = 0
     let observer = center.addObserver(forName: .viemViewPreferencesDidChange, object: nil, queue: .main) { _ in notifications += 1 }
     defer { center.removeObserver(observer) }

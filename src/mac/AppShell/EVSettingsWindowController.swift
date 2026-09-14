@@ -60,6 +60,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     window.title = "Viem Settings"
     window.contentMinSize = NSSize(width: 760, height: 640)
     window.isReleasedWhenClosed = false
+    window.autorecalculatesKeyViewLoop = false
     super.init(window: window)
     build()
     observer = NotificationCenter.default.addObserver(
@@ -189,6 +190,9 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   }
 
   private func showCategory() {
+    // End editing before removing the old page so its pending value is saved.
+    window?.makeFirstResponder(sidebar)
+    defer { configureKeyViewLoop() }
     content.subviews.forEach { $0.removeFromSuperview() }
     wells.removeAll()
     fields.removeAll()
@@ -355,6 +359,33 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       child.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
     }
     refresh()
+  }
+
+  private func configureKeyViewLoop() {
+    // Stack and grid order expresses the form's reading order, including values
+    // below the scroll view's visible area. AppKit handles Tab/Backtab, commits
+    // the field editor, and skips controls according to keyboard preferences.
+    func controls(in view: NSView) -> [NSView] {
+      if let field = view as? NSTextField { return field.isEditable ? [field] : [] }
+      if view is NSControl { return [view] }
+      if let scroll = view as? NSScrollView {
+        return scroll.documentView.map { controls(in: $0) } ?? []
+      }
+      if let stack = view as? NSStackView { return stack.arrangedSubviews.flatMap { controls(in: $0) } }
+      if let grid = view as? NSGridView {
+        return (0..<grid.numberOfRows).flatMap { row in
+          (0..<grid.numberOfColumns).flatMap { column in
+            grid.cell(atColumnIndex: column, rowIndex: row).contentView.map { controls(in: $0) } ?? []
+          }
+        }
+      }
+      return view.subviews.flatMap { controls(in: $0) }
+    }
+    let keyViews = [sidebar] + controls(in: content)
+    for (index, view) in keyViews.enumerated() {
+      view.nextKeyView = keyViews[(index + 1) % keyViews.count]
+    }
+    window?.initialFirstResponder = sidebar
   }
 
   private func refreshCodePreferences() {

@@ -61,7 +61,8 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     try preservingStatusBarDefault {
       let document = EVDocument()
       let surface = Surface()
-      let controller = EVDocumentWindowController(document: document, editorSurface: surface)
+      let controller = EVDocumentWindowController(document: document, editorSurface: surface,
+        placement: EVDocumentWindowPlacement(loadFrame: { nil }))
       defer { controller.close() }
 
       XCTAssertFalse(controller.window?.isVisible ?? true)
@@ -94,7 +95,8 @@ final class EVDocumentWindowControllerTests: XCTestCase {
 
   func testInitialShowOverridesPreShowGeometryWithoutRestorationOrTabbing() throws {
     let document = EVDocument()
-    let controller = EVDocumentWindowController(document: document, editorSurface: Surface())
+    let controller = EVDocumentWindowController(document: document, editorSurface: Surface(),
+      placement: EVDocumentWindowPlacement(loadFrame: { nil }))
     defer { controller.close() }
 
     let window = try XCTUnwrap(controller.window)
@@ -109,7 +111,8 @@ final class EVDocumentWindowControllerTests: XCTestCase {
 
   func testLaterShowsPreserveAUserResize() throws {
     let document = EVDocument()
-    let controller = EVDocumentWindowController(document: document, editorSurface: Surface())
+    let controller = EVDocumentWindowController(document: document, editorSurface: Surface(),
+      placement: EVDocumentWindowPlacement(loadFrame: { nil }))
     defer { controller.close() }
     controller.showWindow(nil)
 
@@ -127,10 +130,29 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     XCTAssertEqual(geometry.editor.height, 475, accuracy: 0.5)
   }
 
+  func testInitialShowRestoresStoredFrameAndRecordsLaterResize() throws {
+    var saved = NSRect(x: 100, y: 100, width: 760, height: 540)
+    let placement = EVDocumentWindowPlacement(loadFrame: { saved }, saveFrame: { saved = $0 })
+    let controller = EVDocumentWindowController(document: EVDocument(), editorSurface: Surface(),
+      placement: placement)
+    defer { controller.close() }
+    controller.showWindow(nil)
+    let window = try XCTUnwrap(controller.window)
+    XCTAssertEqual(window.frame, NSRect(x: 100, y: 100, width: 760, height: 540))
+    window.setContentSize(NSSize(width: 800, height: 500))
+    controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+    XCTAssertEqual(saved, window.frame)
+    let recorded = saved
+    window.orderOut(nil)
+    controller.showWindow(nil)
+    XCTAssertEqual(window.frame, recorded, "Reshowing one window must not restore or cascade it again")
+  }
+
   func testStatusBarMenuValidationToggleAndLayoutStayWindowLocal() throws {
     try preservingStatusBarDefault {
       let document = EVDocument()
-      let controller = EVDocumentWindowController(document: document, editorSurface: Surface())
+      let controller = EVDocumentWindowController(document: document, editorSurface: Surface(),
+        placement: EVDocumentWindowPlacement(loadFrame: { nil }))
       defer { controller.close() }
       controller.showWindow(nil)
       let contentController = controller.documentContentController

@@ -693,3 +693,48 @@ fn outbound_ex_outcome_can_be_prepared_without_frontend_io_or_model_access() {
     core.complete_ex_artifact_write(&prepared, prepared.write().failed())
         .unwrap();
 }
+
+#[test]
+fn write_next_only_releases_navigation_after_the_exact_captured_state_is_saved() {
+    use viem_core::command::argument_list::ExArgumentTarget;
+    let path = ArtifactPath::from("argument.txt");
+    let mut storage = InMemoryArtifactStorage::new();
+    storage.insert(path.clone(), b"old".to_vec()).unwrap();
+    let mut document = Document::from_loaded_artifact(
+        storage.read_artifact(&path).unwrap(), Encoding::Utf8, Format::PlainText,
+        LineEndingOpenPolicy::default(),
+    ).unwrap();
+    document.replace(0..3, "edited").unwrap();
+    let mut core = core_from(document);
+    let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
+    let request = ExFileRequest::NavigateArgument {
+        target: ExArgumentTarget::Previous(2), force: false,
+        write_first: true, path: None, line: Some(12),
+    };
+    let continuation = ExFileRequest::NavigateArgument {
+        target: ExArgumentTarget::Previous(2), force: false,
+        write_first: false, path: None, line: Some(12),
+    };
+    let failed = artifact_write(core.prepare_ex_file_request(&request).unwrap());
+    let result = core.complete_ex_artifact_write(&failed, failed.write().failed()).unwrap();
+    assert!(matches!(result.post_write(), ExPostWriteDisposition::WriteFailed(_)));
+    assert!(core.document().is_dirty());
+
+    let delayed = artifact_write(core.prepare_ex_file_request(&request).unwrap());
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('A')))).unwrap();
+    core.handle(view, CoreEvent::Input(InputEvent::Text(" later".into()))).unwrap();
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+    let receipt = execute_prepared_artifact_write(&mut storage, delayed.write()).unwrap();
+    let result = core.complete_ex_artifact_write(&delayed, delayed.write().succeeded(receipt)).unwrap();
+    assert!(matches!(result.post_write(), ExPostWriteDisposition::DocumentChanged { .. }));
+    assert!(core.document().is_dirty());
+
+    let prepared = artifact_write(core.prepare_ex_file_request(&request).unwrap());
+    assert_eq!(prepared.after_success().unwrap().request(), &continuation);
+    let receipt = execute_prepared_artifact_write(&mut storage, prepared.write()).unwrap();
+    let result = core.complete_ex_artifact_write(&prepared, prepared.write().succeeded(receipt)).unwrap();
+    assert!(matches!(result.post_write(), ExPostWriteDisposition::Ready(ready)
+        if ready.request() == &continuation));
+    assert!(!core.document().is_dirty());
+    assert_eq!(storage.bytes(&path), Some(b"edited later".as_slice()));
+}

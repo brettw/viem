@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+use super::argument_list::ExArgumentTarget;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExCommand {
     pub range: Option<ExRange>,
@@ -47,6 +49,13 @@ pub enum RangeSeparator {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExAction {
+    NavigateArgument {
+        target: ExArgumentTarget,
+        write_first: bool,
+        path: Option<String>,
+        /// One-based line; zero represents the bare `+` last-line command.
+        line: Option<u64>,
+    },
     EditNewWindow {
         path: Option<String>,
     },
@@ -390,7 +399,13 @@ impl<'a> Parser<'a> {
             CommandName::RepeatSubstitute | CommandName::RepeatWithSearch => raw_args.trim_end(),
             _ => raw_args.trim(),
         };
-        let action = self.parse_action(name, args, args_offset)?;
+        let action = if name.is_argument_navigation() {
+            parse_argument_navigation(name, args, args_offset, range.as_ref())?
+        } else {
+            self.parse_action(name, args, args_offset)?
+        };
+        // The prefix for argument navigation is a file count, never a hard-line range.
+        let range = if name.is_argument_navigation() { None } else { range };
         Ok(ExCommand {
             range,
             bang,
@@ -412,8 +427,8 @@ impl<'a> Parser<'a> {
                     self.input[self.at..].to_owned(),
                 ));
             }
-            if &self.input[start..self.at] == "E" {
-                "E".to_owned()
+            if matches!(&self.input[start..self.at], "E" | "N" | "Ne" | "Nex" | "Next" | "wN" | "wNe" | "wNex" | "wNext") {
+                self.input[start..self.at].to_owned()
             } else {
                 self.input[start..self.at].to_ascii_lowercase()
             }
@@ -549,6 +564,9 @@ impl<'a> Parser<'a> {
             }
         };
         match name {
+            CommandName::Next | CommandName::Previous | CommandName::First
+            | CommandName::Last | CommandName::Argument | CommandName::WriteNext
+            | CommandName::WritePrevious => unreachable!("argument navigation is parsed with its count"),
             CommandName::EditNewWindow => Ok(ExAction::EditNewWindow {
                 path: optional_string(args),
             }),
@@ -675,6 +693,13 @@ impl<'a> Parser<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandName {
+    Next,
+    Previous,
+    First,
+    Last,
+    Argument,
+    WriteNext,
+    WritePrevious,
     EditNewWindow,
     PrintWorkingDirectory,
     CheckTime,
@@ -712,8 +737,20 @@ enum CommandName {
 }
 
 impl CommandName {
+    fn is_argument_navigation(self) -> bool {
+        matches!(self, Self::Next | Self::Previous | Self::First | Self::Last
+            | Self::Argument | Self::WriteNext | Self::WritePrevious)
+    }
+
     fn canonical(self) -> &'static str {
         match self {
+            Self::Next => "next",
+            Self::Previous => "previous",
+            Self::First => "first",
+            Self::Last => "last",
+            Self::Argument => "argument",
+            Self::WriteNext => "wnext",
+            Self::WritePrevious => "wprevious",
             Self::EditNewWindow => "E",
             Self::PrintWorkingDirectory => "pwd",
             Self::CheckTime => "checktime",
@@ -752,7 +789,7 @@ impl CommandName {
     }
 
     fn accepts_bang(self) -> bool {
-        matches!(
+        self.is_argument_navigation() || matches!(
             self,
             Self::Edit
                 | Self::EditNewWindow
@@ -773,7 +810,7 @@ impl CommandName {
     }
 
     fn accepts_range(self) -> bool {
-        matches!(
+        matches!(self, Self::Next | Self::Previous | Self::Argument | Self::WriteNext | Self::WritePrevious) || matches!(
             self,
             Self::Write
                 | Self::WriteQuit
@@ -800,6 +837,17 @@ struct CommandSpec {
 }
 
 const COMMANDS: &[CommandSpec] = &[
+    CommandSpec { name: CommandName::Next, spelling: "next", minimum: 1 },
+    CommandSpec { name: CommandName::Previous, spelling: "Next", minimum: 1 },
+    CommandSpec { name: CommandName::Previous, spelling: "previous", minimum: 4 },
+    CommandSpec { name: CommandName::First, spelling: "first", minimum: 3 },
+    CommandSpec { name: CommandName::First, spelling: "rewind", minimum: 3 },
+    CommandSpec { name: CommandName::Last, spelling: "last", minimum: 2 },
+    CommandSpec { name: CommandName::Argument, spelling: "argument", minimum: 4 },
+    CommandSpec { name: CommandName::WriteNext, spelling: "wnext", minimum: 2 },
+    CommandSpec { name: CommandName::WritePrevious, spelling: "wNext", minimum: 2 },
+    CommandSpec { name: CommandName::WritePrevious, spelling: "wprevious", minimum: 2 },
+
     CommandSpec {
         name: CommandName::Sort,
         spelling: "sort",
@@ -998,6 +1046,66 @@ fn resolve_command(input: &str) -> Result<CommandName, ExParseErrorKind> {
 
 fn optional_string(args: &str) -> Option<String> {
     (!args.is_empty()).then(|| args.to_owned())
+}
+
+fn parse_argument_navigation(
+    name: CommandName,
+    args: &str,
+    offset: usize,
+    range: Option<&ExRange>,
+) -> Result<ExAction, ExParseError> {
+    let error = |kind| ExParseError { offset, kind };
+    let mut count = match range {
+        None => None,
+        Some(ExRange::Single(ExAddress { base: AddressBase::Absolute(count), offset: 0 })) => Some(*count),
+        _ => return Err(error(ExParseErrorKind::UnexpectedRange(name.canonical().into()))),
+    };
+    let mut remainder = args;
+    // Vim accepts a rightmost count for :Next/:previous and :argument. For
+    // :wnext the remaining argument names the write destination instead.
+    if matches!(name, CommandName::Previous | CommandName::Argument) {
+        let token = remainder.split_whitespace().next().unwrap_or("");
+        if !token.is_empty() && token.bytes().all(|byte| byte.is_ascii_digit()) {
+            count = Some(parse_number(token, offset)?);
+            remainder = remainder[token.len()..].trim_start();
+        }
+    }
+    if count == Some(0) {
+        return Err(error(ExParseErrorKind::InvalidNumber("0".into())));
+    }
+    let line = if let Some(after_plus) = remainder.strip_prefix('+') {
+        let token = after_plus.split_whitespace().next().unwrap_or("");
+        // Bare '+' selects the last line. '+0', like Vim, selects line one.
+        let line = if remainder == "+" || remainder[1..].starts_with(char::is_whitespace) {
+            remainder = after_plus.trim_start();
+            0
+        } else {
+            if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(error(ExParseErrorKind::UnexpectedArgument(format!("+{token}"))));
+            }
+            let value = parse_number(token, offset)?.max(1);
+            remainder = after_plus[token.len()..].trim_start();
+            value
+        };
+        Some(line)
+    } else { None };
+    let write_first = matches!(name, CommandName::WriteNext | CommandName::WritePrevious);
+    let path = if write_first {
+        optional_string(remainder)
+    } else if remainder.is_empty() {
+        None
+    } else {
+        return Err(error(ExParseErrorKind::UnexpectedArgument(remainder.into())));
+    };
+    let target = match name {
+        CommandName::Next | CommandName::WriteNext => ExArgumentTarget::Next(count.unwrap_or(1)),
+        CommandName::Previous | CommandName::WritePrevious => ExArgumentTarget::Previous(count.unwrap_or(1)),
+        CommandName::First => ExArgumentTarget::First,
+        CommandName::Last => ExArgumentTarget::Last,
+        CommandName::Argument => count.map_or(ExArgumentTarget::Current, ExArgumentTarget::Index),
+        _ => unreachable!("argument navigation command"),
+    };
+    Ok(ExAction::NavigateArgument { target, write_first, path, line })
 }
 
 fn required_string(args: &str, offset: usize, name: &'static str) -> Result<String, ExParseError> {
@@ -1531,6 +1639,58 @@ mod tests {
         assert_eq!(parse(":wq").action, ExAction::WriteQuit { path: None });
         assert_eq!(parse(":x").action, ExAction::Xit { path: None });
         assert_eq!(parse(":wa").action, ExAction::WriteAll);
+    }
+
+    #[test]
+    fn argument_navigation_preserves_case_counts_bangs_and_line_commands() {
+        for command in [":n", ":ne", ":next"] {
+            assert_eq!(parse(command).action, ExAction::NavigateArgument {
+                target: ExArgumentTarget::Next(1), write_first: false, path: None, line: None,
+            });
+        }
+        for command in [":N", ":Ne", ":Next", ":prev", ":previous"] {
+            assert_eq!(parse(&format!("{command}! 3 +123")).action, ExAction::NavigateArgument {
+                target: ExArgumentTarget::Previous(3), write_first: false, path: None, line: Some(123),
+            });
+            assert!(parse(&format!("{command}!")).bang);
+        }
+        assert_eq!(parse(":4next! +").action, ExAction::NavigateArgument {
+            target: ExArgumentTarget::Next(4), write_first: false, path: None, line: Some(0),
+        });
+        assert_eq!(parse(":2Next 3").action, ExAction::NavigateArgument {
+            target: ExArgumentTarget::Previous(3), write_first: false, path: None, line: None,
+        });
+        assert_eq!(parse(":2next").range, None);
+        for command in [":wn", ":wnext"] {
+            assert_eq!(parse(&format!("{command}! +12 copy file.txt")).action, ExAction::NavigateArgument {
+                target: ExArgumentTarget::Next(1), write_first: true,
+                path: Some("copy file.txt".into()), line: Some(12),
+            });
+        }
+        for command in [":2wN", ":2wNext", ":2wp", ":2wprevious"] {
+            assert_eq!(parse(command).action, ExAction::NavigateArgument {
+                target: ExArgumentTarget::Previous(2), write_first: true, path: None, line: None,
+            });
+        }
+    }
+
+    #[test]
+    fn argument_first_last_and_absolute_selection_have_explicit_targets() {
+        for (command, target, line) in [
+            (":fir", ExArgumentTarget::First, None),
+            (":rewind! +0", ExArgumentTarget::First, Some(1)),
+            (":last", ExArgumentTarget::Last, None),
+            (":argu", ExArgumentTarget::Current, None),
+            (":3argument", ExArgumentTarget::Index(3), None),
+            (":2argu! 4 +90", ExArgumentTarget::Index(4), Some(90)),
+        ] {
+            assert_eq!(parse(command).action, ExAction::NavigateArgument {
+                target, write_first: false, path: None, line,
+            });
+        }
+        for command in [":0next", ":0argument", ":1,2next", ":$next", ":.+2next", ":2first", ":next +/pattern", ":next +18446744073709551616", ":next arbitrary-file"] {
+            assert!(parse_ex(command).is_err(), "{command}");
+        }
     }
 
     #[test]

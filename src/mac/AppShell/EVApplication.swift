@@ -4,8 +4,19 @@ import UniformTypeIdentifiers
 @MainActor
 public enum EVApplication {
     public static func run() {
+        let launchArguments: EVLaunchArguments
+        do {
+            // Older Launch Services versions add a process serial number. It
+            // is native launch metadata rather than part of Vim's argv grammar.
+            var arguments = Array(CommandLine.arguments.dropFirst())
+            if arguments.first?.hasPrefix("-psn_") == true { arguments.removeFirst() }
+            launchArguments = try EVLaunchArguments.parse(arguments)
+        } catch {
+            FileHandle.standardError.write(Data("Viem: \(error.localizedDescription)\nUsage: Viem [-o[count]] [+line] [--] [file ...]\n".utf8))
+            exit(EXIT_FAILURE)
+        }
         let application = NSApplication.shared
-        let delegate = EVApplicationDelegate()
+        let delegate = EVApplicationDelegate(launchArguments: launchArguments)
 
         application.setActivationPolicy(.regular)
         application.delegate = delegate
@@ -30,6 +41,9 @@ final class EVApplicationDelegate: NSObject,
     private var settingsWindowController: EVSettingsWindowController?
     private weak var launchPlaceholderDocument: EVDocument?
     private let configuration: EVConfigurationStore
+    private let launchArguments: EVLaunchArguments
+    private let launchDirectory: URL
+    private var hasProcessedLaunchArguments = false
     var documentFactory: () -> EVDocument = { EVDocument() }
     var mainWindow: () -> NSWindow? = { NSApplication.shared.mainWindow }
     var applicationWindows: () -> [NSWindow] = { NSApplication.shared.windows }
@@ -37,9 +51,11 @@ final class EVApplicationDelegate: NSObject,
     var terminateApplication: () -> Void = { NSApplication.shared.terminate(nil) }
     var recordRecentDocument: (URL) -> Void
 
-    init(configuration: EVConfigurationStore? = nil) {
+    init(configuration: EVConfigurationStore? = nil, launchArguments: EVLaunchArguments = EVLaunchArguments()) {
         let configuration = configuration ?? .shared
         self.configuration = configuration
+        self.launchArguments = launchArguments
+        self.launchDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         recordRecentDocument = { try? configuration.recordRecentDocument($0) }
         super.init()
     }
@@ -53,7 +69,7 @@ final class EVApplicationDelegate: NSObject,
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        ensureInitialDocument()
+        if !openLaunchArguments() { ensureInitialDocument() }
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
@@ -162,6 +178,64 @@ final class EVApplicationDelegate: NSObject,
     fileprivate func ensureInitialDocument() {
         guard NSDocumentController.shared.documents.isEmpty else { return }
         launchPlaceholderDocument = createUntitledDocument()
+    }
+
+    @discardableResult
+    func openLaunchArguments() -> Bool {
+        let hasLaunchOptions = !launchArguments.filenames.isEmpty || launchArguments.splitCount != nil
+            || launchArguments.initialLine != nil
+        guard !hasProcessedLaunchArguments else { return hasLaunchOptions }
+        hasProcessedLaunchArguments = true
+        guard hasLaunchOptions else { return false }
+        let document = documentFactory()
+        document.recordRecentDocument = recordRecentDocument
+        NSDocumentController.shared.addDocument(document)
+        document.makeWindowControllers()
+        launchPlaceholderDocument = document
+        guard let controller = document.windowControllers.first as? EVDocumentWindowController else {
+            document.showWindows()
+            return true
+        }
+        controller.argumentDocumentOpener = { [weak self] url, _, completion in
+            guard let self else { completion(nil, CocoaError(.userCancelled)); return }
+            do { completion(try self.loadLaunchDocument(at: url), nil) }
+            catch { completion(nil, error) }
+        }
+        let urls = launchArguments.filenames.map {
+            URL(fileURLWithPath: $0, relativeTo: launchDirectory).absoluteURL
+        }
+        controller.openArgumentList(urls, splitCount: launchArguments.splitCount,
+            initialLine: launchArguments.initialLine) { result in
+            if case let .failure(error) = result {
+                controller.showWindow(nil)
+                NSApplication.shared.presentError(error)
+            }
+        }
+        return true
+    }
+
+    /// CLI launches also work directly from the executable, where an app
+    /// bundle's NSDocumentController type registration may not be installed.
+    private func loadLaunchDocument(at url: URL) throws -> EVDocument {
+        let url = EVDocumentIdentity.canonicalURL(url)
+        if let existing = EVDocumentIdentity.existingDocument(at: url) {
+            recordRecentDocument(url)
+            return existing
+        }
+        let document = documentFactory()
+        document.recordRecentDocument = recordRecentDocument
+        let type = Self.documentType(for: url)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try document.read(from: url, ofType: type)
+        } else {
+            try document.read(from: Data(), ofType: type)
+            document.configureRecovery(for: url)
+        }
+        document.fileURL = url
+        document.fileType = EVDocument.typeName(for: document.editorBackend.sourceFormat)
+        if !document.editorBackend.persistenceState.isDirty { document.updateChangeCount(.changeCleared) }
+        NSDocumentController.shared.addDocument(document)
+        return document
     }
 
     func captureUntitledReplacement() -> EVDocumentWindowController.UntitledReplacement? {

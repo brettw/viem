@@ -1569,6 +1569,18 @@ impl<P: TextMeasurementProvider> Core<P> {
         let tag = ExRequestTag::new(self.document.id(), self.document.revision());
         let tagged = |request| TaggedExFileRequest::new(tag, request);
 
+        if let ExFileRequest::NavigateArgument { target, force, write_first: true, path, line } = request {
+            self.document.validate_write_policy(*force)?;
+            let intent = self.ex_artifact_write_intent(path.as_deref(), *force, None)?;
+            let write = self.prepare_artifact_write_with_force(intent, *force)?;
+            let after_success = tagged(ExFileRequest::NavigateArgument {
+                target: *target, force: *force, write_first: false, path: None, line: *line,
+            });
+            return Ok(PreparedExFileRequest::ArtifactWrite(
+                PreparedExArtifactWrite::new(tag, write, Some(after_success)),
+            ));
+        }
+
         let (path, force, range, quit_after_success) = match request {
             ExFileRequest::Write { path, force, range } => (path.as_deref(), *force, *range, false),
             ExFileRequest::WriteQuit { path, force, range } => {

@@ -14,10 +14,14 @@
 //! capacity, then provide a sufficiently large buffer. Returned byte strings
 //! are length-delimited and never NUL-terminated.
 
+mod argument_list;
+pub use argument_list::*;
 mod completion;
 pub use completion::*;
 mod whitespace;
 pub use whitespace::*;
+mod startup;
+pub use startup::*;
 
 use crate::command::clipboard::{
     ClipboardCommandContext, ClipboardContent, ClipboardGeneration, ClipboardSnapshot,
@@ -438,6 +442,7 @@ pub const VIEM_EX_FRONTEND_CHECKTIME: u32 = 21;
 /// is set.
 pub const VIEM_EX_FRONTEND_WINDOW: u32 = 22;
 pub const VIEM_EX_FRONTEND_NEW_PANE: u32 = 23;
+pub const VIEM_EX_FRONTEND_ARGUMENT: u32 = 24;
 
 pub const VIEM_WINDOW_FOCUS_DOWN: u32 = 1;
 pub const VIEM_WINDOW_FOCUS_UP: u32 = 2;
@@ -465,6 +470,8 @@ pub const VIEM_EX_FRONTEND_LIST: u32 = 1 << 4;
 pub const VIEM_EX_FRONTEND_LITERAL: u32 = 1 << 5;
 /// `window_count` carries an explicit count or pane index.
 pub const VIEM_EX_FRONTEND_HAS_COUNT: u32 = 1 << 6;
+pub const VIEM_EX_FRONTEND_WRITE_FIRST: u32 = 1 << 7;
+pub const VIEM_EX_FRONTEND_HAS_LINE: u32 = 1 << 8;
 
 pub const VIEM_EX_OPTION_WRAP: u32 = 1;
 pub const VIEM_EX_OPTION_LINEBREAK: u32 = 2;
@@ -708,6 +715,12 @@ pub struct ViemExFrontendRequestV1 {
     /// With `VIEM_EX_FRONTEND_HAS_COUNT`: window count/index, or initial row
     /// height for SPLIT and NEW_PANE.
     pub window_count: u64,
+    /// One VIEM_ARGUMENT_* command for argument navigation.
+    pub argument_command: u32,
+    pub reserved: u32,
+    pub argument_count: u64,
+    /// With HAS_LINE, a one-based initial line; zero means the last line.
+    pub argument_line: u64,
 }
 
 pub const VIEM_EX_FRONTEND_REQUEST_V1_SIZE: u32 = size_of::<ViemExFrontendRequestV1>() as u32;
@@ -3595,6 +3608,25 @@ fn export_ex_frontend_request(
             };
         }
         ExFrontendRequest::File(request) => match request {
+            ExFileRequest::NavigateArgument { target, force, write_first, path, line } => {
+                use crate::command::argument_list::ExArgumentTarget;
+                output.kind = VIEM_EX_FRONTEND_ARGUMENT;
+                (output.argument_command, output.argument_count) = match target {
+                    ExArgumentTarget::Next(count) => (VIEM_ARGUMENT_NEXT, *count),
+                    ExArgumentTarget::Previous(count) => (VIEM_ARGUMENT_PREVIOUS, *count),
+                    ExArgumentTarget::First => (VIEM_ARGUMENT_FIRST, 1),
+                    ExArgumentTarget::Last => (VIEM_ARGUMENT_LAST, 1),
+                    ExArgumentTarget::Index(index) => (VIEM_ARGUMENT_INDEX, *index),
+                    ExArgumentTarget::Current => (VIEM_ARGUMENT_CURRENT, 1),
+                };
+                output.flags |= u32::from(*force) * VIEM_EX_FRONTEND_FORCE;
+                output.flags |= u32::from(*write_first) * VIEM_EX_FRONTEND_WRITE_FIRST;
+                if let Some(line) = line {
+                    output.flags |= VIEM_EX_FRONTEND_HAS_LINE;
+                    output.argument_line = *line;
+                }
+                set_ex_path(&mut output, strings, path.as_deref())?;
+            }
             ExFileRequest::EditNewWindow { path } => {
                 output.kind = VIEM_EX_FRONTEND_EDIT_NEW_WINDOW;
                 set_ex_path(&mut output, strings, path.as_deref())?;

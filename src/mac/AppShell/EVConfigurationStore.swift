@@ -98,6 +98,17 @@ public final class EVConfigurationStore {
   }
   public var showStatusBar: Bool { (root["appearance"] as? [String: Any])?["showStatusBar"] as? Bool ?? true }
   public var recentDocumentURLs: [URL] { Self.recentDocumentURLs(in: root) }
+  public var documentWindowFrame: CGRect? {
+    Self.documentWindowFrame(in: root)
+  }
+  public func setDocumentWindowFrame(_ frame: CGRect) throws {
+    let fields: [String: Any] = ["x": frame.origin.x, "y": frame.origin.y,
+      "width": frame.width, "height": frame.height]
+    guard Self.documentWindowFrame(in: ["windows": ["documentFrame": fields]]) != nil else {
+      throw invalid("Document window frame must have finite coordinates and positive dimensions")
+    }
+    try update(section: "windows", values: ["documentFrame": fields], notify: false)
+  }
   public var vimSyntaxDirectory: String {
     (root["code"] as? [String: Any])?["vimSyntaxDirectory"] as? String ?? EVCodePreferences.defaultVimSyntaxDirectory
   }
@@ -228,13 +239,13 @@ public final class EVConfigurationStore {
     guard ["text", "html", "markdown", "rtf", "code"].contains(name) else { throw invalid("Unknown style format") }
     return directory.appendingPathComponent("\(name)_style.json")
   }
-  private func update(section: String, values: [String: Any]) throws {
-    try update { candidate in
+  private func update(section: String, values: [String: Any], notify: Bool = true) throws {
+    try update(notify: notify) { candidate in
       candidate[section] = Self.mergePreservingUnknown(candidate[section] as? [String: Any] ?? [:], values)
       return true
     }
   }
-  private func update(_ mutation: (inout [String: Any]) throws -> Bool) throws {
+  private func update(notify: Bool = true, _ mutation: (inout [String: Any]) throws -> Bool) throws {
     guard writable else { throw invalid(lastError ?? "Configuration cannot be modified") }
     let url = directory.appendingPathComponent("config.json")
     do {
@@ -249,7 +260,7 @@ public final class EVConfigurationStore {
       if changed || !exists { try write(candidate, to: url) }
       root = candidate
       lastError = nil
-      NotificationCenter.default.post(name: .viemConfigurationDidChange, object: self)
+      if notify { NotificationCenter.default.post(name: .viemConfigurationDidChange, object: self) }
     }
     catch { lastError = error.localizedDescription; throw error }
   }
@@ -278,6 +289,12 @@ public final class EVConfigurationStore {
   }
   private static func validate(_ object: [String: Any]) throws {
     try validateVersion(object)
+    if let raw = object["windows"] {
+      guard let windows = raw as? [String: Any] else { throw invalid("Invalid window settings") }
+      if windows["documentFrame"] != nil, documentWindowFrame(in: object) == nil {
+        throw invalid("Document window frame must have finite coordinates and positive dimensions")
+      }
+    }
     if let raw = object["recentDocuments"] {
       guard let paths = raw as? [String], paths.count <= 10,
             paths.allSatisfy(isValidRecentDocumentPath) else {
@@ -351,6 +368,18 @@ public final class EVConfigurationStore {
     let double = number.doubleValue
     guard double.isFinite, double >= 1, double <= Double(UInt32.max), double == double.rounded(.towardZero) else { return nil }
     return UInt32(exactly: double)
+  }
+  private static func documentWindowFrame(in object: [String: Any]) -> CGRect? {
+    guard let fields = (object["windows"] as? [String: Any])?["documentFrame"] as? [String: Any] else { return nil }
+    var values: [Double] = []
+    for key in ["x", "y", "width", "height"] {
+      guard let number = fields[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+            number.doubleValue.isFinite else { return nil }
+      values.append(number.doubleValue)
+    }
+    guard values[2] > 0, values[3] > 0,
+          (values[0] + values[2]).isFinite, (values[1] + values[3]).isFinite else { return nil }
+    return CGRect(x: values[0], y: values[1], width: values[2], height: values[3])
   }
   private static func editingOptions<T: Decodable>(_ root: [String: Any], key: String) -> T? {
     guard let object = (root["editing"] as? [String: Any])?[key],

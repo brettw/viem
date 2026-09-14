@@ -155,6 +155,7 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     case newPane
     case edit
     case editNewWindow
+    case navigateArgument
     case printWorkingDirectory
     case checkTime
     case changeDirectory
@@ -176,6 +177,7 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
   public let hardLineRange: ClosedRange<UInt64>?
   /// Initial text-area height of a new pane, measured in its visual rows.
   public let initialHeightRows: Int?
+  public let argumentNavigation: EVArgumentNavigation?
 
   public init(
     kind: Kind,
@@ -184,7 +186,8 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     force: Bool = false,
     path: String? = nil,
     hardLineRange: ClosedRange<UInt64>? = nil,
-    initialHeightRows: Int? = nil
+    initialHeightRows: Int? = nil,
+    argumentNavigation: EVArgumentNavigation? = nil
   ) {
     self.kind = kind
     self.documentID = documentID
@@ -193,6 +196,7 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     self.path = path
     self.hardLineRange = hardLineRange
     self.initialHeightRows = initialHeightRows
+    self.argumentNavigation = argumentNavigation
   }
 }
 
@@ -319,6 +323,8 @@ public protocol EVEditorSurface: AnyObject {
   func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation
   func perform(statusOption: EVStatusBarOption)
   func showDocumentMessage(_ message: String)
+  /// Startup line in the first argument; UInt64.max selects its last line.
+  func goToLine(_ line: UInt64)
   func dismissCommandOutput()
   /// Resume editor input after leaving the selectable status message.
   func handleStatusMessageKey(_ event: NSEvent)
@@ -333,6 +339,7 @@ extension EVEditorSurface {
   public func perform(statusOption: EVStatusBarOption) {}
   public func selectCommandLine(atUTF8Offset offset: Int, extending: Bool) {}
   public func showDocumentMessage(_ message: String) {}
+  public func goToLine(_ line: UInt64) {}
   public func dismissCommandOutput() {}
   public func handleStatusMessageKey(_ event: NSEvent) {}
 }

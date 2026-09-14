@@ -4,6 +4,7 @@
 //! history live in [`crate::document`]; offsets here are short-lived positions
 //! in the document revision synchronously passed to [`CommandInterpreter::handle`].
 
+pub mod argument_list;
 pub mod caret;
 pub mod clipboard;
 pub mod composition;
@@ -23,6 +24,7 @@ pub mod regex_v1;
 pub mod text_object;
 pub mod visual_block;
 pub mod window;
+pub mod startup;
 
 mod command_line_completion;
 mod command_line_edit;

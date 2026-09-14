@@ -39,15 +39,28 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   private var closingAfterReview = false
   private var hasPresentedInitialWindow = false
   private var isPerformingDocumentHostEffect = false
+  private let placement: EVDocumentWindowPlacement
+  private var initialWindowFrame: NSRect?
+
+  /// Injectable I/O boundary for launch and argument-list opens.
+  var argumentDocumentOpener: ((URL, String?, @escaping @MainActor (EVDocument?, Error?) -> Void) -> Void)?
 
   var currentGeometry: EVDocumentWindowGeometry? {
     guard let window, synchronizeContentFrame(of: window) != nil else { return nil }
     return documentContentController.geometry(in: documentContentController.view)
   }
 
-  public init(document: EVDocument, editorSurface: any EVEditorSurface) {
+  public init(document: EVDocument, editorSurface: any EVEditorSurface, placement: EVDocumentWindowPlacement? = nil) {
+    self.placement = placement ?? .shared
     let firstPane = EVDocumentContentViewController(editorSurface: editorSurface)
     firstPane.document = document
+    if let owner = Self.instances.compactMap(\.value).first(where: {
+      !$0.isClosed && $0.paneContainer.panes.contains(where: { $0.document === document })
+    }), let existing = owner.paneContainer.panes.first(where: { $0.document === document }) {
+      firstPane.argumentList = existing.argumentList
+      firstPane.argumentIndex = existing.argumentIndex
+      argumentDocumentOpener = owner.argumentDocumentOpener
+    }
     paneContainer = EVPaneContainer(first: firstPane)
 
     let window = EVDocumentWindow(
@@ -80,9 +93,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
     // this controller to its document. Pre-setting `document` here makes
     // AppKit treat the subsequent add as a no-op, leaving the document with
     // no retained window controllers.
-    // The initial frame is explicitly centered below. NSWindowController's
-    // cascade machinery is useful for nib/restored windows, but can mutate
-    // a programmatic document window while it is first being shown.
+    // Placement is applied explicitly once for programmatically built windows.
     shouldCascadeWindows = false
     documentContentController.document = document
     (editorSurface as? any EVDocumentHostAttachable)?.documentHostEffectHandler = self
@@ -237,6 +248,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
 
   public func windowWillClose(_ notification: Notification) {
     guard !isClosed else { return }
+    if hasPresentedInitialWindow, let window { placement.record(window: window) }
     isClosed = true
     let documents = paneContainer.panes.compactMap(\.document)
     (document as? EVDocument)?.removeWindowController(self)
@@ -276,6 +288,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
       // fighting subsequent user resizing.
       prepareInitialFrame(of: window)
       hasPresentedInitialWindow = true
+      placement.record(window: window)
     }
     _ = synchronizeContentFrame(of: window)
     window.makeFirstResponder(editorSurface.viewController.view)
@@ -283,14 +296,19 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   }
 
   private func prepareInitialFrame(of window: NSWindow) {
-    window.setContentSize(Self.initialContentSize)
-    // `center()` has surprising destructive behavior before AppKit has
-    // assigned a screen: it can collapse the window to its fitting size.
-    // This occurs during early launch (and in headless AppKit tests).
-    if window.screen != nil {
-      window.center()
+    if initialWindowFrame == nil {
+      initialWindowFrame = placement.initialFrame(for: window, defaultContentSize: Self.initialContentSize)
     }
+    if let initialWindowFrame { window.setFrame(placement.fittedFrame(initialWindowFrame), display: false) }
     _ = synchronizeContentFrame(of: window)
+  }
+
+  public func windowDidMove(_ notification: Notification) { recordWindowPlacement() }
+  public func windowDidResize(_ notification: Notification) { recordWindowPlacement() }
+
+  private func recordWindowPlacement() {
+    guard hasPresentedInitialWindow, !isClosed, let window else { return }
+    placement.record(window: window)
   }
 
   @discardableResult
@@ -307,6 +325,183 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
 
 @MainActor
 extension EVDocumentWindowController {
+  /// Installs a launch argument list without changing how Finder/Open opens
+  /// documents. The first file replaces the captured initial pane only after
+  /// its read succeeds; subsequent files are opened lazily unless `-o` is used.
+  public func openArgumentList(
+    _ urls: [URL], splitCount: Int?, initialLine: UInt64?,
+    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+  ) {
+    guard !isClosed, !isPerformingDocumentHostEffect,
+      let original = activeDocument, Self.isPristineUntitled(original) else {
+      completion(.failure(EVDocumentHostError.operationAlreadyInProgress)); return
+    }
+    let pane = documentContentController
+    let state = original.editorBackend.persistenceState
+    let list = EVArgumentList(urls)
+    isPerformingDocumentHostEffect = true
+    if urls.isEmpty {
+      pane.argumentList = list
+      showWindow(nil)
+      if let initialLine { editorSurface.goToLine(initialLine) }
+      openRemainingArguments(list, nextIndex: 1,
+        paneLimit: launchPaneLimit(splitCount: splitCount, fileCount: 0), completion: completion)
+      return
+    }
+    loadArgumentDocument(list.urls[0], fallback: nil) { [weak self] opened, error in
+      guard let self else { completion(.failure(EVDocumentHostError.staleRequest)); return }
+      guard let opened else {
+        self.finishDocumentHostEffect(.failure(error ?? EVDocumentHostError.unsupportedRequest), completion: completion)
+        return
+      }
+      guard self.canReplace(pane, document: original, expected: state), Self.isPristineUntitled(original) else {
+        self.closeIfUnrepresented(opened)
+        self.finishDocumentHostEffect(.failure(EVDocumentHostError.staleRequest), completion: completion)
+        return
+      }
+      pane.argumentList = list
+      pane.argumentIndex = 0
+      self.replacePane(pane, with: opened)
+      self.closeIfUnrepresented(original)
+      self.showWindow(nil)
+      if let initialLine { self.editorSurface.goToLine(initialLine) }
+      self.openRemainingArguments(list, nextIndex: 1,
+        paneLimit: self.launchPaneLimit(splitCount: splitCount, fileCount: urls.count), completion: completion)
+    }
+  }
+
+  private func launchPaneLimit(splitCount: Int?, fileCount: Int) -> Int {
+    let requested = splitCount.map { $0 == 0 ? max(1, fileCount) : max(1, $0) } ?? 1
+    let row = max(1, editorSurface.visualRowHeight ?? EVStatusBarView.preferredHeight)
+    let minimum = row + documentContentController.statusBarHeight + 1
+    let capacity = max(1, Int((window?.contentLayoutRect.height ?? 680) / minimum))
+    return min(requested, capacity)
+  }
+
+  private func openRemainingArguments(
+    _ list: EVArgumentList, nextIndex: Int, paneLimit: Int,
+    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+  ) {
+    guard !isClosed else {
+      finishDocumentHostEffect(.failure(EVDocumentHostError.staleRequest), completion: completion); return
+    }
+    guard nextIndex < paneLimit else {
+      paneContainer.focusPane(at: 0)
+      updateActiveDocumentChrome()
+      finishDocumentHostEffect(.success(nil), completion: completion)
+      return
+    }
+    func installed(_ opened: EVDocument?, _ error: Error?) {
+      guard let opened else {
+        paneContainer.focusPane(at: 0)
+        finishDocumentHostEffect(.failure(error ?? EVDocumentHostError.unsupportedRequest), completion: completion)
+        return
+      }
+      guard !isClosed else {
+        closeIfUnrepresented(opened)
+        finishDocumentHostEffect(.failure(EVDocumentHostError.staleRequest), completion: completion); return
+      }
+      // The list's order is independent of focus changes during a file read.
+      paneContainer.focusPane(at: paneCount - 1)
+      addPane(document: opened)
+      documentContentController.argumentList = list
+      documentContentController.argumentIndex = list.urls.indices.contains(nextIndex) ? nextIndex : list.urls.indices.last
+      openRemainingArguments(list, nextIndex: nextIndex + 1, paneLimit: paneLimit, completion: completion)
+    }
+    if list.urls.indices.contains(nextIndex) {
+      loadArgumentDocument(list.urls[nextIndex], fallback: nil, completion: installed)
+    } else {
+      do {
+        let blank = EVDocument()
+        try blank.read(from: Data(), ofType: EVDocument.plainTextType)
+        blank.fileType = EVDocument.plainTextType
+        NSDocumentController.shared.addDocument(blank)
+        installed(blank, nil)
+      } catch { installed(nil, error) }
+    }
+  }
+
+  fileprivate func loadArgumentDocument(
+    _ url: URL, fallback: String?, completion: @escaping @MainActor (EVDocument?, Error?) -> Void
+  ) {
+    if let argumentDocumentOpener { argumentDocumentOpener(url, fallback, completion) }
+    else { openPaneDocument(url, fallback: fallback, completion: completion) }
+  }
+
+  fileprivate func canReplace(
+    _ pane: EVDocumentContentViewController, document: EVDocument, expected: EVDocumentPersistenceState
+  ) -> Bool {
+    let current = document.editorBackend.persistenceState
+    return !isClosed && paneContainer.panes.contains(where: { $0 === pane }) && pane.document === document
+      && current.documentID == expected.documentID && current.documentRevision == expected.documentRevision
+  }
+
+  fileprivate func navigateArgument(
+    _ document: EVDocument, request: EVDocumentHostRequest,
+    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+  ) {
+    let pane = documentContentController
+    guard pane.document === document, let navigation = request.argumentNavigation else {
+      completion(.failure(EVDocumentHostError.staleRequest)); return
+    }
+    guard let list = pane.argumentList else { completion(.failure(EVArgumentListError.empty)); return }
+    guard let resolve = EVArgumentListPolicy.resolve else {
+      completion(.failure(EVDocumentHostError.unsupportedRequest)); return
+    }
+    let expected = document.editorBackend.persistenceState
+    let currentIndex = list.index(of: document.fileURL, preferring: pane.argumentIndex)
+    let resolved = resolve(list.urls.count, currentIndex, pane.argumentIndex, navigation)
+
+    func openTarget() {
+      do {
+        guard canReplace(pane, document: document, expected: expected) else { throw EVDocumentHostError.staleRequest }
+        let index = try resolved.get()
+        guard list.urls.indices.contains(index) else { throw EVArgumentListError.invalidIndex }
+        let url = list.urls[index]
+        let sameDocument = document.fileURL.map { EVDocumentIdentity.sameFile($0, url) } ?? false
+        guard sameDocument || request.force || !document.editorBackend.persistenceState.isDirty
+          || hasOtherView(of: document, excluding: pane) else { throw EVDocumentHostError.documentModified }
+        if sameDocument {
+          pane.argumentIndex = index
+          if let line = navigation.line { pane.editorSurface.goToLine(line == 0 ? UInt64.max : line) }
+          completion(.success(nil)); return
+        }
+        loadArgumentDocument(url, fallback: nil) { opened, error in
+          guard let opened else { completion(.failure(error ?? EVDocumentHostError.unsupportedRequest)); return }
+          guard self.canReplace(pane, document: document, expected: expected) else {
+            self.closeIfUnrepresented(opened)
+            completion(.failure(EVDocumentHostError.staleRequest)); return
+          }
+          guard request.force || !document.editorBackend.persistenceState.isDirty
+            || self.hasOtherView(of: document, excluding: pane) else {
+            self.closeIfUnrepresented(opened)
+            completion(.failure(EVDocumentHostError.documentModified)); return
+          }
+          self.replacePane(pane, with: opened)
+          self.documentContentController.argumentIndex = index
+          self.closeIfUnrepresented(document)
+          if let line = navigation.line { self.editorSurface.goToLine(line == 0 ? UInt64.max : line) }
+          completion(.success(nil))
+        }
+      } catch { completion(.failure(error)) }
+    }
+
+    if navigation.writeFirst {
+      let saved: @MainActor (Result<String?, Error>) -> Void = { result in
+        switch result {
+        case .success: openTarget()
+        case .failure: completion(result)
+        }
+      }
+      if request.path != nil {
+        writeAlternate(document, request: request, closeAfter: false, completion: saved)
+      } else {
+        save(document, request: request, destination: document.fileURL,
+          operation: document.fileURL == nil ? .saveAsOperation : .saveOperation, completion: saved)
+      }
+    } else { openTarget() }
+  }
+
   fileprivate func finishDocumentHostEffect(
     _ result: Result<String?, Error>,
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
@@ -368,6 +563,8 @@ extension EVDocumentWindowController {
     }
 
     switch request.kind {
+    case .navigateArgument:
+      navigateArgument(document, request: request, completion: completion)
     case .checkTime:
       document.checkForExternalChanges { change in completion(.success(change?.message ?? "File unchanged.")) }
     case .split:
@@ -500,20 +697,30 @@ extension EVDocumentWindowController {
         completion(.failure(EVDocumentHostError.noDocumentURL))
         return
       }
+      let sourcePane = documentContentController
       openPaneDocument(destination, fallback: document.fileType) { opened, error in
         guard let opened else { completion(.failure(error ?? EVDocumentHostError.unsupportedRequest)); return }
         let controller = EVDocumentWindowController(document: opened, editorSurface: opened.editorBackend.makeEditorSurface())
+        controller.argumentDocumentOpener = self.argumentDocumentOpener
+        controller.documentContentController.argumentList = sourcePane.argumentList
+        let remembered = sourcePane.argumentList?.index(of: document.fileURL, preferring: sourcePane.argumentIndex)
+          ?? sourcePane.argumentIndex
+        controller.documentContentController.argumentIndex = sourcePane.argumentList?.index(of: opened.fileURL,
+          preferring: remembered) ?? remembered
         opened.addWindowController(controller)
         controller.showWindow(nil)
         completion(.success(nil))
       }
 
     case .edit:
-      guard request.force || !persistence.isDirty else {
+      let reloadsCurrent = request.path == nil || request.path.flatMap { resolvedFileURL($0, relativeTo: nil) }
+        .map { url in document.fileURL.map { EVDocumentIdentity.sameFile($0, url) } ?? false } == true
+      guard request.force || !persistence.isDirty
+        || (!reloadsCurrent && hasOtherView(of: document, excluding: documentContentController)) else {
         completion(.failure(EVDocumentHostError.documentModified))
         return
       }
-      edit(document, path: request.path, completion: completion)
+      edit(document, path: request.path, force: request.force, completion: completion)
 
     case .new:
       guard
@@ -748,7 +955,7 @@ extension EVDocumentWindowController {
   }
 
   fileprivate func edit(
-    _ document: EVDocument, path: String?,
+    _ document: EVDocument, path: String?, force: Bool = false,
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
   ) {
     let url: URL
@@ -772,9 +979,20 @@ extension EVDocumentWindowController {
       } catch { completion(.failure(error)) }
       return
     }
+    let pane = documentContentController
+    let state = document.editorBackend.persistenceState
     openPaneDocument(url, fallback: document.fileType) { [weak self] opened, error in
       if let opened, let self {
-        self.replaceActivePane(with: opened)
+        guard self.canReplace(pane, document: document, expected: state) else {
+          self.closeIfUnrepresented(opened)
+          completion(.failure(EVDocumentHostError.staleRequest)); return
+        }
+        guard force || !document.editorBackend.persistenceState.isDirty
+          || self.hasOtherView(of: document, excluding: pane) else {
+          self.closeIfUnrepresented(opened)
+          completion(.failure(EVDocumentHostError.documentModified)); return
+        }
+        self.replacePane(pane, with: opened)
         self.closeIfUnrepresented(document)
         completion(.success(nil))
       } else {
@@ -815,6 +1033,13 @@ extension EVDocumentWindowController {
     let surface = document.editorBackend.makeEditorSurface()
     let pane = EVDocumentContentViewController(editorSurface: surface)
     pane.document = document
+    let previous = documentContentController
+    pane.argumentList = previous.argumentList
+    pane.argumentIndex = previous.argumentList?.index(of: previous.document?.fileURL,
+      preferring: previous.argumentIndex) ?? previous.argumentIndex
+    if let matched = pane.argumentList?.index(of: document.fileURL, preferring: pane.argumentIndex) {
+      pane.argumentIndex = matched
+    }
     (surface as? any EVDocumentHostAttachable)?.documentHostEffectHandler = self
     return pane
   }
@@ -828,7 +1053,16 @@ extension EVDocumentWindowController {
   }
 
   fileprivate func replaceActivePane(with document: EVDocument) {
-    paneContainer.replace(documentContentController, with: makePane(document: document))
+    replacePane(documentContentController, with: document)
+  }
+
+  fileprivate func replacePane(_ old: EVDocumentContentViewController, with document: EVDocument) {
+    let next = makePane(document: document)
+    next.argumentList = old.argumentList
+    let previousIndex = old.argumentList?.index(of: old.document?.fileURL, preferring: old.argumentIndex)
+      ?? old.argumentIndex
+    next.argumentIndex = old.argumentList?.index(of: document.fileURL, preferring: previousIndex) ?? previousIndex
+    paneContainer.replace(old, with: next)
     rebindWindowDocument()
     updateActiveDocumentChrome()
   }
@@ -897,8 +1131,7 @@ extension EVDocumentWindowController {
           original.editorBackend.persistenceState.documentRevision == originalState.documentRevision,
           !original.editorBackend.persistenceState.isDirty && !original.isDocumentEdited {
           if opened !== original {
-            self.paneContainer.replace(target, with: self.makePane(document: opened))
-            self.rebindWindowDocument()
+            self.replacePane(target, with: opened)
             self.closeIfUnrepresented(original)
           }
           self.updateActiveDocumentChrome()
@@ -951,6 +1184,8 @@ final class EVDocumentContentViewController: NSViewController,
   NSMenuItemValidation
 {
   weak var document: EVDocument?
+  var argumentList: EVArgumentList?
+  var argumentIndex: Int?
 
   let editorSurface: any EVEditorSurface
   private let statusBar = EVStatusBarView()

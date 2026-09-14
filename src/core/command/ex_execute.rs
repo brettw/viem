@@ -291,6 +291,14 @@ pub struct ExOptionDisplay {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExFileRequest {
+    NavigateArgument {
+        target: super::argument_list::ExArgumentTarget,
+        force: bool,
+        write_first: bool,
+        path: Option<String>,
+        /// One-based line; zero requests the last line.
+        line: Option<u64>,
+    },
     EditNewWindow {
         path: Option<String>,
     },
@@ -1047,6 +1055,7 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
         && (matches!(
             &command.action,
             ExAction::Write { .. }
+                | ExAction::NavigateArgument { write_first: true, .. }
                 | ExAction::SaveAs { .. }
                 | ExAction::WriteQuit { .. }
                 | ExAction::WriteAll
@@ -1057,6 +1066,16 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
     let mut plan = ExPlan::empty(document);
 
     match &command.action {
+        ExAction::NavigateArgument { target, write_first, path, line } => push_file(
+            &mut plan,
+            ExFileRequest::NavigateArgument {
+                target: *target,
+                force: command.bang,
+                write_first: *write_first,
+                path: path.clone(),
+                line: *line,
+            },
+        ),
         ExAction::EditNewWindow { path } => push_file(
             &mut plan,
             ExFileRequest::EditNewWindow { path: path.clone() },
@@ -3832,6 +3851,42 @@ mod tests {
         )
         .unwrap();
         assert_eq!(goto.outcome.navigation, Some(ExNavigation::TextOffset(1)));
+    }
+
+    #[test]
+    fn argument_navigation_is_a_host_effect_without_edits_or_history_changes() {
+        use crate::command::argument_list::ExArgumentTarget;
+        let mut document = Document::new("one line");
+        document.replace(0..3, "changed").unwrap();
+        let mut state = ExExecutionState::default();
+        let before = document.history_status().current;
+        for (command, target, write_first, force) in [
+            (":3n", ExArgumentTarget::Next(3), false, false),
+            (":2N!", ExArgumentTarget::Previous(2), false, true),
+            (":wn!", ExArgumentTarget::Next(1), true, true),
+        ] {
+            let outcome = execute(&mut document, &mut state, 0, command).unwrap();
+            assert!(!outcome.document_changed);
+            assert!(outcome.register_effects.is_empty());
+            assert_eq!(document.history_status().current, before);
+            assert_eq!(outcome.frontend_requests, [ExFrontendRequest::File(ExFileRequest::NavigateArgument {
+                target, force, write_first, path: None, line: None,
+            })]);
+        }
+    }
+
+    #[test]
+    fn write_next_obeys_read_only_policy_before_emitting_host_work() {
+        let mut document = Document::new("body");
+        document.set_read_only(true);
+        let state = ExExecutionState::default();
+        for command in [":wn", ":wN", ":2wprevious copy"] {
+            assert!(matches!(prepare_ex(&document, &state, &context(0),
+                &parse_ex(command).unwrap(), &()), Err(ExExecuteError::ReadOnly)));
+        }
+        for command in [":next", ":wn!", ":wprevious!"] {
+            assert!(prepare_ex(&document, &state, &context(0), &parse_ex(command).unwrap(), &()).is_ok());
+        }
     }
 
     #[test]

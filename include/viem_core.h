@@ -2,6 +2,7 @@
 #define VIEM_CORE_H
 
 #include <stdint.h>
+#include "viem_startup.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -296,6 +297,30 @@ typedef struct ViemFormattedPointInfoV1 {
    count or one-based pane index when VIEM_EX_FRONTEND_HAS_COUNT is set. */
 #define VIEM_EX_FRONTEND_WINDOW 22u
 #define VIEM_EX_FRONTEND_NEW_PANE 23u
+#define VIEM_EX_FRONTEND_ARGUMENT 24u
+#define VIEM_ARGUMENT_NEXT 1u
+#define VIEM_ARGUMENT_PREVIOUS 2u
+#define VIEM_ARGUMENT_FIRST 3u
+#define VIEM_ARGUMENT_LAST 4u
+#define VIEM_ARGUMENT_INDEX 5u
+#define VIEM_ARGUMENT_CURRENT 6u
+#define VIEM_ARGUMENT_RESOLVE_OK 0u
+#define VIEM_ARGUMENT_RESOLVE_EMPTY 1u
+#define VIEM_ARGUMENT_RESOLVE_BEFORE_FIRST 2u
+#define VIEM_ARGUMENT_RESOLVE_AFTER_LAST 3u
+#define VIEM_ARGUMENT_RESOLVE_INVALID_INDEX 4u
+
+typedef struct ViemArgumentResolution {
+  uint32_t status;
+  uint32_t reserved;
+  uint64_t index;
+} ViemArgumentResolution;
+
+/* Current and remembered indices are zero based; UINT64_MAX means absent.
+ * Count is a positive step count or one-based index according to command. */
+ViemArgumentResolution viem_argument_list_resolve(
+    uint64_t length, uint64_t current_index, uint64_t remembered_index,
+    uint32_t command, uint64_t count);
 
 #define VIEM_WINDOW_FOCUS_DOWN 1u
 #define VIEM_WINDOW_FOCUS_UP 2u
@@ -323,6 +348,8 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_EX_FRONTEND_LITERAL (1u << 5)
 /* window_count carries an explicit count or pane index. */
 #define VIEM_EX_FRONTEND_HAS_COUNT (1u << 6)
+#define VIEM_EX_FRONTEND_WRITE_FIRST (1u << 7)
+#define VIEM_EX_FRONTEND_HAS_LINE (1u << 8)
 
 #define VIEM_EX_OPTION_WRAP 1u
 #define VIEM_EX_OPTION_LINEBREAK 2u
@@ -502,6 +529,12 @@ typedef struct ViemExFrontendRequestV1 {
   /* With VIEM_EX_FRONTEND_HAS_COUNT: window count/index, or initial row
      height for SPLIT and NEW_PANE. */
   uint64_t window_count;
+  /* VIEM_ARGUMENT_* command, count and optional initial line for ARGUMENT. */
+  uint32_t argument_command;
+  uint32_t reserved;
+  uint64_t argument_count;
+  /* One-based line; zero means last line. Valid only with HAS_LINE. */
+  uint64_t argument_line;
 } ViemExFrontendRequestV1;
 
 #define VIEM_EX_FRONTEND_REQUEST_V1_SIZE \

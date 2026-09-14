@@ -1842,7 +1842,10 @@ with color values in portable sRGB. The macOS Settings window has View, Theme,
 Editing, and Code categories; there is no Documents category. Theme contains
 its live preview, color controls, status typography, presets, and restore action.
 View contains independent top/left/bottom/right text margins in pixels, with
-defaults of 28/30/28/30. Margins are application view preferences stored under
+defaults of 10 pixels on every side. Tab and Shift-Tab move forward and backward
+through the Settings values, committing the field being left. The margin fields
+follow their displayed order: top, left, bottom, right.
+Margins are application view preferences stored under
 `view.margins` in config.json and applied to every view, independently of theme
 presets and document style definitions.
 
@@ -1871,7 +1874,7 @@ last row's full ink and natural height before adding bottom padding, even when
 exact line spacing advances by less than that height.
 
 Application preferences have one versioned JSON authority at
-`~/.viem/config.json`. Theme, Smart Quotes, Code preferences, recent files, and status-bar
+`~/.viem/config.json`. Theme, Smart Quotes, Code preferences, recent files, document-window geometry, and status-bar
 visibility use this store; Settings controls write the same values. Valid legacy
 preferences migrate once. Reads validate the complete configuration, writes are
 atomic, and unknown keys survive updates. Invalid or unsupported versions are reported without
@@ -3726,6 +3729,10 @@ than silently applying the old numeric addresses. Escape changes no source,
 and `gv` can restore the remembered selection.
 
 `:e`/`:edit` replaces the active pane after the usual unsaved-change review.
+Replacing a pane with a different document requires a clean buffer or `!` only
+when that pane is the buffer's last view. Reloading the current file with
+`:edit` still requires a clean buffer or `!`, because it changes the shared
+buffer itself.
 The case-sensitive `:E` opens a document in a new native window. `:pwd` displays
 the working directory; `:cd`/`:chdir` changes the application's directory for
 relative file requests. `:update` writes only a modified buffer. `:s` remains
@@ -3762,7 +3769,9 @@ Required Ex commands and common unambiguous abbreviations are:
 
 - files/views: `:edit`, `:enew`, `:split`/`:sp`, `:vsplit`/`:vs`,
   `:close`/`:clo`, `:write`, `:saveas`, `:quit`, `:qall`, `:wq`,
-  `:xit`, `:wall`, and force `!` variants where meaningful;
+  `:xit`, `:wall`, `:next`/`:n`, `:Next`/`:N`, `:previous`/`:prev`,
+  `:wnext`/`:wn`, `:wNext`/`:wN`, `:wprevious`/`:wp`, `:first`,
+  `:rewind`, `:last`, `:argument`/`:argu`, and force `!` variants where meaningful;
 - editing: `:undo`, `:redo`, `:delete`, `:yank`, `:put`, `:join`,
   `:copy`, `:move`, `:sort`, and `:normal` for the supported Normal command subset;
 - search/change: `:substitute` with ranges and repeat flags, `:&`, and `:~`;
@@ -3810,9 +3819,51 @@ HTML `p`/heading elements, retaining each paragraph's source syntax and styles.
 RTF sorting and ambiguous or split rich paragraph owners return an unsupported
 result without changing source.
 
+### Startup files and argument navigation
+
+The executable accepts multiple filename arguments, captured relative to the
+launch working directory in their supplied order. By default only the first
+file is opened; later files are read when selected. A nonexistent filename
+opens a named, clean, empty buffer without creating a file on disk. `--` ends
+option parsing so filenames beginning with `-` or `+` remain expressible.
+Unknown options and unsupported startup commands report an error and usage.
+
+Vim's `+123` selects hard line 123 of the first file, clamped to the file's
+last line, with the cursor at the first nonblank grapheme. Bare `+` selects the
+last line. This is a line number, not a file index. `-o` opens argument files
+in stacked panes; `-oN` requests N panes, adding empty panes if there are fewer
+files and respecting the available height. `-o0` has the same meaning as `-o`.
+Startup keeps the first pane focused and applies `+line` only there.
+
+`:next` and `:Next`/`:previous` move forward and backward by a count, default
+one, without wrapping at either end of the argument list. `:first`/`:rewind`
+and `:last` select its endpoints; `:argument N` and `:Nargument` select the
+one-based file number, and bare `:argument` selects the current argument.
+Common unambiguous abbreviations, meaningful `!`, and `+line`/bare `+`
+modifiers are supported. Previous and argument commands accept Vim's trailing
+count, which takes precedence over a leading count. Argument-list replacement
+through `:next filenames`, wildcard expansion inside Ex, and arbitrary `+cmd`
+are outside this command commitment.
+
+Navigation is relative to the pane's current file when it belongs to the list.
+Otherwise it resumes from the last argument position retained by that pane
+before an unrelated file replaced it. Splits copy this position and retain
+independent subsequent navigation. Reopening a represented file reuses its
+buffer, including unsaved content. Only replacing the last view of a modified
+buffer requires `!`; forced navigation never discards edits in another view.
+An unsuccessful or stale open leaves the pane and remembered position intact.
+
+`:wnext`, `:wNext`, and `:wprevious` write before navigating, including writing
+before an end-of-list error. Write failure, cancellation, or a changed revision
+prevents navigation. An alternate write filename does not rebind the buffer or
+clear its modified state, so the ordinary last-view guard still applies.
+File navigation changes no text, registers, or undo history by itself.
+Argument parsing and index/count policy live in the portable Rust command
+module; file identity, native I/O, pane lifetime, and dialogs belong to the host.
+
 ### Stacked document views
 
-File > Open, Open Recent, and launch/Finder opens reuse the active single-pane
+File > Open, Open Recent, and Finder opens reuse the active single-pane
 window when it contains an untouched, empty, untitled document. Read the incoming
 file successfully before replacement; keep the same native window and geometry
 without a new-window opening animation. After any open or recovery prompt,
@@ -3834,6 +3885,14 @@ route to the focused pane. Closing the final view reviews unsaved changes.
 Each distinct document being closed receives one native unsaved-changes review;
 accepting Save or Delete/Don't Save must not trigger a second review. Cancel
 keeps the window and its unsaved content available for a later close attempt.
+
+The latest normal document-window frame is retained at `windows.documentFrame`
+in config.json. The first window on the next launch restores its size and
+location. If its screen geometry no longer fits, move it onto an available
+screen's visible frame before shrinking only the dimensions that cannot fit.
+Later new windows cascade down and right using AppKit's native title-bar
+spacing. Showing an existing window preserves its frame. Minimized/fullscreen
+frames are not saved as normal geometry.
 
 #### Window commands
 

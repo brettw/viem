@@ -1,11 +1,11 @@
 import Foundation
 
 public struct EVViewMargins: Codable, Equatable, Sendable {
-  public var top: Double = 28
-  public var left: Double = 30
-  public var bottom: Double = 28
-  public var right: Double = 30
-  public init(top: Double = 28, left: Double = 30, bottom: Double = 28, right: Double = 30) {
+  public var top: Double = 10
+  public var left: Double = 10
+  public var bottom: Double = 10
+  public var right: Double = 10
+  public init(top: Double = 10, left: Double = 10, bottom: Double = 10, right: Double = 10) {
     self.top = top
     self.left = left
     self.bottom = bottom
