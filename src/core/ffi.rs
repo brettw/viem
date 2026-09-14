@@ -14,6 +14,8 @@
 //! capacity, then provide a sufficiently large buffer. Returned byte strings
 //! are length-delimited and never NUL-terminated.
 
+mod completion;
+pub use completion::*;
 mod whitespace;
 pub use whitespace::*;
 
@@ -4337,6 +4339,28 @@ fn core_status(error: CoreError) -> ViemStatus {
             | StyleEditGroupError::IdentityMismatch => ViemStatus::InvalidStyleEditGroup,
         },
         CoreError::Composition(error) => composition_status(error),
+        CoreError::Completion(error) => match error {
+            crate::command::completion::CompletionError::Composition(error) => {
+                composition_status(error)
+            }
+            crate::command::completion::CompletionError::Document(error) => document_status(error),
+            crate::command::completion::CompletionError::IdentityExhausted => {
+                ViemStatus::ResourceExhausted
+            }
+            crate::command::completion::CompletionError::Search(error) => match error {
+                crate::document::PositionError::WrongSnapshot { .. } => ViemStatus::StaleRevision,
+                crate::document::PositionError::WrongDocument { .. }
+                | crate::document::PositionError::WrongDomain { .. }
+                | crate::document::PositionError::WrongSourcePart { .. } => ViemStatus::InvalidArgument,
+                crate::document::PositionError::InvalidBoundary { .. }
+                | crate::document::PositionError::InvertedRange { .. } => ViemStatus::InvalidRange,
+                crate::document::PositionError::InvalidUnicodeBoundary { .. } => {
+                    ViemStatus::NotGraphemeBoundary
+                }
+                crate::document::PositionError::ArithmeticOverflow => ViemStatus::LengthOverflow,
+                _ => ViemStatus::CoreFailure,
+            },
+        },
         CoreError::Layout(error) => layout_status(error),
         CoreError::LayoutJob(LayoutJobError::Layout(error)) => layout_status(error),
         CoreError::LayoutJob(

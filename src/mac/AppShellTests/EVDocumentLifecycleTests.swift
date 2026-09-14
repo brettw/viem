@@ -96,6 +96,214 @@ final class EVDocumentLifecycleTests: XCTestCase {
         XCTAssertEqual(document.writableTypes(for: .saveAsOperation), [EVDocument.markdownType])
     }
 
+    private func preservationFixture(name: String = "ffi.rs") throws -> (URL, Backend, EVDocument) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("viem-preserve-original-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let original = directory.appendingPathComponent(name)
+        try Data("original bytes".utf8).write(to: original)
+        let backend = Backend()
+        let document = EVDocument(editorBackend: backend)
+        document.recordRecentDocument = { _ in }
+        try document.read(from: original, ofType: EVDocument.plainTextType)
+        document.fileURL = original
+        backend.serializedData = Data("edited bytes".utf8)
+        backend.publishPersistence(.init(isDirty: true))
+        return (original, backend, document)
+    }
+
+    func testOrdinarySaveKeepsCodeDotfileAndExtensionlessNames() throws {
+        for name in ["ffi.rs", ".vimrc", "LICENSE"] {
+            let (original, backend, document) = try preservationFixture(name: name)
+            defer { document.close() }
+            backend.sourceFormat = .code
+            backend.publishPersistence(.init(isDirty: true))
+            XCTAssertFalse(document.requiresNewFormatDestination)
+            XCTAssertEqual(document.fileNameExtension(forType: EVDocument.plainTextType, saveOperation: .saveOperation),
+                           original.pathExtension.isEmpty ? nil : original.pathExtension)
+            let completion = expectation(description: "ordinary save keeps \(name)")
+            document.save(to: original, ofType: EVDocument.plainTextType, for: .saveOperation) { error in
+                XCTAssertNil(error); completion.fulfill()
+            }
+            wait(for: [completion], timeout: 5)
+            XCTAssertEqual(document.fileURL, original)
+            XCTAssertEqual(try Data(contentsOf: original), backend.serializedData)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: original.deletingPathExtension().appendingPathExtension("txt").path))
+        }
+    }
+
+    func testOrdinarySaveToAnotherURLPreservesOriginalAndAdoptsNewDestination() throws {
+        let (original, backend, document) = try preservationFixture()
+        defer { document.close() }
+        let destination = original.deletingPathExtension().appendingPathExtension("txt")
+        let completion = expectation(description: "changed save destination")
+        document.save(to: destination, ofType: EVDocument.plainTextType, for: .saveOperation) { error in
+            XCTAssertNil(error); completion.fulfill()
+        }
+        wait(for: [completion], timeout: 5)
+        XCTAssertEqual(try Data(contentsOf: original), Data("original bytes".utf8))
+        XCTAssertEqual(try Data(contentsOf: destination), backend.serializedData)
+        XCTAssertEqual(document.fileURL, destination)
+    }
+
+    func testDirectSafeWriteToAnotherURLPreservesOriginalAndDoesNotAdoptCopy() throws {
+        let (original, backend, document) = try preservationFixture()
+        defer { document.close() }
+        let destination = original.deletingPathExtension().appendingPathExtension("txt")
+        try document.writeSafely(to: destination, ofType: EVDocument.plainTextType, for: .saveOperation)
+        XCTAssertEqual(try Data(contentsOf: original), Data("original bytes".utf8))
+        XCTAssertEqual(try Data(contentsOf: destination), backend.serializedData)
+        XCTAssertEqual(document.fileURL, original)
+    }
+
+    func testOrdinarySaveToAnotherHardLinkPreservesOriginalBytesAndName() throws {
+        let (original, backend, document) = try preservationFixture()
+        defer { document.close() }
+        let destination = original.deletingLastPathComponent().appendingPathComponent("linked.rs")
+        try FileManager.default.linkItem(at: original, to: destination)
+        XCTAssertTrue(EVDocumentIdentity.sameFile(original, destination))
+        let completion = expectation(description: "save to another hard link")
+        document.save(to: destination, ofType: EVDocument.plainTextType, for: .saveOperation) { error in
+            XCTAssertNil(error); completion.fulfill()
+        }
+        wait(for: [completion], timeout: 5)
+        XCTAssertEqual(try Data(contentsOf: original), Data("original bytes".utf8))
+        XCTAssertEqual(try Data(contentsOf: destination), backend.serializedData)
+        XCTAssertEqual(document.fileURL, destination)
+        XCTAssertFalse(EVDocumentIdentity.sameFile(original, destination))
+    }
+
+    func testSaveRejectsDifferentSymlinkSpellingsAndPreservesOriginalBytes() throws {
+        let (original, _, document) = try preservationFixture()
+        defer { document.close() }
+        let alias = original.deletingLastPathComponent().appendingPathComponent("alias.rs")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: original)
+        for (bound, destination) in [(original, alias), (alias, original)] {
+            document.fileURL = bound
+            let completion = expectation(description: "save rejects alias pathname")
+            document.save(to: destination, ofType: EVDocument.plainTextType, for: .saveOperation) { error in
+                XCTAssertEqual(error as? EVDocumentSerializationError, .destinationAliasesOriginal)
+                completion.fulfill()
+            }
+            wait(for: [completion], timeout: 5)
+            XCTAssertEqual(document.fileURL, bound)
+            XCTAssertEqual(try Data(contentsOf: original), Data("original bytes".utf8))
+            XCTAssertEqual(try Data(contentsOf: alias), Data("original bytes".utf8))
+            XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: alias.path), original.path)
+        }
+    }
+
+    func testOrdinarySaveToUnchangedSymlinkNameRemainsSupported() throws {
+        let (original, backend, document) = try preservationFixture()
+        defer { document.close() }
+        let alias = original.deletingLastPathComponent().appendingPathComponent("alias.rs")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: original)
+        document.fileURL = alias
+        let completion = expectation(description: "ordinary save to bound symlink")
+        document.save(to: alias, ofType: EVDocument.plainTextType, for: .saveOperation) { error in
+            XCTAssertNil(error); completion.fulfill()
+        }
+        wait(for: [completion], timeout: 5)
+        XCTAssertEqual(try Data(contentsOf: alias), backend.serializedData)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: original.path))
+        XCTAssertEqual(document.fileURL, alias)
+    }
+
+    func testSaveRejectsCaseOnlyAliasOnCaseInsensitiveVolume() throws {
+        let (original, _, document) = try preservationFixture()
+        defer { document.close() }
+        let alias = original.deletingLastPathComponent().appendingPathComponent("FFI.RS")
+        guard EVDocumentIdentity.sameFile(original, alias) else { throw XCTSkip("The fixture volume is case-sensitive") }
+        let completion = expectation(description: "save rejects case-only alias")
+        document.save(to: alias, ofType: EVDocument.plainTextType, for: .saveOperation) { error in
+            XCTAssertEqual(error as? EVDocumentSerializationError, .destinationAliasesOriginal)
+            completion.fulfill()
+        }
+        wait(for: [completion], timeout: 5)
+        XCTAssertEqual(try Data(contentsOf: original), Data("original bytes".utf8))
+        XCTAssertEqual(document.fileURL, original)
+    }
+
+    func testChangedSerializationRejectsOriginalAndSaveAsEstablishesNewBaseline() throws {
+        let (original, backend, document) = try preservationFixture()
+        defer { document.close() }
+        backend.sourceFormat = .html
+        backend.serializedData = Data("<p>converted bytes</p>".utf8)
+        backend.publishPersistence(.init(isDirty: true))
+        XCTAssertTrue(document.requiresNewFormatDestination)
+        XCTAssertEqual(try Data(contentsOf: original), Data("original bytes".utf8), "Format selection does not write")
+        for operation in [NSDocument.SaveOperationType.saveOperation, .saveAsOperation, .saveToOperation] {
+            let completion = expectation(description: "format write rejects original")
+            document.save(to: original, ofType: EVDocument.htmlType, for: operation) { error in
+                XCTAssertEqual(error as? EVDocumentSerializationError, .changedFormatNeedsNewDestination)
+                completion.fulfill()
+            }
+            wait(for: [completion], timeout: 5)
+        }
+        XCTAssertThrowsError(try document.writeSafely(to: original, ofType: EVDocument.htmlType, for: .saveOperation))
+        XCTAssertThrowsError(try document.write(to: original, ofType: EVDocument.htmlType))
+        var hostError: Error?
+        document.saveHostRevision(documentID: 41, documentRevision: 73, force: true,
+                                 to: original, ofType: EVDocument.htmlType, for: .saveOperation) { hostError = $0 }
+        XCTAssertEqual(hostError as? EVDocumentSerializationError, .changedFormatNeedsNewDestination)
+        XCTAssertEqual(document.fileURL, original)
+        XCTAssertEqual(try Data(contentsOf: original), Data("original bytes".utf8))
+
+        let destination = original.deletingPathExtension().appendingPathExtension("html")
+        let completion = expectation(description: "converted Save As")
+        document.save(to: destination, ofType: EVDocument.htmlType, for: .saveAsOperation) { error in
+            XCTAssertNil(error); completion.fulfill()
+        }
+        wait(for: [completion], timeout: 5)
+        XCTAssertEqual(try Data(contentsOf: original), Data("original bytes".utf8))
+        XCTAssertEqual(try Data(contentsOf: destination), backend.serializedData)
+        XCTAssertEqual(document.fileURL, destination)
+        XCTAssertFalse(document.requiresNewFormatDestination)
+        XCTAssertNoThrow(try document.validatePreservedOriginal(at: destination))
+    }
+
+    func testNativeMoveWritesCopyAndFailedMovePreservesBothOriginalAndBinding() throws {
+        let (original, backend, document) = try preservationFixture()
+        defer { document.close() }
+        let destination = original.deletingLastPathComponent().appendingPathComponent("saved-copy.rs")
+        let completion = expectation(description: "non-destructive native move")
+        document.move(to: destination) { error in
+            XCTAssertNil(error); completion.fulfill()
+        }
+        wait(for: [completion], timeout: 5)
+        XCTAssertEqual(try Data(contentsOf: original), Data("original bytes".utf8))
+        XCTAssertEqual(try Data(contentsOf: destination), backend.serializedData)
+        XCTAssertEqual(document.fileURL, destination)
+
+        backend.serializedData = Data("new unsaved bytes".utf8)
+        backend.publishPersistence(.init(isDirty: true))
+        let failure = expectation(description: "failed non-destructive native move")
+        let unavailable = destination.deletingLastPathComponent().appendingPathComponent("absent/other.rs")
+        document.move(to: unavailable) { error in
+            XCTAssertNotNil(error); failure.fulfill()
+        }
+        wait(for: [failure], timeout: 5)
+        XCTAssertEqual(try Data(contentsOf: original), Data("original bytes".utf8))
+        XCTAssertEqual(try Data(contentsOf: destination), Data("edited bytes".utf8))
+        XCTAssertEqual(document.fileURL, destination)
+        XCTAssertTrue(document.isDocumentEdited)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: unavailable.path))
+    }
+
+    func testSameSerializationPresentationChangesKeepOrdinarySave() throws {
+        let (original, backend, document) = try preservationFixture()
+        defer { document.close() }
+        for (from, to) in [(EVSourceFormat.plainText, EVSourceFormat.code), (.markdown, .markdownSource), (.html, .htmlSource)] {
+            backend.sourceFormat = from
+            document.recordFileBaseline(Data("original bytes".utf8), at: original)
+            backend.sourceFormat = to
+            backend.publishPersistence(.init(isDirty: true))
+            XCTAssertFalse(document.requiresNewFormatDestination)
+            XCTAssertNoThrow(try document.validatePreservedOriginal(at: original))
+        }
+    }
+
     func testNativeDocumentRegistrationAcceptsUnknownFilesAsReadableData() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()

@@ -6,6 +6,8 @@
 
 mod conversion;
 mod code_presentation;
+mod completion;
+pub use completion::{WordCompletionBatch, WordCompletionDirection, WordCompletionPrefix, WordCompletionSearch, MAX_COMPLETION_WORD_BYTES};
 pub mod syntax;
 mod checkpoint;
 pub(crate) use checkpoint::DocumentCommandCheckpoint;

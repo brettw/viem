@@ -7,6 +7,7 @@
 pub mod caret;
 pub mod clipboard;
 pub mod composition;
+pub mod completion;
 pub mod ex;
 pub mod ex_execute;
 pub mod insert_motion;

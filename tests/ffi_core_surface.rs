@@ -1015,6 +1015,43 @@ fn ex_info_effects_capture_marks_registers_jumps_and_printed_text() {
 }
 
 #[test]
+fn completion_anchor_exports_exact_layout_and_rejects_geometry_from_before_resize() {
+    let mut core = create_core(b"alphabet almanac\nal", ViemDocumentOptions::default());
+    let mut context = Box::new(FakeProviderContext::new(core.handle));
+    let provider = provider((&mut *context as *mut FakeProviderContext).cast(), fake_shape_batch);
+    let mut view = 0;
+    let mut outcome = ViemCoreOutcomeV1::default();
+    let options = ViemViewOptionsV1 { width: 400.0, height: 200.0, ..ViemViewOptionsV1::default() };
+    assert_eq!(unsafe { viem_core_view_add(core.handle, &options, &provider, &mut view, &mut outcome) }, ViemStatus::Ok);
+    host_chars(&core, view, "GA");
+    assert_eq!(unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_CONTROL_CHARACTER, 'p' as u32), &mut outcome) }, ViemStatus::Ok);
+    let mut first = ViemCompletionInfoV1::default();
+    assert_eq!(unsafe { viem_core_view_completion_info(core.handle, view, &mut first) }, ViemStatus::Ok);
+    assert_ne!(first.flags & VIEM_COMPLETION_HAS_ANCHOR, 0);
+    assert_eq!(first.flags & VIEM_COMPLETION_RIGHT_TO_LEFT, 0);
+    assert_eq!(first.anchor_layout.view_id, view);
+    assert_eq!(first.anchor_layout.document_revision, first.document_revision);
+    assert!(first.anchor_rect.height > 0.0);
+    assert_eq!(first.anchor_rect.width, 0.0);
+    assert_eq!(unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_CONTROL_CHARACTER, 'p' as u32), &mut outcome) }, ViemStatus::Ok);
+    let mut second = ViemCompletionInfoV1::default();
+    assert_eq!(unsafe { viem_core_view_completion_info(core.handle, view, &mut second) }, ViemStatus::Ok);
+    assert_eq!(first.anchor_rect, second.anchor_rect);
+    assert_ne!(first.anchor_layout.layout_revision, second.anchor_layout.layout_revision);
+    assert_eq!(unsafe { viem_core_view_resize(core.handle, view, 320.0, 180.0, &mut outcome) }, ViemStatus::Ok);
+    let mut resized = ViemCompletionInfoV1::default();
+    assert_eq!(unsafe { viem_core_view_completion_info(core.handle, view, &mut resized) }, ViemStatus::Ok);
+    assert_eq!(second.generation, resized.generation, "resize retains the candidate selection");
+    assert_ne!(second.anchor_layout, resized.anchor_layout);
+    let mut count = 99;
+    assert_eq!(unsafe { viem_core_view_copy_completion_items(core.handle, view, &second, ptr::null_mut(), 0, &mut count) }, ViemStatus::StaleRevision);
+    assert_eq!(count, 0);
+    assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &core, core.revision), b"alphabet almanac\nal");
+    assert_eq!(viem_core_destroy(core.handle), ViemStatus::Ok);
+    core.handle = 0;
+}
+
+#[test]
 fn callback_backed_core_round_trips_controller_view_and_exact_source() {
     let mut core = create_core(
         b"caf\xe9\r\n",
@@ -4926,6 +4963,25 @@ _Static_assert(sizeof(ViemCommandLineInfoV1) == {command_line_info},
     "command-line info");
 _Static_assert(VIEM_COMMAND_LINE_INFO_V1_SIZE == sizeof(ViemCommandLineInfoV1),
     "command-line info size macro");
+_Static_assert(sizeof(ViemCompletionInfoV1) == {completion_info},
+    "completion info");
+_Static_assert(VIEM_COMPLETION_INFO_V1_SIZE == sizeof(ViemCompletionInfoV1),
+    "completion info size macro");
+_Static_assert(offsetof(ViemCompletionInfoV1, selected_index) == {completion_selected},
+    "completion signed selection offset");
+_Static_assert(offsetof(ViemCompletionInfoV1, anchor_layout) == {completion_anchor_layout},
+    "completion anchor identity offset");
+_Static_assert(offsetof(ViemCompletionInfoV1, anchor_rect) == {completion_anchor_rect},
+    "completion anchor geometry offset");
+_Static_assert(sizeof(ViemCompletionItemV1) == {completion_item},
+    "completion item");
+_Static_assert(VIEM_COMPLETION_ITEM_V1_SIZE == sizeof(ViemCompletionItemV1),
+    "completion item size macro");
+_Static_assert(VIEM_COMPLETION_ACTIVE == {completion_active}, "completion active flag");
+_Static_assert(VIEM_COMPLETION_SEARCHING == {completion_searching}, "completion searching flag");
+_Static_assert(VIEM_COMPLETION_TRUNCATED == {completion_truncated}, "completion truncated flag");
+_Static_assert(VIEM_COMPLETION_HAS_ANCHOR == {completion_has_anchor}, "completion anchor flag");
+_Static_assert(VIEM_COMPLETION_RIGHT_TO_LEFT == {completion_rtl}, "completion RTL flag");
 _Static_assert(sizeof(ViemVisualSelectionIdentityV1) == {visual_selection_identity},
     "Visual-selection identity");
 _Static_assert(VIEM_VISUAL_SELECTION_IDENTITY_V1_SIZE == sizeof(ViemVisualSelectionIdentityV1),
@@ -5039,6 +5095,18 @@ static void typecheck(void) {{
   ViemStatus (*copy_command_line)(ViemCoreHandle, ViemViewId,
       const ViemCommandLineIdentityV1 *, uint8_t *, uint64_t,
       ViemCommandLineInfoV1 *) = viem_core_view_copy_command_line;
+  ViemStatus (*completion_info)(ViemCoreHandle, ViemViewId,
+      ViemCompletionInfoV1 *) = viem_core_view_completion_info;
+  ViemStatus (*copy_completion_items)(ViemCoreHandle, ViemViewId,
+      const ViemCompletionInfoV1 *, ViemCompletionItemV1 *, uint64_t,
+      uint64_t *) = viem_core_view_copy_completion_items;
+  ViemStatus (*copy_completion_utf8)(ViemCoreHandle, ViemViewId,
+      const ViemCompletionInfoV1 *, uint8_t *, uint64_t,
+      uint64_t *) = viem_core_view_copy_completion_utf8;
+  ViemStatus (*poll_completion)(ViemCoreHandle, ViemViewId,
+      uint8_t *) = viem_core_view_poll_completion;
+  ViemStatus (*accept_completion)(ViemCoreHandle, ViemViewId,
+      uint8_t *) = viem_core_view_accept_completion;
   ViemStatus (*visual_selection_info)(ViemCoreHandle, ViemViewId,
       ViemVisualSelectionInfoV1 *) = viem_core_view_visual_selection_info;
   ViemStatus (*copy_visual_selection)(ViemCoreHandle, ViemViewId,
@@ -5138,6 +5206,9 @@ static void typecheck(void) {{
   (void)layout_info; (void)copy_layout; (void)layout_paint_info;
   (void)copy_layout_paint; (void)caret_geometry; (void)hit_test;
   (void)presentation; (void)command_line_info; (void)copy_command_line;
+  (void)completion_info; (void)copy_completion_items;
+  (void)copy_completion_utf8; (void)poll_completion;
+  (void)accept_completion;
   (void)visual_selection_info; (void)copy_visual_selection;
   (void)use_selection_for_find; (void)reveal_selection;
   (void)set_viewport_origin; (void)set_scale;
@@ -5233,6 +5304,16 @@ static void typecheck(void) {{
         presentation = std::mem::size_of::<ViemViewPresentationV1>(),
         command_line_identity = std::mem::size_of::<ViemCommandLineIdentityV1>(),
         command_line_info = std::mem::size_of::<ViemCommandLineInfoV1>(),
+        completion_info = std::mem::size_of::<ViemCompletionInfoV1>(),
+        completion_selected = std::mem::offset_of!(ViemCompletionInfoV1, selected_index),
+        completion_anchor_layout = std::mem::offset_of!(ViemCompletionInfoV1, anchor_layout),
+        completion_anchor_rect = std::mem::offset_of!(ViemCompletionInfoV1, anchor_rect),
+        completion_item = std::mem::size_of::<ViemCompletionItemV1>(),
+        completion_active = VIEM_COMPLETION_ACTIVE,
+        completion_searching = VIEM_COMPLETION_SEARCHING,
+        completion_truncated = VIEM_COMPLETION_TRUNCATED,
+        completion_has_anchor = VIEM_COMPLETION_HAS_ANCHOR,
+        completion_rtl = VIEM_COMPLETION_RIGHT_TO_LEFT,
         visual_selection_identity = std::mem::size_of::<ViemVisualSelectionIdentityV1>(),
         visual_selection_info = std::mem::size_of::<ViemVisualSelectionInfoV1>(),
         visual_selection_segment = std::mem::size_of::<ViemVisualSelectionSegmentV1>(),

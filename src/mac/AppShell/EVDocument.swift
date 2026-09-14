@@ -38,6 +38,8 @@ public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
 public enum EVDocumentSerializationError: LocalizedError, Equatable {
     case unsupportedWritableType(String)
     case formatConversionUnavailable(current: EVSourceFormat, requested: EVSourceFormat)
+    case changedFormatNeedsNewDestination
+    case destinationAliasesOriginal
 
     public var errorDescription: String? {
         switch self {
@@ -45,6 +47,10 @@ public enum EVDocumentSerializationError: LocalizedError, Equatable {
             "Viem cannot serialize the requested document type ‘\(typeName)’ safely."
         case let .formatConversionUnavailable(current, requested):
             "Saving \(current.displayName) as \(requested.displayName) requires a document format conversion, which is not available yet."
+        case .changedFormatNeedsNewDestination:
+            "The document format has changed. Use Save As and choose a different name or location to preserve the original file."
+        case .destinationAliasesOriginal:
+            "This destination refers to the original file. Choose a different name or location to preserve the original."
         }
     }
 }
@@ -93,6 +99,7 @@ public final class EVDocument: NSDocument {
     private var activeSave: ActiveSave?
     var fileBaseline: EVFileFingerprint?
     var fileBaselineURL: URL?
+    var fileBaselineFormat: EVSourceFormat?
     var fileBaselineGeneration: UInt64 = 0
     public internal(set) var externalFileChange: EVExternalFileChange?
     var externalSaveDecisionHandler: ((EVExternalFileChange) -> Bool)?
@@ -198,6 +205,11 @@ public final class EVDocument: NSDocument {
             self.wasRecovered = recovered
             if let original = try? original.get() { self.recordFileBaseline(original, at: target) }
             else { self.recordMissingFileBaseline(at: target) }
+            // Recovery may restore another format. The baseline describes the
+            // original disk file, whose serialization must remain protected.
+            if recovered {
+                self.fileBaselineFormat = Self.sourceFormat(forTypeName: typeName) ?? .plainText
+            }
             self.recoveryTimer?.cancel()
             self.recoveryGeneration &+= 1
             self.recoveryRequestedTarget = target
@@ -368,6 +380,68 @@ public final class EVDocument: NSDocument {
         onMainActor { [Self.typeName(for: self.editorBackend.sourceFormat)] }
     }
 
+    public override nonisolated func fileNameExtension(
+        forType typeName: String, saveOperation: NSDocument.SaveOperationType
+    ) -> String? {
+        if saveOperation == .saveOperation, let url = onMainActor({ self.fileURL }) {
+            // Code and unknown files use Text's serialization type. Its .txt
+            // extension must never replace an existing .rs name (or add an
+            // extension to an extensionless file) during an ordinary Save.
+            return url.pathExtension.isEmpty ? nil : url.pathExtension
+        }
+        return super.fileNameExtension(forType: typeName, saveOperation: saveOperation)
+    }
+
+    public override func move(to url: URL, completionHandler: ((Error?) -> Void)? = nil) {
+        // AppKit's titlebar and document actions can reach this independently
+        // of our menu. Adopt a newly written copy, retaining the original file.
+        save(to: url, ofType: Self.typeName(for: editorBackend.sourceFormat),
+             for: .saveAsOperation) { completionHandler?($0) }
+    }
+
+    public override func rename(_ sender: Any?) {
+        saveAs(sender)
+    }
+
+    public override func move(_ sender: Any?) {
+        saveAs(sender)
+    }
+
+    public override func save(
+        withDelegate delegate: Any?, didSave didSaveSelector: Selector?,
+        contextInfo: UnsafeMutableRawPointer?
+    ) {
+        if requiresNewFormatDestination {
+            runModalSavePanel(for: .saveAsOperation, delegate: delegate,
+                              didSave: didSaveSelector, contextInfo: contextInfo)
+        } else {
+            super.save(withDelegate: delegate, didSave: didSaveSelector, contextInfo: contextInfo)
+        }
+    }
+
+    var requiresNewFormatDestination: Bool {
+        guard fileURL != nil, let originalFormat = fileBaselineFormat else { return false }
+        return !editorBackend.sourceFormat.hasSameSerialization(as: originalFormat)
+    }
+
+    func validatePreservedOriginal(at destination: URL, checkDestinationName: Bool = true) throws {
+        if checkDestinationName, let original = fileURL,
+           original.standardizedFileURL != destination.standardizedFileURL {
+            let sameResolvedPath = EVDocumentIdentity.canonicalURL(original) == EVDocumentIdentity.canonicalURL(destination)
+            let sameFoldedPath = original.standardizedFileURL.path.compare(
+                destination.standardizedFileURL.path, options: .caseInsensitive) == .orderedSame
+                && EVDocumentIdentity.sameFile(original, destination)
+            if sameResolvedPath || sameFoldedPath {
+                throw EVDocumentSerializationError.destinationAliasesOriginal
+            }
+        }
+        guard requiresNewFormatDestination, let original = fileBaselineURL ?? fileURL else { return }
+        if original.standardizedFileURL == destination.standardizedFileURL
+            || EVDocumentIdentity.sameFile(original, destination) {
+            throw EVDocumentSerializationError.changedFormatNeedsNewDestination
+        }
+    }
+
     public static func typeName(for format: EVSourceFormat) -> String {
         switch format {
         case .plainText: plainTextType
@@ -413,6 +487,7 @@ public final class EVDocument: NSDocument {
             try self.editorBackend.read(source: data, typeName: Self.readableType(for: typeName))
             self.fileBaseline = nil
             self.fileBaselineURL = nil
+            self.fileBaselineFormat = nil
             self.fileBaselineGeneration &+= 1
             self.externalFileChange = nil
         }
@@ -439,6 +514,13 @@ public final class EVDocument: NSDocument {
         }
     }
 
+    public override nonisolated func write(to url: URL, ofType typeName: String) throws {
+        try onMainActor {
+            try self.validatePreservedOriginal(at: url, checkDestinationName: self.activeSave == nil)
+        }
+        try super.write(to: url, ofType: typeName)
+    }
+
     /// Keep AppKit in charge of save panels, coordinated replacement, file
     /// identity, versions, and change-count tokens while binding the bytes and
     /// the core acknowledgement to one exact source revision.
@@ -461,6 +543,7 @@ public final class EVDocument: NSDocument {
         let sourceFormat: EVSourceFormat
         let expectedFile: EVFileFingerprint
         do {
+            try validatePreservedOriginal(at: url)
             expectedFile = try authorizeExternalWrite(to: url).fingerprint
             sourceFormat = try Self.validateSerializationType(
                 typeName,
@@ -500,6 +583,7 @@ public final class EVDocument: NSDocument {
         let sourceFormat: EVSourceFormat
         let expectedFile: EVFileFingerprint
         do {
+            try validatePreservedOriginal(at: url)
             sourceFormat = try Self.validateSerializationType(
                 typeName,
                 currentFormat: editorBackend.sourceFormat
@@ -538,6 +622,7 @@ public final class EVDocument: NSDocument {
         completionHandler: @escaping (Error?) -> Void
     ) {
 
+        let saveOperation = preservingOriginalOperation(saveOperation, destination: url)
         activeSave = ActiveSave(snapshot: snapshot, sourceFormat: sourceFormat,
             destination: url, expectedFile: expectedFile)
         super.save(
@@ -565,7 +650,7 @@ public final class EVDocument: NSDocument {
             }
             let target = EVDocumentIdentity.canonicalURL(url)
             self.recordRecentDocument(target)
-            self.recordFileBaseline(snapshot.data, at: target)
+            self.recordFileBaseline(snapshot.data, at: target, format: sourceFormat)
             if self.recoveryTarget != target {
                 // A successful Save As already adopted its native target even
                 // when a newer edit makes the core acknowledgement stale.
@@ -590,6 +675,7 @@ public final class EVDocument: NSDocument {
         to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType
     ) throws {
         try onMainActor {
+            if self.activeSave == nil { try self.validatePreservedOriginal(at: url) }
             if var save = self.activeSave, EVDocumentIdentity.sameFile(save.destination, url) {
                 save.expectedFile = try self.authorizeExternalWrite(to: url, since: save.expectedFile).fingerprint
                 self.activeSave = save
@@ -598,7 +684,28 @@ public final class EVDocument: NSDocument {
                 _ = try self.authorizeExternalWrite(to: url)
             }
         }
-        try super.writeSafely(to: url, ofType: typeName, for: saveOperation)
+        let (destination, operation) = onMainActor {
+            if self.fileURL?.standardizedFileURL == url.standardizedFileURL,
+               (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) != nil {
+                // The unchanged bound name explicitly authorizes updating its
+                // target. Keep the link where it is: AppKit's ordinary safe
+                // save otherwise moves it into a temporary directory first.
+                return (EVDocumentIdentity.canonicalURL(url), NSDocument.SaveOperationType.saveAsOperation)
+            }
+            return (url, self.preservingOriginalOperation(saveOperation, destination: url))
+        }
+        try super.writeSafely(to: destination, ofType: typeName, for: operation)
+    }
+
+    private func preservingOriginalOperation(
+        _ operation: NSDocument.SaveOperationType, destination: URL
+    ) -> NSDocument.SaveOperationType {
+        guard operation == .saveOperation, let original = fileURL,
+              original.standardizedFileURL != destination.standardizedFileURL
+        else { return operation }
+        // An ordinary NSDocument save to a different URL can remove the old
+        // name. Save As preserves it and adopts the destination only on success.
+        return .saveAsOperation
     }
 
     private static func establishesSavePoint(_ operation: NSDocument.SaveOperationType) -> Bool {

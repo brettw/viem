@@ -550,6 +550,8 @@ extension EVDocumentWindowController {
       completion(.failure(EVDocumentHostError.invalidPath(request.path ?? ""))); return
     }
     do {
+      try document.validatePreservedOriginal(at: destination)
+      let sourceFormat = document.editorBackend.sourceFormat
       let snapshot: EVDocumentSaveSnapshot
       if let range = request.hardLineRange {
         snapshot = try document.editorBackend.nativeSaveSnapshot(typeName: document.fileType ?? EVDocument.plainTextType, hardLineRange: range)
@@ -567,7 +569,7 @@ extension EVDocumentWindowController {
           do {
             try result.get()
             if writesCurrent || adoptBinding { document.recordRecentDocument(target) }
-            if writesCurrent || adoptBinding { document.recordFileBaseline(snapshot.data, at: target) }
+            if writesCurrent || adoptBinding { document.recordFileBaseline(snapshot.data, at: target, format: sourceFormat) }
             if adoptBinding {
               document.fileURL = target
               document.configureRecovery(for: target)

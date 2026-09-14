@@ -28,6 +28,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var layoutSnapshot: EVLayoutExport?
     var layoutPaint: EVLayoutPaintExport?
     private(set) var commandLine: EVCommandLineExport?
+    private(set) var completion: EVCompletionExport?
+    private var completionTimer: Timer?
     private(set) var commandOutput: String?
     static let commandOutputDuration: TimeInterval = 30
     var commandOutputClock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
@@ -108,6 +110,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     deinit {
         commandOutputTimer?.invalidate()
+        completionTimer?.invalidate()
         if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
         if let viewPreferencesObserver { NotificationCenter.default.removeObserver(viewPreferencesObserver) }
     }
@@ -168,6 +171,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     func detachFromCore() {
+        completionTimer?.invalidate()
+        completionTimer = nil
+        completion = nil
+        if isViewLoaded { editorView.hideCompletionPopup() }
         session?.detach()
         session = nil
         selectionPresentationViewID = nil
@@ -192,6 +199,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             let nextPresentation = try session.presentation()
             let nextViewport = try session.viewportState()
             let nextCompositionOverlay = try session.compositionOverlayExport()
+            let nextCompletion = try session.completionExport()
             guard nextFormattedSnapshot.info.identity.document_id == nextDocumentState.document_id,
                   nextFormattedSnapshot.info.identity.document_revision == nextDocumentState.document_revision,
                   nextFormattedSnapshot.info.identity.document_id == nextPresentation.document_id,
@@ -306,6 +314,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             documentState = nextDocumentState
             formattedSnapshot = nextFormattedSnapshot
             compositionOverlay = nextCompositionOverlay
+            completion = nextCompletion
             viewPresentation = nextPresentation
             selectionPresentationViewID = session.viewID
             viewportState = nextViewport
@@ -317,6 +326,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             if nextCommandLine.prompt != nil { clearCommandOutput() }
             visualSelection = nextVisualSelection
             presentationRefreshCount &+= 1
+            synchronizeCompletionPolling()
             updateStatusBar()
             if isViewLoaded {
                 editorView.applyPresentation()
@@ -326,6 +336,59 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             }
         } catch {
             report(error)
+        }
+    }
+
+    /// The frontend schedules opportunities for bounded work; the core decides
+    /// which work remains and publishes every candidate/selection transition.
+    private func synchronizeCompletionPolling() {
+        guard completion?.isSearching == true,
+              !isViewLoaded || editorView.isCaretActive else {
+            completionTimer?.invalidate()
+            completionTimer = nil
+            return
+        }
+        guard completionTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pollCompletion() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        completionTimer = timer
+    }
+
+    func pollCompletion() {
+        guard let session, completion?.isSearching == true else { return }
+        do {
+            if try session.pollCompletion() { refreshPresentation() }
+        } catch {
+            completionTimer?.invalidate()
+            completionTimer = nil
+            report(error)
+        }
+    }
+
+    var isCompletionPolling: Bool { completionTimer?.isValid == true }
+
+    func completionFocusDidChange() {
+        if isViewLoaded, !editorView.isCaretActive { _ = acceptCompletionForNativeInput() }
+        synchronizeCompletionPolling()
+    }
+
+    /// Materialize any preview before AppKit constructs a revision-bound native
+    /// intention. Core decides acceptance; the native operation then runs as usual.
+    @discardableResult
+    func acceptCompletionForNativeInput() -> Bool {
+        guard completion?.isActive == true, let session else { return true }
+        do {
+            let previousRefresh = presentationRefreshCount
+            if try session.acceptCompletion(), previousRefresh == presentationRefreshCount {
+                refreshPresentation()
+            }
+            return true
+        } catch {
+            report(error)
+            NSSound.beep()
+            return false
         }
     }
 
@@ -433,6 +496,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     public func perform(statusOption: EVStatusBarOption) {
+        guard acceptCompletionForNativeInput() else { return }
         guard let session else { return }
         let expected = documentState
         performInput {
@@ -444,6 +508,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     public func perform(menuCommand: EVMenuCommand, sender: Any?) {
+        guard acceptCompletionForNativeInput() else { return }
         if isViewLoaded, editorView.statusBar?.performCommandOutputAction(menuCommand) == true { return }
         dismissCommandOutput()
         guard let session else { return }

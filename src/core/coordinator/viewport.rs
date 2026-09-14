@@ -46,7 +46,11 @@ pub(super) fn composition_caret_baseline<P: TextMeasurementProvider>(
     document: &Document,
     view: &View<P>,
 ) -> Option<f32> {
-    let overlay = view.composition.as_ref()?.overlay(document).ok()?;
+    let overlay = if let Some(composition) = &view.composition {
+        composition.overlay(document).ok()?
+    } else {
+        view.completion.as_ref()?.overlay(document).ok()??
+    };
     let layout = view.composition_layout.as_ref()?;
     let snapshot = layout.snapshot()?;
     let offset = overlay.selected_range_in_overlay().end;

@@ -153,6 +153,12 @@ impl CompositionSession {
         self.generation
     }
 
+    /// Completion previews use globally unique generations in a disjoint
+    /// namespace while sharing the immutable overlay representation.
+    pub(crate) fn set_preview_generation(&mut self, generation: u64) {
+        self.generation = generation;
+    }
+
     pub(crate) fn marked_text(&self) -> &str {
         &self.marked_text
     }

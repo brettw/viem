@@ -5,9 +5,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case save = 100
     case saveAs
     case duplicateDocument
-    case renameDocument
-    case moveDocument
-    case revertLastSaved
+    case revertLastSaved = 105
     case browseVersions
     case lineEndingUnix = 109
     case lineEndingWindows

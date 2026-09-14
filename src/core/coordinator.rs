@@ -42,6 +42,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod input_layout;
+mod completion;
+mod completion_layout;
+pub use completion_layout::CompletionPopupAnchor;
 mod viewport;
 use viewport::capture_caret_baseline_anchor;
 
@@ -563,6 +566,7 @@ impl ViewportState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreError {
+    Completion(crate::command::completion::CompletionError),
     UnknownView(ViewId),
     IdentifierExhausted(CoreIdentifierKind),
     StaleLayoutDemand {
@@ -761,6 +765,7 @@ struct View<P: TextMeasurementProvider> {
     layout: ViewLayout,
     engine: LayoutEngine<P>,
     composition: Option<CompositionSession>,
+    completion: Option<crate::command::completion::CompletionSession>,
     /// Disposable, source-nonmutating layout of `composition`. The ordinary
     /// view layout remains intact so cancellation is an O(1) restoration.
     composition_layout: Option<ViewLayout>,
@@ -1524,6 +1529,9 @@ impl<P: TextMeasurementProvider> Core<P> {
         force: bool,
     ) -> Result<PreparedArtifactWrite, CoreError> {
         self.document.validate_write_policy(force)?;
+        if let Some(view) = self.edit_group_owner {
+            self.accept_completion(view)?;
+        }
         self.finalize_style_edit_group()?;
         self.edit_group_owner = None;
         self.edit_group_restoration = None;
@@ -1786,6 +1794,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 layout,
                 engine,
                 composition: None,
+                completion: None,
                 composition_layout: None,
                 viewport_anchor: None,
                 immediate_layout_context,
@@ -3120,6 +3129,9 @@ impl<P: TextMeasurementProvider> Core<P> {
     ) {
         let view_ids: Vec<_> = self.views.keys().copied().collect();
         for view_id in view_ids {
+            // A source commit retires snapshot-bound completion queries and
+            // their preview layouts before any new presentation is built.
+            let _ = self.retire_stale_completion(view_id);
             let intent = if view_id == active {
                 active_intent
             } else {
@@ -3143,10 +3155,13 @@ impl<P: TextMeasurementProvider> Core<P> {
         view: ViewId,
     ) -> Result<Option<CompositionOverlay>, CoreError> {
         let view = self.views.get(&view).ok_or(CoreError::UnknownView(view))?;
-        view.composition
-            .as_ref()
+        if let Some(session) = &view.composition {
+            return session.overlay(&self.document).map(Some).map_err(CoreError::from);
+        }
+        view.completion.as_ref()
+            .filter(|session| session.is_current(&self.document, &view.commands))
             .map(|session| session.overlay(&self.document).map_err(CoreError::from))
-            .transpose()
+            .transpose().map(Option::flatten)
     }
 
     /// Shape and wrap the active composition through the same provider and
@@ -3166,11 +3181,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .views
                 .get(&view_id)
                 .ok_or(CoreError::UnknownView(view_id))?;
-            let overlay = view
-                .composition
-                .as_ref()
-                .ok_or(CoreError::Composition(CompositionError::NoActiveSession))?
-                .overlay(&self.document)?;
+            let overlay = self.composition_overlay(view_id)?
+                .ok_or(CoreError::Composition(CompositionError::NoActiveSession))?;
             (
                 overlay,
                 view.commands.boundary_affinity(),
@@ -3643,10 +3655,11 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         reveal_selection: bool,
     ) -> Result<(), CoreError> {
+        self.refresh_completion_preview_policy(view_id)?;
         if self
             .views
             .get(&view_id)
-            .is_some_and(|view| view.composition.is_some())
+            .is_some_and(|view| view.composition.is_some() || view.completion.as_ref().is_some_and(|session| session.has_inline_preview()))
         {
             self.materialize_composition_layout(view_id, reveal_selection)?;
         }
@@ -4670,6 +4683,18 @@ impl<P: TextMeasurementProvider> Core<P> {
         if !self.views.contains_key(&view_id) {
             return Err(CoreError::UnknownView(view_id));
         }
+        self.retire_stale_completion(view_id)?;
+        if self.views[&view_id].completion.is_some() {
+            if let CoreEvent::Composition(CompositionEvent::Begin(target)) = &event {
+                return self.begin_composition_after_completion(view_id, target.clone());
+            }
+            if !matches!(&event, CoreEvent::Input(_) | CoreEvent::InputWithClipboard { .. }
+                | CoreEvent::Resize { .. } | CoreEvent::SetScale(_) | CoreEvent::SetWrap(_)
+                | CoreEvent::SetParagraphFlow(_) | CoreEvent::SetViewportOrigin { .. }
+                | CoreEvent::RevealSelection) {
+                self.discard_completion(view_id);
+            }
+        }
         // An explicit style gesture admits only its dedicated grouped-edit and
         // end APIs. Any ordinary coordinator event is an unambiguous boundary:
         // close the successful prefix, consume the token, then process the
@@ -4978,6 +5003,11 @@ impl<P: TextMeasurementProvider> Core<P> {
             event => (event, None),
         };
         if let CoreEvent::Input(input) = &event {
+            if let Some(outcome) = self.handle_completion_input(view_id, input, clipboard_context.as_ref())? {
+                return Ok(outcome);
+            }
+        }
+        if let CoreEvent::Input(input) = &event {
             if self
                 .views
                 .get(&view_id)
@@ -5072,23 +5102,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     ) -> Result<CoreOutcome, CoreError> {
         if matches!(&event, CoreEvent::Input(_)) {
             self.install_buffer_commands(view_id);
-        }
-        if matches!(&event, CoreEvent::Input(_))
-            && self.replay_undo_floor.is_none()
-            && self.edit_group_owner != Some(view_id)
-        {
-            if self.edit_group_owner.take().is_some() {
-                self.document.close_edit_group();
-                self.edit_group_restoration = None;
-            }
-            let resumes_edit = self
-                .views
-                .get(&view_id)
-                .is_some_and(|view| matches!(view.commands.mode(), Mode::Insert | Mode::Replace));
-            if resumes_edit {
-                self.document.begin_edit_group();
-                self.edit_group_owner = Some(view_id);
-            }
+            self.prepare_input_edit_group(view_id);
         }
         let history_before =
             matches!(&event, CoreEvent::Input(_)).then(|| self.document.history_status().current);

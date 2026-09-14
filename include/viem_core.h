@@ -1410,6 +1410,50 @@ typedef struct ViemCommandLineInfoV1 {
 #define VIEM_COMMAND_LINE_INFO_V1_SIZE \
   ((uint32_t)sizeof(ViemCommandLineInfoV1))
 
+#define VIEM_COMPLETION_ACTIVE (1u << 0)
+#define VIEM_COMPLETION_SEARCHING (1u << 1)
+#define VIEM_COMPLETION_TRUNCATED (1u << 2)
+#define VIEM_COMPLETION_HAS_ANCHOR (1u << 3)
+#define VIEM_COMPLETION_RIGHT_TO_LEFT (1u << 4)
+
+/*
+ * Backend-owned Insert completion presentation. The session and generation
+ * identify one exact item ordering and selected index. Inactive completion has
+ * zero flags, session, generation, and counts. selected_index is -1 for the
+ * original text; otherwise it indexes the item array. The frontend displays
+ * these values and continues forwarding ordinary normalized input to the core.
+ * HAS_ANCHOR supplies the completed word's logical leading edge in exact
+ * anchor_layout coordinates. Align popup text there, accounting for native
+ * padding. RIGHT_TO_LEFT mirrors the popup and aligns the text's right edge.
+ * No anchor is published until prefix discovery and exact geometry are ready.
+ */
+typedef struct ViemCompletionInfoV1 {
+  uint32_t struct_size;
+  uint32_t flags;
+  uint64_t session_id;
+  uint64_t generation;
+  uint64_t document_id;
+  uint64_t document_revision;
+  uint64_t view_id;
+  int64_t selected_index;
+  uint64_t item_count;
+  uint64_t utf8_length;
+  ViemLayoutSnapshotIdentityV1 anchor_layout;
+  ViemLayoutRectV1 anchor_rect;
+} ViemCompletionInfoV1;
+
+#define VIEM_COMPLETION_INFO_V1_SIZE \
+  ((uint32_t)sizeof(ViemCompletionInfoV1))
+
+/* Byte ranges in the concatenated, length-delimited UTF-8 candidate arena. */
+typedef struct ViemCompletionItemV1 {
+  uint64_t text_offset;
+  uint64_t text_length;
+} ViemCompletionItemV1;
+
+#define VIEM_COMPLETION_ITEM_V1_SIZE \
+  ((uint32_t)sizeof(ViemCompletionItemV1))
+
 #define VIEM_VISUAL_SELECTION_KIND_NONE 0u
 #define VIEM_VISUAL_SELECTION_KIND_CHARACTER 1u
 #define VIEM_VISUAL_SELECTION_KIND_LINE 2u
@@ -1944,6 +1988,40 @@ ViemStatus viem_core_view_copy_command_line(
     const ViemCommandLineIdentityV1 *expected,
     uint8_t *utf8, uint64_t utf8_capacity,
     ViemCommandLineInfoV1 *out_info);
+
+/*
+ * Copy requires an unchanged info record from the atomic current-state query.
+ * Any changed session, generation, document revision, or presentation field
+ * returns STALE_REVISION. Null output is accepted only with zero capacity.
+ * BUFFER_TOO_SMALL writes the required count and no output elements/bytes;
+ * other failures clear the count after pointer/record validation. Each call's
+ * input, output, and count regions must be aligned and pairwise disjoint.
+ */
+ViemStatus viem_core_view_completion_info(
+    ViemCoreHandle core, ViemViewId view, ViemCompletionInfoV1 *out_info);
+ViemStatus viem_core_view_copy_completion_items(
+    ViemCoreHandle core, ViemViewId view,
+    const ViemCompletionInfoV1 *expected,
+    ViemCompletionItemV1 *items, uint64_t capacity, uint64_t *out_count);
+ViemStatus viem_core_view_copy_completion_utf8(
+    ViemCoreHandle core, ViemViewId view,
+    const ViemCompletionInfoV1 *expected,
+    uint8_t *bytes, uint64_t capacity, uint64_t *out_count);
+/*
+ * Advance one bounded search slice without blocking on document-wide work.
+ * Poll while SEARCHING is set; changed is 1 when presentation needs refreshing.
+ * No active session is a successful no-op. Polling never accepts an item.
+ */
+ViemStatus viem_core_view_poll_completion(
+    ViemCoreHandle core, ViemViewId view, uint8_t *out_changed);
+/*
+ * Materialize the selected item before a non-key native command (save, pointer,
+ * menu, or IME operation). Refresh presentation before constructing that
+ * command's exact target. Inactive completion is a successful no-op; changed
+ * is 1 when the document or layout changed. Key input accepts automatically.
+ */
+ViemStatus viem_core_view_accept_completion(
+    ViemCoreHandle core, ViemViewId view, uint8_t *out_changed);
 
 /*
  * Visual-selection info resolves the current selection against the exact

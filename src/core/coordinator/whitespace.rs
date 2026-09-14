@@ -94,8 +94,14 @@ impl<P: TextMeasurementProvider> Core<P> {
             width: layout.width(),
             height: layout.height(),
         };
-        if let Some(composition) = &view.composition {
-            let overlay = composition.overlay(&self.document)?;
+        if view.composition_layout.is_some() {
+            // Completion and IME previews share composed geometry. Read its
+            // matching text instead of interpreting shifted preview offsets in
+            // the source projection. A failed preview uses base geometry and
+            // therefore must also use base text below.
+            let overlay = self.composition_overlay(id)?.ok_or(
+                CoreError::Composition(CompositionError::NoActiveSession),
+            )?;
             let tree = overlay
                 .layout_text_tree()
                 .map_err(DocumentError::FormattedTextStorage)?;
@@ -328,5 +334,120 @@ mod tests {
         event(&mut core, id, InputEvent::Key(Key::Escape));
         keys(&mut core, id, "u");
         assert_eq!(core.document.text(), original);
+    }
+
+    fn begin_completion(core: &mut Core<MockTextMeasurementProvider>, id: ViewId) {
+        keys(core, id, "i");
+        core.handle(
+            id,
+            CoreEvent::PlaceCursor {
+                document_revision: core.document.revision(),
+                text_offset: "    al".len(),
+                affinity: BoundaryAffinity::Upstream,
+                extend_selection: false,
+            },
+        )
+        .unwrap();
+        event(core, id, InputEvent::Key(Key::Ctrl('n')));
+    }
+
+    #[test]
+    fn completion_whitespace_tracks_candidate_text_across_lengths_and_wrapping() {
+        let source = "    al  \n        }\n    }\nalphabet albatross alps\n  tail  ";
+        for wrap in [false, true] {
+            let width = if wrap { 96.0 } else { 400.0 };
+            let mut core = Core::new(Document::new(source));
+            let id = core.add_view(MockTextMeasurementProvider::new(), width, 600.0);
+            core.handle(id, CoreEvent::SetWrap(wrap)).unwrap();
+            begin_completion(&mut core, id);
+            let revision = core.document.revision();
+            let history = core.document.history_status();
+            for word in ["alphabet", "albatross", "alps", "al", "alphabet"] {
+                let menu = core.completion_presentation(id).unwrap().unwrap();
+                assert!(!menu.searching);
+                assert_eq!(
+                    menu.selected_index.map(|index| menu.items[index].as_str()),
+                    (word != "al").then_some(word),
+                );
+                let preview = source.replacen("    al", &format!("    {word}"), 1);
+                let mut expected = Core::new(Document::new(&preview));
+                let expected_id = expected.add_view(
+                    MockTextMeasurementProvider::new(),
+                    width,
+                    600.0,
+                );
+                expected
+                    .handle(expected_id, CoreEvent::SetWrap(wrap))
+                    .unwrap();
+                let markers = core.whitespace_markers(id).unwrap();
+                assert_eq!(
+                    markers,
+                    expected.whitespace_markers(expected_id).unwrap(),
+                    "completion {word:?}, wrap={wrap} must mark the displayed text",
+                );
+                let trailing: Vec<_> = markers
+                    .iter()
+                    .filter(|marker| marker.text == "*")
+                    .collect();
+                if wrap {
+                    // A space's cell can be clipped at a wrap edge. The full
+                    // marker comparison above checks the exact visible subset.
+                    assert!((2..=4).contains(&trailing.len()));
+                } else {
+                    assert_eq!(
+                        trailing.len(),
+                        4,
+                        "the four real trailing spaces remain visible",
+                    );
+                    assert!(trailing
+                        .iter()
+                        .all(|marker| marker.row_index == 0 || marker.row_index == 4));
+                }
+                assert_eq!(core.document.source_bytes(), source.as_bytes());
+                assert_eq!(core.document.revision(), revision);
+                assert_eq!(core.document.history_status(), history);
+                event(&mut core, id, InputEvent::Key(Key::Ctrl('n')));
+            }
+        }
+    }
+
+    #[test]
+    fn completion_whitespace_uses_base_text_when_preview_geometry_is_unavailable() {
+        let source = "    al  \n        }\n    }\nalphabet\n  tail  ";
+        let mut core = Core::new(Document::new(source));
+        let id = core.add_view(MockTextMeasurementProvider::new(), 400.0, 300.0);
+        let base_markers = core.whitespace_markers(id).unwrap();
+        begin_completion(&mut core, id);
+        assert!(core.composition_overlay(id).unwrap().is_some());
+        // A temporary provider failure can leave the session active without
+        // composed geometry. Exports must agree with the displayed base layout.
+        core.views.get_mut(&id).unwrap().composition_layout = None;
+        assert_eq!(core.whitespace_markers(id).unwrap(), base_markers);
+        assert_eq!(core.document.source_bytes(), source.as_bytes());
+    }
+
+    #[test]
+    fn completion_whitespace_stays_local_in_large_documents() {
+        let source = format!(
+            "    al  \n        }}\n    }}\nalphabet albatross alps\n  tail  \n{}",
+            "    ordinary text\n".repeat(20_000),
+        );
+        let mut core = Core::new(Document::new(&source));
+        let id = core.add_view(MockTextMeasurementProvider::new(), 400.0, 180.0);
+        begin_completion(&mut core, id);
+        assert!(core.completion_presentation(id).unwrap().unwrap().searching);
+        let calls = core.views[&id].engine.provider().request_calls();
+        for _ in 0..4 {
+            let markers = core.whitespace_markers(id).unwrap();
+            assert_eq!(markers.iter().filter(|marker| marker.text == "*").count(), 4);
+            assert!(markers
+                .iter()
+                .all(|marker| marker.row_index == 0 || marker.row_index == 4));
+            core.poll_completion(id).unwrap();
+        }
+        assert_eq!(core.views[&id].engine.provider().request_calls(), calls);
+        assert!(!core.document.projection().compatibility_text_is_materialized());
+        assert_eq!(core.document.source_bytes(), source.as_bytes());
+        assert!(!core.document.is_dirty());
     }
 }

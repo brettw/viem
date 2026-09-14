@@ -120,6 +120,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     /// detached, inert text surface through this weak reference instead.
     private(set) weak var surface: EVEditorSurfaceController?
     private let insertionIndicator = NSTextInsertionIndicator(frame: .zero)
+    private let completionPopup = EVCompletionPopup()
     let documentScrollbars: EVDocumentScrollbars
     private var markedTextValue = ""
     private var markedSelection = NSRange(location: NSNotFound, length: 0)
@@ -159,6 +160,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     var isDragAutoscrollActive: Bool { dragAutoscrollTimer?.isValid == true }
     var isDocumentInsertionIndicatorVisible: Bool { !insertionIndicator.isHidden }
+    var isCompletionPopupVisible: Bool { completionPopup.isVisible }
+    var completionPopupSelectedIndex: Int? { completionPopup.selectedIndex }
     /// The status line owns the command-line caret.
     var isCommandLineInsertionIndicatorVisible: Bool {
         statusBar?.isCommandCaretShowing ?? false
@@ -278,6 +281,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func resignFirstResponder() -> Bool {
+        guard surface?.acceptCompletionForNativeInput() != false else { return false }
         let accepted = super.resignFirstResponder()
         if accepted {
             isActiveTextSurface = false
@@ -290,7 +294,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         if newWindow == nil {
+            completionPopup.hide()
             isActiveTextSurface = false
+            surface?.completionFocusDidChange()
             stopDragAutoscroll()
             customCaretBlinkController.stop()
             endTextInputGeometryUpdate()
@@ -304,8 +310,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func refreshCaretActivity() {
+        surface?.completionFocusDidChange()
         updateCustomCaretPresentation()
         updateInsertionIndicator()
+        updateCompletionPopup()
         needsDisplay = true
         surface?.refreshStatusBarActivity()
     }
@@ -352,7 +360,26 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         updateCustomCaretPresentation()
         needsDisplay = true
         updateInsertionIndicator()
+        updateCompletionPopup()
         notifyTextInputStateChanged()
+    }
+
+    func hideCompletionPopup() { completionPopup.hide() }
+
+    private func updateCompletionPopup() {
+        guard isCaretActive, !compositionActive, let window,
+              let completion = surface?.completion, completion.isActive,
+              let snapshot = surface?.layoutSnapshot,
+              completion.hasAnchor,
+              completion.info.anchor_layout.isSameLayout(as: snapshot.info.identity)
+        else { completionPopup.hide(); return }
+        let rect = completion.info.anchor_rect
+        let anchor = NSRect(origin: viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(rect.x), y: CGFloat(rect.y))),
+                            size: NSSize(width: CGFloat(rect.width), height: CGFloat(rect.height)))
+        let screenAnchor = window.convertToScreen(convert(anchor, to: nil))
+        completionPopup.show(items: completion.items, selectedIndex: completion.selectedIndex,
+                             searching: completion.isSearching, truncated: completion.isTruncated,
+                             at: screenAnchor, in: window, rightToLeft: completion.rightToLeft)
     }
 
     /// Refresh a newly created/replaced core view as well as live preferences.
@@ -1242,6 +1269,14 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     @objc(delete:) func deleteDocumentSelection(_ sender: Any?) { if !performCommandLineMenu(.delete) { surface?.perform(menuCommand: .delete, sender: sender) } }
     override func selectAll(_ sender: Any?) { if !performCommandLineMenu(.selectAll) { surface?.perform(menuCommand: .selectAll, sender: sender) } }
 
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // Native menu shortcuts (including Save/Close) can be consumed before
+        // keyDown. Let core accept the preview before AppKit handles them.
+        if isActiveTextSurface, event.modifierFlags.contains(.command),
+           surface?.acceptCompletionForNativeInput() == false { return true }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func keyDown(with event: NSEvent) {
         guard let surface else { return }
         surface.dismissCommandOutput()
@@ -1259,6 +1294,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             return
         }
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command) {
+            guard surface.acceptCompletionForNativeInput() else { return }
             super.keyDown(with: event)
             return
         }
@@ -1386,6 +1422,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     func insertText(_ string: Any, replacementRange: NSRange) {
         guard let surface else { return }
         guard let session = surface.session, let value = plainText(from: string) else { return }
+        if replacementRange.location != NSNotFound,
+           !surface.acceptCompletionForNativeInput() { return }
         reconcileMarkedTextWithCore()
         let replacesCurrentMarkedText = compositionActive
             && (replacementRange.location == NSNotFound
@@ -1568,6 +1606,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
 
     override func menu(for event: NSEvent) -> NSMenu? {
+        guard surface?.acceptCompletionForNativeInput() != false else { return nil }
         surface?.dismissCommandOutput()
         let menu = NSMenu(title: "Edit")
         if let target = linkMenuTarget(for: event) {
@@ -1664,6 +1703,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private func placeCursor(at local: NSPoint, extending: Bool) {
         guard let surface else { return }
+        guard surface.acceptCompletionForNativeInput() else { return }
         guard let session = surface.session else { return }
         if compositionActive {
             cancelActiveMarkedText(using: session, discardInputContext: true)
@@ -1769,6 +1809,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
               let value = plainText(from: string),
               let selection = utf8Range(inMarkedText: value, utf16Range: selectedRange)
         else { return }
+
+        guard surface.acceptCompletionForNativeInput() else { return }
 
         reconcileMarkedTextWithCore()
 
@@ -1928,6 +1970,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
            let range = utf16Range(forUTF8: commandLine.selectedUTF8Range, in: commandLine.text)
         {
             return range
+        }
+        if surface.completion?.isActive == true,
+           let selected = surface.compositionOverlay?.selectedUTF8Range {
+            return presentedUTF16Range(forUTF8: selected) ?? notFoundRange
         }
         if let range = surface.primarySelectedUTF8Range() {
             return utf16Range(forUTF8: range) ?? notFoundRange
@@ -2354,12 +2400,14 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             return (String(decoding: bytes[utf8Range], as: UTF8.self), actual)
         }
 
-        guard let replacement = markedTextTarget?.documentReplacementUTF8 else {
+        guard let replacementContext = textInputReplacementContext else {
             guard let utf8Range = utf8Range(forUTF16: range),
                   let text = surface.formattedText(in: utf8Range)
             else { return nil }
             return (text, range)
         }
+        let replacement = replacementContext.range
+        let markedTextValue = replacementContext.text
         guard let replacement16 = utf16Range(forUTF8: replacement),
               let replacementEnd = addingWithoutOverflow(
                   replacement16.location,
@@ -2431,11 +2479,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private func textInputUTF8Offset(forUTF16Location location: Int) -> Int? {
         guard let surface else { return nil }
         guard location >= 0 else { return nil }
-        guard case let .document(target)? = markedTextTarget,
+        guard let replacementContext = textInputReplacementContext,
               surface.compositionOverlay != nil else {
             return surface.utf8Offsets(forUTF16: [location])?.first
         }
-        let replacement = target.replacementUTF8
+        let replacement = replacementContext.range
+        let markedTextValue = replacementContext.text
         guard
               let replacement16 = utf16Range(forUTF8: replacement),
               let replacementEnd = addingWithoutOverflow(
@@ -2474,14 +2523,15 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private func textInputUTF16Offset(forLayoutUTF8Offset offset: Int) -> Int? {
         guard let surface else { return nil }
         guard offset >= 0 else { return nil }
-        guard case let .document(target)? = markedTextTarget,
+        guard let replacementContext = textInputReplacementContext,
               let overlay = surface.compositionOverlay,
               let overlayLength = overlay.utf8Length,
               offset <= overlayLength
         else {
             return utf16Range(forUTF8: offset ..< offset)?.location
         }
-        let replacement = target.replacementUTF8
+        let replacement = replacementContext.range
+        let markedTextValue = replacementContext.text
         guard let replacement16 = utf16Range(forUTF8: replacement),
               let replacementEnd = addingWithoutOverflow(
                   replacement16.location,
@@ -3362,16 +3412,33 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private var presentedUTF16Length: Int {
         guard let surface else { return 0 }
-        guard case let .document(target)? = markedTextTarget,
+        guard let replacementContext = textInputReplacementContext,
               surface.compositionOverlay != nil,
-              let replacement = utf16Range(forUTF8: target.replacementUTF8),
+              let replacement = utf16Range(forUTF8: replacementContext.range),
               let withoutReplacement = subtractingWithoutOverflow(
                   surface.formattedUTF16Length,
                   replacement.length
               ),
-              let result = addingWithoutOverflow(withoutReplacement, markedTextValue.utf16.count)
+              let result = addingWithoutOverflow(withoutReplacement, replacementContext.text.utf16.count)
         else { return surface.formattedUTF16Length }
         return result
+    }
+
+    /// IME and completion previews share the same projected-text coordinate
+    /// mapping. Only an actual native marked-text target advertises marked
+    /// text to AppKit; completion remains an ordinary insertion caret.
+    private var textInputReplacementContext: (range: Range<Int>, text: String)? {
+        if let range = markedTextTarget?.documentReplacementUTF8 {
+            return (range, markedTextValue)
+        }
+        guard let surface, surface.completion?.isActive == true,
+              let overlay = surface.compositionOverlay,
+              let start = Int(exactly: overlay.info.replacement_start),
+              let end = Int(exactly: overlay.info.replacement_end),
+              let marked = overlay.markedUTF8Range,
+              let text = surface.presentedText(in: marked)
+        else { return nil }
+        return (start ..< end, text)
     }
 
     private func presentedUTF8Range(forUTF16 range: NSRange) -> Range<Int>? {

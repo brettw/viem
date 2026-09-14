@@ -205,16 +205,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             action: #selector(NSDocument.duplicate(_:)),
             command: .duplicateDocument
         ))
-        menu.addItem(documentItem(
-            "Rename…",
-            action: #selector(NSDocument.rename(_:)),
-            command: .renameDocument
-        ))
-        menu.addItem(documentItem(
-            "Move To…",
-            action: #selector(NSDocument.move(_:)),
-            command: .moveDocument
-        ))
 
         let revertMenu = NSMenu(title: "Revert To")
         revertMenu.addItem(documentItem(

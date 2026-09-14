@@ -112,7 +112,7 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
         XCTAssertEqual(try titles(in: submenu("File", of: menu)), [
             "New", "Open…", "Open Recent", "Close", "Save", "Save As…", "Duplicate",
-            "Rename…", "Move To…", "Revert To", "Convert to", "Reinterpret as", "Text Encoding",
+            "Revert To", "Convert to", "Reinterpret as", "Text Encoding",
             "Line Endings", "Page Setup…", "Print…",
         ])
         XCTAssertEqual(try titles(in: submenu("Edit", of: menu)), [
@@ -151,7 +151,7 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
         XCTAssertEqual(tokens(in: try submenu("File", of: main)), [
             "New", "Open…", "Open Recent", "-", "Close", "Save", "Save As…",
-            "Duplicate", "Rename…", "Move To…", "Revert To", "-",
+            "Duplicate", "Revert To", "-",
             "Convert to", "Reinterpret as", "Text Encoding", "Line Endings", "-",
             "Page Setup…", "Print…",
         ])
@@ -316,7 +316,7 @@ final class EVMenuBuilderTests: XCTestCase {
         }
 
         let nativeDocumentCommands: Set<EVMenuCommand> = [
-            .save, .saveAs, .duplicateDocument, .renameDocument, .moveDocument,
+            .save, .saveAs, .duplicateDocument,
             .revertLastSaved, .browseVersions, .pageSetup, .printDocument,
         ]
         let styleCommands: Set<EVMenuCommand> = [
@@ -383,8 +383,6 @@ final class EVMenuBuilderTests: XCTestCase {
             "File/Save": (#selector(NSDocument.save(_:)), .save),
             "File/Save As…": (#selector(NSDocument.saveAs(_:)), .saveAs),
             "File/Duplicate": (#selector(NSDocument.duplicate(_:)), .duplicateDocument),
-            "File/Rename…": (#selector(NSDocument.rename(_:)), .renameDocument),
-            "File/Move To…": (#selector(NSDocument.move(_:)), .moveDocument),
             "File/Revert To/Last Saved Version": (#selector(NSDocument.revertToSaved(_:)), .revertLastSaved),
             "File/Revert To/Browse All Versions…": (#selector(NSDocument.browseVersions(_:)), .browseVersions),
             "File/Page Setup…": (#selector(NSDocument.runPageLayout(_:)), .pageSetup),

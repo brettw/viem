@@ -3113,8 +3113,9 @@ hidden WYSIWYG syntax. `extends` and `precedes` decorate viewport clipping of
 unwrapped lines. Marker ink fits/clips to existing whitespace geometry and
 does not add source characters, caret stops, wrapping width or line height.
 Search, registers, clipboard, accessibility, undo and serialization see the
-actual text. Exact-snapshot marker exports use the same composition projection
-as text while input-method marked text is active.
+actual text. Exact-snapshot marker exports use the same active presentation text
+as their layout, including input-method marked text and manual completion
+previews. Base-layout fallback must also use base document text.
 
 Tests MUST cover option inheritance and atomic rejection, tab and soft-tab
 stops, comment/reflow agreement, count/repeat/undo behavior, WYSIWYG exclusion,
@@ -3299,6 +3300,64 @@ Text objects operate on logical formatted content and are not changed by soft
 wrapping or font metrics. Their ranges retain provenance for reverse edits.
 
 ### Insert and Replace modes
+
+#### Manual word completion
+
+Insert mode supports Ctrl-N and Ctrl-P over words in the current formatted
+document. Ctrl-N discovers matches in forward document order and Ctrl-P in
+backward order, wrapping once. Matching is case-sensitive prefix matching at
+the caret, using the same Unicode-alphanumeric-or-underscore grapheme classes
+as word motions. Empty prefixes are permitted. The occurrence being completed
+is excluded; duplicate insertion strings are shown once. WYSIWYG views search
+visible formatted words across character styles, while literal/source views
+search their visible source text. Completion does not copy candidate styles.
+
+Only Ctrl-N/P navigate the completion cycle. Every other key, including Escape,
+Ctrl-E, Ctrl-Y, Enter, Tab, Backspace, and arrow keys, accepts the displayed
+candidate and then performs its ordinary action. This deliberately differs
+from Vim's special completion meanings for Ctrl-E/Y and popup cursor keys.
+The original typed prefix is a selectable entry in the cycle. Completion in
+Replace mode and deferred Visual Block insertion is not yet supported.
+
+The core owns the session, source selection, candidate order, selected index,
+and search progress. The frontend displays a native nonactivating popup from
+that state and schedules bounded core work while requested. Search runs in
+cooperative slices between input events, including prefix discovery and Unicode
+segmentation in huge lines/clusters; it never flattens the document or blocks a
+key while scanning the rest of the buffer. New results append without reordering
+existing items. Requests past the known results wait for discovery or exhaustion.
+Search memory and candidate word lengths are bounded; truncation is explicit.
+
+Cycling uses a view-local formatted preview and does not modify authoritative
+source, dirty state, or undo history. For unwrapped presentation lines exceeding
+the bounded layout-slice limit, selection is shown in the popup only until
+acceptance; cycling MUST NOT rebuild their whole-line width/bidi summaries.
+Acceptance inserts the selected missing suffix through ordinary verified
+semantic typing, preserving the existing
+prefix and destination typing style. It belongs to the current Insert undo
+unit. Counts, dot repeat, the last-insert register, and macros retain accepted
+text, not candidate navigation or asynchronous search timing.
+If the following key fails after acceptance, the accepted completion remains;
+the outcome reports its source change and position map together with the key's
+failure diagnostic. No committed completion is hidden by an error-only return.
+Literal-next, register operands, and pending Ctrl-G input keep their existing
+key ownership.
+Snapshot changes, view destruction, and abandoned sessions discard search work;
+stale results cannot revive a popup. Native input-method or menu/pointer actions
+accept completion through the core before constructing new revision-bound
+targets. IME and completion have separate state and undo policies.
+
+The core supplies popup geometry at the beginning of the word being completed,
+resolved against the current presentation layout. Candidate cycling does not
+anchor to the moving insertion caret; the popup follows the word only when its
+actual placement changes, including wrapping, alignment, scrolling, and zoom.
+The native popup compensates for its actual text-cell padding so its words'
+leading edge aligns with the word's leading edge, subject to screen boundaries.
+The word's resolved bidirectional context determines popup direction: RTL
+popups mirror native layout and align text to the right edge. Candidate order
+and Control-N/P behavior remain backend-owned and unchanged.
+
+#### Ordinary insertion controls
 
 Required behavior includes ordinary Unicode text input, Escape/Ctrl-[, Enter,
 Tab, Backspace, Forward Delete, arrow movement, Home/End, Page Up/Down,
@@ -3573,6 +3632,28 @@ Dirty-state queries compare retained identities in constant time, never
 materializing or hashing the document. An asynchronously completed save carries
 the captured source identity even when its history node has been pruned.
 Changing file identity with a successful `:saveas` is not undone.
+
+Saving to another name or location MUST preserve the previously bound source
+file byte-for-byte and write the selected destination separately. A successful
+Save As adopts that destination; a failed write retains the original binding.
+No format change, Save, Save As, or native document action may rename or delete
+the original path. Ordinary Save retains the existing filename and extension,
+including Code files, unknown extensions, dotfiles, and extensionless files.
+Format selection is an in-memory operation until an explicit write. When the
+serialization family differs from the last-loaded/saved format, native Save
+requests Save As and every write entry point rejects the original destination.
+Text/Code, Markdown/Markdown Source, and HTML/HTML Source each share one
+serialization family, so those presentation changes do not require a new file.
+A successful Save As establishes the destination's new format baseline. Native
+rename/move entry points use the same write-and-adopt semantics as Save As, and
+the File menu exposes Save As rather than destructive Rename/Move commands.
+Atomic replacement of bytes at an explicitly selected save destination and
+cleanup of Viem-owned temporary/recovery files remain permitted.
+Different destination names resolving through symbolic links or case-only
+aliases to the original file are rejected: overwriting an alias would still
+change the original's bytes. An ordinary save to the unchanged bound name is
+permitted. Distinct hard-link names use Save As replacement so the original
+name and bytes remain intact.
 
 History retention has configurable node and retained-byte budgets. The default
 byte policy allows 256 MiB of additional retained history above the current
@@ -3955,8 +4036,6 @@ The menu hierarchy is:
   - Save (`Command-S`)
   - Save As… (`Shift-Command-S`)
   - Duplicate
-  - Rename…
-  - Move To…
   - Revert To
     - Last Saved Version
     - Browse All Versions…
