@@ -3827,6 +3827,12 @@ file is opened; later files are read when selected. A nonexistent filename
 opens a named, clean, empty buffer without creating a file on disk. `--` ends
 option parsing so filenames beginning with `-` or `+` remain expressible.
 Unknown options and unsupported startup commands report an error and usage.
+The macOS bootstrap disables AppKit's automatic conversion of process arguments
+into native file-open callbacks before starting the application. Each argument
+must be handled only by this launch policy; later Finder file-open events retain
+their normal behavior. Startup verification must exercise a fresh application
+process, including default multiple files, `-o`, and `+line`; calling the delegate's
+argument-list helper directly cannot validate AppKit startup dispatch.
 
 Vim's `+123` selects hard line 123 of the first file, clamped to the file's
 last line, with the cursor at the first nonblank grapheme. Bare `+` selects the

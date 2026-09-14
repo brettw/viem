@@ -4,6 +4,11 @@ import UniformTypeIdentifiers
 @MainActor
 public enum EVApplication {
     public static func run() {
+        // Viem owns argv, including its lazy argument list and Vim flags.
+        // Otherwise AppKit also turns those arguments into native open-file
+        // callbacks during finishLaunching(), creating one window per file.
+        // AppKit expects the string "NO" for this nonpersistent launch default.
+        UserDefaults.standard.register(defaults: ["NSTreatUnknownArgumentsAsOpen": "NO"])
         let launchArguments: EVLaunchArguments
         do {
             // Older Launch Services versions add a process serial number. It
