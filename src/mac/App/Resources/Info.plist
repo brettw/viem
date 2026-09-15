@@ -94,6 +94,8 @@
 	</array>
 	<key>CFBundleExecutable</key>
 	<string>Viem</string>
+	<key>CFBundleIconFile</key>
+	<string>Viem.icns</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.viem.editor</string>
 	<key>CFBundleInfoDictionaryVersion</key>

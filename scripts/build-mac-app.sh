@@ -52,6 +52,10 @@ mkdir -p "$macos_dir" "$resources_dir"
 cp "$swift_bin_dir/Viem" "$macos_dir/Viem.new"
 mv -f "$macos_dir/Viem.new" "$macos_dir/Viem"
 cp "$project_dir/src/mac/App/Resources/Info.plist" "$contents_dir/Info.plist"
+cp "$project_dir/assets/icon/Viem.icns" "$resources_dir/Viem.icns"
 
 codesign --force --sign - "$app_bundle"
+# Nested resource updates do not change the bundle directory's modification
+# time. Refresh it so Launch Services notices icon and metadata changes.
+touch "$app_bundle"
 echo "$app_bundle"

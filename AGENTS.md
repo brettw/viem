@@ -89,6 +89,12 @@ targets, and finally assembles and ad-hoc signs `.build/Viem.app` for local
 development and end-to-end testing. A future distribution/archive workflow MAY
 add an Xcode project without changing those source ownership boundaries.
 
+Packaging copies `assets/icon/Viem.icns` into the app bundle's
+`Contents/Resources` before signing. The app's `CFBundleIconFile` declaration
+selects this icon for both debug and release builds.
+After signing, packaging updates the app bundle directory's modification time
+so Launch Services detects changed icons and bundle metadata on the next launch.
+
 The root Makefile exposes `make debug` (the default), `make release`, and
 `make clean`. Build targets delegate to the packaging script. `make run-debug`
 and `make run-release` build the corresponding configuration and launch
