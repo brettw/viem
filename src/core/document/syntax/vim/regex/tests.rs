@@ -2,6 +2,11 @@ use super::*;
 
 fn find(pattern: &str, text: &str, slice: usize) -> Option<std::ops::Range<usize>> {
     let pattern = VimPattern::compile(pattern, false, VimRegexLimits::default()).unwrap();
+    find_pattern(&pattern, text, slice)
+}
+
+fn find_pattern(pattern: &VimPattern, text: &str, slice: usize) -> Option<std::ops::Range<usize>> {
+    let tree = crate::document::formatted_text::FormattedTextTree::try_from_text(text).unwrap();
     for at in text
         .char_indices()
         .map(|(at, _)| at)
@@ -14,6 +19,10 @@ fn find(pattern: &str, text: &str, slice: usize) -> Option<std::ops::Range<usize
                 &mut continuation,
                 text.len(),
                 |at| text.as_bytes().get(at).copied(),
+                &|at| {
+                    let row = tree.hard_line_at_byte(at).ok()?;
+                    Some((row + 1, at - tree.hard_line_start(row).ok()? + 1))
+                },
                 &mut fuel,
                 &mut || false,
             ) {
@@ -25,6 +34,557 @@ fn find(pattern: &str, text: &str, slice: usize) -> Option<std::ops::Range<usize
         }
     }
     None
+}
+
+#[test]
+fn syntax_magic_modes_numeric_atoms_and_collection_escapes_are_resumable() {
+    let cases = [
+        (r"\V${", "${target}", Some(0..2)),
+        (r"\V\[-+/*=^&?|!><%~]", "x+y", Some(1..2)),
+        (r#"\M**\|*'\|*""#, "a**b", Some(1..3)),
+        (r"\M\[0-9]\+", "a123b", Some(1..4)),
+        (r"\M\[0-9A-F\]\+", "[0-9A-F]", Some(0..8)),
+        (r"[abc", "[abc", Some(0..4)),
+        (r"[]", "[]", Some(0..2)),
+        (r"^*", "*", Some(0..1)),
+        (r"^*", "abc", None),
+        (r"\M^a\.\*$", "abc", Some(0..3)),
+        (r"\V\^a\.\*\$", "abc", Some(0..3)),
+        (r"\V^a$", "a ^a$ b", Some(2..5)),
+        (r"\Va.*\mb.*", "a.*bcd", Some(0..6)),
+        (r"\V\(ab\)\+\1", "ababab", Some(0..6)),
+        (r"\%d65\%o101\%x41\%u0041\%U00000041", "AAAAA", Some(0..5)),
+        (r"\%u03a3\%U0001f600", "Σ😀", Some(0..6)),
+        (r"[\x00-\x7f]\+", "abcé", Some(0..3)),
+        (r"[\u2010-]", "‐", Some(0..3)),
+        (r"[\d65\o101\x41]", "A", Some(0..1)),
+        (r"[\s]", " s", Some(1..2)),
+        (r"[\s]", "\\", Some(0..1)),
+        (r"[\+]", "+", Some(0..1)),
+        (r"[\+]", "\\", Some(0..1)),
+        (r"[[:ident:]]\+", "café", Some(0..5)),
+        (r"[[:ident:]]", "Σ", None),
+        (r"[[:lower:]]\+", "café", Some(0..5)),
+        (r"\F\f*", "12/usr/é.txt", Some(2..13)),
+        (r"[[:fname:]]\+", "/a/b.txt ", Some(0..8)),
+        (r"\%\(^\|\s\)#", "x #comment", Some(1..3)),
+        (r"\<r\%[[eo]ad]\>", "road", Some(0..4)),
+        (r"\<r\%[[eo]ad]\>", "rod", None),
+        (r"index\%[[[]0[]]]", "index[0]", Some(0..8)),
+        (r"x\%[\d\x]", "x2a", Some(0..3)),
+        (r"[[.é.]]", "é", Some(0..2)),
+        (r"[| \t([.,=\]]", "[", Some(0..1)),
+        (r"[^[:space]]", "x]", Some(0..2)),
+        (r"[[:unknown:]]", "u]", Some(0..2)),
+        (r"\_\s\{-}>", "  >", Some(0..3)),
+        (r"\p\+", "é 😀\u{200b}", Some(0..7)),
+        (r"\P\+", "12aé", Some(2..5)),
+        (r"[[:print:]]\+", "\t café\n", Some(1..7)),
+        (
+            r"\<\(linear-\|radial-\|conic-\)\=\gradient\s*(",
+            "linear-gradient(",
+            Some(0..16),
+        ),
+    ];
+    for (pattern, text, expected) in cases {
+        for fuel in [1, 8192] {
+            assert_eq!(find(pattern, text, fuel), expected, "{pattern} in {text}");
+        }
+    }
+    for pattern in [
+        r"\%u",
+        r"\%U00110000",
+        r"\%uD800",
+        r"\%V",
+        r"\M\~",
+        r"\V\~",
+        r"\M\*",
+        r"\V\*",
+    ] {
+        assert!(
+            VimPattern::compile(pattern, false, VimRegexLimits::default()).is_err(),
+            "{pattern}"
+        );
+    }
+}
+
+#[test]
+fn keyword_options_snapshot_classes_boundaries_and_assertions() {
+    let original = VimKeyword::default();
+    let custom = VimKeyword::parse("@,48-57,_,-,^a-z").unwrap();
+    for (source, expected_original, expected_custom) in [
+        (r"\<one\>", Some(0..3), None),
+        (r"\k\+", Some(0..3), Some(3..7)),
+        (r"\K\+", Some(0..3), Some(3..7)),
+        (r"[[:keyword:]]\+", Some(0..3), Some(3..7)),
+        (r"\%(\<ONE\>\)\@=ONE", Some(4..7), None),
+    ] {
+        for (environment, expected) in [(&original, expected_original), (&custom, expected_custom)]
+        {
+            let pattern = VimPattern::compile_with_keyword(
+                source,
+                false,
+                VimRegexLimits::default(),
+                environment,
+            )
+            .unwrap();
+            assert_eq!(
+                find_pattern(&pattern, "one-ONE", 1),
+                expected,
+                "{source}: {environment:?}"
+            );
+        }
+    }
+    let cases = [
+        ("48-57,,,_", ','),
+        (" -~,^,,9", '\t'),
+        ("@-@", '@'),
+        ("^", '^'),
+        ("45,92", '\\'),
+    ];
+    for (option, member) in cases {
+        assert!(
+            VimKeyword::parse(option).unwrap().contains(member),
+            "{option}"
+        );
+    }
+    assert!(!VimKeyword::parse(" -~,^,,9").unwrap().contains(','));
+    for option in [
+        "256",
+        "z-a",
+        "a-999",
+        "a,",
+        "abc",
+        "999999999999999999999999999999999",
+    ] {
+        assert!(VimKeyword::parse(option).is_err(), "{option}");
+    }
+    let lower = VimKeyword::parse("a-z").unwrap();
+    let pattern =
+        VimPattern::compile_with_keyword(r"\c\k\+", false, VimRegexLimits::default(), &lower)
+            .unwrap();
+    assert_eq!(find_pattern(&pattern, "ABC abc", 1), Some(4..7));
+}
+
+#[test]
+fn bounded_text_find_validates_start_and_preserves_capture_offsets() {
+    let pattern = VimPattern::compile(r"\(é\)\zs\1", false, VimRegexLimits::default()).unwrap();
+    let mut fuel = 10_000;
+    let found = pattern
+        .find_text_with_control("éé éé", 4, &mut fuel, &mut || false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.start..found.end, 7..9);
+    assert_eq!(found.captures[1], Some(5..7));
+    assert!(pattern
+        .find_text_with_control("é", 1, &mut fuel, &mut || false)
+        .is_err());
+    assert!(pattern
+        .find_text_with_control("é", 3, &mut fuel, &mut || false)
+        .is_err());
+    assert!(pattern
+        .find_text_with_control("é", 0, &mut 0, &mut || false)
+        .is_err());
+    assert!(pattern
+        .find_text_with_control("é", 0, &mut fuel, &mut || true)
+        .is_err());
+}
+
+#[test]
+fn final_keyword_environment_rebind_preserves_declaration_case() {
+    let limits = VimRegexLimits::default();
+    let pattern = VimPattern::compile(r"FOO\k*", true, limits).unwrap();
+    assert_eq!(find_pattern(&pattern, "foo-bar", 1), Some(0..3));
+    let keyword = VimKeyword::parse("@,48-57,_,-").unwrap();
+    let rebound = pattern.rebind_keyword(&keyword, limits).unwrap();
+    assert_eq!(find_pattern(&rebound, "foo-bar", 1), Some(0..7));
+    // Rebinding produces an immutable program; the old pattern keeps its env.
+    assert_eq!(find_pattern(&pattern, "foo-bar", 1), Some(0..3));
+}
+
+#[test]
+fn alternate_external_capture_group_spelling_retains_delimiter() {
+    let pattern =
+        VimPattern::compile(r"{\z\([a-z_]*\)|", false, VimRegexLimits::default()).unwrap();
+    assert_eq!(pattern.external_groups, [1]);
+    let found = pattern
+        .find_text_with_control("{delim_|", 0, &mut 10_000, &mut || false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.start..found.end, 0..8);
+    assert_eq!(found.captures[1], Some(1..7));
+}
+
+#[test]
+fn anchored_group_name_expansion_avoids_repeated_nfa_setup() {
+    let pattern =
+        VimPattern::compile(r"^\%(css.*Attr\)$", false, VimRegexLimits::default()).unwrap();
+    let mut fuel = 100_000;
+    for n in 0..1024 {
+        assert!(!pattern
+            .matches_text_at_with_control(&format!("htmlGroup{n}"), 0, &mut fuel, &mut || false)
+            .unwrap());
+    }
+    assert!(
+        fuel > 50_000,
+        "anchored names used {} instructions",
+        100_000 - fuel
+    );
+    assert!(pattern
+        .matches_text_at_with_control("cssColorAttr", 0, &mut fuel, &mut || false)
+        .unwrap());
+    assert!(!pattern
+        .matches_text_at_with_control("cssColorAttr", 1, &mut fuel, &mut || false)
+        .unwrap());
+    for (source, text, expected) in [
+        (r"^b", "a\nb", true),
+        (r"^b", "a b", false),
+        (r"\(^\)\@!b", "ab", true),
+        (r"\%^b", "a\nb", false),
+    ] {
+        let pattern = VimPattern::compile(source, false, VimRegexLimits::default()).unwrap();
+        assert_eq!(
+            pattern.is_match_text(text, 1000).unwrap(),
+            expected,
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn consuming_vm_repetitions_do_not_allocate_nullable_loop_guards() {
+    let source = format!("{}b\\@=b", "a*".repeat(80));
+    assert_eq!(find(&source, "aaab", 1), Some(0..4));
+    let source = format!("{}a", r"\%(a\@=\)*".repeat(40));
+    let error = VimPattern::compile(&source, false, VimRegexLimits::default()).unwrap_err();
+    assert!(
+        error.contains("nullable repetition guard budget"),
+        "{error}"
+    );
+}
+
+#[test]
+fn matcher_selection_prefixes_are_portable_and_position_failures_are_precise() {
+    for selector in [0, 1, 2] {
+        let source = format!(r"\%#={selector}\<\%(true\|false\)\>[?!]\@!");
+        assert_eq!(find(&source, "true? false", 1), Some(6..11));
+    }
+    for (source, reason) in [
+        (r"\%#=3", "engine selector"),
+        (r"\%#", "editor cursor-position"),
+        (r"\%V", "editor Visual-selection"),
+        (r"\%'m", "editor mark-position"),
+        (r"\%<51v", "display and tab context"),
+        (r"\%>.l", "editor current-position"),
+    ] {
+        let error = VimPattern::compile(source, false, VimRegexLimits::default()).unwrap_err();
+        assert!(error.contains(reason), "{source}: {error}");
+    }
+}
+
+#[test]
+fn numeric_controls_distinguish_source_nul_hard_lines_and_string_lf() {
+    for source in [
+        r"\%d0",
+        r"\%d10",
+        r"\%o000",
+        r"\%x0a",
+        r"\%u0000",
+        r"[\d0]",
+        r"[\d10]",
+        r"[\x00-\x09]",
+        r"[\x01-\x0a]",
+        r"[\x09-\x0b]",
+    ] {
+        let pattern = VimPattern::compile(source, false, VimRegexLimits::default()).unwrap();
+        assert!(!pattern.multiline, "{source}");
+        for slice in [1, 8192] {
+            assert_eq!(
+                find_pattern(&pattern, "a\0b\nc", slice),
+                Some(1..2),
+                "{source}"
+            );
+            assert_eq!(find_pattern(&pattern, "a\nb", slice), None, "{source}");
+        }
+        let mut fuel = 1000;
+        assert_eq!(
+            pattern
+                .find_text_with_control("a\nb", 0, &mut fuel, &mut || false)
+                .unwrap()
+                .map(|m| m.start..m.end),
+            Some(1..2),
+            "{source}"
+        );
+        let mut fuel = 1000;
+        assert!(pattern
+            .find_text_with_control("a\nb", 0, &mut fuel, &mut || true)
+            .is_err());
+        assert_eq!(fuel, 1000);
+    }
+    for (source, text, expected) in [
+        (r"a[^\x00]b", "a\0b", None),
+        (r"a[^\x0a]b", "a\0b", None),
+        (r"a[^\x0a]b", "axb", Some(0..3)),
+        (r"[\x00-\x09]", "\t", Some(0..1)),
+        (r"[\x00-\x09]", "\u{b}", None),
+        (r"[\x01-\x0a]", "\u{1}", Some(0..1)),
+        (r"[\x09-\x0b]", "\u{b}", Some(0..1)),
+        (r"[\x09-\x0b]", "\u{8}", None),
+        (r"\n", "a\0b\nc", Some(3..4)),
+        (r"\0", "a\0b\n0", Some(4..5)),
+        (r"a\%[\%d0b]", "a\0b", Some(0..3)),
+        (r"[\d0\n]", "\n", Some(0..1)),
+        (r"[\d0\n]", "\0", Some(0..1)),
+        (r"\_[\d0]", "\n", Some(0..1)),
+    ] {
+        assert_eq!(find(source, text, 1), expected, "{source}");
+    }
+}
+
+#[test]
+fn absolute_source_line_and_byte_column_assertions_are_resumable() {
+    for (source, text, expected) in [
+        (r"\%2lfoo", "foo\nfoo\nfoo", Some(4..7)),
+        (r"\%<3lfoo", "foo\nfoo\nfoo", Some(0..3)),
+        (r"\%>2lfoo", "foo\nfoo\nfoo", Some(8..11)),
+        (r"\%0l", "", None),
+        (r"\%>0l", "", Some(0..0)),
+        (r"\%3cx", "éx", Some(2..3)),
+        (r"\%2cx", "éx", None),
+        (r"\%1cx", "a\nx", Some(2..3)),
+        (r"\%>3c.", "abcéx", Some(3..5)),
+        (r"\%<3c.", "éx", Some(0..2)),
+        (r"\%3l$", "a\nb\n", Some(4..4)),
+        (r"\%2l\%3cx", "a\néx", Some(4..5)),
+        (r"\v%2l%3cx", "a\néx", Some(4..5)),
+        (r"\%(\%2l\)\@!foo", "foo\nfoo", Some(0..3)),
+    ] {
+        for fuel in [1, 8192] {
+            assert_eq!(find(source, text, fuel), expected, "{source} in {text}");
+        }
+    }
+    for (source, global) in [(r"\%2lfoo", true), (r"\%3cx", false)] {
+        assert_eq!(
+            VimPattern::compile(source, false, VimRegexLimits::default())
+                .unwrap()
+                .multiline,
+            global
+        );
+    }
+    // Vim string predicates have no source-line context, and their byte-column
+    // values are relative to the string even when it contains a newline.
+    for (source, text, expected) in [
+        (r"\%1l", "foo", false),
+        (r"\%<3l", "foo", false),
+        (r"\%3cx", "a\nx", true),
+        (r"\%1cx", "a\nx", false),
+    ] {
+        assert_eq!(
+            VimPattern::compile(source, false, VimRegexLimits::default())
+                .unwrap()
+                .is_match_text(text, 1000)
+                .unwrap(),
+            expected,
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn source_position_lookup_remains_bounded_at_a_million_lines() {
+    let text = format!("{}éx", "a\n".repeat(1_000_000));
+    let input = SyntaxInputSnapshot::new(
+        crate::document::syntax::SyntaxInputIdentity {
+            document: 71,
+            revision: 1,
+            generation: 1,
+        },
+        crate::document::formatted_text::FormattedTextTree::try_from_text(text.as_str()).unwrap(),
+    );
+    let pattern =
+        VimPattern::compile(r"\%1000001l\%3cx", false, VimRegexLimits::default()).unwrap();
+    let mut continuation = pattern.start(text.len() - 1);
+    let mut fuel = 32;
+    assert_eq!(
+        pattern.resume_with_control(&mut continuation, &input, &mut fuel, &mut || true),
+        VimRegexProgress::Pending
+    );
+    assert_eq!(fuel, 32);
+    let found = pattern.resume(&mut continuation, &input, &mut fuel);
+    assert!(
+        matches!(found, VimRegexProgress::Complete(Some(VimRegexMatch { start, end, .. })) if start == text.len() - 1 && end == text.len())
+    );
+    assert!(
+        fuel >= 24,
+        "source lookup scanned instead of using tree aggregates"
+    );
+}
+
+#[test]
+fn source_position_atoms_match_installed_vim_buffer_searches() {
+    use std::process::Command;
+    let executable = std::env::var_os("VIEM_VIM_REGEX_ORACLE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            "/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/MacOS/Vim".into()
+        });
+    if !executable.is_file() {
+        return;
+    }
+    let cases = [
+        (r"\%2lfoo", "foo\nfoo\nfoo"),
+        (r"\%<3lfoo", "foo\nfoo\nfoo"),
+        (r"\%>2lfoo", "foo\nfoo\nfoo"),
+        (r"\%3cx", "éx"),
+        (r"\%2cx", "éx"),
+        (r"\%1cx", "a\nx"),
+        (r"\%>3c.", "abcéx"),
+        (r"\%<3c.", "éx"),
+        (r"\%2l\%3cx", "a\néx"),
+        (r"\v%2l%3cx", "a\néx"),
+        (r"\%(\%2l\)\@!foo", "foo\nfoo"),
+        (r"\%d0", "a\0b\nc"),
+        (r"\%d10", "a\0b\nc"),
+        (r"[\x00-\x09]", "a\0b\nc"),
+        (r"[\x01-\x0a]", "a\0b\nc"),
+        (r"[\x09-\x0b]", "a\0b\nc"),
+        (r"a[^\x00]b", "a\0b\nc"),
+        (r"a[^\x0a]b", "a\0b\nc"),
+        (r"\0", "a\0b0\nc"),
+    ];
+    let directory = std::env::temp_dir().join(format!(
+        "viem-source-position-oracle-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let output = directory.join("results.json");
+    let script = directory.join("oracle.vim");
+    let quote = |text: &str| format!("'{}'", text.replace('\'', "''"));
+    let mut program = String::from("set encoding=utf-8\nlet results=[]\n");
+    for (pattern, text) in cases {
+        program.push_str(&format!("enew!\ncall setline(1, {})\ncall cursor(1,1)\nlet first=searchpos({}, 'cnW')\nlet last=searchpos({}, 'cenW')\nif first[0] == 0\ncall add(results, [-1,-1])\nelse\ncall add(results, [line2byte(first[0])+first[1]-2, line2byte(last[0])+last[1]-2+strlen(matchstr(strpart(getline(last[0]),last[1]-1), '^.'))])\nendif\n", serde_json::to_string(&text.split('\n').map(|line|line.replace('\0', "\n")).collect::<Vec<_>>()).unwrap(), quote(pattern), quote(pattern)));
+    }
+    program.push_str(&format!(
+        "call writefile([json_encode(results)], {})\nqa!\n",
+        quote(output.to_str().unwrap())
+    ));
+    std::fs::write(&script, program).unwrap();
+    let result = Command::new(executable)
+        .args([
+            "-u", "NONE", "-U", "NONE", "-i", "NONE", "-n", "-N", "-es", "-S",
+        ])
+        .arg(script)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let expected: Vec<[isize; 2]> =
+        serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
+    for ((pattern, text), [start, end]) in cases.into_iter().zip(expected) {
+        assert_eq!(
+            find(pattern, text, 1),
+            (start >= 0).then_some(start as usize..end as usize),
+            "Vim buffer differential: {pattern} in {text}"
+        );
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn unicode_regular_patterns_use_bounded_scalar_fallback_without_byte_nfa() {
+    let source = r"^\(\k\{33,}\)\zs!$";
+    let scalar = VimPattern::compile(source, false, VimRegexLimits::default()).unwrap();
+    assert!(scalar.nfa.is_none());
+    assert!(scalar.advanced.is_some());
+    assert!(scalar.memory_usage() < VimRegexLimits::default().nfa_bytes);
+    let byte = VimPattern::compile(
+        source,
+        false,
+        VimRegexLimits {
+            states: 65_536,
+            nfa_bytes: 4 * 1024 * 1024,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(byte.nfa.is_some());
+    for text in [
+        format!("{}!", "é".repeat(40)),
+        format!("{}!", "a".repeat(32)),
+        format!("{}x", "a".repeat(40)),
+    ] {
+        assert_eq!(
+            find_pattern(&scalar, &text, 1),
+            find_pattern(&byte, &text, 8192)
+        );
+    }
+    let text = format!("{}!", "é".repeat(40));
+    let mut remaining = 10_000;
+    assert!(scalar
+        .matches_text_at_with_control(&text, 0, &mut remaining, &mut || true)
+        .is_err());
+    assert_eq!(remaining, 10_000);
+    assert!(scalar
+        .matches_text_at_with_control(&text, 0, &mut 1, &mut || false)
+        .is_err());
+    let found = scalar
+        .find_text_with_control(&text, 0, &mut remaining, &mut || false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.start..found.end, 80..81);
+    assert_eq!(found.captures[1], Some(0..80));
+    // The scalar representation must fit the same byte/state limits, including
+    // every retained Unicode range table. It cannot bypass a hard resource cap.
+    for limits in [
+        VimRegexLimits {
+            nfa_bytes: 4096,
+            ..Default::default()
+        },
+        VimRegexLimits {
+            states: 8,
+            ..Default::default()
+        },
+    ] {
+        assert!(VimPattern::compile(source, false, limits)
+            .unwrap_err()
+            .contains("bytecode budget"));
+    }
+}
+
+#[test]
+fn installed_clojure_unicode_block_pattern_fits_bounded_source_profile() {
+    let limits = VimRegexLimits::default();
+    assert_eq!(limits.pattern_bytes, 16 * 1024);
+    let error =
+        VimPattern::compile(&"x".repeat(limits.pattern_bytes + 1), false, limits).unwrap_err();
+    assert!(error.contains("pattern byte budget"));
+    let Ok(source) = std::fs::read_to_string("/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/Resources/vim/runtime/syntax/clojure.vim") else {
+        return;
+    };
+    let source = source
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("syntax match clojureRegexpUnicodeCharClass \"")
+                .and_then(|line| line.split('"').next())
+        })
+        .max_by_key(|source| source.len())
+        .unwrap();
+    assert!(source.len() > 8192);
+    let pattern = VimPattern::compile(source, false, limits).unwrap();
+    assert!(pattern.memory_usage() < limits.nfa_bytes);
+    assert!(pattern
+        .is_match_text(r"\p{InBasicLatin}", 1_000_000)
+        .unwrap());
+    assert!(!pattern
+        .is_match_text(r"\p{InNotAUnicodeBlock}", 1_000_000)
+        .unwrap());
 }
 
 #[test]
@@ -80,6 +640,7 @@ fn same_line_assertions_preserve_local_repair_and_bounded_lookbehind() {
             &mut continuation,
             text.len(),
             |at| text.as_bytes().get(at).copied(),
+            &|_| None,
             &mut fuel,
             &mut || false
         ),
@@ -115,6 +676,7 @@ fn advanced_regex_cancellation_and_workspace_exhaustion_are_explicit() {
             &mut continuation,
             3,
             |at| b"aab".get(at).copied(),
+            &|_| None,
             &mut fuel,
             &mut || true
         ),
@@ -127,6 +689,7 @@ fn advanced_regex_cancellation_and_workspace_exhaustion_are_explicit() {
             &mut continuation,
             3,
             |at| b"aab".get(at).copied(),
+            &|_| None,
             &mut fuel,
             &mut || false
         ),
@@ -137,7 +700,7 @@ fn advanced_regex_cancellation_and_workspace_exhaustion_are_explicit() {
     let mut continuation = pattern.start(0);
     let mut fuel = 1_000_000;
     assert!(
-        matches!(pattern.resume_reader(&mut continuation, text.len(), |at| text.as_bytes().get(at).copied(), &mut fuel, &mut || false), VimRegexProgress::Failed(error) if error.contains("workspace budget"))
+        matches!(pattern.resume_reader(&mut continuation, text.len(), |at| text.as_bytes().get(at).copied(), &|_| None, &mut fuel, &mut || false), VimRegexProgress::Failed(error) if error.contains("workspace budget"))
     );
 }
 
@@ -152,7 +715,7 @@ fn vim_regex_matches_installed_vim_oracle() {
     if !executable.is_file() {
         return;
     }
-    let cases = [
+    let mut cases = vec![
         (r"\<se\%[t]\>", "se number set"),
         (r"\a\@1<=!", "set!"),
         (r"\\\@1<!|", "x\\|y|"),
@@ -174,7 +737,81 @@ fn vim_regex_matches_installed_vim_oracle() {
         (r"\c\(K\)\1", "Kk"),
         (r"\%(é\)\@1<=!", "é!"),
         (r"\%(é\)\@2<=!", "é!"),
+        (r"\%#=0\<\%(true\|false\)\>[?!]\@!", "true? false"),
+        (r"\%#=1\<\%(true\|false\)\>[?!]\@!", "true? false"),
+        (r"\%#=2\<\%(true\|false\)\>[?!]\@!", "true? false"),
+        (r"\V${", "${target}"),
+        (r"\V\[-+/*=^&?|!><%~]", "x+y"),
+        (r#"\M**\|*'\|*""#, "a**b"),
+        (r"\M\[0-9]\+", "a123b"),
+        (r"\M\[0-9A-F\]\+", "[0-9A-F]"),
+        (r"[abc", "[abc"),
+        (r"[]", "[]"),
+        (r"^*", "*"),
+        (r"^*", "abc"),
+        (r"\M^a\.\*$", "abc"),
+        (r"\V\^a\.\*\$", "abc"),
+        (r"\V^a$", "a ^a$ b"),
+        (r"\Va.*\mb.*", "a.*bcd"),
+        (r"\V\(ab\)\+\1", "ababab"),
+        (r"\%d65\%o101\%x41\%u0041\%U00000041", "AAAAA"),
+        (r"\%u03a3\%U0001f600", "Σ😀"),
+        (r"[\x00-\x7f]\+", "abcé"),
+        (r"\%d0", "a\nb"),
+        (r"\%d10", "a\nb"),
+        (r"\%x00", "a\nb"),
+        (r"\%x0a", "a\nb"),
+        (r"[\d0]", "a\nb"),
+        (r"[\d10]", "a\nb"),
+        (r"[\x00-\x09]", "a\nb"),
+        (r"[\x01-\x0a]", "a\nb"),
+        (r"[\x09-\x0b]", "a\nb"),
+        (r"a[^\x00]b", "a\nb"),
+        (r"a[^\x0a]b", "a\nb"),
+        (r"a[^\x0a]b", "axb"),
+        (r"a\%[\%d0b]", "a\nb"),
+        (r"\n", "a\nb"),
+        (r"\0", "a\nb0"),
+        (r"[\u2010-]", "‐"),
+        (r"[\d65\o101\x41]", "A"),
+        (r"[\s]", " s"),
+        (r"[\s]", "\\"),
+        (r"[\+]", "+"),
+        (r"[\+]", "\\"),
+        (r"[[:ident:]]\+", "café"),
+        (r"[[:ident:]]", "Σ"),
+        (r"[[:lower:]]\+", "café"),
+        (r"\F\f*", "12/usr/é.txt"),
+        (r"[[:fname:]]\+", "/a/b.txt "),
+        (r"\%\(^\|\s\)#", "x #comment"),
+        (r"\<r\%[[eo]ad]\>", "road"),
+        (r"\<r\%[[eo]ad]\>", "rod"),
+        (r"index\%[[[]0[]]]", "index[0]"),
+        (r"x\%[\d\x]", "x2a"),
+        (r"[[.é.]]", "é"),
+        (r"[| \t([.,=\]]", "["),
+        (r"[^[:space]]", "x]"),
+        (r"[[:unknown:]]", "u]"),
+        (r"\_\s\{-}>", "  >"),
+        (r"\p\+", "é 😀\u{200b}"),
+        (r"\P\+", "12aé"),
+        (r"[[:print:]]\+", " café"),
+        (
+            r"\<\(linear-\|radial-\|conic-\)\=\gradient\s*(",
+            "linear-gradient(",
+        ),
     ];
+    let j_runtime = std::fs::read_to_string(
+        "/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/Resources/vim/runtime/syntax/j.vim",
+    ).unwrap_or_default();
+    if let Some(pattern) = j_runtime.lines().find_map(|line| {
+        line.split_once("jNumber /")
+            .and_then(|(_, source)| source.strip_suffix('/'))
+    }) {
+        for text in ["_3", "3r4", "2j3", "2ad90", "16bff", "1e_3", ".25"] {
+            cases.push((pattern, text));
+        }
+    }
     let directory = std::env::temp_dir().join(format!(
         "viem-vim-regex-{}-{}",
         std::process::id(),
@@ -188,10 +825,10 @@ fn vim_regex_matches_installed_vim_oracle() {
     let script = directory.join("oracle.vim");
     let quote = |text: &str| format!("'{}'", text.replace('\'', "''"));
     let mut source = String::from("set encoding=utf-8\nlet results = []\n");
-    for (pattern, text) in cases {
+    for (pattern, text) in &cases {
         source.push_str(&format!(
             "call add(results, matchstrpos({}, {})[1:2])\n",
-            quote(text),
+            serde_json::to_string(text).unwrap(),
             quote(pattern)
         ));
     }
@@ -216,6 +853,21 @@ fn vim_regex_matches_installed_vim_oracle() {
         serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
     for ((pattern, text), [start, end]) in cases.into_iter().zip(expected) {
         let expected = (start >= 0).then_some(start as usize..end as usize);
+        let compiled = VimPattern::compile(pattern, false, VimRegexLimits::default()).unwrap();
+        let mut fuel = 1_000_000;
+        assert_eq!(
+            compiled
+                .find_text_with_control(text, 0, &mut fuel, &mut || false)
+                .unwrap()
+                .map(|m| m.start..m.end),
+            expected,
+            "Vim string differential: {pattern} in {text}"
+        );
+        if text.contains('\n') {
+            // Source hard-line semantics are covered by the buffer oracle;
+            // this oracle's string LF is Vim's embedded NUL representation.
+            continue;
+        }
         assert_eq!(
             find(pattern, text, 3),
             expected,

@@ -73,6 +73,128 @@ fn vim_provider_prefix_changes_recompile_but_later_edits_reuse_setup() {
 }
 
 #[test]
+fn vim_provider_filename_changes_recompile_setup_for_unchanged_input() {
+    let _registry = treesitter::package_registry_test_guard();
+    let fixture = Fixture::new("vim", "if expand('%:e') ==# 'h'\n  syn keyword Header token\nelse\n  syn keyword Source token\nendif\n");
+    let mut req = request("token", "vim", 1);
+    req.configuration.vim_directory = fixture.0.to_str().unwrap().to_owned();
+    req.configuration.filename = Some("/writing/first.h".into());
+    let mut provider = BackendProvider::default();
+    assert_eq!(finish(&mut provider, &req).runs[0].name.0, "Header");
+    let old_input = req.input.identity();
+    req.configuration.filename = Some("/writing/first.rs".into());
+    req.configuration.generation += 1;
+    let output = finish(&mut provider, &req);
+    assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostics);
+    assert_eq!(output.runs[0].name.0, "Source");
+    assert_eq!(req.input.identity(), old_input);
+    assert_eq!(
+        output.runs,
+        finish(&mut BackendProvider::default(), &req).runs
+    );
+
+    let load = |filename: &str| {
+        VimProgram::load_directory_with_context(
+            &fixture.0,
+            "vim",
+            VimLoadLimits::default(),
+            &VimSetupContext {
+                prefix: "token".into(),
+                filename: Some(filename.into()),
+            },
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    };
+    assert_ne!(
+        load("/writing/first.h").generation,
+        load("/writing/first.rs").generation
+    );
+    assert_eq!(
+        load("/writing/first.h").generation,
+        load("/writing/first.h").generation
+    );
+}
+
+#[test]
+fn vim_provider_position_assertions_repair_after_body_edits() {
+    let _registry = treesitter::package_registry_test_guard();
+    let prefix = "prefix\n".repeat(32);
+    for (source, body, insertion, before, after) in [
+        (
+            "syn match Positioned /^\\%34lfoo/\n",
+            "foo\nfoo\n",
+            "foo\n",
+            4..7,
+            4..7,
+        ),
+        ("syn match Positioned /\\%4cx/\n", "aéxx\n", "b", 3..4, 0..0),
+        ("syn match Positioned /\\%3cx/\n", "axxx\n", "b", 2..3, 2..3),
+    ] {
+        let fixture = Fixture::new("vim", source);
+        let mut req = request(&format!("{prefix}{body}"), "vim", 1);
+        req.configuration.vim_directory = fixture.0.to_str().unwrap().to_owned();
+        let mut provider = BackendProvider::default();
+        let ranges = |output: &SyntaxResult| {
+            output
+                .runs
+                .iter()
+                .map(|run| {
+                    assert_eq!(run.name.0, "Positioned");
+                    run.range.start - prefix.len()..run.range.end - prefix.len()
+                })
+                .collect::<Vec<_>>()
+        };
+        let expected = |range: Range<usize>| {
+            if range.is_empty() {
+                vec![]
+            } else {
+                vec![range]
+            }
+        };
+        let initial = finish(&mut provider, &req);
+        assert_eq!(
+            initial.coverage,
+            Coverage::Exact,
+            "{:?}",
+            initial.diagnostics
+        );
+        assert_eq!(ranges(&initial), expected(before), "{source}: {body}");
+        let setup = provider.fallback_context.clone();
+
+        // Edits occur after the setup prefix, so a retained program and its
+        // scanner caches must respond to the new physical line/byte column.
+        let tree = req
+            .input
+            .text_tree()
+            .splice(prefix.len()..prefix.len(), insertion)
+            .unwrap();
+        let mut identity = req.input.identity();
+        identity.revision += 1;
+        req.input = SyntaxInputSnapshot::new(identity, tree);
+        req.range = 0..req.input.byte_len();
+        let repaired = finish(&mut provider, &req);
+        assert_eq!(
+            repaired.coverage,
+            Coverage::Exact,
+            "{:?}",
+            repaired.diagnostics
+        );
+        assert_eq!(provider.fallback_context, setup);
+        assert_eq!(
+            ranges(&repaired),
+            expected(after),
+            "{source}: {insertion}{body}"
+        );
+        assert_eq!(
+            repaired.runs,
+            finish(&mut BackendProvider::default(), &req).runs
+        );
+        assert_eq!(repaired.runs, finish(&mut provider, &req).runs);
+    }
+}
+
+#[test]
 fn vim_provider_and_embedded_vim_ignore_registered_tree_sitter_packages() {
     let _registry = treesitter::package_registry_test_guard();
     let previous = treesitter::package_for_language("vim").ok();

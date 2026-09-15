@@ -352,7 +352,7 @@ fn pinned_vim_provider_performance() {
         }
     }
     let report = json!({"fixture_revision":1,"runtime_fixture_version":"MacVim 9.1.1887; unmodified conf.vim and dosini.vim",
-        "engine":"native Vim profile 1","build":"release","provider_only":true,
+        "engine":format!("native Vim profile {}", super::NATIVE_PROFILE_VERSION),"build":"release","provider_only":true,
         "compiler":command("rustc", &["--version"]),"architecture":std::env::consts::ARCH,
         "os":command("sw_vers", &["-productVersion"]),"hardware":hardware(),
         "ceilings":{"slice_instructions":SLICE_FUEL,"cold_prime_instructions":COLD_FUEL + SLICE_FUEL,

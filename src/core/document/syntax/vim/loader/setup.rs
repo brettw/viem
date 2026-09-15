@@ -3,7 +3,16 @@
 //! this module has no file, process, editor, or network execution primitive.
 use super::{Arc, AtomicBool, BTreeMap, Ordering, VimPattern, VimRegexLimits, VimSetupContext};
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
+
+mod builtins;
+mod environment;
+mod formatting;
+mod functions;
+mod parser;
+use parser::Parser;
+#[cfg(test)]
+mod tests;
 
 const MAX_DEPTH: usize = 64;
 const MAX_VALUE_BYTES: usize = 256 * 1024;
@@ -11,14 +20,34 @@ const MAX_BINDINGS: usize = 1024;
 const MAX_EXPRESSION_BYTES: usize = 64 * 1024;
 const MAX_SETUP_STORAGE_BYTES: usize = 4 * 1024 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Value {
     Number(i64),
     Text(String),
     List(Vec<Value>),
+    Dictionary(BTreeMap<String, Value>),
     Scope(String),
 }
 impl Value {
+    fn validate_depth(&self, depth: usize) -> Result<(), String> {
+        if depth >= MAX_DEPTH {
+            return Err("setup collection nesting depth budget exceeded".into());
+        }
+        match self {
+            Self::List(values) => {
+                for value in values {
+                    value.validate_depth(depth + 1)?;
+                }
+            }
+            Self::Dictionary(values) => {
+                for value in values.values() {
+                    value.validate_depth(depth + 1)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
     pub(super) fn truth(&self) -> Result<bool, String> {
         Ok(self.number()? != 0)
     }
@@ -41,6 +70,7 @@ impl Value {
             Self::Text(s) | Self::Scope(s) => s.len(),
             Self::Number(_) => 8,
             Self::List(v) => v.iter().map(|v| v.bytes() + 16).sum(),
+            Self::Dictionary(v) => v.iter().map(|(k, v)| k.len() + v.bytes() + 64).sum(),
         }
     }
     fn storage_bytes(&self) -> usize {
@@ -52,7 +82,11 @@ impl Value {
                     .iter()
                     .map(Value::storage_bytes)
                     .sum::<usize>()
-                    .saturating_mul(2),
+                    .saturating_add(v.len().saturating_mul(std::mem::size_of::<Self>())),
+                Self::Dictionary(v) => v
+                    .iter()
+                    .map(|(k, v)| k.len().saturating_mul(2) + v.storage_bytes() + 96)
+                    .sum(),
             }
     }
 }
@@ -62,7 +96,12 @@ enum Expr {
     Value(Value),
     Variable(String),
     List(Vec<Expr>),
+    Dictionary(Vec<(Expr, Expr)>),
+    Index(Box<Expr>, Box<Expr>),
+    Slice(Box<Expr>, Option<Box<Expr>>, Option<Box<Expr>>),
+    Member(Box<Expr>, String),
     Not(Box<Expr>),
+    Negate(Box<Expr>),
     Binary(String, Box<Expr>, Box<Expr>),
     Conditional(Box<Expr>, Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
@@ -70,46 +109,177 @@ enum Expr {
 
 #[derive(Clone)]
 struct Function {
+    signature: Arc<str>,
+    body: Arc<[String]>,
+    compiled: Rc<RefCell<Option<Arc<CompiledFunction>>>>,
+}
+struct CompiledFunction {
     arguments: Vec<String>,
-    result: Arc<Expr>,
+    variadic: bool,
+    body: Arc<[functions::Statement]>,
 }
 #[derive(Clone)]
-enum Macro {
-    Arguments {
-        suffix: String,
-        scope: Rc<RefCell<ScriptScope>>,
-    },
-    ExecuteSuffix {
-        expression: Arc<Expr>,
-        scope: Rc<RefCell<ScriptScope>>,
-    },
+struct Macro {
+    template: String,
+    nargs: String,
+    scope: Rc<RefCell<ScriptScope>>,
 }
 #[derive(Default)]
 pub(super) struct ScriptScope {
     variables: BTreeMap<String, Value>,
+    shared_collections: BTreeSet<String>,
     functions: BTreeMap<String, Function>,
 }
 
 pub(super) struct Setup<'a> {
     script: Rc<RefCell<ScriptScope>>,
     variables: BTreeMap<String, Value>,
+    shared_collections: BTreeSet<String>,
     macros: BTreeMap<String, Macro>,
+    global_functions: BTreeMap<String, (Rc<RefCell<ScriptScope>>, Function)>,
     prefix: String,
+    filetype: String,
+    filename: Option<String>,
+    source_file: String,
+    keyword_option: String,
+    highlights: BTreeSet<String>,
+    emitted: Option<Vec<String>>,
     fuel: usize,
     storage_reserved: usize,
     cancel: Option<&'a AtomicBool>,
 }
 impl<'a> Setup<'a> {
     pub(super) fn new(context: &VimSetupContext, cancel: Option<&'a AtomicBool>) -> Self {
+        let highlights = environment::initial_highlights();
+        let initial_storage = highlights.iter().map(|name| name.len() + 96).sum::<usize>();
         Self {
             script: Rc::new(RefCell::new(ScriptScope::default())),
             variables: BTreeMap::new(),
+            shared_collections: BTreeSet::new(),
             macros: BTreeMap::new(),
+            global_functions: BTreeMap::new(),
             prefix: context.prefix.clone(),
+            filetype: String::new(),
+            filename: context.filename.clone(),
+            source_file: String::new(),
+            keyword_option: "@,48-57,_,192-255".into(),
+            highlights,
+            emitted: None,
             fuel: 8_000_000,
-            storage_reserved: context.prefix.len().saturating_mul(2),
+            storage_reserved: context
+                .prefix
+                .len()
+                .saturating_mul(2)
+                .saturating_add(initial_storage),
             cancel,
         }
+    }
+    pub(super) fn set_filetype(&mut self, filetype: &str) {
+        self.filetype = filetype.to_owned();
+    }
+    pub(super) fn set_keyword_option(&mut self, value: &str) {
+        self.keyword_option = value.to_owned();
+    }
+    pub(super) fn define_highlight(&mut self, name: &str) -> Result<(), String> {
+        if name.starts_with('@') {
+            return Ok(());
+        }
+        if name.is_empty() || name.len() > 128 {
+            return Err("invalid setup highlight group name".into());
+        }
+        let name = name.to_ascii_lowercase();
+        if !self.highlights.contains(&name) {
+            self.reserve_storage(name.len().saturating_add(96))?;
+            self.highlights.insert(name);
+        }
+        Ok(())
+    }
+    pub(super) fn set_source_file(&mut self, value: &str) -> String {
+        std::mem::replace(&mut self.source_file, value.to_owned())
+    }
+    pub(super) fn set_exception(
+        &mut self,
+        value: Option<String>,
+    ) -> Result<Option<String>, String> {
+        if let Some(value) = &value {
+            if value.len() > MAX_VALUE_BYTES {
+                return Err("setup exception byte budget exceeded".into());
+            }
+            self.reserve_storage(value.len().saturating_mul(2).saturating_add(128))?;
+        }
+        let previous = self
+            .variables
+            .remove("v:exception")
+            .map(|value| value.text())
+            .transpose()?;
+        if let Some(value) = value {
+            self.variables
+                .insert("v:exception".into(), Value::Text(value));
+        }
+        Ok(previous)
+    }
+    pub(super) fn environment_fingerprint(&mut self) -> Result<u64, String> {
+        use std::hash::{Hash, Hasher};
+        let bytes = self
+            .variables
+            .iter()
+            .map(|(name, value)| name.len() + value.bytes())
+            .sum::<usize>()
+            + self
+                .macros
+                .iter()
+                .map(|(name, value)| {
+                    name.len()
+                        + value.template.len()
+                        + value
+                            .scope
+                            .borrow()
+                            .variables
+                            .iter()
+                            .map(|(name, value)| name.len() + value.bytes())
+                            .sum::<usize>()
+                })
+                .sum::<usize>();
+        let functions_bytes = self
+            .global_functions
+            .iter()
+            .map(|(name, (scope, function))| {
+                name.len()
+                    + function.signature.len()
+                    + function.body.iter().map(String::len).sum::<usize>()
+                    + scope
+                        .borrow()
+                        .variables
+                        .iter()
+                        .map(|(name, value)| name.len() + value.bytes())
+                        .sum::<usize>()
+            })
+            .sum::<usize>();
+        self.charge(
+            bytes
+                .saturating_add(functions_bytes)
+                .saturating_add(self.highlights.iter().map(String::len).sum::<usize>()),
+        )?;
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        self.variables.hash(&mut hash);
+        self.shared_collections.hash(&mut hash);
+        self.filetype.hash(&mut hash);
+        self.filename.hash(&mut hash);
+        self.keyword_option.hash(&mut hash);
+        self.highlights.hash(&mut hash);
+        for (name, (scope, function)) in &self.global_functions {
+            name.hash(&mut hash);
+            function.signature.hash(&mut hash);
+            function.body.hash(&mut hash);
+            scope.borrow().variables.hash(&mut hash);
+        }
+        for (name, value) in &self.macros {
+            name.hash(&mut hash);
+            value.template.hash(&mut hash);
+            value.nargs.hash(&mut hash);
+            value.scope.borrow().variables.hash(&mut hash);
+        }
+        Ok(hash.finish())
     }
     pub(super) fn begin_script(&mut self) -> Rc<RefCell<ScriptScope>> {
         std::mem::take(&mut self.script)
@@ -152,18 +322,155 @@ impl<'a> Setup<'a> {
         let expression = Parser::parse(source)?;
         self.eval(&expression, &BTreeMap::new(), 0)
     }
+    pub(super) fn evaluate_execute(&mut self, source: &str) -> Result<String, String> {
+        self.charge(source.len())?;
+        let expressions = Parser::parse_many(source)?;
+        let values = self.eval_values(&expressions, &BTreeMap::new(), 0)?;
+        let text = values
+            .iter()
+            .map(Value::text)
+            .collect::<Result<Vec<_>, _>>()?
+            .join(" ");
+        if text.len() > MAX_VALUE_BYTES {
+            return Err("syntax setup execute byte budget exceeded".into());
+        }
+        Ok(text)
+    }
+    pub(super) fn call_statement(&mut self, source: &str) -> Result<Vec<String>, String> {
+        if self.emitted.is_some() {
+            return Err("nested syntax setup statement invocation is unsupported".into());
+        }
+        self.emitted = Some(Vec::new());
+        let result = self.evaluate(source);
+        let emitted = self.emitted.take().unwrap();
+        result?;
+        self.charge(emitted.iter().map(String::len).sum())?;
+        super::commands::validate_function_output(&emitted)?;
+        Ok(emitted)
+    }
+    pub(super) fn delete_function(&mut self, name: &str, force: bool) -> Result<(), String> {
+        let removed = if name.starts_with("s:") {
+            self.script.borrow_mut().functions.remove(name).is_some()
+        } else {
+            self.global_functions.remove(name).is_some()
+        };
+        if !removed && !force {
+            return Err("unknown setup function".into());
+        }
+        Ok(())
+    }
     pub(super) fn assign(&mut self, source: &str) -> Result<(), String> {
         let (name, expression) = source
             .split_once('=')
             .ok_or("setup assignment requires =")?;
         let name = name.trim();
+        let (name, operator) = ["..", ".", "+", "-", "*", "/", "%"]
+            .into_iter()
+            .find_map(|operator| {
+                name.strip_suffix(operator)
+                    .map(|name| (name.trim_end(), Some(operator)))
+            })
+            .unwrap_or((name, None));
+        let mut value = self.evaluate(expression.trim())?;
+        if let Some(operator) = operator {
+            let old = self.evaluate(name)?;
+            value = self.binary(operator.trim(), old, value)?;
+        }
+        let mut shared = Vec::new();
+        if matches!(value, Value::List(_) | Value::Dictionary(_)) {
+            self.collection_references(&Parser::parse(expression.trim())?, &mut shared);
+        }
+        self.assign_value(name, value)?;
+        if !shared.is_empty() {
+            shared.push(name.to_owned());
+            for name in shared {
+                self.mark_shared_collection(&name);
+            }
+        }
+        Ok(())
+    }
+    fn collection_references(&self, expression: &Expr, shared: &mut Vec<String>) {
+        match expression {
+            Expr::Variable(name) => {
+                if self
+                    .variable(name, &BTreeMap::new())
+                    .is_ok_and(|value| matches!(value, Value::List(_) | Value::Dictionary(_)))
+                {
+                    shared.push(name.clone());
+                }
+            }
+            Expr::List(values) => {
+                for value in values {
+                    self.collection_references(value, shared);
+                }
+            }
+            Expr::Dictionary(values) => {
+                for (_, value) in values {
+                    self.collection_references(value, shared);
+                }
+            }
+            Expr::Call(name, _)
+                if matches!(
+                    name.as_str(),
+                    "copy" | "deepcopy" | "range" | "split" | "keys" | "items" | "matchlist"
+                ) => {}
+            Expr::Call(_, values) => {
+                for value in values {
+                    self.collection_references(value, shared);
+                }
+            }
+            Expr::Index(value, _) | Expr::Member(value, _) | Expr::Slice(value, _, _) => {
+                self.collection_references(value, shared)
+            }
+            Expr::Conditional(_, yes, no) => {
+                self.collection_references(yes, shared);
+                self.collection_references(no, shared);
+            }
+            Expr::Binary(_, left, right) => {
+                self.collection_references(left, shared);
+                self.collection_references(right, shared);
+            }
+            _ => {}
+        }
+    }
+    fn mark_shared_collection(&mut self, name: &str) {
+        let name = variable_name(name);
+        if name.starts_with("s:") {
+            self.script.borrow_mut().shared_collections.insert(name);
+        } else {
+            self.shared_collections.insert(name);
+        }
+    }
+    fn require_unshared_collection(&self, name: &str) -> Result<(), String> {
+        let name = variable_name(name);
+        let shared = if name.starts_with("s:") {
+            self.script.borrow().shared_collections.contains(&name)
+        } else {
+            self.shared_collections.contains(&name)
+        };
+        if shared {
+            Err("mutation of aliased setup collections is unsupported; use copy() for independent setup values".into())
+        } else {
+            Ok(())
+        }
+    }
+    pub(super) fn assign_value(&mut self, name: &str, value: Value) -> Result<(), String> {
+        value.validate_depth(0)?;
+        if name.contains('[') {
+            let target = Parser::parse(name)?;
+            let mut indexes = Vec::new();
+            let base = self.assignment_path(&target, &mut indexes)?;
+            self.require_unshared_collection(&base)?;
+            let mut collection = self.variable(&base, &BTreeMap::new())?;
+            replace_index(&mut collection, &indexes, value)?;
+            return self.assign_value(&base, collection);
+        }
         validate_variable(name)?;
         // These editor options affect syntax semantics and cannot be mutated by
         // setup. Saving/restoring cpoptions is harmless: parsing is deterministic.
         if name.starts_with('&') && !matches!(name, "&cpo" | "&cpoptions") {
             return Err(format!("unsupported syntax setup option: {name}"));
         }
-        let value = self.evaluate(expression.trim())?;
         if name.starts_with('&') {
             return Ok(());
         }
@@ -197,7 +504,27 @@ impl<'a> Setup<'a> {
             return Err("syntax setup value byte budget exceeded".into());
         }
         bindings.insert(name.to_owned(), value);
+        if name.starts_with("s:") {
+            script.shared_collections.remove(name);
+        } else {
+            self.shared_collections.remove(name);
+        }
         Ok(())
+    }
+    fn assignment_path(
+        &mut self,
+        target: &Expr,
+        indexes: &mut Vec<Value>,
+    ) -> Result<String, String> {
+        match target {
+            Expr::Variable(name) => Ok(name.clone()),
+            Expr::Index(base, key) => {
+                let base = self.assignment_path(base, indexes)?;
+                indexes.push(self.eval(key, &BTreeMap::new(), 0)?);
+                Ok(base)
+            }
+            _ => Err("unsupported setup assignment target".into()),
+        }
     }
     pub(super) fn unlet(&mut self, names: &str, force: bool) -> Result<(), String> {
         for name in names.split_whitespace() {
@@ -221,88 +548,84 @@ impl<'a> Setup<'a> {
         signature: &str,
         body: &[String],
     ) -> Result<(), String> {
-        let (name, args) = signature
+        let (name, _) = signature
             .split_once('(')
             .ok_or("invalid setup function signature")?;
-        let args = args
-            .strip_suffix(')')
-            .ok_or("unsupported setup function attributes")?;
-        if !name.starts_with("s:") || !identifier(name) {
-            return Err("only script-local setup functions are supported".into());
+        if name.is_empty() || name.len() > 256 {
+            return Err("invalid setup function name".into());
         }
-        let arguments = if args.trim().is_empty() {
-            vec![]
-        } else {
-            args.split(',')
-                .map(|a| a.trim().to_owned())
-                .collect::<Vec<_>>()
-        };
-        if arguments.len() > 16 || arguments.iter().any(|a| !identifier(a) || a.contains(':')) {
-            return Err("invalid setup function parameters".into());
+        let name = name.trim();
+        let bytes = body.iter().map(String::len).sum::<usize>();
+        if body.len() > 1024 || bytes > MAX_EXPRESSION_BYTES {
+            return Err("syntax setup function source budget exceeded".into());
         }
-        let [statement] = body else {
-            return Err(
-                "setup functions require exactly one side-effect-free return expression".into(),
-            );
-        };
-        let result = Parser::parse(
-            statement
-                .strip_prefix("return ")
-                .ok_or("setup functions only support return")?,
-        )?;
-        validate_pure_expression(&result, 0)?;
         self.reserve_storage(
-            expression_storage(&result)
+            bytes
+                .saturating_mul(2)
                 .saturating_add(signature.len().saturating_mul(2))
+                .saturating_add(body.len().saturating_mul(32))
                 .saturating_add(256),
         )?;
-        if self.script.borrow().functions.len() >= MAX_BINDINGS {
-            return Err("syntax setup function budget exceeded".into());
+        let function = Function {
+            signature: signature.into(),
+            body: body.to_vec().into(),
+            compiled: Rc::new(RefCell::new(None)),
+        };
+        if name.starts_with("s:") {
+            if self.script.borrow().functions.len() >= MAX_BINDINGS {
+                return Err("syntax setup function budget exceeded".into());
+            }
+            self.script
+                .borrow_mut()
+                .functions
+                .insert(name.into(), function);
+        } else {
+            if self.global_functions.len() >= MAX_BINDINGS {
+                return Err("syntax setup function budget exceeded".into());
+            }
+            self.global_functions
+                .insert(name.into(), (self.script.clone(), function));
         }
-        self.script.borrow_mut().functions.insert(
-            name.into(),
-            Function {
-                arguments,
-                result: Arc::new(result),
-            },
-        );
         Ok(())
     }
     pub(super) fn define_macro(&mut self, source: &str) -> Result<(), String> {
-        let source = source
-            .strip_prefix("-nargs=*")
-            .ok_or("only -nargs=* syntax macros are supported")?
-            .trim_start();
+        let mut source = source.trim_start();
+        let mut nargs = "0";
+        while source.starts_with('-') {
+            let (option, rest) = super::word(source)?;
+            if let Some(value) = option.strip_prefix("-nargs=") {
+                if !matches!(value, "0" | "1" | "*" | "+" | "?") {
+                    return Err("unsupported syntax macro argument count".into());
+                }
+                nargs = value;
+            } else if !matches!(option, "-bar" | "-buffer") {
+                return Err(format!("unsupported syntax macro option: {option}"));
+            }
+            source = rest;
+        }
         let (name, body) = super::word(source)?;
         if !identifier(name) || !name.starts_with(char::is_uppercase) || name.contains(':') {
             return Err("invalid syntax macro name".into());
         }
-        let value = if let Some(suffix) = body.strip_prefix("<args>") {
-            if !matches!(suffix.trim(), "" | "fold") {
-                return Err("syntax macro supports only literal fold suffix".into());
-            }
-            Macro::Arguments {
-                suffix: suffix.trim().into(),
-                scope: self.script.clone(),
-            }
-        } else if let Some(expression) = body.strip_prefix("execute <q-args> ") {
-            let expression = Parser::parse(expression)?;
-            validate_pure_expression(&expression, 0)?;
-            Macro::ExecuteSuffix {
-                expression: Arc::new(expression),
-                scope: self.script.clone(),
-            }
-        } else {
-            return Err("unsupported syntax command macro body".into());
-        };
+        if body.contains("<f-args>") {
+            return Err("syntax macro <f-args> quoting is unsupported".into());
+        }
         if self.macros.len() >= MAX_BINDINGS {
             return Err("syntax setup macro budget exceeded".into());
         }
-        self.reserve_storage(name.len().saturating_add(128).saturating_add(match &value {
-            Macro::Arguments { suffix, .. } => suffix.len().saturating_mul(2),
-            Macro::ExecuteSuffix { expression, .. } => expression_storage(expression),
-        }))?;
-        self.macros.insert(name.into(), value);
+        self.reserve_storage(
+            name.len()
+                .saturating_add(body.len().saturating_mul(2))
+                .saturating_add(128),
+        )?;
+        self.macros.insert(
+            name.into(),
+            Macro {
+                template: body.into(),
+                nargs: nargs.into(),
+                scope: self.script.clone(),
+            },
+        );
         Ok(())
     }
     pub(super) fn delete_macro(&mut self, name: &str) -> Result<(), String> {
@@ -317,29 +640,77 @@ impl<'a> Setup<'a> {
         let Some(value) = self.macros.get(name).cloned() else {
             return Ok(None);
         };
-        let (suffix, scope) = match value {
-            Macro::Arguments { suffix, scope } => (suffix, scope),
-            Macro::ExecuteSuffix { expression, scope } => {
-                let caller = std::mem::replace(&mut self.script, scope.clone());
-                let result = self.eval(&expression, &BTreeMap::new(), 0);
-                self.script = caller;
-                (result?.text()?, scope)
+        if value.nargs == "0" && !arguments.is_empty()
+            || matches!(value.nargs.as_str(), "1" | "+") && arguments.is_empty()
+        {
+            return Err("syntax macro argument count mismatch".into());
+        }
+        let mut expanded = String::new();
+        let mut source = value.template.as_str();
+        while let Some(at) = source.find('<') {
+            expanded.push_str(&source[..at]);
+            source = &source[at..];
+            if let Some(rest) = source.strip_prefix("<args>") {
+                expanded.push_str(arguments);
+                source = rest;
+            } else if let Some(rest) = source.strip_prefix("<q-args>") {
+                expanded.push('\'');
+                expanded.push_str(&arguments.replace('\'', "''"));
+                expanded.push('\'');
+                source = rest;
+            } else if let Some(rest) = source.strip_prefix("<lt>") {
+                expanded.push('<');
+                source = rest;
+            } else {
+                expanded.push('<');
+                source = &source[1..];
             }
-        };
-        self.charge(arguments.len().saturating_add(suffix.len()))?;
-        if arguments.len().saturating_add(suffix.len()) > MAX_VALUE_BYTES {
+            if expanded.len() > MAX_VALUE_BYTES {
+                return Err("syntax macro expansion budget exceeded".into());
+            }
+        }
+        expanded.push_str(source);
+        if expanded.len() > MAX_VALUE_BYTES {
             return Err("syntax macro expansion budget exceeded".into());
         }
-        Ok(Some((format!("{arguments} {suffix}"), scope)))
+        self.charge(expanded.len())?;
+        Ok(Some((expanded, value.scope)))
     }
     fn variable(&self, name: &str, arguments: &BTreeMap<String, Value>) -> Result<Value, String> {
+        if let Some(value) = arguments.get(name) {
+            return Ok(value.clone());
+        }
+        let normalized;
+        let name = if let Some(option) = name
+            .strip_prefix("&l:")
+            .or_else(|| name.strip_prefix("&g:"))
+        {
+            normalized = format!("&{option}");
+            normalized.as_str()
+        } else {
+            name
+        };
         match name {
             "v:true" => return Ok(Value::Number(1)),
             "v:false" => return Ok(Value::Number(0)),
+            "v:version" | "version" => return Ok(Value::Number(902)),
+            "&ft" | "&filetype" => return Ok(Value::Text(self.filetype.clone())),
+            "&isk" | "&iskeyword" => return Ok(Value::Text(self.keyword_option.clone())),
             "&cpo" | "&cpoptions" | "&buftype" => return Ok(Value::Text(String::new())),
             "&pyxversion" => return Ok(Value::Number(3)),
+            // The syntax engine consumes decoded UTF-8 with modern Vim grammar.
+            "&enc" | "&encoding" => return Ok(Value::Text("utf-8".into())),
+            "&cp" | "&compatible" => return Ok(Value::Number(0)),
             "g:" | "b:" | "s:" => return Ok(Value::Scope(name.into())),
             _ => {}
+        }
+        let local = if name.starts_with("l:") {
+            name.to_owned()
+        } else {
+            format!("l:{name}")
+        };
+        if let Some(value) = arguments.get(&local) {
+            return Ok(value.clone());
         }
         let script = self.script.borrow();
         let bindings = if name.starts_with("s:") {
@@ -370,6 +741,66 @@ impl<'a> Setup<'a> {
             Expr::Variable(name) => self.variable(name, arguments)?,
             Expr::List(items) => Value::List(self.eval_values(items, arguments, depth + 1)?),
             Expr::Not(e) => Value::Number(i64::from(!self.eval(e, arguments, depth + 1)?.truth()?)),
+            Expr::Negate(e) => Value::Number(
+                self.eval(e, arguments, depth + 1)?
+                    .number()?
+                    .checked_neg()
+                    .ok_or("syntax setup integer overflow")?,
+            ),
+            Expr::Dictionary(items) => {
+                let mut values = BTreeMap::new();
+                let mut bytes = 0usize;
+                for (key, value) in items {
+                    let key = self.eval(key, arguments, depth + 1)?.text()?;
+                    let value = self.eval(value, arguments, depth + 1)?;
+                    bytes = bytes
+                        .saturating_add(key.len())
+                        .saturating_add(value.bytes())
+                        .saturating_add(64);
+                    if bytes > MAX_VALUE_BYTES {
+                        return Err("syntax setup dictionary byte budget exceeded".into());
+                    }
+                    if values.insert(key, value).is_some() {
+                        return Err("duplicate setup dictionary key".into());
+                    }
+                }
+                Value::Dictionary(values)
+            }
+            Expr::Index(value, key) => {
+                let value = self.eval(value, arguments, depth + 1)?;
+                let key = self.eval(key, arguments, depth + 1)?;
+                self.lookup(&value, &key)?
+                    .ok_or("setup index is out of range or key is absent")?
+            }
+            Expr::Slice(value, start, end) => {
+                let value = self.eval(value, arguments, depth + 1)?;
+                let start = start
+                    .as_ref()
+                    .map(|start| {
+                        self.eval(start, arguments, depth + 1)
+                            .and_then(|value| value.number())
+                    })
+                    .transpose()?;
+                let end = end
+                    .as_ref()
+                    .map(|end| {
+                        self.eval(end, arguments, depth + 1)
+                            .and_then(|value| value.number())
+                    })
+                    .transpose()?;
+                builtins::slice(value, start, end)?
+            }
+            Expr::Member(value, key) => {
+                let value = self.eval(value, arguments, depth + 1)?;
+                if matches!(value, Value::Dictionary(_) | Value::Scope(_)) {
+                    self.lookup(&value, &Value::Text(key.clone()))?
+                        .ok_or("setup dictionary key is absent")?
+                } else {
+                    let right = self.variable(key, arguments)?;
+                    self.binary(".", value, right)?
+                }
+            }
+
             Expr::Conditional(condition, yes, no) => {
                 let branch = if self.eval(condition, arguments, depth + 1)?.truth()? {
                     yes
@@ -387,34 +818,30 @@ impl<'a> Setup<'a> {
                     return Ok(Value::Number(1));
                 }
                 let right = self.eval(right, arguments, depth + 1)?;
-                match operator.as_str() {
-                    "&&" | "||" => Value::Number(i64::from(right.truth()?)),
-                    ".." | "." => Value::Text(format!("{}{}", left.text()?, right.text()?)),
-                    "==" | "==#" => Value::Number(i64::from(equal(&left, &right)?)),
-                    "!=" | "!=#" => Value::Number(i64::from(!equal(&left, &right)?)),
-                    ">" => Value::Number(i64::from(left.number()? > right.number()?)),
-                    ">=" => Value::Number(i64::from(left.number()? >= right.number()?)),
-                    "<" => Value::Number(i64::from(left.number()? < right.number()?)),
-                    "<=" => Value::Number(i64::from(left.number()? <= right.number()?)),
-                    "=~#" | "!~#" | "=~" | "!~" => {
-                        let pattern =
-                            VimPattern::compile(&right.text()?, false, VimRegexLimits::default())?;
-                        let cancel = self.cancel;
-                        let found = pattern.is_match_text_with_control(
-                            &left.text()?,
-                            &mut self.fuel,
-                            &mut || cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)),
-                        )?;
-                        Value::Number(i64::from(found ^ operator.starts_with('!')))
-                    }
-                    _ => return Err("unsupported setup binary operator".into()),
-                }
+                self.binary(operator, left, right)?
             }
             Expr::Call(name, inputs) => {
+                if name == "submatch" {
+                    let inputs = self.eval_values(inputs, arguments, depth + 1)?;
+                    let [Value::Number(index)] = inputs.as_slice() else {
+                        return Err("unsupported setup submatch arguments".into());
+                    };
+                    return arguments
+                        .get(&format!("v:setup_submatch{index}"))
+                        .cloned()
+                        .ok_or("submatch() requires a setup substitution expression".into());
+                }
+                if matches!(
+                    name.as_str(),
+                    "extend" | "add" | "insert" | "map" | "filter"
+                ) {
+                    return self.collection_call(name, inputs, arguments, depth + 1);
+                }
                 let inputs = self.eval_values(inputs, arguments, depth + 1)?;
                 self.call(name, inputs, depth + 1)?
             }
         };
+        value.validate_depth(0)?;
         if value.bytes() > MAX_VALUE_BYTES {
             return Err("syntax setup value byte budget exceeded".into());
         }
@@ -441,6 +868,11 @@ impl<'a> Setup<'a> {
     }
     fn call(&mut self, name: &str, values: Vec<Value>, depth: usize) -> Result<Value, String> {
         match (name, values.as_slice()) {
+            ("call", [Value::Text(name), Value::List(values)])
+                if name.starts_with("s:") || self.global_functions.contains_key(name) =>
+            {
+                self.call(name, values.clone(), depth + 1)
+            }
             ("exists", [Value::Text(name)]) => {
                 let name = variable_name(name);
                 let present = if name.starts_with("s:") {
@@ -506,95 +938,108 @@ impl<'a> Setup<'a> {
                 }
                 Ok(Value::Text(strings.join(separator)))
             }
-            _ if name.starts_with("s:") => {
-                let function = self
-                    .script
-                    .borrow()
-                    .functions
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| format!("unknown setup function: {name}"))?;
-                if function.arguments.len() != values.len() {
+            _ if name.starts_with("s:") || self.global_functions.contains_key(name) => {
+                let (scope, function) = if name.starts_with("s:") {
+                    let function = self
+                        .script
+                        .borrow()
+                        .functions
+                        .get(name)
+                        .cloned()
+                        .ok_or_else(|| format!("unknown setup function: {name}"))?;
+                    (self.script.clone(), function)
+                } else {
+                    self.global_functions.get(name).cloned().unwrap()
+                };
+                let compiled = function.compiled.borrow().clone();
+                let function = if let Some(compiled) = compiled {
+                    compiled
+                } else {
+                    self.charge(function.body.iter().map(String::len).sum())?;
+                    let (_, arguments, variadic, body) =
+                        functions::parse(&function.signature, &function.body)?;
+                    self.reserve_storage(
+                        function
+                            .body
+                            .iter()
+                            .map(String::len)
+                            .sum::<usize>()
+                            .saturating_mul(4),
+                    )?;
+                    let compiled = Arc::new(CompiledFunction {
+                        arguments,
+                        variadic,
+                        body: body.into(),
+                    });
+                    *function.compiled.borrow_mut() = Some(compiled.clone());
+                    compiled
+                };
+                if values.len() < function.arguments.len()
+                    || (!function.variadic && function.arguments.len() != values.len())
+                {
                     return Err("setup function argument count mismatch".into());
                 }
-                let arguments = function
+                let extras = values[function.arguments.len()..].to_vec();
+                let mut arguments: BTreeMap<String, Value> = function
                     .arguments
                     .iter()
                     .zip(values)
                     .map(|(name, value)| (format!("a:{name}"), value))
                     .collect();
-                self.eval(&function.result, &arguments, depth)
+                if function.variadic {
+                    arguments.insert("a:0".into(), Value::Number(extras.len() as i64));
+                    for (index, value) in extras.iter().enumerate() {
+                        arguments.insert(format!("a:{}", index + 1), value.clone());
+                    }
+                    arguments.insert("a:000".into(), Value::List(extras));
+                }
+                let previous = std::mem::replace(&mut self.script, scope);
+                let result = functions::run(self, &function.body, arguments, depth);
+                self.script = previous;
+                result
             }
-            _ => Err(format!(
-                "unsupported syntax setup function or arguments: {name}"
-            )),
+            _ => self.builtin(name, values, depth),
         }
     }
 }
-fn expression_storage(expression: &Expr) -> usize {
-    std::mem::size_of::<Expr>()
-        + match expression {
-            Expr::Value(v) => v.storage_bytes(),
-            Expr::Variable(name) => name.len().saturating_mul(2),
-            Expr::List(values) => values
-                .iter()
-                .map(expression_storage)
-                .sum::<usize>()
-                .saturating_mul(2),
-            Expr::Not(e) => expression_storage(e),
-            Expr::Binary(operator, left, right) => {
-                operator.len().saturating_mul(2)
-                    + expression_storage(left)
-                    + expression_storage(right)
-            }
-            Expr::Conditional(condition, yes, no) => {
-                expression_storage(condition) + expression_storage(yes) + expression_storage(no)
-            }
-            Expr::Call(name, values) => {
-                name.len().saturating_mul(2)
-                    + values
-                        .iter()
-                        .map(expression_storage)
-                        .sum::<usize>()
-                        .saturating_mul(2)
+fn replace_index(collection: &mut Value, indexes: &[Value], value: Value) -> Result<(), String> {
+    let Some((key, rest)) = indexes.split_first() else {
+        *collection = value;
+        return Ok(());
+    };
+    match (collection, key) {
+        (Value::Dictionary(items), Value::Text(key)) => {
+            if rest.is_empty() {
+                if items.len() >= MAX_BINDINGS && !items.contains_key(key) {
+                    return Err("syntax setup dictionary item budget exceeded".into());
+                }
+                items.insert(key.clone(), value);
+                Ok(())
+            } else {
+                replace_index(
+                    items.get_mut(key).ok_or("setup dictionary key is absent")?,
+                    rest,
+                    value,
+                )
             }
         }
-}
-fn validate_pure_expression(expression: &Expr, depth: usize) -> Result<(), String> {
-    if depth >= MAX_DEPTH {
-        return Err("syntax setup expression depth budget exceeded".into());
+        (Value::List(items), Value::Number(index)) => {
+            let index = if *index < 0 {
+                items.len() as i64 + index
+            } else {
+                *index
+            };
+            let index = usize::try_from(index).map_err(|_| "setup list index is out of range")?;
+            replace_index(
+                items
+                    .get_mut(index)
+                    .ok_or("setup list index is out of range")?,
+                rest,
+                value,
+            )
+        }
+        _ => Err("setup indexed assignment requires a list or dictionary".into()),
     }
-    match expression {
-        Expr::Call(name, expressions) => {
-            if !matches!(
-                name.as_str(),
-                "exists" | "has" | "get" | "index" | "getline" | "join"
-            ) && !name.starts_with("s:")
-            {
-                return Err(format!("unsupported syntax setup function: {name}"));
-            }
-            for e in expressions {
-                validate_pure_expression(e, depth + 1)?;
-            }
-        }
-        Expr::List(expressions) => {
-            for e in expressions {
-                validate_pure_expression(e, depth + 1)?;
-            }
-        }
-        Expr::Not(e) => validate_pure_expression(e, depth + 1)?,
-        Expr::Binary(_, left, right) => {
-            validate_pure_expression(left, depth + 1)?;
-            validate_pure_expression(right, depth + 1)?;
-        }
-        Expr::Conditional(condition, yes, no) => {
-            validate_pure_expression(condition, depth + 1)?;
-            validate_pure_expression(yes, depth + 1)?;
-            validate_pure_expression(no, depth + 1)?;
-        }
-        Expr::Value(_) | Expr::Variable(_) => {}
-    }
-    Ok(())
 }
 fn equal(left: &Value, right: &Value) -> Result<bool, String> {
     match (left, right) {
@@ -605,7 +1050,7 @@ fn equal(left: &Value, right: &Value) -> Result<bool, String> {
 fn identifier(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b':'))
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b':' | b'#'))
 }
 fn variable_name(name: &str) -> String {
     if name.contains(':') || name.starts_with('&') {
@@ -633,226 +1078,4 @@ fn validate_variable(s: &str) -> Result<(), String> {
         return Err("unsupported setup variable scope".into());
     }
     Ok(())
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Token {
-    Name(String),
-    String(String),
-    Number(i64),
-    Symbol(String),
-    End,
-}
-struct Parser {
-    tokens: Vec<Token>,
-    at: usize,
-}
-impl Parser {
-    fn parse(source: &str) -> Result<Expr, String> {
-        if source.len() > MAX_EXPRESSION_BYTES {
-            return Err("syntax setup expression byte budget exceeded".into());
-        }
-        let mut parser = Self {
-            tokens: lex(source)?,
-            at: 0,
-        };
-        let expression = parser.expression(0, 0)?;
-        if parser.peek() != &Token::End {
-            return Err("unsupported trailing setup expression".into());
-        }
-        Ok(expression)
-    }
-    fn peek(&self) -> &Token {
-        self.tokens.get(self.at).unwrap_or(&Token::End)
-    }
-    fn consume(&mut self, symbol: &str) -> bool {
-        if self.peek() == &Token::Symbol(symbol.into()) {
-            self.at += 1;
-            true
-        } else {
-            false
-        }
-    }
-    fn expect(&mut self, symbol: &str) -> Result<(), String> {
-        if self.consume(symbol) {
-            Ok(())
-        } else {
-            Err(format!("expected setup token: {symbol}"))
-        }
-    }
-    fn expression(&mut self, minimum: u8, depth: usize) -> Result<Expr, String> {
-        if depth >= MAX_DEPTH {
-            return Err("syntax setup parse depth budget exceeded".into());
-        }
-        let mut left = if self.consume("!") {
-            Expr::Not(Box::new(self.expression(6, depth + 1)?))
-        } else if self.consume("(") {
-            let e = self.expression(0, depth + 1)?;
-            self.expect(")")?;
-            e
-        } else if self.consume("[") {
-            Expr::List(self.sequence("]", depth + 1)?)
-        } else {
-            let token = self.peek().clone();
-            self.at += 1;
-            match token {
-                Token::String(s) => Expr::Value(Value::Text(s)),
-                Token::Number(n) => Expr::Value(Value::Number(n)),
-                Token::Name(name) if self.consume("(") => {
-                    Expr::Call(name, self.sequence(")", depth + 1)?)
-                }
-                Token::Name(name) => Expr::Variable(name),
-                _ => return Err("unsupported setup expression atom".into()),
-            }
-        };
-        loop {
-            if minimum <= 7 && self.consume("->") {
-                let Token::Name(name) = self.peek().clone() else {
-                    return Err("setup method name required".into());
-                };
-                self.at += 1;
-                self.expect("(")?;
-                let mut values = vec![left];
-                values.extend(self.sequence(")", depth + 1)?);
-                left = Expr::Call(name, values);
-                continue;
-            }
-            let Token::Symbol(operator) = self.peek().clone() else {
-                break;
-            };
-            let precedence = match operator.as_str() {
-                "?" => 1,
-                "||" => 2,
-                "&&" => 3,
-                "==" | "!=" | "==#" | "!=#" | "<" | "<=" | ">" | ">=" | "=~#" | "!~#" | "=~"
-                | "!~" => 4,
-                ".." | "." => 5,
-                _ => break,
-            };
-            if precedence < minimum {
-                break;
-            }
-            self.at += 1;
-            if operator == "?" {
-                let yes = self.expression(0, depth + 1)?;
-                self.expect(":")?;
-                let no = self.expression(precedence, depth + 1)?;
-                left = Expr::Conditional(Box::new(left), Box::new(yes), Box::new(no));
-            } else {
-                let right = self.expression(precedence + 1, depth + 1)?;
-                left = Expr::Binary(operator, Box::new(left), Box::new(right));
-            }
-        }
-        Ok(left)
-    }
-    fn sequence(&mut self, end: &str, depth: usize) -> Result<Vec<Expr>, String> {
-        let mut values = vec![];
-        if self.consume(end) {
-            return Ok(values);
-        }
-        loop {
-            if values.len() >= 1024 {
-                return Err("syntax setup list budget exceeded".into());
-            }
-            values.push(self.expression(0, depth)?);
-            if self.consume(end) {
-                break;
-            }
-            self.expect(",")?;
-        }
-        Ok(values)
-    }
-}
-fn lex(source: &str) -> Result<Vec<Token>, String> {
-    let mut chars = source.char_indices().peekable();
-    let mut tokens = vec![];
-    while let Some((at, ch)) = chars.next() {
-        if ch.is_whitespace() {
-            continue;
-        }
-        if tokens.len() >= 4096 {
-            return Err("syntax setup token budget exceeded".into());
-        }
-        if ch == '\'' || ch == '"' {
-            let mut value = String::new();
-            let mut closed = false;
-            while let Some((_, c)) = chars.next() {
-                if c == ch {
-                    if ch == '\'' && chars.peek().is_some_and(|(_, c)| *c == '\'') {
-                        chars.next();
-                        value.push('\'');
-                        continue;
-                    }
-                    closed = true;
-                    break;
-                }
-                if c == '\\' && ch == '"' {
-                    let (_, next) = chars.next().ok_or("unterminated setup string escape")?;
-                    value.push(match next {
-                        'n' => '\n',
-                        'r' => '\r',
-                        't' => '\t',
-                        'b' => '\u{8}',
-                        'e' => '\u{1b}',
-                        '\\' => '\\',
-                        '"' => '"',
-                        _ => return Err(format!("unsupported setup string escape: \\{next}")),
-                    });
-                } else {
-                    value.push(c);
-                }
-            }
-            if !closed {
-                return Err("unterminated setup string".into());
-            }
-            tokens.push(Token::String(value));
-            continue;
-        }
-        if ch.is_ascii_digit() || ch == '-' && chars.peek().is_some_and(|(_, c)| c.is_ascii_digit())
-        {
-            let mut end = at + ch.len_utf8();
-            while chars.peek().is_some_and(|(_, c)| c.is_ascii_digit()) {
-                let (at, c) = chars.next().unwrap();
-                end = at + c.len_utf8();
-            }
-            tokens.push(Token::Number(
-                source[at..end]
-                    .parse()
-                    .map_err(|_| "invalid setup number")?,
-            ));
-            continue;
-        }
-        if ch.is_ascii_alphabetic()
-            || ch == '_'
-            || ch == '&' && chars.peek().is_some_and(|(_, c)| c.is_ascii_alphabetic())
-        {
-            let mut end = at + ch.len_utf8();
-            while chars
-                .peek()
-                .is_some_and(|(_, c)| c.is_ascii_alphanumeric() || matches!(c, '_' | ':'))
-            {
-                let (at, c) = chars.next().unwrap();
-                end = at + c.len_utf8();
-            }
-            tokens.push(Token::Name(source[at..end].into()));
-            continue;
-        }
-        let operator = [
-            "=~#", "!~#", "==#", "!=#", "||", "&&", "==", "!=", ">=", "<=", "=~", "!~", "..", "->",
-        ]
-        .into_iter()
-        .find(|s| source[at..].starts_with(s));
-        if let Some(operator) = operator {
-            for _ in 1..operator.len() {
-                chars.next();
-            }
-            tokens.push(Token::Symbol(operator.into()));
-        } else if "!?():,.[]<>".contains(ch) {
-            tokens.push(Token::Symbol(ch.to_string()));
-        } else {
-            return Err(format!("unsupported syntax setup token: {ch}"));
-        }
-    }
-    tokens.push(Token::End);
-    Ok(tokens)
 }

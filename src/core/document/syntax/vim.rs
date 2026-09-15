@@ -1,4 +1,4 @@
-//! Native Vim syntax profile v2: strict declaration loading and resumable,
+//! Native Vim syntax profile v3: strict declaration loading and resumable,
 //! fuel-metered regular matching. See `vim/PROFILE.md` for compatibility limits.
 mod checkpoints;
 mod loader;
@@ -11,7 +11,7 @@ pub use regex::{
 };
 use std::{collections::BTreeMap, ops::Range, path::Path, sync::Arc};
 
-pub const NATIVE_PROFILE_VERSION: u32 = 2;
+pub const NATIVE_PROFILE_VERSION: u32 = 3;
 
 /// Bounded, immutable input available while compiling a syntax program. This
 /// supplies runtime dialect detection without exposing editor commands or
@@ -19,6 +19,8 @@ pub const NATIVE_PROFILE_VERSION: u32 = 2;
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct VimSetupContext {
     pub prefix: String,
+    /// Caller-supplied document name; setup never reads the filesystem to find it.
+    pub filename: Option<String>,
 }
 impl VimSetupContext {
     pub fn from_input(input: &SyntaxInputSnapshot) -> Self {
@@ -35,6 +37,7 @@ impl VimSetupContext {
         }
         Self {
             prefix: input.slice(0..end).unwrap_or_default(),
+            filename: None,
         }
     }
 }
@@ -78,6 +81,9 @@ pub struct VimProgram {
     rules: Vec<Rule>,
     links: BTreeMap<String, String>,
     clusters: BTreeMap<String, Vec<String>>,
+    // Vim's highlight and cluster identities ignore ASCII case, while their
+    // display names retain the spelling of the first declaration/reference.
+    group_names: BTreeMap<String, String>,
     minlines: usize,
     maxlines: usize,
     fromstart: bool,
@@ -86,6 +92,16 @@ pub struct VimProgram {
     pub source_files: Vec<String>,
 }
 impl VimProgram {
+    fn intern_group_name(&mut self, name: &str) -> String {
+        self.group_names.entry(name.to_ascii_lowercase())
+            .or_insert_with(|| name.to_owned()).clone()
+    }
+    fn intern_cluster_name(&mut self, name: &str) -> String {
+        self.intern_group_name(&format!("@{name}"))[1..].to_owned()
+    }
+    fn canonical_group_name<'a>(&'a self, name: &'a str) -> &'a str {
+        self.group_names.get(&name.to_ascii_lowercase()).map_or(name, String::as_str)
+    }
     pub fn compile(
         name: &str,
         text: &str,
@@ -129,7 +145,9 @@ impl VimProgram {
         self.rules.len()
     }
     pub fn effective_group<'a>(&'a self, group: &'a str) -> &'a str {
-        let mut group = group;
+        self.effective_canonical_group(self.canonical_group_name(group))
+    }
+    fn effective_canonical_group<'a>(&'a self, mut group: &'a str) -> &'a str {
         for _ in 0..=self.links.len() {
             match self.links.get(group) {
                 Some(next) => group = next,
@@ -161,7 +179,7 @@ impl VimProgram {
             .first()
             .is_some_and(|s| matches!(s.as_str(), "ALLBUT" | "TOP" | "CONTAINED"));
         let matches = list.iter().skip(usize::from(excluded)).any(|name| {
-            name == group
+            name.eq_ignore_ascii_case(group)
                 || name.strip_prefix('@').is_some_and(|name| {
                     if let Some(found) = memo.get(name) {
                         return *found;
@@ -195,6 +213,7 @@ enum RuleKind {
         ends: Vec<PatternTemplate>,
         skip: Option<PatternTemplate>,
         ignore_case: bool,
+        keyword: regex::VimKeyword,
     },
 }
 #[derive(Clone, Debug)]
@@ -1047,7 +1066,9 @@ impl VimSession {
             let opts = &self.program.rules[f.rule].options;
             let ends = f.match_end.or_else(|| f.closing.as_ref().map(|r| r.end));
             (opts.keepend
-                && ends.is_some_and(|end| end <= j.position)
+                && (ends.is_some_and(|end| end <= j.position)
+                    || f.end_group.is_some()
+                        && f.closing.as_ref().is_some_and(|r| r.start <= j.position))
                 && !j.frames[i + 1..]
                     .iter()
                     .any(|f| self.program.rules[f.rule].options.extend))
@@ -1171,7 +1192,8 @@ impl VimSession {
         }
         let blocked = j.frames.last().is_some_and(|f| {
             f.start_group.is_some() && j.position < f.start_end
-                || f.end_group.is_some() && f.closing.is_some()
+                || f.end_group.is_some()
+                    && f.closing.as_ref().is_some_and(|closing| j.position >= closing.start)
         });
         if !blocked {
             let mut keywords = Vec::new();
@@ -1277,6 +1299,7 @@ impl VimSession {
             ends,
             skip,
             ignore_case,
+            keyword,
             ..
         } = &self.program.rules[rule].kind
         else {
@@ -1304,10 +1327,11 @@ impl VimSession {
         let compile = |p: &PatternTemplate, kind: &str| {
             let mut p = p.clone();
             if p.compiled.is_none() {
-                let compiled = VimPattern::compile(
+                let compiled = VimPattern::compile_with_keyword(
                     &expand_external(&p.source, &captures)?,
                     *ignore_case,
                     VimRegexLimits::default(),
+                    keyword,
                 )?;
                 // Captured delimiters can be empty or multibyte. Validate
                 // offsets using the expanded pattern's real minimum extent.
@@ -1446,14 +1470,17 @@ impl VimSession {
                 let region_end = c
                     .offsets
                     .re
-                    .map_or(Ok(c.found.start), |o| {
-                        offset(&j.input, &c.found, Some(o), true)
-                    })?
+                    .map_or(Ok(c.found.start), |o| region_offset(&j.input, &c.found, o))?
                     .min(end);
-                j.frames.truncate(frame + 1);
                 let f = &mut j.frames[frame];
                 f.closing = Some(region_end..end);
-                f.end_group = c.matchgroup;
+                let rule = &self.program.rules[f.rule];
+                // Vim uses the region's transparent body when its end
+                // matchgroup is the region group itself. The start delimiter
+                // still gets that explicitly requested group (e.g. makeTarget).
+                f.end_group = c.matchgroup.filter(|group| {
+                    !rule.options.transparent || !group.eq_ignore_ascii_case(&rule.group)
+                });
                 f.paint.end = paintend;
                 f.eol_extension =
                     c.pattern.eol && !c.excludenl && byte(&j.input, c.found.end) == Some(b'\n');
@@ -1474,7 +1501,13 @@ impl VimSession {
                     offset(&j.input, &c.found, o.me, true)?
                 };
                 let paintstart = offset(&j.input, &c.found, o.hs.or(o.ms), false)?.max(start);
-                let paintend = offset(&j.input, &c.found, o.he.or(o.me), true)?.min(end);
+                // Region starts do not use me/he. Even calculating those
+                // unused offsets could reject a valid start at the input edge.
+                let paintend = if region {
+                    usize::MAX
+                } else {
+                    offset(&j.input, &c.found, o.he.or(o.me), true)?.min(end)
+                };
                 if end < start {
                     return Err("reversed offset match is outside native profile v1".into());
                 }
@@ -1494,9 +1527,7 @@ impl VimSession {
                     return Err("region stack byte budget exceeded".into());
                 }
                 let region_start = if region.is_some() {
-                    o.rs.map_or(Ok(c.found.end), |o| {
-                        offset(&j.input, &c.found, Some(o), false)
-                    })?
+                    o.rs.map_or(Ok(c.found.end), |o| region_offset(&j.input, &c.found, o))?
                 } else {
                     end
                 };
@@ -1505,11 +1536,7 @@ impl VimSession {
                     region: region.clone(),
                     start_end: region_start,
                     match_end: region.is_none().then_some(end),
-                    paint: paintstart..if region.is_some() {
-                        usize::MAX
-                    } else {
-                        paintend
-                    },
+                    paint: paintstart..paintend,
                     closing: None,
                     skip_until: j.position,
                     search_start: end,
@@ -1549,7 +1576,7 @@ impl VimSession {
         }) else {
             return;
         };
-        let name = self.program.effective_group(group);
+        let name = self.program.effective_canonical_group(group);
         if name == "NONE" {
             return;
         }
@@ -1609,7 +1636,7 @@ fn offset(
     let Some(o) = o else {
         return Ok(if end { m.end } else { m.start });
     };
-    let mut at = match o.base {
+    let at = match o.base {
         OffsetBase::Start => m.start,
         OffsetBase::End => m.end,
     };
@@ -1619,6 +1646,29 @@ fn offset(
             (OffsetBase::End, false) => -1,
             _ => 0,
         };
+    shift_offset(input, at, delta)
+}
+
+/// Region body offsets describe boundaries directly. Unlike ms/hs and me/he,
+/// both rs and re count from the exclusive pattern end (e) or its start (s).
+/// Applying character-end conversion here drops one character of delimiter color.
+fn region_offset(
+    input: &SyntaxInputSnapshot,
+    m: &VimRegexMatch,
+    o: Offset,
+) -> Result<usize, String> {
+    let at = match o.base {
+        OffsetBase::Start => m.start,
+        OffsetBase::End => m.end,
+    };
+    shift_offset(input, at, o.delta)
+}
+
+fn shift_offset(
+    input: &SyntaxInputSnapshot,
+    mut at: usize,
+    delta: isize,
+) -> Result<usize, String> {
     if delta.unsigned_abs() > 1025 {
         return Err("offset work budget exceeded".into());
     }

@@ -40,8 +40,10 @@ ownership, allocator accounting, and resource limits. The
 declarations, setup, patterns, synchronization hints, and execution limits.
 Unsupported Vimscript or query handlers produce diagnostics and default
 styling. This is a declared compatibility subset; it does not execute arbitrary
-Vim runtime scripts. Installed MacVim `conf.vim` and `dosini.vim` also have
-byte-by-byte differential tests against MacVim.
+Vim runtime scripts. Installed MacVim `conf.vim`, `dosini.vim`, `make.vim`, and
+legacy/Vim9 `vim.vim` samples have byte-by-byte differential tests against native
+Vim. The [installed runtime audit](vim-syntax-audit.md) records the complete
+774-file inventory, fixes, reproduction command, and remaining diagnostics.
 
 ## Settings and persistence
 
@@ -81,13 +83,23 @@ The native helper builds and signs the current app, forces SwiftPM to relink
 the Rust archive, and runs `swift test --disable-sandbox` with an isolated
 temporary settings directory.
 
-The recorded full Rust run passed 2,073 tests with the one baseline failure
-described below. Subsequent focused syntax/provider/detection tests also pass.
-The final native run passed all 400 XCTest and 28 Swift Testing tests after a
+The full Rust run for the installed-syntax expansion passed 2,559 tests, with
+four ignored performance/reference gates and one baseline failure described
+below. Focused syntax/provider tests also cover subsequent changes. An earlier
+full native run passed all 400 XCTest and 28 Swift Testing tests after a
 fresh core rebuild and app relink. It required access to AppKit's save and
 pasteboard services, which the restricted execution sandbox denies. The signed
 app also passed an isolated launch/process smoke test and verification of its
 macOS 26.0 minimum deployment target; no visual UI inspection is claimed.
+
+The final installed-syntax expansion run passed all 155 syntax tests and all
+four `EVVimOpeningTests`. The native tests open the installed Makefile and Vim
+runtime through the document/backend/paint path, retain exact source bytes and
+clean state, and verify that Save As changes filename-dependent setup without
+changing document revision. The explicit release Vim performance gate also
+passes through one million lines. Its maximum edit repair was 0.911 ms; the
+maximum cold slice was 2.993 ms against a cooperative 2 ms target, with bounded
+provisional recovery when exact priming did not complete.
 
 The tests cover literal quote ingress and rich-paste stripping, format
 reinterpretation and undo, source/encoding preservation, exact-name styles,
@@ -96,16 +108,15 @@ supersession, native ownership, finite limits, and Code command paths that
 reject whole-document string materialization. Persistent source/text diffs and
 line indexes have randomized reference-oracle and large-document tests.
 
-The complete Rust run has one pre-existing Markdown Source failure:
-`projection_fuzz_regressions::markdown_source_fence_edit_requires_explicit_source_intent_when_breaks_reinterpret`.
+The complete Rust run has one pre-existing rich-caret failure:
+`rich_caret_boundaries::every_visible_rich_caret_boundary_accepts_typing_with_either_affinity`.
 It also fails in an isolated, unmodified archive of baseline commit
-`bd10e37b774b14c4de0aa98720f182c5ae3f3335`, using its locked dependencies and
-`cargo test --locked --offline --test projection_fuzz_regressions markdown_source_fence_edit_requires_explicit_source_intent_when_breaks_reinterpret`.
-That test expects a formatted fence replacement to reject changes to unselected
-breaks, while the existing source-reprojection implementation and another
-baseline test permit fence edits to reinterpret those breaks. This contradictory
-Markdown policy is unchanged by the syntax implementation; both tests are
-retained, and the complete suite is not reported as entirely passing.
+`dfda6f098a427e4269b5d0e1eba997cc8fc44b63`, using its locked dependencies and
+`cargo test --offline --test rich_caret_boundaries every_visible_rich_caret_boundary_accepts_typing_with_either_affinity`.
+Both runs reject inserting `X`, a space, or `é` at the upstream start of a
+Markdown list's fenced code block with `FormattedPayloadCannotReproject`.
+This syntax change does not alter that source-reprojection behavior; the
+complete suite is not reported as entirely passing.
 
 Explicit release performance commands are documented beside each backend.
 The [Vim benchmark](../src/core/document/syntax/vim/performance-baseline.json)

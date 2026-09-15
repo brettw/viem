@@ -2255,6 +2255,21 @@ buffer-sniffing inputs. Compilation/includes are cancellable and memory-bounded.
 The installed MacVim 9.1.1887 files are compatibility fixtures; normative Vim
 behavior remains 9.2. Neither path enables arbitrary Vimscript during editing.
 
+Native syntax profile 3 accepts bounded setup expressions, lists/dictionaries,
+loops, syntax-generating helpers and wrappers, confined runtime includes,
+case-insensitive group/option names, configurable keyword characters, and the
+four Vim regex magic modes. Group names retain their first spelling. Final
+keyword settings apply to all rules, including external-delimiter templates.
+Setup can inspect a bounded 16 KiB filename as well as the input prefix; renaming
+invalidates setup and its generation. Unused helper bodies remain data and do
+not execute during editing. Syntax folding, spelling, and concealment flags are
+presentation metadata: Code keeps all source text visible. Concrete highlight
+attributes establish group/link precedence; the Code stylesheet supplies visual
+properties. Compatibility failures remain atomic diagnostics. Pinned Makefile
+fixtures require native group comparisons and bounded large-document repair and
+cache-reuse tests alongside the existing syntax gates.
+
+
 The supported program includes keywords, ordered match/region start/skip/end
 rules, containment/clusters, nextgroup/whitespace behavior, transparency,
 end-control flags, offsets, group links, and sync/display hints. Pin supported
@@ -2263,8 +2278,11 @@ Viem Regex v1 search patterns: preserve Vim semantics where supported and reject
 unsupported atoms rather than silently translating them with different meaning.
 A fast regular matcher and a budgeted compatibility VM may share one compiled
 pattern model. External delimiter captures must survive in region state.
-Editor-state-dependent cursor/mark/Visual and absolute-line/virtual-column
-assertions are outside the initial syntax-pattern profile.
+Numeric absolute-line and byte-column assertions use the immutable source's
+hard-line index, including comparison forms. Absolute-line predicates invalidate
+from the beginning after edits; byte-column predicates use whole-line
+dependencies. Neither requires scanning preceding source text. Editor-state-
+dependent cursor/mark/Visual and virtual-column assertions remain unsupported.
 
 Retain structurally shared complete restart states densely near requested
 regions and sparsely elsewhere, with bounded span caches. States include region

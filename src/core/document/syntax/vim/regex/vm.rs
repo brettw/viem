@@ -1,7 +1,9 @@
 //! Resumable execution for Vim's non-regular atoms. Every bytecode instruction,
 //! assertion candidate and backreference scalar comparison consumes fuel. The
 //! explicit alternative stack has a reported, enforced memory ceiling.
-use super::{look_matches, VimRegexLimits, VimRegexMatch, VimRegexProgress, SLOTS, UNSET};
+use super::{
+    look_matches, VimKeyword, VimRegexLimits, VimRegexMatch, VimRegexProgress, SLOTS, UNSET,
+};
 use regex_automata::util::look::Look;
 use regex_syntax::hir::{Class, Hir, HirKind};
 
@@ -21,12 +23,27 @@ pub(super) enum AssertionKind {
 pub(super) enum Special {
     Assertion(AssertionKind),
     Backreference(usize),
+    ControlClass {
+        negate: bool,
+    },
+    Position {
+        line: bool,
+        comparison: std::cmp::Ordering,
+        value: usize,
+    },
 }
 #[derive(Clone, Debug)]
 enum Instruction {
     Accept,
     Character(Vec<(u32, u32)>, usize),
+    ControlClass(Vec<(u32, u32)>, bool, usize),
     Look(Look, usize),
+    Position {
+        line: bool,
+        comparison: std::cmp::Ordering,
+        value: usize,
+        next: usize,
+    },
     Split(usize, usize),
     Save(usize, usize),
     Guard(usize, usize),
@@ -40,6 +57,7 @@ enum Instruction {
 }
 #[derive(Clone, Debug)]
 pub(super) struct Program {
+    keyword: VimKeyword,
     code: Vec<Instruction>,
     start: usize,
     groups: usize,
@@ -56,15 +74,19 @@ impl Program {
         ignore_case: bool,
         multiline: bool,
         limits: VimRegexLimits,
+        keyword: &VimKeyword,
     ) -> Result<Self, String> {
         let mut compiler = Compiler {
-            code: vec![Instruction::Accept],
+            code: Vec::new(),
+            range_bytes: 0,
             loops: 0,
             specials,
             limits,
         };
+        compiler.emit(Instruction::Accept)?;
         let start = compiler.node(hir, 0)?;
         Ok(Self {
+            keyword: keyword.clone(),
             code: compiler.code,
             start,
             groups,
@@ -74,12 +96,15 @@ impl Program {
         })
     }
     pub(super) fn memory_usage(&self) -> usize {
-        self.code.capacity() * std::mem::size_of::<Instruction>()
+        std::mem::size_of::<Self>()
+            + self.code.capacity() * std::mem::size_of::<Instruction>()
             + self
                 .code
                 .iter()
                 .map(|i| match i {
-                    Instruction::Character(r, _) => r.capacity() * 8,
+                    Instruction::Character(r, _) | Instruction::ControlClass(r, _, _) => {
+                        r.capacity() * 8
+                    }
                     _ => 0,
                 })
                 .sum::<usize>()
@@ -102,6 +127,7 @@ impl Program {
         c: &mut Continuation,
         len: usize,
         byte: &impl Fn(usize) -> Option<u8>,
+        position: &impl Fn(usize) -> Option<(usize, usize)>,
         fuel: &mut usize,
         cancel: &mut dyn FnMut() -> bool,
         inspected_end: &mut usize,
@@ -173,10 +199,60 @@ impl Program {
                     }
                     c.retained -= 1;
                 }
+                Instruction::ControlClass(ranges, negate, next) => {
+                    *inspected_end =
+                        (*inspected_end).max(thread.position.saturating_add(4).min(len));
+                    if let Some((ch, width)) = scalar(thread.position, byte) {
+                        let member = |ch| {
+                            let index = ranges.partition_point(|range| range.1 < ch);
+                            ranges.get(index).is_some_and(|range| range.0 <= ch)
+                        };
+                        let source_newline = ch == '\n'
+                            && position(thread.position).is_none_or(|(line, _)| line != 0);
+                        let contains = if matches!(ch, '\0' | '\n') {
+                            member(0) || member(10)
+                        } else {
+                            member(ch as u32)
+                        };
+                        if !source_newline && contains != *negate {
+                            thread.position += width;
+                            thread.ip = *next;
+                            frame.current = Some(thread);
+                            continue;
+                        }
+                    }
+                    c.retained -= 1;
+                }
                 Instruction::Look(look, next) => {
                     *inspected_end =
                         (*inspected_end).max(thread.position.saturating_add(4).min(len));
-                    if look_matches(*look, thread.position, len, byte) {
+                    if look_matches(*look, thread.position, len, byte, &self.keyword) {
+                        thread.ip = *next;
+                        frame.current = Some(thread);
+                    } else {
+                        c.retained -= 1;
+                    }
+                }
+                Instruction::Position {
+                    line,
+                    comparison,
+                    value,
+                    next,
+                } => {
+                    let Some((source_line, column)) = position(thread.position) else {
+                        let error = VimRegexProgress::Failed(
+                            "Vim source-position context is unavailable or invalid".into(),
+                        );
+                        c.frames.clear();
+                        c.alternatives.clear();
+                        c.result = Some(error.clone());
+                        return error;
+                    };
+                    let actual = if *line { source_line } else { column };
+                    // Vim's string-match APIs have no buffer line context;
+                    // their lookup uses line zero, which never satisfies a
+                    // line assertion, including a '<' or '>' comparison.
+                    if !(*line && source_line == 0) && actual.cmp(value) == *comparison {
                         thread.ip = *next;
                         frame.current = Some(thread);
                     } else {
@@ -456,17 +532,37 @@ fn scalar(at: usize, byte: &impl Fn(usize) -> Option<u8>) -> Option<(char, usize
 
 struct Compiler<'a> {
     code: Vec<Instruction>,
+    range_bytes: usize,
     loops: usize,
     specials: &'a [Special],
     limits: VimRegexLimits,
 }
 impl Compiler<'_> {
     fn emit(&mut self, instruction: Instruction) -> Result<usize, String> {
-        if self.code.len() >= self.limits.states
-            || self.code.len() * std::mem::size_of::<Instruction>() >= self.limits.nfa_bytes
-        {
+        let capacity = if self.code.len() == self.code.capacity() {
+            self.code.capacity().saturating_mul(2).max(4)
+        } else {
+            self.code.capacity()
+        };
+        let ranges = match &instruction {
+            Instruction::Character(ranges, _) | Instruction::ControlClass(ranges, _, _) => {
+                ranges.capacity() * std::mem::size_of::<(u32, u32)>()
+            }
+            _ => 0,
+        };
+        let bytes = std::mem::size_of::<Program>()
+            + capacity * std::mem::size_of::<Instruction>()
+            + self.range_bytes
+            + ranges;
+        if self.code.len() >= self.limits.states || bytes > self.limits.nfa_bytes {
             return Err("Vim regex bytecode budget exceeded".into());
         }
+        if capacity > self.code.capacity() {
+            self.code
+                .try_reserve_exact(capacity - self.code.len())
+                .map_err(|_| "Vim regex bytecode allocation failed")?;
+        }
+        self.range_bytes += ranges;
         let at = self.code.len();
         self.code.push(instruction);
         Ok(at)
@@ -561,6 +657,37 @@ impl Compiler<'_> {
                         Special::Backreference(group) => {
                             self.emit(Instruction::Backreference(*group, next))
                         }
+                        Special::ControlClass { negate } => {
+                            let ranges = match capture.sub.kind() {
+                                HirKind::Class(Class::Unicode(class)) => class
+                                    .ranges()
+                                    .iter()
+                                    .map(|r| (r.start() as u32, r.end() as u32))
+                                    .collect(),
+                                HirKind::Literal(literal) => {
+                                    let text = std::str::from_utf8(&literal.0)
+                                        .map_err(|_| "non-Unicode Vim control class")?;
+                                    let mut chars = text.chars();
+                                    let ch = chars.next().ok_or("empty Vim control class")?;
+                                    if chars.next().is_some() {
+                                        return Err("invalid Vim control class extent".into());
+                                    }
+                                    vec![(ch as u32, ch as u32)]
+                                }
+                                _ => return Err("invalid Vim control class".into()),
+                            };
+                            self.emit(Instruction::ControlClass(ranges, *negate, next))
+                        }
+                        Special::Position {
+                            line,
+                            comparison,
+                            value,
+                        } => self.emit(Instruction::Position {
+                            line: *line,
+                            comparison: *comparison,
+                            value: *value,
+                            next,
+                        }),
                     }
                 } else {
                     let id = name
@@ -584,14 +711,19 @@ impl Compiler<'_> {
                         })?;
                     }
                 } else {
-                    if self.loops >= LOOPS {
-                        return Err("Vim repetition nesting budget exceeded".into());
-                    }
-                    let guard = self.loops;
-                    self.loops += 1;
                     let split = self.emit(Instruction::Accept)?;
-                    let body = self.node(&repetition.sub, split)?;
-                    let body = self.emit(Instruction::Guard(guard, body))?;
+                    let mut body = self.node(&repetition.sub, split)?;
+                    if extent(&repetition.sub, self.specials).0 == 0 {
+                        // Only nullable bodies can revisit a repetition without
+                        // advancing. Consuming loops need no saved position;
+                        // counting them exhausted guards on J's number syntax.
+                        if self.loops >= LOOPS {
+                            return Err("Vim nullable repetition guard budget exceeded".into());
+                        }
+                        let guard = self.loops;
+                        self.loops += 1;
+                        body = self.emit(Instruction::Guard(guard, body))?;
+                    }
                     self.code[split] = if repetition.greedy {
                         Instruction::Split(body, next)
                     } else {
@@ -632,6 +764,8 @@ fn extent(hir: &Hir, specials: &[Special]) -> (usize, Option<usize>) {
                     Special::Assertion(AssertionKind::Atomic) => extent(&capture.sub, specials),
                     Special::Assertion(_) => (0, Some(0)),
                     Special::Backreference(_) => (0, None),
+                    Special::Position { .. } => (0, Some(0)),
+                    Special::ControlClass { .. } => (1, Some(4)),
                 }
             } else {
                 extent(&capture.sub, specials)

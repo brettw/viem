@@ -30,6 +30,7 @@ pub struct SyntaxConfiguration {
     pub registry_generation: u64,
     pub language: Option<String>,
     pub vim_directory: String,
+    pub filename: Option<String>,
 }
 impl Default for SyntaxConfiguration {
     fn default() -> Self {
@@ -37,6 +38,7 @@ impl Default for SyntaxConfiguration {
             generation: 1,
             registry_generation: super::treesitter::package_registry_generation(),
             language: None,
+            filename: None,
             vim_directory: if cfg!(target_os = "macos") {
                 "/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/Resources/vim/runtime/syntax".into()
             } else {
@@ -397,6 +399,12 @@ impl SyntaxService {
             self.invalidate_configuration();
         }
     }
+    pub fn set_filename(&mut self, filename: Option<String>) {
+        if self.configuration.filename != filename {
+            self.configuration.filename = filename;
+            self.invalidate_configuration();
+        }
+    }
     fn invalidate_configuration(&mut self) {
         self.configuration.generation = self.configuration.generation.wrapping_add(1).max(1);
         self.cancel();
@@ -667,6 +675,29 @@ mod tests {
         assert_eq!(service.statistics.cache_hits, 1);
         assert!(service.runs(input(99).identity()).is_empty());
         assert!(service.retained_result_bytes() <= MAX_CACHED_RUN_BYTES);
+    }
+
+    #[test]
+    fn filename_change_invalidates_configuration_and_rejects_late_results() {
+        let _registry = super::super::treesitter::package_registry_test_guard();
+        let mut service = SyntaxService::default();
+        service.set_filename(Some("first.vim".into()));
+        let snapshot = input(1);
+        let request = SyntaxRequest {
+            input: snapshot.clone(),
+            configuration: service.configuration.clone(),
+            range: 0..100,
+        };
+        let old = SyntaxResult::missing(&request, "old filename");
+        let generation = service.configuration.generation;
+        service.set_filename(Some("second.vim".into()));
+        assert_ne!(service.configuration.generation, generation);
+        service.mailbox.lock().unwrap().ready = Some(old);
+        assert!(!service.poll(snapshot.identity()));
+        assert_eq!(service.statistics.stale_rejections, 1);
+        let generation = service.configuration.generation;
+        service.set_filename(Some("second.vim".into()));
+        assert_eq!(service.configuration.generation, generation);
     }
 
     #[test]

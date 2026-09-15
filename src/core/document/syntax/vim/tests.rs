@@ -16,6 +16,34 @@ fn program(source: &str) -> Arc<VimProgram> {
     VimProgram::compile("fixture.vim", source, VimLoadLimits::default()).unwrap()
 }
 
+const MAKE_SYNTAX: &str = include_str!("fixtures/make.vim");
+
+#[test]
+fn pinned_make_runtime_loads_and_highlights_target_recipe_and_variable() {
+    let p = program(MAKE_SYNTAX);
+    assert!(p.rule_count() >= 40);
+    let text = "CC := clang\nall: main.o\n\t@echo $(CC)\n";
+    let input = input(text, 1);
+    let result = finish(&mut VimSession::new(p), &input, 0..text.len(), 10000);
+    let groups = names(&result, text.len());
+    for (needle, expected) in [
+        ("CC", "Identifier"),
+        ("all:", "Function"),
+        ("@", "Special"),
+        ("echo", "Number"),
+        ("$(CC)", "Identifier"),
+    ] {
+        let start = text.find(needle).unwrap();
+        assert!(
+            groups[start..start + needle.len()]
+                .iter()
+                .all(|group| group == expected),
+            "{needle}: {:?}",
+            &groups[start..start + needle.len()]
+        );
+    }
+}
+
 #[test]
 fn setup_prefix_is_bounded_and_does_not_copy_a_giant_first_line() {
     let text = (0..40).map(|n| format!("line {n}\n")).collect::<String>();
@@ -80,7 +108,7 @@ fn names(result: &VimResult, len: usize) -> Vec<String> {
 fn strict_loader_rejects_partial_programs() {
     let errors = VimProgram::compile(
         "bad.vim",
-        "syn keyword Good good\nsyn match Bad /\\%23lbad/\n",
+        "syn keyword Good good\nsyn match Bad /\\%#bad/\n",
         VimLoadLimits::default(),
     )
     .unwrap_err();
@@ -149,6 +177,218 @@ hi def link CommentBase Comment
         ["Keyword", "Keyword", "Keyword", "", "Spaced", "Spaced", "Todo", "Todo", "Todo", "Todo"]
     );
     assert_eq!(result.coverage, Coverage::Exact);
+}
+
+#[test]
+fn syntax_group_and_cluster_identities_ignore_case_and_keep_first_spelling() {
+    let source = r#"syn cluster Children contains=bar
+syn region Foo start=/\[/ end=/\]/ contains=@children nextgroup=bAR
+syn match Bar /x/ contained
+hi link bAR Comment
+"#;
+    let p = program(source);
+    assert_eq!(p.effective_group("BAR"), "Comment");
+    let input = input("[x]x", 1);
+    let result = finish(&mut VimSession::new(p), &input, 0..input.byte_len(), 10000);
+    assert_eq!(
+        names(&result, input.byte_len()),
+        ["Foo", "Comment", "Foo", "Comment"]
+    );
+    assert_eq!(
+        result
+            .runs
+            .iter()
+            .filter(|run| run.name.0 == "Comment")
+            .map(|run| run.origin.as_str())
+            .collect::<Vec<_>>(),
+        ["bar", "bar"]
+    );
+
+    let source = "hi link First CustomStyle\nsyn match first /x/\n";
+    let input = self::input("x", 1);
+    let result = finish(
+        &mut VimSession::new(program(source)),
+        &input,
+        0..input.byte_len(),
+        10000,
+    );
+    assert_eq!(
+        (
+            result.runs[0].origin.as_str(),
+            result.runs[0].name.0.as_str()
+        ),
+        ("First", "CustomStyle")
+    );
+    for source in [
+        "hi link A b\nhi link B a\n",
+        "syn cluster A contains=@b\nsyn cluster B contains=@a\n",
+    ] {
+        let errors =
+            VimProgram::compile("case-cycle.vim", source, VimLoadLimits::default()).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.message.contains("cyclic")),
+            "{errors:?}"
+        );
+    }
+}
+
+#[test]
+fn syntax_include_ignores_all_clear_forms_and_keeps_nested_cluster_ownership() {
+    struct Directory(std::path::PathBuf);
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let directory = Directory(
+        std::env::temp_dir().join(format!("viem-vim-include-clears-{}", std::process::id())),
+    );
+    std::fs::create_dir_all(&directory.0).unwrap();
+    let parent = "syn match Parent /P/\nsyn match Before /B/\nsyn include @Inc syntax/child.vim\nsyn region Box start=/\\[/ end=/\\]/ contains=@inc\n";
+    std::fs::write(directory.0.join("parent.vim"), parent).unwrap();
+    for (child, old_survives) in [
+        (
+            "syn match ChildOld /y/\nsyn clear\nsyn match Child /x/\n",
+            true,
+        ),
+        ("syn clear Parent\nsyn match Child /x/\n", false),
+        (
+            "syn match ChildOld /y/\nsyn clear ChildOld\nsyn match Child /x/\n",
+            true,
+        ),
+    ] {
+        std::fs::write(directory.0.join("child.vim"), child).unwrap();
+        let p =
+            VimProgram::load_directory(&directory.0, "parent", VimLoadLimits::default()).unwrap();
+        let input = input("PBxy [PBxy] {y}", 1);
+        let result = finish(&mut VimSession::new(p), &input, 0..input.byte_len(), 10000);
+        assert_eq!(
+            names(&result, input.byte_len()),
+            [
+                "Parent",
+                "Before",
+                "",
+                "",
+                "",
+                "Box",
+                "Box",
+                "Box",
+                "Child",
+                if old_survives { "ChildOld" } else { "Box" },
+                "Box",
+                "",
+                "",
+                "",
+                ""
+            ],
+            "{child}"
+        );
+    }
+    std::fs::write(directory.0.join("child.vim"), "syn match Outer /x/\nsyn include @Nested syntax/grand.vim\nsyn region NestedBox start=/{/ end=/}/ contains=@nested\n").unwrap();
+    std::fs::write(
+        directory.0.join("grand.vim"),
+        "syn clear\nsyn match Inner /y/\n",
+    )
+    .unwrap();
+    let p = VimProgram::load_directory(&directory.0, "parent", VimLoadLimits::default()).unwrap();
+    let input = input("xy [x{y}y] {y}", 1);
+    let result = finish(&mut VimSession::new(p), &input, 0..input.byte_len(), 10000);
+    assert_eq!(
+        names(&result, input.byte_len()),
+        [
+            "",
+            "",
+            "",
+            "Box",
+            "Outer",
+            "NestedBox",
+            "Inner",
+            "NestedBox",
+            "Box",
+            "Box",
+            "",
+            "",
+            "",
+            ""
+        ]
+    );
+
+    // Vim includes synchronization group names in the cluster, although their
+    // patterns are recovery hints rather than ordinary highlighting rules.
+    std::fs::write(directory.0.join("parent.vim"), "syn match Hidden /S/ contained\nsyn include @Inc syntax/child.vim\nsyn region Box start=/\\[/ end=/\\]/ contains=@Inc\n").unwrap();
+    std::fs::write(
+        directory.0.join("child.vim"),
+        "syn match Child /x/\nsyn sync match Hidden /S/\n",
+    )
+    .unwrap();
+    let p = VimProgram::load_directory(&directory.0, "parent", VimLoadLimits::default()).unwrap();
+    let input = self::input("S [Sx]", 1);
+    let result = finish(&mut VimSession::new(p), &input, 0..input.byte_len(), 10000);
+    assert_eq!(
+        names(&result, input.byte_len()),
+        ["", "", "Box", "Hidden", "Child", "Box"]
+    );
+}
+
+#[test]
+fn inactive_throw_messages_preserve_following_inline_endif() {
+    let source = "if version < 704 | throw \"old | version\" | endif\nsyn keyword Ready token\n";
+    let input = input("token", 1);
+    let result = finish(
+        &mut VimSession::new(program(source)),
+        &input,
+        0..input.byte_len(),
+        10000,
+    );
+    assert_eq!(
+        names(&result, input.byte_len()),
+        ["Ready", "Ready", "Ready", "Ready", "Ready"]
+    );
+
+    let errors = VimProgram::compile(
+        "active-throw.vim",
+        &source.replace("version < 704", "1"),
+        VimLoadLimits::default(),
+    )
+    .unwrap_err();
+    assert!(
+        errors.iter().any(|error| error
+            .message
+            .contains("unsupported native setup command: throw")),
+        "{errors:?}"
+    );
+    assert!(
+        !errors
+            .iter()
+            .any(|error| error.message.contains("unterminated")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn unused_end_start_offsets_and_trailing_offset_commas_follow_vim() {
+    let errors = VimProgram::compile(
+        "retroactive-region-end.vim",
+        "syn region Body start=/a/ end=/X/re=s-1",
+        VimLoadLimits::default(),
+    )
+    .unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.message.contains("retroactive")),
+        "{errors:?}"
+    );
+    for (source, text, expected) in [
+        ("syn region Body start=/a/ end=/X/re=s", "aXrest", vec!["Body", "Body", "", "", "", ""]),
+        (r"syn region Body start=/a/me=s-99,he=s-99,re=s-99 skip=/\\./ms=s-99,hs=s-99,he=s-99,rs=s-99,re=s-99 end=/X/ms=s-99,hs=s-99,rs=s-99", "a\\XbXrest", vec!["Body", "Body", "Body", "Body", "Body", "", "", "", ""]),
+        ("syn region Body start=/a/ end=/X/ms=s-1,me=s-1\nsyn match Tail /X/", "aXrest", vec!["Body", "Tail", "", "", "", ""]),
+        ("syn region Body start=/a/ end=/in/me=e-2, nextgroup=Tail\nsyn match Tail /in/ contained", "aXinrest", vec!["Body", "Body", "Tail", "Tail", "", "", "", ""]),
+    ] {
+        let input = input(text, 1);
+        let result = finish(&mut VimSession::new(program(source)), &input, 0..input.byte_len(), 10000);
+        assert_eq!(names(&result, input.byte_len()), expected, "{source}");
+    }
 }
 
 #[test]
@@ -224,6 +464,31 @@ fn external_delimiters_escape_vim_pattern_metacharacters() {
 }
 
 #[test]
+fn external_delimiters_use_the_final_keyword_environment() {
+    for (initial, final_value, expected_end) in [
+        ("@,48-57,_", "@,48-57,_,45", 17),
+        ("@,48-57,_,45", "@,48-57,_", 22),
+    ] {
+        let syntax = format!("syn iskeyword {initial}\nsyn region Comment start=/<\\z(\\w\\+\\)>/ end=/\\z1\\k/\nsyn iskeyword {final_value}\n");
+        let input = input("<END>payload END-\nnext", 1);
+        let result = finish(
+            &mut VimSession::new(program(&syntax)),
+            &input,
+            0..input.byte_len(),
+            10000,
+        );
+        assert_eq!(
+            result
+                .runs
+                .iter()
+                .map(|run| (run.range.clone(), run.name.0.as_str()))
+                .collect::<Vec<_>>(),
+            [(0..expected_end, "Comment")]
+        );
+    }
+}
+
+#[test]
 fn zero_width_end_finishes_before_the_real_newline() {
     let p = program("syn region Line start=/@/ end=/$/\n");
     let input = input("@one\ntwo", 1);
@@ -291,6 +556,169 @@ fn region_offsets_are_per_pattern_and_character_based() {
 }
 
 #[test]
+fn region_body_offsets_use_pattern_boundaries_for_both_delimiters() {
+    // Expected groups are independently checked against Vim's synID values.
+    for (start, end, expected) in [
+        (
+            "rs=e",
+            "",
+            vec![(3..6, "Open"), (6..12, "Body"), (12..15, "Close")],
+        ),
+        (
+            "rs=e-1",
+            "",
+            vec![(3..5, "Open"), (5..12, "Body"), (12..15, "Close")],
+        ),
+        (
+            "rs=s+1",
+            "",
+            vec![(3..4, "Open"), (4..12, "Body"), (12..15, "Close")],
+        ),
+        (
+            "rs=e+2",
+            "re=s+1",
+            vec![(3..8, "Open"), (8..13, "Body"), (13..15, "Close")],
+        ),
+    ] {
+        let syntax = format!(
+            "syn region Body matchgroup=Open start=/foo/{start} matchgroup=Close end=/bar/{end}"
+        );
+        let input = input("abcfoostringbarabc", 1);
+        let result = finish(
+            &mut VimSession::new(program(&syntax)),
+            &input,
+            0..input.byte_len(),
+            10000,
+        );
+        assert_eq!(
+            result
+                .runs
+                .iter()
+                .map(|run| (run.range.clone(), run.name.0.as_str()))
+                .collect::<Vec<_>>(),
+            expected,
+            "{syntax}"
+        );
+    }
+    let input = input("«éx»", 1);
+    let syntax = "syn region Body matchgroup=Open start=/«é/rs=e-1 matchgroup=Close end=/»/";
+    let result = finish(
+        &mut VimSession::new(program(syntax)),
+        &input,
+        0..input.byte_len(),
+        10000,
+    );
+    assert_eq!(
+        result
+            .runs
+            .iter()
+            .map(|run| (run.range.clone(), run.name.0.as_str()))
+            .collect::<Vec<_>>(),
+        [(0..2, "Open"), (2..5, "Body"), (5..7, "Close")]
+    );
+}
+
+#[test]
+fn transparent_make_target_keeps_colon_in_start_matchgroup() {
+    let source = r#"syn region Target transparent matchgroup=Function start="^[a-z]\+: "rs=e-1 end="$" keepend"#;
+    let input = input("all: app\nnext: main.o\n", 1);
+    let result = finish(
+        &mut VimSession::new(program(source)),
+        &input,
+        0..input.byte_len(),
+        10000,
+    );
+    assert_eq!(
+        result
+            .runs
+            .iter()
+            .map(|run| (run.range.clone(), run.name.0.as_str()))
+            .collect::<Vec<_>>(),
+        [(0..4, "Function"), (9..14, "Function")]
+    );
+}
+
+#[test]
+fn transparent_region_end_uses_body_transparency_for_its_own_group() {
+    for (group, expected) in [
+        ("Target", vec![(0..4, "Target")]),
+        ("Delimiter", vec![(0..4, "Delimiter"), (7..8, "Delimiter")]),
+    ] {
+        let source = format!(
+            r#"syn region Target transparent matchgroup={group} start="^all: "rs=e-1 end="[^\\]$" keepend"#
+        );
+        let input = input("all: app\n", 1);
+        let result = finish(
+            &mut VimSession::new(program(&source)),
+            &input,
+            0..input.byte_len(),
+            10000,
+        );
+        assert_eq!(
+            result
+                .runs
+                .iter()
+                .map(|run| (run.range.clone(), run.name.0.as_str()))
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn keepend_preserves_contained_color_through_an_unstyled_end_pattern() {
+    for (matchgroup, expected) in [
+        ("", vec![(0..1, "Outer"), (1..5, "Inner")]),
+        (
+            "matchgroup=Delimiter",
+            vec![(0..1, "Delimiter"), (1..4, "Inner"), (4..5, "Delimiter")],
+        ),
+    ] {
+        let syntax = format!("syn region Outer {matchgroup} start=/{{/ end=/}}/ keepend contains=Inner\nsyn region Inner start=/a/ end=/$/ contained");
+        let input = input("{abc} rest\n", 1);
+        let result = finish(
+            &mut VimSession::new(program(&syntax)),
+            &input,
+            0..input.byte_len(),
+            10000,
+        );
+        assert_eq!(
+            result
+                .runs
+                .iter()
+                .map(|run| (run.range.clone(), run.name.0.as_str()))
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn shifted_region_end_allows_containment_until_its_delimiter_boundary() {
+    let syntax = "syn region Outer matchgroup=Delimiter start=/{/ end=/}x/re=s+1 keepend contains=Inner\nsyn match Inner /}/ contained";
+    let input = input("{abc}x rest\n", 1);
+    let result = finish(
+        &mut VimSession::new(program(syntax)),
+        &input,
+        0..input.byte_len(),
+        10000,
+    );
+    assert_eq!(
+        result
+            .runs
+            .iter()
+            .map(|run| (run.range.clone(), run.name.0.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (0..1, "Delimiter"),
+            (1..4, "Outer"),
+            (4..5, "Inner"),
+            (5..6, "Delimiter")
+        ]
+    );
+}
+
+#[test]
 fn excludenl_and_keepend_control_contained_eol_extension() {
     for (flag, keepend, expected) in [
         ("", "", 0..9),
@@ -333,6 +761,105 @@ fn million_line_cold_jump_is_provisional_and_warm_repaint_is_free() {
     let cached = session.highlight(&input, range, VimBudget::default());
     assert_eq!(cached.stats.instructions, 0);
     assert_eq!(cached.stats.cache_hits, 1);
+}
+
+#[test]
+fn pinned_make_large_document_edits_have_bounded_repair_and_free_repaint() {
+    fn bounded(
+        session: &mut VimSession,
+        input: &SyntaxInputSnapshot,
+        range: Range<usize>,
+    ) -> VimResult {
+        let mut instructions = 0;
+        let mut bytes = 0;
+        let mut lines = 0;
+        for _ in 0..32 {
+            let result = session.highlight(input, range.clone(), VimBudget::default());
+            assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+            instructions += result.stats.instructions;
+            bytes += result.stats.input_bytes;
+            lines += result.stats.evaluated_lines;
+            assert!(instructions <= 4_000_000, "{instructions} instructions");
+            assert!(bytes <= 128 * 1024, "{bytes} input bytes");
+            assert!(lines <= 96, "{lines} evaluated lines");
+            if !result.stats.yielded {
+                assert_eq!(result.covered, range);
+                return result;
+            }
+        }
+        panic!("Makefile highlighting exceeded its finite slice budget");
+    }
+    let normalized = |result: &VimResult, start: usize| {
+        result
+            .runs
+            .iter()
+            .map(|run| {
+                (
+                    run.range.start - start..run.range.end - start,
+                    run.name.0.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let p = program(MAKE_SYNTAX);
+    let unit = "all: main.o\n\t@echo $(CC)\n";
+    let local = unit.repeat(2);
+    let mut edited_local = local.clone();
+    edited_local.remove(3);
+    let oracle_input = input(&edited_local, 1);
+    let oracle = finish(
+        &mut VimSession::new(p.clone()),
+        &oracle_input,
+        0..oracle_input.byte_len(),
+        10000,
+    );
+    for line_count in [10_000, 1_000_000] {
+        let text = unit.repeat(line_count / 2);
+        let before = input(&text, 1);
+        for start in [0, text.len() - local.len()] {
+            let range = start..start + local.len();
+            let mut session = VimSession::new(p.clone());
+            let initial = bounded(&mut session, &before, range.clone());
+            assert_eq!(
+                initial.coverage,
+                if start == 0 {
+                    Coverage::Exact
+                } else {
+                    Coverage::Provisional
+                }
+            );
+            let cached = session.highlight(&before, range, VimBudget::default());
+            assert_eq!((cached.stats.instructions, cached.stats.cache_hits), (0, 1));
+
+            // Deleting the target colon removes the recipe's containing context.
+            // Use the persistent tree splice so unchanged suffix identities survive.
+            let edit = start + 3..start + 4;
+            let after = SyntaxInputSnapshot::new(
+                SyntaxInputIdentity {
+                    revision: 2,
+                    ..before.identity()
+                },
+                before.text_tree().splice(edit.clone(), "").unwrap(),
+            );
+            session
+                .apply_edit(
+                    before.identity(),
+                    after.identity(),
+                    edit.clone(),
+                    edit.start,
+                )
+                .unwrap();
+            let changed_range = start..start + edited_local.len();
+            let repaired = bounded(&mut session, &after, changed_range.clone());
+            assert_eq!(
+                normalized(&repaired, start),
+                normalized(&oracle, 0),
+                "{line_count} lines at {start}"
+            );
+            let cached = session.highlight(&after, changed_range, VimBudget::default());
+            assert_eq!((cached.stats.instructions, cached.stats.cache_hits), (0, 1));
+        }
+    }
 }
 
 #[test]
@@ -541,7 +1068,7 @@ fn neovim_query_regex_uses_its_declared_magic_prefix_policy() {
             .is_match_text("a", 20000)
             .unwrap()
     );
-    assert!(VimPattern::compile_neovim_query(r"\Mfoo", VimRegexLimits::default()).is_err());
+    assert!(VimPattern::compile_neovim_query(r"\Mfoo", VimRegexLimits::default()).is_ok());
     let pattern = VimPattern::compile(r"abc\c", false, VimRegexLimits::default()).unwrap();
     assert!(pattern.is_match_text("ABC", 20000).unwrap());
 }
@@ -577,9 +1104,13 @@ fn installed_macvim_runtime_matches_reference_colors_byte_for_byte() {
     let runtime = Path::new(
         "/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/Resources/vim/runtime/syntax",
     );
-    let executable =
-        Path::new("/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/MacOS/Vim");
-    if !runtime.exists() || !executable.exists() {
+    let macvim = Path::new("/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/MacOS/Vim");
+    let executable = if macvim.exists() {
+        macvim
+    } else {
+        Path::new("/usr/bin/vim")
+    };
+    if !executable.exists() {
         return;
     }
     struct Directory(std::path::PathBuf);
@@ -592,6 +1123,14 @@ fn installed_macvim_runtime_matches_reference_colors_byte_for_byte() {
         Directory(std::env::temp_dir().join(format!("viem-vim-reference-{}", std::process::id())));
     std::fs::create_dir_all(&directory.0).unwrap();
     for (language, text) in [
+        (
+            "make",
+            "# TODO: build\nCC := clang\nSOURCES = $(wildcard *.c)\n.PHONY: all clean\nall: app\n\t@echo \"building $(SOURCES)\"\napp: main.o\n\t$(CC) -o $@ $^\nclean:\n\trm -f app\ninclude config.mk\nifeq ($(DEBUG),1)\nCFLAGS += -g\nendif\n",
+        ),
+        (
+            "make",
+            "define compile\n$(CC) -o $$@ $$<\nendef\n\nall: main.o \\\n helper.o # dependencies\n\t@echo '$(CC)' `date`\n\tprintf \"done\"\ninline: ; @echo ok\nempty:\n malformed recipe\n",
+        ),
         (
             "conf",
             "# TODO\nx # FIXME\n\"quoted \\\" value\"\n'unclosed\n",
@@ -609,12 +1148,16 @@ fn installed_macvim_runtime_matches_reference_colors_byte_for_byte() {
             "vim9script\n# editor settings\nset number\nvar enabled = true\ndef Configure(): bool\n  return enabled\nenddef\n",
         ),
     ] {
+        if language != "make" && !runtime.exists() { continue; }
+        let syntax_path = if language == "make" {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core/document/syntax/vim/fixtures/make.vim")
+        } else { runtime.join(format!("{language}.vim")) };
         let input_path = directory.0.join("input.txt");
         let output_path = directory.0.join("groups.txt");
         let script_path = directory.0.join("reference.vim");
         std::fs::write(&input_path, text).unwrap();
         let quote = |p: &Path| format!("'{}'", p.display().to_string().replace('\'', "''"));
-        let script=format!("set nomore\nset encoding=utf-8\nexecute 'edit ' . fnameescape({})\nsyntax clear\nunlet! b:current_syntax\nexecute 'source ' . fnameescape({})\nsyntax sync fromstart\nlet result = []\nfor lnum in range(1, line('$'))\n  for col in range(1, strlen(getline(lnum)))\n    call add(result, synIDattr(synIDtrans(synID(lnum,col,1)), 'name'))\n  endfor\nendfor\ncall writefile(result,{})\nqa!\n",quote(&input_path),quote(&runtime.join(format!("{language}.vim"))),quote(&output_path));
+        let script=format!("set nomore\nset encoding=utf-8\nexecute 'edit ' . fnameescape({})\nsyntax clear\nunlet! b:current_syntax\nexecute 'source ' . fnameescape({})\nsyntax sync fromstart\nlet result = []\nfor lnum in range(1, line('$'))\n  for col in range(1, strlen(getline(lnum)))\n    call add(result, synIDattr(synIDtrans(synID(lnum,col,1)), 'name'))\n  endfor\nendfor\ncall writefile(result,{})\nqa!\n",quote(&input_path),quote(&syntax_path),quote(&output_path));
         std::fs::write(&script_path, script).unwrap();
         let mut child = std::process::Command::new(executable)
             .args(["-Nu", "NONE", "-n", "-es", "-i", "NONE", "-S"])
@@ -640,11 +1183,11 @@ fn installed_macvim_runtime_matches_reference_colors_byte_for_byte() {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         let input = input(text, 1);
-        let p = VimProgram::load_directory_with_context(
+        let p = if language == "make" { program(MAKE_SYNTAX) } else { VimProgram::load_directory_with_context(
             runtime, language, VimLoadLimits::default(),
             &VimSetupContext::from_input(&input),
             &std::sync::atomic::AtomicBool::new(false),
-        ).unwrap();
+        ).unwrap() };
         let actual = names(
             &finish(&mut VimSession::new(p), &input, 0..input.byte_len(), 10000),
             text.len(),
@@ -653,9 +1196,11 @@ fn installed_macvim_runtime_matches_reference_colors_byte_for_byte() {
         .zip(text.bytes())
         .filter_map(|(name, byte)| (byte != b'\n').then_some(name))
         .collect::<Vec<_>>();
-        assert_eq!(
-            actual, reference,
-            "installed {language}.vim effective groups"
-        );
+        assert_eq!(actual.len(), reference.len(), "installed {language}.vim byte count");
+        let mismatches = text.bytes().enumerate().filter(|(_, byte)| *byte != b'\n')
+            .zip(actual.iter().zip(&reference))
+            .filter_map(|((offset, byte), (actual, expected))| (actual != expected).then_some((offset, char::from(byte), actual, expected)))
+            .take(16).collect::<Vec<_>>();
+        assert!(mismatches.is_empty(), "installed {language}.vim effective groups differ (byte, character, actual, expected): {mismatches:?}");
     }
 }

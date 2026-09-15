@@ -512,10 +512,13 @@ impl SyntaxProvider for BackendProvider {
             session.native_allocation_metrics().retained_bytes.saturating_add(session.retained_input_bytes())
         });
         let fallback = self.fallback.as_ref().map_or(0, VimSession::retained_bytes);
+        let context_bytes = |context: &Option<VimSetupContext>| context.as_ref().map_or(0, |context|
+            context.prefix.capacity() + context.filename.as_ref().map_or(0, String::capacity));
         let children = self.children.iter().map(|child| {
             child.session.as_ref().map_or(0, |session| session.native_allocation_metrics().retained_bytes
                 .saturating_add(session.retained_input_bytes()))
                 .saturating_add(child.fallback.as_ref().map_or(0, VimSession::retained_bytes))
+                .saturating_add(context_bytes(&child.fallback_context))
                 .saturating_add(child.cache.as_ref().map_or(0, |cache| cache.runs.capacity() * std::mem::size_of::<SyntaxRun>()
                     + cache.runs.iter().map(|run| run.name.0.capacity() + run.origin.capacity()).sum::<usize>()))
         }).sum::<usize>();
@@ -524,6 +527,8 @@ impl SyntaxProvider for BackendProvider {
         let inputs = [&self.input, &self.fallback_input].into_iter().flatten()
             .map(|input| input.byte_len().saturating_add(input.text_tree().leaf_count().saturating_mul(256))).sum::<usize>();
         primary.saturating_add(fallback).saturating_add(children).saturating_add(inputs)
+            .saturating_add(context_bytes(&self.fallback_context))
+            .saturating_add(self.configuration.as_ref().and_then(|configuration| configuration.filename.as_ref()).map_or(0, String::capacity))
     }
 
     fn analyze(&mut self, request: &SyntaxRequest, cancelled: &AtomicBool) -> SyntaxResult {
@@ -541,8 +546,11 @@ impl SyntaxProvider for BackendProvider {
             .input
             .as_ref()
             .is_none_or(|old| old.identity() != request.input.identity())
+            || self.fallback_context.as_ref().and_then(|context| context.filename.as_ref())
+                != request.configuration.filename.as_ref()
         {
-            let context = VimSetupContext::from_input(&request.input);
+            let mut context = VimSetupContext::from_input(&request.input);
+            context.filename = request.configuration.filename.clone();
             if self.fallback_context.as_ref() != Some(&context) {
                 self.fallback = None;
                 self.fallback_attempted = false;
@@ -777,7 +785,8 @@ fn analyze_child(
         }
         let tree = crate::document::FormattedTextTree::try_from_text(text).expect("valid UTF-8");
         let input = SyntaxInputSnapshot::new(request.input.identity(), tree);
-        let context = VimSetupContext::from_input(&input);
+        let mut context = VimSetupContext::from_input(&input);
+        context.filename = request.configuration.filename.clone();
         if child.fallback_context.as_ref() != Some(&context) {
             child.fallback = None;
             child.fallback_attempted = false;

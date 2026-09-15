@@ -11,6 +11,33 @@ use std::sync::Arc;
 
 mod metrics;
 
+#[cfg(test)]
+mod filename_tests {
+    use super::*;
+    use crate::document::syntax::service::{SyntaxProvider, SyntaxRequest, SyntaxResult};
+    use crate::layout::MockTextMeasurementProvider;
+    struct NoSyntax;
+    impl SyntaxProvider for NoSyntax {
+        fn analyze(&mut self, request: &SyntaxRequest, _: &std::sync::atomic::AtomicBool) -> SyntaxResult {
+            SyntaxResult::missing(request, "fixture")
+        }
+    }
+    #[test]
+    fn code_filename_reaches_syntax_on_open_rename_and_provider_replacement() {
+        let document = Document::from_bytes(b"token".to_vec(), crate::document::Encoding::Utf8, Format::Code).unwrap();
+        let mut core = Core::<MockTextMeasurementProvider>::new(document);
+        core.initialize_code_detection("first.vim", false).unwrap();
+        assert_eq!(core.syntax.service.configuration.filename.as_deref(), Some("first.vim"));
+        let old = core.syntax.service.configuration.clone();
+        core.redetect_code_language(Some("second.vim"));
+        assert_eq!(core.syntax.service.configuration.filename.as_deref(), Some("second.vim"));
+        assert_eq!(core.syntax.service.configuration.language, old.language);
+        assert_ne!(core.syntax.service.configuration.generation, old.generation);
+        core.set_syntax_provider_factory(Arc::new(|| Box::new(NoSyntax)));
+        assert_eq!(core.syntax.service.configuration.filename.as_deref(), Some("second.vim"));
+    }
+}
+
 pub(super) struct CoreSyntax {
     service: SyntaxService,
     selection: LanguageSelection,
@@ -59,6 +86,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             return Err(crate::document::StyleDefaultsError::NotPristine);
         }
         self.syntax.filename = filename.to_owned();
+        self.syntax.service.set_filename((!filename.is_empty()).then(|| filename.to_owned()));
         let detection = detection::detect_with_profile(
             &self.syntax_input(),
             filename,
@@ -87,6 +115,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
     pub fn set_code_language(&mut self, selection: LanguageSelection) {
         self.syntax.selection = selection;
+        self.syntax.service.set_filename((!self.syntax.filename.is_empty()).then(|| self.syntax.filename.clone()));
         let detection = detection::detect_with_profile(
             &self.syntax_input(),
             &self.syntax.filename,
@@ -159,6 +188,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let mut service = SyntaxService::with_factory(factory);
         service.set_language(self.syntax.service.configuration.language.clone());
         service.set_vim_directory(self.syntax.service.configuration.vim_directory.clone());
+        service.set_filename(self.syntax.service.configuration.filename.clone());
         self.syntax.service = service;
         self.syntax.published = None;
     }

@@ -1,12 +1,12 @@
-# Native Vim syntax profile 2
+# Native Vim syntax profile 3
 
-The native compiler loads declarations; it does not run a Vimscript interpreter.
-Compilation is atomic. An active unsupported command, option, pattern, include,
-or cyclic dependency produces a file/line diagnostic and rejects the program.
+The native compiler evaluates the bounded setup language below and emits ordered
+syntax declarations. Compilation is atomic. An active unsupported command, option, pattern, include,
+or nonprogressing include cycle produces a file/line diagnostic and rejects the program.
 The directory loader confines transitive includes to the selected syntax root.
 Program generations incorporate transitive file names and contents.
 
-The installed MacVim 9.1.1887 `conf.vim`, `dosini.vim`, and `vim.vim` files are exercised as
+The installed MacVim 9.1.1887 `conf.vim`, `dosini.vim`, `make.vim`, and `vim.vim` files are exercised as
 runtime fixtures. When that installation is present, a differential test runs
 MacVim without user configuration and compares every non-newline byte's effective
 highlight group. This is compatibility evidence for these fixtures, not a claim
@@ -28,42 +28,72 @@ and zero-width matches are guarded against repeated starts at the same boundary.
 Legacy `lc` leading context may reuse preceding text without recoloring it;
 the effective match start still obeys the current scanning boundary.
 
-The compiler accepts line continuations, the usual `b:current_syntax` guard and
-assignment, `finish`, `unlet`, saved/restored `cpoptions`, and literal
-`runtime`/`syntax include` paths confined to the syntax directory. Script-local
-variables and functions have separate scopes for included files. Bounded setup
-expressions support scalar/list values, Boolean operators, comparisons,
-concatenation, ternaries, and `get`, `exists`, `has`, `index`, `getline`, and
-`join`. Single-return setup functions may compose those expressions. Literal
-command wrappers and `execute` can generate only commands accepted by the same
-strict syntax loader; they cannot invoke editor, process, or network operations.
-Loops and arbitrary functions remain unsupported.
+The compiler accepts line continuations, trailing comments, bar-separated Ex
+statements, common command abbreviations, literal heredocs, and the usual
+`b:current_syntax` guard. Bounded `if`/`elseif`, `for`/`while`, `break`/`continue`,
+`finish`, variable assignment, `unlet`, and saved/restored `cpoptions` support
+runtime setup. A `vim9script` header enables hash comments and simple `var`,
+`const`, and bare assignments; this does not implement a general Vim9 runtime.
+Script-local variables/functions retain separate scopes for included files.
+Global helper functions retain their defining script's scope when called later.
+Literal `source`, `<sfile>` relative paths, `runtime` wildcards, and syntax
+includes stay confined to the selected root. A guarded recursive include may
+reenter with different shared setup state; a repeated path/state is rejected.
+All recursion also observes the aggregate file and instruction limits.
+
+Setup expressions include scalar/list/dictionary values, indexing, Boolean and
+arithmetic operators, comparisons, concatenation, ternaries, and bounded string
+and collection helpers. Syntax-generating functions and command wrappers emit
+only declarations accepted by the same loader. Function bodies are stored as
+bounded data and evaluated only when called during compilation; unused editor
+callbacks never run. Helper-generated output is applied in order after the helper
+returns and is restricted to syntax/highlight declarations. Generated setup
+mutations, includes, control flow, and `hlexists()` after pending output are
+rejected because they would require immediate feedback during evaluation.
+Active unsupported editor, process, file-writing, or network
+commands still reject the whole program. Runtime `try` handlers can handle
+supported setup errors; they cannot conceal a compatibility failure.
+
+Highlight group and cluster identities are case-insensitive and retain their
+first spelling. `hlexists()` observes native default highlight identities and
+groups registered by preceding declarations; color values remain Code policy.
+Keyword and region options accept Vim's case-insensitive names,
+including Make's `nextGroup`. `syntax clear`, group links/clearing, whitespace in
+group lists, and long keyword inventories are supported. Inside a syntax include,
+clearing is ignored as in Vim, all new rules are contained, and each include
+cluster receives its immediate top-level declarations, including sync group names.
+Nested includes retain their own cluster ownership. Large inventories split
+into equivalent bounded keyword rules, without increasing per-pattern limits.
+Concrete `highlight` attributes establish named-group/link precedence; visual
+properties come from the global Code stylesheet.
 
 Buffer-dependent setup receives only the first 32 complete logical lines,
-capped at 64 KiB, when a program is loaded. This allows `vim.vim` to select its
+capped at 64 KiB, plus an optional document filename capped at 16 KiB. This allows `vim.vim` to select its
 Vim9 or legacy declarations. Workers compare that bounded prefix only when the
 input revision changes; setup reruns when the prefix changes. Other edits and
 viewport changes retain the compiled setup. This makes dialect selection
-independent of worker-session eviction. Prefix bytes participate in the program
-generation, alongside transitive syntax files. Cancelled setup compilations
+independent of worker-session eviction. Prefix bytes and filename participate in the program
+generation, alongside transitive syntax files. Renaming a document invalidates
+filename-dependent setup even when the text and language are unchanged. Cancelled setup compilations
 remain retryable and never become cached syntax-load failures.
-Optional editor features such as concealment are unavailable. Runtime globals
+Optional external editor capabilities are unavailable. Runtime globals
 start absent; declarations within a syntax package may assign bounded values.
 The Vim runtime's default embedded-language selections remain in effect.
 
-`sync fromstart`, `minlines`, `maxlines`, and `linebreaks` are retained as
-configuration/hints. Validated `linecont` and sync matches with `grouphere NONE`
-or `groupthere NONE` are accepted as recovery hints; exact analysis still uses
-document start or a validated checkpoint. C-comment recovery remains unsupported.
-`display` rules are always evaluated, so omitting an
-optimization cannot alter continuing state. `fold` and `syntax spell` are
-accepted metadata; this syntax provider does not fold text or perform spelling
-checks. Concealment options are rejected because Code presents literal text.
+`sync fromstart`, `minlines`, `maxlines`, and `linebreaks` configure recovery.
+Validated sync matches/regions with named `grouphere`/`groupthere` targets,
+`linecont`, `ccomment`, and clearing are accepted as recovery hints. Exact scans
+still start at document beginning or a validated checkpoint; heuristic recovery
+remains explicitly provisional. `display` rules are always evaluated. Folding,
+spelling, and concealment declarations are accepted presentation metadata; Code
+continues to display every source character and uses its own presentation policy.
 
 ## Pattern semantics
 
 The regular subset is compiled to a Thompson NFA and interpreted with explicit
-instruction fuel. It does not use an uninterruptible backtracking matcher.
+instruction fuel. Regular Unicode patterns that exceed the byte NFA budget can
+use the bounded scalar VM, which retains no unused NFA. It does not use an
+uninterruptible backtracking matcher.
 Supported atoms include literal text, real hard-line anchors, dot and bracket
 classes, common Vim ASCII character classes, keyword/identifier classes and word
 boundaries, grouping/alternation, greedy and Vim lazy repetitions, explicit
@@ -71,19 +101,29 @@ newlines, case overrides, `\zs`/`\ze`, and external region delimiter captures
 `\z(` with literal `\z1` … `\z9` end/skip references. Region checkpoints retain
 the complete external-capture strings, not just their hashes.
 
-Default magic and very magic are supported. A resumable compatibility VM handles
+Default magic, nomagic, very magic, very nomagic, and in-pattern mode changes are supported. A resumable compatibility VM handles
 postfix lookaround, bounded lookbehind, atomic matches, backreferences, and
 conjunctions. Abbreviation atoms, multiline character classes, and document
-start/end assertions are also supported. Nomagic, very nomagic, editor-position
-assertions, substitution-dependent atoms, and unsupported escapes are diagnosed.
-The keyword environment is the native
-profile's fixed underscore/digit/alphabetic/Latin-1 environment; editor-specific
-`iskeyword` changes are not accepted. Pattern matching uses UTF-8; it never
+start/end assertions, numeric character atoms, filename/printable classes,
+and supported POSIX classes are also supported. Numeric absolute-line (`\%Nl`)
+and byte-column (`\%Nc`) assertions, including `<` and `>` comparisons, query the
+immutable source tree in logarithmic time. Line assertions conservatively
+invalidate from the beginning after edits. Byte columns count UTF-8 bytes,
+independently of tabs, graphemes, and display width. String predicates follow
+Vim's string rules: line assertions fail and byte columns are string-relative.
+Numeric character escapes for 0 and 10 follow Vim's buffer/string distinction:
+they match NUL in source buffers and LF in string predicates; `\n` matches a
+source hard-line boundary. Numeric collection ranges preserve the same rule.
+Cursor, mark, Visual-selection, virtual-column, composing-character (`\Z`/`\%C`),
+and substitution-dependent atoms are diagnosed. `setlocal iskeyword` and syntax's
+independent `iskeyword` override control keyword classes and boundaries. The final
+setup environment applies to all declarations, including dynamically expanded
+external-delimiter patterns. Clearing syntax's override restores the buffer option. Pattern matching uses UTF-8; it never
 manufactures end-of-line boundaries at rope-leaf or work-slice boundaries.
 
 `VimPattern::compile_neovim_query` follows the Neovim 0.11.4 query predicate
 prefix policy: patterns of at least two bytes receive very magic unless they
-already begin with a magic-mode switch. Unsupported explicit modes still fail.
+already begin with a magic-mode switch. Explicit magic-mode switches are honored.
 `is_match_text_with_fuel` charges all candidate starts to one caller-owned
 predicate budget and reports incomplete work as an error, never a false match.
 
@@ -123,8 +163,8 @@ Checkpoint eviction may require later background repair; it never makes an
 interactive frame wait.
 
 Default limits are 4 MiB of setup source, 64 included files, 4,096 rules, 32 MiB
-of compiled pattern data, 8 KiB per pattern, and 1 MiB/8,192 states per NFA.
-The loader bounds diagnostics and conditional depth, streams physical lines,
+of compiled pattern data, 16 KiB per pattern, and 1 MiB/8,192 states per NFA.
+The loader bounds diagnostics, statement/conditional depth, logical source lines,
 and offers cancellation-aware entry points. Cancellation is observed between
 bounded compilation steps; NFA construction is bounded by its pattern/NFA caps.
 
@@ -144,7 +184,7 @@ Run the explicit release gate with:
 
     cargo test --release --offline --lib pinned_vim_provider_performance -- --ignored --nocapture
 
-It emits `target/vim-benchmark.json`. The checked fixtures are unmodified
+It emits `target/vim-benchmark.json`. The benchmark fixtures are unmodified
 `conf.vim` and `dosini.vim` from the installed MacVim 9.1.1887 runtime. Their
 original attribution and the accompanying `fixtures/VIM-LICENSE.txt` are
 retained. Generated four-line source units, their revision, and workload loops
@@ -178,3 +218,10 @@ fallback completed within 1.096 ms. Accounted retained syntax data peaked at
 bytes, and dosini's used 19,991 instructions and 1,663 bytes, unchanged across
 all three document sizes. Million-line middle/end results remain explicitly
 provisional when the finite exact-priming allowance expires.
+
+## Installed-runtime audit
+
+See [the runtime audit](../../../../../docs/vim-syntax-audit.md) for the
+reproducible directory audit, before/after results, and remaining limitations.
+The pinned `make.vim` additionally has byte-for-byte native comparisons and
+10,000/1,000,000-line edit/repair/repaint tests with fixed work ceilings.

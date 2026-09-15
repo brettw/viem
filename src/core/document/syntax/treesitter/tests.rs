@@ -177,7 +177,7 @@ fn queries_validate_host_capabilities_before_activation() {
         "bad",
         1,
         tree_sitter_c::LANGUAGE.into(),
-        r#"((identifier) @name (#match? @name "\\Vfoo"))"#,
+        r#"((identifier) @name (#match? @name "\\m\\%Vfoo"))"#,
         None,
         QueryProfile::NeovimV1,
         &generous(),

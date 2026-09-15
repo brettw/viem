@@ -88,6 +88,18 @@ public final class EVDocument: NSDocument {
         }
     }
 
+    public override var fileURL: URL? {
+        get { super.fileURL }
+        set {
+            super.fileURL = newValue
+            if let newValue {
+                onMainActor {
+                    self.editorBackend.updateFilename(EVDocumentIdentity.canonicalURL(newValue).path)
+                }
+            }
+        }
+    }
+
     nonisolated(unsafe) public let editorBackend: any EVDocumentBackend
     private struct ActiveSave {
         let snapshot: EVDocumentSaveSnapshot
@@ -197,7 +209,7 @@ public final class EVDocument: NSDocument {
             case .readOnly, .editAnyway:
                 let openingType = Self.readableType(for: typeName)
                 try self.editorBackend.read(source: original.get(), typeName: openingType,
-                    filename: target.lastPathComponent, allowAutomaticCode: Self.sourceFormat(forTypeName: openingType) == .plainText)
+                    filename: target.path, allowAutomaticCode: Self.sourceFormat(forTypeName: openingType) == .plainText)
                 recovered = false
             case .cancel: return
             }

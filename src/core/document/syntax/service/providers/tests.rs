@@ -25,6 +25,7 @@ fn request(text: &str, language: &str, revision: u64) -> SyntaxRequest {
             registry_generation: treesitter::package_registry_generation(),
             language: Some(language.into()),
             vim_directory: String::new(),
+            filename: None,
         },
         range: 0..text.len(),
     }

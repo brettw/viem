@@ -3,10 +3,12 @@
 use super::super::SyntaxInputSnapshot;
 use regex_automata::{
     nfa::thompson::{State, NFA},
-    util::{look::Look, primitives::StateID, syntax},
+    util::{look::Look, primitives::StateID},
 };
 use std::sync::Arc;
 
+#[path = "regex/keyword.rs"]
+mod keyword;
 #[cfg(test)]
 #[path = "regex/tests.rs"]
 mod tests;
@@ -14,6 +16,7 @@ mod tests;
 mod translate;
 #[path = "regex/vm.rs"]
 mod vm;
+pub use keyword::VimKeyword;
 
 const SLOTS: usize = 64;
 const UNSET: usize = usize::MAX;
@@ -27,7 +30,7 @@ pub struct VimRegexLimits {
 impl Default for VimRegexLimits {
     fn default() -> Self {
         Self {
-            pattern_bytes: 8192,
+            pattern_bytes: 16 * 1024,
             nfa_bytes: 1024 * 1024,
             states: 8192,
         }
@@ -35,7 +38,10 @@ impl Default for VimRegexLimits {
 }
 #[derive(Clone, Debug)]
 pub struct VimPattern {
-    nfa: Arc<NFA>,
+    keyword: VimKeyword,
+    ignore_case: bool,
+    start_anchor: Option<regex_syntax::hir::Look>,
+    nfa: Option<Arc<NFA>>,
     advanced: Option<Arc<vm::Program>>,
     pub(super) external_groups: Vec<usize>,
     pub(super) multiline: bool,
@@ -76,8 +82,9 @@ impl VimRegexContinuation {
             + self.next.capacity() * std::mem::size_of::<Thread>()
             + self.seen.capacity() * std::mem::size_of::<usize>()
             + self.advanced.as_ref().map_or(0, |vm| vm.retained_bytes())
-            + self.best.as_ref().map_or(0, |best| best.captures.capacity()
-                * std::mem::size_of::<Option<std::ops::Range<usize>>>())
+            + self.best.as_ref().map_or(0, |best| {
+                best.captures.capacity() * std::mem::size_of::<Option<std::ops::Range<usize>>>()
+            })
     }
 }
 
@@ -107,10 +114,18 @@ impl VimPattern {
         ignore_case: bool,
         limits: VimRegexLimits,
     ) -> Result<Self, String> {
+        Self::compile_with_keyword(source, ignore_case, limits, &VimKeyword::default())
+    }
+    pub fn compile_with_keyword(
+        source: &str,
+        ignore_case: bool,
+        limits: VimRegexLimits,
+        keyword: &VimKeyword,
+    ) -> Result<Self, String> {
         if source.len() > limits.pattern_bytes {
             return Err("pattern byte budget exceeded".into());
         }
-        let translation = translate::translate(source)?;
+        let translation = translate::translate(source, keyword)?;
         let translated = &translation.regex;
         let ignore_case = translation.case.unwrap_or(ignore_case);
         if translation.groups * 2 + 2 > SLOTS {
@@ -122,9 +137,33 @@ impl VimPattern {
             .build()
             .parse(translated)
             .map_err(|e| format!("unsupported/invalid Vim regular pattern: {e}"))?;
-        let advanced = if translation.specials.is_empty() {
-            None
+        // Scalar classes can be compact in the VM but expand into many UTF-8
+        // byte states (e.g. a Unicode keyword class repeated 33 times). Try the
+        // linear NFA first, then use the same bounded VM when representation
+        // limits make the byte program too large. Never retain an unused NFA.
+        let regular = translation.specials.is_empty();
+        let nfa = if regular {
+            match NFA::compiler()
+                .configure(NFA::config().nfa_size_limit(Some(limits.nfa_bytes)))
+                .build_from_hir(&hir)
+            {
+                Ok(nfa) if nfa.states().len() <= limits.states => Some(Arc::new(nfa)),
+                Ok(_) => None,
+                Err(error) if error.size_limit().is_some() => None,
+                Err(error) => {
+                    return Err(format!("unsupported/invalid Vim regular pattern: {error}"))
+                }
+            }
         } else {
+            None
+        };
+        if nfa
+            .as_ref()
+            .is_some_and(|nfa| nfa.group_info().slot_len() > SLOTS)
+        {
+            return Err("capture slot budget exceeded".into());
+        }
+        let advanced = if nfa.is_none() {
             Some(Arc::new(vm::Program::compile(
                 &hir,
                 &translation.specials,
@@ -132,7 +171,23 @@ impl VimPattern {
                 ignore_case,
                 translation.multiline,
                 limits,
+                keyword,
             )?))
+        } else {
+            None
+        };
+        let start_anchor = if regular {
+            let looks = hir.properties().look_set_prefix();
+            [
+                regex_syntax::hir::Look::Start,
+                regex_syntax::hir::Look::StartLF,
+            ]
+            .into_iter()
+            .find(|look| looks.contains(*look))
+        } else {
+            // Synthetic assertion bodies do not have their ordinary HIR
+            // semantics: a negative lookahead may invert an apparent anchor.
+            None
         };
         let minimum_chars = if translation.ends.is_empty() && translation.starts.is_empty() {
             advanced
@@ -141,37 +196,21 @@ impl VimPattern {
         } else {
             0
         };
-        let nfa = NFA::compiler()
-            .configure(NFA::config().nfa_size_limit(Some(limits.nfa_bytes)))
-            .syntax(
-                syntax::Config::new()
-                    .multi_line(true)
-                    .case_insensitive(ignore_case),
-            )
-            .build(&translated)
-            .map_err(|e| format!("unsupported/invalid Vim regular pattern: {e}"))?;
-        if nfa.states().len() > limits.states {
-            return Err("pattern state budget exceeded".into());
-        }
-        if advanced.is_none() && nfa.group_info().slot_len() > SLOTS {
-            return Err("capture slot budget exceeded".into());
-        }
-        if nfa.memory_usage() + advanced.as_ref().map_or(0, |vm| vm.memory_usage())
+        if nfa.as_ref().map_or(0, |nfa| nfa.memory_usage())
+            + advanced.as_ref().map_or(0, |vm| vm.memory_usage())
             > limits.nfa_bytes
         {
-            return Err("combined Vim regex program byte budget exceeded".into());
+            return Err("Vim regex program byte budget exceeded".into());
         }
-        let eol = nfa.states().iter().any(|s| {
-            matches!(
-                s,
-                State::Look {
-                    look: Look::EndLF,
-                    ..
-                }
-            )
-        });
+        let eol = hir
+            .properties()
+            .look_set()
+            .contains(regex_syntax::hir::Look::EndLF);
         Ok(Self {
-            nfa: Arc::new(nfa),
+            keyword: keyword.clone(),
+            ignore_case,
+            start_anchor,
+            nfa,
             advanced,
             external_groups: translation.external,
             multiline: translation.multiline,
@@ -182,15 +221,28 @@ impl VimPattern {
             minimum_chars,
         })
     }
+    /// Syntax keyword options are program-wide even when declared after rules.
+    /// Finalization rebinds them while retaining each rule's case declaration.
+    pub fn rebind_keyword(
+        &self,
+        keyword: &VimKeyword,
+        limits: VimRegexLimits,
+    ) -> Result<Self, String> {
+        if &self.keyword == keyword {
+            Ok(self.clone())
+        } else {
+            Self::compile_with_keyword(&self.source, self.ignore_case, limits, keyword)
+        }
+    }
     pub fn memory_usage(&self) -> usize {
-        self.nfa.memory_usage()
+        self.nfa.as_ref().map_or(0, |nfa| nfa.memory_usage())
             + self.source.len()
             + self.advanced.as_ref().map_or(0, |vm| vm.memory_usage())
     }
     pub fn continuation_bytes(&self) -> usize {
         self.advanced.as_ref().map_or_else(
             || {
-                self.nfa.states().len()
+                self.nfa.as_ref().expect("NFA program").states().len()
                     * (4 * std::mem::size_of::<Thread>() + std::mem::size_of::<usize>())
             },
             |vm| vm.continuation_bytes(),
@@ -204,7 +256,7 @@ impl VimPattern {
                 Vec::new()
             } else {
                 vec![Thread {
-                    state: self.nfa.start_anchored(),
+                    state: self.nfa.as_ref().expect("NFA program").start_anchored(),
                     slots: [UNSET; SLOTS],
                 }]
             },
@@ -212,13 +264,13 @@ impl VimPattern {
             seen: if self.advanced.is_some() {
                 Vec::new()
             } else {
-                vec![UNSET; self.nfa.states().len()]
+                vec![UNSET; self.nfa.as_ref().expect("NFA program").states().len()]
             },
             union: None,
             setup: if self.advanced.is_some() {
                 0
             } else {
-                self.nfa.states().len()
+                self.nfa.as_ref().expect("NFA program").states().len()
             },
             best: None,
             done: false,
@@ -246,6 +298,11 @@ impl VimPattern {
             c,
             input.byte_len(),
             |at| input.chunk_at(at).first().copied(),
+            &|at| {
+                let row = input.text_tree().hard_line_at_byte(at).ok()?;
+                let start = input.text_tree().hard_line_start(row).ok()?;
+                Some((row + 1, at - start + 1))
+            },
             fuel,
             cancel,
         );
@@ -257,12 +314,20 @@ impl VimPattern {
         c: &mut VimRegexContinuation,
         len: usize,
         byte: impl Fn(usize) -> Option<u8>,
+        position: &impl Fn(usize) -> Option<(usize, usize)>,
         fuel: &mut usize,
         cancel: &mut dyn FnMut() -> bool,
     ) -> VimRegexProgress {
         if let (Some(program), Some(continuation)) = (&self.advanced, &mut c.advanced) {
-            let mut result =
-                program.resume(continuation, len, &byte, fuel, cancel, &mut c.inspected_end);
+            let mut result = program.resume(
+                continuation,
+                len,
+                &byte,
+                position,
+                fuel,
+                cancel,
+                &mut c.inspected_end,
+            );
             if let VimRegexProgress::Complete(Some(found)) = &mut result {
                 let marker = |groups: &[usize], fallback| {
                     groups
@@ -282,6 +347,7 @@ impl VimPattern {
             }
             return result;
         }
+        let nfa = self.nfa.as_ref().expect("NFA program without VM");
         if c.done {
             return VimRegexProgress::Complete(c.best.clone());
         }
@@ -305,7 +371,7 @@ impl VimPattern {
             }
             *fuel -= 1;
             if let Some((thread, count)) = c.union.take() {
-                let State::Union { alternates } = self.nfa.state(thread.state) else {
+                let State::Union { alternates } = nfa.state(thread.state) else {
                     unreachable!()
                 };
                 let mut branch = thread.clone();
@@ -322,7 +388,7 @@ impl VimPattern {
                     continue;
                 }
                 c.seen[id] = c.position;
-                match self.nfa.state(thread.state) {
+                match nfa.state(thread.state) {
                     State::ByteRange { trans } => {
                         c.inspected_end =
                             c.inspected_end.max(c.position.saturating_add(1).min(len));
@@ -350,7 +416,7 @@ impl VimPattern {
                     State::Look { look, next } => {
                         c.inspected_end =
                             c.inspected_end.max(c.position.saturating_add(4).min(len));
-                        if look_matches(*look, c.position, len, &byte) {
+                        if look_matches(*look, c.position, len, &byte, &self.keyword) {
                             thread.state = *next;
                             c.stack.push(thread);
                         }
@@ -373,7 +439,7 @@ impl VimPattern {
                         c.stack.push(thread);
                     }
                     State::Match { .. } => {
-                        let captures = thread.slots[..self.nfa.group_info().slot_len()]
+                        let captures = thread.slots[..nfa.group_info().slot_len()]
                             .chunks_exact(2)
                             .map(|p| (p[0] != UNSET && p[1] != UNSET).then_some(p[0]..p[1]))
                             .collect();
@@ -408,6 +474,8 @@ impl VimPattern {
     }
     /// Bounded convenience for a query predicate's already-bounded capture text.
     /// Returns a budget error rather than interpreting incomplete work as false.
+    /// Like Vim's matchstr(), string inputs have no buffer-line identity and
+    /// count byte columns from string start. Snapshot execution uses source rows.
     pub fn is_match_text(&self, text: &str, mut fuel: usize) -> Result<bool, String> {
         self.is_match_text_with_fuel(text, &mut fuel)
     }
@@ -420,18 +488,79 @@ impl VimPattern {
         fuel: &mut usize,
         cancel: &mut dyn FnMut() -> bool,
     ) -> Result<bool, String> {
+        self.find_text_with_control(text, 0, fuel, cancel)
+            .map(|found| found.is_some())
+    }
+    /// Run exactly one anchored attempt at an explicit UTF-8 boundary. Syntax
+    /// group-name expansion supplies ^...$ patterns, so searching other starts
+    /// would repeatedly initialize the same NFA for impossible candidates.
+    pub fn matches_text_at_with_control(
+        &self,
+        text: &str,
+        start: usize,
+        fuel: &mut usize,
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, String> {
         if text.len() > 256 * 1024 {
             return Err("Vim predicate text budget exceeded".into());
         }
-        for at in text
+        if !text.is_char_boundary(start) {
+            return Err("Vim predicate start is not a valid UTF-8 boundary".into());
+        }
+        match self.resume_reader(
+            &mut self.start(start),
+            text.len(),
+            |at| text.as_bytes().get(at).copied(),
+            &|at| (at <= text.len()).then_some((0, at + 1)),
+            fuel,
+            cancel,
+        ) {
+            VimRegexProgress::Complete(found) => Ok(found.is_some()),
+            VimRegexProgress::Failed(error) => Err(error),
+            VimRegexProgress::Pending => {
+                Err("Vim predicate cancelled or instruction budget exceeded".into())
+            }
+        }
+    }
+    /// Find a match starting at or after a checked UTF-8 boundary. Candidate
+    /// starts share one caller-owned instruction budget, including assertions.
+    pub fn find_text_with_control(
+        &self,
+        text: &str,
+        start: usize,
+        fuel: &mut usize,
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<VimRegexMatch>, String> {
+        if text.len() > 256 * 1024 {
+            return Err("Vim predicate text budget exceeded".into());
+        }
+        if !text.is_char_boundary(start) {
+            return Err("Vim predicate start is not a valid UTF-8 boundary".into());
+        }
+        for at in text[start..]
             .char_indices()
-            .map(|(at, _)| at)
+            .map(|(at, _)| start + at)
             .chain(std::iter::once(text.len()))
         {
+            if let Some(anchor) = self.start_anchor {
+                if at != 0 {
+                    if *fuel == 0 || cancel() {
+                        return Err("Vim predicate cancelled or instruction budget exceeded".into());
+                    }
+                    *fuel -= 1;
+                    if anchor == regex_syntax::hir::Look::Start {
+                        return Ok(None);
+                    }
+                    if text.as_bytes()[at - 1] != b'\n' {
+                        continue;
+                    }
+                }
+            }
             match self.resume_reader(
                 &mut self.start(at),
                 text.len(),
                 |at| text.as_bytes().get(at).copied(),
+                &|at| (at <= text.len()).then_some((0, at + 1)),
                 fuel,
                 cancel,
             ) {
@@ -439,15 +568,20 @@ impl VimPattern {
                     return Err("Vim predicate cancelled or instruction budget exceeded".into())
                 }
                 VimRegexProgress::Failed(error) => return Err(error),
-                VimRegexProgress::Complete(Some(_)) => return Ok(true),
+                VimRegexProgress::Complete(Some(found)) => return Ok(Some(found)),
                 VimRegexProgress::Complete(None) => {}
             }
         }
-        Ok(false)
+        Ok(None)
     }
 }
 
-fn word_at(at: usize, len: usize, byte: &impl Fn(usize) -> Option<u8>) -> bool {
+fn word_at(
+    at: usize,
+    len: usize,
+    byte: &impl Fn(usize) -> Option<u8>,
+    keyword: &VimKeyword,
+) -> bool {
     if at >= len {
         return false;
     }
@@ -471,18 +605,21 @@ fn word_at(at: usize, len: usize, byte: &impl Fn(usize) -> Option<u8>) -> bool {
     std::str::from_utf8(&bytes[..count])
         .ok()
         .and_then(|s| s.chars().next())
-        .is_some_and(is_keyword)
+        .is_some_and(|c| keyword.contains(c))
 }
-pub(super) fn is_keyword(c: char) -> bool {
-    c == '_' || c.is_alphabetic() || c.is_ascii_digit() || ('\u{c0}'..='\u{ff}').contains(&c)
-}
-fn look_matches(look: Look, at: usize, len: usize, byte: &impl Fn(usize) -> Option<u8>) -> bool {
+fn look_matches(
+    look: Look,
+    at: usize,
+    len: usize,
+    byte: &impl Fn(usize) -> Option<u8>,
+    keyword: &VimKeyword,
+) -> bool {
     let mut before = at.saturating_sub(1);
     while before > 0 && byte(before).is_some_and(|b| b & 0xc0 == 0x80) {
         before -= 1;
     }
-    let left = at > 0 && word_at(before, len, byte);
-    let right = word_at(at, len, byte);
+    let left = at > 0 && word_at(before, len, byte, keyword);
+    let right = word_at(at, len, byte, keyword);
     match look {
         Look::Start => at == 0,
         Look::End => at == len,

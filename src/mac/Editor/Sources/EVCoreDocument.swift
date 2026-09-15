@@ -145,6 +145,20 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         try read(source: source, typeName: typeName, filename: "", allowAutomaticCode: false)
     }
 
+    public func updateFilename(_ filename: String) {
+        guard openingFilename != filename else { return }
+        openingFilename = filename
+        guard core != 0 else { return }
+        let bytes = Array(filename.utf8)
+        let status = bytes.withUnsafeBufferPointer {
+            viem_core_redetect_code_language(core, $0.baseAddress, UInt64($0.count))
+        }
+        if status != Status.ok {
+            configurationWarning = "Unable to update syntax filename (\(status))."
+        }
+        pollSyntax()
+    }
+
     public func read(source: Data, typeName: String, filename: String?, allowAutomaticCode: Bool) throws {
         openingFilename = filename ?? ""
         self.allowAutomaticCode = allowAutomaticCode
