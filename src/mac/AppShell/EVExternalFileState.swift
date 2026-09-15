@@ -6,8 +6,8 @@ public enum EVExternalFileChange: Equatable, Sendable {
   case modified, replaced, deleted, unreadable(String)
   public var message: String {
     switch self {
-    case .modified: "The file changed outside Viem. Your buffer is unchanged. Reload with :e! or save to choose whether to replace the file."
-    case .replaced: "The file was replaced outside Viem. Your buffer is unchanged. Reload with :e! or save to choose whether to replace the file."
+    case .modified: "The file changed outside Viem."
+    case .replaced: "The file was replaced outside Viem."
     case .deleted: "The file was deleted outside Viem. Your buffer is unchanged. Save to choose whether to recreate it."
     case let .unreadable(reason): "The file could not be checked: \(reason). Your buffer is unchanged."
     }
@@ -94,12 +94,15 @@ struct EVExternalWriteAuthorization {
 extension EVDocument {
   /// Baseline is a compact fingerprint of the exact source loaded or written,
   /// not another retained full-document byte copy.
-  func recordFileBaseline(_ data: Data, at url: URL, format: EVSourceFormat? = nil) {
+  func recordFileBaseline(_ data: Data, at url: URL, format: EVSourceFormat? = nil,
+                          fingerprint: EVFileFingerprint? = nil) {
     fileBaselineURL = EVDocumentIdentity.canonicalURL(url)
     fileBaselineFormat = format ?? editorBackend.sourceFormat
-    fileBaseline = EVFileFingerprint.bytes(data, at: fileBaselineURL!)
+    fileBaseline = fingerprint ?? EVFileFingerprint.bytes(data, at: fileBaselineURL!)
     fileBaselineGeneration &+= 1
     externalFileChange = nil
+    resetExternalFileReview()
+    updateExternalFileMonitorForBaseline(at: url)
   }
   func recordMissingFileBaseline(at url: URL) {
     fileBaselineURL = EVDocumentIdentity.canonicalURL(url)
@@ -107,22 +110,52 @@ extension EVDocument {
     fileBaseline = EVFileFingerprint(digest: nil, device: nil, inode: nil)
     fileBaselineGeneration &+= 1
     externalFileChange = nil
+    resetExternalFileReview()
+    updateExternalFileMonitorForBaseline(at: url)
   }
 
   /// Explicit checks and activation do I/O off the document actor. A stale
   /// result after reload/save/retarget is ignored rather than warning about an
   /// obsolete file. This never reloads or changes the editing buffer.
   public func checkForExternalChanges(completion: @escaping @MainActor (EVExternalFileChange?) -> Void) {
-    guard let baseline = fileBaseline, let target = fileURL ?? fileBaselineURL else { completion(nil); return }
+    guard !externalFileMonitoringClosed else { completion(nil); return }
+    externalFileCheckCompletions.append(completion)
+    if !externalFileCheckInFlight { performExternalFileCheck() }
+  }
+
+  private func performExternalFileCheck() {
+    let completions = externalFileCheckCompletions
+    externalFileCheckCompletions.removeAll()
+    guard !externalFileMonitoringClosed, let baseline = fileBaseline,
+          let target = fileURL ?? fileBaselineURL else {
+      completions.forEach { $0(nil) }; return
+    }
     let generation = fileBaselineGeneration
+    externalFileCheckInFlight = true
     DispatchQueue.global(qos: .utility).async { [weak self] in
-      let change: EVExternalFileChange?
-      do { change = try EVFileFingerprint.read(target).change(from: baseline) }
-      catch { change = .unreadable(error.localizedDescription) }
+      let observation: EVExternalFileObservation?
+      do {
+        let fingerprint = try EVFileFingerprint.read(target)
+        observation = fingerprint.change(from: baseline).map {
+          EVExternalFileObservation(change: $0, fingerprint: fingerprint)
+        }
+      } catch {
+        observation = EVExternalFileObservation(change: .unreadable(error.localizedDescription), fingerprint: nil)
+      }
       DispatchQueue.main.async {
-        guard let self, self.fileBaselineGeneration == generation else { completion(nil); return }
-        self.externalFileChange = change
-        completion(change)
+        guard let self else { completions.forEach { $0(nil) }; return }
+        self.externalFileCheckInFlight = false
+        if !self.externalFileMonitoringClosed, self.fileBaselineGeneration == generation {
+          self.externalFileObservation = observation
+          self.externalFileChange = observation?.change
+          if observation == nil { self.externalFileReviewState.clearAcknowledged() }
+          completions.forEach { $0(observation?.change) }
+        } else { completions.forEach { $0(nil) } }
+        // At most one read is active; a burst while it runs shares one trailing
+        // check instead of spawning unbounded whole-file hash jobs.
+        if !self.externalFileCheckInFlight, !self.externalFileCheckCompletions.isEmpty {
+          self.performExternalFileCheck()
+        }
       }
     }
   }

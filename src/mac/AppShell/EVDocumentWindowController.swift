@@ -185,12 +185,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
     var seen = Set<ObjectIdentifier>()
     for pane in paneContainer.panes {
       guard let document = pane.document, seen.insert(ObjectIdentifier(document)).inserted else { continue }
-      document.checkForExternalChanges { [weak self, weak document] change in
-        guard let self, let document, let change else { return }
-        for pane in self.paneContainer.panes where pane.document === document {
-          pane.editorSurface.showDocumentMessage(change.message)
-        }
-      }
+      document.requestExternalFileReview()
     }
   }
 
@@ -566,7 +561,7 @@ extension EVDocumentWindowController {
     case .navigateArgument:
       navigateArgument(document, request: request, completion: completion)
     case .checkTime:
-      document.checkForExternalChanges { change in completion(.success(change?.message ?? "File unchanged.")) }
+      document.checkForExternalChangesAndReview(completion: completion)
     case .split:
       split(document, path: request.path, initialHeightRows: request.initialHeightRows, completion: completion)
     case .newPane:
@@ -770,9 +765,11 @@ extension EVDocumentWindowController {
       if writesCurrent, !snapshot.isCompleteSource, !request.force { throw EVDocumentHostError.partialWriteRequiresForce }
       let target = EVDocumentIdentity.canonicalURL(destination)
       let authorization = try document.authorizeExternalWrite(to: target)
+      document.beginExternalFileWrite()
       writeAuthorizedSnapshot(snapshot.data, document: document, to: target,
         force: request.force || writesCurrent || authorization.overwriteApproved,
         expected: authorization.fingerprint) { [weak self] result in
+          defer { document.endExternalFileWrite() }
           do {
             try result.get()
             if writesCurrent || adoptBinding { document.recordRecentDocument(target) }

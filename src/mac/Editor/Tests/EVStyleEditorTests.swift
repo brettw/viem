@@ -317,14 +317,25 @@ final class EVStyleEditorTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
+        documentWindow.isReleasedWhenClosed = false
+        defer { documentWindow.close() }
         documentWindow.contentViewController = surface
-        let coordinator = EVStyleEditorCoordinator()
+        var replacementRequests = 0
+        // This case has no replacement document. AppKit may still retain an
+        // unrelated window from another test; its global window order must not
+        // decide whether the lifecycle observer disables this editor.
+        let coordinator = EVStyleEditorCoordinator { closing in
+            XCTAssertTrue(closing === surface)
+            replacementRequests += 1
+            return nil
+        }
         coordinator.show(document: surface, preferredStyle: .paragraph, sender: nil)
         defer { coordinator.close() }
         XCTAssertTrue(coordinator.inspection?.hasDocument == true)
 
         NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: documentWindow)
 
+        XCTAssertEqual(replacementRequests, 1)
         XCTAssertFalse(coordinator.inspection?.hasDocument ?? true)
         XCTAssertNil(coordinator.inspection?.selectedStyleKey)
         XCTAssertNotNil(coordinator.styleWindow)

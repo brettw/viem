@@ -17,20 +17,29 @@ final class EVMultilineRenderingTests: XCTestCase {
         let document = EVDocument(editorBackend: backend)
         let windowController = EVDocumentWindowController(
             document: document,
-            editorSurface: surface
+            editorSurface: surface,
+            placement: EVDocumentWindowPlacement(loadFrame: { nil })
         )
         defer { windowController.close() }
 
         windowController.showWindow(nil)
 
         let geometry = try XCTUnwrap(windowController.currentGeometry)
-        XCTAssertEqual(geometry.editor.height, 655, accuracy: 0.5)
+        let statusBarHeight = geometry.statusBarIsVisible ? geometry.statusBar.height : 0
+        XCTAssertEqual(geometry.editor.height, geometry.content.height - statusBarHeight, accuracy: 0.5)
+        XCTAssertGreaterThan(geometry.editor.height, 0)
         let snapshot = try XCTUnwrap(surface.layoutSnapshot)
-        XCTAssertGreaterThan(snapshot.info.viewport_height, 600)
+        // Initial layout must use the actual native viewport, including its
+        // scrollbar gutters, regardless of window placement or status bar policy.
+        XCTAssertEqual(CGFloat(snapshot.info.viewport_height), surface.editorView.layoutViewportSize.height, accuracy: 0.5)
         XCTAssertEqual(snapshot.rows.count, 3)
         XCTAssertEqual(snapshot.rows.map(\.row_index), [0, 1, 2])
         XCTAssertGreaterThan(snapshot.rows[1].y, snapshot.rows[0].y)
         XCTAssertGreaterThan(snapshot.rows[2].y, snapshot.rows[1].y)
+        for row in snapshot.rows {
+            XCTAssertGreaterThanOrEqual(row.y, surface.viewportState.top)
+            XCTAssertLessThanOrEqual(row.y + row.line_advance, surface.viewportState.top + snapshot.info.viewport_height)
+        }
     }
 
     @MainActor
@@ -51,7 +60,8 @@ final class EVMultilineRenderingTests: XCTestCase {
         let document = EVDocument(editorBackend: backend)
         let windowController = EVDocumentWindowController(
             document: document,
-            editorSurface: surface
+            editorSurface: surface,
+            placement: EVDocumentWindowPlacement(loadFrame: { nil })
         )
         document.addWindowController(windowController)
         defer { document.close() }

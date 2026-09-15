@@ -119,6 +119,20 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         if let syntaxTimer { RunLoop.main.add(syntaxTimer, forMode: .common) }
     }
 
+    /// A replacement has no observers, timers, surfaces, or persistence
+    /// callbacks until its fully configured core is transferred to the owner.
+    private init(preparing source: Data, typeName: String, filename: String,
+                 allowAutomaticCode: Bool, recoveryInterpretation: EVRecoverySnapshot?,
+                 configuration: EVConfigurationStore) throws {
+        self.configuration = configuration
+        self.source = source
+        self.typeName = typeName
+        self.openingFilename = filename
+        self.allowAutomaticCode = allowAutomaticCode
+        self.recoveryInterpretation = recoveryInterpretation
+        try createCore(publishDiagnostics: false)
+    }
+
     deinit {
         let source = syntaxDiagnosticSource
         Task { @MainActor in EVCodePreferences.shared.reportLoadDiagnostics([], source: source) }
@@ -160,24 +174,38 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     }
 
     public func read(source: Data, typeName: String, filename: String?, allowAutomaticCode: Bool) throws {
-        openingFilename = filename ?? ""
-        self.allowAutomaticCode = allowAutomaticCode
-        self.source = source
-        self.typeName = typeName
-        for surface in surfaces.compactMap(\.value) {
-            surface.detachFromCore()
+        let replacement = try EVCoreDocumentBackend(
+            preparing: source, typeName: typeName, filename: filename ?? "",
+            allowAutomaticCode: allowAutomaticCode, recoveryInterpretation: recoveryInterpretation,
+            configuration: configuration
+        )
+        let liveSurfaces = surfaces.compactMap(\.value)
+        let replacementSessions = try liveSurfaces.map {
+            try $0.prepareReplacementSession(for: replacement)
         }
+        // Parsing, configuration, and every replacement view must succeed
+        // before the old source, history, or sessions can be discarded. A
+        // failed close likewise leaves the original sessions attached.
         if core != 0 {
             let status = viem_core_destroy(core)
             guard status == Status.ok else {
                 throw EVCoreFrontendError.core(operation: "Close document", status: status)
             }
-            core = 0
         }
-        try createCore()
-        for surface in surfaces.compactMap(\.value) {
-            try surface.attachToCore()
+        for surface in liveSurfaces {
+            surface.detachFromCore()
         }
+        core = replacement.core
+        replacement.core = 0
+        openingFilename = replacement.openingFilename
+        self.allowAutomaticCode = replacement.allowAutomaticCode
+        self.typeName = replacement.typeName
+        configurationWarning = replacement.configurationWarning
+        installDocumentState(replacement.currentDocumentState)
+        for (surface, session) in zip(liveSurfaces, replacementSessions) {
+            surface.installPreparedSession(session)
+        }
+        refreshSyntaxDiagnostics()
     }
 
     public func recoverySnapshot() throws -> EVRecoverySnapshot {
@@ -437,7 +465,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         }
     }
 
-    private func createCore() throws {
+    private func createCore(publishDiagnostics: Bool = true) throws {
         configurationWarning = configuration.lastError
         do { try EVCodeStyleSession.initialize(configuration: configuration) }
         catch { configurationWarning = error.localizedDescription }
@@ -487,7 +515,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
                 try checked(result, operation: "Load default style")
             }
         } catch { configurationWarning = error.localizedDescription }
-        refreshSyntaxDiagnostics()
+        if publishDiagnostics { refreshSyntaxDiagnostics() }
     }
 
     private static func openingType(for format: EVSourceFormat) -> String {
@@ -769,7 +797,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
 @MainActor
 final class EVCoreViewSession {
-    unowned let document: EVCoreDocumentBackend
+    private(set) unowned var document: EVCoreDocumentBackend
     let provider: CoreTextMeasurementProvider
     private nonisolated let coreHandle: ViemCoreHandle
     private(set) var viewID: ViemViewId = 0
@@ -787,6 +815,13 @@ final class EVCoreViewSession {
         try attach(width: width, height: height)
     }
 
+    /// The staged core keeps its identity when ownership transfers from the
+    /// temporary preparation backend to the live document backend.
+    func adoptDocument(_ document: EVCoreDocumentBackend) {
+        precondition(document.core == coreHandle)
+        self.document = document
+    }
+
     deinit {
         if viewID != 0 {
             _ = viem_core_view_remove(coreHandle, viewID)
@@ -796,7 +831,7 @@ final class EVCoreViewSession {
 
     func detach() {
         if viewID != 0 {
-            _ = viem_core_view_remove(document.core, viewID)
+            _ = viem_core_view_remove(coreHandle, viewID)
             viewID = 0
         }
         publishCompositionState(false)

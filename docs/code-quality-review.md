@@ -271,3 +271,16 @@ Local validation logs: `/tmp/viem-quality-rust-all.log`,
 `/tmp/viem-quality-command-final.log`, `/tmp/viem-quality-native-all.log`,
 `/tmp/viem-quality-python.log`, and the clean-baseline proof at
 `/tmp/viem-quality-baseline-pgIoh8/baseline-test.log`.
+
+### Subsequent failure follow-up
+
+The Markdown Source fence-policy failure recorded above has since been
+resolved: `markdown_source_fence_edit_reparses_immediately_through_either_path`
+now verifies the intended source-view behavior, including exact patches,
+reprojection, position maps, and history. All 12 `projection_fuzz_regressions`
+tests passed when this historical failure was rechecked.
+
+The later rich-caret failure recorded in `code-syntax-validation.md` was still
+reproducible and is now fixed by using the shared visible-line insertion
+resolver for ordinary Markdown payloads. Its original regression passes
+unchanged; additional coverage checks source locality and undo/redo.

@@ -21,6 +21,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     let backend: EVCoreDocumentBackend
     private(set) var session: EVCoreViewSession?
+    var makeCoreViewSession: @MainActor (EVCoreDocumentBackend, CGSize) throws -> EVCoreViewSession = { document, size in
+        try EVCoreViewSession(document: document, width: size.width, height: size.height)
+    }
     private(set) var formattedSnapshot: EVFormattedSnapshot?
     private(set) var layoutTextSlices: [EVFormattedTextSlice] = []
     private(set) var compositionOverlay: EVCompositionOverlayExport?
@@ -152,20 +155,42 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     func attachToCore() throws {
         guard session == nil else { return }
+        installPreparedSession(try prepareSession(for: backend))
+    }
+
+    func prepareReplacementSession(for replacement: EVCoreDocumentBackend) throws -> EVCoreViewSession {
+        let prepared = try prepareSession(for: replacement)
+        if let session {
+            let viewport = try session.viewportState()
+            _ = try prepared.setWrap(viewport.flags & UInt32(VIEM_VIEWPORT_STATE_WRAP) != 0)
+            _ = try prepared.setScale(CGFloat(viewport.scale))
+            if replacement.sourceFormat == backend.sourceFormat {
+                try prepared.setLineMode(session.lineMode())
+                if replacement.sourceFormat == .markdownSource || replacement.sourceFormat == .htmlSource {
+                    try prepared.setParagraphFlow(session.paragraphFlow())
+                }
+            }
+        }
+        return prepared
+    }
+
+    private func prepareSession(for document: EVCoreDocumentBackend) throws -> EVCoreViewSession {
         let size = isViewLoaded ? view.bounds.size : NSSize(width: 920, height: 655)
         let viewportSize = isViewLoaded ? editorView.layoutViewportSize : EVEditorView.layoutViewportSize(for: size)
-        let attachedSession = try EVCoreViewSession(
-            document: backend,
-            width: viewportSize.width,
-            height: viewportSize.height
-        )
+        let prepared = try makeCoreViewSession(document, viewportSize)
+        try prepared.setViewMargins(viewPreferences.margins)
+        return prepared
+    }
+
+    func installPreparedSession(_ attachedSession: EVCoreViewSession) {
+        precondition(session == nil)
+        attachedSession.adoptDocument(backend)
         attachedSession.compositionStateDidChange = { [weak self] isActive in
             guard !isActive, let self, self.isViewLoaded else { return }
             self.editorView.coreCompositionDidEnd()
         }
         attachedSession.commandTurnHost = self
         session = attachedSession
-        try attachedSession.setViewMargins(viewPreferences.margins)
         appliedMargins = viewPreferences.margins
         if isViewLoaded { refreshPresentation() }
     }

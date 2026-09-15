@@ -3761,15 +3761,37 @@ The case-sensitive `:E` opens a document in a new native window. `:pwd` displays
 the working directory; `:cd`/`:chdir` changes the application's directory for
 relative file requests. `:update` writes only a modified buffer. `:s` remains
 substitute; filename-like misuse reports `:w` and `:saveas` as the save commands.
-`:checktime` and window activation compare the bound artifact with the exact
-last-loaded/saved fingerprint off the main thread. Changed, replaced, deleted,
-or unreadable files produce non-destructive output. Every explicit save path,
+Open file-backed documents watch the file and its containing directory for
+external writes, atomic replacement, deletion, and recreation. Filesystem
+notifications are coalesced; unchanged documents are not repeatedly read by a
+polling timer. `:checktime`, window activation, and notifications compare the
+bound artifact with the exact last-loaded/saved fingerprint off the main thread.
+Changed or replaced files present a prompt offering Keep Buffer (the default)
+or Load File. The dialog is the only change notification; successful review,
+deferred or acknowledged review, and reload do not also publish status-bar
+messages. An explicit `:checktime` may report that an unchanged file is unchanged.
+Load File explicitly discards unsaved changes in every view of
+that buffer, and the prompt warns when such changes exist. Deleted or unreadable
+files offer Keep Buffer and preserve the editable text. Prompts for inactive
+documents wait until the app and document window can present them.
+One disk state produces at most one acknowledged prompt per buffer, including
+across multiple views. Keep Buffer acknowledges only the notification, never
+the load/save baseline. A further disk change requires another choice. Reload
+consent becomes stale if the buffer, bound path, or observed disk state changes
+while the prompt is open. A reload installs the exact verified bytes and retains
+the current editing format; a failed replacement preserves the existing buffer
+and views. Returning to the saved baseline ends the previous notification's
+acknowledgement. The review/acknowledgement policy lives in the Rust
+document layer; native file watching and alert presentation live in `src/mac`.
+Retargeting a document moves its watch; closing it stops monitoring. Viem's own
+saves refresh the baseline before pending file notifications are reviewed.
+Every explicit save path,
 including native Save/Save As, close-review saves, `:write`, `:saveas`, `:wq`,
 `:xit`, `:update`, `:wall`, and forced `!` variants, checks the destination before
 writing. Changes since the last load/save require a modal error dialog offering
 Cancel (the default) or Save Anyway. `!` does not bypass this external-change
-confirmation. A successful reload/save refreshes the baseline. Automatic checks
-never reload a buffer; `:e!` explicitly reloads. A queued write rechecks its
+confirmation. A successful reload/save refreshes the baseline. Checks never
+reload without a choice; Load File and `:e!` explicitly reload. A queued write rechecks its
 accepted fingerprint before publishing; a further change needs another choice.
 This narrows races with other writers but is not a filesystem compare-and-swap.
 

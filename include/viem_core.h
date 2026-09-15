@@ -322,6 +322,32 @@ ViemArgumentResolution viem_argument_list_resolve(
     uint64_t length, uint64_t current_index, uint64_t remembered_index,
     uint32_t command, uint64_t count);
 
+/* Owned, serial external-file review state. Handles are nonzero and never
+ * reused. Destroy consumes ownership only on success; CORE_BUSY retains it. */
+typedef uint64_t ViemExternalFileReviewHandle;
+#define VIEM_EXTERNAL_FILE_REVIEW_PRESENT (1u << 0)
+#define VIEM_EXTERNAL_FILE_REVIEW_CAN_RELOAD (1u << 1)
+#define VIEM_EXTERNAL_FILE_REVIEW_DISCARDS_UNSAVED_CHANGES (1u << 2)
+#define VIEM_MAX_EXTERNAL_FILE_OBSERVATION_BYTES 4096u
+ViemStatus viem_external_file_review_create(ViemExternalFileReviewHandle *out_handle);
+ViemStatus viem_external_file_review_destroy(ViemExternalFileReviewHandle handle);
+ViemStatus viem_external_file_review_reset(ViemExternalFileReviewHandle handle);
+/* Call after observing the saved baseline again. Clears acknowledgement only;
+ * an active review remains pending and its decision still needs validation. */
+ViemStatus viem_external_file_review_clear_acknowledged(ViemExternalFileReviewHandle handle);
+/* Tokens are opaque, nonempty, length-delimited bytes, at most the maximum
+ * above. All Boolean inputs are 0/1. Input/output regions must be disjoint.
+ * Successful begin returns zero flags for an already acknowledged observation
+ * or while another review is active. Otherwise PRESENT and action flags apply. */
+ViemStatus viem_external_file_review_begin(
+    ViemExternalFileReviewHandle handle, const uint8_t *token, uint64_t token_length,
+    uint32_t can_reload, uint32_t is_dirty, uint32_t *out_flags);
+/* Only a matching active review is completed; mismatched/invalidated reviews
+ * are no-ops. Acknowledge 0 releases for retry; 1 suppresses this observation. */
+ViemStatus viem_external_file_review_finish(
+    ViemExternalFileReviewHandle handle, const uint8_t *token, uint64_t token_length,
+    uint32_t acknowledge);
+
 #define VIEM_WINDOW_FOCUS_DOWN 1u
 #define VIEM_WINDOW_FOCUS_UP 2u
 #define VIEM_WINDOW_FOCUS_NEXT 3u

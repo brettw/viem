@@ -98,6 +98,101 @@ fn every_visible_rich_caret_boundary_accepts_typing_with_either_affinity() {
 }
 
 #[test]
+fn upstream_markdown_list_start_inserts_after_the_hidden_marker() {
+    use viem_core::document::{
+        FormattedPayloadEdit, FormattedPayloadEditRequest, FormattedTextPayload,
+    };
+
+    let source = "- ```\n  A\n  ```";
+    for (input, encoded) in [("X", "X"), (" ", "&#32;"), ("é", "é")] {
+        let mut doc = document(Format::Markdown, source);
+        let before = doc.text().to_owned();
+        let payload = FormattedTextPayload::new(&doc.hard_line_snapshot(), input, vec![]).unwrap();
+        let prepared = doc
+            .prepare_formatted_payload_request(FormattedPayloadEditRequest::new(
+                doc.id(),
+                doc.revision(),
+                vec![FormattedPayloadEdit::new(0..0, payload)
+                    .with_boundary_affinity(BoundaryAffinity::Upstream)],
+            ))
+            .unwrap();
+        let patches = prepared.summary().source_patches();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(patches[0].range(), 2..2);
+        assert_eq!(patches[0].replacement(), encoded.as_bytes());
+        doc.commit_model_transaction(prepared).unwrap();
+        assert_eq!(doc.text(), format!("{input}{before}"));
+        assert_eq!(
+            doc.source_bytes(),
+            format!("- {encoded}```\n  A\n  ```").as_bytes()
+        );
+        assert!(doc.undo());
+        assert_eq!(doc.source_bytes(), source.as_bytes());
+        assert!(doc.redo());
+        assert_eq!(doc.text(), format!("{input}{before}"));
+    }
+}
+
+#[test]
+fn markdown_code_body_edge_payloads_preserve_their_hidden_container_syntax() {
+    use viem_core::document::{
+        FormattedPayloadEdit, FormattedPayloadEditRequest, FormattedTextPayload,
+    };
+
+    for source in [
+        "```\nA\n```",
+        "- item\n\n  ```\n  A\n  ```",
+        "- item\n\n  ```\n  A\n  B\n  ```",
+        "> ```\n> A\n> ```",
+    ] {
+        for affinity in [BoundaryAffinity::Upstream, BoundaryAffinity::Downstream] {
+            for input in ["X", " ", "é"] {
+                for after in [false, true] {
+                    let mut doc = document(Format::Markdown, source);
+                    let before = doc.text().to_owned();
+                    let at = before.find('A').unwrap() + usize::from(after);
+                    let source_at = source.find('A').unwrap() + usize::from(after);
+                    let mut expected_source = source.to_owned();
+                    expected_source.insert_str(source_at, input);
+                    let mut expected_text = before.clone();
+                    expected_text.insert_str(at, input);
+                    let payload =
+                        FormattedTextPayload::new(&doc.hard_line_snapshot(), input, vec![])
+                            .unwrap();
+                    let prepared = doc
+                        .prepare_formatted_payload_request(FormattedPayloadEditRequest::new(
+                            doc.id(),
+                            doc.revision(),
+                            vec![FormattedPayloadEdit::new(at..at, payload)
+                                .with_boundary_affinity(affinity)],
+                        ))
+                        .unwrap_or_else(|error| {
+                            panic!("{source:?} at {at} {affinity:?} {input:?}: {error:?}")
+                        });
+                    let patches = prepared.summary().source_patches();
+                    assert_eq!(patches.len(), 1);
+                    assert_eq!(patches[0].range(), source_at..source_at);
+                    assert_eq!(
+                        patches[0].replacement(),
+                        input.as_bytes(),
+                        "{source:?} at {at} {affinity:?} {input:?}"
+                    );
+                    doc.commit_model_transaction(prepared).unwrap();
+                    assert_eq!(doc.text(), expected_text);
+                    assert_eq!(doc.source_bytes(), expected_source.as_bytes());
+                    assert!(doc.undo());
+                    assert_eq!(doc.text(), before);
+                    assert_eq!(doc.source_bytes(), source.as_bytes());
+                    assert!(doc.redo());
+                    assert_eq!(doc.text(), expected_text);
+                    assert_eq!(doc.source_bytes(), expected_source.as_bytes());
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn atomic_objects_own_only_their_complete_source_construct() {
     for (format, source, expected) in [
         (

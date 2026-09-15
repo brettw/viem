@@ -41,6 +41,7 @@ let package = Package(
         ),
         .target(
             name: "ViemAppShell",
+            dependencies: ["CViemCore"],
             path: "src/mac/AppShell",
             linkerSettings: [
                 .linkedFramework("AppKit"),

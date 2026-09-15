@@ -90,13 +90,22 @@ impl Document {
         }
         let affinity = payload.and_then(|edit| edit.boundary_affinity);
         let source_range = if edit.range.is_empty() {
-            let at = self
-                .projection()
-                .source_insertion_point(
+            let at = if self.format() == Format::Markdown && !edit.replacement.contains('\n') {
+                // A formatted caret belongs to its visible line even when
+                // its upstream side precedes hidden list or fence syntax.
+                // Structural breaks retain the adapter's split-boundary rule.
+                super::super::source_edit::insertion_point(
+                    self.projection(),
+                    edit.range.start,
+                    affinity,
+                )
+            } else {
+                self.projection().source_insertion_point(
                     edit.range.start,
                     affinity != Some(BoundaryAffinity::Upstream),
                 )
-                .ok_or(DocumentError::AmbiguousProjection)?;
+            }
+            .ok_or(DocumentError::AmbiguousProjection)?;
             at..at
         } else {
             self.projection()

@@ -13,6 +13,8 @@ mod checkpoint;
 pub(crate) use checkpoint::DocumentCommandCheckpoint;
 pub use conversion::{ConversionLoss, ConversionWarning, FormatOperation};
 mod encoding;
+mod external_change;
+pub use external_change::{ExternalFileReview, ExternalFileReviewState, InvalidExternalFileObservation, MAX_EXTERNAL_FILE_OBSERVATION_BYTES};
 mod edit_boundary;
 mod formatted_text;
 pub(crate) use formatted_text::FormattedTextSnapshotIdentity;

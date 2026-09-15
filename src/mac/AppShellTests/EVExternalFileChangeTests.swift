@@ -43,6 +43,7 @@ final class EVExternalFileChangeTests: XCTestCase {
     let url = directory.appendingPathComponent("source.txt")
     try Data("original".utf8).write(to: url)
     let backend = Backend(); let document = EVDocument(editorBackend: backend)
+    document.externalFileReviewDecisionHandler = { _, _, decide in decide(.keepBuffer) }
     try document.read(from: url, ofType: EVDocument.plainTextType)
     document.fileURL = url; document.fileType = EVDocument.plainTextType
     addTeardownBlock { MainActor.assumeIsolated { document.close() } }
@@ -85,19 +86,38 @@ final class EVExternalFileChangeTests: XCTestCase {
     XCTAssertNil(document.externalFileChange)
     XCTAssertNil(check(document))
   }
-  func testActivationAndChecktimePublishPersistentWarnings() throws {
+  func testActivationAndChecktimeUseDialogWithoutStatusWarnings() throws {
     let (document, _, url) = try fixture()
     let surface = Surface(); let window = EVDocumentWindowController(document: document, editorSurface: surface)
     defer { window.close() }
     try Data("external".utf8).write(to: url, options: .atomic)
-    let activation = expectation(description: "activation warning")
-    surface.received = { message in XCTAssertTrue(message.contains("outside Viem")); activation.fulfill() }
+    let activation = expectation(description: "activation dialog")
+    var pending: ((EVExternalFileDecision) -> Void)?
+    document.externalFileReviewDecisionHandler = { _, _, decide in
+      pending = decide; activation.fulfill()
+    }
+    surface.received = { message in XCTFail("Unexpected status message: \(message)") }
     window.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
     wait(for: [activation], timeout: 5)
-    surface.received = nil
-    let command = expectation(description: "checktime output")
+
+    // Checking while the dialog is open or after Keep Buffer must stay silent.
+    for acknowledged in [false, true] {
+      if acknowledged { pending?(.keepBuffer) }
+      let command = expectation(description: "silent checktime")
+      window.perform(documentHostRequests: [EVDocumentHostRequest(kind: .checkTime, documentID: 1, documentRevision: 0)]) { result in
+        switch result {
+        case let .success(message): XCTAssertNil(message)
+        case let .failure(error): XCTFail("Unexpected check error: \(error)")
+        }
+        command.fulfill()
+      }
+      wait(for: [command], timeout: 5)
+    }
+
+    document.recordFileBaseline(Data("external".utf8), at: url)
+    let command = expectation(description: "explicit unchanged checktime")
     window.perform(documentHostRequests: [EVDocumentHostRequest(kind: .checkTime, documentID: 1, documentRevision: 0)]) { result in
-      XCTAssertTrue(((try? result.get()) ?? nil)?.contains("outside Viem") ?? false)
+      XCTAssertEqual(try? result.get(), "File unchanged.")
       command.fulfill()
     }
     wait(for: [command], timeout: 5)

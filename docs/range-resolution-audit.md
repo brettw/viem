@@ -192,6 +192,15 @@ These are the places where choosing a minimal raw range is not sufficient:
 
 ## Earlier range-refactor validation
 
+The counts in this section and the following audit section are historical.
+The Markdown Source fence-policy failure has since been resolved by
+`markdown_source_fence_edit_reparses_immediately_through_either_path`, which
+verifies immediate source-view reprojection through both edit APIs. Its full
+12-test regression binary passes. The subsequent upstream Markdown list-caret
+failure is also fixed: ordinary payload insertion now uses the shared
+visible-line resolver, with unchanged original regression coverage and added
+exact-patch/undo/redo checks.
+
 - The complete Rust suite (`cargo test --all-targets --no-fail-fast`) has 1,892
   passing tests and one preexisting failure:
   `projection_fuzz_regressions::markdown_source_fence_edit_requires_explicit_source_intent_when_breaks_reinterpret`.

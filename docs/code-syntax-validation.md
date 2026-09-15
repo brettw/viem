@@ -108,15 +108,31 @@ supersession, native ownership, finite limits, and Code command paths that
 reject whole-document string materialization. Persistent source/text diffs and
 line indexes have randomized reference-oracle and large-document tests.
 
-The complete Rust run has one pre-existing rich-caret failure:
+That complete Rust run had one pre-existing rich-caret failure:
 `rich_caret_boundaries::every_visible_rich_caret_boundary_accepts_typing_with_either_affinity`.
 It also fails in an isolated, unmodified archive of baseline commit
 `dfda6f098a427e4269b5d0e1eba997cc8fc44b63`, using its locked dependencies and
 `cargo test --offline --test rich_caret_boundaries every_visible_rich_caret_boundary_accepts_typing_with_either_affinity`.
 Both runs reject inserting `X`, a space, or `é` at the upstream start of a
-Markdown list's fenced code block with `FormattedPayloadCannotReproject`.
-This syntax change does not alter that source-reprojection behavior; the
-complete suite is not reported as entirely passing.
+Markdown list body beginning with backticks with `FormattedPayloadCannotReproject`.
+That syntax change did not alter that source-reprojection behavior; its
+complete suite was not reported as entirely passing.
+
+The rich-caret failure is now fixed. The ordinary Markdown payload path used
+raw upstream source affinity at the first visible boundary, which placed text
+before the hidden list marker. It now uses the shared visible-line insertion
+resolver; inline affinity still selects context within a line. The original
+test passes unchanged, with added exact-patch and undo/redo coverage for that
+list boundary and both sides of ordinary, quoted, and list-contained code
+bodies.
+
+The follow-up passed all 51 tests across `rich_caret_boundaries`,
+`fuzz_markdown_edits`, `markdown_typing_boundaries`, `markdown_structure`, and
+`formatted_payloads`, plus `paragraph_menu_insertion` and
+`transformation_coverage`; structural newline insertion retains its existing
+split boundary behavior. The separate `projection_fuzz_regressions` binary
+also passed all 12 tests, confirming its older fence-policy failure was
+already resolved.
 
 Explicit release performance commands are documented beside each backend.
 The [Vim benchmark](../src/core/document/syntax/vim/performance-baseline.json)

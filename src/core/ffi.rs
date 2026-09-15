@@ -16,6 +16,8 @@
 
 mod argument_list;
 pub use argument_list::*;
+mod external_change;
+pub use external_change::*;
 mod completion;
 pub use completion::*;
 mod whitespace;

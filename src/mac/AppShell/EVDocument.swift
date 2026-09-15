@@ -91,9 +91,15 @@ public final class EVDocument: NSDocument {
     public override var fileURL: URL? {
         get { super.fileURL }
         set {
+            let previous = super.fileURL
             super.fileURL = newValue
-            if let newValue {
-                onMainActor {
+            onMainActor {
+                if previous?.standardizedFileURL != newValue?.standardizedFileURL {
+                    self.fileBaselineGeneration &+= 1
+                    self.resetExternalFileReview()
+                    self.updateExternalFileMonitor(at: newValue)
+                }
+                if let newValue {
                     self.editorBackend.updateFilename(EVDocumentIdentity.canonicalURL(newValue).path)
                 }
             }
@@ -115,6 +121,18 @@ public final class EVDocument: NSDocument {
     var fileBaselineGeneration: UInt64 = 0
     public internal(set) var externalFileChange: EVExternalFileChange?
     var externalSaveDecisionHandler: ((EVExternalFileChange) -> Bool)?
+    let externalFileReviewState = EVExternalFileReviewState()
+    var externalFileObservation: EVExternalFileObservation?
+    var externalFileCheckInFlight = false
+    var externalFileCheckCompletions: [@MainActor (EVExternalFileChange?) -> Void] = []
+    var externalFileMonitor: EVFileChangeMonitor?
+    var externalFileMonitorURL: URL?
+    var externalFileMonitoringClosed = false
+    var externalFileMonitorObservers: [NSObjectProtocol] = []
+    var externalFileWriteCount = 0
+    var externalFileReviewDecisionHandler: ((EVExternalFileChange, EVExternalFileReview,
+        @escaping (EVExternalFileDecision) -> Void) -> Void)?
+    var externalFileSnapshotReader: @Sendable (URL) throws -> EVExternalFileSnapshot = { try .read($0) }
 
     public private(set) var isReadOnly = false
     public private(set) var wasRecovered = false
@@ -179,6 +197,10 @@ public final class EVDocument: NSDocument {
     }
 
     public override func close() {
+        externalFileMonitoringClosed = true
+        stopExternalFileMonitoring()
+        fileBaselineGeneration &+= 1
+        resetExternalFileReview()
         recoveryTimer?.cancel()
         recoveryGeneration &+= 1
         let stores = retiredRecoveryStores + (recoveryStore.map { [$0] } ?? [])
@@ -235,6 +257,26 @@ public final class EVDocument: NSDocument {
     public func setReadOnly(_ value: Bool) throws {
         try editorBackend.setReadOnly(value)
         isReadOnly = value
+    }
+
+    func installExternalFileSnapshot(_ snapshot: EVExternalFileSnapshot, from url: URL) throws {
+        let readOnly = isReadOnly
+        let format = editorBackend.sourceFormat
+        let openingType: String
+        switch format {
+        case .code: openingType = Self.codeType
+        case .markdownSource: openingType = Self.markdownSourceType
+        case .htmlSource: openingType = Self.htmlSourceType
+        default: openingType = Self.typeName(for: format)
+        }
+        try editorBackend.read(source: snapshot.data, typeName: openingType,
+            filename: EVDocumentIdentity.canonicalURL(url).path, allowAutomaticCode: false)
+        if readOnly { try setReadOnly(true) }
+        wasRecovered = false
+        fileModificationDate = snapshot.modificationDate
+        recordFileBaseline(snapshot.data, at: url, format: format, fingerprint: snapshot.fingerprint)
+        synchronizeEditedState(editorBackend.persistenceState)
+        captureRecoveryNow()
     }
 
     /// Called when a previously untitled buffer acquires an original target,
@@ -367,6 +409,7 @@ public final class EVDocument: NSDocument {
     }
 
     deinit {
+        for observer in externalFileMonitorObservers { NotificationCenter.default.removeObserver(observer) }
         if let recoveryLifecycleObserver { NotificationCenter.default.removeObserver(recoveryLifecycleObserver) }
     }
 
@@ -502,6 +545,8 @@ public final class EVDocument: NSDocument {
             self.fileBaselineFormat = nil
             self.fileBaselineGeneration &+= 1
             self.externalFileChange = nil
+            self.resetExternalFileReview()
+            self.stopExternalFileMonitoring()
         }
     }
 
@@ -635,6 +680,7 @@ public final class EVDocument: NSDocument {
     ) {
 
         let saveOperation = preservingOriginalOperation(saveOperation, destination: url)
+        beginExternalFileWrite()
         activeSave = ActiveSave(snapshot: snapshot, sourceFormat: sourceFormat,
             destination: url, expectedFile: expectedFile)
         super.save(
@@ -646,6 +692,7 @@ public final class EVDocument: NSDocument {
                 completionHandler(writeError)
                 return
             }
+            defer { self.endExternalFileWrite() }
             self.activeSave = nil
             guard writeError == nil else {
                 self.synchronizeEditedState(self.editorBackend.persistenceState)
@@ -656,6 +703,9 @@ public final class EVDocument: NSDocument {
                 // Save To, Duplicate, and recovery autosaves write a copy;
                 // native NSDocument semantics do not make that copy the
                 // source document's new save point.
+                if let bound = self.fileURL, EVDocumentIdentity.sameFile(bound, url) {
+                    self.recordFileBaseline(snapshot.data, at: url, format: sourceFormat)
+                }
                 self.synchronizeEditedState(self.editorBackend.persistenceState)
                 completionHandler(nil)
                 return
