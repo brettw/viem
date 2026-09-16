@@ -10,7 +10,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
     private let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
     private let inlineCode = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code"))
 
-    func testNativeEditStylesFootersAndCommandsOpenTheCurrentRequestedStyle() throws {
+    func testNativeEditStylesFootersAndCommandsOpenTheCurrentCaretStyle() throws {
         let surface = try markdownSurface()
         let original = try surface.backend.recoverySnapshot()
         let coordinator = EVStyleEditorCoordinator.shared
@@ -22,26 +22,29 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         let owner = EVApplicationDelegate(configuration: surface.backend.configuration)
         let builder = EVMenuBuilder(owner: owner, styleMenuProvider: { surface })
         let main = builder.buildMainMenu(for: NSApplication.shared)
-        for (title, expected) in [("Character", inlineCode), ("Paragraph", heading)] {
+        for title in ["Character", "Paragraph"] {
+            coordinator.close()
             let menu = try XCTUnwrap(main.item(withTitle: title)?.submenu)
             builder.menuNeedsUpdate(menu)
             let item = try XCTUnwrap(menu.item(withTitle: "Edit Styles…"))
             XCTAssertTrue(surface.editorView.validateMenuItem(item))
             surface.editorView.performEditorStyleMenuAction(item)
-            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, expected)
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
         }
 
-        for (command, expected) in [(EVMenuCommand.editCharacterStyles, inlineCode),
-                                     (.editParagraphStyles, heading)] {
+        let commands: [EVMenuCommand] = [.editCharacterStyles, .editParagraphStyles, .editStyles]
+        for command in commands {
+            coordinator.close()
             surface.perform(menuCommand: command, sender: nil)
-            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, expected)
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
         }
         moveCaret(1, in: surface)
-        surface.perform(menuCommand: .editCharacterStyles, sender: nil)
-        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading,
-                       "With no named character style, Character opens the current paragraph style")
-        surface.perform(menuCommand: .editParagraphStyles, sender: nil)
-        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
+        for command in commands {
+            coordinator.close()
+            surface.perform(menuCommand: command, sender: nil)
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading,
+                           "With no named character style, Edit Styles opens the current paragraph style")
+        }
         XCTAssertEqual(try surface.backend.recoverySnapshot(), original)
         XCTAssertFalse(surface.canUndo)
     }
@@ -50,7 +53,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         let surface = try markdownSurface()
         moveCaret(7, in: surface)
         let coordinator = EVStyleEditorCoordinator { _ in nil }
-        coordinator.show(document: surface, preferredStyle: .character, sender: nil)
+        coordinator.show(document: surface, sender: nil)
         defer { coordinator.close() }
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
         let editor = try XCTUnwrap(coordinator.styleWindow?.contentViewController as? EVStyleEditorViewController)
@@ -73,6 +76,12 @@ final class EVStyleEditorTrackingTests: XCTestCase {
                        "Reporting the same caret again must retain an explicit picker choice")
         let afterStyleEdit = try surface.backend.recoverySnapshot()
 
+        let originalWindow = try XCTUnwrap(coordinator.styleWindow)
+        coordinator.show(document: surface, sender: nil)
+        XCTAssertTrue(coordinator.styleWindow === originalWindow)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode,
+                       "Invoking Edit Styles again selects the current caret style without requiring a move")
+
         moveCaret(1, in: surface)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
         moveCaret(7, in: surface)
@@ -91,7 +100,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         let unrelated = try markdownSurface()
         moveCaret(7, in: first)
         let coordinator = EVStyleEditorCoordinator { _ in nil }
-        coordinator.show(document: first, preferredStyle: .character, sender: nil)
+        coordinator.show(document: first, sender: nil)
         defer { coordinator.close() }
         moveCaret(17, in: otherView)
         moveCaret(1, in: unrelated)
@@ -102,7 +111,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
 
         // Retargeting detaches the original view observer even when that
         // original document still has a second live view.
-        coordinator.show(document: unrelated, preferredStyle: .paragraph, sender: nil)
+        coordinator.show(document: unrelated, sender: nil)
         moveCaret(7, in: first)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
         XCTAssertEqual(coordinator.inspection?.targetDocumentIdentity, ObjectIdentifier(unrelated.backend))
@@ -152,6 +161,12 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         XCTAssertTrue(mixedParagraphs.paragraphMixed)
         XCTAssertNil(mixedParagraphs.paragraph)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
+        for command in [EVMenuCommand.editCharacterStyles, .editParagraphStyles, .editStyles] {
+            coordinator.close()
+            surface.perform(menuCommand: command, sender: nil)
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph,
+                           "Opening with mixed character and paragraph styles uses the same fallback as following")
+        }
         XCTAssertEqual(try surface.backend.recoverySnapshot(), original)
         XCTAssertFalse(surface.canUndo)
     }
@@ -177,10 +192,13 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         let coordinator = EVStyleEditorCoordinator.shared
         coordinator.close()
         defer { coordinator.close() }
-        surface.perform(menuCommand: .editCharacterStyles, sender: nil)
-        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, captureKey)
-        XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, 0)
-        XCTAssertNil(coordinator.inspection?.targetDocumentIdentity)
+        for command in [EVMenuCommand.editCharacterStyles, .editParagraphStyles, .editStyles] {
+            coordinator.close()
+            surface.perform(menuCommand: command, sender: nil)
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, captureKey)
+            XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, 0)
+            XCTAssertNil(coordinator.inspection?.targetDocumentIdentity)
+        }
 
         moveCaret(2, in: surface)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)

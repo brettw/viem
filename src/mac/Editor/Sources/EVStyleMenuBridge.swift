@@ -154,7 +154,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     if action.kind == .editCurrent {
       guard session != nil, let state = try? backend.documentState(),
         state.document_id == action.documentID else { return }
-      EVStyleEditorCoordinator.shared.show(document: self, preferredStyle: action.role.styleKind, sender: sender)
+      EVStyleEditorCoordinator.shared.show(document: self, sender: sender)
       return
     }
     if backend.sourceFormat == .code {
@@ -201,7 +201,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     }
 
     let coordinator = EVStyleEditorCoordinator.shared
-    coordinator.show(document: self, preferredStyle: definition.kind, sender: sender)
+    coordinator.show(document: self, sender: sender)
     coordinator.selectStyle(definition.key)
   }
 
@@ -221,7 +221,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     if action.kind == .edit, action.role == .character, action.stableID.isEmpty {
       EVStyleEditorCoordinator.shared.showCode(
         configuration: backend.configuration,
-        preferredStyle: currentStyleEditorKey(preferredKind: .paragraph), following: self, sender: sender)
+        preferredStyle: .baseParagraph, following: self, sender: sender)
       return
     }
     guard action.kind == .edit,
@@ -291,13 +291,6 @@ extension EVStyleKind {
 }
 
 extension EVStyleMenuRole {
-  fileprivate var styleKind: EVStyleKind {
-    switch self {
-    case .character: .character
-    case .paragraph: .paragraph
-    }
-  }
-
   fileprivate var namespace: EVStyleNamespace {
     switch self {
     case .character: .character

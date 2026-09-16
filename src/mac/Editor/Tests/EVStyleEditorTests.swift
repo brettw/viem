@@ -65,7 +65,7 @@ final class EVStyleEditorTests: XCTestCase {
         secondSurface.loadViewIfNeeded()
 
         let coordinator = EVStyleEditorCoordinator()
-        coordinator.show(document: firstSurface, preferredStyle: .paragraph, sender: nil)
+        coordinator.show(document: firstSurface, sender: nil)
         defer { coordinator.close() }
         let originalWindow = try XCTUnwrap(coordinator.styleWindow)
 
@@ -80,7 +80,7 @@ final class EVStyleEditorTests: XCTestCase {
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, EVStyleKey.baseParagraph)
         XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, try firstBackend.documentState().document_id)
 
-        coordinator.show(document: secondSurface, preferredStyle: .character, sender: nil)
+        coordinator.show(document: secondSurface, sender: nil)
 
         XCTAssertTrue(coordinator.styleWindow === originalWindow)
         XCTAssertEqual(coordinator.inspection?.targetDocumentIdentity, ObjectIdentifier(secondBackend))
@@ -329,7 +329,7 @@ final class EVStyleEditorTests: XCTestCase {
             replacementRequests += 1
             return nil
         }
-        coordinator.show(document: surface, preferredStyle: .paragraph, sender: nil)
+        coordinator.show(document: surface, sender: nil)
         defer { coordinator.close() }
         XCTAssertTrue(coordinator.inspection?.hasDocument == true)
 
@@ -352,7 +352,7 @@ final class EVStyleEditorTests: XCTestCase {
         let coordinator = EVStyleEditorCoordinator { closing in
             closing === first ? second : nil
         }
-        coordinator.show(document: first, preferredStyle: .character, sender: nil)
+        coordinator.show(document: first, sender: nil)
         defer { coordinator.close() }
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
 
@@ -385,7 +385,7 @@ final class EVStyleEditorTests: XCTestCase {
         firstWindow.contentViewController = first
         secondWindow.contentViewController = second
         let coordinator = EVStyleEditorCoordinator()
-        coordinator.show(document: first, preferredStyle: .paragraph, sender: nil)
+        coordinator.show(document: first, sender: nil)
         defer { coordinator.close() }
 
         NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: firstWindow)
@@ -403,7 +403,7 @@ final class EVStyleEditorTests: XCTestCase {
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
         let coordinator = EVStyleEditorCoordinator()
-        coordinator.show(document: surface, preferredStyle: .paragraph, sender: nil)
+        coordinator.show(document: surface, sender: nil)
         defer { coordinator.close() }
 
         _ = try session.sendText("i")

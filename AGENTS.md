@@ -4433,12 +4433,12 @@ their ownership or move their edits into document history.
   open brings the existing window forward, retargets it to the invoking
   document or explicitly requested global Code sheet, and selects the requested
   style by stable style ID.
-- **Paragraph > Edit Styles…** initially selects the current paragraph style;
-  **Character > Edit Styles…** initially selects the current character style,
-  or the current paragraph style when Default Paragraph is current. A mixed
-  character selection uses the paragraph result; mixed paragraphs use Base
-  Paragraph. Choosing an individual style definition from
-  a menu or another explicit Edit Style action selects that requested style.
+- Every general **Edit Styles…** action, including **F8**, **Paragraph**, and
+  **Character** menu actions, immediately selects the style at the invoking
+  view's cursor using the same rules as subsequent caret following below.
+  Reopening an existing editor also reselects that current style. Choosing an
+  individual style definition from a menu or another explicit Edit Style action
+  selects that requested style.
 - An editor opened from a document view follows subsequent logical caret or
   selection changes in that invoking view. Select its current non-default
   character style when there is one single such style; otherwise select its

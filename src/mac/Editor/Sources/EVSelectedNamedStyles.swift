@@ -42,9 +42,9 @@ extension EVCoreViewSession {
 
 @MainActor
 extension EVEditorSurfaceController {
-  /// Resolve against the current source/settings authority. A nil kind is the
-  /// caret-following policy: prefer a unique non-default character assignment.
-  func currentStyleEditorKey(preferredKind: EVStyleKind? = nil) -> EVStyleKey {
+  /// Opening and caret following share one policy: prefer a unique non-default
+  /// character assignment, then the paragraph style, against current authority.
+  func currentStyleEditorKey() -> EVStyleKey {
     let fallback = EVStyleKey.baseParagraph
     guard let session,
       let selected = try? session.selectedNamedStyles(),
@@ -64,8 +64,6 @@ extension EVEditorSurfaceController {
     }
     let character = current(.character, id: selected.character, mixed: selected.characterMixed)
     let paragraph = current(.paragraph, id: selected.paragraph, mixed: selected.paragraphMixed)
-    if preferredKind == .paragraph { return paragraph ?? .baseParagraph }
-    if preferredKind == .character { return character ?? paragraph ?? .baseParagraph }
     return character ?? paragraph ?? .baseParagraph
   }
 }

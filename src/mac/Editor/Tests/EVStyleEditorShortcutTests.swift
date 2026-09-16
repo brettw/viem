@@ -11,7 +11,7 @@ final class EVStyleEditorShortcutTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        let source = Data("# Heading\n\nBody".utf8)
+        let source = Data("# Title `code` tail\n\nBody".utf8)
         try backend.read(source: source, typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
@@ -45,6 +45,9 @@ final class EVStyleEditorShortcutTests: XCTestCase {
         XCTAssertNil(item.target, "The shortcut uses the editor responder chain")
 
         let session = try XCTUnwrap(surface.session)
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 7, length: 0))
+        let inlineCode = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code"))
+        XCTAssertEqual(try session.selectedNamedStyles().character, inlineCode.id)
         let original = try backend.recoverySnapshot()
         for insert in [false, true] {
             if insert { _ = try session.sendText("i"); surface.refreshPresentation() }
@@ -62,6 +65,7 @@ final class EVStyleEditorShortcutTests: XCTestCase {
             XCTAssertTrue(panel.isVisible)
             XCTAssertNil(application.modalWindow)
             XCTAssertEqual(coordinator.inspection?.targetDocumentIdentity, ObjectIdentifier(backend))
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
             XCTAssertEqual(surface.viewPresentation.mode, mode)
             XCTAssertEqual(try backend.recoverySnapshot(), original)
             XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)

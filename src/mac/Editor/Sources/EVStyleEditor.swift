@@ -68,8 +68,8 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         super.init()
     }
 
-    func show(document: EVEditorSurfaceController, preferredStyle: EVStyleKind?, sender: Any?) {
-        let styleKey = document.currentStyleEditorKey(preferredKind: preferredStyle)
+    func show(document: EVEditorSurfaceController, sender: Any?) {
+        let styleKey = document.currentStyleEditorKey()
         if document.backend.sourceFormat == .code {
             showCode(configuration: document.backend.configuration, preferredStyle: styleKey,
                      following: document, sender: sender)

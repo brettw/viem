@@ -545,17 +545,13 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             }
             return
         }
+        switch menuCommand {
+        case .editCharacterStyles, .editParagraphStyles, .editStyles:
+            EVStyleEditorCoordinator.shared.show(document: self, sender: sender)
+            return
+        default: break
+        }
         if backend.sourceFormat == .code {
-            let style: EVStyleKind? = switch menuCommand {
-            case .editCharacterStyles: .character
-            case .editParagraphStyles: .paragraph
-            case .editStyles: .paragraph
-            default: nil
-            }
-            if let style {
-                EVStyleEditorCoordinator.shared.show(document: self, preferredStyle: style, sender: sender)
-                return
-            }
             if (300..<400).contains(menuCommand.rawValue) { return }
         }
         switch menuCommand {
@@ -685,24 +681,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             if let (property, value) = directParagraphEdit(for: menuCommand) {
                 performInput { _ = try session.editDirectProperty(property, value: value, expected: session.listSelection()) }
             }
-        case .editCharacterStyles:
-            EVStyleEditorCoordinator.shared.show(
-                document: self,
-                preferredStyle: .character,
-                sender: sender
-            )
-        case .editParagraphStyles:
-            EVStyleEditorCoordinator.shared.show(
-                document: self,
-                preferredStyle: .paragraph,
-                sender: sender
-            )
-        case .editStyles:
-            EVStyleEditorCoordinator.shared.show(
-                document: self,
-                preferredStyle: nil,
-                sender: sender
-            )
+        case .editCharacterStyles, .editParagraphStyles, .editStyles:
+            break // Routed above for both document and global Code styles.
         case .saveDefaultStyle:
             do { let url = try backend.saveDefaultStyle(); publishHostMessage("Saved default style to \(url.path)") }
             catch { report(error) }
