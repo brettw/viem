@@ -2699,6 +2699,41 @@ impl CommandInterpreter {
         Ok(())
     }
 
+    /// Native line navigation cancels unfinished input without executing its
+    /// Escape-time count expansion, deferred block edit, or command line. The
+    /// coordinator closes the existing undo unit before calling this method.
+    /// This is deliberately outside input dispatch and macro recording.
+    pub(crate) fn go_to_line(&mut self, document: &Document, line: u64) -> CommandOutput {
+        let old_mode = self.mode;
+        self.typing_style = Default::default();
+        self.input_assistance.clear_tag();
+        self.mode = Mode::Normal;
+        self.boundary_affinity = BoundaryAffinity::Downstream;
+        self.visual_position = None;
+        self.desired_x = None;
+        self.preferred_column = None;
+        self.visual_anchor = None;
+        self.visual_to_line_end = false;
+        self.visual_block = None;
+        self.active_visual_block = None;
+        self.visual_block_rebind_error = None;
+        self.visual_source_anchor = None;
+        self.physical_cursor = None;
+        self.command_line_state = None;
+        self.insert_session = None;
+        self.visual_block_insert = None;
+        self.insert_normal_once = None;
+        self.ctrl_o_just_started = false;
+        self.generated_indent = None;
+        self.restored_indent = None;
+        self.clear_pending();
+        self.position_revision = Some(document.revision());
+        let line = usize::try_from(line).unwrap_or(usize::MAX).max(1);
+        let mut output = self.goto_line(document, line);
+        output.mode_changed = old_mode != Mode::Normal;
+        output
+    }
+
     /// Publish a text commit performed by a non-keyboard core input source,
     /// such as an IME composition. Insert/Replace modes retain a boundary
     /// caret; character-shaped modes normalize it to their associated item.

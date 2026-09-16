@@ -8825,6 +8825,38 @@ pub unsafe extern "C" fn viem_core_view_select_all(
     })
 }
 
+/// Enter Normal mode and reveal a clamped one-based logical hard line.
+/// Pending input is cancelled without executing it or changing source.
+///
+/// # Safety
+/// `out_outcome` must identify one aligned writable outcome.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_go_to_line(
+    handle: ViemCoreHandle,
+    view: ViemViewId,
+    document: u64,
+    revision: u64,
+    line: u64,
+    out_outcome: *mut ViemCoreOutcomeV1,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            dispatch_event(
+                core,
+                view,
+                CoreEvent::GoToLine {
+                    document: DocumentId(document),
+                    revision: Revision(revision),
+                    line,
+                },
+            )
+        })?;
+        unsafe { out_outcome.write(outcome) };
+        Ok(())
+    })
+}
+
 unsafe fn core_view_navigate_history(
     handle: ViemCoreHandle,
     view: ViemViewId,
@@ -11652,6 +11684,63 @@ mod tests {
             ViemStatus::Ok
         );
         info.identity
+    }
+
+    #[test]
+    fn ffi_native_line_navigation_validates_identity_before_cancelling_input() {
+        let mut storage = PaintTestProviderStorage::default();
+        let mut core = Core::new(Document::new("first\n  second\nthird"));
+        let view = core.add_view(paint_test_provider(&mut storage, 501, 601), 240.0, 80.0);
+        for key in ['3', 'i', 'X'] {
+            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char(key))))
+                .unwrap();
+        }
+        let document = core.document().id().0;
+        let revision = core.document().revision().0;
+        let handle = register_core(core).unwrap();
+        let mut outcome = ViemCoreOutcomeV1::default();
+        for (requested_document, requested_revision, expected) in [
+            (document + 1, revision, ViemStatus::InvalidArgument),
+            (document, revision - 1, ViemStatus::StaleRevision),
+        ] {
+            assert_eq!(
+                unsafe {
+                    super::viem_core_view_go_to_line(
+                        handle, view.0, requested_document, requested_revision, 2, &mut outcome,
+                    )
+                },
+                expected
+            );
+            assert_eq!(outcome, ViemCoreOutcomeV1::default());
+            let lease = checkout_core(handle).unwrap();
+            assert_eq!(lease.core().command_state(view).unwrap().mode(), crate::command::Mode::Insert);
+            assert_eq!(lease.core().document().text(), "Xfirst\n  second\nthird");
+        }
+        assert_eq!(
+            unsafe {
+                super::viem_core_view_go_to_line(
+                    handle, view.0, document, revision, 2, ptr::null_mut(),
+                )
+            },
+            ViemStatus::NullPointer
+        );
+        assert_eq!(
+            unsafe {
+                super::viem_core_view_go_to_line(
+                    handle, view.0, document, revision, u64::MAX, &mut outcome,
+                )
+            },
+            ViemStatus::Ok
+        );
+        assert_eq!(outcome.flags & super::VIEM_OUTCOME_DOCUMENT_CHANGED, 0);
+        {
+            let lease = checkout_core(handle).unwrap();
+            assert_eq!(lease.core().command_state(view).unwrap().mode(), crate::command::Mode::Normal);
+            assert_eq!(lease.core().command_state(view).unwrap().cursor(), 16);
+            assert_eq!(lease.core().document().revision().0, revision);
+            assert_eq!(lease.core().document().text(), "Xfirst\n  second\nthird");
+        }
+        assert_eq!(viem_core_destroy(handle), ViemStatus::Ok);
     }
 
     #[test]

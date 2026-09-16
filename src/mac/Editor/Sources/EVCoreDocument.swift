@@ -1414,6 +1414,15 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
+    func goToLine(_ line: UInt64) throws -> ViemCoreOutcomeV1 {
+        let state = try document.documentState()
+        return try performCoreOperation("Go to logical line") { outcome in
+            viem_core_view_go_to_line(document.core, viewID, state.document_id,
+                state.document_revision, line, outcome)
+        }
+    }
+
+    @discardableResult
     func selectAll() throws -> ViemCoreOutcomeV1 {
         let state = try document.documentState()
         return try performCoreOperation("Select all text") { outcome in

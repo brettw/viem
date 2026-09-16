@@ -3867,6 +3867,27 @@ result without changing source.
 
 ### Startup files and argument navigation
 
+Viem runs one editor process per user. A later executable invocation forwards
+its original argument vector and working directory to the existing process,
+then exits after acknowledgment. Process election must be atomic across
+simultaneous launches and recover after a crash. Startup and forwarded requests
+use the same argument parser and document-opening path; forwarded requests wait
+until startup is ready and are processed in order, including across nested
+document-recovery dialogs. A failed handoff reports an error rather than starting
+a second editor.
+
+An invocation without launch options activates the existing application and
+brings an existing window forward; if no windows remain, it creates the same
+blank document as a fresh startup. A file requested for immediate opening that
+already appears in a window or pane keeps its existing buffer and view, including
+unsaved edits; focus that pane and bring its window forward. Do not create an
+additional window or pane for repeated filenames, symlinks, or hard links to that
+file. Install the invocation's argument list in reused panes as well as new ones.
+New files selected by `-o` share a new stacked window; represented files retain
+their current windows. The first requested file retains focus, and `+line`
+navigates it without inserting text or replaying pending Insert/Replace input.
+Explicit extra empty panes from `-oN` remain supported.
+
 The executable accepts multiple filename arguments, captured relative to the
 launch working directory in their supplied order. By default only the first
 file is opened; later files are read when selected. A nonexistent filename

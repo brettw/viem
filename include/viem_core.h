@@ -2188,6 +2188,15 @@ ViemStatus viem_core_view_select_all(
     uint64_t document_id, uint64_t document_revision,
     ViemCoreOutcomeV1 *out_outcome);
 
+/* Enter Normal mode and reveal the first nonblank grapheme on a logical hard
+ * line in the exact document revision. Lines are one-based; zero selects the
+ * first and excess (including UINT64_MAX) selects the last. Pending input is
+ * cancelled without executing it, changing source, or recording a macro key. */
+ViemStatus viem_core_view_go_to_line(
+    ViemCoreHandle core, ViemViewId view,
+    uint64_t document_id, uint64_t document_revision, uint64_t line,
+    ViemCoreOutcomeV1 *out_outcome);
+
 /* Native Edit-menu history navigation; behavior is independent of Vim mode. */
 ViemStatus viem_core_view_undo(ViemCoreHandle core, ViemViewId view,
                                ViemCoreOutcomeV1 *out_outcome);

@@ -41,10 +41,10 @@ extension EVEditorSurfaceController {
         performInput {
             try attachToCore()
             guard let session else { return }
-            // Normal G already owns grapheme-safe, clamped logical line
-            // navigation. Startup is a fresh Normal view, with no pending input.
-            let sequence = line == UInt64.max ? "G" : "\(max(1, min(line, UInt64(Int.max))))G"
-            _ = try session.sendText(sequence)
+            // A forwarded launch may target a view with pending input. Native
+            // navigation cancels that state without typing into the document
+            // or replaying a counted Insert session.
+            _ = try session.goToLine(line)
         }
     }
 }

@@ -426,6 +426,14 @@ pub enum CoreEvent {
         document: DocumentId,
         revision: Revision,
     },
+    /// Enter Normal mode and reveal the first nonblank grapheme of a logical
+    /// hard line in the exact snapshot, without interpreting pending input.
+    /// Lines are one-based; zero selects the first and excess selects the last.
+    GoToLine {
+        document: DocumentId,
+        revision: Revision,
+        line: u64,
+    },
     /// Navigate one retained history edge independently of the current Vim
     /// mode. Native Edit menu actions use this instead of synthesizing `u` or
     /// Ctrl-R key input.
@@ -3761,6 +3769,45 @@ impl<P: TextMeasurementProvider> Core<P> {
         Ok(outcome)
     }
 
+    fn go_to_line(
+        &mut self,
+        view_id: ViewId,
+        document: DocumentId,
+        revision: Revision,
+        line: u64,
+    ) -> Result<CoreOutcome, CoreError> {
+        if document != self.document.id() {
+            return Err(DocumentError::WrongDocument.into());
+        }
+        if revision != self.document.revision() {
+            return Err(DocumentError::WrongSnapshot {
+                expected: self.document.revision(),
+                actual: revision,
+            }
+            .into());
+        }
+        let mut composition_changes = Vec::new();
+        if self.views[&view_id].composition.is_some() {
+            let cancelled = self.handle_composition_event(view_id, CompositionEvent::Cancel)?;
+            composition_changes.extend(cancelled.composition_changes);
+        }
+        self.finalize_open_edit_group(view_id)?;
+        let command = self
+            .views
+            .get_mut(&view_id)
+            .expect("view checked")
+            .commands
+            .go_to_line(&self.document, line);
+        self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::RevealCaret)?;
+        Ok(CoreOutcome {
+            command: Some(command),
+            document_changed: false,
+            position_map: None,
+            layout_changed: true,
+            composition_changes,
+        })
+    }
+
     fn validate_style_sheet_identity(
         &self,
         document: DocumentId,
@@ -4828,6 +4875,13 @@ impl<P: TextMeasurementProvider> Core<P> {
             CoreEvent::SelectAll { document, revision } => {
                 return self.select_all(view_id, document, revision);
             }
+            CoreEvent::GoToLine {
+                document,
+                revision,
+                line,
+            } => {
+                return self.go_to_line(view_id, document, revision, line);
+            }
             CoreEvent::NavigateHistory(navigation) => {
                 return self.navigate_history(view_id, navigation);
             }
@@ -5874,6 +5928,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             CoreEvent::SelectAll { .. } => {
                 unreachable!("native whole-document selection returns before ordinary dispatch")
+            }
+            CoreEvent::GoToLine { .. } => {
+                unreachable!("native line navigation returns before ordinary dispatch")
             }
             CoreEvent::NavigateHistory(_) => {
                 unreachable!("native history navigation returns before ordinary dispatch")

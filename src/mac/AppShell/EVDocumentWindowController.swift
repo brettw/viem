@@ -320,9 +320,10 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
 
 @MainActor
 extension EVDocumentWindowController {
-  /// Installs a launch argument list without changing how Finder/Open opens
-  /// documents. The first file replaces the captured initial pane only after
-  /// its read succeeds; subsequent files are opened lazily unless `-o` is used.
+  /// Startup and forwarded command lines install the same argument list.
+  /// Already represented files keep their windows and panes; only new files
+  /// occupy this initially hidden window. Later arguments stay lazy unless
+  /// requested by `-o`, including when the first file was already open.
   public func openArgumentList(
     _ urls: [URL], splitCount: Int?, initialLine: UInt64?,
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
@@ -334,86 +335,137 @@ extension EVDocumentWindowController {
     let pane = documentContentController
     let state = original.editorBackend.persistenceState
     let list = EVArgumentList(urls)
+    let argumentLimit = splitCount.map { $0 == 0 ? max(1, urls.count) : max(1, $0) } ?? 1
+    var installedNewPane = false
+    var firstTarget: (EVDocumentWindowController, EVDocumentContentViewController)?
     isPerformingDocumentHostEffect = true
-    if urls.isEmpty {
-      pane.argumentList = list
-      showWindow(nil)
-      if let initialLine { editorSurface.goToLine(initialLine) }
-      openRemainingArguments(list, nextIndex: 1,
-        paneLimit: launchPaneLimit(splitCount: splitCount, fileCount: 0), completion: completion)
-      return
-    }
-    loadArgumentDocument(list.urls[0], fallback: nil) { [weak self] opened, error in
-      guard let self else { completion(.failure(EVDocumentHostError.staleRequest)); return }
-      guard let opened else {
-        self.finishDocumentHostEffect(.failure(error ?? EVDocumentHostError.unsupportedRequest), completion: completion)
-        return
+
+    func finish(_ result: Result<String?, Error>) {
+      if !installedNewPane && firstTarget != nil {
+        // Every requested file was already shown. Retire the unused blank
+        // without ever presenting another document window.
+        close()
+      } else if !isClosed {
+        showWindow(nil)
+        paneContainer.focusPane(at: 0)
+        updateActiveDocumentChrome()
       }
-      guard self.canReplace(pane, document: original, expected: state), Self.isPristineUntitled(original) else {
-        self.closeIfUnrepresented(opened)
-        self.finishDocumentHostEffect(.failure(EVDocumentHostError.staleRequest), completion: completion)
-        return
+      if let (controller, target) = firstTarget, !controller.isClosed,
+        let index = controller.paneContainer.panes.firstIndex(where: { $0 === target }) {
+        controller.paneContainer.focusPane(at: index)
+        controller.updateActiveDocumentChrome()
+        if controller.window?.isMiniaturized == true { controller.window?.deminiaturize(nil) }
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
       }
-      pane.argumentList = list
-      pane.argumentIndex = 0
-      self.replacePane(pane, with: opened)
-      self.closeIfUnrepresented(original)
-      self.showWindow(nil)
-      if let initialLine { self.editorSurface.goToLine(initialLine) }
-      self.openRemainingArguments(list, nextIndex: 1,
-        paneLimit: self.launchPaneLimit(splitCount: splitCount, fileCount: urls.count), completion: completion)
+      finishDocumentHostEffect(result, completion: completion)
     }
+
+    // The native loader can complete synchronously. Drain those completions
+    // iteratively so a long argv containing repeated files cannot exhaust the
+    // stack; an asynchronous recovery result resumes the same drain later.
+    var nextArgument: Int?
+    var isOpeningArgument = false
+    func openNext(_ index: Int) {
+      nextArgument = index
+      guard !isOpeningArgument else { return }
+      isOpeningArgument = true
+      defer { isOpeningArgument = false }
+      while let next = nextArgument {
+        nextArgument = nil
+        openArgument(next)
+      }
+    }
+
+    func openArgument(_ index: Int) {
+      guard !isClosed else {
+        finish(.failure(EVDocumentHostError.staleRequest)); return
+      }
+      guard index < argumentLimit else { finish(.success(nil)); return }
+      // Reusing another window or an earlier argument consumes no space here.
+      // Once this window is full, leave the next new target lazy without even
+      // reading it, while allowing already represented arguments to be reused.
+      if installedNewPane && paneCount >= launchPaneCapacity() {
+        guard list.urls.indices.contains(index),
+          let existing = EVDocumentIdentity.existingDocument(at: list.urls[index]),
+          Self.windowShowing(document: existing) != nil else {
+          finish(.success(nil)); return
+        }
+      }
+
+      func installed(_ opened: EVDocument?, _ error: Error?) {
+        guard let opened else {
+          finish(.failure(error ?? EVDocumentHostError.unsupportedRequest)); return
+        }
+        guard !isClosed else {
+          closeIfUnrepresented(opened)
+          finish(.failure(EVDocumentHostError.staleRequest)); return
+        }
+        let targetController: EVDocumentWindowController
+        let targetPane: EVDocumentContentViewController
+        if opened !== original, let controller = Self.windowShowing(document: opened)?.windowController
+          as? EVDocumentWindowController,
+          let existingPane = controller.paneContainer.panes.first(where: { $0.document === opened }) {
+          targetController = controller
+          targetPane = existingPane
+        } else {
+          guard installedNewPane || (canReplace(pane, document: original, expected: state)
+            && Self.isPristineUntitled(original)) else {
+            closeIfUnrepresented(opened)
+            finish(.failure(EVDocumentHostError.staleRequest)); return
+          }
+          if !installedNewPane {
+            if opened !== original {
+              replacePane(pane, with: opened)
+              closeIfUnrepresented(original)
+              targetPane = documentContentController
+            } else {
+              targetPane = pane
+            }
+            installedNewPane = true
+          } else {
+            paneContainer.focusPane(at: paneCount - 1)
+            addPane(document: opened)
+            targetPane = documentContentController
+          }
+          targetController = self
+          showWindow(nil)
+        }
+        // Repeated/aliased filenames keep the first argument position in the
+        // one existing pane while the complete list remains navigable.
+        if targetPane.argumentList !== list {
+          targetPane.argumentList = list
+          targetPane.argumentIndex = list.urls.indices.contains(index) ? index : list.urls.indices.last
+        }
+        targetController.argumentDocumentOpener = argumentDocumentOpener
+        if index == 0 {
+          firstTarget = (targetController, targetPane)
+          if let initialLine { targetPane.editorSurface.goToLine(initialLine) }
+        }
+        openNext(index + 1)
+      }
+
+      if list.urls.indices.contains(index) {
+        loadArgumentDocument(list.urls[index], fallback: nil, completion: installed)
+      } else if index == 0 {
+        installed(original, nil)
+      } else {
+        do {
+          let blank = EVDocument()
+          try blank.read(from: Data(), ofType: EVDocument.plainTextType)
+          blank.fileType = EVDocument.plainTextType
+          NSDocumentController.shared.addDocument(blank)
+          installed(blank, nil)
+        } catch { installed(nil, error) }
+      }
+    }
+    openNext(0)
   }
 
-  private func launchPaneLimit(splitCount: Int?, fileCount: Int) -> Int {
-    let requested = splitCount.map { $0 == 0 ? max(1, fileCount) : max(1, $0) } ?? 1
+  private func launchPaneCapacity() -> Int {
     let row = max(1, editorSurface.visualRowHeight ?? EVStatusBarView.preferredHeight)
     let minimum = row + documentContentController.statusBarHeight + 1
-    let capacity = max(1, Int((window?.contentLayoutRect.height ?? 680) / minimum))
-    return min(requested, capacity)
-  }
-
-  private func openRemainingArguments(
-    _ list: EVArgumentList, nextIndex: Int, paneLimit: Int,
-    completion: @escaping @MainActor (Result<String?, Error>) -> Void
-  ) {
-    guard !isClosed else {
-      finishDocumentHostEffect(.failure(EVDocumentHostError.staleRequest), completion: completion); return
-    }
-    guard nextIndex < paneLimit else {
-      paneContainer.focusPane(at: 0)
-      updateActiveDocumentChrome()
-      finishDocumentHostEffect(.success(nil), completion: completion)
-      return
-    }
-    func installed(_ opened: EVDocument?, _ error: Error?) {
-      guard let opened else {
-        paneContainer.focusPane(at: 0)
-        finishDocumentHostEffect(.failure(error ?? EVDocumentHostError.unsupportedRequest), completion: completion)
-        return
-      }
-      guard !isClosed else {
-        closeIfUnrepresented(opened)
-        finishDocumentHostEffect(.failure(EVDocumentHostError.staleRequest), completion: completion); return
-      }
-      // The list's order is independent of focus changes during a file read.
-      paneContainer.focusPane(at: paneCount - 1)
-      addPane(document: opened)
-      documentContentController.argumentList = list
-      documentContentController.argumentIndex = list.urls.indices.contains(nextIndex) ? nextIndex : list.urls.indices.last
-      openRemainingArguments(list, nextIndex: nextIndex + 1, paneLimit: paneLimit, completion: completion)
-    }
-    if list.urls.indices.contains(nextIndex) {
-      loadArgumentDocument(list.urls[nextIndex], fallback: nil, completion: installed)
-    } else {
-      do {
-        let blank = EVDocument()
-        try blank.read(from: Data(), ofType: EVDocument.plainTextType)
-        blank.fileType = EVDocument.plainTextType
-        NSDocumentController.shared.addDocument(blank)
-        installed(blank, nil)
-      } catch { installed(nil, error) }
-    }
+    return max(1, Int((window?.contentLayoutRect.height ?? 680) / minimum))
   }
 
   fileprivate func loadArgumentDocument(

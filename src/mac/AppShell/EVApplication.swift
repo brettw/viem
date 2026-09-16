@@ -9,30 +9,69 @@ public enum EVApplication {
         // callbacks during finishLaunching(), creating one window per file.
         // AppKit expects the string "NO" for this nonpersistent launch default.
         UserDefaults.standard.register(defaults: ["NSTreatUnknownArgumentsAsOpen": "NO"])
+        let request = EVInstanceLaunchRequest(
+            arguments: Array(CommandLine.arguments.dropFirst()),
+            workingDirectory: FileManager.default.currentDirectoryPath
+        )
+        let instance: EVSingleInstance
         let launchArguments: EVLaunchArguments
         do {
-            // Older Launch Services versions add a process serial number. It
-            // is native launch metadata rather than part of Vim's argv grammar.
-            var arguments = Array(CommandLine.arguments.dropFirst())
-            if arguments.first?.hasPrefix("-psn_") == true { arguments.removeFirst() }
-            launchArguments = try EVLaunchArguments.parse(arguments)
+            // Development subprocess tests isolate their IPC endpoint just as
+            // VIEM_CONFIG_DIR isolates settings; normal launches share one.
+            let instanceDirectory = ProcessInfo.processInfo.environment["VIEM_INSTANCE_DIRECTORY"].map {
+                URL(fileURLWithPath: $0, isDirectory: true)
+            }
+            switch try EVSingleInstance.start(request: request, directory: instanceDirectory) {
+            case let .forwarded(response):
+                if let error = response.errorMessage {
+                    FileHandle.standardError.write(Data("Viem: \(error)\n".utf8))
+                    exit(EXIT_FAILURE)
+                }
+                return
+            case let .primary(primary):
+                instance = primary
+            }
+            launchArguments = try parse(request)
         } catch {
-            FileHandle.standardError.write(Data("Viem: \(error.localizedDescription)\nUsage: Viem [-o[count]] [+line] [--] [file ...]\n".utf8))
+            FileHandle.standardError.write(Data("Viem: \(error.localizedDescription)\n".utf8))
             exit(EXIT_FAILURE)
         }
         let application = NSApplication.shared
-        let delegate = EVApplicationDelegate(launchArguments: launchArguments)
+        let delegate = EVApplicationDelegate(launchArguments: launchArguments,
+            launchDirectory: URL(fileURLWithPath: request.workingDirectory, isDirectory: true))
 
         application.setActivationPolicy(.regular)
         application.delegate = delegate
-        withExtendedLifetime(delegate) {
+        withExtendedLifetime((delegate, instance)) {
             // A SwiftPM executable enters AppKit directly rather than through
             // NSApplicationMain, so complete launch explicitly before starting
             // the event loop. This delivers the delegate launch callbacks that
             // install the menu and create the initial untitled document.
             application.finishLaunching()
+            instance.setLaunchHandler { request in
+                do {
+                    let arguments = try parse(request)
+                    // Acknowledge acceptance before document recovery or open
+                    // errors can enter a modal event loop in the editor.
+                    DispatchQueue.main.async {
+                        delegate.processLaunchArguments(arguments, workingDirectory:
+                            URL(fileURLWithPath: request.workingDirectory, isDirectory: true))
+                    }
+                    return nil
+                } catch { return error.localizedDescription }
+            }
             application.activate(ignoringOtherApps: true)
             application.run()
+        }
+    }
+
+    private static func parse(_ request: EVInstanceLaunchRequest) throws -> EVLaunchArguments {
+        // Older Launch Services versions add native process metadata to argv.
+        var arguments = request.arguments
+        if arguments.first?.hasPrefix("-psn_") == true { arguments.removeFirst() }
+        do { return try EVLaunchArguments.parse(arguments) }
+        catch {
+            throw EVLaunchArgumentError("\(error.localizedDescription)\nUsage: Viem [-o[count]] [+line] [--] [file ...]")
         }
     }
 }
@@ -49,6 +88,8 @@ final class EVApplicationDelegate: NSObject,
     private let launchArguments: EVLaunchArguments
     private let launchDirectory: URL
     private var hasProcessedLaunchArguments = false
+    private var pendingLaunches: [(EVLaunchArguments, URL)] = []
+    private var isProcessingLaunch = false
     var documentFactory: () -> EVDocument = { EVDocument() }
     var mainWindow: () -> NSWindow? = { NSApplication.shared.mainWindow }
     var applicationWindows: () -> [NSWindow] = { NSApplication.shared.windows }
@@ -56,11 +97,12 @@ final class EVApplicationDelegate: NSObject,
     var terminateApplication: () -> Void = { NSApplication.shared.terminate(nil) }
     var recordRecentDocument: (URL) -> Void
 
-    init(configuration: EVConfigurationStore? = nil, launchArguments: EVLaunchArguments = EVLaunchArguments()) {
+    init(configuration: EVConfigurationStore? = nil, launchArguments: EVLaunchArguments = EVLaunchArguments(),
+         launchDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)) {
         let configuration = configuration ?? .shared
         self.configuration = configuration
         self.launchArguments = launchArguments
-        self.launchDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        self.launchDirectory = launchDirectory
         recordRecentDocument = { try? configuration.recordRecentDocument($0) }
         super.init()
     }
@@ -74,7 +116,7 @@ final class EVApplicationDelegate: NSObject,
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if !openLaunchArguments() { ensureInitialDocument() }
+        openLaunchArguments()
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
@@ -104,13 +146,7 @@ final class EVApplicationDelegate: NSObject,
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag {
-            if let document = NSDocumentController.shared.documents.first {
-                document.showWindows()
-            } else {
-                createUntitledDocument()
-            }
-        }
+        processLaunchArguments(EVLaunchArguments(), workingDirectory: launchDirectory)
         return true
     }
 
@@ -180,18 +216,39 @@ final class EVApplicationDelegate: NSObject,
         return document
     }
 
-    fileprivate func ensureInitialDocument() {
-        guard NSDocumentController.shared.documents.isEmpty else { return }
-        launchPlaceholderDocument = createUntitledDocument()
-    }
-
     @discardableResult
     func openLaunchArguments() -> Bool {
-        let hasLaunchOptions = !launchArguments.filenames.isEmpty || launchArguments.splitCount != nil
-            || launchArguments.initialLine != nil
+        let hasLaunchOptions = !launchArguments.isEmpty
         guard !hasProcessedLaunchArguments else { return hasLaunchOptions }
         hasProcessedLaunchArguments = true
-        guard hasLaunchOptions else { return false }
+        processLaunchArguments(launchArguments, workingDirectory: launchDirectory)
+        return hasLaunchOptions
+    }
+
+    /// Startup and later executable invocations share this dispatch path.
+    /// Serializing requests also prevents nested recovery panels from opening
+    /// the same file twice before the first request has installed its window.
+    func processLaunchArguments(_ arguments: EVLaunchArguments, workingDirectory: URL) {
+        pendingLaunches.append((arguments, workingDirectory))
+        processNextLaunch()
+    }
+
+    private func processNextLaunch() {
+        guard !isProcessingLaunch, !pendingLaunches.isEmpty else { return }
+        isProcessingLaunch = true
+        let (arguments, workingDirectory) = pendingLaunches.removeFirst()
+        guard !arguments.isEmpty else {
+            if hasNoOpenWindows {
+                launchPlaceholderDocument = createUntitledDocument()
+            } else if let window = mainWindow() ?? applicationWindows().first(where: {
+                !($0 is NSPanel) && ($0.isVisible || $0.isMiniaturized)
+            }) {
+                if window.isMiniaturized { window.deminiaturize(nil) }
+                window.makeKeyAndOrderFront(nil)
+            }
+            finishLaunch()
+            return
+        }
         let document = documentFactory()
         document.recordRecentDocument = recordRecentDocument
         NSDocumentController.shared.addDocument(document)
@@ -199,24 +256,30 @@ final class EVApplicationDelegate: NSObject,
         launchPlaceholderDocument = document
         guard let controller = document.windowControllers.first as? EVDocumentWindowController else {
             document.showWindows()
-            return true
+            finishLaunch()
+            return
         }
         controller.argumentDocumentOpener = { [weak self] url, _, completion in
             guard let self else { completion(nil, CocoaError(.userCancelled)); return }
             do { completion(try self.loadLaunchDocument(at: url), nil) }
             catch { completion(nil, error) }
         }
-        let urls = launchArguments.filenames.map {
-            URL(fileURLWithPath: $0, relativeTo: launchDirectory).absoluteURL
+        let urls = arguments.filenames.map {
+            URL(fileURLWithPath: $0, relativeTo: workingDirectory).absoluteURL
         }
-        controller.openArgumentList(urls, splitCount: launchArguments.splitCount,
-            initialLine: launchArguments.initialLine) { result in
+        controller.openArgumentList(urls, splitCount: arguments.splitCount,
+            initialLine: arguments.initialLine) { [self] result in
             if case let .failure(error) = result {
-                controller.showWindow(nil)
                 NSApplication.shared.presentError(error)
             }
+            finishLaunch()
         }
-        return true
+    }
+
+    private func finishLaunch() {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        isProcessingLaunch = false
+        processNextLaunch()
     }
 
     /// CLI launches also work directly from the executable, where an app
