@@ -25,6 +25,7 @@ pub mod text_object;
 pub mod visual_block;
 pub mod window;
 pub mod startup;
+pub mod mappings;
 
 mod command_line_completion;
 mod command_line_edit;
@@ -183,6 +184,8 @@ pub enum Key {
     PageUp,
     PageDown,
     Ctrl(char),
+    /// Function key 1..=35; modifiers are Shift=1, Control=2, Alt=4, Command=8.
+    Function { number: u8, modifiers: u8 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1104,6 +1107,7 @@ pub(crate) struct ExNormalTarget {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ReplayPlan {
     LiteralTerminator(InputEvent),
+    Mapping(mappings::MappingReplayPlan),
     Macro(MacroReplayPlan),
     ExNormal(ExNormalReplayPlan),
 }
@@ -1208,6 +1212,7 @@ struct MotionExtent {
 /// authoritative owner in the core buffer.
 #[derive(Clone, Debug)]
 pub(crate) struct BufferCommandState {
+    mappings: mappings::KeyMappings,
     registers: Registers,
     marks: BTreeMap<char, usize>,
     search_history: Vec<String>,
@@ -1228,6 +1233,9 @@ pub(crate) struct BufferCommandState {
 /// Per-view Vim controller state.
 #[derive(Clone, Debug)]
 pub struct CommandInterpreter {
+    mappings: mappings::KeyMappings,
+    mapping_pending: Vec<Key>,
+    mapping_suppressed: bool,
     mode: Mode,
     cursor: usize,
     position_revision: Option<Revision>,
@@ -1352,6 +1360,9 @@ impl Default for CommandInterpreter {
 impl CommandInterpreter {
     pub fn new() -> Self {
         Self {
+            mappings: Default::default(),
+            mapping_pending: Vec::new(),
+            mapping_suppressed: false,
             mode: Mode::Normal,
             cursor: 0,
             position_revision: None,
@@ -1420,6 +1431,7 @@ impl CommandInterpreter {
 
     pub(crate) fn export_buffer_state(&self) -> BufferCommandState {
         BufferCommandState {
+            mappings: self.mappings.clone(),
             registers: self.registers.clone(),
             marks: self
                 .marks
@@ -1443,6 +1455,7 @@ impl CommandInterpreter {
     }
 
     pub(crate) fn install_buffer_state(&mut self, state: &BufferCommandState) {
+        self.mappings.clone_from(&state.mappings);
         self.registers.clone_from(&state.registers);
         self.marks.clone_from(&state.marks);
         self.search_history.clone_from(&state.search_history);
@@ -2054,6 +2067,7 @@ impl CommandInterpreter {
         event: &InputEvent,
         clipboard: Option<&ClipboardCommandContext>,
     ) -> bool {
+        if self.mapping_applies(event) { return false; }
         let normalized = match event {
             InputEvent::Key(key) => Some(InputEvent::Key(self.normalized_input_key(*key))),
             InputEvent::Text(_) => None,
@@ -2598,6 +2612,7 @@ impl CommandInterpreter {
     pub fn set_cursor(&mut self, document: &Document, offset: usize) -> bool {
         let lines = document.hard_line_snapshot();
         if lines.is_grapheme_boundary(offset) {
+            self.mapping_pending.clear();
             self.typing_style = Default::default();
             self.input_assistance.clear_tag();
             self.invalidate_replace_restoration();
@@ -2791,6 +2806,7 @@ impl CommandInterpreter {
         document: &mut Document,
         event: InputEvent,
     ) -> Result<CommandOutput, DocumentError> {
+        if let Some(output) = self.handle_mapping(document, &event)? { return Ok(output); }
         let event = self.normalized_input_event(event);
         let model_checkpoint = document.begin_command_checkpoint();
         let checkpoint = self.clone();
@@ -2975,7 +2991,6 @@ impl CommandInterpreter {
         context: &CommandContext<'_>,
         event: InputEvent,
     ) -> Result<CommandResolution, DocumentError> {
-        let event = self.normalized_input_event(event);
         if context.document_id() != context.document().id()
             || context.document_revision() != context.document().revision()
         {
@@ -2985,6 +3000,10 @@ impl CommandInterpreter {
             });
         }
 
+        if self.mapping_applies(&event) {
+            return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
+        }
+        let event = self.normalized_input_event(event);
         if self.handles_literal_input(&event) || self.is_cancel_input(&event)
             || self.insert_control_g_pending()
             || (self.mode == Mode::Replace && matches!(&event, InputEvent::Key(Key::Ctrl('w' | 'W' | 'u' | 'U'))))
@@ -3828,8 +3847,6 @@ impl CommandInterpreter {
         event: InputEvent,
         context: &mut LayoutCommandContext<'_>,
     ) -> Result<CommandOutput, DocumentError> {
-        let event = self.normalized_input_event(event);
-        self.record_event(&event);
         if context.snapshot.document_id != document.id()
             || context.snapshot.document_revision != document.revision()
         {
@@ -3838,6 +3855,16 @@ impl CommandInterpreter {
                 ..CommandOutput::complete()
             });
         }
+        if self.mapping_applies(&event) && !self.plan_compound_replay {
+            return Ok(CommandOutput::unsupported(
+                "key mappings with a supplied layout require the core coordinator",
+            ));
+        }
+        if let Some(output) = self.handle_mapping(document, &event)? {
+            return Ok(output);
+        }
+        let event = self.normalized_input_event(event);
+        self.record_event(&event);
         // The layout is authoritative for the current view's wrap setting.
         // Keeping this synchronized makes `:set wrap?` accurate even when the
         // host changed wrapping outside the Ex command line.
@@ -10120,7 +10147,8 @@ impl CommandInterpreter {
             | Key::End
             | Key::PageUp
             | Key::PageDown
-            | Key::Ctrl(_) => Ok(CommandOutput::unsupported(
+            | Key::Ctrl(_)
+            | Key::Function { .. } => Ok(CommandOutput::unsupported(
                 "cursor motion is unavailable while a deferred Visual Block insertion is collected",
             )),
             Key::Escape => unreachable!("handled above"),
@@ -12243,6 +12271,13 @@ impl CommandInterpreter {
     }
 
     fn execute_ex_command(&mut self, document: &mut Document, input: &str) -> CommandOutput {
+        if let Some(result) = self.mappings.execute(input) {
+            self.mapping_pending.clear();
+            return match result {
+                Ok(()) => CommandOutput::complete(),
+                Err(message) => CommandOutput { status: CommandStatus::Error(message), ..CommandOutput::complete() },
+            };
+        }
         let command = match parse_ex(input) {
             Ok(command) => command,
             Err(error) => {
@@ -12492,10 +12527,7 @@ impl CommandInterpreter {
             };
         };
 
-        // Mappings do not exist in this core yet, so both `:normal` and
-        // `:normal!` execute the same built-in event stream. Retain and consume
-        // the literal bit here rather than leaking either spelling to a host.
-        let _literal = request.literal;
+        let mapping_was_suppressed = self.set_mapping_suppressed(request.literal);
         let original_cursor = self.cursor;
         let original_revision = document.revision();
         let mut output = CommandOutput::complete();
@@ -12539,6 +12571,7 @@ impl CommandInterpreter {
 
         document.end_edit_group();
         self.compound_replay_depth -= 1;
+        self.set_mapping_suppressed(mapping_was_suppressed);
         output.document_changed |= document.revision() != original_revision;
         output.cursor_moved |= self.cursor != original_cursor;
         if matches!(
@@ -13650,6 +13683,7 @@ impl CommandInterpreter {
     }
 
     fn clear_pending(&mut self) {
+        self.mapping_pending.clear();
         self.insert_controls = Default::default();
         self.literal_input = None;
         self.clipboard_copy_as_seen = false;

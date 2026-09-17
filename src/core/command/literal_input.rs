@@ -300,7 +300,7 @@ impl CommandInterpreter {
     }
 }
 
-fn literal_key_text(key: Key) -> Option<String> {
+pub(super) fn literal_key_text(key: Key) -> Option<String> {
     Some(match key {
         Key::Char(character) => character.to_string(),
         Key::Escape => "\u{1b}".into(),
@@ -334,6 +334,14 @@ fn literal_key_text(key: Key) -> Option<String> {
         Key::DocumentEnd => "<C-End>".into(),
         Key::PageUp => "<PageUp>".into(),
         Key::PageDown => "<PageDown>".into(),
+        Key::Function { number, modifiers } => {
+            let mut name = String::from("<");
+            for (bit, modifier) in [(2, "C-"), (1, "S-"), (4, "A-"), (8, "D-")] {
+                if modifiers & bit != 0 { name.push_str(modifier); }
+            }
+            name.push_str(&format!("F{number}>"));
+            name
+        }
         Key::SelectAll => return None,
     })
 }

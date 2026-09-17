@@ -144,9 +144,20 @@
       "tests": []
     },
     {
-      "id": "mappings-abbreviations-runtime",
+      "id": "startup-key-mappings",
+      "status": "supported",
+      "decision": "The profile startup.viem initializes supported settings and mode-scoped recursive/nonrecursive mappings. Interactive mapping changes are buffer-scoped. Multi-key prefixes, function-key notation, counts, registers, undo and bounded expansion use the portable command pipeline; general Vimscript and mapping expressions remain unsupported.",
+      "tests": [
+        "src/core/command/mappings.rs",
+        "src/mac/AppShellTests/EVStartupFileTests.swift",
+        "src/mac/Editor/Tests/EVStartupCommandTests.swift",
+        "src/mac/Editor/Tests/EVFunctionKeyMappingTests.swift"
+      ]
+    },
+    {
+      "id": "abbreviations-script-runtime",
       "status": "rejected",
-      "decision": "User mappings/abbreviations, expression input, scripting, custom commands/operators and plugins remain outside the explicitly bounded command model.",
+      "decision": "User abbreviations, expression input, scripting, custom commands/operators and plugins remain outside the explicitly bounded command model.",
       "tests": []
     },
     {

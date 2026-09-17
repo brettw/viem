@@ -21,21 +21,25 @@ public struct EVCodeFilenameAssociation: Codable, Equatable, Sendable {
 public final class EVConfigurationStore {
   public static let shared = EVConfigurationStore()
   public let directory: URL
+  /// All buffers share the first read of startup.viem until this profile is
+  /// reopened, normally at the next application launch.
+  public private(set) lazy var startupFile = EVStartupFile.load(directory: directory)
   public private(set) var lastError: String?
   private var root: [String: Any] = ["version": 1]
   private var writable = true
   private let manager: FileManager
 
   public init(directory: URL? = nil, legacyDefaults: UserDefaults? = nil,
-              manager: FileManager = .default) {
+              manager: FileManager = .default,
+              environment: [String: String] = ProcessInfo.processInfo.environment,
+              homeDirectory: URL? = nil) {
     self.manager = manager
-    let overriddenDirectory = ProcessInfo.processInfo.environment["VIEM_CONFIG_DIR"]
+    let profile = EVProfileDirectory.resolve(directory: directory, environment: environment,
+      homeDirectory: homeDirectory ?? manager.homeDirectoryForCurrentUser)
     // Injected directories are isolated (tests, previews, portable profiles):
     // never consume the real application's legacy preferences there.
-    let legacy = legacyDefaults ?? (directory == nil && overriddenDirectory == nil ? UserDefaults.standard : nil)
-    self.directory = directory ?? overriddenDirectory.map {
-      URL(fileURLWithPath: $0, isDirectory: true)
-    } ?? manager.homeDirectoryForCurrentUser.appendingPathComponent(".viem", isDirectory: true)
+    let legacy = legacyDefaults ?? (profile.usesDefaultDirectory && homeDirectory == nil ? UserDefaults.standard : nil)
+    self.directory = profile.url
     let file = self.directory.appendingPathComponent("config.json")
     do {
       if manager.fileExists(atPath: file.path) {

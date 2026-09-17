@@ -515,6 +515,10 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
                 try checked(result, operation: "Load default style")
             }
         } catch { configurationWarning = error.localizedDescription }
+        let startupDiagnostics = EVCoreStartup.initialize(core: core, file: configuration.startupFile)
+        if !startupDiagnostics.isEmpty {
+            configurationWarning = ([configurationWarning].compactMap { $0 } + startupDiagnostics).joined(separator: "\n")
+        }
         if publishDiagnostics { refreshSyntaxDiagnostics() }
     }
 
@@ -807,6 +811,7 @@ final class EVCoreViewSession {
     weak var commandTurnHost: (any EVCommandTurnHost)?
     var hostEffectAccessCounters = EVHostEffectAccessCounters()
     var compositionStateDidChange: ((Bool) -> Void)?
+    private var mappingTimer: Timer?
 
     init(document: EVCoreDocumentBackend, width: CGFloat, height: CGFloat) throws {
         self.document = document
@@ -823,6 +828,7 @@ final class EVCoreViewSession {
     }
 
     deinit {
+        mappingTimer?.invalidate()
         if viewID != 0 {
             _ = viem_core_view_remove(coreHandle, viewID)
         }
@@ -830,6 +836,8 @@ final class EVCoreViewSession {
     }
 
     func detach() {
+        mappingTimer?.invalidate()
+        mappingTimer = nil
         if viewID != 0 {
             _ = viem_core_view_remove(coreHandle, viewID)
             viewID = 0
@@ -887,11 +895,12 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func sendKey(kind: UInt32, codepoint: UInt32 = 0) throws -> ViemCoreOutcomeV1 {
+    func sendKey(kind: UInt32, codepoint: UInt32 = 0, modifiers: UInt32 = 0) throws -> ViemCoreOutcomeV1 {
         var input = ViemKeyInputV1()
         input.struct_size = UInt32(MemoryLayout<ViemKeyInputV1>.size)
         input.kind = kind
         input.codepoint = codepoint
+        input.modifiers = modifiers
         return try performHostEffectTurn("Send key input") { outcome, effects in
             withCommandTurnContext { context in
                 viem_core_view_send_key_with_host_context_v2(
@@ -926,6 +935,7 @@ final class EVCoreViewSession {
         effectBatch: ViemEffectBatchHandle,
         operation: String
     ) throws {
+        defer { scheduleMappingTimeout() }
         var copiedBatch: EVHostEffectBatch?
         var batchError: Error?
         if effectBatch != 0 {
@@ -947,6 +957,41 @@ final class EVCoreViewSession {
         if outcome.command_status == UInt32(VIEM_COMMAND_STATUS_READ_ONLY) {
             throw EVCoreFrontendError.command(operation: operation, status: outcome.command_status)
         }
+    }
+
+    func hasPendingMapping() throws -> Bool {
+        var pending: UInt8 = 0
+        try checked(viem_core_view_has_pending_mapping(document.core, viewID, &pending),
+                    operation: "Read pending key mapping")
+        return pending != 0
+    }
+
+    @discardableResult
+    func flushMappingPrefix() throws -> ViemCoreOutcomeV1 {
+        try performHostEffectTurn("Resolve key mapping") { outcome, effects in
+            withCommandTurnContext { context in
+                viem_core_view_flush_mapping_with_host_context_v2(
+                    document.core, viewID, context, outcome, effects)
+            }
+        }
+    }
+
+    private func scheduleMappingTimeout() {
+        mappingTimer?.invalidate()
+        mappingTimer = nil
+        guard viewID != 0, (try? hasPendingMapping()) == true else { return }
+        let timer = Timer(timeInterval: 1, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if let surface = self.commandTurnHost as? EVEditorSurfaceController {
+                    surface.performInput { _ = try self.flushMappingPrefix() }
+                } else {
+                    _ = try? self.flushMappingPrefix()
+                }
+            }
+        }
+        mappingTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     func lineLocation() throws -> ViemViewLineLocationV1 {

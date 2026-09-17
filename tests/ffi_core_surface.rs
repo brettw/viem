@@ -614,7 +614,7 @@ fn key(kind: u32, codepoint: u32) -> ViemKeyInputV1 {
         struct_size: VIEM_KEY_INPUT_V1_SIZE,
         kind,
         codepoint,
-        reserved: 0,
+        modifiers: 0,
     }
 }
 

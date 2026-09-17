@@ -236,6 +236,11 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_KEY_SHIFT_ENTER 19u
 #define VIEM_KEY_WORD_LEFT 20u
 #define VIEM_KEY_WORD_RIGHT 21u
+#define VIEM_KEY_FUNCTION 22u
+#define VIEM_KEY_MODIFIER_SHIFT 1u
+#define VIEM_KEY_MODIFIER_CONTROL 2u
+#define VIEM_KEY_MODIFIER_ALT 4u
+#define VIEM_KEY_MODIFIER_COMMAND 8u
 
 #define VIEM_COMMAND_STATUS_NONE 0u
 #define VIEM_COMMAND_STATUS_COMPLETE 1u
@@ -1787,8 +1792,10 @@ typedef struct ViemMarkSavedV1 {
 typedef struct ViemKeyInputV1 {
   uint32_t struct_size;
   uint32_t kind;
+  /* Unicode scalar, or function-key number 1..35 for VIEM_KEY_FUNCTION. */
   uint32_t codepoint;
-  uint32_t reserved;
+  /* VIEM_KEY_MODIFIER_* bits for function keys; zero for other kinds. */
+  uint32_t modifiers;
 } ViemKeyInputV1;
 
 #define VIEM_KEY_INPUT_V1_SIZE ((uint32_t)sizeof(ViemKeyInputV1))
@@ -2142,6 +2149,14 @@ ViemStatus viem_core_view_send_text_with_host_context_v2(
     ViemCoreHandle handle, ViemViewId view, const uint8_t *text, uint64_t text_length,
     const ViemCommandTurnContextV2 *context, ViemCoreOutcomeV1 *out_outcome,
     ViemEffectBatchHandle *out_effect_batch);
+
+/* Pending multi-key mapping state and timeout dispatch. Flush captures host
+ * context and returns an owned effect batch just like send_key. */
+ViemStatus viem_core_view_has_pending_mapping(ViemCoreHandle core, ViemViewId view,
+                                             uint8_t *pending);
+ViemStatus viem_core_view_flush_mapping_with_host_context_v2(
+    ViemCoreHandle core, ViemViewId view, const ViemCommandTurnContextV2 *context,
+    ViemCoreOutcomeV1 *outcome, ViemEffectBatchHandle *effects);
 
 ViemStatus viem_effect_batch_info(ViemEffectBatchHandle batch,
                                   ViemEffectBatchInfoV1 *out_info);

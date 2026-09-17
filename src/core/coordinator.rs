@@ -42,6 +42,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod input_layout;
+mod startup;
 mod completion;
 mod completion_layout;
 pub use completion_layout::CompletionPopupAnchor;
@@ -288,6 +289,8 @@ pub enum StyleEditGroupError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoreEvent {
+    FlushMappingPrefix,
+    FlushMappingPrefixWithClipboard(ClipboardCommandContext),
     EditCommandLine(crate::command::CommandLineEditRequest),
     SetDirectCharacterProperties {
         expected: LogicalSelectionIdentity,
@@ -858,6 +861,7 @@ pub struct Core<P: TextMeasurementProvider> {
     syntax: syntax::CoreSyntax,
     buffer_commands: BufferCommandState,
     whitespace_defaults: crate::layout::WhitespacePresentationOptions,
+    startup_view_options: Option<(bool, crate::command::VisibleWhitespaceSetting)>,
     views: BTreeMap<ViewId, View<P>>,
     next_view: Option<u64>,
     next_layout_job: Option<u64>,
@@ -912,6 +916,7 @@ struct OpenStyleEditGroup {
 
 #[derive(Debug)]
 enum ReplayFrame {
+    Mapping { plan: crate::command::mappings::MappingReplayPlan, event: usize },
     Macro {
         plan: MacroReplayPlan,
         iteration: usize,
@@ -927,7 +932,7 @@ enum ReplayFrame {
 
 #[derive(Debug)]
 enum ReplayAction {
-    Input { event: InputEvent, ex_normal: bool },
+    Input { event: InputEvent, ex_normal: bool, remap: bool },
     BeginExNormalLine(ExNormalTarget),
     FinishExNormalLine,
     PopFrame,
@@ -997,6 +1002,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             syntax: syntax::CoreSyntax::default(),
             buffer_commands,
             whitespace_defaults: Default::default(),
+            startup_view_options: None,
             views: BTreeMap::new(),
             next_view: Some(1),
             next_layout_job: Some(1),
@@ -1803,8 +1809,12 @@ impl<P: TextMeasurementProvider> Core<P> {
         commands.install_buffer_state(&self.buffer_commands);
         commands.set_reflow_language(self.reflow_language());
         commands.note_document_revision(self.document.revision());
-        let layout = ViewLayout::new(width, height);
+        let mut layout = ViewLayout::new(width, height);
         commands.set_layout_options(layout.wrap());
+        if let Some(options) = &self.startup_view_options {
+            commands.install_startup_view_options(options);
+            layout.set_wrap(options.0);
+        }
         let engine = LayoutEngine::new(provider);
         let observed_metrics_generation = inspect_layout_provider(&engine).metrics_generation;
         self.views.insert(
@@ -4761,6 +4771,14 @@ impl<P: TextMeasurementProvider> Core<P> {
         // without risking later commands joining the style undo unit.
         self.finalize_style_edit_group()?;
         let event = match event {
+            CoreEvent::FlushMappingPrefix | CoreEvent::FlushMappingPrefixWithClipboard(_) => {
+                let clipboard = match event { CoreEvent::FlushMappingPrefixWithClipboard(value) => Some(value), _ => None };
+                self.install_buffer_commands(view_id);
+                let plan = self.views.get_mut(&view_id).expect("validated view").commands.flush_mapping();
+                let initial = CoreOutcome { command: Some(crate::command::mappings::empty_mapping_output()), document_changed: false, position_map: None, layout_changed: false, composition_changes: Vec::new() };
+                let Some(plan) = plan else { return Ok(initial); };
+                return self.run_compound_replay(view_id, clipboard, initial, ReplayPlan::Mapping(plan));
+            }
             CoreEvent::EditCommandLine(request) => {
                 self.install_buffer_commands(view_id);
                 let command = self
@@ -5954,6 +5972,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             CoreEvent::EditGeneratedStyle { .. } => {
                 unreachable!("native style edits return before ordinary dispatch")
             }
+            CoreEvent::FlushMappingPrefix | CoreEvent::FlushMappingPrefixWithClipboard(_) => unreachable!("mapping flush handled before dispatch"),
             CoreEvent::InputWithClipboard { .. } => {
                 unreachable!("clipboard input is normalized before ordinary dispatch")
             }
@@ -6033,11 +6052,24 @@ impl<P: TextMeasurementProvider> Core<P> {
         initial: CoreOutcome,
         initial_plan: ReplayPlan,
     ) -> Result<CoreOutcome, CoreError> {
-        if self.edit_group_owner.take().is_some() {
-            self.document.close_edit_group();
+        let mapping_replay = matches!(&initial_plan, ReplayPlan::Mapping(_));
+        let editing = matches!(self.views[&view_id].commands.mode(), Mode::Insert | Mode::Replace);
+        if mapping_replay && editing && self.edit_group_owner == Some(view_id)
+            && self.document.edit_group_depth() > 0 {
+            // An Insert mapping belongs to the existing typing undo group.
+            // Reserve a nesting level above the replay floor for Escape to
+            // close without consuming the coordinator-owned group.
+            self.edit_group_owner = None;
+            self.replay_undo_floor = Some(self.document.edit_group_depth());
+            self.document.begin_edit_group();
+        } else {
+            if self.edit_group_owner.take().is_some() {
+                self.document.close_edit_group();
+            }
+            self.edit_group_restoration = None;
+            self.begin_replay_undo_segment(view_id)?;
+            if mapping_replay && editing { self.document.begin_edit_group(); }
         }
-        self.edit_group_restoration = None;
-        self.begin_replay_undo_segment(view_id)?;
 
         let mut accumulator = CoreOutcomeAccumulator::new(initial);
         let mut frames = Vec::new();
@@ -6064,6 +6096,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                         break ReplayAction::PopFrame;
                     };
                     match frame {
+                        ReplayFrame::Mapping { plan, event } => {
+                            if *event >= plan.events.len() { break ReplayAction::PopFrame; }
+                            let (next, remap) = plan.events[*event].clone();
+                            *event += 1;
+                            break ReplayAction::Input { event: next, ex_normal: false, remap };
+                        }
                         ReplayFrame::Macro {
                             plan,
                             iteration,
@@ -6082,6 +6120,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             break ReplayAction::Input {
                                 event: next,
                                 ex_normal: false,
+                                remap: true,
                             };
                         }
                         ReplayFrame::ExNormal {
@@ -6090,7 +6129,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                             event,
                             line_started,
                         } => {
-                            let _literal = plan.literal;
                             if *target >= plan.targets.len() {
                                 break ReplayAction::PopFrame;
                             }
@@ -6109,6 +6147,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                                 break ReplayAction::Input {
                                     event: next,
                                     ex_normal: true,
+                                    remap: !plan.literal,
                                 };
                             }
                             break ReplayAction::FinishExNormalLine;
@@ -6219,7 +6258,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             *line_started = false;
                         }
                     }
-                    ReplayAction::Input { event, ex_normal } => {
+                    ReplayAction::Input { event, ex_normal, remap } => {
                         if dispatched_events >= self.compound_replay_event_limit {
                             terminal_status = Some(CommandStatus::CountError(
                                 CountError::ReplayEventBudgetExceeded {
@@ -6245,8 +6284,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                             continue;
                         }
 
-                        let outcome =
-                            self.dispatch_replay_input(view_id, event, clipboard.as_ref());
+                        let old_suppressed = self.views.get_mut(&view_id).expect("replay view").commands.set_mapping_suppressed(!remap);
+                        let outcome = self.dispatch_replay_input(view_id, event, clipboard.as_ref());
+                        self.views.get_mut(&view_id).expect("replay view").commands.set_mapping_suppressed(old_suppressed);
                         let status = outcome
                             .command
                             .as_ref()
@@ -6280,9 +6320,14 @@ impl<P: TextMeasurementProvider> Core<P> {
                             continue;
                         }
                         if host_action {
-                            terminal_status = Some(CommandStatus::Unsupported(
-                                "compound replay stopped at a host action".into(),
-                            ));
+                            let mapping_finished = mapping_replay && frames.iter().all(|frame| {
+                                matches!(frame, ReplayFrame::Mapping { plan, event } if *event == plan.events.len())
+                            });
+                            terminal_status = Some(if mapping_finished {
+                                status
+                            } else {
+                                CommandStatus::Unsupported("compound replay stopped at a host action".into())
+                            });
                             continue;
                         }
                         if history_navigation {
@@ -6344,7 +6389,17 @@ impl<P: TextMeasurementProvider> Core<P> {
         // replay segment. A replay with history navigation may have finalized
         // earlier segments already; each segment retains its own restoration
         // endpoints and undo grouping.
-        let restoration_result = self.finish_replay_undo_segment(view_id);
+        let mapping_continues_edit = mapping_replay
+            && matches!(self.views[&view_id].commands.mode(), Mode::Insert | Mode::Replace);
+        let restoration_result = if mapping_continues_edit {
+            if let Some(floor) = self.replay_undo_floor.take() {
+                self.document.restore_edit_group_depth(floor);
+            }
+            self.edit_group_owner = Some(view_id);
+            Ok(())
+        } else {
+            self.finish_replay_undo_segment(view_id)
+        };
 
         if let Some(status) = terminal_status {
             accumulator.command_mut().status = status;
@@ -6358,7 +6413,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .views
             .get(&view_id)
             .is_some_and(|view| matches!(view.commands.mode(), Mode::Insert | Mode::Replace));
-        if resumes_edit {
+        if resumes_edit && !mapping_continues_edit {
             self.edit_group_owner = Some(view_id);
             let generation = self.document.edit_group_generation();
             let before = self
@@ -7049,6 +7104,7 @@ fn splice_paragraph_styles(
 fn replay_frame(plan: ReplayPlan) -> ReplayFrame {
     match plan {
         ReplayPlan::LiteralTerminator(_) => unreachable!("literal input continues before compound replay"),
+        ReplayPlan::Mapping(plan) => ReplayFrame::Mapping { plan, event: 0 },
         ReplayPlan::Macro(plan) => ReplayFrame::Macro {
             plan,
             iteration: 0,

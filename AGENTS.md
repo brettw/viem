@@ -1887,6 +1887,31 @@ atomic, and unknown keys survive updates. Invalid or unsupported versions are re
 overwriting the user's file. `VIEM_CONFIG_DIR` may override the directory for
 isolated development and testing.
 
+All native profile-directory resolution goes through `EVProfileDirectory`:
+an explicitly injected directory takes precedence over `VIEM_CONFIG_DIR`, then
+the default is `~/.viem`. Configuration, Code styles, and startup commands use
+that same resolved directory; consumers MUST NOT compute their own profile path.
+
+`startup.viem` in this profile is an optional UTF-8 file of configuration Ex
+commands. It is read once per application profile at startup; restarting reloads
+changes. Missing files are silent and are not created. A UTF-8 BOM and CRLF are
+accepted. The native loader bounds input to 1 MiB and reports unreadable,
+oversized, or malformed files without overwriting them. Blank lines and lines
+whose first nonblank character is `"` are ignored; a leading `:` is optional.
+Errors include the file path and one-based line number, and later valid lines
+still apply. Parsing and configuration policy live in the portable command
+module, while filesystem access belongs to the frontend.
+
+Startup accepts the supported `set`/`setlocal` settings and the mapping commands
+below. Settings initialize every document and view after JSON preferences have
+been applied, without changing source, dirty state, or document history. A
+source-changing option such as `fileformat` cannot be assigned by startup.
+`fileformats` assignment is also rejected until startup can configure the
+pre-open decoding policy; accepting it after opening would have no effect.
+Startup does not execute document edits, file/window actions, or Vimscript.
+JSON preferences and `startup.viem` retain separate persistence: startup is an
+explicit command override and is never rewritten by Settings controls.
+
 Editing contains **Indentation and tabs** and **Visible whitespace** sections
 alongside the existing editing controls. Indentation
 defaults live at `editing.indentation`; leading whitespace and marker defaults
@@ -4698,10 +4723,43 @@ documents, and Code-view versus direct Settings launches retaining global
 ownership. Large-document following queries must remain bounded and must not
 request new syntax work.
 
+### User key mappings
+
+`map {lhs} {rhs}` defines recursive mappings for Normal, Visual, and
+operator-pending input; `noremap` defines the same modes without remapping the
+replacement keys. Full command names with `n`, `v`/`x`, `o`, `i`, or `c` prefixes
+select Normal, Visual, operator-pending, Insert/Replace, or command-line input.
+`map!` and `noremap!` select Insert/Replace and command-line input. `unmap` and
+`mapclear`, including these mode prefixes and bang forms, remove mappings.
+Interactive definitions apply to the current buffer and its views; startup
+definitions initialize every buffer. Mapping listing, command abbreviations,
+mapping attributes such as `<expr>`/`<buffer>`, and user abbreviations remain
+unsupported and report diagnostics.
+
+Key notation accepts ordinary Unicode characters, `<Esc>`, `<CR>`, `<Tab>`,
+`<S-Tab>`, `<BS>`, `<Del>`, navigation keys, control characters, and `<F1>` through
+`<F35>`. Function keys accept combined `S-`, `C-`, `A-`/`M-`, and `D-` modifiers
+for Shift, Control, Alt/Option, and Command. `<Space>`, `<lt>`, `<Bar>`, and
+`<Bslash>` express literal separator characters; `<Nop>` is an empty replacement.
+Trailing replacement spaces are significant. Unsupported notation is diagnosed
+instead of installing an unusable mapping. Native bare F8 and Shift-F10 retain
+their existing Styles and context-menu shortcuts.
+
+For example, `map Y y$` uses the existing line-mode-aware `$` yank semantics,
+preserving explicit counts and registers. `map <C-F2> :sp` enters the Ex prompt with `sp` ready to
+edit; `map <C-F2> :sp<CR>` executes the split. Mapping expansion uses the ordinary
+command and layout pipeline, with fresh layout when edits require it. Literal
+command operands and quoted input bypass mapping. Recursive expansion is bounded
+and reports an error on exhaustion; nonrecursive replacements bypass mappings.
+Multi-key prefixes wait for further input, with a one-second native timeout that
+selects a shorter complete mapping or releases unmatched keys. Escape cancels a
+pending prefix. Mapping-driven edits are grouped for undo, and their normal
+register, dot-repeat, and macro behavior remains testable in the portable core.
+
 ### Explicitly deferred compatibility
 
 The following are outside the initial command commitment unless a later change
-adds them here: Vimscript/Vim9script, user mappings and abbreviations, plugins,
+adds them here: Vimscript/Vim9script, user abbreviations, plugins,
 terminal jobs, shell filters and `:!`, tags, quickfix, diff mode, folding,
 spellchecking, Vim tab pages and side-by-side splits,
 sessions/viminfo, remote server commands, and full Vim option/regex parity.

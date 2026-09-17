@@ -68,3 +68,32 @@ The Swift package is divided into the same ownership boundaries as the source:
 
 The AppKit view is a renderer and input adapter. It must not become a second
 text store, selection model, or undo authority.
+
+## Startup commands
+
+Create `~/.viem/startup.viem` to configure mappings and supported Ex settings:
+
+```vim
+" Yank from the cursor through the current line end (using $ semantics).
+map Y y$
+
+" Control-F2 prepares :sp; include <CR> to split immediately.
+map <C-F2> :sp
+map <C-F3> :sp<CR>
+
+set nowrap
+```
+
+Restart Viem after editing the file. Startup commands apply to every document
+and new view. `VIEM_CONFIG_DIR` overrides the profile directory for `config.json`,
+`code_style.json`, and `startup.viem` together; native code resolves it through
+`EVProfileDirectory`. The optional startup file uses UTF-8, accepts a BOM and
+CRLF, and is limited to 1 MiB. Invalid lines report their path and line number
+without preventing later valid settings from loading.
+
+Use `noremap` to prevent recursive expansion, or mode-specific forms such as
+`nnoremap` and `imap`. Multi-key mappings wait up to one second for another key.
+Interactive mapping commands affect the current buffer and its views. Startup
+accepts configuration commands only; document/window actions belong in mapping
+replacements. Mapping listing, mapping attributes, Vimscript, and startup
+assignments to `fileformat` or `fileformats` are not supported.

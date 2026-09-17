@@ -382,6 +382,11 @@ pub const VIEM_KEY_DOCUMENT_END: u32 = 18;
 pub const VIEM_KEY_SHIFT_ENTER: u32 = 19;
 pub const VIEM_KEY_WORD_LEFT: u32 = 20;
 pub const VIEM_KEY_WORD_RIGHT: u32 = 21;
+pub const VIEM_KEY_FUNCTION: u32 = 22;
+pub const VIEM_KEY_MODIFIER_SHIFT: u32 = 1;
+pub const VIEM_KEY_MODIFIER_CONTROL: u32 = 2;
+pub const VIEM_KEY_MODIFIER_ALT: u32 = 4;
+pub const VIEM_KEY_MODIFIER_COMMAND: u32 = 8;
 
 pub const VIEM_COMMAND_STATUS_NONE: u32 = 0;
 pub const VIEM_COMMAND_STATUS_COMPLETE: u32 = 1;
@@ -2202,7 +2207,8 @@ pub struct ViemKeyInputV1 {
     pub struct_size: u32,
     pub kind: u32,
     pub codepoint: u32,
-    pub reserved: u32,
+    /// Function-key modifiers; zero for other key kinds.
+    pub modifiers: u32,
 }
 
 pub const VIEM_KEY_INPUT_V1_SIZE: u32 = size_of::<ViemKeyInputV1>() as u32;
@@ -4218,7 +4224,10 @@ fn execution_context_permits(
 }
 
 fn parse_key(input: ViemKeyInputV1) -> Result<Key, ViemStatus> {
-    if input.struct_size < VIEM_KEY_INPUT_V1_SIZE || input.reserved != 0 {
+    if input.struct_size < VIEM_KEY_INPUT_V1_SIZE
+        || input.modifiers & !15 != 0
+        || (input.kind != VIEM_KEY_FUNCTION && input.modifiers != 0)
+    {
         return Err(ViemStatus::InvalidArgument);
     }
     let scalar = || char::from_u32(input.codepoint).ok_or(ViemStatus::InvalidKey);
@@ -4251,6 +4260,10 @@ fn parse_key(input: ViemKeyInputV1) -> Result<Key, ViemStatus> {
         VIEM_KEY_PAGE_UP => special(Key::PageUp),
         VIEM_KEY_PAGE_DOWN => special(Key::PageDown),
         VIEM_KEY_CONTROL_CHARACTER => Ok(Key::Ctrl(scalar()?)),
+        VIEM_KEY_FUNCTION if (1..=35).contains(&input.codepoint) => Ok(Key::Function {
+            number: input.codepoint as u8,
+            modifiers: input.modifiers as u8,
+        }),
         _ => Err(ViemStatus::InvalidKey),
     }
 }
@@ -7059,10 +7072,20 @@ fn dispatch_input_with_effects(
     input: InputEvent,
     clipboard: ClipboardCommandContext,
 ) -> Result<(ViemCoreOutcomeV1, Option<OwnedEffectBatch>), ViemStatus> {
+    dispatch_event_with_effects(core, view,
+        CoreEvent::InputWithClipboard { input, clipboard: clipboard.clone() }, clipboard)
+}
+
+fn dispatch_event_with_effects(
+    core: &mut Core<CTextMeasurementProvider>,
+    view: ViemViewId,
+    event: CoreEvent,
+    clipboard: ClipboardCommandContext,
+) -> Result<(ViemCoreOutcomeV1, Option<OwnedEffectBatch>), ViemStatus> {
     let view_id = ViewId(view);
     let effect_clipboard = clipboard.clone();
     let outcome = core
-        .handle_with_layout(view_id, CoreEvent::InputWithClipboard { input, clipboard })
+        .handle_with_layout(view_id, event)
         .map_err(core_status)?;
     let mut summary = summarize_core_outcome(core, view_id, Some(&outcome))?;
     let effects = OwnedEffectBatch::from_command(

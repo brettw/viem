@@ -1288,6 +1288,21 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             surface.perform(menuCommand: .editStyles, sender: event)
             return
         }
+        if event.keyCode == 109, shortcutModifiers == [.shift] { showEditorContextMenu(event); return }
+        if let functionKey = functionKeyInput(for: event) {
+            if compositionActive {
+                if inputContext?.handleEvent(event) != true {
+                    interpretKeyEvents([event])
+                }
+                reconcileMarkedTextWithCore()
+            } else {
+                surface.performInput {
+                    _ = try session.sendKey(kind: UInt32(VIEM_KEY_FUNCTION),
+                        codepoint: functionKey.number, modifiers: functionKey.modifiers)
+                }
+            }
+            return
+        }
         if shortcutModifiers == [.command], let key = event.charactersIgnoringModifiers,
            key == "-" || key == "=" {
             surface.perform(menuCommand: key == "=" ? .zoomIn : .zoomOut, sender: event)
@@ -1298,7 +1313,6 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             super.keyDown(with: event)
             return
         }
-        if event.keyCode == 109, event.modifierFlags.contains(.shift) { showEditorContextMenu(event); return }
         if !compositionActive, moveCommandLineSelection(with: event) { return }
         let textModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         if textModifiers == [.option], event.charactersIgnoringModifiers?.lowercased() == "i",
@@ -1375,6 +1389,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             let codepoint = native < 0x20 ? native + 0x40 : native == 0x7F ? 0x3F : scalar.value
             surface.performInput {
                 _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: codepoint)
+            }
+        } else if let functionKey = functionKeyInput(for: event) {
+            surface.performInput {
+                _ = try session.sendKey(kind: UInt32(VIEM_KEY_FUNCTION),
+                    codepoint: functionKey.number, modifiers: functionKey.modifiers)
             }
         } else if let kind = specialKeyKind(for: event) {
             surface.performInput { _ = try session.sendKey(kind: kind) }
@@ -1457,17 +1476,15 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             }
 
         case UInt32(VIEM_MODE_COMMAND_LINE):
-            if corePromptInputPending, replacementRange.location == NSNotFound {
+            if replacementRange.location == NSNotFound {
+                // Ordinary typing must reach command-line mappings and core
+                // literal/register input; core also replaces its selection.
                 surface.performInput { _ = try session.sendText(value) }
                 return
             }
-            guard let commandLine = surface.commandLine else { return }
-            let range: Range<Int>
-            if replacementRange.location == NSNotFound { range = commandLine.selectedUTF8Range }
-            else {
-                guard let converted = utf8Range(forUTF16: replacementRange, in: commandLine.text, requireGraphemeBoundaries: true) else { return }
-                range = converted
-            }
+            guard let commandLine = surface.commandLine,
+                  let range = utf8Range(forUTF16: replacementRange, in: commandLine.text,
+                                        requireGraphemeBoundaries: true) else { return }
             surface.performInput { _ = try session.editCommandLine(commandLine, selecting: range, replacement: value) }
 
         case UInt32(VIEM_MODE_NORMAL),
@@ -1504,6 +1521,20 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         default:
             return
         }
+    }
+
+    private func functionKeyInput(for event: NSEvent) -> (number: UInt32, modifiers: UInt32)? {
+        guard let characters = event.charactersIgnoringModifiers,
+              characters.unicodeScalars.count == 1,
+              let scalar = characters.unicodeScalars.first,
+              scalar.value >= UInt32(NSF1FunctionKey),
+              scalar.value <= UInt32(NSF35FunctionKey) else { return nil }
+        var modifiers: UInt32 = 0
+        if event.modifierFlags.contains(.shift) { modifiers |= UInt32(VIEM_KEY_MODIFIER_SHIFT) }
+        if event.modifierFlags.contains(.control) { modifiers |= UInt32(VIEM_KEY_MODIFIER_CONTROL) }
+        if event.modifierFlags.contains(.option) { modifiers |= UInt32(VIEM_KEY_MODIFIER_ALT) }
+        if event.modifierFlags.contains(.command) { modifiers |= UInt32(VIEM_KEY_MODIFIER_COMMAND) }
+        return (scalar.value - UInt32(NSF1FunctionKey) + 1, modifiers)
     }
 
     private func specialKeyKind(for event: NSEvent) -> UInt32? {
