@@ -5,6 +5,7 @@
 //! shape-affecting properties from paint-only properties.
 
 use super::{EdgeInsets, OpenTypeFeature, ResolvedTextStyle, ShapeStyleRun, TextDirection};
+use super::search_overlay::SearchPaintOverlay;
 use crate::document::{
     Block, CharacterProperties, Color, DocumentStyleAssignment, FontSlant, FormattedDocument,
     FormattedTextError, FormattedTextTree, LineSpacing, ParagraphAlignment, ResolvedCharacterStyle,
@@ -77,6 +78,9 @@ pub struct DocumentLayoutStyles {
     pub default_paint: ResolvedTextPaint,
     pub paint_runs: Vec<PaintStyleRun>,
     pub paragraphs: Vec<ParagraphLayoutStyle>,
+    /// Sparse presentation declarations retained until cluster geometry is
+    /// available. They must not absorb surrounding authored paint properties.
+    pub(crate) search_paint_overlay: Option<SearchPaintOverlay>,
 }
 
 /// Borrowed normalized style inputs. Projection implementations can use this
@@ -113,6 +117,7 @@ struct StyleCascadeInput<'a> {
     style_spans: &'a [StyleSpan],
     style_sheet: &'a StyleSheet,
     document_style: &'a DocumentStyleAssignment,
+    search_matches: &'a [Range<usize>],
 }
 
 impl<'a> From<DocumentStyleInput<'a>> for StyleCascadeInput<'a> {
@@ -122,6 +127,7 @@ impl<'a> From<DocumentStyleInput<'a>> for StyleCascadeInput<'a> {
             style_spans: input.style_spans,
             style_sheet: input.style_sheet,
             document_style: input.document_style,
+            search_matches: &[],
         }
     }
 }
@@ -233,6 +239,7 @@ impl DocumentLayoutStyles {
                 style_spans: &spans,
                 style_sheet: document.style_sheet(),
                 document_style: document.document_style(),
+                search_matches: &[],
             },
             block,
             range,
@@ -257,6 +264,7 @@ impl DocumentLayoutStyles {
             style_spans: &[],
             style_sheet: document.style_sheet(),
             document_style: document.document_style(),
+            search_matches: &[],
         })?;
         Ok(Some(resolved.paragraphs))
     }
@@ -276,6 +284,15 @@ impl DocumentLayoutStyles {
         document: &FormattedDocument,
         text_range: Range<usize>,
         flow: bool,
+    ) -> Result<Self, DocumentStyleError> {
+        Self::resolve_region_with_search(document, text_range, flow, &[])
+    }
+
+    pub(crate) fn resolve_region_with_search(
+        document: &FormattedDocument,
+        text_range: Range<usize>,
+        flow: bool,
+        search_matches: &[Range<usize>],
     ) -> Result<Self, DocumentStyleError> {
         let text = document.text_tree();
         if text_range.start > text_range.end
@@ -308,6 +325,7 @@ impl DocumentLayoutStyles {
             style_spans: &regional_spans,
             style_sheet: document.style_sheet(),
             document_style: document.document_style(),
+            search_matches,
         })?;
         for (paragraph, block) in styles.paragraphs.iter_mut().zip(&regional_blocks) {
             if !structural_flow {
@@ -336,6 +354,17 @@ impl DocumentLayoutStyles {
         )?;
         let whitespace_shaping_style = shaping_style(&whitespace_paragraph.character)?;
         let default_paint = paint_style(&resolved_document.character);
+        let search_paint_overlay = if input.search_matches.is_empty() {
+            None
+        } else {
+            let start = input.blocks.first().map_or(0, |block| block.range.start);
+            let end = input.blocks.last().map_or(start, |block| block.range.end);
+            SearchPaintOverlay::new(
+                input.search_matches,
+                start..end,
+                &sheet.incremental_match_properties()?,
+            )
+        };
 
         let mut shaping_runs = Vec::new();
         let mut paint_runs = Vec::new();
@@ -511,6 +540,7 @@ impl DocumentLayoutStyles {
             default_paint,
             paint_runs,
             paragraphs,
+            search_paint_overlay,
         })
     }
 }
@@ -598,11 +628,39 @@ fn resolve_block_runs(
             boundaries.insert(end);
         }
     }
+    // Search presentation supplies sorted, disjoint coverage. Restrict the
+    // sweep to this block so dense matches do not make each style interval
+    // rescan the entire viewport's match list.
+    let first_match = input
+        .search_matches
+        .partition_point(|matched| matched.end <= block.range.start);
+    let last_match = input
+        .search_matches
+        .partition_point(|matched| matched.start < block.range.end);
+    let search_matches = &input.search_matches[first_match..last_match];
+    for matched in search_matches {
+        let start = matched.start.max(block.range.start);
+        let end = matched.end.min(block.range.end);
+        if start < end {
+            boundaries.insert(start);
+            boundaries.insert(end);
+        }
+    }
     let boundaries: Vec<_> = boundaries.into_iter().collect();
 
+    let mut match_index = 0;
     for pair in boundaries.windows(2) {
         let range = pair[0]..pair[1];
-        let character = resolve_character_at(input, block, range.clone())?;
+        let mut character = resolve_character_at(input, block, range.clone())?;
+        while match_index < search_matches.len() && search_matches[match_index].end <= range.start {
+            match_index += 1;
+        }
+        if search_matches
+            .get(match_index)
+            .is_some_and(|matched| matched.start <= range.start && range.end <= matched.end)
+        {
+            character = input.style_sheet.overlay_incremental_match(&character)?;
+        }
         let shape = shaping_style(&character)?;
         let paint = paint_style(&character);
         if shape != *default_shaping_style {

@@ -17,6 +17,8 @@ use regex_automata::{
     PatternID,
 };
 
+pub mod scanner;
+
 /// The sole supported search dialect; compiled state is disposable across versions.
 pub const DIALECT_VERSION: u32 = 2;
 
@@ -904,6 +906,8 @@ impl ReplacementTemplate {
 /// Buffer search policy, shared by every view of the same document.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SearchOptions {
+    pub hlsearch: bool,
+    pub incsearch: bool,
     pub ignorecase: bool,
     pub smartcase: bool,
     pub wrapscan: bool,
@@ -911,6 +915,8 @@ pub struct SearchOptions {
 impl Default for SearchOptions {
     fn default() -> Self {
         Self {
+            hlsearch: false,
+            incsearch: false,
             ignorecase: false,
             smartcase: false,
             wrapscan: true,

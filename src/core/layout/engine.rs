@@ -5,6 +5,7 @@ use super::height_index::{
 };
 use super::jobs::LayoutJobId;
 use super::measurement::*;
+use super::search_overlay::normalize_search_paint;
 use super::style::{
     DocumentLayoutStyles, DocumentStyleError, PaintStyleRun, ParagraphLayoutStyle,
     ResolvedTextPaint,
@@ -1533,6 +1534,7 @@ impl LayoutJobViewConfiguration {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewLayout {
+    search_matches: Option<(DocumentId, Revision, Vec<Range<usize>>)>,
     whitespace: WhitespaceConfiguration,
     whitespace_bounds: std::cell::RefCell<super::whitespace::WhitespaceBoundsCache>,
     paragraph_flow: bool,
@@ -1564,6 +1566,7 @@ pub type ViewLayoutState = ViewLayout;
 impl ViewLayout {
     pub fn new(width: f32, height: f32) -> Self {
         Self {
+            search_matches: None,
             whitespace: WhitespaceConfiguration::default(),
             whitespace_bounds: Default::default(),
             paragraph_flow: false,
@@ -1599,6 +1602,40 @@ impl ViewLayout {
             self.height = height;
             self.bump_configuration(width_changed);
         }
+    }
+
+    /// Search preview may retain old geometry, but cancelling it must never
+    /// restore options changed while the prompt was open. Ignore only scroll,
+    /// search decorations and disposable cache/job state in this comparison.
+    pub(crate) fn same_presentation_configuration(&self, other: &Self) -> bool {
+        self.whitespace == other.whitespace && self.paragraph_flow == other.paragraph_flow
+            && self.width == other.width && self.height == other.height && self.insets == other.insets
+            && self.wrap == other.wrap && self.scale == other.scale
+            && self.default_style == other.default_style && self.default_style_is_override == other.default_style_is_override
+            && self.style_runs == other.style_runs && self.style_runs_are_override == other.style_runs_are_override
+            && self.regional_cache_limits == other.regional_cache_limits
+    }
+
+    /// Presentation-only style overlays, bound to the exact searched snapshot.
+    /// Changing their coverage retires captured layout jobs and regional runs.
+    pub(crate) fn set_search_matches(&mut self, document: DocumentId, revision: Revision, ranges: Vec<Range<usize>>, changes_metrics: bool) -> bool {
+        let next = (!ranges.is_empty()).then_some((document, revision, ranges));
+        if self.search_matches == next { return false; }
+        self.search_matches = next;
+        self.bump_configuration(changes_metrics);
+        true
+    }
+
+    pub(crate) fn search_matches(&self, document: DocumentId, revision: Revision) -> &[Range<usize>] {
+        self.search_matches.as_ref().filter(|(id, rev, _)| *id == document && *rev == revision)
+            .map_or(&[], |(_, _, ranges)| ranges.as_slice())
+    }
+
+    /// An internal style has no authored assignment ranges to invalidate.
+    /// Retire its captured paint/geometry when its declarations change while
+    /// the visible search coverage remains the same.
+    pub(crate) fn invalidate_search_style(&mut self, changes_metrics: bool) {
+        self.bump_configuration(changes_metrics);
     }
 
     pub fn whitespace_presentation(&self) -> &WhitespacePresentationOptions { &self.whitespace.options }
@@ -3008,8 +3045,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         document: &Document,
         view: &mut ViewLayout,
     ) -> Result<(), LayoutError> {
-        let mut document_styles = DocumentLayoutStyles::resolve_region_with_flow(
-            document.projection(), 0..document.projection().text_tree().byte_len(), view.paragraph_flow(),
+        let mut document_styles = DocumentLayoutStyles::resolve_region_with_search(
+            document.projection(), 0..document.projection().text_tree().byte_len(), view.paragraph_flow(), view.search_matches(document.id(), document.revision()),
         )?;
         document_styles.apply_source_quote_policy(document.format(), view.paragraph_flow());
         let hard_lines = if view.paragraph_flow() {
@@ -3720,12 +3757,19 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         if self.provider.metrics_generation() != metrics_generation {
             return Err(LayoutError::MetricsChangedDuringShape.into());
         }
-        let paint_runs = document_styles
+        let mut paint_runs = document_styles
             .paint_runs
             .iter()
             .filter(|run| run.text_range.start < paint_end && paint_start < run.text_range.end)
             .cloned()
             .collect();
+        normalize_search_paint(
+            &mut paint_runs,
+            &document_styles.default_paint,
+            lines.iter().flat_map(|line| &line.rows)
+                .flat_map(|row| &row.clusters).map(|cluster| &cluster.text_range),
+            document_styles.search_paint_overlay.as_ref(),
+        );
         let hard_lines = first_hard_line..requested_end;
         let coverage_ranges = lines
             .iter()
@@ -3873,7 +3917,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             .map_or_else(ResolvedTextPaint::default, |styles| {
                 styles.default_paint.clone()
             });
-        let paint_runs = document_styles
+        let mut paint_runs = document_styles
             .as_ref()
             .map_or_else(Vec::new, |styles| styles.paint_runs.clone());
         let paragraph_styles = document_styles
@@ -4187,6 +4231,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             .iter()
             .copied()
             .fold(view.width, f32::max);
+        normalize_search_paint(
+            &mut paint_runs,
+            &default_paint,
+            rows.iter().flat_map(|row| &row.clusters).map(|cluster| &cluster.text_range),
+            document_styles.as_ref().and_then(|styles| styles.search_paint_overlay.as_ref()),
+        );
         let snapshot = LayoutSnapshot {
             whitespace_unit,
             revision: layout_revision,

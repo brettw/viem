@@ -130,6 +130,7 @@ pub enum ExAction {
         names: Vec<char>,
     },
     Jumps,
+    NoHighlight,
     Set(SetCommand),
 }
 
@@ -649,6 +650,7 @@ impl<'a> Parser<'a> {
                 names: parse_name_list(args),
             }),
             CommandName::Jumps => no_args(ExAction::Jumps),
+            CommandName::NoHighlight => no_args(ExAction::NoHighlight),
             CommandName::Set => parse_set(args, SetScope::GlobalAndLocal, args_offset),
             CommandName::SetLocal => parse_set(args, SetScope::Local, args_offset),
         }
@@ -732,6 +734,7 @@ enum CommandName {
     Marks,
     Registers,
     Jumps,
+    NoHighlight,
     Set,
     SetLocal,
 }
@@ -783,6 +786,7 @@ impl CommandName {
             Self::Marks => "marks",
             Self::Registers => "registers",
             Self::Jumps => "jumps",
+            Self::NoHighlight => "nohlsearch",
             Self::Set => "set",
             Self::SetLocal => "setlocal",
         }
@@ -837,6 +841,7 @@ struct CommandSpec {
 }
 
 const COMMANDS: &[CommandSpec] = &[
+    CommandSpec { name: CommandName::NoHighlight, spelling: "nohlsearch", minimum: 3 },
     CommandSpec { name: CommandName::Next, spelling: "next", minimum: 1 },
     CommandSpec { name: CommandName::Previous, spelling: "Next", minimum: 1 },
     CommandSpec { name: CommandName::Previous, spelling: "previous", minimum: 4 },
@@ -2018,4 +2023,26 @@ mod tests {
             })
         ));
     }
+}
+
+
+/// Read only the supported substitute command's range and pattern while its
+/// delimiters/replacement are still being typed. Execution still uses parse_ex.
+pub(super) fn incremental_substitute(input: &str) -> Option<(Option<ExRange>, String, Option<bool>, Option<u64>)> {
+    if let Ok(ExCommand { range, action: ExAction::Substitute(substitute), .. }) = parse_ex(input) {
+        return Some((range, substitute.pattern, substitute.flags.ignore_case, substitute.count));
+    }
+    let mut parser = Parser::new(input);
+    parser.skip_space();
+    if parser.peek() == Some(':') { parser.bump(); }
+    parser.skip_space();
+    let range = parser.parse_range().ok()?;
+    parser.skip_space();
+    let (name, _) = parser.parse_command_head(range.is_some()).ok()?;
+    if name != CommandName::Substitute { return None; }
+    parser.skip_space();
+    let delimiter = parser.bump()?;
+    if delimiter.is_ascii_alphanumeric() || delimiter.is_whitespace() || matches!(delimiter, '\\' | '"' | '|') { return None; }
+    let (pattern, _, _) = read_delimited(input, parser.at, delimiter);
+    Some((range, pattern, None, None))
 }

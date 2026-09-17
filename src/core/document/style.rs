@@ -18,6 +18,11 @@ impl From<&str> for StyleId {
 }
 
 impl StyleId {
+    /// Presentation-only character overlay used for search matches.
+    pub fn incremental_match() -> Self {
+        Self("* Incremental match".into())
+    }
+
     /// Structural list families are editable definitions, distinct from source
     /// syntax coloring styles. They are assigned through list commands.
     pub fn is_internal_list(&self) -> bool {
@@ -49,7 +54,8 @@ impl StyleId {
     pub fn is_internal(&self) -> bool {
         matches!(
             self.0.as_str(),
-            "* HTML Brackets"
+            "* Incremental match"
+                | "* HTML Brackets"
                 | "* HTML Tag name"
                 | "* HTML Attribute key"
                 | "* HTML Attribute value"
@@ -557,7 +563,7 @@ impl Default for StyleSheet {
             StyleDefinitionMetadata::generated("Code Block"),
         );
         character_metadata.insert("Code".into(), StyleDefinitionMetadata::generated("Code"));
-        Self {
+        let mut sheet = Self {
             revision: StyleSheetRevision(1),
             base_paragraph: paragraph,
             intrinsic_character_defaults: CharacterProperties::default(),
@@ -575,7 +581,9 @@ impl Default for StyleSheet {
             source_character_defaults: BTreeMap::new(),
             default_blocks: BTreeMap::new(),
             default_characters: BTreeMap::new(),
-        }
+        };
+        sheet.install_incremental_match_style();
+        sheet
     }
 }
 
@@ -1051,6 +1059,36 @@ impl ResolvedParagraphStyle {
 }
 
 impl StyleSheet {
+    fn install_incremental_match_style(&mut self) {
+        let id = StyleId::incremental_match();
+        self.character_styles.insert(id.clone(), CharacterStyle {
+            id: id.clone(),
+            based_on: None,
+            properties: CharacterProperties {
+                background: Some(Color { red: 1.0, green: 0.86, blue: 0.0, alpha: 0.40 }),
+                ..Default::default()
+            },
+        });
+        self.character_metadata.insert(id, StyleDefinitionMetadata::generated("Incremental match"));
+    }
+
+    /// Sparse presentation declarations, including saved user defaults, with
+    /// no paragraph or emergency properties filled in for unspecified fields.
+    pub fn incremental_match_properties(&self) -> Result<CharacterProperties, StyleError> {
+        self.named_character_declarations(Some(&StyleId::incremental_match()))
+    }
+
+    /// Apply search presentation after the complete ordinary text cascade.
+    /// Unspecified properties preserve the underlying content's appearance.
+    pub fn overlay_incremental_match(
+        &self,
+        underlying: &ResolvedCharacterStyle,
+    ) -> Result<ResolvedCharacterStyle, StyleError> {
+        let mut result = underlying.clone();
+        apply_character_properties(&mut result, &self.incremental_match_properties()?);
+        Ok(result)
+    }
+
     pub(crate) fn install_html_source_styles(&mut self) {
         for (name, rgb) in [
             ("Brackets", [0.48, 0.48, 0.52]),
@@ -1602,6 +1640,9 @@ impl StyleSheet {
                     }
                 }
                 StyleDefinitionEdit::InsertCharacter { style, metadata } => {
+                    if style.id.is_internal() && style.based_on.is_some() {
+                        return Err(StyleError::InvalidDefinitionMetadata(style.id.clone()));
+                    }
                     if metadata.origin == StyleDefinitionOrigin::SourceBacked {
                         candidate.source_defined_characters.insert(style.id.clone());
                     }
@@ -2668,7 +2709,14 @@ fn validate_definition_metadata(
     id: &StyleId,
     metadata: &StyleDefinitionMetadata,
 ) -> Result<(), StyleError> {
-    if metadata.display_name.trim().is_empty() || metadata.display_name.contains('\0') {
+    let invalid_internal = id.is_internal()
+        && (metadata.origin != StyleDefinitionOrigin::GeneratedConfiguration
+            || metadata.display_name != if *id == StyleId::incremental_match() {
+                "Incremental match"
+            } else {
+                id.0.as_str()
+            });
+    if metadata.display_name.trim().is_empty() || metadata.display_name.contains('\0') || invalid_internal {
         Err(StyleError::InvalidDefinitionMetadata(id.clone()))
     } else {
         Ok(())

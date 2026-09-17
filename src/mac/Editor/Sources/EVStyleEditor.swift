@@ -855,12 +855,17 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
 
     private func configureStylePopup(snapshot: EVStyleSheetSnapshot) {
         let menu = NSMenu()
-        for kind in EVStyleKind.allCases {
-            menu.addItem(.sectionHeader(title: kind.displayName))
-            for definition in snapshot.definitions
-                .filter({ $0.kind == kind })
-                .sorted(by: { $0.name.localizedStandardCompare($1.name) == .orderedAscending })
-            {
+        let definitions = snapshot.definitions.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+        let sections = EVStyleKind.allCases.map { kind in
+            (kind.displayName, definitions.filter {
+                $0.kind == kind && !$0.flags.contains(.internalSyntax)
+            })
+        } + [("Internal", definitions.filter { $0.flags.contains(.internalSyntax) })]
+        for (title, styles) in sections {
+            menu.addItem(.sectionHeader(title: title))
+            for definition in styles {
                 let item = NSMenuItem(title: definition.name, action: nil, keyEquivalent: "")
                 item.representedObject = EVStyleKeyBox(definition.key)
                 item.toolTip = "Stable ID: \(definition.key.id.rawValue)"

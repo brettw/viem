@@ -173,9 +173,23 @@
       "tests": []
     },
     {
+      "id": "search-highlighting-and-preview",
+      "status": "supported",
+      "decision": "Buffer-shared hlsearch/hls and incsearch/is default off and support startup.viem. :nohlsearch/:noh temporarily suppresses accepted-pattern highlighting. Read-only counted /? and addressed substitute match previews support Ctrl-G/Ctrl-T, Enter and Escape. The internal, customizable Incremental match style overlays explicit declarations after the existing cascade and is excluded from assignment menus/APIs. Snapshot-bound cooperative viewport highlighting retains bounded matches; display-only cluster expansion preserves logical ranges and source/history state.",
+      "tests": [
+        "src/core/command/search_presentation.rs",
+        "src/core/command/search_regex/scanner.rs",
+        "src/core/coordinator/search.rs",
+        "src/core/layout/search_overlay.rs",
+        "tests/incremental_match_style.rs",
+        "src/mac/Editor/Tests/EVSearchHighlightTests.swift",
+        "src/mac/Editor/Tests/EVIncrementalMatchStyleTests.swift"
+      ]
+    },
+    {
       "id": "legacy-pattern-parity",
       "status": "rejected",
-      "decision": "Vim regex modes, offsets, expression/case-conversion replacements and history files are outside canonical Regex v2. Incremental search/highlight decoration remains an explicit future UI capability.",
+      "decision": "Vim regex modes, offsets, expression/case-conversion replacements and history files are outside canonical Regex v2.",
       "tests": []
     },
     {

@@ -827,7 +827,7 @@ where
             Some(document_line_range(document, range.end, false)?)
         } else { None };
         let style_end = following_style_end(document, following_line_range.as_ref(), text_end)?;
-        let mut styles = DocumentLayoutStyles::resolve_region(document.projection(), text_origin..style_end)?;
+        let mut styles = DocumentLayoutStyles::resolve_region_with_search(document.projection(), text_origin..style_end, false, view.search_matches(document.id(), document.revision()))?;
         styles.apply_source_quote_policy(document.format(), false);
         let styles = retain_regional_styles(styles, &line_ranges, following_line_range.as_ref());
         (
@@ -895,7 +895,7 @@ where
             return Err(LayoutJobError::Cancelled);
         }
         let mut styles =
-            DocumentLayoutStyles::resolve_region_with_flow(document.projection(), context_start..style_end, view.paragraph_flow())?;
+            DocumentLayoutStyles::resolve_region_with_search(document.projection(), context_start..style_end, view.paragraph_flow(), view.search_matches(document.id(), document.revision()))?;
         styles.apply_source_quote_policy(document.format(), view.paragraph_flow());
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
@@ -975,7 +975,7 @@ where
             return Err(LayoutJobError::Cancelled);
         }
         let mut styles =
-            DocumentLayoutStyles::resolve_region_with_flow(document.projection(), text_origin..style_end, view.paragraph_flow())?;
+            DocumentLayoutStyles::resolve_region_with_search(document.projection(), text_origin..style_end, view.paragraph_flow(), view.search_matches(document.id(), document.revision()))?;
         styles.apply_source_quote_policy(document.format(), view.paragraph_flow());
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);

@@ -115,6 +115,7 @@ impl CommandInterpreter {
                 buffer.detach_from_history();
             }
         }
+        self.invalidate_changed_incremental_navigation();
         Ok(CommandOutput::pending())
     }
 }

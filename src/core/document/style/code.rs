@@ -26,7 +26,7 @@ pub fn default_sheet() -> StyleSheet {
         .retain(|id, _| sheet.block_styles.contains_key(id));
     sheet
         .character_styles
-        .clear();
+        .retain(|id, _| id.is_internal());
     sheet
         .character_metadata
         .retain(|id, _| sheet.character_styles.contains_key(id));
@@ -286,6 +286,12 @@ struct File {
 }
 
 fn validate(sheet: &StyleSheet) -> Result<(), String> {
+    let internal = StyleId::incremental_match();
+    if !sheet.character_styles.get(&internal).is_some_and(|style| style.based_on.is_none())
+        || !sheet.character_metadata.get(&internal).is_some_and(|metadata| metadata.display_name == "Incremental match")
+    {
+        return Err("The internal Incremental match style is required and cannot be renamed or reparented".into());
+    }
     sheet
         .validate_block_cycles()
         .map_err(|e| format!("{e:?}"))?;

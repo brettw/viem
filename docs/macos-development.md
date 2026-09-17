@@ -82,6 +82,7 @@ map <C-F2> :sp
 map <C-F3> :sp<CR>
 
 set nowrap
+set hlsearch incsearch
 ```
 
 Restart Viem after editing the file. Startup commands apply to every document
@@ -90,6 +91,13 @@ and new view. `VIEM_CONFIG_DIR` overrides the profile directory for `config.json
 `EVProfileDirectory`. The optional startup file uses UTF-8, accepts a BOM and
 CRLF, and is limited to 1 MiB. Invalid lines report their path and line number
 without preventing later valid settings from loading.
+
+`hlsearch` highlights the saved search pattern; `incsearch` previews matches
+while typing a search. `:noh` clears saved-pattern highlights until the next
+search. Customize their internal **Incremental match** character style in the
+Style Editor; its explicit properties overlay the text's existing formatting.
+The default changes only the background, and the style is absent from style
+application menus.
 
 Use `noremap` to prevent recursive expansion, or mode-specific forms such as
 `nnoremap` and `imap`. Multi-key mappings wait up to one second for another key.

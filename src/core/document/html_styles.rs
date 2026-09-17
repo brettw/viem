@@ -494,6 +494,9 @@ fn parse_rule(text: &str) -> Option<StyleDefinitionEdit> {
         }
     }
     let id = StyleId(values.remove("--viem-style-id")?);
+    if id.is_internal() {
+        return None;
+    }
     if let Some(deleted) = values.remove("--viem-style-deleted") {
         if deleted != "true"
             || !values.is_empty()
@@ -748,7 +751,7 @@ pub(super) fn select_class(sheet: &StyleSheet, classes: &str, character: bool) -
         let id = if character {
             sheet
                 .character_styles()
-                .find(|s| class_name(&s.id, true) == token)
+                .find(|s| !s.id.is_internal() && class_name(&s.id, true) == token)
                 .map(|s| s.id.clone())
         } else {
             sheet
@@ -859,6 +862,9 @@ pub(super) fn block_css(properties: &BlockProperties) -> String {
 // Import validation only: the frozen v1 grammar includes its exact fallback CSS.
 // All authored definitions use write_rule and are emitted as v2.
 fn canonical_v1_spelling(sheet: &StyleSheet, id: &StyleId, character: bool) -> Option<String> {
+    if id.is_internal() {
+        return None;
+    }
     if !character && StyleSheet::builtin_block(id) && sheet.block_style(id).is_none() {
         // An additive v1 rule persists deletion of an otherwise implicit
         // heading definition. Its ordinary CSS presents hN as the default
@@ -1013,6 +1019,9 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
                 BlockProperties::default(),
             )
         };
+    if id.is_internal() {
+        return None;
+    }
     if let Some(deleted) = values.remove("--viem-style-deleted") {
         return (deleted == "true"
             && values.is_empty()
@@ -1280,6 +1289,9 @@ fn write_rule_for_selector(
     character: bool,
     selector: &str,
 ) -> Option<String> {
+    if id.is_internal() {
+        return None;
+    }
     let native = native_definition(selector);
     if !character && StyleSheet::builtin_block(id) && sheet.block_style(id).is_none() {
         let identity = if native.is_none() {
@@ -1819,6 +1831,7 @@ mod tests {
             .chain(
                 sheet
                     .character_styles()
+                    .filter(|style| !style.id.is_internal())
                     .map(|style| canonical_v1_spelling(&sheet, &style.id, true).unwrap()),
             )
             .collect::<String>();
@@ -2119,6 +2132,7 @@ mod tests {
             .chain(
                 sheet
                     .character_styles()
+                    .filter(|style| !style.id.is_internal())
                     .map(|s| write_rule(&sheet, &s.id, true).unwrap()),
             )
             .collect::<String>();
@@ -2139,8 +2153,34 @@ mod tests {
         }
         assert_eq!(
             parsed.rules.len(),
-            sheet.block_style_count() + sheet.character_style_count()
+            sheet.block_style_count() + sheet.character_styles().filter(|style| !style.id.is_internal()).count()
         );
+    }
+
+    #[test]
+    fn internal_search_style_is_neither_authored_nor_selected_by_source_classes() {
+        let sheet = StyleSheet::for_format(Format::Html);
+        let id = StyleId::incremental_match();
+        let class = class_name(&id, true);
+        assert!(canonical_v1_spelling(&sheet, &id, true).is_none());
+        assert!(write_rule(&sheet, &id, true).is_none());
+        assert!(select_class(&sheet, &class, true).is_none());
+        for (open, rule) in [
+            (OPEN, canonical_v1_spelling(&sheet, &sheet.base_paragraph, false).unwrap()),
+            (OPEN_V2, write_rule(&sheet, &sheet.base_paragraph, false).unwrap()),
+        ] {
+            let reserved = format!(
+                ".{class} {{\n  --viem-style-id: \"* Incremental match\";\n  --viem-style-name: \"Incremental match\";\n  --viem-style-role: \"character\";\n  background-color: red;\n}}\n"
+            );
+            let source = format!("{open}\n{reserved}{rule}</style><p><span class='{class}'>Words</span></p>");
+            let parsed = read(&source);
+            assert_eq!(parsed.rules.len(), 1, "reserved rules must not discard neighboring definitions");
+            assert_eq!(parsed.sheet.character_style(&id), sheet.character_style(&id));
+            let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            assert_eq!(document.text(), "Words");
+            assert_eq!(crate::layout::DocumentLayoutStyles::semantic_character_at(document.projection(), 0, false).unwrap().background, None);
+        }
     }
 
     #[test]

@@ -1902,8 +1902,8 @@ Errors include the file path and one-based line number, and later valid lines
 still apply. Parsing and configuration policy live in the portable command
 module, while filesystem access belongs to the frontend.
 
-Startup accepts the supported `set`/`setlocal` settings and the mapping commands
-below. Settings initialize every document and view after JSON preferences have
+Startup accepts the supported `set`/`setlocal` settings, `nohlsearch`, and the
+mapping commands below. Settings initialize every document and view after JSON preferences have
 been applied, without changing source, dirty state, or document history. A
 source-changing option such as `fileformat` cannot be assigned by startup.
 `fileformats` assignment is also rejected until startup can configure the
@@ -2708,6 +2708,68 @@ projection and is independent of wrapping. Matches may cross style boundaries.
 Search/replace changes are reverse-projected like other edits. Search uses
 the Viem Regex v2 dialect below rather than Vim's full regular-expression
 language. Search history belongs in core state.
+
+#### Search highlighting and incremental preview
+
+`hlsearch` (`hls`) and `incsearch` (`is`) are buffer-shared Boolean options,
+both false by default. They support the normal `:set`/`:setlocal` Boolean
+grammar and may be initialized by `startup.viem`. Every view of the buffer
+observes accepted search-pattern and option changes. `hlsearch` highlights
+matches of the accepted pattern; `incsearch` previews the pattern being typed
+in `/` and `?`, including counted, Visual, and operator-pending searches.
+Supported `:substitute` prompts preview matching text within their addressed
+hard-line range, respecting escaped delimiters and case flags. They do not
+preview replacement text or apply replacements before Enter.
+
+Incremental preview reveals the candidate match without changing the
+authoritative cursor, selection, registers, search history, or pending
+operator's origin. Ctrl-G and Ctrl-T choose the next and previous preview
+match; changing the prompt resets that navigation. Counts retain their normal
+search/operator meaning. Enter executes the accepted search or command using
+the chosen match where applicable. Escape restores the original cursor,
+selection, and viewport without accepting the pattern. Empty, invalid,
+unmatched, or resource-limited previews do not commit editing state.
+
+`:nohlsearch` and `:noh` temporarily suppress accepted-pattern highlighting
+without changing `hlsearch` or the saved pattern. A subsequent search or an
+explicit `hlsearch` setting change clears that suppression; querying the
+option does not. Incremental preview remains available while accepted-pattern
+highlighting is suppressed.
+
+All search presentation uses the built-in internal Character style
+**Incremental match**. Its default declaration is a translucent yellow
+background only. The Style Editor exposes its declarations in the final
+**Internal** group of its Style picker, and normal user style-default
+persistence saves customizations. Style-application menus and
+assignment APIs MUST exclude/reject it; it cannot become authored content or
+be renamed, removed, or reparented. Explicit declarations overlay the complete
+existing paragraph, automatic/syntax, named Character, and direct-formatting
+cascade. Unspecified properties retain their underlying values; explicit
+font/metric properties participate in shaping and layout invalidation.
+
+Highlight coverage may expand to containing graphemes and indivisible shaping
+clusters for display. Paint normalization extends only the internal style's
+explicit paint properties across a cluster, preserving unrelated underlying
+formatting. Logical match ranges and editing endpoints remain unchanged.
+Highlighting and preview MUST NOT change document source, dirty state, undo
+history, or saved style assignments.
+
+The portable core owns matching, preview, range expansion, and invalidation;
+frontends schedule cooperative polls and draw the resulting ordinary paint
+runs. Work and results are bound to an exact document/projection revision,
+pattern, effective options, viewport, and style configuration. A query, edit,
+viewport, or relevant style change retires stale work or layout results.
+Highlight scanning yields after at most 8,192 input steps per poll and also
+checks a 100,000-transition work quota at complete byte transitions. It preserves
+regex state across polls and retains at most 16,384 matches intersecting the
+viewport plus 4,096 bytes of overscan on each side. It may scan preceding text
+or a match's tail to preserve multiline assertions and greedy-match semantics;
+the default regex program and total-work limits still apply. Incremental
+preview has a separate 1,000,000-work-unit limit. Resource exhaustion stops the
+affected presentation query without mutating the document. Ordinary edits MUST
+NOT trigger a
+synchronous full-document highlight rescan. Tests MUST cover stale work,
+paint-only shaping reuse, style invalidation, and bounded large-document work.
 
 #### Viem Regex v2
 
@@ -3880,7 +3942,8 @@ Required Ex commands and common unambiguous abbreviations are:
   `:rewind`, `:last`, `:argument`/`:argu`, and force `!` variants where meaningful;
 - editing: `:undo`, `:redo`, `:delete`, `:yank`, `:put`, `:join`,
   `:copy`, `:move`, `:sort`, and `:normal` for the supported Normal command subset;
-- search/change: `:substitute` with ranges and repeat flags, `:&`, and `:~`;
+- search/change: `:substitute` with ranges and repeat flags, `:&`, `:~`, and
+  `:nohlsearch`/`:noh`;
 - navigation/info: numeric line addresses, `:goto`, `:marks`, `:registers`,
   `:jumps`, and `:pwd`; and
 - options: `:set`, `:setlocal`, `:set wrap`, `:set nowrap`, `:set fileformat?`, and
@@ -3889,12 +3952,15 @@ Required Ex commands and common unambiguous abbreviations are:
   `fileformats` open-policy option supports query and ordered assignment even
   though changing it does not reinterpret an already open buffer.
 
-Search switches `ignorecase` (`ic`), `smartcase` (`sc`), and `wrapscan` (`ws`)
-are buffer-shared Boolean policy, defaulting to false, false, and true. Their
+Search switches `ignorecase` (`ic`), `smartcase` (`sc`), `wrapscan` (`ws`),
+`hlsearch` (`hls`), and `incsearch` (`is`) are buffer-shared Boolean policy,
+defaulting to false, false, true, false, and false. Their
 `:set` and `:setlocal` forms support enable/disable, toggle, query, and reset.
 A compound option command validates atomically before publishing any changes.
-They follow Regex v2 case rules and affect searches, repeats, and substitute;
-`wrapscan` controls navigation wrapping. They do not change persisted source.
+Case switches follow Regex v2 rules for searches, repeats, and substitute;
+`wrapscan` controls navigation wrapping. Highlighting and incremental-preview
+behavior is specified under **Search highlighting and incremental preview**.
+These options do not change persisted source.
 
 The numeric `textwidth`/`tw` option, its buffer scope, query and inheritance
 forms, and the Settings default are specified under **Hard-line reflow**. It
@@ -4533,7 +4599,9 @@ From top to bottom, the content is:
 
 1. a properties section containing:
    - **Style**, a pop-up that selects a style in the target document and groups
-     Paragraph and Character styles;
+     Paragraph, Character, and Internal styles, in that order. Internal styles,
+     including Incremental match, appear only in the final Internal group even
+     when their underlying style type is Character;
    - **Name**, an editable text field;
    - **Style type**, a read-only value showing Paragraph or Character; and
    - **Based on**, a pop-up for the style's parent with a trailing **↗** button;

@@ -11,6 +11,7 @@ mod unicode_breaks;
 mod unicode_break_data;
 mod measurement;
 mod mock;
+mod search_overlay;
 mod style;
 mod zoom;
 mod whitespace;

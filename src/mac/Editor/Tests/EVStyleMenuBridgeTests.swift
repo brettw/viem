@@ -85,7 +85,8 @@ final class EVStyleMenuBridgeTests: XCTestCase {
     let snapshot = try backend.styleSheetSnapshot()
     let internalStyles = snapshot.definitions.filter { $0.flags.contains(.internalSyntax) }
     XCTAssertGreaterThanOrEqual(internalStyles.count, 7)
-    XCTAssertTrue(internalStyles.allSatisfy { $0.name.hasPrefix("*") && !$0.capabilities.contains(.assign) })
+    XCTAssertTrue(internalStyles.allSatisfy { !$0.capabilities.contains(.assign) })
+    XCTAssertTrue(internalStyles.filter { $0.key.id.rawValue.hasPrefix("* HTML ") }.allSatisfy { $0.name.hasPrefix("*") })
     let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
     XCTAssertEqual(catalogue.entries.first { $0.stableID == "Heading2" }?.presentation.state, .on)
     XCTAssertEqual(catalogue.entries.first { $0.stableID == "" }?.presentation.state, .on)

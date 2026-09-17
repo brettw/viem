@@ -33,6 +33,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var commandLine: EVCommandLineExport?
     private(set) var completion: EVCompletionExport?
     private var completionTimer: Timer?
+    private var searchTimer: Timer?
+    private(set) var searchWorkPending = false
     private(set) var commandOutput: String?
     static let commandOutputDuration: TimeInterval = 30
     var commandOutputClock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
@@ -114,6 +116,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     deinit {
         commandOutputTimer?.invalidate()
         completionTimer?.invalidate()
+        searchTimer?.invalidate()
         if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
         if let viewPreferencesObserver { NotificationCenter.default.removeObserver(viewPreferencesObserver) }
     }
@@ -196,6 +199,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     func detachFromCore() {
+        stopSearchPolling()
         completionTimer?.invalidate()
         completionTimer = nil
         completion = nil
@@ -215,9 +219,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         documentState = ViemDocumentStateV1()
     }
 
-    func refreshPresentation() {
+    func refreshPresentation(advancingSearch: Bool = true) {
         guard let session else { return }
         do {
+            if advancingSearch { _ = try session.pollSearch() }
             try session.refreshLayoutIfNeeded()
             let nextDocumentState = try backend.documentState()
             let nextFormattedSnapshot = try backend.formattedSnapshot()
@@ -225,6 +230,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             let nextViewport = try session.viewportState()
             let nextCompositionOverlay = try session.compositionOverlayExport()
             let nextCompletion = try session.completionExport()
+            let nextSearchWorkPending = try session.searchWorkPending()
             guard nextFormattedSnapshot.info.identity.document_id == nextDocumentState.document_id,
                   nextFormattedSnapshot.info.identity.document_revision == nextDocumentState.document_revision,
                   nextFormattedSnapshot.info.identity.document_id == nextPresentation.document_id,
@@ -352,6 +358,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             visualSelection = nextVisualSelection
             presentationRefreshCount &+= 1
             synchronizeCompletionPolling()
+            synchronizeSearchPolling(pending: nextSearchWorkPending)
             updateStatusBar()
             if isViewLoaded {
                 editorView.applyPresentation()
@@ -360,9 +367,45 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 NotificationCenter.default.post(name: .viemEditorSelectionDidChange, object: self)
             }
         } catch {
+            stopSearchPolling()
             report(error)
         }
     }
+
+    /// Every attached pane can display shared search highlights, including an
+    /// inactive pane. Work remains finite and core determines the slice budget.
+    private func synchronizeSearchPolling(pending: Bool) {
+        searchWorkPending = pending
+        guard pending else { stopSearchPolling(); return }
+        guard searchTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pollSearch() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        searchTimer = timer
+    }
+
+    private func stopSearchPolling() {
+        searchTimer?.invalidate()
+        searchTimer = nil
+        searchWorkPending = false
+    }
+
+    func pollSearch() {
+        guard let session else { stopSearchPolling(); return }
+        do {
+            if try session.pollSearch() {
+                refreshPresentation(advancingSearch: false)
+            } else {
+                synchronizeSearchPolling(pending: try session.searchWorkPending())
+            }
+        } catch {
+            stopSearchPolling()
+            report(error)
+        }
+    }
+
+    var isSearchPolling: Bool { searchTimer?.isValid == true }
 
     /// The frontend schedules opportunities for bounded work; the core decides
     /// which work remains and publishes every candidate/selection transition.
@@ -1616,6 +1659,8 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         case 5: name = "ignorecase"
         case 6: name = "smartcase"
         case 7: name = "wrapscan"
+        case UInt32(VIEM_EX_OPTION_HLSEARCH): name = "hlsearch"
+        case UInt32(VIEM_EX_OPTION_INCSEARCH): name = "incsearch"
         case UInt32(VIEM_EX_OPTION_TEXTWIDTH): name = "textwidth"
         case UInt32(VIEM_EX_OPTION_AUTOINDENT): name = "autoindent"
         case UInt32(VIEM_EX_OPTION_TABSTOP): name = "tabstop"

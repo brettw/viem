@@ -196,8 +196,12 @@ impl super::CommandInterpreter {
             } else {
                 (|| {
                     let command = super::ex::parse_ex(line).map_err(|error| error.to_string())?;
+                    if command.action == ExAction::NoHighlight {
+                        self.search_highlight_suppressed = true;
+                        return Ok(());
+                    }
                     let ExAction::Set(set) = &command.action else {
-                        return Err("startup supports mapping commands, set, and setlocal".into());
+                        return Err("startup supports mapping commands, set, setlocal, and nohlsearch".into());
                     };
                     if let SetOperation::Options(options) = &set.operation {
                         if options.iter().any(|option| {

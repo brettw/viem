@@ -1664,6 +1664,9 @@ impl Document {
         &self,
         intent: PersistedStyleIntent,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if matches!(&intent, PersistedStyleIntent::AssignCharacterStyle { style, .. } if style.is_internal()) {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
         if self.format().is_rich_text() {
             if let Some(prepared) = self.prepare_materialized_character_intent(&intent)? {
                 return Ok(prepared);

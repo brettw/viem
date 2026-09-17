@@ -1256,6 +1256,14 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         self.next_layout_revision = self
             .next_layout_revision
             .max(layout_revision.0.wrapping_add(1).max(1));
+        let mut paint_runs = styles.paint_runs.clone();
+        normalize_search_paint(
+            &mut paint_runs,
+            &styles.default_paint,
+            lines.iter().flat_map(|line| &line.rows)
+                .flat_map(|row| &row.clusters).map(|cluster| &cluster.text_range),
+            styles.search_paint_overlay.as_ref(),
+        );
         Ok((
             RegionalLayoutSnapshot {
                 whitespace_unit,
@@ -1277,7 +1285,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 canvas_background: styles.canvas_background,
                 canvas_background_is_default: styles.canvas_background_is_default,
                 default_paint: styles.default_paint.clone(),
-                paint_runs: styles.paint_runs.clone(),
+                paint_runs,
                 lines,
                 diagnostics,
                 grapheme_boundaries: Vec::new(),

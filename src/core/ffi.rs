@@ -20,6 +20,8 @@ mod external_change;
 pub use external_change::*;
 mod completion;
 pub use completion::*;
+mod search;
+pub use search::*;
 mod whitespace;
 pub use whitespace::*;
 mod startup;
@@ -506,6 +508,8 @@ pub const VIEM_EX_OPTION_VALUE_NUMBER: u32 = 4;
 pub const VIEM_EX_OPTION_VALUE_STRING: u32 = 5;
 pub const VIEM_EX_OPTION_LIST: u32 = 17;
 pub const VIEM_EX_OPTION_LISTCHARS: u32 = 18;
+pub const VIEM_EX_OPTION_HLSEARCH: u32 = 19;
+pub const VIEM_EX_OPTION_INCSEARCH: u32 = 20;
 
 pub const VIEM_EX_JUMP_CURRENT: u32 = 1 << 0;
 
@@ -3461,6 +3465,8 @@ fn ex_option_name_to_ffi(name: &ExOptionName) -> u32 {
         ExOptionName::IgnoreCase => VIEM_EX_OPTION_IGNORECASE,
         ExOptionName::SmartCase => VIEM_EX_OPTION_SMARTCASE,
         ExOptionName::WrapScan => VIEM_EX_OPTION_WRAPSCAN,
+        ExOptionName::HlSearch => VIEM_EX_OPTION_HLSEARCH,
+        ExOptionName::IncSearch => VIEM_EX_OPTION_INCSEARCH,
         ExOptionName::TextWidth => VIEM_EX_OPTION_TEXTWIDTH,
         ExOptionName::AutoIndent => VIEM_EX_OPTION_AUTOINDENT,
         ExOptionName::TabStop => VIEM_EX_OPTION_TABSTOP,
@@ -11209,8 +11215,8 @@ mod tests {
             unsafe { viem_core_style_sheet_info(handle, &mut info) },
             ViemStatus::Ok
         );
-        assert_eq!(info.definition_count, 18);
-        assert_eq!(info.property_count, 388);
+        assert_eq!(info.definition_count, 19);
+        assert_eq!(info.property_count, 402);
         assert_ne!(info.string_bytes, 0);
 
         let mut count_info = ViemStyleSheetInfoV1::default();

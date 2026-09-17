@@ -45,6 +45,7 @@ mod input_layout;
 mod startup;
 mod completion;
 mod completion_layout;
+mod search;
 pub use completion_layout::CompletionPopupAnchor;
 mod viewport;
 use viewport::capture_caret_baseline_anchor;
@@ -773,6 +774,7 @@ fn execute_command_plan(
 
 struct View<P: TextMeasurementProvider> {
     commands: CommandInterpreter,
+    search: search::SearchViewState,
     layout: ViewLayout,
     engine: LayoutEngine<P>,
     composition: Option<CompositionSession>,
@@ -1826,6 +1828,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 composition: None,
                 completion: None,
                 composition_layout: None,
+                search: Default::default(),
                 viewport_anchor: None,
                 immediate_layout_context,
                 observed_metrics_generation,
@@ -2349,10 +2352,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             view.layout
                 .synchronize_document_hard_line_count(hard_line_count, document_is_stale)
                 .map_err(LayoutError::from)?;
-            let caret_offset = view
+            let caret_offset = view.search_preview_destination(&self.document).unwrap_or_else(|| view
                 .commands
                 .visual_position()
-                .map_or(view.commands.cursor(), |position| position.text_offset);
+                .map_or(view.commands.cursor(), |position| position.text_offset));
             let focus_offset = match (intent, view.viewport_anchor) {
                 (ImmediateLayoutIntent::PreserveViewport | ImmediateLayoutIntent::PreserveViewportAndRevealCaret, Some(anchor))
                     if anchor.anchor.document() == self.document.id()
@@ -2487,7 +2490,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     restore_viewport_anchor(view)?;
                 }
                 if intent != ImmediateLayoutIntent::PreserveViewport {
-                    viewport::reveal_caret_row(view)?;
+                    viewport::reveal_presentation_caret_row(&self.document, view)?;
                 }
                 update_viewport_anchor(&self.document, view);
                 viewport_extension_needed(view)
@@ -2659,7 +2662,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                         restore_viewport_anchor(view)?;
                     }
                     if intent != ImmediateLayoutIntent::PreserveViewport {
-                        viewport::reveal_caret_row(view)?;
+                        viewport::reveal_presentation_caret_row(&self.document, view)?;
                     }
                     update_viewport_anchor(&self.document, view);
                     let top = view.layout.viewport_top();
@@ -3407,10 +3410,11 @@ impl<P: TextMeasurementProvider> Core<P> {
             .transpose()
             .map_err(DocumentError::FormattedTextStorage)?
             .unwrap_or(base_text_end);
-        let mut styles = DocumentLayoutStyles::resolve_region_with_flow(
+        let mut styles = DocumentLayoutStyles::resolve_region_with_search(
             self.document.projection(),
             base_text_start..style_end,
             flow,
+            self.views[&view_id].layout.search_matches(self.document.id(), self.document.revision()),
         )
         .map_err(LayoutError::from)?;
         if flow {
@@ -3591,10 +3595,11 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .transpose()
                 .map_err(DocumentError::FormattedTextStorage)?
                 .unwrap_or_else(|| to_base(style_capture.end, true));
-            let mut styles = DocumentLayoutStyles::resolve_region_with_flow(
+            let mut styles = DocumentLayoutStyles::resolve_region_with_search(
                 self.document.projection(),
                 to_base(capture.start, false)..style_end,
                 flow,
+                self.views[&view_id].layout.search_matches(self.document.id(), self.document.revision()),
             )
             .map_err(LayoutError::from)?;
             if flow {
@@ -4749,6 +4754,17 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     pub fn handle(&mut self, view_id: ViewId, event: CoreEvent) -> Result<CoreOutcome, CoreError> {
+        let mut outcome = self.handle_without_search_presentation(view_id, event)?;
+        // Search is disposable presentation work. A failed bounded query or
+        // shaper cannot turn a committed edit into a failed command.
+        match self.poll_search(view_id) {
+            Ok(changed) => outcome.layout_changed |= changed,
+            Err(error) => self.record_presentation_error(view_id, error),
+        }
+        Ok(outcome)
+    }
+
+    fn handle_without_search_presentation(&mut self, view_id: ViewId, event: CoreEvent) -> Result<CoreOutcome, CoreError> {
         if !self.views.contains_key(&view_id) {
             return Err(CoreError::UnknownView(view_id));
         }
@@ -6874,6 +6890,9 @@ fn composition_layout_styles(
     let paint = resolved_composition_paint(&styles, replaced.start, old_text_len, affinity);
     styles.shaping_runs = splice_shaping_runs(styles.shaping_runs, &replaced, &inserted, shaping)?;
     styles.paint_runs = splice_paint_runs(styles.paint_runs, &replaced, &inserted, paint)?;
+    if let Some(search) = &mut styles.search_paint_overlay {
+        search.remap_ranges(|range| map_base_range_to_overlay(overlay, &range).ok());
+    }
     styles.paragraphs = splice_paragraph_styles(styles.paragraphs, &replaced, &inserted, affinity)?;
     Ok(styles)
 }

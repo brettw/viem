@@ -21,6 +21,9 @@ mod input_keys;
 mod whitespace;
 pub use whitespace::VisibleWhitespaceSetting;
 pub mod search_regex;
+pub mod search_presentation;
+pub use search_presentation::{SearchPresentation, SearchPresentationKey, IncrementalSearchPreview};
+use search_presentation::search_destination_with_navigation;
 pub mod text_object;
 pub mod visual_block;
 pub mod window;
@@ -797,6 +800,8 @@ struct CommandLineState {
     count: usize,
     operator: Option<PendingOperator>,
     visual_range_revision: Option<Revision>,
+    incremental_navigation: Vec<SearchDirection>,
+    incremental_navigation_input: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1086,6 +1091,7 @@ struct VisualBlockRepeat {
 struct OperatorSearch {
     direction: SearchDirection,
     pattern: String,
+    navigation: Vec<SearchDirection>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1221,6 +1227,7 @@ pub(crate) struct BufferCommandState {
     ex_state: ExExecutionState,
     fileformats: Vec<FileFormat>,
     search_options: search_regex::SearchOptions,
+    search_highlight_suppressed: bool,
     last_search: Option<(SearchDirection, String)>,
     last_repeat: Option<RepeatAction>,
     recording: Option<(char, Vec<InputEvent>)>,
@@ -1275,6 +1282,7 @@ pub struct CommandInterpreter {
     visual_source_anchor: Option<crate::document::SourcePoint>,
     fileformats: Vec<FileFormat>,
     search_options: search_regex::SearchOptions,
+    search_highlight_suppressed: bool,
     last_search: Option<(SearchDirection, String)>,
     last_repeat: Option<RepeatAction>,
     insert_session: Option<InsertSession>,
@@ -1395,6 +1403,7 @@ impl CommandInterpreter {
             visual_source_anchor: None,
             fileformats: vec![FileFormat::Unix, FileFormat::Dos],
             search_options: search_regex::SearchOptions::default(),
+            search_highlight_suppressed: false,
             last_search: None,
             last_repeat: None,
             insert_session: None,
@@ -1445,6 +1454,7 @@ impl CommandInterpreter {
             ex_state: self.ex_state.clone(),
             fileformats: self.fileformats.clone(),
             search_options: self.search_options,
+            search_highlight_suppressed: self.search_highlight_suppressed,
             last_search: self.last_search.clone(),
             last_repeat: self.last_repeat.clone(),
             recording: self.recording.clone(),
@@ -1464,6 +1474,7 @@ impl CommandInterpreter {
         self.ex_state.clone_from(&state.ex_state);
         self.fileformats.clone_from(&state.fileformats);
         self.search_options = state.search_options;
+        self.search_highlight_suppressed = state.search_highlight_suppressed;
         self.last_search.clone_from(&state.last_search);
         self.last_repeat.clone_from(&state.last_repeat);
         self.recording.clone_from(&state.recording);
@@ -1491,6 +1502,7 @@ impl CommandInterpreter {
             return false;
         }
         self.last_search = Some((SearchDirection::Forward, search_regex::escape_literal(literal)));
+        self.search_highlight_suppressed = false;
         true
     }
 
@@ -2841,6 +2853,7 @@ impl CommandInterpreter {
                 self.finish_explicit_register_prefix(&output);
                 self.position_revision = Some(document.revision());
                 self.finish_clipboard_writes(&mut output);
+                self.invalidate_changed_incremental_navigation();
                 document.commit_command_checkpoint(model_checkpoint);
                 Ok(output)
             }
@@ -2895,6 +2908,7 @@ impl CommandInterpreter {
                 self.finish_explicit_register_prefix(&output);
                 self.position_revision = Some(document.revision());
                 self.finish_clipboard_writes(&mut output);
+                self.invalidate_changed_incremental_navigation();
                 document.commit_command_checkpoint(model_checkpoint);
                 Ok(output)
             }
@@ -3999,10 +4013,12 @@ impl CommandInterpreter {
         document: &Document,
         event: &InputEvent,
     ) -> Option<CommandOutput> {
-        match event {
+        let output = match event {
             InputEvent::Text(input) => self.try_handle_controller_only_text(document, input),
             InputEvent::Key(key) => self.try_handle_controller_only_key(document, *key),
-        }
+        };
+        self.invalidate_changed_incremental_navigation();
+        output
     }
 
     fn try_handle_controller_only_text(
@@ -4018,6 +4034,7 @@ impl CommandInterpreter {
             if let Some(state) = self.command_line_state.as_mut() {
                 state.buffer.insert(input);
             }
+            self.invalidate_changed_incremental_navigation();
             return Some(CommandOutput::pending());
         }
 
@@ -4104,6 +4121,9 @@ impl CommandInterpreter {
         }
         if key == Key::Enter {
             return None;
+        }
+        if matches!(key, Key::Ctrl('g' | 'G' | 't' | 'T')) && self.search_options.incsearch {
+            return Some(self.navigate_incremental_search(document, matches!(key, Key::Ctrl('g' | 'G'))));
         }
         let output = match key {
             Key::Escape => {
@@ -4205,6 +4225,7 @@ impl CommandInterpreter {
             }
             _ => CommandOutput::unsupported(format!("command-line key {key:?}")),
         };
+        self.invalidate_changed_incremental_navigation();
         Some(output)
     }
 
@@ -11829,13 +11850,14 @@ impl CommandInterpreter {
                     .0,
                 )
             }
-            RepeatTarget::Search(search) => match search_destination(
+            RepeatTarget::Search(search) => match search_destination_with_navigation(
                 &document.hard_line_snapshot(),
                 self.cursor,
                 search.direction,
                 &search.pattern,
                 count,
                 self.search_options,
+                &search.navigation,
             ) {
                 Ok(Some(destination)) => Some(exclusive_search_extent(document, self.cursor, destination)),
                 Ok(None) => {
@@ -12161,6 +12183,8 @@ impl CommandInterpreter {
             count: 1,
             operator: None,
             visual_range_revision: None,
+            incremental_navigation: Vec::new(),
+            incremental_navigation_input: None,
         });
         self.clear_pending();
         self.requested_register = requested_register;
@@ -12193,6 +12217,7 @@ impl CommandInterpreter {
                     CommandLineKind::SearchBackward => SearchDirection::Backward,
                     CommandLineKind::Ex => unreachable!(),
                 };
+                let navigation = self.incremental_navigation(&state).to_vec();
                 let entered = state.buffer.input;
                 let pattern = if entered.is_empty() {
                     self.last_search
@@ -12217,10 +12242,11 @@ impl CommandInterpreter {
                         OperatorSearch {
                             direction,
                             pattern: pattern.clone(),
+                            navigation: navigation.clone(),
                         },
                     )?
                 } else {
-                    self.search_pattern(document, direction, &pattern, state.count)
+                    self.search_pattern_navigated(document, direction, &pattern, state.count, &navigation)
                 };
                 output.mode_changed = true;
                 if !matches!(output.status, CommandStatus::Error(_))
@@ -12376,6 +12402,7 @@ impl CommandInterpreter {
                 };
             }
         };
+        if outcome.suppress_search_highlight { self.search_highlight_suppressed = true; }
         if matches!(
             command.action,
             ExAction::Substitute(_) | ExAction::RepeatSubstitute { .. }
@@ -12389,6 +12416,7 @@ impl CommandInterpreter {
                     .as_ref()
                     .map_or(SearchDirection::Forward, |(direction, _)| *direction);
                 self.last_search = Some((direction, pattern.to_owned()));
+                self.search_highlight_suppressed = false;
             }
         }
 
@@ -12740,6 +12768,11 @@ impl CommandInterpreter {
             match (&effect.name, &effect.new_value) {
                 (_, ExOptionValue::Indentation(value)) => self.indentation = *value,
                 (_, ExOptionValue::VisibleWhitespace(value)) => self.visible_whitespace = value.clone(),
+                (ExOptionName::HlSearch, ExOptionValue::Boolean(value)) => {
+                    self.search_options.hlsearch = *value;
+                    if *value { self.search_highlight_suppressed = false; }
+                }
+                (ExOptionName::IncSearch, ExOptionValue::Boolean(value)) => self.search_options.incsearch = *value,
                 (ExOptionName::IgnoreCase, ExOptionValue::Boolean(value)) => {
                     self.search_options.ignorecase = *value
                 }
@@ -12970,7 +13003,7 @@ impl CommandInterpreter {
                 SearchDirection::Backward => SearchDirection::Forward,
             };
         }
-        self.execute_operator_search(document, pending, OperatorSearch { direction, pattern })
+        self.execute_operator_search(document, pending, OperatorSearch { direction, pattern, navigation: Vec::new() })
     }
 
     fn execute_operator_word_search(
@@ -13007,6 +13040,7 @@ impl CommandInterpreter {
             OperatorSearch {
                 direction,
                 pattern: pattern.clone(),
+                navigation: Vec::new(),
             },
         )?;
         if matches!(output.status, CommandStatus::Complete) {
@@ -13025,13 +13059,14 @@ impl CommandInterpreter {
             Ok(count) => count,
             Err(error) => return Ok(CommandOutput::count_error(error)),
         };
-        let destination = match search_destination(
+        let destination = match search_destination_with_navigation(
             &document.hard_line_snapshot(),
             self.cursor,
             search.direction,
             &search.pattern,
             count,
             self.search_options,
+            &search.navigation,
         ) {
             Ok(Some(destination)) => destination,
             Ok(None) => {
@@ -13047,6 +13082,7 @@ impl CommandInterpreter {
                 });
             }
         };
+        self.search_highlight_suppressed = false;
         let extent = exclusive_search_extent(document, self.cursor, destination);
         self.apply_operator_target_with_jump(
             document,
@@ -13462,25 +13498,28 @@ impl CommandInterpreter {
         pattern: &str,
         count: usize,
     ) -> CommandOutput {
+        self.search_pattern_navigated(document, direction, pattern, count, &[])
+    }
+
+    fn search_pattern_navigated(
+        &mut self, document: &Document, direction: SearchDirection, pattern: &str,
+        count: usize, navigation: &[SearchDirection],
+    ) -> CommandOutput {
         let old = self.cursor;
-        match search_destination(
-            &document.hard_line_snapshot(),
-            old,
-            direction,
-            pattern,
-            count,
-            self.search_options,
+        match search_destination_with_navigation(
+            &document.hard_line_snapshot(), old, direction, pattern, count, self.search_options, navigation,
         ) {
             Ok(Some(destination)) => {
+                self.search_highlight_suppressed = false;
                 self.cursor = destination;
                 CommandOutput {
                     cursor_moved: destination != old,
                     ..CommandOutput::complete()
                 }
             }
-            Ok(None) => CommandOutput {
-                status: CommandStatus::SearchNotFound,
-                ..CommandOutput::complete()
+            Ok(None) => {
+                self.search_highlight_suppressed = false;
+                CommandOutput { status: CommandStatus::SearchNotFound, ..CommandOutput::complete() }
             },
             Err(error) => CommandOutput {
                 status: CommandStatus::Error(error),
@@ -14535,96 +14574,6 @@ fn exclusive_search_extent(document: &Document, origin: usize, destination: usiz
         range: origin.min(destination)..origin.max(destination),
         kind: MotionKind::Characterwise,
     }
-}
-
-fn search_destination(
-    lines: &HardLineSnapshot,
-    origin: usize,
-    direction: SearchDirection,
-    pattern: &str,
-    count: usize,
-    options: search_regex::SearchOptions,
-) -> Result<Option<usize>, String> {
-    use search_regex::{CompiledRegex, RegexInput, RegexLimits, RegexWork};
-    let limits = RegexLimits::default();
-    let regex = CompiledRegex::compile(
-        pattern,
-        options
-            .case_insensitive(pattern)
-            .map_err(|e| e.to_string())?,
-        limits,
-    )
-    .map_err(|e| e.to_string())?;
-    let input = RegexInput::new(lines);
-    let mut work = RegexWork::new(limits);
-    let mut cursor = origin;
-    let mut completed = 0;
-    let mut seen = HashMap::new();
-    while completed < count.max(1) {
-        if let Some(previous) = seen.insert(cursor, completed) {
-            let cycle = completed - previous;
-            let skip = (count.max(1) - completed) / cycle;
-            if skip > 0 {
-                completed += skip * cycle;
-                continue;
-            }
-        }
-        let mut seek = |start: usize, before: Option<usize>| -> Result<Option<usize>, String> {
-            let mut at = start;
-            let mut last = None;
-            while at <= lines.text_length() {
-                let Some(matched) = regex
-                    .find(&input, at, lines.text_length(), &mut work)
-                    .map_err(|e| e.to_string())?
-                else {
-                    break;
-                };
-                let found = matched.range().start;
-                if before.is_some_and(|limit| found >= limit) {
-                    break;
-                }
-                if lines.is_grapheme_boundary(found) {
-                    if before.is_none() {
-                        return Ok(Some(found));
-                    }
-                    last = Some(found);
-                }
-                let Some(next) = lines.next_grapheme_boundary(found) else {
-                    break;
-                };
-                at = next;
-            }
-            Ok(last)
-        };
-        let found = match direction {
-            SearchDirection::Forward => {
-                let found = if let Some(start) = lines.next_grapheme_boundary(cursor) {
-                    seek(start, None)?
-                } else {
-                    None
-                };
-                if found.is_none() && options.wrapscan {
-                    seek(0, None)?
-                } else {
-                    found
-                }
-            }
-            SearchDirection::Backward => {
-                let found = seek(0, Some(cursor))?;
-                if found.is_none() && options.wrapscan {
-                    seek(0, Some(lines.text_length().saturating_add(1)))?
-                } else {
-                    found
-                }
-            }
-        };
-        let Some(found) = found else {
-            return Ok(None);
-        };
-        cursor = found;
-        completed += 1;
-    }
-    Ok(Some(cursor))
 }
 
 fn percentage_line(lines: &HardLineSnapshot, percent: usize) -> Option<usize> {

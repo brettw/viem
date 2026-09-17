@@ -315,7 +315,8 @@ impl StyleSheet {
         let mut candidate = self.clone();
         candidate.default_blocks = defaults.block_styles;
         candidate.default_characters = defaults.character_styles;
-        // Internal HTML styles belong only to an HTML source projection.
+        // Keep only internal styles available in this projection: the search
+        // overlay is universal; HTML syntax styles require HTML Source.
         candidate
             .default_characters
             .retain(|id, _| !id.is_internal() || self.character_styles.contains_key(id));

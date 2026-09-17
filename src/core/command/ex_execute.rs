@@ -251,6 +251,8 @@ pub enum ExOptionName {
     Wrap,
     FileFormat,
     FileFormats,
+    HlSearch,
+    IncSearch,
     IgnoreCase,
     SmartCase,
     WrapScan,
@@ -547,6 +549,8 @@ pub enum ExNavigation {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ExOutcome {
+    /// Temporarily hide search matches without changing hlsearch.
+    pub suppress_search_highlight: bool,
     pub document_changed: bool,
     /// Exact model publications produced by mutating Ex commands, in commit
     /// order.
@@ -596,6 +600,7 @@ impl ExOutcome {
             .checked_add(next.substitutions)
             .ok_or(ExOutcomeMergeError::SubstitutionCountOverflow)?;
 
+        self.suppress_search_highlight |= next.suppress_search_highlight;
         self.document_changed |= next.document_changed;
         self.model_transactions.append(&mut next.model_transactions);
         if next.navigation.is_some() {
@@ -1397,6 +1402,7 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
             .outcome
             .frontend_requests
             .push(ExFrontendRequest::Info(ExInfoRequest::Jumps)),
+        ExAction::NoHighlight => plan.outcome.suppress_search_highlight = true,
         ExAction::Set(set) => prepare_set(document, context, set.scope, &set.operation, &mut plan)?,
     }
     Ok(plan)
@@ -2312,6 +2318,8 @@ fn prepare_set(
                 shown.push(display(ExOptionName::List, ExOptionValue::Boolean(values.visible_whitespace.enabled())));
             }
             if values.visible_whitespace.listchars.is_some() { shown.push(display(ExOptionName::ListChars, ExOptionValue::String(values.visible_whitespace.listchars().into()))); }
+            if values.search_options.hlsearch { shown.push(display(ExOptionName::HlSearch, ExOptionValue::Boolean(true))); }
+            if values.search_options.incsearch { shown.push(display(ExOptionName::IncSearch, ExOptionValue::Boolean(true))); }
             if values.search_options.ignorecase {
                 shown.push(display(
                     ExOptionName::IgnoreCase,
@@ -2408,6 +2416,8 @@ struct PendingOptions {
 
 fn all_option_values(values: &PendingOptions) -> Vec<ExOptionDisplay> {
     let mut result = vec![
+        display(ExOptionName::HlSearch, ExOptionValue::Boolean(values.search_options.hlsearch)),
+        display(ExOptionName::IncSearch, ExOptionValue::Boolean(values.search_options.incsearch)),
         display(ExOptionName::List, ExOptionValue::Boolean(values.visible_whitespace.enabled())),
         display(ExOptionName::ListChars, ExOptionValue::String(values.visible_whitespace.listchars().into())),
         display(
@@ -2589,6 +2599,8 @@ fn apply_option_operation(
     if apply_indentation_option(scope, operation, &mut values.indentation, plan)? { return Ok(()); }
     if apply_whitespace_option(scope, operation, &mut values.visible_whitespace, plan)? { return Ok(()); }
     match name.as_str() {
+        "hlsearch" | "hls" => apply_boolean_option(scope, ExOptionName::HlSearch, false, &operation.action, &mut values.search_options.hlsearch, plan),
+        "incsearch" | "is" => apply_boolean_option(scope, ExOptionName::IncSearch, false, &operation.action, &mut values.search_options.incsearch, plan),
         "ignorecase" | "ic" => apply_boolean_option(
             scope,
             ExOptionName::IgnoreCase,
@@ -2754,7 +2766,7 @@ fn apply_boolean_option(
             )))
         }
     }
-    if *current != old {
+    if *current != old || (name == ExOptionName::HlSearch && *current) {
         plan.outcome.option_effects.push(ExOptionEffect {
             scope,
             name,
@@ -3786,7 +3798,7 @@ mod tests {
         ).unwrap();
         let ExFrontendRequest::Info(ExInfoRequest::Options(options)) =
             &plan.outcome.frontend_requests[0] else { panic!("expected options") };
-        assert_eq!(options.len(), 17);
+        assert_eq!(options.len(), 19);
         assert!(options.iter().any(|option| option.name == ExOptionName::TextWidth));
     }
 

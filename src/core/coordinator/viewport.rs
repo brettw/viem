@@ -137,6 +137,17 @@ pub(super) fn reveal_caret_row<P: TextMeasurementProvider>(
     reveal_layout_row_at(&mut view.layout, position.text_offset, position.affinity)
 }
 
+pub(super) fn reveal_presentation_caret_row<P: TextMeasurementProvider>(
+    document: &Document,
+    view: &mut View<P>,
+) -> Result<(), LayoutError> {
+    if let Some(offset) = view.search_preview_destination(document) {
+        reveal_layout_row_at(&mut view.layout, offset, BoundaryAffinity::Downstream)
+    } else {
+        reveal_caret_row(view)
+    }
+}
+
 /// Source-backed and composed layouts share one row reveal policy. Reserve
 /// the application margins without reducing painting or materialization
 /// coverage, and include the complete row's typography and ink.

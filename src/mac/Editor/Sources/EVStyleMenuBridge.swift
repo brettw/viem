@@ -72,7 +72,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     let selectionMatches = selectedStyles?.identity.documentID == state.document_id
       && selectedStyles?.identity.documentRevision == state.document_revision
       && selectedStyles?.identity.styleSheetRevision == snapshot.identity.styleSheetRevision
-    var entries = snapshot.definitions.map { definition in
+    var entries = snapshot.definitions.filter { !$0.flags.contains(.internalSyntax) }.map { definition in
       EVStyleMenuEntry(
         role: definition.kind.menuRole,
         stableID: definition.key.id.rawValue,

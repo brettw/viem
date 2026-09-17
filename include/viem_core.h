@@ -408,6 +408,8 @@ ViemStatus viem_external_file_review_finish(
 #define VIEM_EX_OPTION_VALUE_STRING 5u
 #define VIEM_EX_OPTION_LIST 17u
 #define VIEM_EX_OPTION_LISTCHARS 18u
+#define VIEM_EX_OPTION_HLSEARCH 19u
+#define VIEM_EX_OPTION_INCSEARCH 20u
 
 #define VIEM_EX_JUMP_CURRENT (1u << 0)
 
@@ -2080,6 +2082,17 @@ ViemStatus viem_core_view_copy_completion_utf8(
  */
 ViemStatus viem_core_view_poll_completion(
     ViemCoreHandle core, ViemViewId view, uint8_t *out_changed);
+/*
+ * Advance one bounded slice of search highlighting/incremental preview before
+ * reading layout and paint. Source and submitted search state are unchanged.
+ * changed is 1 when presentation must be exported again. The pending query is
+ * read-only; schedule further slices while it returns 1. Both output pointers
+ * must identify one writable byte and are cleared on validated-call failures.
+ */
+ViemStatus viem_core_view_poll_search(
+    ViemCoreHandle core, ViemViewId view, uint8_t *out_changed);
+ViemStatus viem_core_view_search_work_pending(
+    ViemCoreHandle core, ViemViewId view, uint8_t *out_pending);
 /*
  * Materialize the selected item before a non-key native command (save, pointer,
  * menu, or IME operation). Refresh presentation before constructing that

@@ -447,8 +447,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         }
     }
 
-    /// A buffer tabstop can change other views' geometry without changing the
-    /// document. Refresh only panes whose retained snapshot was superseded.
+    /// Buffer presentation options and shared search state can change another
+    /// pane without a source edit or a cursor move in the invoking pane.
     func notePresentationChange(originatingViewID: ViemViewId) {
         guard !isRefreshingLayoutSurfaces else { return }
         isRefreshingLayoutSurfaces = true
@@ -458,8 +458,10 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             var info = ViemLayoutSnapshotInfoV1()
             info.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotInfoV1>.size)
             let status = viem_core_view_layout_snapshot_info(core, session.viewID, &info)
-            if status == UInt32(VIEM_STATUS_OK),
-               info.identity.layout_revision != surface.layoutSnapshot?.info.identity.layout_revision {
+            if status == UInt32(VIEM_STATUS_LAYOUT_UNAVAILABLE)
+                || (status == UInt32(VIEM_STATUS_OK)
+                    && info.identity.layout_revision != surface.layoutSnapshot?.info.identity.layout_revision)
+                || (try? session.searchWorkPending()) == true {
                 surface.refreshPresentation()
             }
         }
@@ -1588,7 +1590,7 @@ final class EVCoreViewSession {
         }
         if outcome.flags & UInt32(VIEM_OUTCOME_DOCUMENT_CHANGED) != 0 {
             document.noteSourceChange(originatingViewID: viewID)
-        } else if outcome.flags & UInt32(VIEM_OUTCOME_LAYOUT_CHANGED) != 0 {
+        } else {
             document.notePresentationChange(originatingViewID: viewID)
         }
     }
