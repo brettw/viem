@@ -2,7 +2,7 @@
 //! document. Every key is computed against one immutable logical snapshot.
 use super::ex::SortOptions;
 use super::ex_execute::{ExExecuteError, ExExecutionContext, HardLineRange};
-use super::regex_v1::{CompiledRegex, RegexInput, RegexLimits, RegexWork};
+use super::search_regex::{CompiledRegex, RegexInput, RegexLimits, RegexWork};
 use crate::document::{Document, Format};
 use std::{cmp::Ordering, ops::Range};
 

@@ -17,7 +17,8 @@ use regex_automata::{
     PatternID,
 };
 
-pub const DIALECT_VERSION: u32 = 1;
+/// The sole supported search dialect; compiled state is disposable across versions.
+pub const DIALECT_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub struct RegexLimits {
@@ -298,11 +299,13 @@ impl<'a> InputCursor<'a> {
 
 #[derive(Clone, Debug)]
 pub struct CompiledRegex {
+    dialect_version: u32,
     nfa: NFA,
 }
 #[derive(Clone, PartialEq, Eq)]
 struct CacheKey {
     pattern: String,
+    dialect_version: u32,
     insensitive: bool,
     limits: RegexLimits,
 }
@@ -321,6 +324,7 @@ impl CompiledRegex {
         validate_pattern(pattern)?;
         let key = CacheKey {
             pattern: pattern.into(),
+            dialect_version: DIALECT_VERSION,
             insensitive,
             limits,
         };
@@ -371,13 +375,19 @@ impl CompiledRegex {
                 "compiled program and capture workspace",
             ));
         }
-        let compiled = Arc::new(Self { nfa });
+        let compiled = Arc::new(Self {
+            dialect_version: key.dialect_version,
+            nfa,
+        });
         let mut cache = cache.lock().expect("pattern cache lock");
         if cache.len() == 32 {
             cache.pop_front();
         }
         cache.push_back((key, compiled.clone()));
         Ok(compiled)
+    }
+    pub fn dialect_version(&self) -> u32 {
+        self.dialect_version
     }
     pub fn capture_count(&self) -> usize {
         self.nfa.group_info().group_len(PatternID::ZERO)
@@ -618,7 +628,7 @@ fn scan_pattern(pattern: &str) -> Result<bool, RegexError> {
             };
             at += escaped.len_utf8();
             let allowed = match escaped {
-                'd' | 'D' | 's' | 'S' | 'w' | 'W' | 'A' | 't' | 'r' | 'n' => true,
+                'd' | 'D' | 's' | 'S' | 'w' | 'W' | 'A' | 't' | 'r' | 'n' | '<' | '>' => true,
                 'b' | 'B' => !pattern[at..].starts_with('{'),
                 'z' => !pattern[at..]
                     .chars()
@@ -935,7 +945,11 @@ mod tests {
             r"$",
             r"\b",
             r"\B",
+            r"\<",
+            r"\>",
             r"\b\w+\b",
+            r"\<\w+\>",
+            r"\<(?P<word>é𐐀|e\p{Mark}*)\>",
             r"(é|𐐀|😀)(\w*)",
             r"(?s:é.*?終)",
             r"(?i:é)(?P<tail>\w+)",
@@ -1055,6 +1069,30 @@ mod tests {
             input.hard_break_offsets(14..20).collect::<Vec<_>>(),
             Vec::<usize>::new()
         );
+        assert!(!document.projection().compatibility_text_is_materialized());
+    }
+
+    #[test]
+    fn restricted_ranges_preserve_word_context_outside_the_range() {
+        let document = edited_document("prefix target suffix");
+        let snapshot = document.hard_line_snapshot();
+        let input = RegexInput::new(&snapshot);
+        let limits = RegexLimits::default();
+        for (pattern, range, expected) in [
+            (r"\<target\>", 7..13, Some(7..13)),
+            (r"\<arget\>", 8..13, None),
+            (r"\<targe\>", 7..12, None),
+            (r"\<", 7..7, Some(7..7)),
+            (r"\<", 8..8, None),
+            (r"\>", 12..12, None),
+            (r"\>", 13..13, Some(13..13)),
+        ] {
+            let regex = CompiledRegex::compile(pattern, false, limits).unwrap();
+            let found = regex
+                .find(&input, range.start, range.end, &mut RegexWork::new(limits))
+                .unwrap();
+            assert_eq!(found.map(|matched| matched.range()), expected, "{pattern}");
+        }
         assert!(!document.projection().compatibility_text_is_materialized());
     }
 

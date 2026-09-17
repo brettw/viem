@@ -31,11 +31,11 @@
       ]
     },
     {
-      "id": "regex-v1",
+      "id": "regex-v2",
       "status": "intentional-difference",
-      "decision": "Versioned Unicode scalar syntax with semantic hard-line assertions, typed captures, resource limits, cancellation and grapheme-safe atomic edits. Vim-only atoms are rejected.",
+      "decision": "Viem Regex v2 adds \\< and \\> directional edges using the same Unicode Alphabetic/Mark/Nd/Pc/Join_Control word class as \\w and \\b, independent of Vim iskeyword and Viem keyword extraction. Prior pattern/replacement semantics and */# generated \\b...\\b patterns remain unchanged. Compiled/cache identities include the dialect version; unsupported Vim atoms remain rejected.",
       "tests": [
-        "tests/regex_v1.rs",
+        "tests/search_regex.rs",
         "tests/regex_commands.rs",
         "tests/captured_replacements.rs"
       ]
@@ -175,7 +175,7 @@
     {
       "id": "legacy-pattern-parity",
       "status": "rejected",
-      "decision": "Vim regex modes, offsets, expression/case-conversion replacements and history files are outside canonical Regex v1. Incremental search/highlight decoration remains an explicit future UI capability.",
+      "decision": "Vim regex modes, offsets, expression/case-conversion replacements and history files are outside canonical Regex v2. Incremental search/highlight decoration remains an explicit future UI capability.",
       "tests": []
     },
     {
@@ -211,7 +211,7 @@
     {
       "id": "sort",
       "status": "partial",
-      "decision": ":sort supports hard-line ranges, reverse, case-insensitive/unique, integer numeric bases, and Regex v1 keys as one verified source permutation. Plain/source rows, Markdown prose paragraphs and balanced sibling HTML paragraphs preserve source spelling and styles. Floating/locale sorting and ambiguous rich/RTF row ownership are unsupported.",
+      "decision": ":sort supports hard-line ranges, reverse, case-insensitive/unique, integer numeric bases, and Regex v2 keys as one verified source permutation. Plain/source rows, Markdown prose paragraphs and balanced sibling HTML paragraphs preserve source spelling and styles. Floating/locale sorting and ambiguous rich/RTF row ownership are unsupported.",
       "tests": [
         "tests/ex_sort.rs"
       ]

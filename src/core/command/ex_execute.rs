@@ -5,13 +5,13 @@
 //! changes, navigation, and frontend work in one [`ExPlan`]. The coordinator
 //! can therefore validate every effect before committing the document change.
 //!
-//! Substitution uses the versioned portable Regex v1 language and semantic
+//! Substitution uses the versioned portable Regex v2 language and semantic
 //! hard-line assertions. Replacement captures retain their formatted content.
 
 use std::fmt;
 use std::ops::Range;
 
-use super::regex_v1::{
+use super::search_regex::{
     CompiledRegex, ExpandedFragment, RegexError, RegexInput, RegexLimits, RegexWork,
     ReplacementTemplate,
 };
@@ -57,7 +57,7 @@ pub struct ExExecutionContext {
     pub current_line: usize,
     pub wrap: bool,
     pub fileformats: Vec<FileFormat>,
-    pub search_options: super::regex_v1::SearchOptions,
+    pub search_options: super::search_regex::SearchOptions,
     /// Buffer-owned `textwidth` state.
     pub text_width: crate::document::TextWidthSetting,
     pub indentation: crate::document::IndentationSetting,
@@ -71,7 +71,7 @@ impl Default for ExExecutionContext {
             current_line: 0,
             wrap: false,
             fileformats: vec![FileFormat::Unix, FileFormat::Dos],
-            search_options: super::regex_v1::SearchOptions::default(),
+            search_options: super::search_regex::SearchOptions::default(),
             text_width: crate::document::TextWidthSetting::default(),
             indentation: Default::default(),
             visible_whitespace: Default::default(),
@@ -2400,7 +2400,7 @@ struct PendingOptions {
     wrap: bool,
     file_format: FileFormat,
     fileformats: Vec<FileFormat>,
-    search_options: super::regex_v1::SearchOptions,
+    search_options: super::search_regex::SearchOptions,
     text_width: crate::document::TextWidthSetting,
     indentation: crate::document::IndentationSetting,
     visible_whitespace: super::VisibleWhitespaceSetting,

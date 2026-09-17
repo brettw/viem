@@ -20,7 +20,7 @@ mod insert_controls;
 mod input_keys;
 mod whitespace;
 pub use whitespace::VisibleWhitespaceSetting;
-pub mod regex_v1;
+pub mod search_regex;
 pub mod text_object;
 pub mod visual_block;
 pub mod window;
@@ -1220,7 +1220,7 @@ pub(crate) struct BufferCommandState {
     last_command_line: Option<String>,
     ex_state: ExExecutionState,
     fileformats: Vec<FileFormat>,
-    search_options: regex_v1::SearchOptions,
+    search_options: search_regex::SearchOptions,
     last_search: Option<(SearchDirection, String)>,
     last_repeat: Option<RepeatAction>,
     recording: Option<(char, Vec<InputEvent>)>,
@@ -1274,7 +1274,7 @@ pub struct CommandInterpreter {
     physical_cursor: Option<line_mode::PhysicalCursor>,
     visual_source_anchor: Option<crate::document::SourcePoint>,
     fileformats: Vec<FileFormat>,
-    search_options: regex_v1::SearchOptions,
+    search_options: search_regex::SearchOptions,
     last_search: Option<(SearchDirection, String)>,
     last_repeat: Option<RepeatAction>,
     insert_session: Option<InsertSession>,
@@ -1394,7 +1394,7 @@ impl CommandInterpreter {
             physical_cursor: None,
             visual_source_anchor: None,
             fileformats: vec![FileFormat::Unix, FileFormat::Dos],
-            search_options: regex_v1::SearchOptions::default(),
+            search_options: search_regex::SearchOptions::default(),
             last_search: None,
             last_repeat: None,
             insert_session: None,
@@ -1490,7 +1490,7 @@ impl CommandInterpreter {
         if literal.is_empty() {
             return false;
         }
-        self.last_search = Some((SearchDirection::Forward, regex_v1::escape_literal(literal)));
+        self.last_search = Some((SearchDirection::Forward, search_regex::escape_literal(literal)));
         true
     }
 
@@ -12990,7 +12990,7 @@ impl CommandInterpreter {
                 ..CommandOutput::complete()
             }),
         };
-        let escaped = regex_v1::escape_literal(&word);
+        let escaped = search_regex::escape_literal(&word);
         let pattern = if whole_word {
             format!(r"\b{escaped}\b")
         } else {
@@ -13143,7 +13143,7 @@ impl CommandInterpreter {
                 ..CommandOutput::complete()
             },
         };
-        let escaped = regex_v1::escape_literal(&word);
+        let escaped = search_regex::escape_literal(&word);
         let pattern = if whole_word {
             format!(r"\b{escaped}\b")
         } else {
@@ -14543,9 +14543,9 @@ fn search_destination(
     direction: SearchDirection,
     pattern: &str,
     count: usize,
-    options: regex_v1::SearchOptions,
+    options: search_regex::SearchOptions,
 ) -> Result<Option<usize>, String> {
-    use regex_v1::{CompiledRegex, RegexInput, RegexLimits, RegexWork};
+    use search_regex::{CompiledRegex, RegexInput, RegexLimits, RegexWork};
     let limits = RegexLimits::default();
     let regex = CompiledRegex::compile(
         pattern,
@@ -15555,9 +15555,9 @@ fn command_line_delete_word(buffer: &mut CommandLineBuffer) {
 /// A keyword exceeding the regex pattern limit cannot be searched. Read only
 /// enough surrounding text to extract a permitted word or report that limit;
 /// an arbitrarily long word or combining cluster never allocates a flat document.
-fn search_keyword(document: &Document, offset: usize) -> Result<Option<String>, regex_v1::RegexError> {
+fn search_keyword(document: &Document, offset: usize) -> Result<Option<String>, search_regex::RegexError> {
     let tree = document.projection().text_tree();
-    let limit = regex_v1::RegexLimits::default().pattern_bytes;
+    let limit = search_regex::RegexLimits::default().pattern_bytes;
     let mut start = offset.saturating_sub(limit + 4);
     let mut end = offset.saturating_add(limit + 4).min(tree.byte_len());
     while tree.byte_chunk_at(start).first().is_some_and(|byte| byte & 0xc0 == 0x80) { start += 1; }
@@ -15574,12 +15574,12 @@ fn search_keyword(document: &Document, offset: usize) -> Result<Option<String>, 
             let first = std::str::from_utf8(tree.byte_chunk_at(previous))
                 .expect("scalar-aligned tree leaf").chars().next();
             if first.is_some_and(|character| character.is_alphanumeric() || character == '_') {
-                return Err(regex_v1::RegexError::RegexResourceLimit("pattern length"));
+                return Err(search_regex::RegexError::RegexResourceLimit("pattern length"));
             }
         }
     }
     if range.len() > limit {
-        return Err(regex_v1::RegexError::RegexResourceLimit("pattern length"));
+        return Err(search_regex::RegexError::RegexResourceLimit("pattern length"));
     }
     Ok(Some(text[range].into()))
 }
@@ -15829,7 +15829,7 @@ mod tests {
         let mut oversized = Document::new(format!("{}!", "a".repeat(100_000)));
         oversized.delete(100_000..100_001).unwrap();
         for offset in [0, 50_000, 99_999] {
-            assert!(matches!(search_keyword(&oversized, offset), Err(regex_v1::RegexError::RegexResourceLimit("pattern length"))));
+            assert!(matches!(search_keyword(&oversized, offset), Err(search_regex::RegexError::RegexResourceLimit("pattern length"))));
         }
         assert!(!oversized.projection().compatibility_text_is_materialized());
         for (base, oversized_word) in [("a", true), ("😀", false)] {
@@ -15837,7 +15837,7 @@ mod tests {
             let document = Document::new(text.clone());
             let result = search_keyword(&document, text.len() - 1);
             if oversized_word {
-                assert!(matches!(result, Err(regex_v1::RegexError::RegexResourceLimit("pattern length"))));
+                assert!(matches!(result, Err(search_regex::RegexError::RegexResourceLimit("pattern length"))));
             } else {
                 assert_eq!(result.unwrap().as_deref(), Some("b"));
             }

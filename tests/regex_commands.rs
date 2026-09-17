@@ -9,6 +9,97 @@ fn command(c: &mut CommandInterpreter, d: &mut Document, text: &str) -> CommandS
 fn success(status: CommandStatus) {
     assert!(matches!(status, CommandStatus::Complete), "{status:?}");
 }
+fn keys(c: &mut CommandInterpreter, d: &mut Document, text: &str) -> CommandStatus {
+    let mut status = CommandStatus::Complete;
+    for ch in text.chars() {
+        status = c.handle(d, InputEvent::Key(Key::Char(ch))).unwrap().status;
+    }
+    status
+}
+#[test]
+fn directional_word_searches_preserve_counts_direction_and_repeat() {
+    let mut d = Document::new("old old_name old older old");
+    let mut c = CommandInterpreter::new();
+    success(command(&mut c, &mut d, r"/\<old\>"));
+    assert_eq!(c.cursor(), 13);
+    success(keys(&mut c, &mut d, "2n"));
+    assert_eq!(c.cursor(), 0);
+    success(keys(&mut c, &mut d, "N"));
+    assert_eq!(c.cursor(), 23);
+    success(command(&mut c, &mut d, r"?\<old\>"));
+    assert_eq!(c.cursor(), 13);
+    success(keys(&mut c, &mut d, "n"));
+    assert_eq!(c.cursor(), 0);
+    success(keys(&mut c, &mut d, "N"));
+    assert_eq!(c.cursor(), 13);
+    assert_eq!(d.text(), "old old_name old older old");
+    assert!(!d.undo());
+}
+#[test]
+fn directional_operator_search_uses_an_exclusive_extent_and_named_register() {
+    let original = "one older old tail";
+    let mut d = Document::new(original);
+    let mut c = CommandInterpreter::new();
+    success(command(&mut c, &mut d, r#""ad/\<old\>"#));
+    assert_eq!(d.text(), "old tail");
+    assert_eq!(c.register('a').unwrap().text, "one older ");
+    assert_eq!(c.cursor(), 0);
+    assert!(d.undo());
+    assert_eq!(d.text(), original);
+    assert!(!d.undo());
+}
+#[test]
+fn directional_whole_word_substitution_renames_identifiers_in_one_undo_unit() {
+    let original = "old old_name older (old) old-old";
+    let mut d = Document::new(original);
+    let mut c = CommandInterpreter::new();
+    success(command(&mut c, &mut d, r":%s/\<old\>/new/g"));
+    assert_eq!(d.text(), "new old_name older (new) new-new");
+    assert!(d.undo());
+    assert_eq!(d.text(), original);
+    assert!(!d.undo());
+    assert!(d.redo());
+    assert_eq!(d.text(), "new old_name older (new) new-new");
+}
+#[test]
+fn directional_substitution_checks_every_grapheme_endpoint_before_editing() {
+    for (text, substitution) in [
+        ("a a\u{301}", r":%s/\<a/b/g"),
+        ("a !\u{301}", r":%s/\</X/g"),
+        ("a 👩\u{200d}💻", r":%s/\>/X/g"),
+    ] {
+        let mut d = Document::new(text);
+        let mut c = CommandInterpreter::new();
+        let revision = d.revision();
+        let source = d.source_bytes();
+        let status = command(&mut c, &mut d, substitution);
+        assert!(
+            format!("{status:?}").contains("RegexMatchSplitsGraphemeCluster"),
+            "{substitution:?} on {text:?}: {status:?}"
+        );
+        assert_eq!(d.source_bytes(), source);
+        assert_eq!(d.revision(), revision);
+        assert_eq!(c.cursor(), 0);
+        assert!(!d.undo());
+        let status = command(&mut c, &mut d, ":&");
+        assert!(format!("{status:?}").contains("NoPreviousSubstitute"));
+    }
+}
+#[test]
+fn star_and_hash_keep_existing_boundaries_for_non_regex_word_numbers() {
+    // Keyword extraction includes ², but the Unicode regex word class does
+    // not. Replacing the generated \b²\b with \<²\> would change behavior.
+    for (search, first, repeated) in [("*", 4, 9), ("#", 9, 4)] {
+        let mut d = Document::new("² x²x y²y");
+        let mut c = CommandInterpreter::new();
+        success(keys(&mut c, &mut d, search));
+        assert_eq!(c.cursor(), first, "{search}");
+        success(keys(&mut c, &mut d, "n"));
+        assert_eq!(c.cursor(), repeated, "{search}");
+        success(command(&mut c, &mut d, ":%s//Q/g"));
+        assert_eq!(d.text(), "² xQx yQy", "{search}");
+    }
+}
 #[test]
 fn multiline_matches_are_contained_and_selected_once_by_start_line() {
     let mut d = Document::new("a\nb a\nb");

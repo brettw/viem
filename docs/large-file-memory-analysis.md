@@ -134,7 +134,7 @@ does not establish a native, varied-text, or whole-document-scroll cache bound.
    retain flat compatibility caches. Initial save-point hashing copies all
    source bytes and creates a padded SHA input
    ([source.rs](../src/core/document/source.rs), lines 234 and 512).
-   [RegexInput](../src/core/command/regex_v1.rs), line 139, flattens snapshot text,
+   [RegexInput](../src/core/command/search_regex.rs), line 139, flattens snapshot text,
    allocates two `Vec<bool>` buffers of text-byte length, and requests all hard
    lines as a temporary vector. These are inspected operation costs, not
    measured components of the opening table.

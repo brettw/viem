@@ -2305,7 +2305,7 @@ The supported program includes keywords, ordered match/region start/skip/end
 rules, containment/clusters, nextgroup/whitespace behavior, transparency,
 end-control flags, offsets, group links, and sync/display hints. Pin supported
 regex constructs in compatibility tests. Vim syntax patterns are separate from
-Viem Regex v1 search patterns: preserve Vim semantics where supported and reject
+Viem Regex v2 search patterns: preserve Vim semantics where supported and reject
 unsupported atoms rather than silently translating them with different meaning.
 A fast regular matcher and a budgeted compatibility VM may share one compiled
 pattern model. External delimiter captures must survive in region state.
@@ -2705,18 +2705,20 @@ command prompt, these keys move to the prompt's beginning or end.
 Required search commands are `/pattern`, `?pattern`, `n`, `N`, `*`, `#`,
 `g*`, and `g#`. Search operates on logical UTF-8 text in the formatted
 projection and is independent of wrapping. Matches may cross style boundaries.
-Search/replace changes are reverse-projected like other edits. The first
-implementation uses the Viem Regex v1 dialect below rather than Vim's full
-regular-expression language. Search history belongs in core state.
+Search/replace changes are reverse-projected like other edits. Search uses
+the Viem Regex v2 dialect below rather than Vim's full regular-expression
+language. Search history belongs in core state.
 
-#### Viem Regex v1
+#### Viem Regex v2
 
-Viem Regex v1 is the sole pattern language for `/`, `?`, operator-pending
-searches, `:substitute`, and any later command documented as accepting a search
-pattern. It is a stable product interface, not an alias for whatever syntax a
-particular regex library version happens to accept. The implementation may use
+Viem Regex v2 is the sole pattern language for `/`, `?`, operator-pending
+searches, `:substitute`, `:sort`, and any later command documented as accepting
+a search pattern. It is a stable product interface, not an alias for whatever
+syntax a particular regex library version happens to accept. The implementation may use
 the Rust `regex` crate or another engine only when it produces the behavior
-defined here.
+defined here. Version 2 adds directional word-boundary assertions to version 1;
+previously accepted patterns and replacements retain their meaning. Version 2
+is the sole supported dialect.
 
 Patterns are valid UTF-8 and Unicode mode is mandatory. The matching atom is a
 Unicode scalar value, not a source byte, UTF-8 code unit, grapheme cluster,
@@ -2738,7 +2740,8 @@ The supported pattern syntax is:
   `?` for the corresponding lazy form;
 - capturing groups `(pattern)`, noncapturing groups `(?:pattern)`, named groups
   `(?P<name>pattern)` and `(?<name>pattern)`, and alternation `|`;
-- Unicode word-boundary assertions `\b` and `\B`;
+- Unicode word-boundary assertions `\b` and `\B`, and directional
+  word-boundary assertions `\<` and `\>`;
 - `^` and `$` as zero-width formatted hard-line start and end assertions at
   every pattern position, and `\A` and `\z` as logical-document start and end;
 - escapes `\t`, `\r`, `\n`, `\xNN`, and `\u{scalar-value}`; and
@@ -2748,7 +2751,7 @@ The supported pattern syntax is:
   treats an unescaped `#` outside a class through the next pattern U+000A or
   pattern end as a comment.
 
-No other inline flag is part of version 1. In particular, `m` is unnecessary
+No other inline flag is part of version 2. In particular, `m` is unnecessary
 because `^` and `$` always use formatted hard-line semantics, and an inline
 flag may not disable Unicode mode. A literal `^` or `$` is written `\^` or
 `\$`. An unsupported escape or construct is an error; it is never treated as
@@ -2765,8 +2768,6 @@ The following Vim pattern families are deliberately unsupported:
 - lookaround and atomic postfixes `\@=`, `\@!`, `\@<=`, `\@<!`, bounded
   lookbehind forms such as `\@123<=`, and `\@>`;
 - match-boundary controls `\zs` and `\ze`;
-- Vim keyword boundaries `\<` and `\>`; Viem's `\b` and `\B` use the
-  Unicode regex word definition and are independent of word-motion tailoring;
 - end-of-line-inclusive `\_x` forms, including `\_.`, `\_^`, `\_$`,
   `\_[...]`, and `\_`-prefixed character classes;
 - buffer-relative assertions beginning with `\%`, including document,
@@ -2782,12 +2783,17 @@ The following Vim pattern families are deliberately unsupported:
 - `\Z` combining-character-insensitive matching, Vim equivalence classes,
   Vim collation elements, and Vim's automatic composing-character inclusion;
   and
-- `~` as the previous substitute string. In Viem Regex v1, `~` is literal.
+- `~` as the previous substitute string. In Viem Regex v2, `~` is literal.
 
 Some accepted spellings intentionally differ from Vim and therefore require
 specific compatibility tests and documentation:
 
 - `\b` is a Unicode word boundary, not a Backspace character;
+- `\<` and `\>` assert the start and end of a Unicode regex word using the
+  same word class as `\w`, `\b`, and `\B`. Vim defines these assertions
+  through its configurable keyword class; Viem does not use `iskeyword` or
+  word-motion tailoring for them. Any future keyword-tailoring option MUST
+  preserve these regex meanings;
 - `\A` is logical-document start, not Vim's nonalphabetic class;
 - `\w`, `\d`, and `\s` and their negations are Unicode-aware rather than
   Vim's ASCII- or option-specific classes; and
@@ -2798,6 +2804,32 @@ A compatibility validator must recognize the complete unsupported families
 before engine compilation. It must return `UnsupportedRegexAtom` naming the
 first offending atom even when the underlying engine would accept that
 spelling with a different meaning. A substring blacklist is insufficient.
+`\b{start}`, `\b{end}`, `\b{start-half}`, `\b{end-half}`, and other
+`\b{...}` or `\B{...}` variants remain unsupported. `\<` and `\>` are the
+only supported directional word-boundary spellings; neither has a negated
+form. Inside a bracketed class, `[\<]` and `[\>]` are malformed patterns and
+return `InvalidRegex`.
+
+The Unicode regex word class is the union of `Alphabetic`, `Mark`,
+`Decimal_Number` (`Nd`), `Connector_Punctuation` (`Pc`), and `Join_Control`.
+`\<` holds when the following scalar belongs to this class and the preceding
+scalar does not; `\>` holds when the preceding scalar belongs and the
+following scalar does not. Outside the logical document is non-word context.
+Both assertions are zero-width. Combining marks and join controls participate
+in this scalar classification; the grapheme-safety rules below still govern
+navigation and edits. These semantics do not claim equivalence to Vim's
+keyword or script-specific classification.
+
+Viem's keyword extraction for `*`, `#`, `C-r C-w`, and manual completion is a
+separate, grapheme-based policy: a grapheme belongs when its first scalar is
+alphanumeric or `_`. For example, superscript two (`²`) belongs to that keyword
+class but not the regex word class, while undertie (U+203F) belongs to the regex
+word class but not the keyword class. `*` and `#`, including operator-pending
+forms, retain their generated `\b{escaped keyword}\b` as the last-search
+pattern, available through the `/` register. They MUST NOT be rewritten as
+`\<{escaped keyword}\>`: keyword extraction does not guarantee regex-word
+scalars at both edges, so these patterns are not universally equivalent. `g*`
+and `g#` retain the escaped literal pattern without boundary assertions.
 
 #### Matching domain and hard lines
 
@@ -2860,7 +2892,7 @@ legal logical boundary and must always make progress.
 
 #### Substitute replacement language
 
-The pattern and replacement are different languages. Viem Regex v1 defines
+The pattern and replacement are different languages. Viem Regex v2 defines
 this replacement syntax for `:substitute`:
 
 - ordinary Unicode text inserts itself;
@@ -2880,7 +2912,7 @@ reference to a capture not declared by the compiled pattern is an error.
 
 Dollar-form references such as `$1`, Vim's previous-replacement `~`, case
 conversion escapes, expression replacement with `\=`, literal control-key
-spellings, and every unlisted backslash escape are unsupported in version 1.
+spellings, and every unlisted backslash escape are unsupported in version 2.
 They return `UnsupportedReplacementAtom`; an unknown escape never silently
 drops its backslash.
 
@@ -2888,15 +2920,18 @@ drops its backslash.
 
 Matching must be linear in the searched input for a fixed compiled pattern,
 with an `O(m * n)` worst-case bound where `m` is compiled-pattern size and `n`
-is searched-input length; no version-1 feature may add input-dependent
+is searched-input length; no version-2 feature may add input-dependent
 backtracking. The core enforces configurable pattern-length,
 compiled-program-size, capture-count, and search-work limits. Resource-limit
 failure and user cancellation are non-destructive structured results.
 
-Compiled patterns may be cached by exact pattern text, dialect version, and
-effective compile flags. Match results, incremental-search state, and search
-decorations are bound to an exact projection snapshot and cannot be reused
-after a relevant edit without a validated change map or rescan. Searching may
+Every compiled pattern carries the explicit dialect version. A compiled-pattern
+cache key includes that version, exact pattern text, effective compile flags,
+and resource limits. The current identity uses version 2.
+Any future persisted pattern metadata must also identify its dialect version.
+Match results, incremental-search state, and search decorations are bound to an
+exact projection snapshot and cannot be reused after a relevant edit without a
+validated change map or rescan. Searching may
 scan the requested document range, but an ordinary edit must not synchronously
 rescan the whole document merely because match highlighting is enabled.
 
@@ -3858,7 +3893,7 @@ Search switches `ignorecase` (`ic`), `smartcase` (`sc`), and `wrapscan` (`ws`)
 are buffer-shared Boolean policy, defaulting to false, false, and true. Their
 `:set` and `:setlocal` forms support enable/disable, toggle, query, and reset.
 A compound option command validates atomically before publishing any changes.
-They follow Regex v1 case rules and affect searches, repeats, and substitute;
+They follow Regex v2 case rules and affect searches, repeats, and substitute;
 `wrapscan` controls navigation wrapping. They do not change persisted source.
 
 The numeric `textwidth`/`tw` option, its buffer scope, query and inheritance
@@ -3873,7 +3908,7 @@ document as a substitute for the source.
 
 `:[range]sor[t][!]` defaults to all hard lines. It supports `i` (Unicode
 case-insensitive comparison), `u` (remove duplicate full lines), mutually
-exclusive `n`/`x`/`o`/`b` numeric keys, and an optional Regex v1 pattern. The
+exclusive `n`/`x`/`o`/`b` numeric keys, and an optional Regex v2 pattern. The
 pattern skips through its match by default; `r` selects the match itself as the
 key, and `//` reuses the last search without changing search history. Pattern
 matching uses `ignorecase` but not `smartcase`. Missing numeric keys sort first;
@@ -4770,7 +4805,7 @@ The Code syntax-provider system, nine bundled Tree-sitter language families,
 versioned query compatibility, and supported Vim syntax-loading/detection
 profiles specified above are required exceptions. They do not imply general
 Vimscript/Vim9script execution, Neovim Lua plugins, arbitrary runtime
-autocommands, syntax-driven folding/concealment, or a change to Viem Regex v1.
+autocommands, syntax-driven folding/concealment, or a change to Viem Regex v2.
 
 ## Core architecture
 

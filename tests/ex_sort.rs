@@ -143,6 +143,14 @@ fn pattern_keys_skip_or_match_and_missing_patterns_stay_separate() {
     );
 }
 #[test]
+fn directional_word_assertions_select_complete_sort_keys() {
+    restored(
+        Document::new("z beta\na alpha\nb alphabet\nx beta_name"),
+        r":sort r /\<(alpha|beta)\>/",
+        "b alphabet\nx beta_name\na alpha\nz beta",
+    );
+}
+#[test]
 fn pattern_uses_ignorecase_without_smartcase_or_search_history_mutation() {
     let mut document = Document::new("X2\nx1\nx3");
     let mut context = ExExecutionContext::default();
