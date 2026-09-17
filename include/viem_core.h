@@ -181,6 +181,8 @@ typedef struct ViemFormattedPointInfoV1 {
   uint64_t utf8_offset;
   uint64_t utf16_offset;
   uint64_t hard_line_index;
+  /* For READ, hard_line_start is the one-based line after which to insert;
+     zero inserts before the first line. It is not a selected range. */
   uint64_t hard_line_start;
   uint64_t hard_line_end;
   uint64_t grapheme_column;
@@ -303,6 +305,10 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_EX_FRONTEND_WINDOW 22u
 #define VIEM_EX_FRONTEND_NEW_PANE 23u
 #define VIEM_EX_FRONTEND_ARGUMENT 24u
+#define VIEM_EX_FRONTEND_READ 25u
+#define VIEM_EX_FRONTEND_SOURCE 26u
+#define VIEM_EX_FRONTEND_FILE 27u
+#define VIEM_EX_FRONTEND_ONLY 28u
 #define VIEM_ARGUMENT_NEXT 1u
 #define VIEM_ARGUMENT_PREVIOUS 2u
 #define VIEM_ARGUMENT_FIRST 3u
@@ -2082,6 +2088,13 @@ ViemStatus viem_core_view_copy_completion_utf8(
  */
 ViemStatus viem_core_view_poll_completion(
     ViemCoreHandle core, ViemViewId view, uint8_t *out_changed);
+/* Current read-only substitute confirmation prompt. Null/zero count queries
+ * use the ordinary UTF-8 two-pass contract; empty means no pending prompt.
+ * Reply through the normal key API with y/n/a/q/l or Escape. */
+ViemStatus viem_core_view_copy_substitute_confirmation(
+    ViemCoreHandle core, ViemViewId view, uint8_t *output,
+    uint64_t capacity, uint64_t *out_length);
+
 /*
  * Advance one bounded slice of search highlighting/incremental preview before
  * reading layout and paint. Source and submitted search state are unchanged.
@@ -2532,6 +2545,19 @@ ViemStatus viem_core_copy_syntax_diagnostics(ViemCoreHandle core, uint8_t *outpu
 /* Read-only two-pass UTF-8 JSON array of unique sorted names in accepted syntax
    runs, including undefined names. Does not parse, publish, or scan source. */
 ViemStatus viem_core_copy_syntax_style_names(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
+
+/* Host-loaded Ex continuations. Source files are UTF-8, at most 1 MiB,
+   with at most 10,000 executed lines per invocation and 16 nested files. */
+#define VIEM_SOURCE_MAX_BYTES 1048576u
+#define VIEM_SOURCE_MAX_COMMANDS 10000u
+#define VIEM_SOURCE_MAX_DEPTH 16u
+ViemStatus viem_core_view_read_file(ViemCoreHandle core, ViemViewId view,
+    uint64_t document_id, uint64_t revision, uint64_t after_line,
+    const uint8_t *bytes, uint64_t length, ViemCoreOutcomeV1 *out_outcome);
+ViemStatus viem_core_view_source_line(ViemCoreHandle core, ViemViewId view,
+    uint32_t depth, const uint8_t *text, uint64_t length,
+    const ViemCommandTurnContextV2 *context, ViemCoreOutcomeV1 *out_outcome,
+    ViemEffectBatchHandle *out_effects);
 
 #ifdef __cplusplus
 }

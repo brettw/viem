@@ -20,11 +20,15 @@ mod external_change;
 pub use external_change::*;
 mod completion;
 pub use completion::*;
+mod substitute_confirmation;
+pub use substitute_confirmation::*;
 mod search;
 pub use search::*;
 mod whitespace;
 pub use whitespace::*;
 mod startup;
+mod ex_files;
+pub use ex_files::*;
 pub use startup::*;
 
 use crate::command::clipboard::{
@@ -452,6 +456,10 @@ pub const VIEM_EX_FRONTEND_CHECKTIME: u32 = 21;
 pub const VIEM_EX_FRONTEND_WINDOW: u32 = 22;
 pub const VIEM_EX_FRONTEND_NEW_PANE: u32 = 23;
 pub const VIEM_EX_FRONTEND_ARGUMENT: u32 = 24;
+pub const VIEM_EX_FRONTEND_READ: u32 = 25;
+pub const VIEM_EX_FRONTEND_SOURCE: u32 = 26;
+pub const VIEM_EX_FRONTEND_FILE: u32 = 27;
+pub const VIEM_EX_FRONTEND_ONLY: u32 = 28;
 
 pub const VIEM_WINDOW_FOCUS_DOWN: u32 = 1;
 pub const VIEM_WINDOW_FOCUS_UP: u32 = 2;
@@ -3622,6 +3630,24 @@ fn export_ex_frontend_request(
             };
         }
         ExFrontendRequest::File(request) => match request {
+            ExFileRequest::Only { force } => {
+                output.kind = VIEM_EX_FRONTEND_ONLY;
+                output.flags |= u32::from(*force) * VIEM_EX_FRONTEND_FORCE;
+            }
+            ExFileRequest::Read { path, after } => {
+                output.kind = VIEM_EX_FRONTEND_READ;
+                output.hard_line_start = checked_export_count(*after)?;
+                set_ex_path(&mut output, strings, path.as_deref())?;
+            }
+            ExFileRequest::Source { path } => {
+                output.kind = VIEM_EX_FRONTEND_SOURCE;
+                set_ex_path(&mut output, strings, Some(path))?;
+            }
+            ExFileRequest::File { path, truncate } => {
+                output.kind = VIEM_EX_FRONTEND_FILE;
+                output.flags |= u32::from(*truncate) * VIEM_EX_FRONTEND_FORCE;
+                set_ex_path(&mut output, strings, path.as_deref())?;
+            }
             ExFileRequest::NavigateArgument { target, force, write_first, path, line } => {
                 use crate::command::argument_list::ExArgumentTarget;
                 output.kind = VIEM_EX_FRONTEND_ARGUMENT;

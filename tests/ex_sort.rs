@@ -528,9 +528,9 @@ fn visual_character_line_and_block_enter_checked_hard_line_ex_ranges() {
     use viem_core::layout::MockTextMeasurementProvider;
     use viem_core::{Core, CoreEvent};
     for (prefix, block, expected_range, expected) in [
-        ("v2j", false, "1,3", "a\nb\nz\noutside"),
-        ("Vj", false, "1,2", "a\nz\nb\noutside"),
-        ("j", true, "1,2", "a\nz\nb\noutside"),
+        ("v2j", false, "'<,'>", "a\nb\nz\noutside"),
+        ("Vj", false, "'<,'>", "a\nz\nb\noutside"),
+        ("j", true, "'<,'>", "a\nz\nb\noutside"),
     ] {
         let mut core = Core::new(Document::new("z\na\nb\noutside"));
         let view = core.add_view(MockTextMeasurementProvider::new(), 250., 200.);
@@ -579,7 +579,7 @@ fn visual_ex_escape_remembers_selection_and_foreign_edit_makes_prefill_stale() {
     }
     assert_eq!(
         core.command_state(first).unwrap().command_line(),
-        Some("1,2")
+        Some("'<,'>")
     );
     for key in "iX".chars().map(Key::Char).chain([Key::Escape]) {
         core.handle(second, CoreEvent::Input(InputEvent::Key(key)))

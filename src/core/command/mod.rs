@@ -10,7 +10,12 @@ pub mod clipboard;
 pub mod composition;
 pub mod completion;
 pub mod ex;
+mod ex_addresses;
+mod ex_global;
+mod ex_history;
+pub mod ex_files;
 pub mod ex_execute;
+mod substitute_confirmation;
 pub mod insert_motion;
 pub mod layout_motion;
 mod reflow;
@@ -1104,7 +1109,7 @@ struct OperatorTarget {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ExNormalTarget {
     pub(crate) anchor: TextAnchor,
-    pub(crate) block_id: u64,
+    pub(crate) hard_line_id: u64,
 }
 
 /// A compound command which the serial core coordinator must replay one input
@@ -1127,9 +1132,26 @@ pub(crate) struct MacroReplayPlan {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ExNormalReplayPlan {
+    pub(crate) global: bool,
+    pub(crate) global_map: Option<Box<PositionMap>>,
     pub(crate) literal: bool,
     pub(crate) events: Vec<InputEvent>,
     pub(crate) targets: Vec<Option<ExNormalTarget>>,
+}
+
+impl ExNormalReplayPlan {
+    pub(crate) fn bound_target(&self, index: usize) -> Result<Option<ExNormalTarget>, PositionError> {
+        let Some(mut target) = self.targets[index] else { return Ok(None); };
+        if let Some(map) = self.global_map.as_ref() {
+            target.anchor = match map.map_text_anchor(target.anchor)? {
+                MappingOutcome::Exact(anchor) | MappingOutcome::Moved(anchor)
+                | MappingOutcome::RecoveredFromProvenance(anchor) => anchor,
+                MappingOutcome::CollapsedByDeletion(_) | MappingOutcome::Ambiguous(_)
+                | MappingOutcome::Unresolvable(_) => return Ok(None),
+            };
+        }
+        Ok(Some(target))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1271,6 +1293,7 @@ pub struct CommandInterpreter {
     pending: Pending,
     registers: Registers,
     command_line_state: Option<CommandLineState>,
+    substitute_confirmation: Option<Box<substitute_confirmation::SubstituteConfirmation>>,
     search_history: Vec<String>,
     ex_history: Vec<String>,
     last_command_line: Option<String>,
@@ -1300,6 +1323,8 @@ pub struct CommandInterpreter {
     recording: Option<(char, Vec<InputEvent>)>,
     last_macro: Option<char>,
     compound_replay_depth: usize,
+    pub(crate) global_replay_depth: usize,
+    pub(crate) source_replay_depth: u32,
     macro_recording_suppressed: bool,
     /// Core-facing dispatch asks compound commands to emit a replay plan.
     /// Direct `CommandInterpreter` users retain the legacy headless executor
@@ -1392,6 +1417,7 @@ impl CommandInterpreter {
             pending: Pending::None,
             registers: Registers::default(),
             command_line_state: None,
+            substitute_confirmation: None,
             search_history: Vec::new(),
             ex_history: Vec::new(),
             last_command_line: None,
@@ -1421,6 +1447,8 @@ impl CommandInterpreter {
             recording: None,
             last_macro: None,
             compound_replay_depth: 0,
+            global_replay_depth: 0,
+            source_replay_depth: 0,
             macro_recording_suppressed: false,
             plan_compound_replay: false,
             pending_replay: None,
@@ -1445,7 +1473,7 @@ impl CommandInterpreter {
             marks: self
                 .marks
                 .iter()
-                .filter(|(name, _)| name.is_ascii_lowercase())
+                .filter(|(name, _)| name.is_ascii_lowercase() || matches!(**name, '<' | '>'))
                 .map(|(name, offset)| (*name, *offset))
                 .collect(),
             search_history: self.search_history.clone(),
@@ -1981,6 +2009,14 @@ impl CommandInterpreter {
             }
         }
 
+        if matches!(before.mode, Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock)
+            && self.last_visual != before.last_visual {
+            // A newly remembered selection belongs to the old snapshot until
+            // the mapping above completes. Publish its marks from that mapped
+            // memory, never stale numeric offsets from the consumed selection.
+            next.update_visual_marks();
+        }
+
         if self.mode == Mode::VisualBlock && self.active_visual_block == before.active_visual_block
         {
             match (anchors.active_visual_block, self.active_visual_block) {
@@ -2079,7 +2115,7 @@ impl CommandInterpreter {
         event: &InputEvent,
         clipboard: Option<&ClipboardCommandContext>,
     ) -> bool {
-        if self.mapping_applies(event) { return false; }
+        if self.substitute_confirmation.is_some() || self.mapping_applies(event) { return false; }
         let normalized = match event {
             InputEvent::Key(key) => Some(InputEvent::Key(self.normalized_input_key(*key))),
             InputEvent::Text(_) => None,
@@ -2277,7 +2313,7 @@ impl CommandInterpreter {
                     Pending::VisualTextObject { .. } => {
                         !matches!(*key, Key::Char(key) if TextObjectKind::from_vim_key(key).is_some())
                     }
-                    Pending::JumpMark { .. } => !matches!(*key, Key::Char('a'..='z')),
+                    Pending::JumpMark { .. } => !matches!(*key, Key::Char('a'..='z' | '<' | '>')),
                     _ => false,
                 }
             }
@@ -3014,7 +3050,7 @@ impl CommandInterpreter {
             });
         }
 
-        if self.mapping_applies(&event) {
+        if self.substitute_confirmation.is_some() || self.mapping_applies(&event) {
             return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
         }
         let event = self.normalized_input_event(event);
@@ -3879,6 +3915,9 @@ impl CommandInterpreter {
         }
         let event = self.normalized_input_event(event);
         self.record_event(&event);
+        if self.substitute_confirmation.is_some() {
+            return Ok(self.handle_substitute_confirmation(document, event));
+        }
         // The layout is authoritative for the current view's wrap setting.
         // Keeping this synchronized makes `:set wrap?` accurate even when the
         // host changed wrapping outside the Ex command line.
@@ -3984,6 +4023,7 @@ impl CommandInterpreter {
         }
         self.reopened_group_after_insert_normal_once = false;
         let stops_recording = self.recording.is_some()
+            && self.substitute_confirmation.is_none()
             && self.mode == Mode::Normal
             && self.pending == Pending::None
             && *event == InputEvent::Key(Key::Char('q'));
@@ -3999,6 +4039,9 @@ impl CommandInterpreter {
         document: &mut Document,
         event: InputEvent,
     ) -> Result<CommandOutput, DocumentError> {
+        if self.substitute_confirmation.is_some() {
+            return Ok(self.handle_substitute_confirmation(document, event));
+        }
         match event {
             InputEvent::Text(text) => self.handle_text(document, text),
             InputEvent::Key(key) => self.handle_key(document, key),
@@ -4414,8 +4457,8 @@ impl CommandInterpreter {
             Pending::JumpMark { linewise } => {
                 self.pending = Pending::None;
                 return Some(match key {
-                    Key::Char(name @ 'a'..='z') => self.jump_to_mark(document, name, linewise),
-                    _ => CommandOutput::unsupported("jump expects a-z"),
+                    Key::Char(name @ ('a'..='z' | '<' | '>')) => self.jump_to_mark(document, name, linewise),
+                    _ => CommandOutput::unsupported("jump expects a-z, < or >"),
                 });
             }
             Pending::MacroRecord => {
@@ -4724,8 +4767,8 @@ impl CommandInterpreter {
             Pending::JumpMark { linewise } => {
                 self.pending = Pending::None;
                 return Some(match key {
-                    Key::Char(name @ 'a'..='z') => self.jump_to_mark(document, name, linewise),
-                    _ => CommandOutput::unsupported("jump expects a-z"),
+                    Key::Char(name @ ('a'..='z' | '<' | '>')) => self.jump_to_mark(document, name, linewise),
+                    _ => CommandOutput::unsupported("jump expects a-z, < or >"),
                 });
             }
             Pending::None => {}
@@ -5635,7 +5678,7 @@ impl CommandInterpreter {
         }
         if let Pending::JumpMark { linewise } = self.pending {
             return match key {
-                Key::Char(name @ 'a'..='z') => Ok(self.apply_visual_block_logical_motion(
+                Key::Char(name @ ('a'..='z' | '<' | '>')) => Ok(self.apply_visual_block_logical_motion(
                     document,
                     context,
                     |commands, document| {
@@ -5645,7 +5688,7 @@ impl CommandInterpreter {
                 )),
                 _ => {
                     self.pending = Pending::None;
-                    Ok(CommandOutput::unsupported("jump expects a-z"))
+                    Ok(CommandOutput::unsupported("jump expects a-z, < or >"))
                 }
             };
         }
@@ -7496,6 +7539,8 @@ impl CommandInterpreter {
 
     fn remember_visual_block(&mut self) {
         if let Some(memory) = self.visual_block_memory() {
+            self.marks.insert('<', memory.anchor.min(memory.active));
+            self.marks.insert('>', memory.anchor.max(memory.active));
             self.last_visual = Some(memory);
         }
     }
@@ -7677,6 +7722,7 @@ impl CommandInterpreter {
             return output;
         }
         self.last_visual = Some(current);
+        self.update_visual_marks();
         output
     }
 
@@ -8319,10 +8365,10 @@ impl CommandInterpreter {
             Pending::OperatorMark { operator, linewise } => {
                 self.pending = Pending::None;
                 return match key {
-                    Key::Char(name @ 'a'..='z') => {
+                    Key::Char(name @ ('a'..='z' | '<' | '>')) => {
                         self.execute_operator_mark(document, operator, name, linewise)
                     }
-                    _ => Ok(CommandOutput::unsupported("mark motion expects a-z")),
+                    _ => Ok(CommandOutput::unsupported("mark motion expects a-z, < or >")),
                 };
             }
             Pending::TextObject { operator, scope } => {
@@ -9551,6 +9597,7 @@ impl CommandInterpreter {
             }
         }
         self.last_visual = remembered;
+        self.update_visual_marks();
         self.visual_anchor = None;
         self.visual_to_line_end = false;
         if operator != Operator::Change {
@@ -9581,6 +9628,7 @@ impl CommandInterpreter {
                 ));
             }
         }
+        self.update_visual_marks();
         if output.document_changed && !self.replaying {
             self.last_repeat = Some(RepeatAction::VisualReplace {
                 shape,
@@ -9746,6 +9794,7 @@ impl CommandInterpreter {
                 mapped_start..mapped_start.saturating_add(inserted_len),
             )
         });
+        self.update_visual_marks();
         if !preserve_unnamed {
             self.delete_register(None, replaced, deletion_class);
         }
@@ -11902,6 +11951,9 @@ impl CommandInterpreter {
     }
 
     fn history(&mut self, document: &mut Document, redo: bool, count: usize) -> CommandOutput {
+        if self.global_replay_depth > 0 {
+            return ex_global::ex_error(ExExecuteError::UnsupportedGlobalCommand);
+        }
         if self.insert_session.is_some() {
             let _ = self.finish_insert(document);
         }
@@ -12106,8 +12158,17 @@ impl CommandInterpreter {
         self.clear_pending();
     }
 
+    fn update_visual_marks(&mut self) {
+        if let Some(memory) = self.last_visual {
+            self.marks.insert('<', memory.anchor.min(memory.active));
+            self.marks.insert('>', memory.anchor.max(memory.active));
+        }
+    }
+
     fn remember_visual(&mut self) {
         if let Some(anchor) = self.visual_anchor {
+            self.marks.insert('<', anchor.min(self.cursor));
+            self.marks.insert('>', anchor.max(self.cursor));
             self.last_visual = Some(VisualMemory {
                 mode: self.mode,
                 anchor,
@@ -12147,10 +12208,10 @@ impl CommandInterpreter {
         } else {
             (self.visual_anchor.unwrap_or(self.cursor), self.cursor)
         };
-        let Some(first) = document.hard_line_at_offset(anchor.min(active)) else {
+        let Some(_) = document.hard_line_at_offset(anchor.min(active)) else {
             return CommandOutput::unsupported("Visual selection has no starting hard line");
         };
-        let Some(last) = document.hard_line_at_offset(anchor.max(active)) else {
+        let Some(_) = document.hard_line_at_offset(anchor.max(active)) else {
             return CommandOutput::unsupported("Visual selection has no ending hard line");
         };
         // Ex addresses complete logical hard lines, including when the source
@@ -12163,7 +12224,7 @@ impl CommandInterpreter {
         }
         self.enter_command_line(CommandLineKind::Ex);
         let state = self.command_line_state.as_mut().unwrap();
-        state.buffer.set(format!("{},{}", first + 1, last + 1));
+        state.buffer.set("'<,'>".into());
         state.visual_range_revision = Some(document.revision());
         CommandOutput {
             mode_changed: true,
@@ -12270,9 +12331,9 @@ impl CommandInterpreter {
                         ..CommandOutput::complete()
                     });
                 }
-                self.last_command_line = Some(command.clone());
+                if self.global_replay_depth == 0 { self.last_command_line = Some(command.clone()); }
                 let output = self.execute_ex_command(document, &command);
-                if !matches!(
+                if self.global_replay_depth == 0 && !matches!(
                     output.status,
                     CommandStatus::Error(_) | CommandStatus::ExError(_)
                 ) {
@@ -12304,7 +12365,7 @@ impl CommandInterpreter {
                 Err(message) => CommandOutput { status: CommandStatus::Error(message), ..CommandOutput::complete() },
             };
         }
-        let command = match parse_ex(input) {
+        let mut command = match parse_ex(input) {
             Ok(command) => command,
             Err(error) => {
                 return CommandOutput {
@@ -12314,6 +12375,25 @@ impl CommandInterpreter {
                 };
             }
         };
+        if let ExAction::DeleteMarks { names } = &command.action {
+            if (command.bang && !names.is_empty()) || (!command.bang && names.is_empty()) {
+                return CommandOutput { status: CommandStatus::ExError(ExCommandError::Execute(ExExecuteError::UnsupportedCommand("Use :delmarks {marks} or :delmarks!".into()))), ..CommandOutput::complete() };
+            }
+            if command.bang { self.marks.retain(|name, _| !name.is_ascii_lowercase()); }
+            else { for name in names { self.marks.remove(name); } }
+            return CommandOutput::complete();
+        }
+        if self.global_replay_depth > 0 && !ex_global::allowed(&command.action) {
+            return ex_global::ex_error(ExExecuteError::UnsupportedGlobalCommand);
+        }
+        let address_search = match self.bind_ex_addresses(document, &mut command) {
+            Ok(search) => search,
+            Err(error) => return ex_global::ex_error(error),
+        };
+        if matches!(command.action, ExAction::Global { .. }) {
+            if let Some(search) = address_search { self.last_search = Some(search); }
+            return self.execute_ex_global(document, &command);
+        }
         if let ExAction::Delete(arguments) | ExAction::Yank(arguments) = &command.action {
             if let Err(mut output) = self.require_register_write(arguments.register) {
                 output.mode_changed = true;
@@ -12370,9 +12450,7 @@ impl CommandInterpreter {
             search_options: self.search_options,
             text_width: self.text_width,
             indentation: self.indentation,
-            last_search_pattern: self
-                .last_search
-                .as_ref()
+            last_search_pattern: address_search.as_ref().or(self.last_search.as_ref())
                 .map(|(_, pattern)| pattern.clone()),
             visible_whitespace: self.visible_whitespace.clone(),
         };
@@ -12384,6 +12462,9 @@ impl CommandInterpreter {
             &register_reader,
         ) {
             Ok(plan) => plan,
+            Err(ExExecuteError::NeedsPolicy(ex_execute::ExPolicyRequest::ConfirmSubstitution(preview))) => {
+                return self.begin_substitute_confirmation(document, *preview);
+            }
             Err(error) => {
                 return CommandOutput {
                     status: CommandStatus::ExError(ExCommandError::Execute(error)),
@@ -12402,6 +12483,7 @@ impl CommandInterpreter {
                 };
             }
         };
+        if let Some(search) = address_search { self.last_search = Some(search); self.search_highlight_suppressed = false; }
         if outcome.suppress_search_highlight { self.search_highlight_suppressed = true; }
         if matches!(
             command.action,
@@ -12440,6 +12522,8 @@ impl CommandInterpreter {
                     };
                 };
                 self.pending_replay = Some(ReplayPlan::ExNormal(ExNormalReplayPlan {
+                    global: false,
+                    global_map: None,
                     literal: request.literal,
                     events: request
                         .commands
@@ -12619,7 +12703,7 @@ impl CommandInterpreter {
         (request.range.start..=request.range.end)
             .map(|line| {
                 let start = document.line_start(line)?;
-                let block_id = block_id_at_hard_line_start(document, start)?;
+                let hard_line_id = hard_line_id_at_start(document, start)?;
                 let point = document.text_point(start).ok()?;
                 Some(Some(ExNormalTarget {
                     anchor: document
@@ -12630,7 +12714,7 @@ impl CommandInterpreter {
                             DeletionRecovery::PreferFollowingThenPreceding,
                         )
                         .ok()?,
-                    block_id,
+                    hard_line_id,
                 }))
             })
             .collect()
@@ -13235,6 +13319,7 @@ impl CommandInterpreter {
     }
 
     fn record_jump(&mut self, document: &Document, from: usize, to: usize) {
+        if self.global_replay_depth > 0 { return; }
         let lines = document.hard_line_snapshot();
         // `jumps[jump_index]` is the live location. A new jump after CTRL-O
         // discards the newer branch, and an ordinary motion since the last
@@ -13471,6 +13556,7 @@ impl CommandInterpreter {
             previous.active.min(document.projection().text_tree().byte_len()),
         );
         self.last_visual = Some(current);
+        self.update_visual_marks();
         self.boundary_affinity = BoundaryAffinity::Downstream;
         self.visual_position = None;
         self.desired_x = None;
@@ -15344,7 +15430,7 @@ fn map_visual_block_anchor(
     })
 }
 
-fn block_id_at_hard_line_start(document: &Document, start: usize) -> Option<u64> {
+fn hard_line_id_at_start(document: &Document, start: usize) -> Option<u64> {
     let line = document.hard_line_at_offset(start)?;
     document.projection().hard_line_id(line)
 }
@@ -15353,16 +15439,9 @@ pub(crate) fn ex_normal_target_position(
     document: &Document,
     target: ExNormalTarget,
 ) -> Option<usize> {
-    let block = document
-        .projection()
-        .blocks()
-        .iter()
-        .find(|block| block.id == target.block_id)?;
-    let offset = target.anchor.offset();
-    if offset < block.range.start || offset > block.range.end {
-        return None;
-    }
-    Some(block.range.start)
+    let line = document.hard_line_at_offset(target.anchor.offset())?;
+    (document.projection().hard_line_id(line) == Some(target.hard_line_id))
+        .then(|| document.line_start(line)).flatten()
 }
 
 pub(crate) fn rebase_ex_normal_targets(
@@ -15385,12 +15464,9 @@ pub(crate) fn rebase_ex_normal_targets(
                 continue;
             }
         };
-        if !document
-            .projection()
-            .blocks()
-            .iter()
-            .any(|block| block.id == target.block_id)
-        {
+        let retained = document.hard_line_at_offset(mapped.offset())
+            .and_then(|line| document.projection().hard_line_id(line)) == Some(target.hard_line_id);
+        if !retained {
             *slot = None;
             continue;
         }

@@ -20,6 +20,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     public weak var documentHostEffectHandler: (any EVDocumentHostEffectHandling)?
 
     let backend: EVCoreDocumentBackend
+    private var sourcedLineRequests: [EVDocumentHostRequest]?
     private(set) var session: EVCoreViewSession?
     var makeCoreViewSession: @MainActor (EVCoreDocumentBackend, CGSize) throws -> EVCoreViewSession = { document, size in
         try EVCoreViewSession(document: document, width: size.width, height: size.height)
@@ -31,6 +32,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var layoutSnapshot: EVLayoutExport?
     var layoutPaint: EVLayoutPaintExport?
     private(set) var commandLine: EVCommandLineExport?
+    private(set) var substituteConfirmationPrompt: String?
     private(set) var completion: EVCompletionExport?
     private var completionTimer: Timer?
     private var searchTimer: Timer?
@@ -214,6 +216,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         layoutSnapshot = nil
         layoutPaint = nil
         commandLine = nil
+        substituteConfirmationPrompt = nil
         visualSelection = nil
         viewportState = ViemViewportStateV1()
         documentState = ViemDocumentStateV1()
@@ -309,6 +312,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             }
 
             let nextCommandLine = try session.commandLineExport()
+            let nextSubstituteConfirmation = try session.substituteConfirmationPrompt()
             guard nextCommandLine.info.identity.document_id
                     == nextFormattedSnapshot.info.identity.document_id,
                   nextCommandLine.info.identity.document_revision
@@ -354,6 +358,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             layoutTextSlices = nextLayoutTextSlices
             compositionTextSlices = nextCompositionTextSlices
             commandLine = nextCommandLine
+            substituteConfirmationPrompt = nextSubstituteConfirmation
             if nextCommandLine.prompt != nil { clearCommandOutput() }
             visualSelection = nextVisualSelection
             presentationRefreshCount &+= 1
@@ -1337,7 +1342,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         let column = point?.column ?? 1
         statusBarState = EVStatusBarState(
             mode: modeLabel(viewPresentation.mode),
-            message: lastErrorMessage,
+            message: substituteConfirmationPrompt ?? lastErrorMessage,
             location: "Ln \(line), Col \(column)",
             format: backend.formatLabel,
             lineMode: (try? session?.lineMode()) ?? .visual,
@@ -1352,6 +1357,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 )
             },
             commandOutput: commandOutput,
+            requiresInteraction: substituteConfirmationPrompt != nil,
             isActive: editorView.isCaretActive
         )
         statusBarStateDidChange?(statusBarState)
@@ -1535,6 +1541,10 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             }
             documentHostEffectHandler.perform(windowRequests: windowRequests, from: self)
         }
+        if sourcedLineRequests != nil {
+            sourcedLineRequests?.append(contentsOf: documentRequests)
+            return
+        }
         guard !documentRequests.isEmpty else { return }
         guard let documentHostEffectHandler else {
             throw EVCoreFrontendError.unsupportedHostEffect
@@ -1553,6 +1563,25 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         }
     }
 
+    public func insertFileContents(_ bytes: Data, after: UInt64, expected: EVDocumentPersistenceState) throws {
+        guard let session else { throw EVCoreFrontendError.unsupportedHostEffect }
+        _ = try session.readFile(bytes, after: after, expected: expected)
+        refreshPresentation()
+    }
+
+    public func executeSourcedLine(_ text: String, depth: UInt32) throws -> [EVDocumentHostRequest] {
+        guard let session, sourcedLineRequests == nil else { throw EVCoreFrontendError.unsupportedHostEffect }
+        sourcedLineRequests = []
+        defer { sourcedLineRequests = nil }
+        let outcome = try session.sourceLine(text, depth: depth)
+        refreshPresentation()
+        guard outcome.command_status == UInt32(VIEM_COMMAND_STATUS_COMPLETE)
+            || outcome.command_status == UInt32(VIEM_COMMAND_STATUS_NONE) else {
+            throw EVCoreFrontendError.command(operation: "Execute sourced command", status: outcome.command_status)
+        }
+        return sourcedLineRequests ?? []
+    }
+
     private func documentHostRequest(
         from effect: EVExHostEffect
     ) throws -> EVDocumentHostRequest? {
@@ -1562,6 +1591,10 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             : nil
         let kind: EVDocumentHostRequest.Kind
         switch effect.kind {
+        case UInt32(VIEM_EX_FRONTEND_READ): kind = .read
+        case UInt32(VIEM_EX_FRONTEND_SOURCE): kind = .source
+        case UInt32(VIEM_EX_FRONTEND_FILE): kind = .file
+        case UInt32(VIEM_EX_FRONTEND_ONLY): kind = .only
         case UInt32(VIEM_EX_FRONTEND_SPLIT): kind = .split
         case UInt32(VIEM_EX_FRONTEND_NEW_PANE): kind = .newPane
         case UInt32(VIEM_EX_FRONTEND_ARGUMENT): kind = .navigateArgument
@@ -1610,7 +1643,8 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             path: path,
             hardLineRange: effect.hardLineRange,
             initialHeightRows: initialHeightRows,
-            argumentNavigation: effect.argumentNavigation
+            argumentNavigation: effect.argumentNavigation,
+            readAfterLine: effect.readAfterLine
         )
     }
 
@@ -1640,7 +1674,7 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             let listed = effect.flags & UInt32(VIEM_EX_FRONTEND_LIST) != 0
             return effect.textLines.map { line in
                 var text = listed
-                    ? line.text.replacingOccurrences(of: "\t", with: "^I") + "$"
+                    ? visibleListText(line.text) + "$"
                     : line.text
                 if numbered { text = "\(line.hardLineIndex + 1)\t\(text)" }
                 return text
@@ -1696,6 +1730,20 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         case UInt32(VIEM_FILE_FORMAT_MAC): "mac"
         default: "unix"
         }
+    }
+
+    /// List logical line content without letting literal controls create new
+    /// output rows or affect presentation. Hard-line boundaries are added by
+    /// the caller; a literal LF remains visibly distinct as ^J.
+    private func visibleListText(_ value: String) -> String {
+        value.unicodeScalars.map { scalar in
+            switch scalar.value {
+            case 0...31: return "^" + String(UnicodeScalar(scalar.value + 64)!)
+            case 127: return "^?"
+            case 128...159: return String(format: "<%02x>", scalar.value)
+            default: return String(scalar)
+            }
+        }.joined()
     }
 
     private func visibleRegisterText(_ value: String) -> String {

@@ -217,7 +217,8 @@ fn input_key(event: &InputEvent) -> Option<Key> {
 
 impl CommandInterpreter {
     fn mapping_mode(&self) -> Option<u8> {
-        if self.mapping_suppressed
+        if self.substitute_confirmation.is_some()
+            || self.mapping_suppressed
             || self.literal_input_pending()
             || self.register_pending
             || self.command_line_register_pending()

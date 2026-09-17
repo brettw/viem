@@ -404,7 +404,7 @@ fn window_prompt_and_control_c_preserve_visual_selection_semantics() {
         assert_eq!(c.mode(), Mode::CommandLine);
         assert_eq!(
             c.command_line(),
-            Some(if mode_key.is_some() { "1,1" } else { "" })
+            Some(if mode_key.is_some() { "'<,'>" } else { "" })
         );
         assert_eq!(d.text(), "alpha beta\nsecond line\nthird");
     }
@@ -480,7 +480,7 @@ fn visual_block_window_prefix_precedes_block_shortcuts_and_preserves_the_rectang
     assert_eq!(core.command_state(view).unwrap().mode(), Mode::CommandLine);
     assert_eq!(
         core.command_state(view).unwrap().command_line(),
-        Some("1,2")
+        Some("'<,'>")
     );
 }
 

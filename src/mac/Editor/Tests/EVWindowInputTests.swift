@@ -116,7 +116,7 @@ final class EVWindowInputTests: XCTestCase {
         XCTAssertEqual(original.viewPresentation.cursor_utf8_offset, cursor)
         try control("w", in: original)
         type(":", in: original)
-        XCTAssertEqual(original.statusBarState.commandLine?.text, "1,2")
+        XCTAssertEqual(original.statusBarState.commandLine?.text, "'<,'>")
         XCTAssertEqual(original.viewPresentation.mode, UInt32(VIEM_MODE_COMMAND_LINE))
         XCTAssertNil(original.commandOutput)
     }

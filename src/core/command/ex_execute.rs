@@ -8,6 +8,9 @@
 //! Substitution uses the versioned portable Regex v2 language and semantic
 //! hard-line assertions. Replacement captures retain their formatted content.
 
+#[path = "ex_misc.rs"]
+mod misc;
+
 use std::fmt;
 use std::ops::Range;
 
@@ -88,6 +91,18 @@ pub struct ExExecutionState {
 }
 
 impl ExExecutionState {
+    pub(super) fn remember_global_pattern(&mut self, pattern: &str) {
+        if let Some(previous) = &mut self.last_substitute { previous.pattern = pattern.into(); }
+    }
+    pub(crate) fn requests_confirmation(&self, action: &ExAction) -> bool {
+        let flags = match action {
+            ExAction::Substitute(substitute) => &substitute.flags,
+            ExAction::RepeatSubstitute { flags, .. } => flags,
+            _ => return false,
+        };
+        effective_flags(flags, self.last_substitute.as_ref()).confirm
+    }
+
     pub fn has_previous_substitute(&self) -> bool {
         self.last_substitute.is_some()
     }
@@ -293,6 +308,10 @@ pub struct ExOptionDisplay {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExFileRequest {
+    Only { force: bool },
+    Read { path: Option<String>, after: usize },
+    Source { path: String },
+    File { path: Option<String>, truncate: bool },
     NavigateArgument {
         target: super::argument_list::ExArgumentTarget,
         force: bool,
@@ -633,6 +652,10 @@ impl std::error::Error for ExOutcomeMergeError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SubstitutePreview {
+    document_id: DocumentId,
+    revision: Revision,
+    stored: StoredSubstitute,
+    lines: HardLineRange,
     pub pattern: String,
     pub replacement: String,
     pub matches: usize,
@@ -644,9 +667,37 @@ pub struct SubstitutePreview {
     pub fragment_edits: Vec<crate::document::FragmentEdit>,
 }
 
+impl SubstitutePreview {
+    pub fn is_current(&self, document: &Document) -> bool {
+        self.document_id == document.id() && self.revision == document.revision()
+    }
+
+    /// Commit only approved matches against the original exact snapshot. Keeping
+    /// decisions separate from mutation makes the entire interaction one undo unit.
+    pub(super) fn approved_plan(self, approved: &[usize]) -> ExPlan {
+        let mut outcome = ExOutcome { substitutions: approved.len(), ..ExOutcome::default() };
+        if let Some(index) = approved.last() {
+            outcome.navigation = Some(ExNavigation::TextOffset(self.edits[*index].range.start));
+        }
+        if self.stored.flags.print || self.stored.flags.number || self.stored.flags.list {
+            outcome.frontend_requests.push(ExFrontendRequest::Info(ExInfoRequest::PrintLines {
+                range: self.lines, number: self.stored.flags.number, list: self.stored.flags.list,
+            }));
+        }
+        let mutation = if approved.is_empty() { ExMutation::None } else {
+            ExMutation::Model(ModelRequest::ApplyFragmentEdits {
+                document: self.document_id, revision: self.revision,
+                edits: approved.iter().map(|index| self.fragment_edits[*index].clone()).collect(),
+            })
+        };
+        ExPlan { document_id: self.document_id, expected_revision: self.revision,
+            mutation, outcome, next_substitute: Some(self.stored) }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExPolicyRequest {
-    ConfirmSubstitution(SubstitutePreview),
+    ConfirmSubstitution(Box<SubstitutePreview>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -670,6 +721,9 @@ pub enum ExExecuteError {
         zero_allowed: bool,
     },
     AddressOverflow,
+    UnresolvedAddress,
+    MarkNotSet(char),
+    UnsupportedGlobalCommand,
     InvertedRange {
         start: usize,
         end: usize,
@@ -692,6 +746,7 @@ pub enum ExExecuteError {
         option: String,
         value: String,
     },
+    UnsupportedCommand(String),
     UnsupportedOption(String),
     UnsupportedOptionOperation(String),
     ConflictingOptionChanges(String),
@@ -752,6 +807,9 @@ impl fmt::Display for ExExecuteError {
                 "line address {value} is outside {}..={line_count}",
                 if *zero_allowed { 0 } else { 1 }
             ),
+            Self::UnresolvedAddress => formatter.write_str("symbolic address requires the command interpreter"),
+            Self::MarkNotSet(name) => write!(formatter, "mark {name} is not set"),
+            Self::UnsupportedGlobalCommand => formatter.write_str("this command cannot run inside :global"),
             Self::AddressOverflow => formatter.write_str("line address arithmetic overflowed"),
             Self::InvertedRange { start, end } => {
                 write!(
@@ -794,6 +852,7 @@ impl fmt::Display for ExExecuteError {
             Self::InvalidOptionValue { option, value } => {
                 write!(formatter, "invalid value {value:?} for option {option}")
             }
+            Self::UnsupportedCommand(message) => formatter.write_str(message),
             Self::UnsupportedOption(option) => write!(formatter, "unsupported option {option}"),
             Self::UnsupportedOptionOperation(option) => {
                 write!(formatter, "unsupported operation for option {option}")
@@ -962,7 +1021,7 @@ pub fn resolve_range(
             end: line_count - 1,
         }),
         Some(ExRange::Single(address)) => {
-            let line = resolve_address(*address, current_line, line_count)?;
+            let line = resolve_address(address.clone(), current_line, line_count)?;
             Ok(HardLineRange {
                 start: line,
                 end: line,
@@ -973,12 +1032,12 @@ pub fn resolve_range(
             end,
             separator,
         }) => {
-            let start = resolve_address(*start, current_line, line_count)?;
+            let start = resolve_address(start.clone(), current_line, line_count)?;
             let end_current = match separator {
                 RangeSeparator::Comma => current_line,
                 RangeSeparator::Semicolon => start,
             };
-            let end = resolve_address(*end, end_current, line_count)?;
+            let end = resolve_address(end.clone(), end_current, line_count)?;
             HardLineRange::new(start, end)
         }
     }
@@ -999,7 +1058,7 @@ fn resolve_put_address(
         None => current_line
             .checked_add(1)
             .ok_or(ExExecuteError::AddressOverflow),
-        Some(ExRange::Single(address)) => resolve_destination(*address, current_line, line_count),
+        Some(ExRange::Single(address)) => resolve_destination(address.clone(), current_line, line_count),
         Some(range) => resolve_range(Some(range), current_line, line_count)?
             .end
             .checked_add(1)
@@ -1071,6 +1130,7 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
     let mut plan = ExPlan::empty(document);
 
     match &command.action {
+        ExAction::Global { .. } => return Err(ExExecuteError::UnsupportedGlobalCommand),
         ExAction::NavigateArgument { target, write_first, path, line } => push_file(
             &mut plan,
             ExFileRequest::NavigateArgument {
@@ -1189,6 +1249,16 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
             plan.stage_history_navigation(document, HistoryNavigationRequest::Redo);
             plan.outcome.navigation = Some(ExNavigation::HistoryRestoration);
         }
+        ExAction::HistoryTime { later, amount } => {
+            let target = document.history_time_target(*later, *amount);
+            if target != document.history_status().current {
+                plan.stage_history_navigation(document, HistoryNavigationRequest::SelectNode(target.node));
+                plan.outcome.navigation = Some(ExNavigation::HistoryRestoration);
+            }
+        }
+        ExAction::UndoList => plan.outcome.frontend_requests.push(
+            ExFrontendRequest::Info(ExInfoRequest::Message(super::ex_history::format_undo_list(document))),
+        ),
         ExAction::Delete(arguments) => {
             let lines = effective_counted_range(
                 document,
@@ -1269,7 +1339,7 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
                 document.line_count(),
             )?;
             let destination =
-                resolve_destination(*destination, context.current_line, document.line_count())?;
+                resolve_destination(destination.clone(), context.current_line, document.line_count())?;
             let source = lines.start..lines.end + 1;
             let cursor = transfer_cursor_offset(
                 document,
@@ -1287,7 +1357,7 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
                 document.line_count(),
             )?;
             let destination =
-                resolve_destination(*destination, context.current_line, document.line_count())?;
+                resolve_destination(destination.clone(), context.current_line, document.line_count())?;
             let source = lines.start..lines.end + 1;
             let cursor = transfer_cursor_offset(
                 document,
@@ -1362,7 +1432,7 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
             )?;
         }
         ExAction::GoToLine(address) => {
-            let line = resolve_address(*address, context.current_line, document.line_count())?;
+            let line = resolve_address(address.clone(), context.current_line, document.line_count())?;
             let hard_lines = document.hard_line_snapshot();
             plan.outcome.navigation = Some(ExNavigation::TextOffset(
                 hard_lines
@@ -1402,6 +1472,16 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
             .outcome
             .frontend_requests
             .push(ExFrontendRequest::Info(ExInfoRequest::Jumps)),
+        ExAction::Print { .. } | ExAction::Shift { .. } | ExAction::Retab { .. }
+        | ExAction::Align { .. } => misc::prepare(document, context, command, &mut plan)?,
+        ExAction::Only => push_file(&mut plan, ExFileRequest::Only { force: command.bang }),
+        ExAction::Read { path } => {
+            let after = resolve_put_address(command.range.as_ref(), context.current_line, document.line_count())?;
+            push_file(&mut plan, ExFileRequest::Read { path: path.clone(), after });
+        }
+        ExAction::Source { path } => push_file(&mut plan, ExFileRequest::Source { path: path.clone() }),
+        ExAction::File { path } => push_file(&mut plan, ExFileRequest::File { path: path.clone(), truncate: command.bang }),
+        ExAction::DeleteMarks { .. } => return Err(ExExecuteError::UnsupportedCommand("mark deletion requires the command interpreter".into())),
         ExAction::NoHighlight => plan.outcome.suppress_search_highlight = true,
         ExAction::Set(set) => prepare_set(document, context, set.scope, &set.operation, &mut plan)?,
     }
@@ -1552,7 +1632,7 @@ fn resolve_address_value(
 ) -> Result<i128, ExExecuteError> {
     validate_current_line(current_line, line_count)?;
     let base = match address.base {
-        AddressBase::Absolute(line) => i128::from(line),
+        AddressBase::Mark(_) | AddressBase::Search { .. } => return Err(ExExecuteError::UnresolvedAddress),        AddressBase::Absolute(line) => i128::from(line),
         AddressBase::Current => {
             i128::try_from(current_line + 1).map_err(|_| ExExecuteError::AddressOverflow)?
         }
@@ -1583,18 +1663,18 @@ fn effective_goto_count(
     let last = i128::try_from(line_count).map_err(|_| ExExecuteError::AddressOverflow)?;
     let value = match range {
         ExRange::WholeFile => last,
-        ExRange::Single(address) => resolve_goto_address(*address, current, last)?,
+        ExRange::Single(address) => resolve_goto_address(address.clone(), current, last)?,
         ExRange::Between {
             start,
             end,
             separator,
         } => {
-            let start = resolve_goto_address(*start, current, last)?;
+            let start = resolve_goto_address(start.clone(), current, last)?;
             let end_current = match separator {
                 RangeSeparator::Comma => current,
                 RangeSeparator::Semicolon => start,
             };
-            resolve_goto_address(*end, end_current, last)?
+            resolve_goto_address(end.clone(), end_current, last)?
         }
     };
     u64::try_from(value).map_err(|_| ExExecuteError::AddressOverflow)
@@ -1606,7 +1686,7 @@ fn resolve_goto_address(
     last: i128,
 ) -> Result<i128, ExExecuteError> {
     let base = match address.base {
-        AddressBase::Absolute(value) => i128::from(value),
+        AddressBase::Mark(_) | AddressBase::Search { .. } => return Err(ExExecuteError::UnresolvedAddress),        AddressBase::Absolute(value) => i128::from(value),
         AddressBase::Current => current,
         AddressBase::Last => last,
     };
@@ -1756,7 +1836,7 @@ fn line_start_after_deletion(
         .ok_or(ExExecuteError::AddressOverflow)
 }
 
-fn plan_put(
+pub(crate) fn plan_put(
     document: &Document,
     insertion_line: usize,
     register: &ExRegisterValue,
@@ -2169,14 +2249,18 @@ fn plan_substitution(
     }
     if stored.flags.confirm && substitutions != 0 {
         return Err(ExExecuteError::NeedsPolicy(
-            ExPolicyRequest::ConfirmSubstitution(SubstitutePreview {
+            ExPolicyRequest::ConfirmSubstitution(Box::new(SubstitutePreview {
+                document_id: document.id(),
+                revision: document.revision(),
+                stored: stored.clone(),
+                lines,
                 pattern: stored.pattern,
                 replacement: stored.replacement,
                 matches: substitutions,
                 edits,
                 payload_edits,
                 fragment_edits,
-            }),
+            })),
         ));
     }
 

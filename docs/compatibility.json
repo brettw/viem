@@ -109,12 +109,14 @@
     {
       "id": "registers-marks-history",
       "status": "partial",
-      "decision": "Stored/special clipboard/current-file/last-insert registers, local marks, typed jumps, branch-aware undo/time navigation. Session/global-file/expression registers and cross-file change lists are not adopted.",
+      "decision": "Stored/special clipboard/current-file/last-insert registers, local and Visual endpoint marks, typed jumps, branch-aware undo, :earlier/:later time and write navigation, and :undolist are implemented. Session/global-file/expression registers and cross-file change lists are not adopted.",
       "tests": [
         "tests/special_registers.rs",
         "tests/history_model.rs",
         "tests/history_retention.rs",
-        "tests/undo_restoration.rs"
+        "tests/undo_restoration.rs",
+        "tests/ex_history.rs",
+        "tests/ex_global_addresses.rs"
       ]
     },
     {
@@ -169,7 +171,7 @@
     {
       "id": "general-ex-automation",
       "status": "rejected",
-      "decision": "Command pipelines/modifiers, global/vglobal, retab, execute, user commands and file iteration require a separate batch/provenance policy and are not implicitly adopted by an agent-generated parity list.",
+      "decision": "Command pipelines/modifiers, execute, user commands, shell filters and a general Vimscript runtime remain unsupported. Implemented Ex editing and command-file sourcing use the portable command pipeline and verified source transactions.",
       "tests": []
     },
     {
@@ -228,6 +230,20 @@
       "decision": ":sort supports hard-line ranges, reverse, case-insensitive/unique, integer numeric bases, and Regex v2 keys as one verified source permutation. Plain/source rows, Markdown prose paragraphs and balanced sibling HTML paragraphs preserve source spelling and styles. Floating/locale sorting and ambiguous rich/RTF row ownership are unsupported.",
       "tests": [
         "tests/ex_sort.rs"
+      ]
+    },
+    {
+      "id": "ex-line-commands",
+      "status": "partial",
+      "decision": "Global/vglobal use stable line targets and one undo group; mark/pattern addresses and Visual ranges are reusable. Substitute confirmation uses literal choices and commits approved matches atomically at completion. Print/number/list, shifts, retab, delmarks and only are implemented. Alignment edits paragraph properties in HTML/RTF, whitespace in literal views, and rejects formatted Markdown. Interactive confirmation and host/history commands inside global remain unsupported. :read inserts host-loaded literal lines with revision checks; :source runs bounded UTF-8 Ex/mapping files in sequence; :file changes binding without writing; :only refuses discarding dirty last views unless forced.",
+      "tests": [
+        "tests/ex_global_addresses.rs",
+        "tests/ex_misc.rs",
+        "tests/substitute_confirmation.rs",
+        "src/mac/Editor/Tests/EVSubstituteConfirmationTests.swift",
+        "src/core/command/ex_files.rs",
+        "src/mac/Editor/Tests/EVNativeExFileTests.swift",
+        "src/mac/Editor/Tests/EVExListOutputTests.swift"
       ]
     }
   ],

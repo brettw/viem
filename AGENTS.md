@@ -2690,6 +2690,9 @@ Required movements are:
 - viewport: `H`, `M`, `L`, `Ctrl-F`, `Ctrl-B`, `Ctrl-D`, `Ctrl-U`,
   `Ctrl-E`, `Ctrl-Y`, `zz`, `zt`, `zb`; and
 - marks/jumps: `m{a-z}`, `` `{mark} ``, `'{mark}`, `Ctrl-O`, `Ctrl-I`.
+  Local marks and the remembered Visual endpoints `<` and `>` support exact
+  and linewise jumps. `:delmarks` removes named local or Visual marks, including
+  lowercase ranges such as `a-f`; `:delmarks!` clears lowercase local marks.
 
 Sentence and paragraph motions should use Unicode-aware human-language rules
 with Vim-compatible blank-line behavior. Their exact segmentation rules must
@@ -3726,9 +3729,14 @@ The buffer owns one history tree and one current-node pointer:
 - If the requested parent or preferred child does not exist, the command
   reports a non-destructive boundary error and leaves all state unchanged.
 - Core history APIs enumerate branches and select a node by stable identity or
-  change number even if the first frontend does not yet expose all of Vim's
-  time-navigation commands. Selecting a node is atomic and updates the same
-  preferred-child links as stepwise navigation.
+  change number. `:earlier`/`:ea` and `:later`/`:lat` move through chronological
+  changes across branches, defaulting to one change. Counts accept `s`, `m`,
+  `h`, and `d` for elapsed time, or `f` for successful full-buffer writes.
+  Navigation clamps to retained history boundaries. `:undolist`/`:undol`
+  reports each retained leaf's change number, depth, age in seconds, and write
+  number. Selecting a node is atomic and updates the same preferred-child
+  links as stepwise navigation. Timestamps and write annotations belong to
+  the portable history model; printing the list creates no undo entry.
 - A read-only history status query reports the current change number, whether
   undo and redo are available, and the semantic summaries of the parent and
   preferred child so frontends can label and enable native menu items without
@@ -3856,7 +3864,8 @@ selection and retain the prompt. Recursive expansion is bounded. Unsupported
 expression, alternate-file, and filename/path-object selectors report an error.
 
 Filename arguments to `:edit`/`:E`, `:write`, `:saveas`, `:wq`, `:xit`,
-`:split`/`:vsplit`, and `:cd`/`:chdir` support Rust-backed prefix completion.
+`:split`/`:vsplit`, `:read`, `:source`, `:file`, and `:cd`/`:chdir` support
+Rust-backed prefix completion.
 Tab selects the first case-insensitive alphabetical match and cycles forward;
 Shift+Tab starts with the last match and cycles backward. Matches use the
 filename's actual spelling; directories include a trailing `/`, and directory
@@ -3869,10 +3878,21 @@ Ctrl-E restores the input before the active completion cycle, Ctrl-Y accepts
 it, and Escape cancels the prompt. Completion never changes document history.
 
 In Visual Character, Line, or Block mode, `:` opens an Ex prompt prefilled with
-the selected logical hard-line range. The range is bound to that document
+`'<,'>` for the selected logical hard-line range. Visual endpoints are retained
+as marks, so manually typed ranges and recalled Ex history use the latest
+selection. The initial prompt range is bound to that document
 revision; an intervening edit in another view makes execution stale rather
-than silently applying the old numeric addresses. Escape changes no source,
+than silently applying a stale selection. Escape changes no source,
 and `gv` can restore the remembered selection.
+
+Ex addresses support local marks (`'a`), Visual marks (`'<`, `'>`), and forward
+or backward Regex v2 patterns (`/pattern/`, `?pattern?`) alongside numeric
+addresses, `.`, `$`, and signed offsets. Empty patterns reuse the preceding
+search. Pattern addresses search beyond the current hard line and obey the
+case and wrapping options. A comma keeps the original current line for both
+addresses; a semicolon resolves the second relative to the first. Copy and move
+destinations accept the same address grammar. Missing marks, invalid patterns,
+and failed addresses leave source and search state unchanged.
 
 `:e`/`:edit` replaces the active pane after the usual unsaved-change review.
 Replacing a pane with a different document requires a clean buffer or `!` only
@@ -3935,17 +3955,21 @@ already preference-adjusted direction exactly once.
 
 Required Ex commands and common unambiguous abbreviations are:
 
-- files/views: `:edit`, `:enew`, `:split`/`:sp`, `:vsplit`/`:vs`,
-  `:close`/`:clo`, `:write`, `:saveas`, `:quit`, `:qall`, `:wq`,
+- files/views: `:edit`, `:enew`, `:split`/`:sp`, `:vsplit`/`:vs`, `:only`/`:on`,
+  `:close`/`:clo`, `:write`, `:saveas`, `:read`/`:r`, `:file`/`:f`, `:source`/`:so`,
+  `:quit`, `:qall`, `:wq`,
   `:xit`, `:wall`, `:next`/`:n`, `:Next`/`:N`, `:previous`/`:prev`,
   `:wnext`/`:wn`, `:wNext`/`:wN`, `:wprevious`/`:wp`, `:first`,
   `:rewind`, `:last`, `:argument`/`:argu`, and force `!` variants where meaningful;
-- editing: `:undo`, `:redo`, `:delete`, `:yank`, `:put`, `:join`,
-  `:copy`, `:move`, `:sort`, and `:normal` for the supported Normal command subset;
-- search/change: `:substitute` with ranges and repeat flags, `:&`, `:~`, and
+- editing: `:undo`, `:redo`, `:earlier`, `:later`, `:delete`, `:yank`, `:put`,
+  `:join`, `:copy`, `:move`, `:sort`, `:>`, `:<`, `:retab`, `:left`, `:right`,
+  `:center`, and `:normal` for the supported Normal command subset;
+- search/change: `:global`/`:g`, `:vglobal`/`:v`, `:substitute` with ranges,
+  confirmation and repeat flags, `:&`, `:~`, and
   `:nohlsearch`/`:noh`;
-- navigation/info: numeric line addresses, `:goto`, `:marks`, `:registers`,
-  `:jumps`, and `:pwd`; and
+- navigation/info: line addresses, `:goto`, `:marks`, `:delmarks`, `:registers`,
+  `:jumps`, `:undolist`, `:print`/`:p`, `:number`/`:nu`/`:#`, `:list`/`:l`, and
+  `:pwd`; and
 - options: `:set`, `:setlocal`, `:set wrap`, `:set nowrap`, `:set fileformat?`, and
   `:set fileformat=unix|dos|mac` (where one value is supplied), including the
   `ff` abbreviation and corresponding `:setlocal` forms. The global
@@ -3971,6 +3995,91 @@ presentation are frontend responsibilities driven by typed core requests and
 results. Write commands serialize the authoritative source artifact, preserving
 unchanged source slices exactly; they never export a newly normalized formatted
 document as a substitute for the source.
+
+`:global[!]/pattern/command` and `:vglobal[!]/pattern/command` default to all
+hard lines; `vglobal` inverts matching and `!` reverses either selection.
+The default command is `:print`. Matching uses Regex v2 and records the search
+pattern. The first pass selects stable line identities; the second runs the
+command once per surviving selected line. Insertions do not add targets,
+deleted targets are skipped, and moved targets retain their identity. One
+global invocation forms one undo unit. Per-line failures are reported while
+remaining targets continue. Nested global commands act as current-line
+predicates and cannot have a range. Host/file requests, history navigation,
+and interactive substitute confirmation are unsupported inside global.
+Regex work, selected targets, and recursive replay have explicit limits.
+
+Substitute's `c` flag opens a core-owned confirmation interaction. The current
+match uses **Incremental match** regardless of `hlsearch` or `incsearch`, and
+the native prompt shows its expanded replacement and progress. Literal,
+unmapped `y` accepts, `n` skips, `a` accepts the remainder, `l` accepts the
+current match and finishes, and `q`, Escape, or Ctrl-C finish with the decisions
+already made. Viem deliberately stages decisions against the original
+snapshot and commits approved replacements together when confirmation ends,
+preserving captures, styles, and one undo unit. Source remains unchanged while
+choosing. An intervening source revision invalidates the pending interaction
+and discards its staged decisions with a diagnostic. Ctrl-E/Ctrl-Y scrolling
+during confirmation is not implemented.
+
+Standalone `:print`, `:number`, and `:list` use the selectable command-output
+surface. They default to the current hard line; a trailing count starts at the
+last addressed line. Their `p`, `#`, and `l` output flags also apply to Ex shifts.
+List output renders tabs and control characters visibly and appends `$` to
+each hard line; printable Unicode remains intact.
+Printing changes no source, registers, or undo state.
+`:>` and `:<` shift addressed hard lines using `shiftwidth`, `tabstop`, and
+`expandtab`; repeating the symbol multiplies the shift, while a trailing count
+selects how many lines to shift from the last address. Empty lines remain empty,
+outdenting stops at column zero, and the batch is one undo unit.
+
+`:retab[!] [-indentonly] [new-tabstop]` defaults to all hard lines. It measures
+existing whitespace with the old tabstop and writes equivalent logical-column
+whitespace using the new tabstop and `expandtab`. Without `!` it changes only
+runs containing a tab; `!` also allows compression of space runs. `-indentonly`
+restricts conversion to leading whitespace. Omitted or zero tabstop retains
+the current value; a valid nonzero value also sets the buffer's tabstop.
+Invalid arguments do not partially edit source or options.
+
+In HTML and RTF formatted views, `:left`, `:right`, and `:center` set sparse
+direct paragraph alignment on the addressed paragraphs, retaining their text
+and other styles. Alignment follows paragraph start/end direction. Numeric
+indent/width arguments are rejected in these views. Formatted Markdown reports
+unsupported alignment. In plain text, Code, and source views, the commands
+adjust leading whitespace using logical columns and the indentation options.
+`:left [indent]` defaults to zero; `:right [width]` and `:center [width]` default
+to `textwidth`, or 80 when it is zero. Each operation is one verified,
+source-preserving undo unit.
+
+`:[address]read [file]` inserts decoded literal text lines after the addressed
+hard line, defaulting to the current line and the current filename. Address
+zero inserts before the first line. The imported file's encoding and line
+endings are decoded independently, then semantic hard breaks are written
+through the destination format's normal verified insertion path. Source bytes
+outside the insertion remain untouched. The operation changes no register,
+forms one undo unit, and moves the invoking view to the first inserted line.
+An empty file is a no-op. Native file I/O runs outside the core lease, and its
+completion validates the originating document and revision before editing.
+Shell filters (`:read !command`) and `++` overrides are unsupported.
+
+`:source file` reads a UTF-8 command file and executes supported Ex commands
+and mapping definitions in order, using the same portable command interpreter
+as interactive input. Blank lines, leading `"` comments, an initial BOM, and
+CRLF files are supported. Meaningful trailing payload spaces remain intact.
+Host operations complete before the next command runs; nested sources share
+a command budget. Limits are 1 MiB per file, 10,000 input lines per invocation
+including nested files, and 16 levels of nesting. Errors identify the path and
+line and stop the remaining commands, retaining successful earlier commands
+with their ordinary undo units. Interactive substitute confirmation, Normal
+key-script `:source!`, and a general Vimscript runtime are unsupported.
+
+`:file [name]` reports the current filename and buffer flags, or changes the
+buffer's filename without writing its contents. Renaming retains dirty state,
+updates filename-dependent syntax and recovery ownership, and refuses another
+live document's path. It MUST NOT treat existing bytes at a new destination as
+loaded or saved content; subsequent writes retain overwrite protection.
+`:only[!]` keeps the active pane. Without `!`, it validates every pane to be
+closed and rejects the entire operation if it would discard a modified
+buffer's last view. `!` permits that discard. Other surviving views of a
+buffer retain their contents. `Ctrl-W o` shares the non-forced close policy.
 
 `:[range]sor[t][!]` defaults to all hard lines. It supports `i` (Unicode
 case-insensitive comparison), `u` (remove duplicate full lines), mutually

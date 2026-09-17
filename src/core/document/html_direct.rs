@@ -147,7 +147,7 @@ pub(super) fn paragraph_patches(
     for (range, properties) in desired {
         let mut current = None;
         for token in &tokens {
-            if mapper.source_range(token.range.clone()).start > range.start {
+            if mapper.source_range(token.range.clone()).start >= range.start {
                 break;
             }
             if let TokenKind::Tag(tag) = &token.kind {

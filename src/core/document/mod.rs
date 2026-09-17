@@ -78,6 +78,7 @@ pub use formatted_text::{
 };
 pub use history::{
     HistoryBoundary, HistoryBranch, HistoryChangeNumber, HistoryError, HistoryLocation,
+    HistoryTimeAmount, HistoryTimelineEntry,
     HistoryNavigation, HistoryNodeDetails, HistoryNodeId, HistoryRestoration,
     HistoryRestorationSnapshot, HistoryRetentionPolicy, HistorySemanticChangeKind,
     HistorySemanticSummary, HistorySourcePatch, HistoryStatus, HistoryTransactionSummary,
@@ -1856,6 +1857,16 @@ impl Document {
         let mut status = self.history.status();
         status.is_dirty |= self.recovered_dirty;
         status
+    }
+
+    /// Resolve a chronological history destination without changing document state.
+    pub fn history_time_target(&self, later: bool, amount: HistoryTimeAmount) -> HistoryLocation {
+        self.history.time_target(later, amount)
+    }
+
+    /// Retained leaf states, ordered by monotonically increasing change number.
+    pub fn history_timeline_leaves(&self) -> Vec<HistoryTimelineEntry> {
+        self.history.timeline_leaves()
     }
 
     /// Immutable diagnostics/audit metadata for one retained history node.

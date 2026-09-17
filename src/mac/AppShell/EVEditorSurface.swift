@@ -53,6 +53,8 @@ public struct EVStatusBarState: Equatable, Sendable {
   public var commandLine: EVStatusCommandLine?
   /// Read-only command output occupying the same area, in normal status colors.
   public var commandOutput: String?
+  /// A pending core interaction must remain visible even with the status bar hidden.
+  public var requiresInteraction: Bool
   /// Whether this pane holds the text focus. The command caret blinks only in
   /// the active pane and is outlined elsewhere.
   public var isActive: Bool
@@ -66,6 +68,7 @@ public struct EVStatusBarState: Equatable, Sendable {
     locationIsFragment: Bool = false,
     commandLine: EVStatusCommandLine? = nil,
     commandOutput: String? = nil,
+    requiresInteraction: Bool = false,
     isActive: Bool = false
   ) {
     self.mode = mode
@@ -75,6 +78,7 @@ public struct EVStatusBarState: Equatable, Sendable {
     self.lineMode = lineMode
     self.commandLine = commandLine
     self.commandOutput = commandOutput
+    self.requiresInteraction = requiresInteraction
     self.isActive = isActive
     self.locationIsFragment = locationIsFragment
   }
@@ -158,6 +162,10 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     case navigateArgument
     case printWorkingDirectory
     case checkTime
+    case read
+    case source
+    case file
+    case only
     case changeDirectory
     case new
     case write
@@ -178,6 +186,7 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
   /// Initial text-area height of a new pane, measured in its visual rows.
   public let initialHeightRows: Int?
   public let argumentNavigation: EVArgumentNavigation?
+  public let readAfterLine: UInt64?
 
   public init(
     kind: Kind,
@@ -187,7 +196,8 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     path: String? = nil,
     hardLineRange: ClosedRange<UInt64>? = nil,
     initialHeightRows: Int? = nil,
-    argumentNavigation: EVArgumentNavigation? = nil
+    argumentNavigation: EVArgumentNavigation? = nil,
+    readAfterLine: UInt64? = nil
   ) {
     self.kind = kind
     self.documentID = documentID
@@ -197,6 +207,7 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     self.hardLineRange = hardLineRange
     self.initialHeightRows = initialHeightRows
     self.argumentNavigation = argumentNavigation
+    self.readAfterLine = readAfterLine
   }
 }
 
@@ -325,6 +336,8 @@ public protocol EVEditorSurface: AnyObject {
   func showDocumentMessage(_ message: String)
   /// Startup line in the first argument; UInt64.max selects its last line.
   func goToLine(_ line: UInt64)
+  func insertFileContents(_ bytes: Data, after: UInt64, expected: EVDocumentPersistenceState) throws
+  func executeSourcedLine(_ text: String, depth: UInt32) throws -> [EVDocumentHostRequest]
   func dismissCommandOutput()
   /// Resume editor input after leaving the selectable status message.
   func handleStatusMessageKey(_ event: NSEvent)
@@ -340,6 +353,8 @@ extension EVEditorSurface {
   public func selectCommandLine(atUTF8Offset offset: Int, extending: Bool) {}
   public func showDocumentMessage(_ message: String) {}
   public func goToLine(_ line: UInt64) {}
+  public func insertFileContents(_ bytes: Data, after: UInt64, expected: EVDocumentPersistenceState) throws { throw EVDocumentHostError.unsupportedRequest }
+  public func executeSourcedLine(_ text: String, depth: UInt32) throws -> [EVDocumentHostRequest] { throw EVDocumentHostError.unsupportedRequest }
   public func dismissCommandOutput() {}
   public func handleStatusMessageKey(_ event: NSEvent) {}
 }

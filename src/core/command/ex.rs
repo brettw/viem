@@ -26,14 +26,16 @@ pub enum ExRange {
     WholeFile,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExAddress {
     pub base: AddressBase,
     pub offset: i64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AddressBase {
+    Mark(char),
+    Search { pattern: String, forward: bool },
     Absolute(u64),
     Current,
     Last,
@@ -49,6 +51,7 @@ pub enum RangeSeparator {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExAction {
+    Global { pattern: String, command: String, invert: bool },
     NavigateArgument {
         target: ExArgumentTarget,
         write_first: bool,
@@ -93,6 +96,8 @@ pub enum ExAction {
         change: Option<u64>,
     },
     Redo,
+    HistoryTime { later: bool, amount: crate::document::HistoryTimeAmount },
+    UndoList,
     Delete(RegisterCount),
     Yank(RegisterCount),
     Put {
@@ -130,9 +135,21 @@ pub enum ExAction {
         names: Vec<char>,
     },
     Jumps,
+    Print { count: Option<u64>, number: bool, list: bool },
+    Shift { right: bool, amount: usize, count: Option<u64>, print: bool, number: bool, list: bool },
+    Retab { tabstop: Option<u64>, indent_only: bool },
+    Align { alignment: ExAlignment, width: Option<u64> },
+    DeleteMarks { names: Vec<char> },
+    Only,
+    Read { path: Option<String> },
+    Source { path: String },
+    File { path: Option<String> },
     NoHighlight,
     Set(SetCommand),
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExAlignment { Left, Right, Center }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RegisterCount {
@@ -241,6 +258,7 @@ pub enum ExParseErrorKind {
     InvalidNumber(String),
     InvalidRegister(String),
     InvalidSubstituteDelimiter(char),
+    InvalidGlobalDelimiter(char),
     UnterminatedSubstitutePattern,
     InvalidSubstituteFlag(char),
     DuplicateSubstituteFlag(char),
@@ -287,6 +305,7 @@ impl fmt::Display for ExParseError {
             ExParseErrorKind::InvalidRegister(register) => {
                 write!(formatter, "invalid register {register:?}")
             }
+            ExParseErrorKind::InvalidGlobalDelimiter(delimiter) => write!(formatter, "invalid global delimiter {delimiter:?}"),
             ExParseErrorKind::InvalidSubstituteDelimiter(delimiter) => {
                 write!(formatter, "invalid substitute delimiter {delimiter:?}; :s substitutes text — use :w <file> or :saveas <file> to save")
             }
@@ -338,7 +357,7 @@ pub(super) fn filename_argument(input: &str, cursor: usize) -> Option<FilenameAr
         | CommandName::Write
         | CommandName::SaveAs
         | CommandName::WriteQuit
-        | CommandName::Xit => false,
+        | CommandName::Xit | CommandName::Read | CommandName::Source | CommandName::File => false,
         _ => return None,
     };
     // A bare command still names the command, rather than an empty filename.
@@ -393,7 +412,7 @@ impl<'a> Parser<'a> {
         let args = match name {
             // A trailing Space is a real Normal-mode command.  Only the
             // whitespace separating `:normal[!]` from its payload is trivia.
-            CommandName::Normal | CommandName::Set | CommandName::SetLocal => raw_args.trim_start(),
+            CommandName::Normal | CommandName::Global | CommandName::VGlobal | CommandName::Set | CommandName::SetLocal => raw_args.trim_start(),
             // For `:&` and `:~`, whitespace distinguishes a following line
             // count from an immediately adjacent occurrence number.  Keep
             // that leading separator for the substitute-tail parser.
@@ -416,7 +435,7 @@ impl<'a> Parser<'a> {
 
     fn parse_command_head(&mut self, has_range: bool) -> Result<(CommandName, bool), ExParseError> {
         let command_offset = self.at;
-        let command = if matches!(self.peek(), Some('&' | '~')) {
+        let command = if matches!(self.peek(), Some('&' | '~' | '>' | '<' | '#')) {
             self.bump().unwrap().to_string()
         } else {
             let start = self.at;
@@ -506,6 +525,20 @@ impl<'a> Parser<'a> {
     fn parse_address(&mut self) -> Result<Option<ExAddress>, ExParseError> {
         let start = self.at;
         let base = match self.peek() {
+            Some('\'') => {
+                self.bump();
+                let name = self.bump().ok_or(ExParseError { offset: self.at, kind: ExParseErrorKind::InvalidAddress })?;
+                if !matches!(name, 'a'..='z' | '<' | '>') {
+                    return self.error(ExParseErrorKind::InvalidAddress);
+                }
+                AddressBase::Mark(name)
+            }
+            Some(delimiter @ ('/' | '?')) => {
+                self.bump();
+                let (pattern, end, _) = read_pattern_delimited(self.input, self.at, delimiter);
+                self.at = end;
+                AddressBase::Search { pattern, forward: delimiter == '/' }
+            }
             Some('.') => {
                 self.bump();
                 AddressBase::Current
@@ -565,6 +598,7 @@ impl<'a> Parser<'a> {
             }
         };
         match name {
+            CommandName::Global | CommandName::VGlobal => parse_global(args, args_offset, name == CommandName::VGlobal),
             CommandName::Next | CommandName::Previous | CommandName::First
             | CommandName::Last | CommandName::Argument | CommandName::WriteNext
             | CommandName::WritePrevious => unreachable!("argument navigation is parsed with its count"),
@@ -603,6 +637,11 @@ impl<'a> Parser<'a> {
                 change: parse_optional_count(args, args_offset)?,
             }),
             CommandName::Redo => no_args(ExAction::Redo),
+            CommandName::Earlier | CommandName::Later => Ok(ExAction::HistoryTime {
+                later: name == CommandName::Later,
+                amount: super::ex_history::parse_amount(args, args_offset)?,
+            }),
+            CommandName::UndoList => no_args(ExAction::UndoList),
             CommandName::Delete => Ok(ExAction::Delete(parse_register_count(args, args_offset)?)),
             CommandName::Yank => Ok(ExAction::Yank(parse_register_count(args, args_offset)?)),
             CommandName::Put => Ok(ExAction::Put {
@@ -650,6 +689,40 @@ impl<'a> Parser<'a> {
                 names: parse_name_list(args),
             }),
             CommandName::Jumps => no_args(ExAction::Jumps),
+            CommandName::Print | CommandName::Number | CommandName::List => {
+                let (count, _, number, list) = parse_count_print_flags(args, args_offset)?;
+                Ok(ExAction::Print { count,
+                    number: number || name == CommandName::Number, list: list || name == CommandName::List })
+            }
+            CommandName::ShiftRight | CommandName::ShiftLeft => {
+                let right = name == CommandName::ShiftRight;
+                let symbol = if right { '>' } else { '<' };
+                let extra = args.chars().take_while(|ch| *ch == symbol).count();
+                let (count, print, number, list) = parse_count_print_flags(args[extra..].trim(), args_offset + extra)?;
+                Ok(ExAction::Shift { right, amount: extra + 1, count, print, number, list })
+            }
+            CommandName::Retab => {
+                let (indent_only, value) = args.strip_prefix("-indentonly")
+                    .filter(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
+                    .map_or((false, args), |tail| (true, tail.trim()));
+                let tabstop = if value.is_empty() { None } else { Some(parse_number(value, args_offset)?) };
+                Ok(ExAction::Retab { tabstop, indent_only })
+            }
+            CommandName::Left | CommandName::Right | CommandName::Center => Ok(ExAction::Align {
+                alignment: match name { CommandName::Left => ExAlignment::Left,
+                    CommandName::Right => ExAlignment::Right, _ => ExAlignment::Center },
+                width: if args.is_empty() { None } else { Some(parse_number(args, args_offset)?) },
+            }),
+            CommandName::DeleteMarks => Ok(ExAction::DeleteMarks { names: parse_mark_deletions(args, args_offset)? }),
+            CommandName::Only => no_args(ExAction::Only),
+            CommandName::Read => {
+                if args.starts_with('!') || args.starts_with("++") {
+                    return Err(ExParseError { offset: args_offset, kind: ExParseErrorKind::UnexpectedArgument(args.into()) });
+                }
+                Ok(ExAction::Read { path: optional_string(args) })
+            }
+            CommandName::Source => Ok(ExAction::Source { path: required_string(args, args_offset, "command file")? }),
+            CommandName::File => Ok(ExAction::File { path: optional_string(args) }),
             CommandName::NoHighlight => no_args(ExAction::NoHighlight),
             CommandName::Set => parse_set(args, SetScope::GlobalAndLocal, args_offset),
             CommandName::SetLocal => parse_set(args, SetScope::Local, args_offset),
@@ -695,6 +768,8 @@ impl<'a> Parser<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CommandName {
+    Global,
+    VGlobal,
     Next,
     Previous,
     First,
@@ -719,6 +794,9 @@ enum CommandName {
     WriteAll,
     Undo,
     Redo,
+    Earlier,
+    Later,
+    UndoList,
     Delete,
     Yank,
     Put,
@@ -734,6 +812,8 @@ enum CommandName {
     Marks,
     Registers,
     Jumps,
+    Print, Number, List, ShiftRight, ShiftLeft, Retab, Left, Right, Center,
+    DeleteMarks, Only, Read, Source, File,
     NoHighlight,
     Set,
     SetLocal,
@@ -747,6 +827,8 @@ impl CommandName {
 
     fn canonical(self) -> &'static str {
         match self {
+            Self::Global => "global",
+            Self::VGlobal => "vglobal",
             Self::Next => "next",
             Self::Previous => "previous",
             Self::First => "first",
@@ -771,6 +853,9 @@ impl CommandName {
             Self::WriteAll => "wall",
             Self::Undo => "undo",
             Self::Redo => "redo",
+            Self::Earlier => "earlier",
+            Self::Later => "later",
+            Self::UndoList => "undolist",
             Self::Delete => "delete",
             Self::Yank => "yank",
             Self::Put => "put",
@@ -786,6 +871,11 @@ impl CommandName {
             Self::Marks => "marks",
             Self::Registers => "registers",
             Self::Jumps => "jumps",
+            Self::Print => "print", Self::Number => "number", Self::List => "list",
+            Self::ShiftRight => ">", Self::ShiftLeft => "<", Self::Retab => "retab",
+            Self::Left => "left", Self::Right => "right", Self::Center => "center",
+            Self::DeleteMarks => "delmarks", Self::Only => "only", Self::Read => "read",
+            Self::Source => "source", Self::File => "file",
             Self::NoHighlight => "nohlsearch",
             Self::Set => "set",
             Self::SetLocal => "setlocal",
@@ -795,7 +885,10 @@ impl CommandName {
     fn accepts_bang(self) -> bool {
         self.is_argument_navigation() || matches!(
             self,
-            Self::Edit
+            Self::Global
+                | Self::VGlobal
+                | Self::Retab | Self::DeleteMarks | Self::Only | Self::File
+                | Self::Edit
                 | Self::EditNewWindow
                 | Self::Update
                 | Self::New
@@ -814,9 +907,13 @@ impl CommandName {
     }
 
     fn accepts_range(self) -> bool {
+        matches!(self, Self::Print | Self::Number | Self::List | Self::ShiftRight | Self::ShiftLeft
+            | Self::Retab | Self::Left | Self::Right | Self::Center | Self::Read) ||
         matches!(self, Self::Next | Self::Previous | Self::Argument | Self::WriteNext | Self::WritePrevious) || matches!(
             self,
-            Self::Write
+            Self::Global
+                | Self::VGlobal
+                | Self::Write
                 | Self::WriteQuit
                 | Self::Delete
                 | Self::Yank
@@ -841,6 +938,23 @@ struct CommandSpec {
 }
 
 const COMMANDS: &[CommandSpec] = &[
+    CommandSpec { name: CommandName::Earlier, spelling: "earlier", minimum: 2 },
+    CommandSpec { name: CommandName::Later, spelling: "later", minimum: 3 },
+    CommandSpec { name: CommandName::UndoList, spelling: "undolist", minimum: 5 },
+    CommandSpec { name: CommandName::Print, spelling: "print", minimum: 1 },
+    CommandSpec { name: CommandName::Number, spelling: "number", minimum: 2 },
+    CommandSpec { name: CommandName::List, spelling: "list", minimum: 1 },
+    CommandSpec { name: CommandName::Retab, spelling: "retab", minimum: 3 },
+    CommandSpec { name: CommandName::Left, spelling: "left", minimum: 2 },
+    CommandSpec { name: CommandName::Right, spelling: "right", minimum: 2 },
+    CommandSpec { name: CommandName::Center, spelling: "center", minimum: 2 },
+    CommandSpec { name: CommandName::DeleteMarks, spelling: "delmarks", minimum: 4 },
+    CommandSpec { name: CommandName::Only, spelling: "only", minimum: 2 },
+    CommandSpec { name: CommandName::Read, spelling: "read", minimum: 1 },
+    CommandSpec { name: CommandName::Source, spelling: "source", minimum: 2 },
+    CommandSpec { name: CommandName::File, spelling: "file", minimum: 1 },
+    CommandSpec { name: CommandName::Global, spelling: "global", minimum: 1 },
+    CommandSpec { name: CommandName::VGlobal, spelling: "vglobal", minimum: 1 },
     CommandSpec { name: CommandName::NoHighlight, spelling: "nohlsearch", minimum: 3 },
     CommandSpec { name: CommandName::Next, spelling: "next", minimum: 1 },
     CommandSpec { name: CommandName::Previous, spelling: "Next", minimum: 1 },
@@ -1031,6 +1145,8 @@ const COMMANDS: &[CommandSpec] = &[
 ];
 
 fn resolve_command(input: &str) -> Result<CommandName, ExParseErrorKind> {
+    match input { ">" => return Ok(CommandName::ShiftRight), "<" => return Ok(CommandName::ShiftLeft),
+        "#" => return Ok(CommandName::Number), _ => {} }
     if input == "&" {
         return Ok(CommandName::RepeatSubstitute);
     }
@@ -1197,6 +1313,25 @@ fn is_valid_register(register: char) -> bool {
     register.is_ascii_alphanumeric() || matches!(register, '"' | '-' | '_' | '+' | '*' | '.' | '%')
 }
 
+/// Vim's line-command tail is a count followed by any combination of p/#/l.
+fn parse_count_print_flags(args: &str, offset: usize) -> Result<(Option<u64>, bool, bool, bool), ExParseError> {
+    let digits = args.bytes().take_while(u8::is_ascii_digit).count();
+    let count = if digits == 0 { None } else { Some(parse_number(&args[..digits], offset)?) };
+    let mut print = false;
+    let mut number = false;
+    let mut list = false;
+    for (index, ch) in args[digits..].char_indices() {
+        match ch {
+            'p' => print = true,
+            '#' => { print = true; number = true; }
+            'l' => { print = true; list = true; }
+            ' ' | '\t' => {},
+            _ => return Err(ExParseError { offset: offset + digits + index, kind: ExParseErrorKind::UnexpectedArgument(args.into()) }),
+        }
+    }
+    Ok((count, print, number, list))
+}
+
 fn parse_optional_count(args: &str, offset: usize) -> Result<Option<u64>, ExParseError> {
     if args.is_empty() {
         Ok(None)
@@ -1297,6 +1432,17 @@ fn parse_sort(args: &str, offset: usize) -> Result<SortOptions, ExParseError> {
     Ok(options)
 }
 
+fn parse_global(args: &str, offset: usize, invert: bool) -> Result<ExAction, ExParseError> {
+    let delimiter = args.chars().next().ok_or(ExParseError { offset, kind: ExParseErrorKind::InvalidAddress })?;
+    if !delimiter.is_ascii() || delimiter.is_ascii_alphabetic() || delimiter.is_whitespace()
+        || matches!(delimiter, '\\' | '"' | '|' | '!') {
+        return Err(ExParseError { offset, kind: ExParseErrorKind::InvalidGlobalDelimiter(delimiter) });
+    }
+    let (pattern, end, _) = read_pattern_delimited(args, delimiter.len_utf8(), delimiter);
+    let command = args[end..].trim_start();
+    Ok(ExAction::Global { pattern, command: if command.is_empty() { "print".into() } else { command.into() }, invert })
+}
+
 fn parse_substitute(args: &str, offset: usize) -> Result<ExAction, ExParseError> {
     if args.is_empty() {
         return Ok(ExAction::RepeatSubstitute {
@@ -1337,6 +1483,16 @@ fn parse_substitute(args: &str, offset: usize) -> Result<ExAction, ExParseError>
     }))
 }
 
+/// Escaping a delimiter is still a literal match when that delimiter is a
+/// Regex v2 metacharacter, such as the `?` in a backward address.
+fn read_pattern_delimited(input: &str, at: usize, delimiter: char) -> (String, usize, bool) {
+    let (mut pattern, end, closed) = read_delimited(input, at, delimiter);
+    if ".+*?()[]{}^$|#-".contains(delimiter) {
+        pattern = pattern.replace(delimiter, &format!("\\x{:02X}", delimiter as u32));
+    }
+    (pattern, end, closed)
+}
+
 /// Returns field, byte after delimiter/end, and whether a delimiter was found.
 fn read_delimited(input: &str, mut at: usize, delimiter: char) -> (String, usize, bool) {
     let mut output = String::new();
@@ -1355,6 +1511,7 @@ fn read_delimited(input: &str, mut at: usize, delimiter: char) -> (String, usize
                     at += escaped.len_utf8();
                     continue;
                 }
+                at += escaped.len_utf8();
             }
             output.push_str(&input[slash_at..at]);
             continue;
@@ -2045,4 +2202,22 @@ pub(super) fn incremental_substitute(input: &str) -> Option<(Option<ExRange>, St
     if delimiter.is_ascii_alphanumeric() || delimiter.is_whitespace() || matches!(delimiter, '\\' | '"' | '|') { return None; }
     let (pattern, _, _) = read_delimited(input, parser.at, delimiter);
     Some((range, pattern, None, None))
+}
+
+fn parse_mark_deletions(args: &str, offset: usize) -> Result<Vec<char>, ExParseError> {
+    let chars: Vec<_> = args.chars().filter(|ch| !ch.is_whitespace()).collect();
+    let mut names = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        let first = chars[index];
+        if !matches!(first, 'a'..='z' | '<' | '>') {
+            return Err(ExParseError { offset, kind: ExParseErrorKind::UnexpectedArgument(args.into()) });
+        }
+        if chars.get(index + 1) == Some(&'-') {
+            let last = chars.get(index + 2).copied().filter(|last| first.is_ascii_lowercase() && last.is_ascii_lowercase() && *last >= first)
+                .ok_or_else(|| ExParseError { offset, kind: ExParseErrorKind::UnexpectedArgument(args.into()) })?;
+            names.extend(first..=last); index += 3;
+        } else { names.push(first); index += 1; }
+    }
+    Ok(names)
 }

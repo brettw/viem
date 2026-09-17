@@ -3788,12 +3788,14 @@ impl Document {
         let range = range.start().offset()..range.end().offset();
         let mut desired = Vec::new();
         let mut expected = Vec::new();
+        let mut changed = false;
         for block in self.projection().blocks() {
             let mut properties = block.direct_paragraph.clone();
             let selected = if range.is_empty() {
                 block.range.start <= range.start && range.start <= block.range.end
             } else {
-                block.range.start < range.end && range.start < block.range.end
+                (block.range.is_empty() && range.contains(&block.range.start))
+                    || (block.range.start < range.end && range.start < block.range.end)
             };
             if selected {
                 super::rich_text::overlay_block(&mut properties, &set);
@@ -3805,16 +3807,20 @@ impl Document {
                     )?;
                 }
                 if properties != block.direct_paragraph {
-                    let source = self
-                        .projection()
-                        .source_range(block.range.clone())
-                        .ok_or(DocumentError::AmbiguousProjection)?;
-                    desired.push((source, properties.clone()));
+                    changed = true;
+                    // HTML needs the paragraph's source element. RTF instead
+                    // edits each contributing run below and need not have one
+                    // contiguous source range across controls and groups.
+                    if self.format() == Format::Html {
+                        let source = self.projection().source_range(block.range.clone())
+                            .ok_or(DocumentError::AmbiguousProjection)?;
+                        desired.push((source, properties.clone()));
+                    }
                 }
             }
             expected.push(properties);
         }
-        if desired.is_empty() {
+        if !changed {
             return Ok(self.no_op_prepared());
         }
         let decoded = self.encoding().decode(&self.source_bytes())?;
@@ -3907,6 +3913,13 @@ impl Document {
                     runs.push((span.source, direct, named));
                 }
             }
+            if runs.is_empty() && block.range.is_empty() {
+                // An empty paragraph has an explicit editable boundary even
+                // though it contributes no text run. A scoped declaration at
+                // that boundary also supplies the style for subsequent typing.
+                let source = super::rich_text::text_source_range(self, &block.range)?;
+                runs.push((source, CharacterProperties::default(), None));
+            }
             if runs.is_empty() {
                 return Err(DocumentError::AmbiguousProjection.into());
             }
@@ -3960,7 +3973,22 @@ impl Document {
                 patches.push((source.end..source.end, "}".to_owned()));
             }
         }
-        Ok(patches)
+        // Adjacent paragraphs/runs share a source insertion boundary. Close
+        // the preceding scope and open the following scope in one ordered
+        // insertion so the source transaction has no ambiguous duplicate point.
+        patches.sort_by_key(|(range, _)| (range.start, range.end));
+        let mut merged: Vec<(Range<usize>, String)> = Vec::new();
+        for (range, syntax) in patches {
+            if let Some((previous, text)) = merged.last_mut()
+                .filter(|(previous, _)| previous.is_empty() && range.is_empty() && previous.start == range.start)
+            {
+                let _ = previous;
+                text.push_str(&syntax);
+            } else {
+                merged.push((range, syntax));
+            }
+        }
+        Ok(merged)
     }
 
     fn prepare_markdown_paragraph_style(

@@ -162,6 +162,7 @@ struct EVExHostEffect: Equatable {
     let jumps: [EVExJumpEffect]
     let textLines: [EVExTextLineEffect]
     var argumentNavigation: EVArgumentNavigation? = nil
+    var readAfterLine: UInt64? = nil
 }
 
 struct EVHostEffectBatch: Equatable {
@@ -432,7 +433,8 @@ private extension EVRawEffectBatch {
                 registers: try registers(for: request),
                 jumps: try jumps(for: request),
                 textLines: try textLines(for: request),
-                argumentNavigation: argumentNavigation
+                argumentNavigation: argumentNavigation,
+                readAfterLine: request.kind == UInt32(VIEM_EX_FRONTEND_READ) ? request.hard_line_start : nil
             )
         }
 

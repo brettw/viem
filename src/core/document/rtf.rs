@@ -799,12 +799,10 @@ pub(super) fn project(
                 && matches!(&token.kind, Kind::Control(name, _) if matches!(name.as_str(), "tab" | "u" | "bullet" | "emdash" | "endash" | "lquote" | "rquote" | "ldblquote" | "rdblquote") || (builder.line_is_empty() && matches!(name.as_str(), "par" | "line"))))
             || (!state.hidden
                 && !paragraph_started
+                && builder.line_is_empty()
                 && matches!(token.kind, Kind::Close)
-                && state.modern_list.is_some()
-                && state
-                    .list_origin
-                    .as_ref()
-                    .is_some_and(|origin| origin.end >= paragraph_source_start))
+                && ((state.modern_list.is_none() && state.list.is_none())
+                    || state.list_origin.as_ref().is_some_and(|origin| origin.end >= paragraph_source_start)))
         {
             if !paragraph_started {
                 paragraph_started = true;

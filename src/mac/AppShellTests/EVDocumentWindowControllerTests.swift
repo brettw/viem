@@ -57,6 +57,25 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     try body()
   }
 
+  func testPendingInteractionRevealsHiddenStatusBarUntilFinished() throws {
+    try preservingStatusBarDefault {
+      let document = EVDocument()
+      let surface = Surface()
+      let controller = EVDocumentWindowController(document: document, editorSurface: surface,
+        placement: EVDocumentWindowPlacement(loadFrame: { nil }))
+      defer { controller.close() }
+      controller.showWindow(nil)
+      controller.documentContentController.toggleStatusBar(nil)
+      XCTAssertFalse(try XCTUnwrap(controller.currentGeometry).statusBarIsVisible)
+      surface.statusBarState = EVStatusBarState(message: "Replace? (y/n/a/q/l)", requiresInteraction: true)
+      surface.statusBarStateDidChange?(surface.statusBarState)
+      XCTAssertTrue(try XCTUnwrap(controller.currentGeometry).statusBarIsVisible)
+      surface.statusBarState = EVStatusBarState()
+      surface.statusBarStateDidChange?(surface.statusBarState)
+      XCTAssertFalse(try XCTUnwrap(controller.currentGeometry).statusBarIsVisible)
+    }
+  }
+
   func testInitialShowUsesRequestedContentSizeAndFillsCanvasAboveStatusBar() throws {
     try preservingStatusBarDefault {
       let document = EVDocument()

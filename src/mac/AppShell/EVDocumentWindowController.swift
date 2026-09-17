@@ -1,4 +1,5 @@
 import AppKit
+import CViemCore
 
 /// AppKit may ask a window to constrain itself before it has been assigned a
 /// screen during direct SwiftPM application startup. NSWindow's default
@@ -39,6 +40,8 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   private var closingAfterReview = false
   private var hasPresentedInitialWindow = false
   private var isPerformingDocumentHostEffect = false
+  private var sourceDepth: UInt32 = 0
+  private var sourceCommandCount = 0
   private let placement: EVDocumentWindowPlacement
   private var initialWindowFrame: NSRect?
 
@@ -112,7 +115,12 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   /// ignored rather than applied to someone else's panes.
   public func perform(windowRequests: [EVWindowRequest], from surface: any EVEditorSurface) {
     guard paneContainer.panes.contains(where: { $0.editorSurface === surface }) else { return }
-    for request in windowRequests { paneContainer.perform(request) }
+    for request in windowRequests {
+      if request == .closeOthers {
+        do { try closeOtherPanes(force: false) }
+        catch { surface.showDocumentMessage(error.localizedDescription) }
+      } else { paneContainer.perform(request) }
+    }
     updateActiveDocumentChrome()
   }
 
@@ -610,6 +618,53 @@ extension EVDocumentWindowController {
     }
 
     switch request.kind {
+    case .read:
+      do {
+        guard let path = request.path ?? document.fileURL?.path,
+              let url = resolvedFileURL(path, relativeTo: nil),
+              let after = request.readAfterLine,
+              let pane = (documentContentController.document === document ? documentContentController : paneContainer.panes.first(where: { $0.document === document })) else {
+          throw EVDocumentHostError.noDocumentURL
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+          let loaded = Result { try Data(contentsOf: url) }
+          DispatchQueue.main.async {
+            do {
+              let bytes = try loaded.get()
+              guard self.paneContainer.panes.contains(where: { $0 === pane }), pane.document === document else {
+                throw EVDocumentHostError.staleRequest
+              }
+              try pane.editorSurface.insertFileContents(bytes, after: after, expected: persistence)
+              completion(.success("\(url.path) read"))
+            } catch { completion(.failure(error)) }
+          }
+        }
+      } catch { completion(.failure(error)) }
+    case .source:
+      sourceCommands(request.path, completion: completion)
+    case .file:
+      do {
+        if let path = request.path {
+          guard let url = resolvedFileURL(path, relativeTo: nil) else { throw EVDocumentHostError.invalidPath(path) }
+          if let existing = EVDocumentIdentity.existingDocument(at: url), existing !== document {
+            throw EVDocumentHostError.destinationExists(path)
+          }
+          if document.fileURL.map({ EVDocumentIdentity.sameFile($0, url) }) != true {
+            document.fileURL = url
+            // Renaming the buffer never acknowledges the new destination's
+            // contents. An existing target still needs overwrite review.
+            document.recordMissingFileBaseline(at: url)
+            document.configureRecovery(for: url)
+            updateActiveDocumentChrome()
+          }
+        }
+        let name = document.fileURL?.path ?? "[No Name]"
+        let flags = (persistence.isDirty ? " [Modified]" : "") + (persistence.isReadOnly ? " [Read only]" : "")
+        completion(.success("\(name)\(flags)"))
+      } catch { completion(.failure(error)) }
+    case .only:
+      do { try closeOtherPanes(force: request.force); completion(.success(nil)) }
+      catch { completion(.failure(error)) }
     case .navigateArgument:
       navigateArgument(document, request: request, completion: completion)
     case .checkTime:
@@ -791,6 +846,91 @@ extension EVDocumentWindowController {
         }
       } catch {
         completion(.failure(error))
+      }
+    }
+  }
+
+  private func closeOtherPanes(force: Bool) throws {
+    let active = paneContainer.activePane
+    let removing = paneContainer.panes.filter { $0 !== active }
+    var seen = Set<ObjectIdentifier>()
+    let documents = removing.compactMap(\.document).filter { seen.insert(ObjectIdentifier($0)).inserted }
+    for document in documents where document !== active.document {
+      let survives = Self.instances.compactMap(\.value).contains { controller in
+        !controller.isClosed && controller !== self
+          && controller.paneContainer.panes.contains(where: { $0.document === document })
+      }
+      if !force && !survives && document.editorBackend.persistenceState.isDirty {
+        throw EVDocumentHostError.documentModified
+      }
+    }
+    for pane in removing { paneContainer.remove(pane) }
+    rebindWindowDocument()
+    for document in documents { closeIfUnrepresented(document) }
+    updateActiveDocumentChrome()
+  }
+
+  private func sourceCommands(_ path: String?, completion: @escaping @MainActor (Result<String?, Error>) -> Void) {
+    do {
+      guard let path, let url = resolvedFileURL(path, relativeTo: nil) else { throw EVDocumentHostError.invalidPath(path ?? "") }
+      guard sourceDepth < UInt32(VIEM_SOURCE_MAX_DEPTH) else {
+        throw EVSourceCommandError(path: url.path, line: 0, message: "Source nesting limit exceeded.")
+      }
+      let file = try FileHandle(forReadingFrom: url)
+      defer { try? file.close() }
+      let data = try file.read(upToCount: Int(VIEM_SOURCE_MAX_BYTES) + 1) ?? Data()
+      guard data.count <= Int(VIEM_SOURCE_MAX_BYTES), let text = String(data: data, encoding: .utf8) else {
+        throw EVSourceCommandError(path: url.path, line: 0, message: "Source files must be UTF-8 and at most 1 MiB.")
+      }
+      if sourceDepth == 0 { sourceCommandCount = 0 }
+      sourceDepth += 1
+      let depth = sourceDepth
+      let lines = text.components(separatedBy: "\n")
+      var targetPane = documentContentController
+      func finish(_ result: Result<String?, Error>) { self.sourceDepth -= 1; completion(result) }
+      func next(_ index: Int) {
+        guard index < lines.count else { finish(.success(nil)); return }
+        self.sourceCommandCount += 1
+        guard !self.isClosed, self.sourceCommandCount <= Int(VIEM_SOURCE_MAX_COMMANDS) else {
+          finish(.failure(EVSourceCommandError(path: url.path, line: index + 1, message: "Source command limit exceeded or window closed.")))
+          return
+        }
+        do {
+          guard let targetIndex = self.paneContainer.panes.firstIndex(where: { $0 === targetPane }) else {
+            throw EVDocumentHostError.staleRequest
+          }
+          // A user's focus change while a sourced host request is pending
+          // must not redirect the remaining script into an unrelated buffer.
+          self.paneContainer.focusPane(at: targetIndex)
+          let requests = try targetPane.editorSurface.executeSourcedLine(lines[index], depth: depth)
+          targetPane = self.documentContentController
+          let navigates = requests.contains { [.edit, .new, .split, .newPane, .navigateArgument, .quit].contains($0.kind) }
+
+          self.performSourcedHostRequests(requests[...]) { result in
+            switch result {
+            case .success:
+              if navigates { targetPane = self.documentContentController }
+              DispatchQueue.main.async { next(index + 1) }
+            case .failure(let error):
+              finish(.failure(EVSourceCommandError(path: url.path, line: index + 1, message: error.localizedDescription)))
+            }
+          }
+        } catch {
+          finish(.failure(EVSourceCommandError(path: url.path, line: index + 1, message: error.localizedDescription)))
+        }
+      }
+      next(0)
+    } catch { completion(.failure(error)) }
+  }
+
+  private func performSourcedHostRequests(_ requests: ArraySlice<EVDocumentHostRequest>, completion: @escaping @MainActor (Result<Void, Error>) -> Void) {
+    guard let request = requests.first else { completion(.success(())); return }
+    performDocumentHostRequest(request) { result in
+      switch result {
+      case .success(let message):
+        if let message { self.editorSurface.showDocumentMessage(message) }
+        self.performSourcedHostRequests(requests.dropFirst(), completion: completion)
+      case .failure(let error): completion(.failure(error))
       }
     }
   }
@@ -1254,7 +1394,7 @@ final class EVDocumentContentViewController: NSViewController,
       }
       // The command line lives in the status line, so a hidden status line
       // still has to appear while one is active.
-      let needed = self.showsStatusBar || state.commandLine != nil || state.commandOutput != nil
+      let needed = self.showsStatusBar || state.commandLine != nil || state.commandOutput != nil || state.requiresInteraction
       if self.statusBar.isHidden == needed {
         self.statusBar.isHidden = !needed
         self.layoutContent()
@@ -1307,6 +1447,7 @@ final class EVDocumentContentViewController: NSViewController,
     statusBar.apply(editorSurface.statusBarState)
     statusBar.isHidden = !showsStatusBar && editorSurface.statusBarState.commandLine == nil
       && editorSurface.statusBarState.commandOutput == nil
+      && !editorSurface.statusBarState.requiresInteraction
     view = root
     layoutContent()
   }
@@ -1366,6 +1507,7 @@ final class EVDocumentContentViewController: NSViewController,
     showsStatusBar.toggle()
     statusBar.isHidden = !showsStatusBar && editorSurface.statusBarState.commandLine == nil
       && editorSurface.statusBarState.commandOutput == nil
+      && !editorSurface.statusBarState.requiresInteraction
     layoutContent()
     try? EVConfigurationStore.shared.setShowStatusBar(showsStatusBar)
   }
@@ -1392,4 +1534,11 @@ final class EVDocumentContentViewController: NSViewController,
     }
     return presentation.isEnabled
   }
+}
+
+private struct EVSourceCommandError: LocalizedError {
+  let path: String
+  let line: Int
+  let message: String
+  var errorDescription: String? { "\(path):\(line): \(message)" }
 }

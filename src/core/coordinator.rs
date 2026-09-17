@@ -43,6 +43,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod input_layout;
 mod startup;
+mod ex_files;
 mod completion;
 mod completion_layout;
 mod search;
@@ -290,6 +291,7 @@ pub enum StyleEditGroupError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoreEvent {
+    ReadFile { document: DocumentId, revision: Revision, after: usize, bytes: Vec<u8> },
     FlushMappingPrefix,
     FlushMappingPrefixWithClipboard(ClipboardCommandContext),
     EditCommandLine(crate::command::CommandLineEditRequest),
@@ -4795,6 +4797,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 let Some(plan) = plan else { return Ok(initial); };
                 return self.run_compound_replay(view_id, clipboard, initial, ReplayPlan::Mapping(plan));
             }
+            CoreEvent::ReadFile { document, revision, after, bytes } => {
+                return self.complete_read_file(view_id, document, revision, after, &bytes);
+            }
             CoreEvent::EditCommandLine(request) => {
                 self.install_buffer_commands(view_id);
                 let command = self
@@ -5222,7 +5227,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         };
         let invoking_restoration_before = active_position_state
             .as_ref()
-            .map(|(_, anchors)| anchors.history_snapshot());
+            .map(|(commands, anchors)| commands.substitute_confirmation_history(&self.document)
+                .cloned().unwrap_or_else(|| anchors.history_snapshot()));
         let inactive_positions = if matches!(&event, CoreEvent::Input(_)) {
             self.views
                 .iter()
@@ -5237,6 +5243,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             Vec::new()
         };
         let outcome: Result<CoreOutcome, CoreError> = match event {
+            CoreEvent::ReadFile { .. } => unreachable!("read completion handled before dispatch"),
             CoreEvent::EditCommandLine(_) => {
                 unreachable!("prompt edits handled before document/layout dispatch")
             }
@@ -6090,6 +6097,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let mut accumulator = CoreOutcomeAccumulator::new(initial);
         let mut frames = Vec::new();
         let mut terminal_status = None;
+        let mut global_error = None;
         let mut dispatched_events = 0usize;
         if self
             .views
@@ -6098,6 +6106,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             .commands
             .begin_replay_frame()
         {
+            if matches!(&initial_plan, ReplayPlan::ExNormal(plan) if plan.global) {
+                self.views.get_mut(&view_id).unwrap().commands.global_replay_depth += 1;
+            }
             frames.push(replay_frame(initial_plan));
         } else {
             terminal_status = Some(CommandStatus::Error(format!(
@@ -6149,7 +6160,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                                 break ReplayAction::PopFrame;
                             }
                             if !*line_started {
-                                let Some(bound) = plan.targets[*target] else {
+                                let Some(bound) = plan.bound_target(*target)? else {
                                     *target += 1;
                                     continue;
                                 };
@@ -6174,6 +6185,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 match action {
                     ReplayAction::PopFrame => {
                         let popped = frames.pop();
+                        if matches!(&popped, Some(ReplayFrame::ExNormal { plan, .. }) if plan.global) {
+                            self.views.get_mut(&view_id).unwrap().commands.global_replay_depth -= 1;
+                        }
                         if popped.is_some() {
                             self.views
                                 .get_mut(&view_id)
@@ -6332,7 +6346,18 @@ impl<P: TextMeasurementProvider> Core<P> {
                             }
                         }
                         if command_status_stops_compound(&status) {
-                            terminal_status = Some(status);
+                            if let Some(global) = frames.iter().rposition(|frame| matches!(frame, ReplayFrame::ExNormal { plan, .. } if plan.global)) {
+                                // A failed line does not discard successful global
+                                // edits or skip later selected identities.
+                                global_error.get_or_insert(status);
+                                while frames.len() > global + 1 {
+                                    frames.pop();
+                                    self.views.get_mut(&view_id).unwrap().commands.end_replay_frame();
+                                }
+                                if let ReplayFrame::ExNormal { plan, event, .. } = &mut frames[global] { *event = plan.events.len(); }
+                                accumulator.command_mut().status = CommandStatus::Complete;
+                                self.queued_replay = None;
+                            } else { terminal_status = Some(status); }
                             continue;
                         }
                         if host_action {
@@ -6368,6 +6393,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                                 )));
                                 continue;
                             }
+                            if matches!(&nested, ReplayPlan::ExNormal(plan) if plan.global) {
+                                self.views.get_mut(&view_id).unwrap().commands.global_replay_depth += 1;
+                            }
                             frames.push(replay_frame(nested));
                         }
                     }
@@ -6392,7 +6420,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             Ok(())
         })();
 
-        while frames.pop().is_some() {
+        while let Some(frame) = frames.pop() {
+            if matches!(&frame, ReplayFrame::ExNormal { plan, .. } if plan.global) {
+                self.views.get_mut(&view_id).unwrap().commands.global_replay_depth -= 1;
+            }
             self.views
                 .get_mut(&view_id)
                 .expect("replay view remains attached")
@@ -6417,7 +6448,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             self.finish_replay_undo_segment(view_id)
         };
 
-        if let Some(status) = terminal_status {
+        if let Some(status) = terminal_status.or(global_error) {
             accumulator.command_mut().status = status;
         }
         self.views
@@ -7153,6 +7184,11 @@ fn rebase_replay_ex_normal_targets(
         else {
             continue;
         };
+        if plan.global {
+            let composed = plan.global_map.as_ref().map_or_else(|| Ok(map.clone()), |previous| previous.then(map))?;
+            plan.global_map = Some(Box::new(composed));
+            continue;
+        }
         let start = if *line_started {
             target.saturating_add(1)
         } else {

@@ -6,6 +6,9 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+mod timeline;
+pub use timeline::{HistoryTimeAmount, HistoryTimelineEntry};
+
 static NEXT_HISTORY_NODE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Resource limits applied to the in-memory branching undo tree.
@@ -389,6 +392,7 @@ pub(crate) struct History<T, M = ()> {
     current: usize,
     group_node: Option<usize>,
     next_change_number: u64,
+    next_write_number: u64,
     save_point: HistoryNodeId,
     save_point_digest: Option<SourceArtifactDigest>,
     save_point_source: Option<SourceSnapshotIdentity>,
@@ -416,6 +420,7 @@ struct HistoryCommandCheckpoint<T, M> {
     current: usize,
     group_node: Option<usize>,
     next_change_number: u64,
+    next_write_number: u64,
     save_point: HistoryNodeId,
     save_point_digest: Option<SourceArtifactDigest>,
     save_point_source: Option<SourceSnapshotIdentity>,
@@ -429,6 +434,7 @@ struct NodeCommandCheckpoint<T, M> {
     children_len: usize,
     children_capacity: usize,
     preferred_child: Option<usize>,
+    saved_write: Option<u64>,
     content: Option<NodeContentCheckpoint<T, M>>,
 }
 
@@ -451,6 +457,9 @@ struct EdgeCommandCheckpoint<M> {
 struct Node<T, M> {
     id: HistoryNodeId,
     change: HistoryChangeNumber,
+    timestamp: u64,
+    creation_write: u64,
+    saved_write: Option<u64>,
     state: Arc<T>,
     parent: Option<usize>,
     children: Vec<usize>,
@@ -590,6 +599,9 @@ impl<T, M> History<T, M> {
             nodes: vec![Node {
                 id: root_id,
                 change: root_change,
+                timestamp: timeline::now_seconds(),
+                creation_write: 0,
+                saved_write: None,
                 state: Arc::new(initial),
                 parent: None,
                 children: Vec::new(),
@@ -604,6 +616,7 @@ impl<T, M> History<T, M> {
             current: 0,
             group_node: None,
             next_change_number: 1,
+            next_write_number: 1,
             save_point: root_id,
             save_point_digest,
             save_point_source,
@@ -799,6 +812,7 @@ impl<T, M> History<T, M> {
             current: self.current,
             group_node: self.group_node,
             next_change_number: self.next_change_number,
+            next_write_number: self.next_write_number,
             save_point: self.save_point,
             save_point_digest: self.save_point_digest,
             save_point_source: self.save_point_source,
@@ -820,6 +834,7 @@ impl<T, M> History<T, M> {
                     children_len: node.children.len(),
                     children_capacity: node.children.capacity(),
                     preferred_child: node.preferred_child,
+                    saved_write: node.saved_write,
                     content: None,
                 }
             });
@@ -899,6 +914,7 @@ impl<T, M> History<T, M> {
             node.children.truncate(saved.children_len);
             node.children.shrink_to(saved.children_capacity);
             node.preferred_child = saved.preferred_child;
+            node.saved_write = saved.saved_write;
             if let Some(content) = saved.content {
                 node.state = content.state;
                 node.retained_buffers =
@@ -940,6 +956,7 @@ impl<T, M> History<T, M> {
         self.current = checkpoint.current;
         self.group_node = checkpoint.group_node;
         self.next_change_number = checkpoint.next_change_number;
+        self.next_write_number = checkpoint.next_write_number;
         self.save_point = checkpoint.save_point;
         self.save_point_digest = checkpoint.save_point_digest;
         self.save_point_source = checkpoint.save_point_source;
@@ -1239,6 +1256,7 @@ impl<T, M> History<T, M> {
         // open, a later grouped commit must create a new node rather than
         // overwrite the state represented by this save point.
         self.end_group();
+        self.annotate_saved(self.current);
         self.save_point = self.nodes[self.current].id;
         self.save_point_digest = self
             .accounting
@@ -1263,6 +1281,9 @@ impl<T, M> History<T, M> {
         // exact snapshot identity without resurrecting a navigable node.
         if let Some(&index) = self.node_indexes.get(&location.node) {
             debug_assert_eq!(self.location(index), location);
+            self.annotate_saved(index);
+        } else {
+            self.next_write_number = self.next_write_number.saturating_add(1);
         }
         self.save_point = location.node;
         self.save_point_digest = Some(digest);
@@ -1615,6 +1636,9 @@ impl<T> History<T> {
         self.nodes.push(Node {
             id,
             change,
+            timestamp: self.next_timestamp(),
+            creation_write: self.next_write_number - 1,
+            saved_write: None,
             state: Arc::new(state),
             parent: Some(parent),
             children: Vec::new(),
@@ -1694,6 +1718,9 @@ impl<T> History<T, PositionMap> {
         self.nodes.push(Node {
             id,
             change,
+            timestamp: self.next_timestamp(),
+            creation_write: self.next_write_number - 1,
+            saved_write: None,
             state: Arc::new(state),
             parent: Some(parent),
             children: Vec::new(),

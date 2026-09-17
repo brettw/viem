@@ -37,6 +37,8 @@ pub struct SearchPresentationKey {
     origin: usize,
     options: SearchOptions,
     suppressed: bool,
+    confirmation_match: Option<Range<usize>>,
+    address_marks: Vec<(char, usize)>,
     last_search: Option<(SearchDirection, String)>,
     prompt: Option<(
         CommandLineKind,
@@ -64,6 +66,8 @@ impl CommandInterpreter {
             origin: self.cursor,
             options: self.search_options,
             suppressed: self.search_highlight_suppressed,
+            confirmation_match: self.substitute_confirmation_match(document),
+            address_marks: self.marks.iter().map(|(name, offset)| (*name, *offset)).collect(),
             last_search: self.last_search.clone(),
             prompt: self.command_line_state.as_ref().map(|state| {
                 (
@@ -101,6 +105,14 @@ impl CommandInterpreter {
             search_range: None,
             diagnostic: None,
         };
+        if let Some(matched_range) = self.substitute_confirmation_match(document) {
+            result.highlight_all = false;
+            result.incremental_match = Some(IncrementalSearchPreview {
+                document: document.id(), revision: document.revision(), origin: self.cursor,
+                destination: matched_range.start, matched_range,
+            });
+            return result;
+        }
         if !self.search_options.incsearch {
             return result;
         }
@@ -165,12 +177,15 @@ impl CommandInterpreter {
             CommandLineKind::Ex => {
                 let (range, mut pattern, override_case, count) =
                     ex::incremental_substitute(&state.buffer.input)?;
+                if state.visual_range_revision.is_some_and(|revision| revision != document.revision()) { return None; }
+                let mut command = ex::ExCommand { range, bang: false, action: ExAction::NoHighlight };
+                let address_search = self.bind_ex_addresses_with_limits(document, &mut command, preview_limits()).ok()?;
                 if pattern.is_empty() {
-                    pattern = self.last_search.as_ref()?.1.clone();
+                    pattern = address_search.as_ref().or(self.last_search.as_ref())?.1.clone();
                 }
                 let current = document.hard_line_at_offset(self.cursor)?;
                 let mut lines =
-                    ex_execute::resolve_range(range.as_ref(), current, document.line_count())
+                    ex_execute::resolve_range(command.range.as_ref(), current, document.line_count())
                         .ok()?;
                 if let Some(count) = count {
                     let count = usize::try_from(count).ok()?.max(1);

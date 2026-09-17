@@ -877,6 +877,35 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
+    func readFile(_ bytes: Data, after: UInt64, expected: EVDocumentPersistenceState) throws -> ViemCoreOutcomeV1 {
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        try bytes.withUnsafeBytes { raw in
+            try checked(viem_core_view_read_file(document.core, viewID, expected.documentID,
+                expected.documentRevision, after, raw.bindMemory(to: UInt8.self).baseAddress,
+                UInt64(raw.count), &outcome), operation: "Read file into buffer")
+        }
+        finish(outcome, composition: .cancelIfChanged)
+        guard outcome.command_status == UInt32(VIEM_COMMAND_STATUS_NONE)
+            || outcome.command_status == UInt32(VIEM_COMMAND_STATUS_COMPLETE) else {
+            throw EVCoreFrontendError.command(operation: "Read file into buffer", status: outcome.command_status)
+        }
+        return outcome
+    }
+
+    func sourceLine(_ text: String, depth: UInt32) throws -> ViemCoreOutcomeV1 {
+        let data = Data(text.utf8)
+        return try performHostEffectTurn("Execute sourced command") { outcome, effects in
+            withCommandTurnContext { context in
+                data.withUnsafeBytes { raw in
+                    viem_core_view_source_line(document.core, viewID, depth,
+                        raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count), context, outcome, effects)
+                }
+            }
+        }
+    }
+
+    @discardableResult
     func sendText(_ text: String) throws -> ViemCoreOutcomeV1 {
         let data = Data(text.utf8)
         return try performHostEffectTurn("Send text input") { outcome, effects in
