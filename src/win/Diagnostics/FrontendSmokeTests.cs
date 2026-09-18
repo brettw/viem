@@ -147,11 +147,20 @@ internal static class FrontendSmokeTests
         Scenario(string.Concat(Enumerable.Repeat("A long line with office ligatures and AV kerning.\n", 25_000)), 1, (doc, view) => {
             long initial = view.Provider.ShapedCharacters;
             Check(initial < 100_000, "large document initial layout is bounded");
+            var beforeDrag = view.Layout();
+            view.Place(40f, 40f); view.Place(140f, 40f, true);
+            var afterDrag = view.Layout();
+            Check(ReferenceEquals(beforeDrag.Clusters, afterDrag.Clusters) && ReferenceEquals(beforeDrag.PaintRuns, afterDrag.PaintRuns) && afterDrag.Selection.Length > 0, "large-document drag reuses immutable geometry and paint while refreshing selection");
+            view.Key(VIEM_KEY_ESCAPE);
             view.Resize(650, 350);
+            Check(!ReferenceEquals(beforeDrag.Clusters, view.Layout().Clusters), "resize invalidates the frontend layout export cache");
             Check(view.Provider.ShapedCharacters - initial < 20_000, "resize reuses shaping cache");
             view.Command("i"); view.Text("x"); view.Key(VIEM_KEY_ESCAPE);
             Check(view.Provider.ShapedCharacters - initial < 40_000, "local edit does not reshape whole document");
+            var beforeZoomLayout = view.Layout();
+            Check(!ReferenceEquals(afterDrag.Clusters, beforeZoomLayout.Clusters), "editing invalidates the frontend layout export cache");
             long beforeZoom = view.Provider.ShapedCharacters; view.Zoom(1.5f);
+            Check(!ReferenceEquals(beforeZoomLayout.Clusters, view.Layout().Clusters), "zoom invalidates the frontend layout export cache");
             Check(view.Provider.ShapedCharacters > beforeZoom, "scale invalidates affected metrics");
             var layout = view.Layout(); Check(layout.Info.coverage_hard_line_end < 25_000, "viewport export remains regional");
             view.Scroll(0, 100_000); Check(view.Viewport.top > 0, "large document scrolling");

@@ -96,7 +96,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     }
     internal delegate uint Operation(ViemCoreOutcomeV1* outcome);
     internal void Apply(Operation operation)
-    { var outcome = New<ViemCoreOutcomeV1>(); Finish(operation(&outcome), outcome); }
+    { var outcome = New<ViemCoreOutcomeV1>(); uint status; using (Diagnostics.InputPerformance.Measure("core.operation")) status = operation(&outcome); Finish(status, outcome); }
     private void Finish(uint status, ViemCoreOutcomeV1 outcome)
     {
         Check(status, Provider.LastError ?? "Editor operation"); Outcome = outcome;

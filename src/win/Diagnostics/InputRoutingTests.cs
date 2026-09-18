@@ -42,7 +42,7 @@ internal static class InputRoutingTests
         foreach (char value in text) Post(0x0102, value, 1); // WM_CHAR, including UTF-16 pairs.
         await Task.Delay(100);
     }
-    private static async Task Key(VirtualKey key)
+    internal static async Task Key(VirtualKey key)
     {
         uint scan = MapVirtualKey((uint)key, 0);
         Post(0x0100, (uint)key, (nint)(1u | scan << 16)); // WM_KEYDOWN
@@ -85,6 +85,7 @@ internal static class InputRoutingTests
         var input = Find<TextBox>(pane)!;
         Check(ReferenceEquals(FocusManager.GetFocusedElement(pane.XamlRoot), input), "pane switch transfers native keyboard focus");
         await Text("i" + text); await Key(VirtualKey.Escape);
+        if (pane.LastError != null) throw pane.LastError;
         Check(pane.Document.FormattedText().Contains(text), "typing reaches the focused pane after a split");
         await Text("u");
     }

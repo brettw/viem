@@ -11,11 +11,20 @@ internal sealed record LayoutSnapshot(ViemLayoutSnapshotInfoV1 Info, ViemVisualR
 
 internal sealed unsafe partial class CoreView
 {
+    private LayoutSnapshot? cachedLayout;
+    internal static bool SameLayout(ViemLayoutSnapshotIdentityV1 a, ViemLayoutSnapshotIdentityV1 b)
+        => a.view_id == b.view_id && a.document_id == b.document_id && a.document_revision == b.document_revision
+        && a.layout_revision == b.layout_revision && a.configuration_generation == b.configuration_generation
+        && a.measurement_environment_id == b.measurement_environment_id && a.metrics_generation == b.metrics_generation;
     public ViemLayoutSnapshotInfoV1 LayoutInfo()
     { var info = New<ViemLayoutSnapshotInfoV1>(); Check(viem_core_view_layout_snapshot_info(Document.Handle, Id, &info), "Read layout"); return info; }
     public LayoutSnapshot Layout()
     {
         var info = LayoutInfo(); var identity = info.identity;
+        // Geometry and paint belong to an immutable, fully identified snapshot.
+        // Selection changes independently and must still be exported each turn.
+        if (cachedLayout is { } cached && SameLayout(cached.Info.identity, identity))
+            return cached with { Info = info, Selection = Selection().Rectangles };
         var rows = new ViemVisualRowV1[checked((int)info.row_count)];
         var clusters = new ViemPositionedClusterV1[checked((int)info.cluster_count)];
         var carets = new ViemPositionedCaretV1[checked((int)info.caret_count)];
@@ -31,7 +40,7 @@ internal sealed unsafe partial class CoreView
         var decorations = new ViemLayoutDecorationV1[checked((int)furniture.decoration_count)]; var labels = new byte[checked((int)furniture.label_bytes)];
         fixed (ViemLayoutDecorationV1* d = decorations) fixed (byte* l = labels)
             Check(viem_core_view_copy_layout_decorations(Document.Handle, Id, &identity, d, (ulong)decorations.Length, l, (ulong)labels.Length, &furniture), "Copy decorations");
-        return new(info, rows, clusters, carets, paint, runs, selection.Rectangles, decorations);
+        return cachedLayout = new(info, rows, clusters, carets, paint, runs, selection.Rectangles, decorations);
     }
     public (ViemVisualSelectionInfoV1 Info, ViemVisualSelectionSegmentV1[] Segments, ViemVisualSelectionRectangleV1[] Rectangles) Selection()
     {

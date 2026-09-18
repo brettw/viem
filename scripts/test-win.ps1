@@ -1,4 +1,4 @@
-param([switch]$NoBuild)
+param([switch]$NoBuild, [string]$ProfileDocument)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $projectRoot
@@ -10,6 +10,8 @@ try {
     New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
     $reportPath = Join-Path $testRoot ('result-' + [Guid]::NewGuid().ToString('N') + '.json')
     $oldProfile = $env:VIEM_CONFIG_DIR
+    $oldPerformanceDocument = $env:VIEM_PERF_DOCUMENT
+    if ($ProfileDocument) { $env:VIEM_PERF_DOCUMENT = (Resolve-Path -LiteralPath $ProfileDocument).Path }
     $env:VIEM_CONFIG_DIR = $reportPath + '.profile'
     try {
         $executable = Join-Path $projectRoot 'target/windows/Viem.Windows/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/Viem.exe'
@@ -18,8 +20,9 @@ try {
         if (!(Test-Path -LiteralPath $reportPath)) { throw "Windows app exited $($process.ExitCode) before writing a test report." }
         $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
         if (!$report.passed) { throw $report.error }
-        Write-Output "$($report.count) Windows integration checks passed. Report: $reportPath"
+        if ($ProfileDocument) { Write-Output "Mouse-drag CPU benchmark completed. Report: $reportPath" }
+        else { Write-Output "$($report.count) Windows integration checks passed. Report: $reportPath" }
     }
-    finally { $env:VIEM_CONFIG_DIR = $oldProfile }
+    finally { $env:VIEM_CONFIG_DIR = $oldProfile; $env:VIEM_PERF_DOCUMENT = $oldPerformanceDocument }
 }
 finally { Pop-Location }

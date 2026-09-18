@@ -23,7 +23,7 @@ using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Editor;
 
-internal sealed class EditorPane : Grid, IDisposable
+internal sealed partial class EditorPane : Grid, IDisposable
 {
     public CoreDocument Document { get; }
     public CoreView? View { get; private set; }
@@ -131,6 +131,7 @@ internal sealed class EditorPane : Grid, IDisposable
     }
     private void Attach()
     {
+        InvalidateDrawingCache();
         if (View != null) { View.Provider.ResetDevice(Canvas.Device); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); return; }
         View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight);
         View.Changed += Refresh; View.Effects += ApplyEffects;
@@ -147,6 +148,7 @@ internal sealed class EditorPane : Grid, IDisposable
     }
     private void ApplyTheme()
     {
+        InvalidateDrawingCache();
         var theme = preferences.Theme;
         Background = new SolidColorBrush(theme.Background); status.Background = new SolidColorBrush(theme.StatusBackground);
         mode.Foreground = format.Foreground = message.Foreground = location.Foreground = new SolidColorBrush(theme.StatusForeground);
@@ -294,11 +296,12 @@ internal sealed class EditorPane : Grid, IDisposable
     }
     public void Refresh()
     {
+        using var measurement = Diagnostics.InputPerformance.Measure("refresh");
         if (View == null || refreshing || disposed) return;
         refreshing = true;
         try
         {
-            try { snapshot = View.Layout(); }
+            try { using var layoutMeasurement = Diagnostics.InputPerformance.Measure("layout.export"); snapshot = View.Layout(); }
             catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); snapshot = View.Layout(); }
             presentation = View.Presentation; viewport = View.Viewport;
             mode.Text = presentation.mode switch { 2 => "INSERT", 3 => "REPLACE", 4 => "VISUAL", 5 => "V-LINE", 6 => "V-BLOCK", 7 => "COMMAND", _ => "NORMAL" };
@@ -316,7 +319,7 @@ internal sealed class EditorPane : Grid, IDisposable
             horizontal.Visibility = (viewport.flags & VIEM_VIEWPORT_STATE_WRAP) == 0 && viewport.maximum_left > 0 ? Visibility.Visible : Visibility.Collapsed;
             scrollUpdating = false;
             caretRect = CalculateCaret();
-            whitespace = View.Whitespace(snapshot.Info);
+            using (Diagnostics.InputPerformance.Measure("whitespace.export")) whitespace = View.Whitespace(snapshot.Info);
             RefreshCompletion();
             Microsoft.UI.Xaml.Controls.Canvas.SetLeft(input, Math.Clamp(caretRect.X, 0, Math.Max(0, Canvas.ActualWidth - 2)));
             Microsoft.UI.Xaml.Controls.Canvas.SetTop(input, Math.Clamp(caretRect.Y, 0, Math.Max(0, Canvas.ActualHeight - 24)));
@@ -359,44 +362,17 @@ internal sealed class EditorPane : Grid, IDisposable
     }
     private static Color Color(ViemRgbaV1 c) => global::Windows.UI.Color.FromArgb((byte)Math.Clamp(c.alpha * 255, 0, 255), (byte)Math.Clamp(c.red * 255, 0, 255), (byte)Math.Clamp(c.green * 255, 0, 255), (byte)Math.Clamp(c.blue * 255, 0, 255));
     private static Rect OffsetRect(ViemLayoutRectV1 r, ViemViewportStateV1 v) => new(r.x - v.left, r.y - v.top, Math.Max(0, r.width), Math.Max(0, r.height));
-    private void Draw(CanvasDrawingSession drawing)
+    internal void Draw(CanvasDrawingSession drawing)
     {
+        using var measurement = Diagnostics.InputPerformance.Measure("draw");
         var theme = preferences.Theme;
         drawing.Clear(snapshot != null && (snapshot.Paint.flags & VIEM_LAYOUT_PAINT_DEFAULT_CANVAS) == 0 ? Color(snapshot.Paint.canvas_background) : theme.Background);
         if (snapshot == null || View == null) return;
-        // Explicit character backgrounds precede selection, which must remain
-        // visible even over opaque source-authored highlights.
-        foreach (var cluster in snapshot.Clusters)
-        {
-            var paint = PaintFor(cluster.text_start);
-            if ((paint.flags & VIEM_TEXT_PAINT_HAS_BACKGROUND) != 0) drawing.FillRectangle(OffsetRect(cluster.typographic_bounds, viewport), Color(paint.background));
-        }
+        EnsureDrawingCache();
+        // Source highlights, selection, then text: preserve the original layering.
+        drawing.DrawImage(cachedBackground);
         foreach (var rectangle in snapshot.Selection) drawing.FillRectangle(OffsetRect(rectangle.rect, viewport), theme.Selection);
-        foreach (var row in snapshot.Rows)
-        {
-            if (row.y + row.ascent + row.descent + row.leading < viewport.top - 4 || row.y > viewport.top + Canvas.ActualHeight + 4) continue;
-            for (ulong index = row.first_cluster; index < row.first_cluster + row.cluster_count; index++)
-            {
-                var cluster = snapshot.Clusters[checked((int)index)];
-                if (cluster.ink_bounds.x + cluster.ink_bounds.width < viewport.left - 4 || cluster.ink_bounds.x > viewport.left + Canvas.ActualWidth + 4) continue;
-                var paint = PaintFor(cluster.text_start);
-                var bounds = OffsetRect(cluster.typographic_bounds, viewport);
-                Color foreground = (paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? theme.Foreground : Color(paint.foreground);
-                View.Provider.Draw(drawing, cluster.render_run, new(cluster.x - viewport.left, row.baseline - viewport.top), foreground);
-                if ((paint.flags & VIEM_TEXT_PAINT_UNDERLINE) != 0) drawing.DrawLine((float)bounds.X, row.baseline - viewport.top + 2, (float)bounds.Right, row.baseline - viewport.top + 2, foreground);
-                if ((paint.flags & VIEM_TEXT_PAINT_STRIKETHROUGH) != 0) drawing.DrawLine((float)bounds.X, row.baseline - viewport.top - row.ascent * .3f, (float)bounds.Right, row.baseline - viewport.top - row.ascent * .3f, foreground);
-            }
-        }
-        foreach (var d in snapshot.Decorations)
-        {
-            var row = snapshot.Rows.FirstOrDefault(r => r.row_index == d.row_index);
-            Color foreground = (d.paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? theme.Foreground : Color(d.paint.foreground);
-            if ((d.flags & VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0) drawing.FillRectangle(OffsetRect(d.typographic_bounds, viewport), foreground);
-            else View.Provider.Draw(drawing, d.render_run, new(d.x - viewport.left, row.baseline - viewport.top), foreground);
-        }
-        if (whitespace != null) View.Provider.DrawWhitespace(drawing, whitespace, snapshot, viewport, offset => {
-            var paint = PaintFor(offset); return (paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? theme.Foreground : Color(paint.foreground);
-        }, theme.Foreground);
+        drawing.DrawImage(cachedText);
         bool focused = active && window.IsWindowActive && input.FocusState != FocusState.Unfocused;
         if (caretRect.Height > 0 && presentation.mode != VIEM_MODE_COMMAND_LINE && (!focused || caretVisible))
         {
@@ -449,6 +425,7 @@ internal sealed class EditorPane : Grid, IDisposable
     {
         if (disposed) return; disposed = true; blink.Stop(); mapping.Stop();
         preferences.Changed -= PreferencesChanged; Document.Changed -= DocumentChanged; Clipboard.ContentChanged -= ClipboardChanged;
+        InvalidateDrawingCache();
         View?.Dispose(); View = null; prompt.Dispose(); Canvas.RemoveFromVisualTree();
     }
 }

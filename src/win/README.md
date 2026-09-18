@@ -102,6 +102,14 @@ normal application profile. Atomic file replacement must be permitted by the
 host: the Codex workspace sandbox on this machine blocks `File.Replace`, so the
 native integration harness was run outside that sandbox against isolated test data.
 
+To profile selection with a local document, run
+`scripts/test-win.ps1 -ProfileDocument AGENTS.md` (add `-NoBuild` to reuse the
+Debug build). The isolated app loads a copy as Markdown and reports p50/p95 CPU
+times for 100 deterministic drag updates, layout export and Win2D drawing,
+plus shaping and drawing-cache rebuild counts. Drawing uses an offscreen
+surface on the UI thread; these are CPU measurements, not display-present or
+mouse-to-photon latency. The source file is never changed.
+
 Regenerate `Assets/Viem.ico` with `python src/win/tools/build_icon.py` when the
 existing iconset changes. The script only packages those PNGs into an ICO;
 it does not redraw or resample them.

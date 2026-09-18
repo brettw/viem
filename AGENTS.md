@@ -5771,6 +5771,15 @@ Keyboard regressions MUST also exercise the native WinUI input host, including
 text entry, command keys and pane focus. Calling the Rust input wrappers alone
 does not verify Windows event routing.
 
+Pointer selection over already materialized visible rows MUST reuse exact
+layout geometry instead of running visible reflow for each pointer event.
+Windows caches exported geometry and text drawing commands against the full
+layout identity. Selection and caret drawing remain independent; viewport,
+device/DPI, theme and whitespace changes invalidate affected drawing commands.
+Menu validation runs when menus are opened, not on each editor input event.
+Regression checks MUST cover cache invalidation, large-document selection and
+pixel equivalence between cached and freshly rebuilt selection frames.
+
 Native save preserves the core's source bytes through synchronized temporary
 files and atomic replacement. External-file checks compare saved content
 hashes; a conflicting overwrite is reviewed. Named documents claim their own

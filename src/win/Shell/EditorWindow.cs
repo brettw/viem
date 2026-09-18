@@ -130,7 +130,7 @@ internal sealed partial class EditorWindow : Window
         if (closed || !Panes.Contains(pane) || pane.Document.Handle == 0) return;
         if (ActivePane != pane) { lastPane = ActivePane; ActivePane = pane; }
         foreach (var item in Panes) item.IsActive = item == pane;
-        UpdateTitle(); RefreshStyleMenus(); ValidateMenus();
+        UpdateTitle(); RefreshStyleMenus();
     }
     private void RebuildPanes()
     {
@@ -158,7 +158,8 @@ internal sealed partial class EditorWindow : Window
     {
         if (ActivePane == null || closed) return;
         string value = ActivePane.Document.Name + (ActivePane.Document.IsDirty ? " •" : "") + (Panes.Count > 1 ? $" · {Panes.Count} panes" : "");
-        Title = value + " — Viem"; titleText.Text = value; ValidateMenus();
+        if (titleText.Text != value) { Title = value + " — Viem"; titleText.Text = value; }
+        menusDirty = true;
     }
     private void Safe(Func<Task> action) { async void Execute() { try { await action(); } catch (Exception e) { ActivePane?.Report(e); } } Execute(); }
     internal async Task OpenDialog()

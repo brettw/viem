@@ -11,6 +11,7 @@ internal sealed partial class EditorWindow
 {
     private readonly List<(MenuFlyoutItemBase Item, Func<bool> Enabled)> validation = [];
     private readonly List<(ToggleMenuFlyoutItem Item, Func<bool> Checked)> checks = [];
+    private bool menusDirty = true;
     private MenuFlyoutSubItem recentMenu = null!;
     private MenuBarItem paragraphMenu = null!, characterMenu = null!;
     private MenuFlyoutItem undoItem = null!, redoItem = null!;
@@ -21,6 +22,7 @@ internal sealed partial class EditorWindow
     private MenuFlyoutItem Item(string text, Func<Task> action, string shortcut = "", Func<bool>? enabled = null)
     {
         var item = new MenuFlyoutItem { Text = text, KeyboardAcceleratorTextOverride = shortcut };
+        item.Loaded += (_, _) => ValidateMenus();
         item.Click += (_, _) => Safe(action);
         if (enabled != null) validation.Add((item, enabled));
         return item;
@@ -30,6 +32,7 @@ internal sealed partial class EditorWindow
     private ToggleMenuFlyoutItem Toggle(string text, Action<bool> action, Func<bool>? state = null)
     {
         var item = new ToggleMenuFlyoutItem { Text = text };
+        item.Loaded += (_, _) => ValidateMenus();
         item.Click += (_, _) => Safe(() => { action(item.IsChecked); ActivePane?.FocusEditor(); return Task.CompletedTask; });
         if (state != null) checks.Add((item, state));
         return item;
@@ -37,6 +40,11 @@ internal sealed partial class EditorWindow
     private MenuBarItem Top(string title, string accessKey, params MenuFlyoutItemBase[] items)
     {
         var menu = new MenuBarItem { Title = title, AccessKey = accessKey };
+        // Validate on demand for pointer, keyboard, access-key and UI Automation
+        // opening (the items' Loaded handler), rather than on every editor move.
+        menu.PointerEntered += (_, _) => ValidateMenus();
+        menu.GotFocus += (_, _) => ValidateMenus();
+        menu.AccessKeyInvoked += (_, _) => ValidateMenus();
         foreach (var item in items) menu.Items.Add(item);
         Menu.Items.Add(menu); return menu;
     }
@@ -107,6 +115,9 @@ internal sealed partial class EditorWindow
     private static string HistoryCategory(uint value) => value switch { 1 => "Typing", 2 => "Style", 3 => "Line Endings", 4 => "Move Lines", 6 => "Document Format", _ => "Edit" };
     private void ValidateMenus()
     {
+        if (!menusDirty) return;
+        menusDirty = false;
+        using var measurement = Diagnostics.InputPerformance.Measure("menus");
         foreach (var (item, enabled) in validation) { try { item.IsEnabled = enabled(); } catch { item.IsEnabled = false; } }
         foreach (var (item, checkedValue) in checks) { try { item.IsChecked = checkedValue(); } catch { } }
         if (View == null || undoItem == null) return;

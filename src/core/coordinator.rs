@@ -3742,7 +3742,35 @@ impl<P: TextMeasurementProvider> Core<P> {
             .set_cursor_from_pointer(&self.document, text_offset, affinity, extend_selection);
         debug_assert!(placed, "the boundary was validated before placement");
 
-        self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::RevealCaret)?;
+        // An on-screen pointer move changes selection, not text geometry. Keep
+        // the exact snapshot when its caret row and viewport are already fully
+        // materialized. Distant/partial long-line destinations retain the normal
+        // materialization path, including its checkpoint and viewport policy.
+        self.poll_syntax();
+        self.synchronize_whitespace(view_id)?;
+        let reuse_visible = {
+            let view = &self.views[&view_id];
+            let requirements = inspect_layout_provider(&view.engine);
+            current_snapshot_for_layout(&self.document, &view.layout, requirements)
+                .is_some_and(|snapshot| {
+                    !snapshot.has_horizontal_materialization()
+                        && viewport_extension_needed(view) == (false, false)
+                        && viewport::capture_caret_baseline_anchor(&self.document, view)
+                            .and_then(|anchor| viewport::anchor_geometry(snapshot, anchor).ok())
+                            .is_some_and(|geometry| {
+                                let bounds = snapshot.rows[geometry.row_index].reveal_bounds();
+                                bounds.start >= view.layout.viewport_top()
+                                    && bounds.end <= view.layout.viewport_top() + view.layout.height()
+                            })
+                })
+        };
+        if reuse_visible {
+            let view = self.views.get_mut(&view_id).expect("validated view");
+            viewport::reveal_presentation_caret_row(&self.document, view)?;
+            update_viewport_anchor(&self.document, view);
+        } else {
+            self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::RevealCaret)?;
+        }
         Ok(CoreOutcome {
             command: None,
             document_changed: false,
@@ -4581,6 +4609,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .commands;
             (commands.cursor(), commands.mode())
         };
+        let invoking_positions = self.views[&view_id].commands.capture_position_anchors(&self.document)?;
         let inactive_positions = self
             .views
             .iter()
@@ -4621,6 +4650,15 @@ impl<P: TextMeasurementProvider> Core<P> {
             .expect("invoking view remains attached")
             .commands
             .clone();
+        // History records restore the cursor and named marks. Rebase the
+        // remaining per-view state (notably gv memory and jumps) first, just
+        // as for inactive views, so it cannot retain pre-Undo offsets.
+        if !invoking_commands.apply_position_map(&invoking_positions, &map)? {
+            return Err(CoreError::Position(PositionError::WrongSnapshot {
+                expected: before_revision,
+                actual: invoking_positions.revision(),
+            }));
+        }
         invoking_commands.apply_history_restoration(&self.document, &restoration)?;
         let mut rebased = Vec::with_capacity(inactive_positions.len());
         for (id, anchors) in inactive_positions {
@@ -4649,6 +4687,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .commands = commands;
         }
 
+        // Native history actions bypass ordinary input dispatch. Publish the
+        // restored buffer marks too, or the next key/new view reinstalls stale
+        // offsets from before Undo (which can now be past the document end).
+        self.publish_buffer_commands(view_id);
         self.replay_undo_floor = None;
         self.cancel_all_active_layout_work();
         self.rebase_viewport_anchors(&map)?;
@@ -11971,6 +12013,84 @@ mod tests {
             CommandStatus::Unsupported(message) if message.contains("requires layout context")
         ));
         assert_eq!(commands.cursor(), 0);
+    }
+
+    #[test]
+    fn pointer_drag_reuses_visible_layout_in_a_large_document() {
+        let mut core = Core::new(Document::new("alpha beta gamma\n".repeat(25_000)));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 300.0);
+        let revision = core.document().revision();
+        let jobs = core.next_layout_job;
+        let layout_revision = core.layout(view).unwrap().snapshot().unwrap().revision;
+        for offset in (0..100).chain((0..100).rev()) {
+            core.handle(view, CoreEvent::PlaceCursor {
+                document_revision: revision,
+                text_offset: offset,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: offset != 0,
+            }).unwrap();
+        }
+        assert_eq!(core.next_layout_job, jobs, "dragging must not schedule visible reflow");
+        assert_eq!(core.layout(view).unwrap().snapshot().unwrap().revision, layout_revision);
+        assert_eq!(core.document().revision(), revision);
+
+        // A destination outside coverage still materializes and reveals its row.
+        core.handle(view, CoreEvent::PlaceCursor {
+            document_revision: revision,
+            text_offset: 200_000,
+            affinity: BoundaryAffinity::Downstream,
+            extend_selection: true,
+        }).unwrap();
+        assert!(core.next_layout_job > jobs);
+        let layout = core.layout(view).unwrap();
+        assert!(layout.snapshot().unwrap().coverage.contains_text_offset(200_000));
+        assert!(layout.viewport_top() > 0.0);
+    }
+
+    #[test]
+    fn pointer_reuse_rejects_stale_document_configuration_and_metrics() {
+        let mut core = Core::new(Document::new("alpha beta gamma\n".repeat(100)));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 300.0);
+        for invalidation in 0..3 {
+            let previous = core.layout(view).unwrap().snapshot().unwrap().revision;
+            match invalidation {
+                0 => { core.document.insert(0, "new ").unwrap(); }
+                1 => { core.views.get_mut(&view).unwrap().layout.resize(180.0, 200.0); }
+                _ => core.views.get_mut(&view).unwrap().engine.provider_mut().set_metrics_generation(MetricsGeneration(2)),
+            }
+            core.handle(view, CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: 0,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            }).unwrap();
+            let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+            assert_ne!(snapshot.revision, previous);
+            assert_eq!(snapshot.document_revision, core.document().revision());
+        }
+        assert_eq!(core.layout(view).unwrap().snapshot().unwrap().metrics_generation, MetricsGeneration(2));
+    }
+
+    #[test]
+    fn native_undo_publishes_restored_marks_before_typing_in_a_new_view() {
+        let mut core = Core::new(Document::new("alpha beta"));
+        let first = core.add_view(MockTextMeasurementProvider::new(), 240.0, 120.0);
+        core.handle(first, CoreEvent::SelectAll {
+            document: core.document().id(), revision: core.document().revision(),
+        }).unwrap();
+        core.handle(first, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        core.handle(first, key('g')).unwrap();
+        core.handle(first, key('g')).unwrap();
+        core.handle(first, key('i')).unwrap();
+        core.handle(first, text("extra ")).unwrap();
+        core.handle(first, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        core.handle(first, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().text(), "alpha beta");
+        let second = core.add_view(MockTextMeasurementProvider::new(), 240.0, 120.0);
+        core.handle(second, key('i')).unwrap();
+        core.handle(second, text("new ")).unwrap();
+        core.handle(second, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        assert_eq!(core.document().text(), "new alpha beta");
     }
 
     #[test]

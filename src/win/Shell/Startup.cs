@@ -19,6 +19,14 @@ internal sealed partial class EditorWindow
             Diagnostics.FrontendSmokeTests.Started = true;
             DispatcherQueue.TryEnqueue(async () => {
                 try {
+                    if (Environment.GetEnvironmentVariable("VIEM_PERF_DOCUMENT") is string performancePath)
+                    {
+                        var performancePane = AddPane(NewDocument(File.ReadAllBytes(performancePath), format: VIEM_FORMAT_MARKDOWN));
+                        await ClosePane(pane);
+                        await Diagnostics.InputPerformance.Run(performancePane, Diagnostics.FrontendSmokeTests.ReportPath);
+                        Environment.Exit(0);
+                        return;
+                    }
                     await Diagnostics.InputRoutingTests.Run(pane);
                     pane.View!.Command("i"); pane.View.Text("# Viem for Windows\n\nA modal editor for writing.\n\nThe same Rust core, with native Windows controls.\n\nUnicode: café · 日本語 · مرحبا · 👩‍💻\n"); pane.View.Key(VIEM_KEY_ESCAPE);
                     pane.View.Format(VIEM_FORMAT_MARKDOWN);
@@ -26,6 +34,7 @@ internal sealed partial class EditorWindow
                     if (pane.LastError != null) throw pane.LastError;
                     Diagnostics.FrontendSmokeTests.UiChecks.Add("native editor draws without presentation errors");
                     await Diagnostics.WindowCapture.Save(Hwnd, pane.Canvas.Device, Diagnostics.FrontendSmokeTests.ReportPath + ".png");
+                    await Diagnostics.PresentationTests.Run(pane, Menu, preferences);
                     var second = AddPane(pane.Document);
                     await Task.Delay(250);
                     await Diagnostics.InputRoutingTests.FocusPane(second, "Split input ");
