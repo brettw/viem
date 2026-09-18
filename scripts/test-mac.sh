@@ -8,5 +8,6 @@ trap 'rm -rf "$viem_test_config"' EXIT
 export VIEM_CONFIG_DIR="$viem_test_config"
 export CLANG_MODULE_CACHE_PATH="$viem_repo_root/.build/clang-module-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$viem_repo_root/.build/clang-module-cache"
+cargo run --locked --example check_c_abi
 "$viem_repo_root/scripts/build-mac-app.sh"
 swift test --disable-sandbox "$@"

@@ -55,8 +55,13 @@ Run the portable and native test suites independently:
 
 ```sh
 cargo test --all-targets
-swift test --disable-sandbox
+scripts/test-mac.sh
 ```
+
+The native test script checks the C header against the Rust ABI, builds the
+current app, and runs the Swift tests with isolated settings. Run `make check-abi`
+for the header check alone. See [C ABI validation](abi-validation.md) for Windows
+setup and CI usage. Ordinary Rust tests do not run the C compiler check.
 
 The Swift package is divided into the same ownership boundaries as the source:
 

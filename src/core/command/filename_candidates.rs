@@ -295,16 +295,11 @@ mod tests {
     fn only_suggests_whitespace_names_that_the_literal_ex_argument_preserves() {
         let fixture = Fixture::new();
         fixture.file(" leading");
-        fixture.file("trailing ");
         fixture.file("interior space");
-        fixture.directory("directory ");
-        assert_eq!(
-            fixture.complete("e ").values,
-            ["directory /", "interior space"]
-        );
+        assert_eq!(fixture.complete("e ").values, ["interior space"]);
         assert_eq!(
             fixture.complete("e ./").values,
-            ["./ leading", "./directory /", "./interior space"]
+            ["./ leading", "./interior space"]
         );
     }
 

@@ -6093,6 +6093,13 @@ structural gates. All cache and worker budgets must have tested finite defaults.
 
 ## Correctness test strategy
 
+- **C ABI declaration checks**: `cargo run --locked --example check_c_abi`
+  validates the public C header's sizes, alignment, field offsets, constants,
+  and selected function declarations against the current Rust definitions.
+  This explicit native validation runs in `scripts/test-mac.sh` and is also
+  available as `make check-abi`; it stays outside ordinary Rust test execution.
+  Windows MSVC validation runs from a matching Visual Studio developer shell.
+  See `docs/abi-validation.md` for platform setup and CI usage.
 - **Source property tests**: randomized byte patches preserve source-tree
   aggregates, unchanged byte slices, part identities, and source anchors.
 - **Projection property tests**: randomized incremental projections equal
