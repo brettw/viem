@@ -96,7 +96,8 @@ advanced typography controls and outgoing RTF are not claimed as implemented.
   WinUI/DirectWrite UI thread. No stand-in core or test compiler is involved.
 
 `scripts/test-win.ps1` creates a unique profile under `target/windows-validation`.
-It checks native WinUI keyboard focus, text and command-key routing, vi editing,
+It checks native WinUI keyboard focus, text and command-key routing, status-line
+prompt painting and command output (including hidden bars and scrolled documents), vi editing,
 Unicode and bidi, composition, shared views, source/style
 round trips, clipboard policy, atomic settings/save behavior, recovery ownership,
 second-process launch handoff, menu visibility and large-document layout/cache

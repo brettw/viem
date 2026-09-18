@@ -5792,6 +5792,17 @@ Native file pickers, menus, dialogs, color pickers and font controls use WinUI
 styles. Settings has View, Theme, Editing and Code categories and uses the
 shared portable profile schema; Windows-specific settings stay in `windows`.
 
+The Windows status line follows the shared command-entry/output contract above:
+an inverse-color prompt replaces the left group, while selectable read-only
+output uses normal status colors and a close button. Both preserve the right
+location widget and temporarily reveal a hidden status line. Prompt drawing
+must refresh when Win2D resources or its measured width first become available.
+Scrolling the caret outside regional layout must not abort status updates or
+force distant layout; retain its location only while the document, cursor and
+measurement configuration are unchanged. Native regression checks cover the
+first colon, subsequent typing, command results, hidden status bars, output
+scrolling/focus, and command entry in a scrolled large document.
+
 Windows clipboard shortcuts are an intentional exception to Vim compatibility:
 `Control-C`, `Control-X`, and `Control-V` always mean Copy, Cut, and Paste,
 including during literal-next input. `Control-Shift-V` pastes plain text.

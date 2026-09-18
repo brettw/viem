@@ -69,13 +69,13 @@ internal sealed partial class EditorWindow
         undoItem = ActionItem("Undo", () => View?.Undo(), enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_UNDO) != 0);
         redoItem = ActionItem("Redo", () => View?.Redo(), enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_REDO) != 0);
         Top("Edit", "E", undoItem, redoItem, Separator(),
-            Item("Cut", () => ActivePane?.Copy(true) ?? Task.CompletedTask, "Ctrl+X", () => ActivePane?.CanCopy == true),
+            Item("Cut", () => ActivePane?.Copy(true) ?? Task.CompletedTask, "Ctrl+X", () => ActivePane?.CanCut == true),
             Item("Copy", () => ActivePane?.Copy(false) ?? Task.CompletedTask, "Ctrl+C", () => ActivePane?.CanCopy == true),
             Item("Copy Source", () => ActivePane?.CopySource() ?? Task.CompletedTask, enabled: () => ActivePane?.CanCopy == true),
             Item("Paste", () => ActivePane?.Paste() ?? Task.CompletedTask, "Ctrl+V"),
             Item("Paste and Match Style", () => ActivePane?.Paste(true) ?? Task.CompletedTask, "Ctrl+Shift+V"),
-            ActionItem("Delete", () => { if (View?.IsVisual == true) View.Command("d"); }, enabled: () => View?.IsVisual == true), Separator(),
-            ActionItem("Select All", () => ActivePane?.SelectAll()),
+            ActionItem("Delete", () => { if (View?.IsVisual == true) View.Command("d"); }, enabled: () => View?.IsVisual == true && ActivePane?.CanCut == true), Separator(),
+            Item("Select All", () => { ActivePane?.SelectAll(); return Task.CompletedTask; }),
             Sub("Select", ActionItem("Word", () => Select("viw")), ActionItem("Sentence", () => Select("vis")), ActionItem("Paragraph", () => Select("vip")), ActionItem("Hard Line", () => Select("V")), ActionItem("Visual Block", () => { View?.Key(VIEM_KEY_ESCAPE); View?.Key(VIEM_KEY_CONTROL_CHARACTER, 'q'); }, "Ctrl+Q")),
             Separator(), Sub("Find", ActionItem("Find…", () => Select("/")), ActionItem("Find and Replace…", () => { Select(":"); View?.Text("%s/"); }), ActionItem("Find Next", () => Select("n")), ActionItem("Find Previous", () => Select("N"))),
             Sub("Transformations", ActionItem("Make Uppercase", () => View?.Command("U"), enabled: () => View?.IsVisual == true), ActionItem("Make Lowercase", () => View?.Command("u"), enabled: () => View?.IsVisual == true), ActionItem("Toggle Case", () => View?.Command("~"), enabled: () => View?.IsVisual == true)));

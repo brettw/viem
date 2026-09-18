@@ -35,7 +35,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private readonly Canvas inputLayer = new() { IsHitTestVisible = false };
     private readonly ScrollBar vertical = new() { Orientation = Orientation.Vertical, Width = 14, SmallChange = 30 };
     private readonly ScrollBar horizontal = new() { Orientation = Orientation.Horizontal, Height = 14, SmallChange = 30 };
-    private readonly Grid status = new() { Height = 28, Padding = new(10, 0, 10, 0), ColumnSpacing = 12 };
+    private readonly Grid status = new() { Height = 28, ColumnSpacing = 5 };
     private readonly TextBlock mode = new() { VerticalAlignment = VerticalAlignment.Center, FontSize = 12 };
     private readonly DropDownButton format = new() { MinWidth = 0, MinHeight = 0, Padding = new(4, 0, 4, 0), BorderThickness = new(0), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), FontSize = 12 };
     private readonly TextBlock location = new() { VerticalAlignment = VerticalAlignment.Center, FontSize = 12 };
@@ -76,9 +76,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Children.Add(vertical); SetColumn(vertical, 1);
         Children.Add(horizontal); SetRow(horizontal, 1);
         Children.Add(status); SetRow(status, 2); SetColumnSpan(status, 2);
-        foreach (var width in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto }) status.ColumnDefinitions.Add(new() { Width = width });
-        status.Children.Add(mode); status.Children.Add(format); SetColumn(format, 1); status.Children.Add(message); SetColumn(message, 2); status.Children.Add(location); SetColumn(location, 3);
-        status.Children.Add(prompt); SetColumnSpan(prompt, 3);
+        BuildStatus();
         AutomationProperties.SetName(input, "Viem document input"); AutomationProperties.SetName(Canvas, "Document");
         AutomationProperties.SetName(format, "Document format"); AutomationProperties.SetName(vertical, "Vertical document scroll"); AutomationProperties.SetName(horizontal, "Horizontal document scroll");
         inputLayer.IsHitTestVisible = true; input.IsHitTestVisible = false;
@@ -97,7 +95,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Canvas.AllowDrop = true;
         Canvas.DragOver += (_, e) => { if (e.DataView.Contains(StandardDataFormats.StorageItems)) e.AcceptedOperation = DataPackageOperation.Copy; };
         Canvas.Drop += async (_, e) => { try { if (e.DataView.Contains(StandardDataFormats.StorageItems)) { var items = await e.DataView.GetStorageItemsAsync(); foreach (var item in items) if (File.Exists(item.Path)) await window.OpenNative(item.Path); } } catch (Exception error) { Report(error); } };
-        input.GotFocus += (_, _) => { Focused?.Invoke(this); ResetBlink(); _ = RefreshClipboard(); };
+        input.GotFocus += (_, _) => { outputHadFocus = false; Focused?.Invoke(this); ResetBlink(); _ = RefreshClipboard(); };
         input.LostFocus += (_, _) => { caretVisible = true; Canvas.Invalidate(); };
         input.PreviewKeyDown += OnKey;
         // TextChanging reliably signals input even for this nearly invisible
@@ -155,7 +153,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         foreach (var label in new[] { mode, message, location }) { label.FontFamily = new FontFamily(preferences.StatusFontFamily); label.FontSize = preferences.StatusFontSize; }
         format.FontFamily = new FontFamily(preferences.StatusFontFamily); format.FontSize = preferences.StatusFontSize;
         status.Height = Math.Max(28, preferences.StatusFontSize + 12);
-        status.Visibility = preferences.ShowStatus ? Visibility.Visible : Visibility.Collapsed;
+        ApplyStatusTheme();
         Canvas.Invalidate();
     }
     private void BuildFormatMenu()
@@ -166,9 +164,9 @@ internal sealed partial class EditorPane : Grid, IDisposable
         format.Flyout = flyout;
     }
     public void FocusEditor() { if (!disposed) input.Focus(FocusState.Programmatic); }
-    public void Report(Exception error) { LastError = error; message.Text = error.Message; ToolTipService.SetToolTip(message, error.ToString()); }
+    public void Report(Exception error) { LastError = error; ShowCommandOutput(error.Message); }
     public void Run(Action action) { try { action(); } catch (Exception e) { Report(e); } }
-    public void SetMessage(string text) { message.Text = text; }
+    public void SetMessage(string text) { ShowCommandOutput(text); }
     private void ResetBlink() { caretVisible = true; blink.Stop(); blink.Start(); Canvas.Invalidate(); prompt.Blink(true); }
     private void ClearInput() { inputUpdating = true; input.Text = ""; inputUpdating = false; }
     private void CaptureCommittedText()
@@ -220,7 +218,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         {
             await previous;
             if (disposed) return;
-            try { message.Text = ""; await action(); ResetBlink(); if (View?.HasPendingMapping == true) { mapping.Stop(); mapping.Start(); } }
+            try { message.Text = ""; DismissCommandOutput(false); await action(); ResetBlink(); if (View?.HasPendingMapping == true) { mapping.Stop(); mapping.Start(); } }
             catch (Exception e) { Report(e); }
         }
         inputQueue = Next(inputQueue);
@@ -236,6 +234,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
     public Task Copy(bool cut)
     {
+        if (OutputIsActionTarget) { if (!cut && outputText.SelectedText.Length > 0) ClipboardFormats.Write(outputText.SelectedText, ""); return Task.CompletedTask; }
         if (View == null) return Task.CompletedTask;
         if (View.Presentation.mode == VIEM_MODE_COMMAND_LINE)
         {
@@ -255,14 +254,18 @@ internal sealed partial class EditorPane : Grid, IDisposable
         }
         return Task.CompletedTask;
     }
-    public bool CanCopy => View?.IsVisual == true || View?.Presentation.mode == VIEM_MODE_COMMAND_LINE && View.Prompt() is var p && p.Anchor != p.Active;
+    public bool CanCopy => OutputIsActionTarget ? outputText.SelectedText.Length > 0 : View?.IsVisual == true || View?.Presentation.mode == VIEM_MODE_COMMAND_LINE && View.Prompt() is var p && p.Anchor != p.Active;
+    public bool CanCut => !OutputIsActionTarget && CanCopy;
     public void SelectAll()
     {
+        if (OutputIsActionTarget) { outputText.Focus(FocusState.Programmatic); outputText.SelectAll(); return; }
         if (View?.Presentation.mode == VIEM_MODE_COMMAND_LINE) { var p = View.Prompt(); View.EditPrompt(p, 0, (ulong)Encoding.UTF8.GetByteCount(p.Text)); }
         else View?.SelectAll();
+        FocusEditor();
     }
     public Task CopySource()
     {
+        if (OutputIsActionTarget) return Copy(false);
         if (View?.Presentation.mode == VIEM_MODE_COMMAND_LINE) return Copy(false);
         if (View?.IsVisual != true) return Task.CompletedTask;
         var fragments = new List<string>(); var selection = View.Selection();
@@ -290,6 +293,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
         if (View == null || !e.GetCurrentPoint(Canvas).Properties.IsLeftButtonPressed) return;
+        DismissCommandOutput(false);
         FocusEditor(); var point = e.GetCurrentPoint(Canvas).Position;
         Run(() => View.Place((float)point.X, (float)point.Y, Down(VirtualKey.Shift)));
         dragPoint = point; dragging = true; Canvas.CapturePointer(e.Pointer); e.Handled = true; ResetBlink();
@@ -301,18 +305,17 @@ internal sealed partial class EditorPane : Grid, IDisposable
         refreshing = true;
         try
         {
+            // The command/status surface must update even when document
+            // geometry is temporarily unavailable (for example after scrolling).
+            presentation = View.Presentation;
+            message.Text = View.SubstitutePrompt();
+            UpdateStatusPresentation();
             try { using var layoutMeasurement = Diagnostics.InputPerformance.Measure("layout.export"); snapshot = View.Layout(); }
             catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); snapshot = View.Layout(); }
             presentation = View.Presentation; viewport = View.Viewport;
             mode.Text = presentation.mode switch { 2 => "INSERT", 3 => "REPLACE", 4 => "VISUAL", 5 => "V-LINE", 6 => "V-BLOCK", 7 => "COMMAND", _ => "NORMAL" };
             format.Content = CoreDocument.FormatName(Document.State.format);
-            var pos = View.Location;
-            location.Text = $"{(Document.IsReadOnly ? "🔒  " : "")}Ln {(pos.line == 0 ? pos.hard_line : pos.line)}, Col {pos.column}";
-            bool command = presentation.mode == VIEM_MODE_COMMAND_LINE;
-            prompt.Visibility = command ? Visibility.Visible : Visibility.Collapsed;
-            if (command) prompt.Refresh();
-            status.Visibility = command || preferences.ShowStatus ? Visibility.Visible : Visibility.Collapsed;
-            string substitution = View.SubstitutePrompt(); if (substitution.Length > 0) message.Text = substitution;
+            UpdateLocation();
             scrollUpdating = true;
             vertical.Maximum = Math.Max(0, snapshot.Info.total_height - Canvas.ActualHeight); vertical.ViewportSize = Math.Max(1, Canvas.ActualHeight); vertical.LargeChange = Math.Max(1, Canvas.ActualHeight * .9); vertical.Value = viewport.top;
             horizontal.Maximum = viewport.maximum_left; horizontal.ViewportSize = Math.Max(1, Canvas.ActualWidth); horizontal.Value = viewport.left;
@@ -423,7 +426,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
     public void Dispose()
     {
-        if (disposed) return; disposed = true; blink.Stop(); mapping.Stop();
+        if (disposed) return; disposed = true; blink.Stop(); mapping.Stop(); outputTimer.Stop();
         preferences.Changed -= PreferencesChanged; Document.Changed -= DocumentChanged; Clipboard.ContentChanged -= ClipboardChanged;
         InvalidateDrawingCache();
         View?.Dispose(); View = null; prompt.Dispose(); Canvas.RemoveFromVisualTree();

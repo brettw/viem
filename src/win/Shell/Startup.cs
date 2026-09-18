@@ -28,6 +28,10 @@ internal sealed partial class EditorWindow
                         return;
                     }
                     await Diagnostics.InputRoutingTests.Run(pane);
+                    await Diagnostics.CommandStatusTests.Run(pane, this, preferences);
+                    var scrolled = AddPane(NewDocument(Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("A paragraph in a large document.\n", 5000)))));
+                    await Diagnostics.CommandStatusTests.RunScrolled(scrolled);
+                    await ClosePane(scrolled);
                     pane.View!.Command("i"); pane.View.Text("# Viem for Windows\n\nA modal editor for writing.\n\nThe same Rust core, with native Windows controls.\n\nUnicode: café · 日本語 · مرحبا · 👩‍💻\n"); pane.View.Key(VIEM_KEY_ESCAPE);
                     pane.View.Format(VIEM_FORMAT_MARKDOWN);
                     await Task.Delay(400);

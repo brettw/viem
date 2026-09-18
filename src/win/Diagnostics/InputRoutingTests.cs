@@ -37,7 +37,7 @@ internal static class InputRoutingTests
         // Never inject global input or target another application's window.
         if (!PostMessage(NativeTarget(), message, value, data)) throw new InvalidOperationException("Cannot post input to the native test window.");
     }
-    private static async Task Text(string text)
+    internal static async Task Text(string text)
     {
         foreach (char value in text) Post(0x0102, value, 1); // WM_CHAR, including UTF-16 pairs.
         await Task.Delay(100);

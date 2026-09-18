@@ -314,7 +314,7 @@ internal sealed partial class EditorWindow : Window
     {
             try
             {
-                if (effects.Output.Length > 0) await Dialog("Command output", string.Join("\n", effects.Output));
+                if (effects.Output.Length > 0) pane.ShowCommandOutput(string.Join("\n", effects.Output));
                 foreach (var request in effects.Requests)
                 {
                     var r = request.Value; bool force = (r.flags & VIEM_EX_FRONTEND_FORCE) != 0;
