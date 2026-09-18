@@ -374,6 +374,8 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             key: String(UnicodeScalar(NSF8FunctionKey)!), modifiers: []))
         styles.addItem(coreItem("Save as default text style", command: .saveDefaultStyle))
         styles.addItem(coreItem("Include style definitions in file", command: .includeStyleDefinitionsInFile))
+        styles.addItem(.separator())
+        styles.addItem(coreItem("Reload style sheet", command: .reloadStyleSheet))
         menu.addItem(submenuItem("Style", submenu: styles))
         menu.addItem(.separator())
 

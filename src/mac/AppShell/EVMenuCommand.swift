@@ -98,6 +98,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case numberedList
     case removeList
     case includeStyleDefinitionsInFile
+    case reloadStyleSheet
     case heading0 = 370
     case heading1
     case heading2

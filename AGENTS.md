@@ -1955,9 +1955,11 @@ configuration and never changes source bytes, dirty state, or undo history.
 
 Format > Style contains Edit Styles and Save as default <format> style.
 HTML also exposes Include style definitions in file, as specified above.
-Saving defaults exports the current style configuration to the corresponding
-JSON file. Existing open buffers keep their current configuration; subsequently
-opened buffers load the saved defaults.
+A trailing separated Reload style sheet re-reads the global Code
+`code_style.json` from disk; it stays enabled in every format because that sheet
+is application-wide. Saving defaults exports the current style configuration to
+the corresponding JSON file. Existing open buffers keep their current
+configuration; subsequently opened buffers load the saved defaults.
 
 Code instead uses the live application-wide `code_style.json` authority
 specified below. It is not a copy of per-document format defaults: a global
@@ -2013,6 +2015,12 @@ overrides, stable definition IDs, validation, and immutable revision identity.
 It is shared live by all Code buffers. Valid changes update every open Code
 view without modifying source, dirty state, or document undo history; undoing
 a document edit does not restore an older global stylesheet.
+
+The file is read once per application profile at startup and is never polled.
+Format > Style > Reload style sheet re-reads it on demand, republishing it to
+every open Code buffer even when the file appears unchanged, and reports a
+missing, oversized, or malformed file without overwriting it. An in-app style
+edit that finds the file changed underneath it refuses the write and reloads.
 
 Core serializes mutations of the global authority and publishes an immutable
 revision to buffer coordinators, without locking all buffers together. Layout

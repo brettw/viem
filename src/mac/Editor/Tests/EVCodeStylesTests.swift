@@ -245,9 +245,58 @@ final class EVCodeStylesTests: XCTestCase {
         XCTAssertTrue(session.undoManager.canUndo)
     }
 
+    func testManualReloadRepublishesToEveryBufferEvenWhenTheFileLooksUnchanged() async throws {
+        let configuration = configuration()
+        let session = try EVCodeStyleSession(configuration: configuration)
+        let backends = [EVCoreDocumentBackend(configuration: configuration),
+                        EVCoreDocumentBackend(configuration: configuration)]
+        for backend in backends { try backend.read(source: Data("const x = 1;".utf8), typeName: EVDocument.codeType) }
+        try session.edit(key: .baseParagraph, expected: session.snapshot().identity,
+                         mutation: .setDeclaration(.characterSize, .float(18)))
+        let revision = try session.snapshot().identity.styleSheetRevision
+
+        // A local write leaves the stamp current, so the opportunistic check
+        // stays a no-op where an explicit reload still republishes.
+        await checkExternalChanges()
+        XCTAssertEqual(try session.snapshot().identity.styleSheetRevision, revision)
+        let failure = await reloadStyleSheet()
+        XCTAssertNil(failure)
+        XCTAssertGreaterThan(try session.snapshot().identity.styleSheetRevision, revision)
+        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?
+            .properties[.characterSize]?.declared, .float(18))
+        XCTAssertTrue(session.undoManager.canUndo,
+                      "Reloading identical content is not an external replacement")
+
+        for backend in backends {
+            backend.pollSyntax()
+            XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?
+                .properties[.characterSize]?.declared, .float(18),
+                "Every open buffer follows the republished sheet, not only the focused one")
+        }
+    }
+
+    func testManualReloadOfAnAbsentSheetReportsItInsteadOfSucceedingSilently() async throws {
+        let configuration = configuration()
+        let session = try EVCodeStyleSession(configuration: configuration)
+        let file = configuration.directory.appendingPathComponent("code_style.json")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path),
+                       "Nothing has written the sheet, so its stamp matches the absent baseline")
+        let size = try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective
+        let failure = await reloadStyleSheet()
+        XCTAssertTrue(try XCTUnwrap(failure).contains("was removed"))
+        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?
+            .properties[.characterSize]?.effective, size, "The last valid styles remain active")
+    }
+
     private func checkExternalChanges() async {
         await withCheckedContinuation { continuation in
             EVCodeStyleSession.checkExternalStyleChanges { continuation.resume() }
+        }
+    }
+
+    private func reloadStyleSheet() async -> String? {
+        await withCheckedContinuation { continuation in
+            EVCodeStyleSession.reloadStyleSheet { continuation.resume(returning: $0) }
         }
     }
 }

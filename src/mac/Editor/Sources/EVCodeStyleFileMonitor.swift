@@ -1,8 +1,11 @@
 import AppKit
 import ViemAppShell
 
-/// One process-wide settings watch, independent of the number or size of buffers.
-/// File reads run off the main actor and are capped before allocating their data.
+/// One process-wide handle on the Code stylesheet file, independent of the
+/// number or size of buffers. The file is read at startup and thereafter only
+/// when the user reloads it or an in-app write needs its conflict check; it is
+/// never polled. File reads run off the main actor and are capped before
+/// allocating their data.
 @MainActor
 final class EVCodeStyleFileMonitor {
     private struct Stamp: Equatable, Sendable {
@@ -20,21 +23,15 @@ final class EVCodeStyleFileMonitor {
     private var baseline: Stamp?
     private var generation: UInt64 = 0
     private var inFlight = false
-    private var timer: Timer?
-    private var completions: [@MainActor () -> Void] = []
+    private var forceRequested = false
+    private var completions: [@MainActor (String?) -> Void] = []
 
     init(configuration: EVConfigurationStore, apply: @escaping @MainActor (Data) throws -> Void) {
         file = configuration.directory.appendingPathComponent("code_style.json")
         self.apply = apply
         baseline = try? Self.stamp(file)
         EVCodePreferences.shared.reportLoadDiagnostics([], source: "code_styles_file")
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.checkForChanges() }
-        }
-        if let timer { RunLoop.main.add(timer, forMode: .common) }
     }
-
-    deinit { timer?.invalidate() }
 
     func didWriteFile() {
         generation &+= 1
@@ -49,35 +46,53 @@ final class EVCodeStyleFileMonitor {
         }
     }
 
-    func checkForChanges(completion: (@MainActor () -> Void)? = nil) {
+    /// `force` re-reads and re-applies the file even when its stamp is
+    /// unchanged, so an explicit Reload is never a silent no-op.
+    func checkForChanges(force: Bool = false, completion: (@MainActor (String?) -> Void)? = nil) {
         if let completion { completions.append(completion) }
+        if force { forceRequested = true }
         guard !inFlight else { return }
         inFlight = true
+        let forcing = forceRequested
+        forceRequested = false
         let requestedGeneration = generation
         let baseline = baseline
         let file = file
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let result = Self.readChange(file, baseline: baseline)
+            let result = Self.readChange(file, baseline: baseline, force: forcing)
             DispatchQueue.main.async {
-                guard let self else { completion?(); return }
+                guard let self else { completion?(nil); return }
                 self.inFlight = false
-                guard requestedGeneration == self.generation else { self.checkForChanges(); return }
+                guard requestedGeneration == self.generation else {
+                    if forcing { self.forceRequested = true }
+                    self.checkForChanges()
+                    return
+                }
+                // nil is success: the caller reports the failure itself, since
+                // load diagnostics otherwise surface only in Settings.
+                var outcome: String?
                 switch result {
-                case .unchanged, .retry: break
+                case .unchanged: break
+                case .retry:
+                    // Only reachable when the file kept changing under every
+                    // read, so an explicit reload must not claim it applied.
+                    if forcing { outcome = "code_style.json is being written right now. Reload again once the writer finishes." }
                 case .removed:
                     self.baseline = nil
-                    self.report("code_style.json was removed. The last valid Code styles remain active; use Restore Defaults to reset them.")
+                    outcome = "code_style.json was removed. The last valid Code styles remain active; use Restore Defaults to reset them."
                 case let .failed(message, stamp):
                     self.baseline = stamp
-                    self.report(message)
+                    outcome = message
                 case let .contents(data, stamp):
                     self.baseline = stamp
-                    do { try self.apply(data); self.report(nil) }
-                    catch { self.report("Unable to reload code_style.json: \(error.localizedDescription) The last valid Code styles remain active.") }
+                    do { try self.apply(data) }
+                    catch { outcome = "Unable to reload code_style.json: \(error.localizedDescription) The last valid Code styles remain active." }
                 }
+                self.report(outcome)
+                if self.forceRequested { self.checkForChanges(); return }
                 let callbacks = self.completions
                 self.completions.removeAll()
-                for callback in callbacks { callback() }
+                for callback in callbacks { callback(outcome) }
             }
         }
     }
@@ -95,11 +110,22 @@ final class EVCodeStyleFileMonitor {
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile { return nil }
     }
 
-    private nonisolated static func readChange(_ file: URL, baseline: Stamp?) -> ReadResult {
+    private nonisolated static func readChange(_ file: URL, baseline: Stamp?, force: Bool) -> ReadResult {
+        for _ in 0..<4 {
+            let result = readOnce(file, baseline: baseline, force: force)
+            if case .retry = result { continue }
+            return result
+        }
+        return .retry
+    }
+
+    private nonisolated static func readOnce(_ file: URL, baseline: Stamp?, force: Bool) -> ReadResult {
         var observed: Stamp?
         do {
             observed = try stamp(file)
-            guard observed != baseline else { return .unchanged }
+            // A forced read still reports a missing file rather than comparing
+            // one absent stamp against another and calling it unchanged.
+            if !force, observed == baseline { return .unchanged }
             guard let observed else { return .removed }
             let limit = 4 * 1024 * 1024
             guard observed.size <= limit else { return .failed("code_style.json exceeds 4 MiB. The last valid Code styles remain active.", observed) }

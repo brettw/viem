@@ -597,6 +597,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .editCharacterStyles, .editParagraphStyles, .editStyles:
             EVStyleEditorCoordinator.shared.show(document: self, sender: sender)
             return
+        case .reloadStyleSheet:
+            reloadCodeStyleSheet()
+            return
         default: break
         }
         if backend.sourceFormat == .code {
@@ -764,7 +767,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             )
         }
         if backend.sourceFormat == .code, (300..<400).contains(menuCommand.rawValue) {
-            if [.editCharacterStyles, .editParagraphStyles, .editStyles].contains(menuCommand) {
+            if [.editCharacterStyles, .editParagraphStyles, .editStyles, .reloadStyleSheet].contains(menuCommand) {
                 return .enabled
             }
             return .disabled
@@ -871,6 +874,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 && (try? session?.listSelection()) != nil)
         case .saveDefaultStyle:
             EVMenuItemPresentation(isEnabled: backend.sourceFormat != .code, title: "Save as default \(backend.sourceFormat.defaultStyleName) style")
+        case .reloadStyleSheet:
+            .enabled
         case .editCharacterStyles, .editParagraphStyles, .editStyles:
             EVMenuItemPresentation(isEnabled: backend.sourceFormat != .code)
         case .printDocument:
@@ -1784,6 +1789,15 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
     }
 
     public func showDocumentMessage(_ message: String) { publishHostMessage(message) }
+
+    /// The Code stylesheet is one application-wide authority, so an explicit
+    /// reload republishes it to every open Code buffer, not only this one.
+    private func reloadCodeStyleSheet() {
+        let file = backend.configuration.directory.appendingPathComponent("code_style.json")
+        EVCodeStyleSession.reloadStyleSheet { [weak self] failure in
+            self?.publishHostMessage(failure ?? "Reloaded Code styles from \(file.path)")
+        }
+    }
 
     func publishHostMessage(_ message: String) {
         clearCommandOutput()

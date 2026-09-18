@@ -226,6 +226,7 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
         XCTAssertEqual(tokens(in: try submenu("Style", of: format)), [
             "Edit Styles…", "Save as default text style", "Include style definitions in file",
+            "-", "Reload style sheet",
         ])
 
         let paragraph = try submenu("Paragraph", of: format)
@@ -622,6 +623,7 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
         XCTAssertEqual(try titles(in: submenu("Style", of: format)), [
             "Edit Styles…", "Save as default text style", "Include style definitions in file",
+            "Reload style sheet",
         ])
 
         let paragraph = try submenu("Paragraph", of: format)

@@ -167,9 +167,24 @@ final class EVCodeStyleSession {
         return data
     }
 
+    /// Explicit user reload. Re-reads `code_style.json` and republishes it to
+    /// the shared authority even when the file looks untouched, so every open
+    /// Code buffer restyles. `completion` receives a user-facing failure
+    /// message, or nil when the reload succeeded.
+    static func reloadStyleSheet(completion: @escaping @MainActor (String?) -> Void) {
+        guard let fileMonitor else {
+            completion("Code styles are not loaded.")
+            return
+        }
+        fileMonitor.checkForChanges(force: true, completion: completion)
+    }
+
+    /// Opportunistic re-read used when an in-app write loses its conflict
+    /// check. Unlike `reloadStyleSheet` it does nothing when the file is
+    /// unchanged, so a local write is never reimported over itself.
     static func checkExternalStyleChanges(completion: @escaping @MainActor () -> Void) {
         guard let fileMonitor else { completion(); return }
-        fileMonitor.checkForChanges(completion: completion)
+        fileMonitor.checkForChanges { _ in completion() }
     }
 
     private static func replaceGlobalJSON(_ data: Data) throws {
