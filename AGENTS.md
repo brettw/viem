@@ -5685,6 +5685,47 @@ The frontend draws only damage regions returned by state/layout changes where
 practical. It may cache native glyph/draw resources separately from core
 metrics, keyed by layout snapshot and metrics generation.
 
+### TODO: macOS pointer selection performance
+
+The shared Rust core already reuses current visible layout during pointer
+selection and repairs retained position state during native Undo/Redo. Those
+fixes also apply to macOS when rebuilt; the remaining work is in the Swift
+frontend. Windows measurements do not establish macOS latency.
+
+- **Reuse presentation exports.** `EVEditorSurfaceController.refreshPresentation`
+  currently requests fresh geometry, paint, and text slices on every refresh;
+  `EVCoreViewSession.layoutExport` in `EVCoreDocument.swift` allocates and copies
+  the layout arrays each time. Reuse unchanged immutable exports against the
+  full layout identity (view, document, document revision, layout revision,
+  configuration generation, measurement environment, and metrics generation),
+  with separate invalidation for affected paint, whitespace, and composition
+  state. Selection and caret presentation must still update on every change.
+- **Remove the redundant pointer refresh.** `EVEditorView.placeCursor(at:extending:)`
+  performs a full presentation refresh before hit testing, followed by another
+  refresh after input. Replace the first refresh with a cheap validity check,
+  rebuilding only when needed. Preserve stale-layout detection, font/metrics
+  invalidation, composition handling, and drag autoscroll; never hit-test an
+  unchecked old snapshot.
+- **Measure and reduce drawing work.** `EVEditorView.applyPresentation` currently
+  invalidates the whole editor, and drawing visits text clusters even when only
+  selection or caret geometry changed. Core Text glyph resources are already
+  retained, but drawing commands are still issued again. Profile this path on
+  macOS, then use smaller damage regions or bounded cached drawing if the
+  measurements justify it. Any drawing cache must account for viewport, backing
+  scale, appearance, whitespace, and composition changes as well as layout
+  identity, while preserving selection/text/caret drawing order.
+
+Validate these changes with repeated selection in `AGENTS.md` and a
+large-document fixture, recording core work, export copies, and drawing costs
+separately on macOS. Add cache-invalidation coverage for edits, Undo/Redo,
+resize/zoom, font metrics, appearance, whitespace, and composition; verify that
+cached or partial redraws match fresh rendering. Unchanged visible selection
+must not trigger new layout work or repeated immutable export copies.
+
+Mac menu handling already uses native menu-validation callbacks rather than an
+explicit all-menu validation pass after each editor input. The Windows menu
+optimization does not require a direct Mac counterpart.
+
 ### macOS caret realization
 
 The initial macOS frontend may require the latest generally available macOS
