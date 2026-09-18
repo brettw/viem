@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- Keep native and managed build products out of the source tree. -->
+    <BaseOutputPath>$(MSBuildThisFileDirectory)../../target/windows/$(MSBuildProjectName)/bin/</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)../../target/windows/$(MSBuildProjectName)/obj/</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>

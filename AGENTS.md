@@ -30,8 +30,9 @@ command explicitly listed in this file follows Vim's command grammar and
 observable editing semantics, except where this file defines a deliberate
 word-processing behavior.
 
-The first frontend is macOS. The core must remain suitable for later Windows
-and terminal frontends, but those frontends are not part of the current scope.
+The native frontends are macOS and Windows. Windows follows the macOS editor's
+presentation and behavior with Windows controls and the platform differences
+recorded below. A terminal frontend remains outside the current scope.
 
 ## Working rules for this repository
 
@@ -60,7 +61,9 @@ and terminal frontends, but those frontends are not part of the current scope.
 - Implement the portable core under `src/core` in Rust.
 - Implement the macOS frontend under `src/mac` in Swift using AppKit, not
   SwiftUI.
-- A future native Windows frontend will use C# and WinUI 3.
+- Implement the Windows frontend under `src/win` in C# using WinUI 3 and
+  Win2D/DirectWrite. Windows UI, file, clipboard, input, and lifecycle mechanisms
+  belong there; document and command policy remains in the Rust core.
 - Connect frontends to the Rust core through a narrow C ABI. Keep
   ownership explicit and make performance-sensitive exchanges batch-oriented.
 
@@ -4566,8 +4569,10 @@ The menu hierarchy is:
   - Release Notes
   - Report a Problem…
 
-The future Windows frontend uses `Control-0` through `Control-6` for the same
-paragraph/heading assignments. Menu validation follows the focused pane and
+The Windows frontend uses `Control-0` through `Control-5` for the same
+paragraph/heading assignments. Heading 6 is menu-only because `Control-6`
+also spells Vim's `Control-^` and must reach the command interpreter.
+Menu validation follows the focused pane and
 current format capabilities. Native menu tracking must retain item identity and
 must not rebuild the menu structure under a held mouse button; presentation
 updates must preserve normal click-drag highlighting and selection.
@@ -5716,9 +5721,99 @@ assumption through the C ABI or into `src/core`.
 
 Normal and Visual block carets, the Replace underline, color-glyph fallback,
 empty/end-of-line geometry, and inactive outline are drawn by Viem according to
-the portable requirements in "Modes and caret". A future Windows frontend uses
+the portable requirements in "Modes and caret". The Windows frontend uses
 the same portable appearance and centralized color preference but chooses its
 own native or custom implementation for the thin vertical caret.
+
+## Windows frontend requirements
+
+`src/win/Viem.Windows.csproj` builds the unpackaged x64 C# / WinUI 3 frontend.
+`scripts/build-win.ps1` builds the matching Rust DLL and Windows executable;
+`scripts/test-win.ps1` checks generated ABI declarations and runs the native
+integration harness with an isolated profile. Development instructions and
+ownership boundaries are in `src/win/README.md`. The screenshots under
+`docs/mac_references` remain the visual reference for editor chrome, stacked
+panes, the bottom command prompt, and the modeless style inspector.
+
+The window has a Windows menu bar below its title bar. A native toggle button
+immediately to the left of the caption controls shows or hides the menu and
+persists the preference. Panes stack vertically, with native resize dividers,
+independent scrollbars, status bars, cursors, selections, and view options.
+Native file pickers, menus, dialogs, color pickers and font controls use WinUI
+styles. Settings has View, Theme, Editing and Code categories and uses the
+shared portable profile schema; Windows-specific settings stay in `windows`.
+
+Windows clipboard shortcuts are an intentional exception to Vim compatibility:
+`Control-C`, `Control-X`, and `Control-V` always mean Copy, Cut, and Paste,
+including during literal-next input. `Control-Shift-V` pastes plain text.
+`Control-Q` remains the core's alternate Visual Block/literal-next binding.
+`Control-S` and `Control-Shift-S` save/save as outside literal-next input.
+`Control-0` through `Control-5` assign Base Paragraph and Headings 1–5;
+Heading 6 remains in the menu to preserve `Control-6` / `Control-^`.
+Other vi control keys MUST reach the Rust interpreter: Windows MUST NOT claim
+`Control-B/F` for formatting/find, `Control-I/U` for italic/underline,
+`Control-N/O` for new/open, or `Control-A/Z/W` for native editor commands.
+Those native actions remain available through menus. AltGr remains text input;
+function-key modifiers are preserved. Windows owns its system shortcuts.
+
+The Rust core owns document state, editing, mappings, command prompts,
+completion, formatting, history, wrapping, geometry and hit testing. The C#
+bridge is generated from `include/viem_core.h` and `include/viem_startup.h`;
+`src/win/tools/generate_bindings.py --check` must pass after ABI changes.
+Win2D's DirectWrite layout shapes bounded unwrapped contextual fragments and
+retains glyph resources through the core's leases. Drawing uses viewport
+exports and never maintains a second editable document string. The small
+native input TextBox is an input-method host, not the document authority.
+IME marked text uses the core's composition overlay and explicit commit/cancel
+protocol. Default font names resolve to installed Windows families; actual
+glyph shapes and font fallback naturally differ from Core Text.
+Keyboard regressions MUST also exercise the native WinUI input host, including
+text entry, command keys and pane focus. Calling the Rust input wrappers alone
+does not verify Windows event routing.
+
+Native save preserves the core's source bytes through synchronized temporary
+files and atomic replacement. External-file checks compare saved content
+hashes; a conflicting overwrite is reviewed. Named documents claim their own
+recovery slots, write source snapshots after idle edits, and remove only owned
+slots on document close. Recovery uses the Mac-compatible recovery envelope;
+foreign slots remain untouched. One process per Windows user/profile receives
+bounded same-user named-pipe launch requests, including the caller's working
+directory. Relative paths, first-file/deferred arguments, `-o` and `+line` use
+the portable launch parser.
+
+### Known gaps from the macOS frontend
+
+These are explicit limitations of the current Windows frontend, not changes to
+the portable document or vi command contract:
+
+- AppKit Services, the system menu search, Dictionary/Look Up, spelling and
+  grammar panels, application-managed dictation, and macOS document Versions
+  have no corresponding integration in this frontend. Their menu commands are
+  omitted. Revert to Last Saved and Viem recovery are available.
+- Page Setup and Print are omitted pending a Windows printing adapter; the
+  AppKit printing implementation cannot be reused.
+- Native controls have automation labels, but the custom document surface does
+  not yet expose a complete Windows UI Automation TextPattern. Narrator text
+  ranges, accessible editing, and macOS-equivalent text-service integration are
+  not claimed. IME protocol checks do not substitute for testing every installed
+  Windows IME or speech-input service.
+- The modeless style inspector exposes inheritance, names, fonts, colors,
+  decoration, tracking, baseline, paragraph direction/alignment/indents and
+  spacing. A system font panel, per-font OpenType feature discovery, and the
+  full Mac typography menus are omitted. Existing source OpenType features
+  still participate in DirectWrite shaping. The inspector preview currently
+  demonstrates font and alignment rather than the complete paragraph layout.
+- Per-span explicit bidi overrides are retained in source but are not realized
+  by the Win2D adapter; their inspector control is omitted. Unicode bidi and
+  explicit paragraph direction are supported.
+- Windows clipboard interchange writes Unicode text, HTML, and the lossless
+  Viem private fragment, and reads text, private fragments, HTML and RTF.
+  An outgoing RTF representation is omitted; applications supporting only RTF
+  receive the plain-text fallback. HTML cannot exactly express RTF's
+  minimum-line-height policy; Viem-to-Viem transfer retains the original data.
+
+Changes to these gaps MUST update this list and the Windows integration tests
+when the relevant mechanism becomes available.
 
 ## Performance requirements and acceptance fixtures
 
