@@ -34,7 +34,7 @@ internal sealed partial class EditorWindow
                     if (pane.LastError != null) throw pane.LastError;
                     Diagnostics.FrontendSmokeTests.UiChecks.Add("native editor draws without presentation errors");
                     await Diagnostics.WindowCapture.Save(Hwnd, pane.Canvas.Device, Diagnostics.FrontendSmokeTests.ReportPath + ".png");
-                    await Diagnostics.PresentationTests.Run(pane, Menu, preferences);
+                    await Diagnostics.PresentationTests.Run(pane, Menu, preferences, this);
                     var second = AddPane(pane.Document);
                     await Task.Delay(250);
                     await Diagnostics.InputRoutingTests.FocusPane(second, "Split input ");

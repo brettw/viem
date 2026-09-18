@@ -2429,17 +2429,39 @@ impl<P: TextMeasurementProvider> Core<P> {
         };
         let (visible_start, visible_end) = {
             let view = self.views.get(&view_id).expect("view was validated above");
-            let start = view
-                .layout
-                .hard_line_at_y(f64::from(requested_top))
-                .map_err(LayoutError::from)?
-                .map_or(hard_line_count - 1, |hit| hit.hard_line());
-            let bottom = requested_top + viewport_height.max(f32::EPSILON);
-            let end = view
-                .layout
-                .hard_line_at_y(f64::from(bottom))
-                .map_err(LayoutError::from)?
-                .map_or(hard_line_count, |hit| hit.hard_line() + 1);
+            // A width change resets offscreen heights to estimates. In prose,
+            // one hard line can span many rows: those estimates would schedule
+            // several screens of unnecessary reflow on every resize tick.
+            // Seed work from the previously visible lines instead. This is
+            // only a work hint; the extension loop below still requires exact
+            // coverage at the new size before publishing the presentation.
+            let previous_visible = view.layout.snapshot().filter(|snapshot| {
+                intent == ImmediateLayoutIntent::PreserveViewport
+                    && snapshot.document_id == self.document.id()
+                    && snapshot.document_revision == document_revision
+                    && (snapshot.viewport_width != view.layout.width()
+                        || snapshot.viewport_height != viewport_height)
+            }).and_then(|snapshot| {
+                let mut rows = snapshot.rows.iter().filter(|row| {
+                    row.y + row.height() > viewport_top
+                        && row.y < viewport_top + snapshot.viewport_height
+                });
+                let first = rows.next()?;
+                let last = rows.last().unwrap_or(first);
+                Some((first.hard_line_index, last.hard_line_index + 1))
+            });
+            let (start, end) = if let Some(previous) = previous_visible {
+                previous
+            } else {
+                let start = view.layout.hard_line_at_y(f64::from(requested_top))
+                    .map_err(LayoutError::from)?
+                    .map_or(hard_line_count - 1, |hit| hit.hard_line());
+                let bottom = requested_top + viewport_height.max(f32::EPSILON);
+                let end = view.layout.hard_line_at_y(f64::from(bottom))
+                    .map_err(LayoutError::from)?
+                    .map_or(hard_line_count, |hit| hit.hard_line() + 1);
+                (start, end)
+            };
             (start.min(focus_line), end.max(focus_line + 1))
         };
         let overscan = (visible_end - visible_start).max(MIN_OVERSCAN_LINES);
@@ -12013,6 +12035,52 @@ mod tests {
             CommandStatus::Unsupported(message) if message.contains("requires layout context")
         ));
         assert_eq!(commands.cursor(), 0);
+    }
+
+    #[test]
+    fn live_resize_bounds_reflow_by_previously_visible_paragraphs() {
+        let paragraph = "alpha beta gamma delta ".repeat(20) + "\n";
+        let mut core = Core::new(Document::new(paragraph.repeat(5_000)));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600.0, 400.0);
+        let shaped = core.views[&view].engine.provider().request_calls();
+        for width in [590.0, 550.0, 450.0, 700.0] {
+            core.handle(view, CoreEvent::Resize { width, height: 400.0 }).unwrap();
+            let layout = core.layout(view).unwrap();
+            let snapshot = layout.snapshot().unwrap();
+            assert!(snapshot.coverage.hard_lines().len() < 32,
+                "resize must not turn estimated hard-line heights into screens of overscan");
+            assert_eq!(viewport_layout_extension_needed(layout), (false, false));
+            assert_eq!(snapshot.viewport_width, width);
+            assert_eq!(core.views[&view].engine.provider().request_calls(), shaped,
+                "width changes must reuse shaped text");
+
+            let mut fresh = Core::new(Document::new(paragraph.repeat(100)));
+            let fresh_view = fresh.add_view(MockTextMeasurementProvider::new(), width, 400.0);
+            let visible_rows = |snapshot: &crate::layout::LayoutSnapshot| snapshot.rows.iter()
+                .filter(|row| row.y < 400.0)
+                .map(|row| (row.text_range.clone(), row.y, row.baseline, row.width))
+                .collect::<Vec<_>>();
+            assert_eq!(visible_rows(snapshot), visible_rows(fresh.layout(fresh_view).unwrap().snapshot().unwrap()),
+                "the old geometry is a hint, never the new wrapping result");
+        }
+
+        // A much larger viewport needs more lines than the old hint provides.
+        core.handle(view, CoreEvent::Resize { width: 4_000.0, height: 2_000.0 }).unwrap();
+        assert_eq!(viewport_layout_extension_needed(core.layout(view).unwrap()), (false, false));
+        assert!(core.layout(view).unwrap().snapshot().unwrap().coverage.hard_lines().len() > 32);
+
+        core.views.get_mut(&view).unwrap().engine.provider_mut().set_metrics_generation(MetricsGeneration(2));
+        core.handle(view, CoreEvent::Resize { width: 550.0, height: 400.0 }).unwrap();
+        let layout = core.layout(view).unwrap();
+        assert_eq!(layout.snapshot().unwrap().metrics_generation, MetricsGeneration(2));
+        assert_eq!(viewport_layout_extension_needed(layout), (false, false));
+        assert!(core.views[&view].engine.provider().request_calls() > shaped);
+
+        core.document.insert(0, "new paragraph\n").unwrap();
+        core.handle(view, CoreEvent::Resize { width: 600.0, height: 400.0 }).unwrap();
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+        assert_eq!(snapshot.document_revision, core.document.revision());
+        assert_eq!(snapshot.rows[0].text_range, 0..13);
     }
 
     #[test]

@@ -67,6 +67,7 @@ internal sealed partial class EditorPane
     {
         if (snapshot == null || View == null) return;
         var theme = preferences.Theme;
+        using var glyphs = View.Provider.BeginDrawing(drawing);
         foreach (var row in snapshot.Rows)
         {
             if (row.y + row.ascent + row.descent + row.leading < viewport.top - 4 || row.y > viewport.top + Canvas.ActualHeight + 4) continue;
@@ -77,7 +78,7 @@ internal sealed partial class EditorPane
                 var paint = PaintFor(cluster.text_start);
                 var bounds = OffsetRect(cluster.typographic_bounds, viewport);
                 Color foreground = (paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? theme.Foreground : Color(paint.foreground);
-                View.Provider.Draw(drawing, cluster.render_run, new(cluster.x - viewport.left, row.baseline - viewport.top), foreground);
+                glyphs.Draw(cluster.render_run, new(cluster.x - viewport.left, row.baseline - viewport.top), foreground);
                 if ((paint.flags & VIEM_TEXT_PAINT_UNDERLINE) != 0) drawing.DrawLine((float)bounds.X, row.baseline - viewport.top + 2, (float)bounds.Right, row.baseline - viewport.top + 2, foreground);
                 if ((paint.flags & VIEM_TEXT_PAINT_STRIKETHROUGH) != 0) drawing.DrawLine((float)bounds.X, row.baseline - viewport.top - row.ascent * .3f, (float)bounds.Right, row.baseline - viewport.top - row.ascent * .3f, foreground);
             }
@@ -87,7 +88,7 @@ internal sealed partial class EditorPane
             var row = snapshot.Rows.FirstOrDefault(r => r.row_index == d.row_index);
             Color foreground = (d.paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? theme.Foreground : Color(d.paint.foreground);
             if ((d.flags & VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0) drawing.FillRectangle(OffsetRect(d.typographic_bounds, viewport), foreground);
-            else View.Provider.Draw(drawing, d.render_run, new(d.x - viewport.left, row.baseline - viewport.top), foreground);
+            else glyphs.Draw(d.render_run, new(d.x - viewport.left, row.baseline - viewport.top), foreground);
         }
         if (whitespace != null) View.Provider.DrawWhitespace(drawing, whitespace, snapshot, viewport, offset => {
             var paint = PaintFor(offset); return (paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? theme.Foreground : Color(paint.foreground);

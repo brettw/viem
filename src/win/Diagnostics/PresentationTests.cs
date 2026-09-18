@@ -10,7 +10,7 @@ namespace Viem.Windows.Diagnostics;
 
 internal static class PresentationTests
 {
-    internal static async Task Run(EditorPane pane, MenuBar menu, Preferences preferences)
+    internal static async Task Run(EditorPane pane, MenuBar menu, Preferences preferences, EditorWindow window)
     {
         void Check(bool value, string name)
         { if (!value) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
@@ -27,6 +27,23 @@ internal static class PresentationTests
             await InputRoutingTests.Key(global::Windows.System.VirtualKey.Escape);
         }
         pane.FocusEditor();
+        var windowSize = window.AppWindow.Size;
+        var revision = pane.Document.State.document_revision;
+        try
+        {
+            foreach (int delta in new[] { -120, -200, 40 })
+            {
+                window.AppWindow.Resize(new(windowSize.Width + delta, windowSize.Height + delta / 2));
+                await Task.Delay(100);
+                var resized = view.Layout().Info;
+                Check(resized.viewport_width == (float)pane.Canvas.ActualWidth
+                    && resized.viewport_height == (float)pane.Canvas.ActualHeight
+                    && resized.identity.document_revision == revision,
+                    $"native window resize installs exact editor geometry ({delta})");
+            }
+        }
+        finally { window.AppWindow.Resize(windowSize); }
+        await Task.Delay(100);
         using var surface = new CanvasRenderTarget(pane.Canvas.Device, (float)pane.Canvas.ActualWidth, (float)pane.Canvas.ActualHeight, pane.Canvas.Dpi);
         byte[] Draw() { using (var drawing = surface.CreateDrawingSession()) pane.Draw(drawing); return surface.GetPixelBytes(); }
         view.Place(45f, 40f);

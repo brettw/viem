@@ -109,6 +109,29 @@ internal static class FrontendSmokeTests
             view.Zoom(1.25f); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "zoom is presentation-only");
             view.Format(VIEM_FORMAT_MARKDOWN_SOURCE); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "source-view switch preserves source bytes");
         });
+        Scenario("# Heading\n\nHello **office** and مرحبا 👩‍💻.\n", 2, (doc, view) => {
+            var layout = view.Layout();
+            using var target = new CanvasRenderTarget(device, 700, 400, 96);
+            byte[] Render(bool batched)
+            {
+                using (var drawing = target.CreateDrawingSession())
+                {
+                    drawing.Clear(Microsoft.UI.Colors.White);
+                    using var batch = view.Provider.BeginDrawing(drawing);
+                    int index = 0;
+                    foreach (var row in layout.Rows)
+                    foreach (var cluster in layout.Clusters.Where(c => c.row_index == row.row_index))
+                    {
+                        var color = (index++ % 3) switch { 0 => Microsoft.UI.Colors.Red, 1 => Microsoft.UI.Colors.Blue, _ => Microsoft.UI.Colors.Black };
+                        var baseline = new System.Numerics.Vector2(cluster.x, row.baseline);
+                        if (batched) batch.Draw(cluster.render_run, baseline, color);
+                        else view.Provider.Draw(drawing, cluster.render_run, baseline, color);
+                    }
+                }
+                return target.GetPixelBytes();
+            }
+            Check(Render(false).AsSpan().SequenceEqual(Render(true)), "reused glyph brushes preserve colored, styled, bidi and emoji pixels");
+        });
         Scenario("<p>Text</p>", 3, (doc, view) => {
             view.Command("i"); view.ToggleSemantic(VIEM_SEMANTIC_STYLE_STRONG); view.Text("Bold "); view.Key(VIEM_KEY_ESCAPE);
             Check(doc.FormattedText().Contains("Bold Text"), "HTML typing style");

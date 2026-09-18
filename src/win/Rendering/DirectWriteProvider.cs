@@ -71,6 +71,28 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     public bool IsColorGlyph(ViemRenderRunHandleV1 handle) => resources.TryGetValue(handle.identifier, out var resource) && resource.ColorGlyph;
     public void Draw(CanvasDrawingSession drawing, ViemRenderRunHandleV1 handle, Vector2 baseline, Color color)
     {
+        using var batch = BeginDrawing(drawing);
+        batch.Draw(handle, baseline, color);
+    }
+
+    public GlyphDrawingBatch BeginDrawing(CanvasDrawingSession drawing) => new(this, drawing);
+
+    // Reflow changes glyph positions, so text commands must be recorded again.
+    // Share immutable brushes across that recording instead of creating and
+    // releasing a native COM brush for every individual shaped cluster.
+    public sealed class GlyphDrawingBatch(DirectWriteProvider provider, CanvasDrawingSession drawing) : IDisposable
+    {
+        private readonly Dictionary<Color, CanvasSolidColorBrush> brushes = [];
+        public void Draw(ViemRenderRunHandleV1 handle, Vector2 baseline, Color color)
+        {
+            if (!brushes.TryGetValue(color, out var brush)) brushes[color] = brush = new(drawing, color);
+            provider.Draw(drawing, handle, baseline, color, brush);
+        }
+        public void Dispose() { foreach (var brush in brushes.Values) brush.Dispose(); }
+    }
+
+    private void Draw(CanvasDrawingSession drawing, ViemRenderRunHandleV1 handle, Vector2 baseline, Color color, CanvasSolidColorBrush brush)
+    {
         if (handle.owner != owner || handle.metrics_generation != Generation || !resources.TryGetValue(handle.identifier, out var resource)) return;
         if (resource.ColorGlyph)
         {
@@ -81,7 +103,6 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             drawing.DrawTextLayout(resource.Fragment.Layout, baseline.X - resource.Left, baseline.Y - resource.Baseline, color);
             return;
         }
-        using var brush = new CanvasSolidColorBrush(drawing, color);
         foreach (var part in resource.Parts)
             drawing.DrawGlyphRun(baseline + part.Offset, part.Font, part.Size, part.Glyphs, false, part.BidiLevel, brush);
     }

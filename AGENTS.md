@@ -2505,6 +2505,11 @@ source, syntax, unrelated style assignments, or width-independent shaping.
 - Off-screen wrap results and height aggregates may be recomputed lazily after
   a resize. Scrollbar extent may temporarily use estimates, but visible text,
   hit testing, selection, and the caret must always use exact layout.
+- Live resize uses previously visible hard lines as a work estimate when the
+  document revision is unchanged, then extends reflow until the new viewport
+  has exact coverage. Reset height estimates must not turn wrapped paragraphs
+  into several screens of synchronous offscreen work. Tests cover bounded work
+  in large documents, fresh-layout equivalence, and invalidation.
 - During reflow, preserve a stable text anchor at the top of the viewport and
   keep the active caret visible. Do not preserve a stale numeric scroll offset
   if doing so would make the user's text jump unpredictably.
@@ -5688,9 +5693,10 @@ metrics, keyed by layout snapshot and metrics generation.
 ### TODO: macOS pointer selection performance
 
 The shared Rust core already reuses current visible layout during pointer
-selection and repairs retained position state during native Undo/Redo. Those
-fixes also apply to macOS when rebuilt; the remaining work is in the Swift
-frontend. Windows measurements do not establish macOS latency.
+selection, bounds resize work using previously visible hard lines, and repairs
+retained position state during native Undo/Redo. Those fixes also apply to macOS
+when rebuilt; the remaining work is in the Swift frontend. Windows measurements
+do not establish macOS latency.
 
 - **Reuse presentation exports.** `EVEditorSurfaceController.refreshPresentation`
   currently requests fresh geometry, paint, and text slices on every refresh;
@@ -5770,6 +5776,8 @@ own native or custom implementation for the thin vertical caret.
 
 `src/win/Viem.Windows.csproj` builds the unpackaged x64 C# / WinUI 3 frontend.
 `scripts/build-win.ps1` builds the matching Rust DLL and Windows executable;
+`scripts/run_windows.ps1` builds Release and launches the app, with an optional
+`-Offline` switch for already-restored dependencies.
 `scripts/test-win.ps1` checks generated ABI declarations and runs the native
 integration harness with an isolated profile. Development instructions and
 ownership boundaries are in `src/win/README.md`. The screenshots under
@@ -5817,6 +5825,8 @@ layout geometry instead of running visible reflow for each pointer event.
 Windows caches exported geometry and text drawing commands against the full
 layout identity. Selection and caret drawing remain independent; viewport,
 device/DPI, theme and whitespace changes invalidate affected drawing commands.
+Rebuilding text drawing commands shares native brushes by color within the
+drawing pass instead of allocating a brush for every glyph cluster.
 Menu validation runs when menus are opened, not on each editor input event.
 Regression checks MUST cover cache invalidation, large-document selection and
 pixel equivalence between cached and freshly rebuilt selection frames.

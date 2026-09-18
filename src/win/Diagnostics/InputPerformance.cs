@@ -23,11 +23,15 @@ internal static class InputPerformance
     {
         var view = await pane.Ready;
         await Task.Delay(300);
+        bool resize = Environment.GetEnvironmentVariable("VIEM_PERF_SCENARIO") == "resize";
+        string scenario = resize ? "resize" : "drag";
+        float width = (float)pane.Canvas.ActualWidth, height = (float)pane.Canvas.ActualHeight;
         using var surface = new Microsoft.Graphics.Canvas.CanvasRenderTarget(pane.Canvas.Device, (float)pane.Canvas.ActualWidth, (float)pane.Canvas.ActualHeight, pane.Canvas.Dpi);
         view.Place(40f, 40f);
         for (int i = 0; i < 8; i++)
         {
-            view.Place(50f + i * 10, 60f, true);
+            if (resize) view.Resize(width - i * 12, height);
+            else view.Place(50f + i * 10, 60f, true);
             using var drawing = surface.CreateDrawingSession(); pane.Draw(drawing);
         }
         samples.Clear(); Enabled = true;
@@ -38,9 +42,13 @@ internal static class InputPerformance
             var random = new Random(42);
             for (int i = 0; i < 100; i++)
             {
-                using (Measure("drag.frame.cpu"))
+                using (Measure(scenario + ".frame.cpu"))
                 {
-                    using (Measure("drag.turn")) view.Place((float)(30 + random.NextDouble() * (pane.Canvas.ActualWidth - 60)), (float)(30 + random.NextDouble() * (pane.Canvas.ActualHeight - 60)), true);
+                    using (Measure(scenario + ".turn"))
+                    {
+                        if (resize) view.Resize(width - (i < 50 ? i : 99 - i) * 5, height);
+                        else view.Place((float)(30 + random.NextDouble() * (pane.Canvas.ActualWidth - 60)), (float)(30 + random.NextDouble() * (pane.Canvas.ActualHeight - 60)), true);
+                    }
                     using var drawing = surface.CreateDrawingSession(); pane.Draw(drawing);
                 }
                 await Task.Delay(16);
@@ -48,11 +56,14 @@ internal static class InputPerformance
         }
         finally { Enabled = false; }
         if (pane.LastError != null) throw pane.LastError;
+        var layout = view.Layout();
         var results = samples.ToDictionary(pair => pair.Key, pair => {
             var sorted = pair.Value.Order().ToArray();
             return new { count = sorted.Length, mean = sorted.Average(), p50 = sorted[sorted.Length / 2], p95 = sorted[(int)(sorted.Length * .95)], max = sorted[^1] };
         });
-        File.WriteAllText(report, JsonSerializer.Serialize(new { passed = true, count = 100, shapedCharacters = view.Provider.ShapedCharacters - shaped, drawingCacheBuilds = pane.DrawingCacheBuilds - builds, milliseconds = results }, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(report, JsonSerializer.Serialize(new { passed = true, scenario, count = 100, shapedCharacters = view.Provider.ShapedCharacters - shaped, drawingCacheBuilds = pane.DrawingCacheBuilds - builds,
+            rows = layout.Rows.Length, clusters = layout.Clusters.Length, hardLines = layout.Info.coverage_hard_line_end - layout.Info.coverage_hard_line_start,
+            milliseconds = results }, new JsonSerializerOptions { WriteIndented = true }));
     }
 #endif
 }

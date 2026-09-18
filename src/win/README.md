@@ -17,11 +17,15 @@ Prerequisites:
 From the repository root in PowerShell:
 
 ```powershell
+.\scripts\run_windows.ps1
 .\scripts\build-win.ps1 -Run
 .\scripts\build-win.ps1 -Configuration Release
 .\scripts\test-win.ps1
 cargo test --locked
 ```
+
+`run_windows.ps1` builds Release and launches the app. Add `-Offline` to use
+already-restored dependencies. `build-win.ps1 -Run` builds and launches Debug.
 
 The executable is under
 `target/windows/Viem.Windows/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/Viem.exe`
@@ -109,6 +113,11 @@ times for 100 deterministic drag updates, layout export and Win2D drawing,
 plus shaping and drawing-cache rebuild counts. Drawing uses an offscreen
 surface on the UI thread; these are CPU measurements, not display-present or
 mouse-to-photon latency. The source file is never changed.
+
+Add `-ProfileScenario resize` to measure 100 width changes through the same
+core resize, presentation refresh, and drawing path. This reports CPU work for
+reflow and rendering; it does not measure native window-manager presentation.
+The default scenario is `drag`.
 
 Regenerate `Assets/Viem.ico` with `python src/win/tools/build_icon.py` when the
 existing iconset changes. The script only packages those PNGs into an ICO;
