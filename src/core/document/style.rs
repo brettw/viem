@@ -1090,6 +1090,9 @@ impl StyleSheet {
     }
 
     pub(crate) fn install_html_source_styles(&mut self) {
+        // When changing these identities, update StyleId::is_internal and the
+        // expected HTML styles in tests/html_source.rs:
+        // source_is_exact_normalized_decoding_with_lossless_bytes_and_semantic_context.
         for (name, rgb) in [
             ("Brackets", [0.48, 0.48, 0.52]),
             ("Tag name", [0.62, 0.36, 0.80]),

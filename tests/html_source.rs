@@ -23,14 +23,29 @@ fn source_is_exact_normalized_decoding_with_lossless_bytes_and_semantic_context(
         DocumentLayoutStyles::character_at(document.projection(), bracket, false).unwrap();
     assert!(authored.bold && colored.bold);
     assert_ne!(authored.foreground, colored.foreground);
+    // HTML syntax styles have their own contract alongside shared internal overlays.
+    let mut html_style_ids = document
+        .projection()
+        .style_sheet()
+        .character_styles()
+        .filter(|style| style.id.0.starts_with("* HTML "))
+        .map(|style| {
+            assert!(style.id.is_internal(), "HTML syntax style {:?}", style.id);
+            style.id.0.as_str()
+        })
+        .collect::<Vec<_>>();
+    html_style_ids.sort_unstable();
     assert_eq!(
-        document
-            .projection()
-            .style_sheet()
-            .character_styles()
-            .filter(|style| style.id.is_internal())
-            .count(),
-        7
+        html_style_ids,
+        [
+            "* HTML Attribute key",
+            "* HTML Attribute value",
+            "* HTML Brackets",
+            "* HTML Entity",
+            "* HTML Equals",
+            "* HTML Tag name",
+            "* HTML Uninterpreted",
+        ]
     );
 }
 #[test]
