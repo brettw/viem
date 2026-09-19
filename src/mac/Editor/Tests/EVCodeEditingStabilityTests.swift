@@ -117,8 +117,8 @@ final class EVCodeEditingStabilityTests: XCTestCase {
                              includeComments: Bool = true) throws -> Fixture {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-code-edit-stability-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
-        if !highlighting { try configuration.setVimSyntaxDirectory(directory.appendingPathComponent("missing-syntax").path) }
+        let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil,
+            bundleResourceURL: highlighting ? Bundle.main.resourceURL : directory.appendingPathComponent("missing-resources"))
         let styles = try EVCodeStyleSession(configuration: configuration)
         if commentSize != 14 {
             let snapshot = try styles.snapshot()

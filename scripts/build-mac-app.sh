@@ -19,6 +19,7 @@ case "$configuration" in
 esac
 
 cd "$project_dir"
+python3 "$script_dir/vim-runtime.py" verify "$project_dir/assets/vim"
 module_cache_dir="$project_dir/.build/clang-module-cache"
 mkdir -p "$module_cache_dir"
 export CLANG_MODULE_CACHE_PATH="$module_cache_dir"
@@ -53,6 +54,12 @@ cp "$swift_bin_dir/Viem" "$macos_dir/Viem.new"
 mv -f "$macos_dir/Viem.new" "$macos_dir/Viem"
 cp "$project_dir/src/mac/App/Resources/Info.plist" "$contents_dir/Info.plist"
 cp "$project_dir/assets/icon/Viem.icns" "$resources_dir/Viem.icns"
+# Replace this owned subtree so removed upstream files cannot survive a rebuild.
+# All files, including the original license and provenance manifest, are sealed
+# into the application signature. No installed Vim is needed at build/run time.
+rm -rf "$resources_dir/vim"
+cp -R "$project_dir/assets/vim" "$resources_dir/vim"
+python3 "$script_dir/vim-runtime.py" verify "$resources_dir/vim"
 
 codesign --force --sign - "$app_bundle"
 # Nested resource updates do not change the bundle directory's modification

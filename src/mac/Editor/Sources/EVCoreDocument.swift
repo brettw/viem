@@ -102,17 +102,14 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         } catch {
             assertionFailure("Unable to create the initial Viem core: \(error)")
         }
-        for name in [Notification.Name.viemCodePreferencesDidChange, .viemGlobalCodeStyleDidChange] {
-            codeObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    if notification.name == .viemCodePreferencesDidChange { self.configureSyntax() }
-                    else if self.sourceFormat == .code { self.configurationWarning = self.configuration.lastError }
-                    self.pollSyntax()
-                    self.refreshSyntaxDiagnostics()
-                }
-            })
-        }
+        codeObservers.append(NotificationCenter.default.addObserver(forName: .viemGlobalCodeStyleDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if self.sourceFormat == .code { self.configurationWarning = self.configuration.lastError }
+                self.pollSyntax()
+                self.refreshSyntaxDiagnostics()
+            }
+        })
         syntaxTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.pollSyntax() }
         }
@@ -535,7 +532,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     private func configureSyntax() {
         guard core != 0 else { return }
-        let bytes = Array((configuration.vimSyntaxDirectory as NSString).expandingTildeInPath.utf8)
+        let bytes = Array(configuration.bundledVimSyntaxDirectory.utf8)
         let status = bytes.withUnsafeBufferPointer {
             viem_core_configure_syntax(core, $0.baseAddress, UInt64($0.count))
         }

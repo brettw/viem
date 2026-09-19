@@ -95,6 +95,12 @@ add an Xcode project without changing those source ownership boundaries.
 Packaging copies `assets/icon/Viem.icns` into the app bundle's
 `Contents/Resources` before signing. The app's `CFBundleIconFile` declaration
 selects this icon for both debug and release builds.
+Packaging also verifies the pinned `assets/vim` snapshot, replaces the bundle's
+`Contents/Resources/vim` subtree with it, and verifies the packaged copy before
+signing. `scripts/vim-runtime.py` uses Python 3's standard library to verify
+file inventories and SHA-256 hashes. Builds do not require an installed Vim or
+download runtime files. The snapshot retains nested syntax helpers, original
+bytes and attribution, and the source runtime's license.
 After signing, packaging updates the app bundle directory's modification time
 so Launch Services detects changed icons and bundle metadata on the next launch.
 
@@ -2174,19 +2180,20 @@ ranges; they do not create new grapheme or shaping caret stops.
 
 #### Language detection and Code settings
 
-The Code Settings page MUST provide **Vim syntax directory**, with a directory
-chooser, an editable path, and a restore-default action. The initial macOS
-default is exactly:
+Vim syntax uses the shared pinned snapshot in `assets/vim/runtime/syntax`.
+There is no user-configurable syntax directory or associated path/chooser/
+restore control in Code settings. Native frontends
+resolve its installed resource path and pass it to the core; the Rust core has
+no platform-specific default directory. macOS packages it at
+`Contents/Resources/vim/runtime/syntax`. Windows packaging of the same snapshot
+is tracked in `docs/windows-vim-runtime-followup.md`.
 
-```text
-/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/Resources/vim/runtime/syntax
-```
-
-Persist it in `config.json`. Other platforms provide their own optional default
-through the resource resolver. An absent or unreadable directory makes that
+The retired `code.vimSyntaxDirectory` setting is ignored and removed on the
+next settings write, preserving unrelated fields. Application resource paths
+are never persisted. Includes stay within the bundled syntax root.
+An absent or unreadable bundled directory makes that
 Vim source unavailable, but never prevents opening, editing, or using bundled
-Tree-sitter. Changing it starts a new package generation and reloads affected
-Vim definitions asynchronously. The page reports load diagnostics and provides
+Tree-sitter. The Code Settings page reports load diagnostics and provides
 **Edit Code Styles…**, opening the global stylesheet in the existing modeless
 Styles editor. That editor has an explicit global target, distinct from a
 document target; valid edits persist and apply live. Its undo grouping belongs

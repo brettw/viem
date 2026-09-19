@@ -6,9 +6,7 @@ import XCTest
 
 @MainActor
 final class EVVimOpeningTests: XCTestCase {
-    private func checkVimrcPaint(syntaxDirectory: URL, directory: URL, command: String = "set") async throws {
-        let configuration = EVConfigurationStore(directory: directory.appendingPathComponent("settings"), legacyDefaults: nil)
-        try configuration.setVimSyntaxDirectory(syntaxDirectory.path)
+    private func checkVimrcPaint(configuration: EVConfigurationStore, directory: URL, command: String = "set") async throws {
         let backend = EVCoreDocumentBackend(configuration: configuration)
         let document = EVDocument(editorBackend: backend)
         document.recordRecentDocument = { _ in }
@@ -32,9 +30,22 @@ final class EVVimOpeningTests: XCTestCase {
             }
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertTrue(highlighted, "Configured vim.vim did not paint \(command): \(EVCodePreferences.shared.loadDiagnostics)")
+        XCTAssertTrue(highlighted, "Configured vim.vim did not paint \(command) from \(configuration.bundledVimSyntaxDirectory)")
         XCTAssertEqual(try document.data(ofType: EVDocument.plainTextType), source)
         XCTAssertFalse(document.isDocumentEdited)
+    }
+
+    private func bundledConfiguration(directory: URL, syntaxFile: String) throws -> EVConfigurationStore {
+        // SwiftPM's test bundle does not contain application resources. Inject
+        // the packaged app explicitly and fail if packaging omitted the runtime.
+        var checkout = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { checkout.deleteLastPathComponent() }
+        let resources = checkout.appendingPathComponent(".build/Viem.app/Contents/Resources")
+        let configuration = EVConfigurationStore(directory: directory.appendingPathComponent("settings"),
+          legacyDefaults: nil, bundleResourceURL: resources)
+        let syntax = URL(fileURLWithPath: configuration.bundledVimSyntaxDirectory).appendingPathComponent(syntaxFile)
+        _ = try Data(contentsOf: syntax)
+        return configuration
     }
 
     private func directory() throws -> URL {
@@ -45,33 +56,29 @@ final class EVVimOpeningTests: XCTestCase {
         return directory
     }
 
-    func testVimrcUsesTheConfiguredVimSyntaxFile() async throws {
+    func testVimrcUsesTheBundledResourceResolver() async throws {
         let directory = try directory()
-        let syntaxDirectory = directory.appendingPathComponent("syntax")
+        let resources = directory.appendingPathComponent("Resources")
+        let syntaxDirectory = resources.appendingPathComponent("vim/runtime/syntax")
         try FileManager.default.createDirectory(at: syntaxDirectory, withIntermediateDirectories: true)
-        // A custom declaration proves that the configured Vim file supplies
+        // An injected bundle fixture proves that the resource resolver supplies
         // the paint, instead of Code mode alone or another syntax provider.
         try Data("syn keyword viemVimFixture viemFixtureCommand\nhi def link viemVimFixture Statement\n".utf8)
             .write(to: syntaxDirectory.appendingPathComponent("vim.vim"))
-        try await checkVimrcPaint(syntaxDirectory: syntaxDirectory, directory: directory, command: "viemFixtureCommand")
+        let configuration = EVConfigurationStore(directory: directory.appendingPathComponent("settings"),
+          legacyDefaults: nil, bundleResourceURL: resources)
+        try await checkVimrcPaint(configuration: configuration, directory: directory, command: "viemFixtureCommand")
     }
 
-    func testInstalledVimRuntimePaintsVimrc() async throws {
-        let syntaxDirectory = URL(fileURLWithPath: EVCodePreferences.defaultVimSyntaxDirectory)
-        guard FileManager.default.fileExists(atPath: syntaxDirectory.appendingPathComponent("vim.vim").path) else {
-            throw XCTSkip("Pinned MacVim syntax runtime is not installed")
-        }
-        try await checkVimrcPaint(syntaxDirectory: syntaxDirectory, directory: directory())
-    }
-
-    func testInstalledMakefileSyntaxOpensAndPaintsWithoutChangingSource() async throws {
-        let syntaxDirectory = URL(fileURLWithPath: EVCodePreferences.defaultVimSyntaxDirectory)
-        guard FileManager.default.fileExists(atPath: syntaxDirectory.appendingPathComponent("make.vim").path) else {
-            throw XCTSkip("Pinned MacVim syntax runtime is not installed")
-        }
+    func testBundledVimRuntimePaintsVimrcByDefault() async throws {
         let directory = try directory()
-        let configuration = EVConfigurationStore(directory: directory.appendingPathComponent("settings"), legacyDefaults: nil)
-        try configuration.setVimSyntaxDirectory(syntaxDirectory.path)
+        let configuration = try bundledConfiguration(directory: directory, syntaxFile: "vim.vim")
+        try await checkVimrcPaint(configuration: configuration, directory: directory)
+    }
+
+    func testBundledMakefileSyntaxOpensAndPaintsWithoutChangingSource() async throws {
+        let directory = try directory()
+        let configuration = try bundledConfiguration(directory: directory, syntaxFile: "make.vim")
         let backend = EVCoreDocumentBackend(configuration: configuration)
         let document = EVDocument(editorBackend: backend)
         document.recordRecentDocument = { _ in }
@@ -95,22 +102,23 @@ final class EVVimOpeningTests: XCTestCase {
             }
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertTrue(paintedTarget, "Installed make.vim did not paint the target: \(EVCodePreferences.shared.loadDiagnostics)")
+        XCTAssertTrue(paintedTarget, "Bundled make.vim did not paint the target from \(configuration.bundledVimSyntaxDirectory)")
         XCTAssertEqual(try document.data(ofType: EVDocument.plainTextType), source)
         XCTAssertFalse(document.isDocumentEdited)
     }
 
     func testDocumentFullPathAndSaveAsUpdateVimSetupWithoutEditingSource() async throws {
         let directory = try directory()
-        let syntaxDirectory = directory.appendingPathComponent("syntax")
+        let resources = directory.appendingPathComponent("Resources")
+        let syntaxDirectory = resources.appendingPathComponent("vim/runtime/syntax")
         try FileManager.default.createDirectory(at: syntaxDirectory, withIntermediateDirectories: true)
         let original = EVDocumentIdentity.canonicalURL(directory.appendingPathComponent("original.vim"))
         let renamed = directory.appendingPathComponent("renamed.vim")
         let quotedPath = original.path.replacingOccurrences(of: "'", with: "''")
         let syntax = "if expand('%') ==# '\(quotedPath)'\n  syn keyword Comment token\nelse\n  syn keyword Constant token\nendif\n"
         try Data(syntax.utf8).write(to: syntaxDirectory.appendingPathComponent("vim.vim"))
-        let configuration = EVConfigurationStore(directory: directory.appendingPathComponent("settings"), legacyDefaults: nil)
-        try configuration.setVimSyntaxDirectory(syntaxDirectory.path)
+        let configuration = EVConfigurationStore(directory: directory.appendingPathComponent("settings"),
+          legacyDefaults: nil, bundleResourceURL: resources)
         let backend = EVCoreDocumentBackend(configuration: configuration)
         let document = EVDocument(editorBackend: backend)
         document.recordRecentDocument = { _ in }

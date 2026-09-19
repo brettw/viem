@@ -1,5 +1,13 @@
 use super::*;
 
+fn bundled_syntax_source(name: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("assets/vim/runtime/syntax")
+        .join(name);
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("failed to read bundled syntax {}: {error}", path.display()))
+}
+
 fn find(pattern: &str, text: &str, slice: usize) -> Option<std::ops::Range<usize>> {
     let pattern = VimPattern::compile(pattern, false, VimRegexLimits::default()).unwrap();
     find_pattern(&pattern, text, slice)
@@ -559,15 +567,13 @@ fn unicode_regular_patterns_use_bounded_scalar_fallback_without_byte_nfa() {
 }
 
 #[test]
-fn installed_clojure_unicode_block_pattern_fits_bounded_source_profile() {
+fn bundled_clojure_unicode_block_pattern_fits_bounded_source_profile() {
     let limits = VimRegexLimits::default();
     assert_eq!(limits.pattern_bytes, 16 * 1024);
     let error =
         VimPattern::compile(&"x".repeat(limits.pattern_bytes + 1), false, limits).unwrap_err();
     assert!(error.contains("pattern byte budget"));
-    let Ok(source) = std::fs::read_to_string("/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/Resources/vim/runtime/syntax/clojure.vim") else {
-        return;
-    };
+    let source = bundled_syntax_source("clojure.vim");
     let source = source
         .lines()
         .filter_map(|line| {
@@ -585,6 +591,25 @@ fn installed_clojure_unicode_block_pattern_fits_bounded_source_profile() {
     assert!(!pattern
         .is_match_text(r"\p{InNotAUnicodeBlock}", 1_000_000)
         .unwrap());
+}
+
+#[test]
+fn bundled_j_number_pattern_has_resumable_semantics() {
+    let source = bundled_syntax_source("j.vim");
+    let pattern = source
+        .lines()
+        .filter_map(|line| {
+            line.split_once("jNumber /")
+                .and_then(|(_, source)| source.strip_suffix('/'))
+        })
+        .max_by_key(|pattern| pattern.len())
+        .unwrap();
+    let pattern = VimPattern::compile(pattern, false, VimRegexLimits::default()).unwrap();
+    for text in ["_3", "3r4", "2j3", "2ad90", "16bff", "1e_3", "_0.25"] {
+        for fuel in [1, 8192] {
+            assert_eq!(find_pattern(&pattern, text, fuel), Some(0..text.len()), "{text}");
+        }
+    }
 }
 
 #[test]
@@ -801,9 +826,7 @@ fn vim_regex_matches_installed_vim_oracle() {
             "linear-gradient(",
         ),
     ];
-    let j_runtime = std::fs::read_to_string(
-        "/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/Resources/vim/runtime/syntax/j.vim",
-    ).unwrap_or_default();
+    let j_runtime = bundled_syntax_source("j.vim");
     if let Some(pattern) = j_runtime.lines().find_map(|line| {
         line.split_once("jNumber /")
             .and_then(|(_, source)| source.strip_suffix('/'))

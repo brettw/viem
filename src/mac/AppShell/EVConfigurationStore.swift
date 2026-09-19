@@ -28,12 +28,15 @@ public final class EVConfigurationStore {
   private var root: [String: Any] = ["version": 1]
   private var writable = true
   private let manager: FileManager
+  private let bundleResourceURL: URL?
 
   public init(directory: URL? = nil, legacyDefaults: UserDefaults? = nil,
               manager: FileManager = .default,
               environment: [String: String] = ProcessInfo.processInfo.environment,
-              homeDirectory: URL? = nil) {
+              homeDirectory: URL? = nil,
+              bundleResourceURL: URL? = Bundle.main.resourceURL) {
     self.manager = manager
+    self.bundleResourceURL = bundleResourceURL
     let profile = EVProfileDirectory.resolve(directory: directory, environment: environment,
       homeDirectory: homeDirectory ?? manager.homeDirectoryForCurrentUser)
     // Injected directories are isolated (tests, previews, portable profiles):
@@ -113,8 +116,9 @@ public final class EVConfigurationStore {
     }
     try update(section: "windows", values: ["documentFrame": fields], notify: false)
   }
-  public var vimSyntaxDirectory: String {
-    (root["code"] as? [String: Any])?["vimSyntaxDirectory"] as? String ?? EVCodePreferences.defaultVimSyntaxDirectory
+  /// Application resource discovery, independent of persisted preferences.
+  public var bundledVimSyntaxDirectory: String {
+    bundleResourceURL?.appendingPathComponent("vim/runtime/syntax", isDirectory: true).path ?? ""
   }
   public var codeFilenameAssociations: [EVCodeFilenameAssociation] {
     guard let entries = (root["code"] as? [String: Any])?["filenameAssociations"] as? [[String: Any]] else { return [] }
@@ -168,9 +172,6 @@ public final class EVConfigurationStore {
     } catch { lastError = error.localizedDescription; throw error }
   }
   public func setShowStatusBar(_ enabled: Bool) throws { try update(section: "appearance", values: ["showStatusBar": enabled]) }
-  public func setVimSyntaxDirectory(_ path: String) throws {
-    try update(section: "code", values: ["vimSyntaxDirectory": path])
-  }
   public func setCodeFilenameAssociations(_ entries: [EVCodeFilenameAssociation]) throws {
     try update(section: "code", values: ["filenameAssociations": entries.map { ["pattern": $0.pattern, "language": $0.language] }])
   }
@@ -260,6 +261,12 @@ public final class EVConfigurationStore {
       let exists = manager.fileExists(atPath: url.path)
       if exists { candidate = try Self.readObject(Data(contentsOf: url)); try Self.validate(candidate) }
       let changed = try mutation(&candidate)
+      // This removed preference never controls resource lookup. Retire old
+      // values on the next settings write while retaining unrelated fields.
+      if var code = candidate["code"] as? [String: Any] {
+        code.removeValue(forKey: "vimSyntaxDirectory")
+        candidate["code"] = code
+      }
       try Self.validate(candidate)
       if changed || !exists { try write(candidate, to: url) }
       root = candidate
@@ -341,11 +348,6 @@ public final class EVConfigurationStore {
     }
     if let raw = object["code"] {
       guard let fields = raw as? [String: Any] else { throw invalid("Invalid Code settings") }
-      if let rawPath = fields["vimSyntaxDirectory"] {
-        guard let path = rawPath as? String, !path.contains("\0"), path.utf8.count <= 16_384 else {
-          throw invalid("Vim syntax directory must be a path of at most 16 KiB")
-        }
-      }
       if let rawAssociations = fields["filenameAssociations"] {
         guard let entries = rawAssociations as? [[String: Any]], entries.count <= 256 else {
           throw invalid("Code filename associations must be an array of at most 256 entries")

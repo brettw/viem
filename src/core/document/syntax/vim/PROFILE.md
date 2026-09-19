@@ -6,10 +6,13 @@ or nonprogressing include cycle produces a file/line diagnostic and rejects the 
 The directory loader confines transitive includes to the selected syntax root.
 Program generations incorporate transitive file names and contents.
 
-The installed MacVim 9.1.1887 `conf.vim`, `dosini.vim`, `make.vim`, and `vim.vim` files are exercised as
-runtime fixtures. When that installation is present, a differential test runs
-MacVim without user configuration and compares every non-newline byte's effective
-highlight group. This is compatibility evidence for these fixtures, not a claim
+The bundled MacVim 9.1.1887 snapshot in `assets/vim/runtime/syntax` supplies
+portable runtime fixtures, including `conf.vim`, `dosini.vim`, and nested
+`debsources.vim` helpers. The pinned `make.vim` regression fixture is also retained.
+An optional differential test uses these sources and a reference Vim executable
+(`VIEM_VIM_REGEX_ORACLE`, installed MacVim, or `/usr/bin/vim`) without user
+configuration, comparing every non-newline byte's effective highlight group.
+This is compatibility evidence for these fixtures, not a claim
 that every distributed Vim runtime file compiles. Vim 9.2 remains the normative
 behavioral reference.
 

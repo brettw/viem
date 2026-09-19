@@ -8,6 +8,12 @@ The inventory contains 774 `.vim` files: 763 top-level language packages and 11
 nested helper fragments. The user's `~/.vim` contains `colors/bretts.vim`, a
 color scheme rather than a syntax package.
 
+The audited runtime is now copied unchanged into `assets/vim/runtime/syntax`
+for distribution. `assets/vim/manifest.json` records the source distribution
+and exact file hashes; the original runtime license is included. The report
+below records the original audit, while its reproduction command now uses the
+checked-in copy and needs no installed MacVim.
+
 ## Measured result
 
 With native profile 3, **663 of 774 files compile**, up from 235 before the
@@ -55,7 +61,7 @@ one million lines; its largest measured edit repair on this machine was
 
 ```sh
 cargo run --release --offline --example audit_vim_syntax -- \
-  /opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/Resources/vim/runtime/syntax \
+  assets/vim/runtime/syntax \
   > target/vim-syntax-audit.json
 ```
 

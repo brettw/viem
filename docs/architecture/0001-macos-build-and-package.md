@@ -28,6 +28,14 @@ library dependency in the development bundle. The package and bundle declare a
 macOS 26.0 deployment target, matching the latest major SDK available when this
 frontend was introduced (macOS SDK 26.5).
 
+The packaging script copies the shared `assets/vim` syntax snapshot into
+`Contents/Resources/vim` before signing. It verifies source and destination
+against the SHA-256 manifest and replaces the previous owned subtree to remove
+obsolete files. The native configuration store resolves the installed bundle
+path and always uses these resources, without a configurable directory or
+persisting a location-dependent path. The same snapshot is available to Windows
+packaging, tracked in `docs/windows-vim-runtime-followup.md`.
+
 ## Consequences
 
 The dependency graph keeps AppKit and Core Text out of Rust and permits unit

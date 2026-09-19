@@ -1,0 +1,2 @@
+# Preserve the vendored runtime's original encodings and line endings.
+assets/vim/runtime/** -text

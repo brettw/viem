@@ -7,10 +7,11 @@ import XCTest
 
 @MainActor
 final class EVCodeOpeningTests: XCTestCase {
-    private func backend() -> EVCoreDocumentBackend {
+    private func backend(bundleResourceURL: URL? = Bundle.main.resourceURL) -> EVCoreDocumentBackend {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-code-open-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        return EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory, legacyDefaults: nil))
+        return EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory,
+            legacyDefaults: nil, bundleResourceURL: bundleResourceURL))
     }
 
     private func assertRustKeywordIsHighlighted(
@@ -201,8 +202,7 @@ final class EVCodeOpeningTests: XCTestCase {
     }
 
     func testDiagnosticsRefreshWithoutAChangedPresentation() async throws {
-        let backend = backend()
-        try backend.configuration.setVimSyntaxDirectory("/missing/viem-diagnostic-only")
+        let backend = backend(bundleResourceURL: URL(fileURLWithPath: "/missing/viem-diagnostic-only"))
         try backend.read(source: Data("unrecognized language".utf8), typeName: EVDocument.codeType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()

@@ -26,8 +26,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private let content = NSView()
   private var observer: NSObjectProtocol?
   private var editingObserver: NSObjectProtocol?
-  private var codeObservers: [NSObjectProtocol] = []
-  private let codeDirectoryField = NSTextField()
+  private var codeObserver: NSObjectProtocol?
   private let codeDiagnostic = NSTextField(wrappingLabelWithString: "")
   private weak var smartQuotesCheckbox: NSButton?
   private let textWidthField = NSTextField(string: "")
@@ -81,10 +80,10 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
         self.refreshEditingPreferences()
       }
     }
-    codeObservers = [Notification.Name.viemCodePreferencesDidChange, .viemCodeDiagnosticsDidChange].map { name in
-      NotificationCenter.default.addObserver(forName: name, object: codePreferences, queue: .main) { [weak self] _ in
-        MainActor.assumeIsolated { self?.refreshCodePreferences() }
-      }
+    codeObserver = NotificationCenter.default.addObserver(
+      forName: .viemCodeDiagnosticsDidChange, object: codePreferences, queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated { self?.refreshCodePreferences() }
     }
     window.setContentSize(NSSize(width: 800, height: 690))
     if window.screen != nil { window.center() }
@@ -104,7 +103,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     if let observer { NotificationCenter.default.removeObserver(observer) }
     if let viewObserver { NotificationCenter.default.removeObserver(viewObserver) }
     if let editingObserver { NotificationCenter.default.removeObserver(editingObserver) }
-    codeObservers.forEach { NotificationCenter.default.removeObserver($0) }
+    if let codeObserver { NotificationCenter.default.removeObserver(codeObserver) }
   }
   @available(*, unavailable) required init?(coder: NSCoder) {
     fatalError("init(coder:) is unavailable")
@@ -227,7 +226,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
         "Set the space around text in every editor view.",
         "Make a comfortable space for writing. Changes apply to every window.",
         "Choose how Viem helps while you type. These preferences apply to every document.",
-        "Configure syntax highlighting and the shared styles used by every Code document.",
+        "Customize the shared styles used by every Code document.",
       ][selectedCategory])
     subtitle.textColor = .secondaryLabelColor
     stack.addArrangedSubview(subtitle)
@@ -237,25 +236,12 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
     stack.addArrangedSubview(persistenceDiagnostic)
     if selectedCategory == 3 {
-      codeDirectoryField.target = self
-      codeDirectoryField.action = #selector(changeCodeDirectory(_:))
-      codeDirectoryField.delegate = self
-      codeDirectoryField.placeholderString = "Vim syntax directory"
-      codeDirectoryField.setAccessibilityLabel("Vim syntax directory")
-      codeDirectoryField.lineBreakMode = .byTruncatingMiddle
-      let choose = button("Choose…", action: #selector(chooseCodeDirectory))
-      let restore = button("Restore Default", action: #selector(restoreCodeDirectory))
-      let buttons = NSStackView(views: [choose, restore])
-      buttons.spacing = 8
       codeDiagnostic.font = .systemFont(ofSize: 12)
       codeDiagnostic.textColor = .secondaryLabelColor
-      let directorySection = section("Vim syntax directory", views: [codeDirectoryField, buttons, codeDiagnostic])
-      stack.addArrangedSubview(directorySection)
-      directorySection.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
-      codeDirectoryField.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -88).isActive = true
       let styles = section("Code styles", views: [
         label("Code styles apply live to all open Code documents and are saved in code_style.json."),
         button("Edit Code Styles…", action: #selector(editCodeStyles)),
+        codeDiagnostic,
       ])
       stack.addArrangedSubview(styles)
       styles.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
@@ -389,8 +375,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   }
 
   private func refreshCodePreferences() {
-    codeDirectoryField.stringValue = codePreferences.vimSyntaxDirectory
-    codeDiagnostic.stringValue = ([codePreferences.directoryDiagnostic].compactMap { $0 }
+    codeDiagnostic.stringValue = ([codePreferences.bundledSyntaxDiagnostic].compactMap { $0 }
       + codePreferences.loadDiagnostics).joined(separator: "\n")
     codeDiagnostic.isHidden = codeDiagnostic.stringValue.isEmpty
     if selectedCategory == 3 {
@@ -584,13 +569,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
 
   @objc private func editVisibleWhitespaceStyle() { editingPreferences.openVisibleWhitespaceStyle() }
 
-  @objc private func changeCodeDirectory(_ sender: Any?) {
-    _ = codePreferences.setVimSyntaxDirectory(codeDirectoryField.stringValue)
-    refreshCodePreferences()
-  }
-
   func controlTextDidEndEditing(_ notification: Notification) {
-    if notification.object as AnyObject? === codeDirectoryField { changeCodeDirectory(nil) }
     if notification.object as AnyObject? === textWidthField { changeTextWidth(textWidthField) }
     if let field = notification.object as? NSTextField, let name = field.identifier?.rawValue {
       if indentationFields[name] === field { changeIndentationNumber(field) }
@@ -611,26 +590,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
   }
 
-  @objc private func chooseCodeDirectory() {
-    let panel = NSOpenPanel()
-    panel.canChooseFiles = false
-    panel.canChooseDirectories = true
-    panel.allowsMultipleSelection = false
-    panel.prompt = "Choose"
-    panel.directoryURL = URL(fileURLWithPath: (codePreferences.vimSyntaxDirectory as NSString).expandingTildeInPath)
-    guard let window else { return }
-    panel.beginSheetModal(for: window) { [weak self] response in
-      guard response == .OK, let path = panel.url?.path, let self else { return }
-      _ = self.codePreferences.setVimSyntaxDirectory(path)
-      self.refreshCodePreferences()
-    }
-  }
-
-  @objc private func restoreCodeDirectory() {
-    codePreferences.restoreDefaultDirectory()
-    refreshCodePreferences()
-  }
-
   @objc private func editCodeStyles() { codePreferences.openStyles() }
 
   func showViewCategoryForTesting() {
@@ -643,10 +602,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     selectedCategory = 3
     showCategory()
   }
-  var codeDirectoryForTesting: String { codeDirectoryField.stringValue }
   var codeDiagnosticsForTesting: String { codeDiagnostic.stringValue }
-  func setCodeDirectoryForTesting(_ path: String) { codeDirectoryField.stringValue = path; changeCodeDirectory(nil) }
-  func restoreCodeDirectoryForTesting() { restoreCodeDirectory() }
 
   private func label(_ text: String) -> NSTextField { NSTextField(labelWithString: text) }
   private func section(_ title: String, views: [NSView]) -> NSView {

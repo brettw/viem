@@ -39,11 +39,8 @@ impl Default for SyntaxConfiguration {
             registry_generation: super::treesitter::package_registry_generation(),
             language: None,
             filename: None,
-            vim_directory: if cfg!(target_os = "macos") {
-                "/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/Resources/vim/runtime/syntax".into()
-            } else {
-                String::new()
-            },
+            // Frontends resolve bundled resources or a user-selected directory.
+            vim_directory: String::new(),
         }
     }
 }

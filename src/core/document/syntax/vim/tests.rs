@@ -18,6 +18,10 @@ fn program(source: &str) -> Arc<VimProgram> {
 
 const MAKE_SYNTAX: &str = include_str!("fixtures/make.vim");
 
+fn bundled_syntax_directory() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/vim/runtime/syntax")
+}
+
 #[test]
 fn pinned_make_runtime_loads_and_highlights_target_recipe_and_variable() {
     let p = program(MAKE_SYNTAX);
@@ -498,14 +502,13 @@ fn zero_width_end_finishes_before_the_real_newline() {
 }
 
 #[test]
-fn actual_installed_macvim_conf_file_loads_without_partial_translation() {
-    let path = Path::new(
-        "/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/Resources/vim/runtime/syntax",
-    );
-    if !path.exists() {
-        return;
-    }
-    let p = VimProgram::load_directory(path, "conf", VimLoadLimits::default()).unwrap();
+fn bundled_conf_file_loads_without_partial_translation() {
+    let p = VimProgram::load_directory(
+        &bundled_syntax_directory(),
+        "conf",
+        VimLoadLimits::default(),
+    )
+    .unwrap();
     assert_eq!(p.rule_count(), 5);
     let input = input("# TODO\nx # FIXME\n\"literal\"\n", 1);
     let result = finish(&mut VimSession::new(p), &input, 0..input.byte_len(), 1000);
@@ -517,14 +520,13 @@ fn actual_installed_macvim_conf_file_loads_without_partial_translation() {
 }
 
 #[test]
-fn actual_installed_macvim_dosini_file_preserves_declarations() {
-    let path = Path::new(
-        "/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/Resources/vim/runtime/syntax",
-    );
-    if !path.exists() {
-        return;
-    }
-    let p = VimProgram::load_directory(path, "dosini", VimLoadLimits::default()).unwrap();
+fn bundled_dosini_file_preserves_declarations() {
+    let p = VimProgram::load_directory(
+        &bundled_syntax_directory(),
+        "dosini",
+        VimLoadLimits::default(),
+    )
+    .unwrap();
     let input = input("[Main]\nport=123\nname=hello\n; remark\n", 1);
     let result = finish(&mut VimSession::new(p), &input, 0..input.byte_len(), 5000);
     let names = names(&result, input.byte_len());
@@ -533,6 +535,33 @@ fn actual_installed_macvim_dosini_file_preserves_declarations() {
     assert_eq!(names[12], "Number");
     assert_eq!(names[21], "String");
     assert_eq!(names[29], "Comment");
+}
+
+#[test]
+fn bundled_debsources_loads_nested_shared_runtime_and_highlights_versions() {
+    let p = VimProgram::load_directory(
+        &bundled_syntax_directory(),
+        "debsources",
+        VimLoadLimits::default(),
+    )
+    .unwrap();
+    assert!(p.source_files.iter().any(|file| {
+        Path::new(file).ends_with(Path::new("shared").join("debversions.vim"))
+    }));
+    let text = "deb https://deb.debian.org/debian stable main\n";
+    let input = input(text, 1);
+    let result = finish(&mut VimSession::new(p), &input, 0..input.byte_len(), 10000);
+    let groups = names(&result, text.len());
+    for (needle, expected) in [("deb", "Statement"), ("stable", "Type"), ("main", "Statement")] {
+        let start = text.find(needle).unwrap();
+        assert!(
+            groups[start..start + needle.len()]
+                .iter()
+                .all(|group| group == expected),
+            "{needle}: {:?}",
+            &groups[start..start + needle.len()]
+        );
+    }
 }
 
 #[test]
@@ -1097,19 +1126,21 @@ fn cooperative_control_interrupts_inside_the_regex_and_resumes_frozen_input() {
     );
 }
 
-/// The optional installed-runtime test compares observable effective Vim groups
-/// at every source byte; fixture availability is separate from portable tests.
+/// Compare observable effective Vim groups at every source byte using bundled
+/// syntax sources. Only the external reference executable is optional.
 #[test]
-fn installed_macvim_runtime_matches_reference_colors_byte_for_byte() {
-    let runtime = Path::new(
-        "/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/Resources/vim/runtime/syntax",
-    );
-    let macvim = Path::new("/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/MacOS/Vim");
-    let executable = if macvim.exists() {
-        macvim
-    } else {
-        Path::new("/usr/bin/vim")
-    };
+fn bundled_runtime_matches_reference_colors_byte_for_byte() {
+    let runtime = bundled_syntax_directory();
+    let executable = std::env::var_os("VIEM_VIM_REGEX_ORACLE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let macvim = Path::new("/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/MacOS/Vim");
+            if macvim.exists() {
+                macvim.to_path_buf()
+            } else {
+                Path::new("/usr/bin/vim").to_path_buf()
+            }
+        });
     if !executable.exists() {
         return;
     }
@@ -1148,7 +1179,6 @@ fn installed_macvim_runtime_matches_reference_colors_byte_for_byte() {
             "vim9script\n# editor settings\nset number\nvar enabled = true\ndef Configure(): bool\n  return enabled\nenddef\n",
         ),
     ] {
-        if language != "make" && !runtime.exists() { continue; }
         let syntax_path = if language == "make" {
             Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core/document/syntax/vim/fixtures/make.vim")
         } else { runtime.join(format!("{language}.vim")) };
@@ -1157,9 +1187,9 @@ fn installed_macvim_runtime_matches_reference_colors_byte_for_byte() {
         let script_path = directory.0.join("reference.vim");
         std::fs::write(&input_path, text).unwrap();
         let quote = |p: &Path| format!("'{}'", p.display().to_string().replace('\'', "''"));
-        let script=format!("set nomore\nset encoding=utf-8\nexecute 'edit ' . fnameescape({})\nsyntax clear\nunlet! b:current_syntax\nexecute 'source ' . fnameescape({})\nsyntax sync fromstart\nlet result = []\nfor lnum in range(1, line('$'))\n  for col in range(1, strlen(getline(lnum)))\n    call add(result, synIDattr(synIDtrans(synID(lnum,col,1)), 'name'))\n  endfor\nendfor\ncall writefile(result,{})\nqa!\n",quote(&input_path),quote(&syntax_path),quote(&output_path));
+        let script=format!("set nomore\nset encoding=utf-8\nlet &runtimepath = {}\nexecute 'edit ' . fnameescape({})\nsyntax clear\nunlet! b:current_syntax\nexecute 'source ' . fnameescape({})\nsyntax sync fromstart\nlet result = []\nfor lnum in range(1, line('$'))\n  for col in range(1, strlen(getline(lnum)))\n    call add(result, synIDattr(synIDtrans(synID(lnum,col,1)), 'name'))\n  endfor\nendfor\ncall writefile(result,{})\nqa!\n",quote(runtime.parent().unwrap()),quote(&input_path),quote(&syntax_path),quote(&output_path));
         std::fs::write(&script_path, script).unwrap();
-        let mut child = std::process::Command::new(executable)
+        let mut child = std::process::Command::new(&executable)
             .args(["-Nu", "NONE", "-n", "-es", "-i", "NONE", "-S"])
             .arg(&script_path)
             .spawn()
@@ -1184,7 +1214,7 @@ fn installed_macvim_runtime_matches_reference_colors_byte_for_byte() {
             .collect::<Vec<_>>();
         let input = input(text, 1);
         let p = if language == "make" { program(MAKE_SYNTAX) } else { VimProgram::load_directory_with_context(
-            runtime, language, VimLoadLimits::default(),
+            &runtime, language, VimLoadLimits::default(),
             &VimSetupContext::from_input(&input),
             &std::sync::atomic::AtomicBool::new(false),
         ).unwrap() };
@@ -1196,11 +1226,11 @@ fn installed_macvim_runtime_matches_reference_colors_byte_for_byte() {
         .zip(text.bytes())
         .filter_map(|(name, byte)| (byte != b'\n').then_some(name))
         .collect::<Vec<_>>();
-        assert_eq!(actual.len(), reference.len(), "installed {language}.vim byte count");
+        assert_eq!(actual.len(), reference.len(), "bundled {language}.vim byte count");
         let mismatches = text.bytes().enumerate().filter(|(_, byte)| *byte != b'\n')
             .zip(actual.iter().zip(&reference))
             .filter_map(|((offset, byte), (actual, expected))| (actual != expected).then_some((offset, char::from(byte), actual, expected)))
             .take(16).collect::<Vec<_>>();
-        assert!(mismatches.is_empty(), "installed {language}.vim effective groups differ (byte, character, actual, expected): {mismatches:?}");
+        assert!(mismatches.is_empty(), "bundled {language}.vim effective groups differ (byte, character, actual, expected): {mismatches:?}");
     }
 }

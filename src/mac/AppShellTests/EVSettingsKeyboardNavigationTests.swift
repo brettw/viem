@@ -96,8 +96,11 @@ final class EVSettingsKeyboardNavigationTests: XCTestCase {
     XCTAssertTrue(tabstop.currentEditor() === window.firstResponder)
     XCTAssertEqual(configuration.textWidth, 96)
     settings.showCodeCategoryForTesting()
-    let directory = try field("Vim syntax directory", in: window)
-    XCTAssertTrue(sidebar.nextKeyView === directory)
+    let styles = try XCTUnwrap(descendants(window.contentView).compactMap { $0 as? NSButton }
+      .first { $0.title == "Edit Code Styles…" })
+    XCTAssertTrue(sidebar.nextKeyView === styles)
+    XCTAssertTrue(styles.nextKeyView === sidebar)
+    XCTAssertFalse(descendants(window.contentView).compactMap { $0 as? NSTextField }.contains { $0.isEditable })
     settings.showViewCategoryForTesting()
     let newTop = try field("View top margin", in: window)
     XCTAssertFalse(newTop === top)

@@ -55,12 +55,23 @@ specification's precedence. The [detection profile](../src/core/document/syntax/
 exposes validated declarative registration for additional signatures and
 extension disambiguators. Ordinary editing does not redetect the language.
 
-Settings → Code provides the Vim syntax directory, chooser, restore-default
-action, diagnostics, and **Edit Code Styles…**. Its initial directory is the
-requested MacVim 9.1.1887 runtime path. `config.json` stores
-`code.vimSyntaxDirectory` and an ordered optional `code.filenameAssociations`
+Settings → Code provides diagnostics and **Edit Code Styles…**. macOS resolves its
+directory from the bundled `Contents/Resources/vim/runtime/syntax` snapshot.
+`assets/vim` contains an unchanged copy of the previously configured MacVim
+9.1.1887 syntax tree and license, with a SHA-256 inventory. Packaging verifies
+the source and destination and replaces the previous resource subtree before
+signing, so removed files cannot survive rebuilds. The default remains valid
+when the app is moved and needs no installed MacVim.
+
+`config.json` stores an ordered optional `code.filenameAssociations`
 array of `{ "pattern": "*.custom", "language": "rust" }` entries. The table
 allows at most 256 entries with bounded patterns and language names.
+Vim always uses the bundled runtime; there is no directory setting or associated
+UI. The retired `code.vimSyntaxDirectory` key is ignored and removed on the next
+settings write while unrelated fields are preserved. Syntax includes remain
+within the bundled root. Windows
+packaging and configuration work is described in
+[the Windows follow-up](windows-vim-runtime-followup.md).
 
 `code_style.json` beside `config.json` stores the global Code stylesheet using
 sparse overrides and explicit suppression of deleted/renamed built-ins. Both

@@ -7,39 +7,50 @@ final class EVCodePreferencesTests: XCTestCase {
   private func fixture() -> EVConfigurationStore {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-code-\(UUID().uuidString)")
     addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-    return EVConfigurationStore(directory: directory)
+    return EVConfigurationStore(directory: directory,
+      bundleResourceURL: directory.appendingPathComponent("Moved Viem – Résumé.app/Contents/Resources"))
   }
 
-  func testDirectoryDefaultsPersistenceUnknownKeysAndInvalidConfiguration() throws {
+  func testBundledResourcesFollowRelocationWithoutPersistingPaths() throws {
     let configuration = fixture()
-    XCTAssertEqual(configuration.vimSyntaxDirectory, EVCodePreferences.defaultVimSyntaxDirectory)
+    XCTAssertTrue(configuration.bundledVimSyntaxDirectory.hasSuffix("Moved Viem – Résumé.app/Contents/Resources/vim/runtime/syntax"))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: configuration.directory.appendingPathComponent("config.json").path))
+    try configuration.setSmartQuotes(true)
+    let file = configuration.directory.appendingPathComponent("config.json")
+    let stored = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+    XCTAssertNil((stored["code"] as? [String: Any])?["vimSyntaxDirectory"])
+    let movedResources = configuration.directory.appendingPathComponent("Other Folder/Éditeur.app/Contents/Resources")
+    let reopened = EVConfigurationStore(directory: configuration.directory, bundleResourceURL: movedResources)
+    let expected = movedResources.appendingPathComponent("vim/runtime/syntax").path
+    XCTAssertEqual(reopened.bundledVimSyntaxDirectory, expected)
+    let previousDirectory = FileManager.default.currentDirectoryPath
+    defer { _ = FileManager.default.changeCurrentDirectoryPath(previousDirectory) }
+    XCTAssertTrue(FileManager.default.changeCurrentDirectoryPath(configuration.directory.path))
+    XCTAssertEqual(reopened.bundledVimSyntaxDirectory, expected)
+    XCTAssertNotNil(EVCodePreferences(configuration: reopened).bundledSyntaxDiagnostic)
+    try FileManager.default.createDirectory(atPath: expected, withIntermediateDirectories: true)
+    XCTAssertNil(EVCodePreferences(configuration: reopened).bundledSyntaxDiagnostic)
+  }
+
+  func testRetiredSyntaxDirectoryValuesAreIgnoredAndRemovedOnSettingsWrite() throws {
+    let configuration = fixture()
     try FileManager.default.createDirectory(at: configuration.directory, withIntermediateDirectories: true)
     let file = configuration.directory.appendingPathComponent("config.json")
-    try Data(#"{"version":1,"code":{"future":42}}"#.utf8).write(to: file)
-    let preferences = EVCodePreferences(configuration: configuration)
-    XCTAssertTrue(preferences.setVimSyntaxDirectory("/tmp/custom syntax"))
-    let reopened = EVConfigurationStore(directory: configuration.directory)
-    XCTAssertEqual(reopened.vimSyntaxDirectory, "/tmp/custom syntax")
-    let stored = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-    XCTAssertEqual((stored["code"] as? [String: Any])?["future"] as? Int, 42)
-    XCTAssertNotNil(preferences.directoryDiagnostic)
-    preferences.restoreDefaultDirectory()
-    XCTAssertEqual(preferences.vimSyntaxDirectory, EVCodePreferences.defaultVimSyntaxDirectory)
-    let invalid = Data(#"{"version":1,"code":{"vimSyntaxDirectory":false}}"#.utf8)
-    try invalid.write(to: file)
-    let bad = EVConfigurationStore(directory: configuration.directory)
-    XCTAssertNotNil(bad.lastError)
-    XCTAssertThrowsError(try bad.setVimSyntaxDirectory("/tmp"))
-    XCTAssertEqual(try Data(contentsOf: file), invalid)
-  }
-
-  func testWriteFailureDoesNotPublishDirectoryChange() throws {
-    let configuration = fixture()
-    try Data("obstruction".utf8).write(to: configuration.directory)
-    let preferences = EVCodePreferences(configuration: configuration)
-    XCTAssertFalse(preferences.setVimSyntaxDirectory("/tmp/syntax"))
-    XCTAssertEqual(preferences.vimSyntaxDirectory, EVCodePreferences.defaultVimSyntaxDirectory)
-    XCTAssertNotNil(preferences.lastError)
+    let resources = configuration.directory.appendingPathComponent("Resources")
+    let oldValues: [Any] = ["/custom/syntax", "", NSNull(), false]
+    for oldValue in oldValues {
+      let original = try JSONSerialization.data(withJSONObject: ["version": 1,
+        "code": ["vimSyntaxDirectory": oldValue, "future": 42]])
+      try original.write(to: file)
+      let reopened = EVConfigurationStore(directory: configuration.directory, bundleResourceURL: resources)
+      XCTAssertNil(reopened.lastError)
+      XCTAssertEqual(reopened.bundledVimSyntaxDirectory, resources.appendingPathComponent("vim/runtime/syntax").path)
+      XCTAssertEqual(try Data(contentsOf: file), original, "Loading a profile must not rewrite it")
+      try reopened.setSmartQuotes(true)
+      let stored = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+      XCTAssertNil((stored["code"] as? [String: Any])?["vimSyntaxDirectory"])
+      XCTAssertEqual((stored["code"] as? [String: Any])?["future"] as? Int, 42)
+    }
   }
 
   func testFilenameAssociationsPersistInOrderAndRejectInvalidUpdatesAtomically() throws {
@@ -64,8 +75,6 @@ final class EVCodePreferencesTests: XCTestCase {
       XCTAssertEqual(configuration.codeFilenameAssociations, entries)
       XCTAssertEqual(try Data(contentsOf: file), original)
     }
-    XCTAssertThrowsError(try configuration.setVimSyntaxDirectory(String(repeating: "x", count: 16_385)))
-    XCTAssertEqual(try Data(contentsOf: file), original)
     let malformed = Data(#"{"version":1,"code":{"filenameAssociations":[{"pattern":"*","language":false}]}}"#.utf8)
     try malformed.write(to: file)
     let rejected = EVConfigurationStore(directory: configuration.directory)
@@ -131,20 +140,15 @@ final class EVCodePreferencesTests: XCTestCase {
     }
   }
 
-  func testCodeSettingsPageEditsDirectoryAndReportsUnavailableResources() throws {
+  func testCodeSettingsPageReportsBundledResourceAndProviderDiagnostics() throws {
     let configuration = fixture()
     let preferences = EVCodePreferences(configuration: configuration)
     let window = EVSettingsWindowController(store: EVThemeStore(configuration: configuration),
       editingPreferences: EVEditingPreferences(configuration: configuration), codePreferences: preferences)
     window.showCodeCategoryForTesting()
-    XCTAssertEqual(window.codeDirectoryForTesting, EVCodePreferences.defaultVimSyntaxDirectory)
-    window.setCodeDirectoryForTesting("/missing/viem-syntax-directory")
-    XCTAssertEqual(preferences.vimSyntaxDirectory, "/missing/viem-syntax-directory")
     XCTAssertTrue(window.codeDiagnosticsForTesting.contains("unavailable"))
     preferences.reportLoadDiagnostics(["Unsupported syntax instruction in sample.vim:12"])
     XCTAssertTrue(window.codeDiagnosticsForTesting.contains("sample.vim:12"))
-    window.restoreCodeDirectoryForTesting()
-    XCTAssertEqual(window.codeDirectoryForTesting, EVCodePreferences.defaultVimSyntaxDirectory)
     window.close()
   }
 }
