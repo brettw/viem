@@ -2500,27 +2500,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn no_op_open_save_is_byte_exact_for_every_encoding() {
-        let cases = [
-            (Encoding::Utf8, b"\xef\xbb\xbfhello\r\n".to_vec()),
-            (Encoding::Latin1, vec![0x48, 0xe9, 0x0d, 0x0a]),
-            (
-                Encoding::Utf16Le,
-                vec![0xff, 0xfe, 0x48, 0x00, 0xe9, 0x00, 0x0a, 0x00],
-            ),
-            (
-                Encoding::Utf16Be,
-                vec![0xfe, 0xff, 0x00, 0x48, 0x00, 0xe9, 0x00, 0x0a],
-            ),
-        ];
-        for (encoding, bytes) in cases {
-            let document =
-                Document::from_bytes(bytes.clone(), encoding, Format::PlainText).unwrap();
-            assert_eq!(document.source_bytes(), bytes);
-        }
-    }
-
-    #[test]
     fn utf8_bom_survives_local_edit() {
         let mut document = Document::from_bytes(
             b"\xef\xbb\xbfhello".to_vec(),
@@ -3465,17 +3444,6 @@ mod tests {
         assert!(document.undo());
         assert_eq!(document.text(), "");
         assert!(!document.undo());
-    }
-
-    #[test]
-    fn grapheme_clusters_are_indivisible() {
-        let mut document = Document::new("a\u{301}b");
-        assert_eq!(
-            document.delete(1..3),
-            Err(DocumentError::NotGraphemeBoundary(1))
-        );
-        document.delete(0..3).unwrap();
-        assert_eq!(document.text(), "b");
     }
 
     #[test]

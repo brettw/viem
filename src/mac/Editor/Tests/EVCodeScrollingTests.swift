@@ -38,7 +38,6 @@ final class EVCodeScrollingTests: XCTestCase {
         let destinations: [CGFloat] = [64, 512, 2_048, 8_192, 16_384, 32_768, 4_096, 0]
         for _ in 0..<2 {
             for top in destinations {
-                allowSyntaxWorkerToFinish()
                 let before = try session.viewportState()
                 _ = try session.setViewportOrigin(left: 0, top: top, expected: before)
                 surface.refreshPresentation()
@@ -72,7 +71,6 @@ final class EVCodeScrollingTests: XCTestCase {
         try await waitForRustPaint(backend: backend, surface: surface)
 
         for iteration in 0..<24 {
-            allowSyntaxWorkerToFinish()
             if iteration % 4 == 0 {
                 // A font/scale environment change and width change require
                 // fresh geometry while syntax work is independently pending.
@@ -143,10 +141,6 @@ final class EVCodeScrollingTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTFail("Rust keyword did not receive syntax paint: \(surface.statusBarState.message)")
-    }
-
-    private func allowSyntaxWorkerToFinish() {
-        Thread.sleep(forTimeInterval: 0.025)
     }
 
     private func waitForVisibleRustPaint(

@@ -1,9 +1,7 @@
 //! Exact black-box fixtures for the required Vim command surface.
 //!
-//! `vim_command_matrix` establishes that the grammar accepts every required
-//! command. These fixtures complement that smoke coverage by pinning the
-//! observable result: document text, cursor byte boundary, mode, register
-//! side effects, and undo grouping. They deliberately enter through `Core`
+//! These fixtures pin observable results: document text, cursor byte boundary,
+//! mode, register side effects, and undo grouping. They enter through `Core`
 //! rather than constructing the command interpreter directly.
 
 use viem_core::command::{CommandStatus, InputEvent, Key, Mode, RegisterKind};

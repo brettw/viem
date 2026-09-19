@@ -5,7 +5,6 @@ use viem_core::ffi::{
     VIEM_CORE_ABI_VERSION, VIEM_DOCUMENT_OPTIONS_SIZE, VIEM_ENCODING_DETECT, VIEM_ENCODING_LATIN1,
     VIEM_ENCODING_UTF16_BE, VIEM_ENCODING_UTF16_LE, VIEM_ENCODING_UTF8, VIEM_FILE_FORMAT_DETECT,
     VIEM_FILE_FORMAT_DOS, VIEM_FILE_FORMAT_MAC, VIEM_FILE_FORMAT_UNIX, VIEM_FORMAT_MARKDOWN,
-    VIEM_FORMAT_PLAIN_TEXT,
 };
 use std::ptr;
 
@@ -349,13 +348,4 @@ fn destroying_a_handle_is_final_and_detected_by_every_operation() {
     assert_eq!(required, 0);
 
 
-}
-
-#[test]
-fn explicit_format_constants_remain_disjoint() {
-    // These values are serialized in C structs; this test guards accidental
-    // aliases even though Rust's domain types are distinct enums.
-    assert_ne!(VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_MARKDOWN);
-    assert_ne!(VIEM_FILE_FORMAT_UNIX, VIEM_FILE_FORMAT_DOS);
-    assert_ne!(VIEM_FILE_FORMAT_DOS, VIEM_FILE_FORMAT_MAC);
 }

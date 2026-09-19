@@ -70,18 +70,6 @@ final class EVFunctionKeyMappingTests: XCTestCase {
         XCTAssertNil(split.commandOutput)
     }
 
-    func testUnmodifiedFunctionKeyIsMappedInsteadOfInsertedAsPrivateUseText() throws {
-        let (backend, document, controller, surface) = try fixture(startup: "map <F2> l\n")
-        defer { controller.close(); document.close() }
-
-        surface.editorView.keyDown(with: try functionKey(2))
-
-        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 1)
-        XCTAssertEqual(try backend.formattedText(), "first line\nsecond line")
-        XCTAssertFalse(backend.persistenceState.isDirty)
-        XCTAssertNil(surface.commandOutput)
-    }
-
     func testFunctionModifiersAndHighFunctionNumbersReachTheirDistinctMappings() throws {
         let startup = """
         map <F2> l

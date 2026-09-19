@@ -2211,15 +2211,16 @@ mod tests {
         assert!(tree.leaf_count() > 1);
         assert_eq!(tree.utf16_len(), text.encode_utf16().count());
 
-        for byte in text
-            .char_indices()
-            .map(|(offset, _)| offset)
-            .chain(std::iter::once(text.len()))
-        {
-            let expected = text[..byte].encode_utf16().count();
+        // Count the oracle once while retaining checks at every scalar boundary.
+        // Re-encoding each prefix makes this otherwise linear sweep quadratic.
+        let mut expected = 0;
+        for (byte, scalar) in text.char_indices() {
             assert_eq!(tree.utf16_offset_for_byte(byte).unwrap(), expected);
             assert_eq!(tree.byte_offset_for_utf16(expected).unwrap(), byte);
+            expected += scalar.len_utf16();
         }
+        assert_eq!(tree.utf16_offset_for_byte(text.len()).unwrap(), expected);
+        assert_eq!(tree.byte_offset_for_utf16(expected).unwrap(), text.len());
 
         let emoji = text.find('👩').unwrap();
         assert_eq!(

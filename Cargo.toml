@@ -30,3 +30,10 @@ tree-sitter-python = "=0.23.5"
 unicode-width = "=0.1.14"
 
 [dev-dependencies]
+
+# The suite exercises multi-megabyte documents and million-line fixtures. Keep
+# debug assertions and overflow checks while avoiding unoptimized fixture work.
+[profile.test]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true

@@ -323,7 +323,13 @@ impl MockTextMeasurementProvider {
             let style = Self::style_at(request, global_start);
             let mut count = 1;
 
-            if self.ligatures && Self::feature_enabled(style, *b"liga", true) {
+            // Every supported ligature starts with an uncombined `f`. Avoid
+            // style-run searches and full style comparisons for other clusters,
+            // which dominate the large literal-document test fixtures.
+            if self.ligatures
+                && graphemes[index].1 == "f"
+                && Self::feature_enabled(style, *b"liga", true)
+            {
                 for candidate in [3, 2] {
                     if index + candidate <= graphemes.len() {
                         let candidate_end = if index + candidate == graphemes.len() {
@@ -332,11 +338,14 @@ impl MockTextMeasurementProvider {
                             graphemes[index + candidate].0
                         };
                         let candidate_text = &shaping_text[local_start..candidate_end];
+                        if !matches!(candidate_text, "fi" | "fl" | "ffi" | "ffl") {
+                            continue;
+                        }
                         let same_style = (index..index + candidate).all(|grapheme_index| {
                             let offset = context_start + graphemes[grapheme_index].0;
                             Self::style_at(request, offset) == style
                         });
-                        if same_style && matches!(candidate_text, "fi" | "fl" | "ffi" | "ffl") {
+                        if same_style {
                             count = candidate;
                             break;
                         }

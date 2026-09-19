@@ -5,7 +5,7 @@
     {
       "id": "command-surface",
       "status": "supported",
-      "decision": "The normative command fixtures are executable matrices; counts/registers/operators/repeat/undo have separate exact-result tests.",
+      "decision": "Black-box command fixtures assert observable results, with focused coverage for counts, registers, operators, repeat, and undo.",
       "tests": [
         "tests/vim_command_matrix.rs",
         "tests/vim_exact_conformance.rs",
