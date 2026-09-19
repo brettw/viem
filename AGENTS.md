@@ -5808,11 +5808,16 @@ Windows clipboard shortcuts are an intentional exception to Vim compatibility:
 including during literal-next input. `Control-Shift-V` pastes plain text.
 `Control-Q` remains the core's alternate Visual Block/literal-next binding.
 `Control-S` and `Control-Shift-S` save/save as outside literal-next input.
+`Control-Z` and `Control-Shift-Z` invoke the core's native Undo and Redo actions
+outside literal-next input. They work during Insert mode as well as Normal mode
+and use the same document history as the Edit menu; they never undo the hidden
+input TextBox. These bindings apply only to Windows. The vi `u` and `Control-R`
+commands and macOS shortcuts remain unchanged.
 `Control-0` through `Control-5` assign Base Paragraph and Headings 1–5;
 Heading 6 remains in the menu to preserve `Control-6` / `Control-^`.
 Other vi control keys MUST reach the Rust interpreter: Windows MUST NOT claim
 `Control-B/F` for formatting/find, `Control-I/U` for italic/underline,
-`Control-N/O` for new/open, or `Control-A/Z/W` for native editor commands.
+`Control-N/O` for new/open, or `Control-A/W` for native editor commands.
 Those native actions remain available through menus. AltGr remains text input;
 function-key modifiers are preserved. Windows owns its system shortcuts.
 

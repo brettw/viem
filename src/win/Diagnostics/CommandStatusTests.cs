@@ -81,7 +81,8 @@ internal static class CommandStatusTests
             await Screenshot(".command-output-long");
             Check(pane.StatusControl.ActualHeight == height && pane.OutputScrollControl.ScrollableHeight > 0
                 && pane.OutputScrollControl.ScrollableWidth > 0, "long multiline output scrolls inside one status row");
-            pane.OutputScrollControl.ChangeView(100, 20, null, true); await Task.Delay(80);
+            pane.OutputScrollControl.ChangeView(100, 20, null, true);
+            for (int i = 0; i < 20 && (pane.OutputScrollControl.HorizontalOffset == 0 || pane.OutputScrollControl.VerticalOffset == 0); i++) await Task.Delay(100);
             Check(pane.OutputScrollControl.HorizontalOffset > 0 && pane.OutputScrollControl.VerticalOffset > 0,
                 "output scrolling exposes clipped lines and columns");
             // Expiration must not take focus from another pane/control.

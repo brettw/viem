@@ -3,10 +3,10 @@ using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Input;
 
-internal enum NativeAction { None, Copy, Cut, Paste, PastePlain, Save, SaveAs, Heading }
+internal enum NativeAction { None, Copy, Cut, Paste, PastePlain, Undo, Redo, Save, SaveAs, Heading }
 internal readonly record struct KeyRoute(uint Kind = 0, uint Codepoint = 0, uint Modifiers = 0, NativeAction Action = NativeAction.None);
 
-/// <summary>Only the explicitly reserved clipboard keys shadow vi bindings.</summary>
+/// <summary>Reserve Windows shortcuts explicitly; preserve all other vi bindings.</summary>
 internal static class KeyPolicy
 {
     public static KeyRoute Route(VirtualKey key, bool control, bool shift, bool alt, bool literal = false)
@@ -18,6 +18,7 @@ internal static class KeyPolicy
             if (key == VirtualKey.C) return new(Action: NativeAction.Copy);
             if (key == VirtualKey.X) return new(Action: NativeAction.Cut);
             if (key == VirtualKey.V) return new(Action: shift ? NativeAction.PastePlain : NativeAction.Paste);
+            if (!literal && key == VirtualKey.Z) return new(Action: shift ? NativeAction.Redo : NativeAction.Undo);
             if (!literal && key == VirtualKey.S) return new(Action: shift ? NativeAction.SaveAs : NativeAction.Save);
             // Ctrl+6/Ctrl+^ belongs to vi. Heading 6 remains a menu action.
             if (!literal && !shift && key >= VirtualKey.Number0 && key <= VirtualKey.Number5) return new(Codepoint: (uint)(key - VirtualKey.Number0), Action: NativeAction.Heading);

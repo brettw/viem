@@ -188,12 +188,15 @@ internal static class FrontendSmokeTests
             var layout = view.Layout(); Check(layout.Info.coverage_hard_line_end < 25_000, "viewport export remains regional");
             view.Scroll(0, 100_000); Check(view.Viewport.top > 0, "large document scrolling");
         });
-        foreach (var key in new[] { VirtualKey.A, VirtualKey.B, VirtualKey.D, VirtualKey.E, VirtualKey.F, VirtualKey.H, VirtualKey.I, VirtualKey.J, VirtualKey.K, VirtualKey.L, VirtualKey.M, VirtualKey.N, VirtualKey.O, VirtualKey.P, VirtualKey.Q, VirtualKey.R, VirtualKey.T, VirtualKey.U, VirtualKey.W, VirtualKey.Y, VirtualKey.Z })
+        foreach (var key in new[] { VirtualKey.A, VirtualKey.B, VirtualKey.D, VirtualKey.E, VirtualKey.F, VirtualKey.H, VirtualKey.I, VirtualKey.J, VirtualKey.K, VirtualKey.L, VirtualKey.M, VirtualKey.N, VirtualKey.O, VirtualKey.P, VirtualKey.Q, VirtualKey.R, VirtualKey.T, VirtualKey.U, VirtualKey.W, VirtualKey.Y })
             Check(KeyPolicy.Route(key, true, false, false).Kind == VIEM_KEY_CONTROL_CHARACTER, $"preserve Ctrl+{key}");
         Check(KeyPolicy.Route(VirtualKey.C, true, false, false, true).Action == NativeAction.Copy, "Ctrl+C overrides literal/vi bindings");
         Check(KeyPolicy.Route(VirtualKey.X, true, false, false).Action == NativeAction.Cut, "Ctrl+X override");
         Check(KeyPolicy.Route(VirtualKey.V, true, false, false).Action == NativeAction.Paste, "Ctrl+V override");
         Check(KeyPolicy.Route(VirtualKey.V, true, false, true).Action == NativeAction.None, "AltGr remains text input");
+        Check(KeyPolicy.Route(VirtualKey.Z, true, false, true).Action == NativeAction.None
+            && KeyPolicy.Route(VirtualKey.Z, true, true, true).Action == NativeAction.None, "AltGr+Z does not invoke history");
+        Check(KeyPolicy.Route(VirtualKey.Z, true, true, false, true).Kind == VIEM_KEY_CONTROL_CHARACTER, "literal-next preserves Ctrl+Shift+Z as a control character");
         Check(KeyPolicy.Route(VirtualKey.F5, false, true, false).Modifiers == VIEM_KEY_MODIFIER_SHIFT, "function-key modifiers preserved");
         Check(KeyPolicy.Route(VirtualKey.Number6, true, false, false).Codepoint == '^', "preserve vi Ctrl+6/Ctrl+^");
         File.WriteAllText(ReportPath!, JsonSerializer.Serialize(new { passed = true, count = checks.Count, checks }, new JsonSerializerOptions { WriteIndented = true }));

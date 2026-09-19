@@ -62,11 +62,13 @@ stacked panes, status bars and command prompt follow `docs/mac_references`.
 - Ctrl+C/X/V always copy/cut/paste; Ctrl+Shift+V pastes plain text.
 - Ctrl+Q retains Visual Block and literal-next input.
 - Ctrl+S / Ctrl+Shift+S save / save as, outside literal-next input.
+- Ctrl+Z / Ctrl+Shift+Z undo / redo, including from Insert mode, outside
+  literal-next input. Normal-mode `u` and Ctrl+R remain available.
 - Ctrl+0–5 select Base Paragraph / Headings 1–5. Heading 6 is menu-only to
   preserve vi's Ctrl+6 / Ctrl+^.
 - Other vi control bindings remain available. Use the menus for native actions
   whose usual Windows shortcuts conflict with vi, including bold, italic,
-  underline, find, select all and undo. AltGr and IME text go through native input.
+  underline, find and select all. AltGr and IME text go through native input.
 
 Preferences, startup commands and style defaults use `%USERPROFILE%\.viem`.
 Set `VIEM_CONFIG_DIR` before launch for an isolated profile. Portable settings

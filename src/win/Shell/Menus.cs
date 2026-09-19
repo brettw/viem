@@ -66,8 +66,8 @@ internal sealed partial class EditorWindow
             Sub("Text Encoding", new[] { "UTF-8", "Latin-1", "UTF-16 LE", "UTF-16 BE" }.Select((s, i) => ActionItem(s, () => View?.SetEncoding((uint)i + 1))).ToArray()),
             Sub("Line Endings", ActionItem("Unix (LF)", () => View?.FileFormat(1)), ActionItem("Windows (CRLF)", () => View?.FileFormat(2)), ActionItem("Classic Mac (CR)", () => View?.FileFormat(3))),
             Separator(), Item("Settings…", ShowSettings), Separator(), Item("Exit", RequestClose));
-        undoItem = ActionItem("Undo", () => View?.Undo(), enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_UNDO) != 0);
-        redoItem = ActionItem("Redo", () => View?.Redo(), enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_REDO) != 0);
+        undoItem = ActionItem("Undo", () => View?.Undo(), "Ctrl+Z", enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_UNDO) != 0);
+        redoItem = ActionItem("Redo", () => View?.Redo(), "Ctrl+Shift+Z", enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_REDO) != 0);
         Top("Edit", "E", undoItem, redoItem, Separator(),
             Item("Cut", () => ActivePane?.Copy(true) ?? Task.CompletedTask, "Ctrl+X", () => ActivePane?.CanCut == true),
             Item("Copy", () => ActivePane?.Copy(false) ?? Task.CompletedTask, "Ctrl+C", () => ActivePane?.CanCopy == true),
