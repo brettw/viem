@@ -1551,8 +1551,9 @@ typedef struct ViemVisualSelectionIdentityV1 {
   ((uint32_t)sizeof(ViemVisualSelectionIdentityV1))
 
 /*
- * Segments are in logical UTF-8 document order. Rectangles are in visual-row,
- * then x order.
+ * Segments are in logical UTF-8 document order. Character/Line segments retain
+ * the entire selected range, including text outside materialized layout.
+ * Rectangles cover only materialized geometry, in visual-row, then x order.
  */
 typedef struct ViemVisualSelectionInfoV1 {
   uint32_t struct_size;
@@ -2120,8 +2121,11 @@ ViemStatus viem_core_view_accept_completion(
  * current layout. Copy requires both its layout and opaque state identities.
  * Null array pointers are accepted only with zero capacities;
  * BUFFER_TOO_SMALL writes both required counts and no array elements.
- * STALE_REVISION means either identity changed. OUTSIDE_LAYOUT_COVERAGE means
- * the current exact selection is not wholly materialized by this layout.
+ * STALE_REVISION means either identity changed. Character/Line selections
+ * retain their complete logical segments when endpoints leave layout coverage;
+ * rectangle_count may be zero when selected text is entirely offscreen.
+ * OUTSIDE_LAYOUT_COVERAGE may still mean a Visual Block's row-dependent extent
+ * cannot be resolved against the current materialized layout.
  */
 ViemStatus viem_core_view_visual_selection_info(
     ViemCoreHandle core, ViemViewId view,

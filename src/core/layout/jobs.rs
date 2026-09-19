@@ -1532,7 +1532,7 @@ mod tests {
     use super::*;
     use crate::document::{TextEdit, TextRange};
     use crate::layout::{
-        ClusterCaretStop, MeasurementError, MockTextMeasurementProvider,
+        ClusterCaretStop, LayoutSnapshot, MeasurementError, MockTextMeasurementProvider,
         RegionalLayoutCacheStatistics, RenderRunHandle, RenderRunPolicy, ShapeRequest,
         ShapedBounds, ShapedCluster, ShapedFragment, TextMetrics,
     };
@@ -2258,6 +2258,26 @@ mod tests {
             snapshot.selection_rectangles(crossing, super::super::BoundaryAffinity::Downstream),
             Err(LayoutError::OutsideMaterializedCoverage)
         );
+        let visible_crossing = TextRange::new(
+            document.text_point(expected.start).unwrap(),
+            crossing.end(),
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot.materialized_selection_rectangles(
+                crossing, super::super::BoundaryAffinity::Downstream,
+            ).unwrap(),
+            snapshot.selection_rectangles(
+                visible_crossing, super::super::BoundaryAffinity::Downstream,
+            ).unwrap(),
+        );
+        assert!(snapshot.materialized_selection_rectangles(
+            uncovered, super::super::BoundaryAffinity::Downstream,
+        ).unwrap().is_empty());
+        let offscreen_caret = TextRange::new(uncovered.start(), uncovered.start()).unwrap();
+        assert!(snapshot.materialized_selection_rectangles(
+            offscreen_caret, super::super::BoundaryAffinity::Downstream,
+        ).unwrap().is_empty());
         let coverage = snapshot.coverage.vertical_range().unwrap();
         assert_eq!(
             snapshot.hit_test(super::super::LayoutPoint {
@@ -2265,6 +2285,110 @@ mod tests {
                 y: coverage.start - 1.0,
             }),
             Err(LayoutError::OutsideMaterializedCoverage)
+        );
+    }
+
+    #[test]
+    fn large_document_selection_geometry_follows_viewport_and_layout_invalidation() {
+        let mut document = Document::new("a\u{301} row\n\n".repeat(10_000));
+        let provider = InstrumentedProvider::new(ProviderThreading::AnyWorker);
+        let mut engine = LayoutEngine::new(provider);
+        let mut view = ViewLayout::new(200.0, 32.0);
+        let affinity = super::super::BoundaryAffinity::Downstream;
+        let original = TextRange::new(
+            document.text_point(0).unwrap(),
+            document.text_point(document.text().len()).unwrap(),
+        )
+        .unwrap();
+        let mut previous_snapshot: Option<LayoutSnapshot> = None;
+
+        // Move beyond the regional cache, reverse direction, then rebuild
+        // after content, width, and font-metrics changes. Selection must use
+        // the current geometry without shaping its offscreen extent.
+        for (index, first_line) in [0, 10_000, 19_998, 0, 10_000].into_iter().enumerate() {
+            if index == 4 {
+                document
+                    .insert(document.line_start(first_line).unwrap(), "W")
+                    .unwrap();
+                view.resize(160.0, 32.0);
+                engine
+                    .provider_mut()
+                    .inner
+                    .set_metrics_generation(MetricsGeneration(2));
+            }
+            let selection = TextRange::new(
+                document.text_point(0).unwrap(),
+                document.text_point(document.text().len()).unwrap(),
+            )
+            .unwrap();
+            let requirements = inspect_layout_provider(&engine);
+            let request = prepare_layout_job(
+                &document,
+                &mut view,
+                requirements,
+                LayoutJobId(index as u64 + 1),
+                LayoutJobPriority::ChangedVisibleRows,
+                viewport(first_line..first_line + 2, first_line as f32 * 16.0, 32.0),
+                LayoutCancellationToken::new(),
+            )
+            .unwrap();
+            assert!(request.captured_text_len() < 32);
+            let candidate =
+                compute_layout_job(&mut engine, &request, LayoutExecutionContext::WorkerPool).unwrap();
+            install_layout_job(
+                &mut view,
+                target(&document, requirements.metrics_generation),
+                candidate,
+            )
+            .unwrap();
+            let snapshot = view.snapshot().unwrap();
+            assert_eq!(snapshot.coverage.hard_lines(), first_line..first_line + 2);
+            assert_eq!(snapshot.rows.len(), 2);
+            let rectangles = snapshot
+                .materialized_selection_rectangles(selection, affinity)
+                .unwrap();
+            assert!(rectangles
+                .iter()
+                .any(|rectangle| rectangle.row_index == 0 && rectangle.rect.width > 0.0));
+            assert!(
+                rectangles
+                    .iter()
+                    .any(|rectangle| rectangle.row_index == 1 && rectangle.rect.width == 0.0),
+                "the selected hard break on the last materialized empty row has geometry"
+            );
+            assert!(rectangles
+                .iter()
+                .all(|rectangle| rectangle.row_index < snapshot.rows.len()));
+            assert_eq!(
+                snapshot.selection_rectangles(selection, affinity),
+                Err(LayoutError::OutsideMaterializedCoverage)
+            );
+            if index == 4 {
+                assert_eq!(snapshot.metrics_generation, MetricsGeneration(2));
+                assert_eq!(snapshot.viewport_width, 160.0);
+                assert_eq!(
+                    snapshot.materialized_selection_rectangles(original, affinity),
+                    Err(LayoutError::WrongDocumentRevision)
+                );
+                assert_eq!(
+                    previous_snapshot
+                        .as_ref()
+                        .unwrap()
+                        .materialized_selection_rectangles(selection, affinity),
+                    Err(LayoutError::WrongDocumentRevision)
+                );
+            }
+            previous_snapshot = Some(snapshot.clone());
+        }
+        assert!(engine.provider().shaped_text_bytes < 100);
+        let other = Document::new("other");
+        let other_selection =
+            TextRange::new(other.text_point(0).unwrap(), other.text_point(1).unwrap()).unwrap();
+        assert_eq!(
+            view.snapshot()
+                .unwrap()
+                .materialized_selection_rectangles(other_selection, affinity),
+            Err(LayoutError::WrongDocument)
         );
     }
 

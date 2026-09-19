@@ -1283,6 +1283,37 @@ impl LayoutSnapshot {
         empty_affinity: BoundaryAffinity,
     ) -> Result<Vec<SelectionRectangle>, LayoutError> {
         self.validate_selection_range(range)?;
+        self.selection_rectangles_for_validated_range(range, empty_affinity)
+    }
+
+    /// Paint the materialized portion of a checked logical selection without
+    /// requiring its offscreen endpoints to have layout geometry. The complete
+    /// logical range stays unchanged; only the returned rectangles are limited
+    /// to this snapshot's rows and clusters. Work is bounded by that geometry.
+    ///
+    /// `TextRange` already carries document-validated grapheme endpoints. A
+    /// regional snapshot cannot revalidate offscreen endpoints against its
+    /// local grapheme index, but must still reject a different snapshot.
+    pub fn materialized_selection_rectangles(
+        &self,
+        range: TextRange,
+        empty_affinity: BoundaryAffinity,
+    ) -> Result<Vec<SelectionRectangle>, LayoutError> {
+        self.validate_selection_identity(range)?;
+        if range.is_empty()
+            && (!self.coverage.contains_text_offset(range.start().offset())
+                || !self.horizontal_text_is_materialized(range.start().offset()))
+        {
+            return Ok(Vec::new());
+        }
+        self.selection_rectangles_for_validated_range(range, empty_affinity)
+    }
+
+    fn selection_rectangles_for_validated_range(
+        &self,
+        range: TextRange,
+        empty_affinity: BoundaryAffinity,
+    ) -> Result<Vec<SelectionRectangle>, LayoutError> {
         let start = range.start().offset();
         let end = range.end().offset();
         if start == end {
@@ -1407,7 +1438,7 @@ impl LayoutSnapshot {
         Ok(())
     }
 
-    fn validate_selection_range(&self, range: TextRange) -> Result<(), LayoutError> {
+    fn validate_selection_identity(&self, range: TextRange) -> Result<(), LayoutError> {
         let start = range.start();
         let end = range.end();
         if start.document() != self.document_id || end.document() != self.document_id {
@@ -1421,6 +1452,13 @@ impl LayoutSnapshot {
                 return Err(LayoutError::InvalidTextOffset(offset));
             }
         }
+        Ok(())
+    }
+
+    fn validate_selection_range(&self, range: TextRange) -> Result<(), LayoutError> {
+        self.validate_selection_identity(range)?;
+        let start = range.start();
+        let end = range.end();
         if !self.selection_range_is_covered(start.offset()..end.offset()) {
             return Err(LayoutError::OutsideMaterializedCoverage);
         }

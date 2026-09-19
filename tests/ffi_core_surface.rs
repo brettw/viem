@@ -3429,7 +3429,7 @@ fn native_find_selection_is_exact_literal_and_reveal_requires_visual_state() {
 }
 
 #[test]
-fn visual_selection_reports_outside_partial_layout_coverage() {
+fn visual_selection_preserves_logical_extent_outside_partial_layout_coverage() {
     let source = "row\n".repeat(3_000);
     let core = create_core(source.as_bytes(), ViemDocumentOptions::default());
     let mut context = Box::new(FakeProviderContext::new(core.handle));
@@ -3454,12 +3454,71 @@ fn visual_selection_reports_outside_partial_layout_coverage() {
             ViemStatus::Ok
         );
     }
-    let mut selection = ViemVisualSelectionInfoV1::default();
-    assert_eq!(
-        unsafe { viem_core_view_visual_selection_info(core.handle, view, &mut selection) },
-        ViemStatus::OutsideLayoutCoverage
-    );
-    assert_eq!(selection, ViemVisualSelectionInfoV1::default());
+    for top in [None, Some(10_000.0), Some(0.0)] {
+        if let Some(top) = top {
+            let mut state = ViemViewportStateV1::default();
+            assert_eq!(
+                unsafe { viem_core_view_viewport_state(core.handle, view, &mut state) },
+                ViemStatus::Ok
+            );
+            let request = ViemViewportOriginV1 {
+                flags: VIEM_VIEWPORT_ORIGIN_HAS_TOP,
+                top,
+                expected_document_id: state.document_id,
+                expected_document_revision: state.document_revision,
+                expected_layout_revision: state.layout_revision,
+                expected_configuration_generation: state.configuration_generation,
+                expected_measurement_environment_id: state.measurement_environment_id,
+                expected_metrics_generation: state.metrics_generation,
+                ..ViemViewportOriginV1::default()
+            };
+            assert_eq!(
+                unsafe {
+                    viem_core_view_set_viewport_origin(core.handle, view, &request, &mut outcome)
+                },
+                ViemStatus::Ok
+            );
+        }
+        let mut selection = ViemVisualSelectionInfoV1::default();
+        assert_eq!(
+            unsafe { viem_core_view_visual_selection_info(core.handle, view, &mut selection) },
+            ViemStatus::Ok
+        );
+        assert_eq!(selection.identity.kind, VIEM_VISUAL_SELECTION_KIND_LINE);
+        assert_eq!(selection.segment_count, 1);
+        assert!(selection.rectangle_count > 0);
+        let mut segment = ViemVisualSelectionSegmentV1::default();
+        let mut rectangles =
+            vec![ViemVisualSelectionRectangleV1::default(); selection.rectangle_count as usize];
+        assert_eq!(
+            unsafe {
+                viem_core_view_copy_visual_selection(
+                    core.handle,
+                    view,
+                    &selection.identity,
+                    &mut segment,
+                    1,
+                    rectangles.as_mut_ptr(),
+                    rectangles.len() as u64,
+                    &mut ViemVisualSelectionInfoV1::default(),
+                )
+            },
+            ViemStatus::Ok
+        );
+        assert_eq!(segment.text_start, 0);
+        assert_eq!(segment.text_end, source.len() as u64);
+        assert_eq!(
+            unsafe { viem_core_view_layout_snapshot_info(core.handle, view, &mut layout) },
+            ViemStatus::Ok
+        );
+        assert_eq!(selection.identity.layout, layout.identity);
+        assert!(rectangles.iter().all(
+            |rectangle| rectangle.row_index < layout.row_count && rectangle.segment_index == 0
+        ));
+        assert!(rectangles
+            .iter()
+            .any(|rectangle| rectangle.rect.width > 0.0));
+    }
 
     assert_eq!(viem_core_view_remove(core.handle, view), ViemStatus::Ok);
 }

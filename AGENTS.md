@@ -4388,6 +4388,13 @@ standard copy/cut/paste/select-all menu items, drag selection auto-scroll, and
 font selection for the active range. Native commands dispatch the same core
 semantic intentions and verified source transactions as keyboard commands.
 They must not maintain a second selection, source, or undo model in AppKit.
+Dragging beyond the window or screen and autoscrolling MUST retain the original
+selection anchor and complete logical range until an explicit selection-changing
+action. Moving selection endpoints outside materialized layout MUST NOT discard
+the selection export or its native selected-text range. Character/Line exports
+retain their full logical segments and provide rectangles only for materialized
+selected content; an entirely offscreen selection may have zero rectangles.
+Mouse-up stops autoscrolling and retains the selected range.
 The macOS Undo and Redo menu actions dispatch to the core history API. An
 `NSUndoManager` adapter, if required for AppKit integration, is only a proxy for
 core status and commands and never registers or executes independent inverse

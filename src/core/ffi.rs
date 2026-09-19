@@ -5978,9 +5978,16 @@ fn push_selection_rectangles(
     expected_row: Option<usize>,
     rectangles: &mut Vec<ViemVisualSelectionRectangleV1>,
 ) -> Result<(), ViemStatus> {
-    let resolved = snapshot
-        .selection_rectangles(range, empty_affinity)
-        .map_err(layout_query_status)?;
+    let resolved = if expected_row.is_some() {
+        // Block rows are explicitly resolved against this exact layout.
+        snapshot.selection_rectangles(range, empty_affinity)
+    } else {
+        // Linear selection endpoints may have scrolled out of the regional
+        // snapshot. Keep their complete logical segment and export the exact
+        // geometry that is materialized, including selected hard breaks.
+        snapshot.materialized_selection_rectangles(range, empty_affinity)
+    }
+    .map_err(layout_query_status)?;
     let mut matched = false;
     for rectangle in resolved {
         if expected_row.is_some_and(|row| row != rectangle.row_index) {
@@ -8328,6 +8335,8 @@ pub unsafe extern "C" fn viem_core_view_copy_command_line(
 /// Read required logical-segment and drawable-rectangle counts for the exact
 /// current Visual selection and layout. A non-Visual view returns kind NONE
 /// with zero counts and the current layout identity.
+/// Linear selections retain their complete logical segments when endpoints
+/// are offscreen; rectangles describe only the materialized layout coverage.
 ///
 /// # Safety
 ///
