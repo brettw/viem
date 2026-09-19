@@ -39,6 +39,7 @@ internal sealed partial class EditorWindow : Window
     {
         using var startup = Diagnostics.StartupPerformance.Measure("window.initialize");
         this.preferences = preferences;
+        menuToggle.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
         if (document != null)
         {
             var owner = App.Instance.Windows.FirstOrDefault(w => w.savedSources.ContainsKey(document));
@@ -100,7 +101,7 @@ internal sealed partial class EditorWindow : Window
         AppWindow.TitleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
         AppWindow.TitleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
         AppWindow.TitleBar.ButtonForegroundColor = preferences.Midnight ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
-        titleBar.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(31, 31, 31) : Theme.Rgb(243, 243, 243));
+        titleBar.Background = Menu.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(31, 31, 31) : Theme.Rgb(243, 243, 243));
         updatingPreferences = false;
         RefreshRecentMenu();
     }

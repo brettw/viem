@@ -5795,6 +5795,9 @@ The window has a Windows menu bar below its title bar. A native toggle button
 immediately to the left of the caption controls shows or hides the menu and
 persists the preference. Panes stack vertically, with native resize dividers,
 independent scrollbars, status bars, cursors, selections, and view options.
+The menu bar matches the title-bar background. Its visibility toggle blends
+into that background when off and uses WinUI's neutral default control fill
+when on, with native hover, pressed, and keyboard-focus feedback.
 Native menus, dialogs, color pickers and font controls use WinUI compact sizing
 through the application-wide `DensityStyles/Compact.xaml` resource dictionary.
 This is a keyboard-and-mouse writing application; all application windows and
