@@ -3,7 +3,7 @@ using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Input;
 
-internal enum NativeAction { None, Copy, Cut, Paste, PastePlain, Undo, Redo, Save, SaveAs, Heading }
+internal enum NativeAction { None, Copy, Cut, Paste, PastePlain, Undo, Redo, Save, SaveAs, Heading, Styles }
 internal readonly record struct KeyRoute(uint Kind = 0, uint Codepoint = 0, uint Modifiers = 0, NativeAction Action = NativeAction.None);
 
 /// <summary>Reserve Windows shortcuts explicitly; preserve all other vi bindings.</summary>
@@ -11,6 +11,7 @@ internal static class KeyPolicy
 {
     public static KeyRoute Route(VirtualKey key, bool control, bool shift, bool alt, bool literal = false)
     {
+        if (!literal && key == VirtualKey.F8 && !control && !shift && !alt) return new(Action: NativeAction.Styles);
         // These Windows clipboard overrides also apply during literal-next input.
         // AltGr is text input, not a Control shortcut.
         if (control && !alt)

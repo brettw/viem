@@ -1,91 +1,126 @@
-using System.Text.Json;
 using System.Text.Json.Nodes;
-using Microsoft.Graphics.Canvas.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 
 namespace Viem.Windows.Shell;
 
-internal sealed partial class EditorWindow
+internal sealed partial class SettingsWindow : Window
 {
-    private ContentDialog CreateSettings()
+    private readonly Preferences preferences;
+    private readonly Grid root = new();
+    private readonly ListView categories = new() { SelectionMode = ListViewSelectionMode.Single, Margin = new(8, 0, 8, 0) };
+    private readonly Grid pages = new();
+    private readonly TextBlock error = new() { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
+    private readonly Border sidebar = new();
+    private readonly SolidColorBrush sectionBorder = new();
+    private readonly List<ScrollViewer> sections = [];
+    private bool loading = true;
+
+    internal SettingsWindow(Preferences preferences)
     {
-        var tabs = new Pivot();
-        StackPanel Page(string name)
-        {
-            var panel = new StackPanel { Spacing = 12, Margin = new(0, 8, 0, 8) };
-            tabs.Items.Add(new PivotItem { Header = name, Content = new ScrollViewer { Content = panel, MaxHeight = 440, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled } }); return panel;
-        }
-        var view = Page("View"); var themePage = Page("Theme"); var editingPage = Page("Editing"); var codePage = Page("Code");
-        var marginFields = new Dictionary<string, NumberBox>();
-        var marginRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-        foreach (string edge in new[] { "top", "left", "bottom", "right" })
-        { var box = new NumberBox { Header = char.ToUpperInvariant(edge[0]) + edge[1..], Value = preferences.Margin(edge), Minimum = 0, Maximum = 1000, Width = 84 }; marginFields.Add(edge, box); marginRow.Children.Add(box); }
-        view.Children.Add(new TextBlock { Text = "Text margins (DIPs)" }); view.Children.Add(marginRow);
-        var status = new ToggleSwitch { Header = "Show status bar", IsOn = preferences.ShowStatus }; view.Children.Add(status);
-        var menus = new ToggleSwitch { Header = "Show menu bar", IsOn = preferences.ShowMenu }; view.Children.Add(menus);
-        var theme = preferences.Theme;
-        var colors = new Dictionary<string, ColorPicker>();
-        var preview = new TextBlock { Text = "A calm writing surface", Padding = new(12), FontSize = 18 };
-        var previewStatus = new TextBlock { Text = "NORMAL                         Ln 1, Col 1", Padding = new(8) };
-        var previewBox = new StackPanel(); var previewBody = new Border { Child = preview }; var previewFooter = new Border { Child = previewStatus }; previewBox.Children.Add(previewBody); previewBox.Children.Add(previewFooter);
-        void RefreshThemePreview()
-        { if (colors.Count < 6) return; preview.Foreground = new SolidColorBrush(colors["foreground"].Color); previewBody.Background = new SolidColorBrush(colors["background"].Color); previewStatus.Foreground = new SolidColorBrush(colors["statusForeground"].Color); previewFooter.Background = new SolidColorBrush(colors["statusBackground"].Color); }
-        var preset = new ComboBox { Header = "Preset", ItemsSource = new[] { "Custom", "Midnight", "Paper" }, SelectedIndex = 0 }; themePage.Children.Add(preset);
-        foreach (var (key, title, color) in new[] { ("foreground", "Text", theme.Foreground), ("background", "Canvas", theme.Background), ("caret", "Caret", theme.Caret), ("selection", "Selection", theme.Selection), ("statusForeground", "Status text", theme.StatusForeground), ("statusBackground", "Status background", theme.StatusBackground) })
-        {
-            var picker = new ColorPicker { Color = color, IsAlphaEnabled = true, Width = 290 };
-            colors[key] = picker;
-            var button = new Button { Content = title, HorizontalAlignment = HorizontalAlignment.Stretch, Flyout = new Flyout { Content = picker } }; themePage.Children.Add(button);
-            picker.ColorChanged += (_, _) => RefreshThemePreview();
-        }
-        preset.SelectionChanged += (_, _) => { if (preset.SelectedIndex < 1) return; var value = Preferences.ThemeJson(preset.SelectedIndex == 1 ? Theme.Midnight : Theme.Paper); foreach (var pair in colors) { var c = value[pair.Key]!; pair.Value.Color = Theme.Rgb((byte)(c["red"]!.GetValue<double>() * 255), (byte)(c["green"]!.GetValue<double>() * 255), (byte)(c["blue"]!.GetValue<double>() * 255), (byte)(c["alpha"]!.GetValue<double>() * 255)); } };
-        var statusFont = new ComboBox { Header = "Status font", IsEditable = true, ItemsSource = CanvasTextFormat.GetSystemFontFamilies(), Text = preferences.StatusFontFamily };
-        var statusSize = new NumberBox { Header = "Status font size", Value = preferences.StatusFontSize, Minimum = 8, Maximum = 32 };
-        themePage.Children.Add(statusFont); themePage.Children.Add(statusSize); themePage.Children.Add(previewBox); RefreshThemePreview();
-        statusFont.LostFocus += (_, _) => previewStatus.FontFamily = new FontFamily(statusFont.Text);
-        statusSize.ValueChanged += (_, _) => { if (double.IsFinite(statusSize.Value)) previewStatus.FontSize = statusSize.Value; };
-        var editing = preferences.Editing;
-        var quotes = new ToggleSwitch { Header = "Smart quotes", IsOn = preferences.SmartQuotes }; editingPage.Children.Add(quotes);
-        var width = new NumberBox { Header = "Text width (columns for gq / gw)", Value = preferences.TextWidth, Minimum = 1, Maximum = uint.MaxValue }; editingPage.Children.Add(width);
-        var indentation = editing["indentation"] as JsonObject ?? new JsonObject(); var indentNumbers = new Dictionary<string, NumberBox>(); var indentBooleans = new Dictionary<string, CheckBox>();
-        editingPage.Children.Add(new TextBlock { Text = "Indentation and tabs", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        foreach (var (key, title, fallback, min) in new[] { ("tabstop", "Tab stop", 2, 1), ("shiftwidth", "Shift width", 2, 0), ("softtabstop", "Soft tab stop", 2, -1) })
-        { var box = new NumberBox { Header = title, Value = indentation[key]?.GetValue<int>() ?? fallback, Minimum = min, Maximum = 1024 }; indentNumbers[key] = box; editingPage.Children.Add(box); }
-        foreach (var (key, title) in new[] { ("autoindent", "Auto indent"), ("expandtab", "Insert spaces for tabs"), ("smarttab", "Smart tabs"), ("continueCommentsOnEnter", "Continue comments with Enter"), ("continueCommentsOnOpenLine", "Continue comments with o / O") })
-        { var box = new CheckBox { Content = title, IsChecked = indentation[key]?.GetValue<bool>() ?? true }; indentBooleans[key] = box; editingPage.Children.Add(box); }
-        var whitespace = editing["whitespacePresentation"] as JsonObject ?? new JsonObject(); var visible = whitespace["visibleWhitespace"] as JsonObject ?? new JsonObject();
-        editingPage.Children.Add(new TextBlock { Text = "Whitespace", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        var codeWhitespace = new ComboBox { Header = "Code indentation width", ItemsSource = new[] { "Paragraph en", "Spaces" }, SelectedIndex = whitespace["codeWhitespace"]?.GetValue<string>() == "spaces" ? 1 : 0 };
-        var otherWhitespace = new ComboBox { Header = "Other formats indentation width", ItemsSource = new[] { "Spaces", "Paragraph en" }, SelectedIndex = whitespace["otherWhitespace"]?.GetValue<string>() == "paragraphEn" ? 1 : 0 };
-        var wrapIndent = new NumberBox { Header = "Wrapped line indent (Code)", Value = whitespace["codeWrappedLineIndent"]?.GetValue<int>() ?? 4, Minimum = 0, Maximum = 1024 };
-        var showWhitespace = new CheckBox { Content = "Show invisible characters", IsChecked = visible["enabled"]?.GetValue<bool>() ?? true };
-        var listchars = new TextBox { Header = "Visible whitespace (listchars)", Text = visible["listchars"]?.GetValue<string>() ?? "tab:>-,trail:*,extends:>,precedes:<" };
-        editingPage.Children.Add(codeWhitespace); editingPage.Children.Add(otherWhitespace); editingPage.Children.Add(wrapIndent); editingPage.Children.Add(showWhitespace); editingPage.Children.Add(listchars);
-        var syntax = new TextBox { Header = "Vim syntax directory (optional)", Text = preferences.VimDirectory }; codePage.Children.Add(syntax);
-        codePage.Children.Add(new TextBlock { Text = "Bundled Tree-sitter languages work without a Vim installation. The directory supplies fallback syntax files.", TextWrapping = TextWrapping.Wrap });
-        var associations = new TextBox { Header = "Filename associations (JSON)", Text = System.Text.Encoding.UTF8.GetString(preferences.Associations), AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 80 }; codePage.Children.Add(associations);
-        var error = new TextBlock { TextWrapping = TextWrapping.Wrap };
-        var body = new StackPanel { Width = 400, Spacing = 8 }; body.Children.Add(tabs); body.Children.Add(error); body.Children.Add(new TextBlock { Text = preferences.DirectoryPath, TextWrapping = TextWrapping.Wrap, FontSize = 11, IsTextSelectionEnabled = true });
-        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.RequestedTheme, Title = "Settings", Content = body, PrimaryButtonText = "Apply", CloseButtonText = "Cancel" };
-        dialog.PrimaryButtonClick += (_, args) => {
-            try
-            {
-                var themeJson = new JsonObject(); foreach (var pair in colors) themeJson[pair.Key] = Preferences.ColorJson(pair.Value.Color);
-                themeJson["statusFontFamily"] = statusFont.Text; themeJson["statusFontSize"] = statusSize.Value;
-                var indent = new JsonObject(); foreach (var pair in indentNumbers) indent[pair.Key] = pair.Value.Value; foreach (var pair in indentBooleans) indent[pair.Key] = pair.Value.IsChecked == true;
-                var margins = new JsonObject(); foreach (var pair in marginFields) margins[pair.Key] = pair.Value.Value;
-                var changes = new JsonObject {
-                    ["theme"] = themeJson, ["view"] = new JsonObject { ["margins"] = margins }, ["appearance"] = new JsonObject { ["showStatusBar"] = status.IsOn }, ["windows"] = new JsonObject { ["showMenu"] = menus.IsOn },
-                    ["editing"] = new JsonObject { ["smartQuotes"] = quotes.IsOn, ["textWidth"] = width.Value, ["indentation"] = indent,
-                        ["whitespacePresentation"] = new JsonObject { ["codeWhitespace"] = codeWhitespace.SelectedIndex == 0 ? "paragraphEn" : "spaces", ["otherWhitespace"] = otherWhitespace.SelectedIndex == 0 ? "spaces" : "paragraphEn", ["codeWrappedLineIndent"] = wrapIndent.Value, ["visibleWhitespace"] = new JsonObject { ["enabled"] = showWhitespace.IsChecked == true, ["listchars"] = listchars.Text } } },
-                    ["code"] = new JsonObject { ["vimSyntaxDirectory"] = syntax.Text, ["filenameAssociations"] = JsonNode.Parse(associations.Text) }
-                };
-                preferences.SetSections(changes);
-            }
-            catch (Exception exception) { error.Text = exception.Message; args.Cancel = true; }
+        this.preferences = preferences;
+        Title = "Settings"; Content = root;
+        root.ColumnDefinitions.Add(new() { Width = new(164) }); root.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        var navigation = new StackPanel { Spacing = 12 };
+        navigation.Children.Add(new TextBlock { Text = "SETTINGS", FontSize = 11, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Opacity = .7, Margin = new(20, 24, 0, 0) });
+        navigation.Children.Add(categories); sidebar.Child = navigation; root.Children.Add(sidebar);
+        var body = new Grid(); body.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) }); body.RowDefinitions.Add(new() { Height = GridLength.Auto });
+        body.Children.Add(pages); body.Children.Add(error); Grid.SetRow(error, 1); error.Margin = new(24, 0, 24, 16);
+        Grid.SetColumn(body, 1); root.Children.Add(body);
+        BuildView(Page("View", "\uE7F4", "Arrange your writing space."));
+        BuildTheme(Page("Theme", "\uE790", "Make a comfortable space for writing. Changes apply to every window."));
+        BuildEditing(Page("Editing", "\uE70F", "Configure typing, indentation, and whitespace."));
+        BuildCode(Page("Code", "\uE943", "Choose syntax files and filename associations."));
+        categories.SelectionChanged += (_, _) => {
+            for (int i = 0; i < sections.Count; i++) sections[i].Visibility = i == categories.SelectedIndex ? Visibility.Visible : Visibility.Collapsed;
         };
-        return dialog;
+        categories.SelectedIndex = 1;
+        ApplyAppearance(); preferences.Changed += ApplyAppearance;
+        Closed += (_, _) => preferences.Changed -= ApplyAppearance;
+        WindowSizing.Resize(this, 800, 730);
+        loading = false;
     }
+    private StackPanel Page(string title, string glyph, string description)
+    {
+        var label = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+        label.Children.Add(new FontIcon { Glyph = glyph, FontSize = 16 }); label.Children.Add(new TextBlock { Text = title });
+        categories.Items.Add(new ListViewItem { Content = label });
+        var panel = new StackPanel { Spacing = 16, Padding = new(24, 20, 24, 24) };
+        var heading = new StackPanel { Spacing = 6 };
+        heading.Children.Add(new TextBlock { Text = title, FontSize = 24, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        heading.Children.Add(new TextBlock { Text = description, TextWrapping = TextWrapping.Wrap, Opacity = .7 }); panel.Children.Add(heading);
+        var scroll = new ScrollViewer { Content = panel, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Visibility = Visibility.Collapsed };
+        sections.Add(scroll); pages.Children.Add(scroll); return panel;
+    }
+    private void ApplyAppearance()
+    {
+        root.RequestedTheme = preferences.Midnight ? ElementTheme.Dark : ElementTheme.Light;
+        root.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(32, 32, 32) : Theme.Rgb(250, 250, 250));
+        sidebar.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(27, 27, 27) : Theme.Rgb(240, 240, 240));
+        sectionBorder.Color = preferences.Midnight ? Theme.Rgb(58, 58, 58) : Theme.Rgb(216, 216, 216);
+        WindowSizing.Appearance(this, preferences.Midnight);
+    }
+    private void Commit(Action update)
+    {
+        if (loading) return;
+        try { update(); error.Text = ""; error.Visibility = Visibility.Collapsed; }
+        catch (Exception exception) { error.Text = exception.Message; error.Visibility = Visibility.Visible; }
+    }
+    private static StackPanel Row(Panel parent)
+    { var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 }; parent.Children.Add(row); return row; }
+    private NumberBox Number(Panel parent, string label, double value, double min, double max, Action<double> set, double width = 140)
+    {
+        var box = new NumberBox { Header = label, Value = value, Minimum = min, Maximum = max, Width = width, HorizontalAlignment = HorizontalAlignment.Left, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        parent.Children.Add(box); box.ValueChanged += (_, _) => { if (double.IsFinite(box.Value)) Commit(() => set(box.Value)); }; return box;
+    }
+    private void Check(Panel parent, string label, bool value, Action<bool> set)
+    { var box = new CheckBox { Content = label, IsChecked = value }; parent.Children.Add(box); box.Click += (_, _) => Commit(() => set(box.IsChecked == true)); }
+    private void Choice(Panel parent, string label, string[] items, int selected, Action<int> set)
+    { var box = new ComboBox { Header = label, ItemsSource = items, SelectedIndex = selected, HorizontalAlignment = HorizontalAlignment.Stretch }; parent.Children.Add(box); box.SelectionChanged += (_, _) => Commit(() => set(box.SelectedIndex)); }
+    private void Text(Panel parent, string label, string text, Action<string> set, bool multiline = false)
+    { var box = new TextBox { Header = label, Text = text, AcceptsReturn = multiline, TextWrapping = multiline ? TextWrapping.Wrap : TextWrapping.NoWrap, MinHeight = multiline ? 100 : 0 }; parent.Children.Add(box); box.LostFocus += (_, _) => Commit(() => set(box.Text)); }
+    private void BuildView(StackPanel page)
+    {
+        page.Children.Add(new TextBlock { Text = "Text margins", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        var row = Row(page);
+        foreach (string edge in new[] { "top", "left", "bottom", "right" })
+            Number(row, char.ToUpperInvariant(edge[0]) + edge[1..], preferences.Margin(edge), 0, 1000, n => preferences.Set("view", "margins", new JsonObject { [edge] = n }), 112);
+        Check(page, "Show status bar", preferences.ShowStatus, value => preferences.Set("appearance", "showStatusBar", value));
+        Check(page, "Show menu bar", preferences.ShowMenu, value => preferences.Set("windows", "showMenu", value));
+    }
+    private void BuildEditing(StackPanel page)
+    {
+        Check(page, "Smart quotes", preferences.SmartQuotes, value => preferences.Set("editing", "smartQuotes", value));
+        Number(page, "Text width (columns for gq / gw)", preferences.TextWidth, 1, uint.MaxValue, n => preferences.Set("editing", "textWidth", n), 250);
+        var editing = preferences.Editing;
+        var indentation = editing["indentation"] as JsonObject ?? new JsonObject();
+        void Indent<T>(string key, T value) => preferences.Set("editing", "indentation", new JsonObject { [key] = System.Text.Json.JsonSerializer.SerializeToNode(value) });
+        page.Children.Add(new TextBlock { Text = "Indentation and tabs", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        var row = Row(page);
+        foreach (var (key, title, fallback, min) in new[] { ("tabstop", "Tab stop", 2, 1), ("shiftwidth", "Shift width", 2, 0), ("softtabstop", "Soft tab stop", 2, -1) })
+            Number(row, title, indentation[key]?.GetValue<int>() ?? fallback, min, 1024, n => Indent(key, n));
+        foreach (var (key, title) in new[] { ("autoindent", "Auto indent"), ("expandtab", "Insert spaces for tabs"), ("smarttab", "Smart tabs"), ("continueCommentsOnEnter", "Continue comments with Enter"), ("continueCommentsOnOpenLine", "Continue comments with o / O") })
+            Check(page, title, indentation[key]?.GetValue<bool>() ?? true, value => Indent(key, value));
+        var whitespace = editing["whitespacePresentation"] as JsonObject ?? new JsonObject(); var visible = whitespace["visibleWhitespace"] as JsonObject ?? new JsonObject();
+        void Whitespace<T>(string key, T value) => preferences.Set("editing", "whitespacePresentation", new JsonObject { [key] = System.Text.Json.JsonSerializer.SerializeToNode(value) });
+        page.Children.Add(new TextBlock { Text = "Whitespace", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        Choice(page, "Code indentation width", ["Paragraph en", "Spaces"], whitespace["codeWhitespace"]?.GetValue<string>() == "spaces" ? 1 : 0, n => Whitespace("codeWhitespace", n == 0 ? "paragraphEn" : "spaces"));
+        Choice(page, "Other formats indentation width", ["Spaces", "Paragraph en"], whitespace["otherWhitespace"]?.GetValue<string>() == "paragraphEn" ? 1 : 0, n => Whitespace("otherWhitespace", n == 0 ? "spaces" : "paragraphEn"));
+        Number(page, "Wrapped line indent (Code)", whitespace["codeWrappedLineIndent"]?.GetValue<int>() ?? 4, 0, 1024, n => Whitespace("codeWrappedLineIndent", n), 250);
+        Check(page, "Show invisible characters", visible["enabled"]?.GetValue<bool>() ?? true, value => Whitespace("visibleWhitespace", new JsonObject { ["enabled"] = value }));
+        Text(page, "Visible whitespace (listchars)", visible["listchars"]?.GetValue<string>() ?? "tab:>-,trail:*,extends:>,precedes:<", value => Whitespace("visibleWhitespace", new JsonObject { ["listchars"] = value }));
+    }
+    private void BuildCode(StackPanel page)
+    {
+        Text(page, "Vim syntax directory (optional)", preferences.VimDirectory, value => preferences.Set("code", "vimSyntaxDirectory", value));
+        page.Children.Add(new TextBlock { Text = "Bundled Tree-sitter languages work without a Vim installation. The directory supplies fallback syntax files.", TextWrapping = TextWrapping.Wrap, Opacity = .7 });
+        Text(page, "Filename associations (JSON)", System.Text.Encoding.UTF8.GetString(preferences.Associations), value => preferences.Set("code", "filenameAssociations", JsonNode.Parse(value)), true);
+    }
+#if DEBUG
+    internal FrameworkElement RootControl => root;
+    internal ListView Categories => categories;
+    internal ScrollViewer CurrentPage => sections[categories.SelectedIndex];
+    internal string Error => error.Text;
+#endif
 }

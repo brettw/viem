@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Windowing;
 using Viem.Windows.Core;
+using Viem.Windows.Rendering;
 using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Shell;
@@ -86,15 +87,15 @@ internal sealed partial class EditorWindow
             ActionItem("Underline", () => ToggleDecoration(VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE), enabled: () => DirectCharacter),
             ActionItem("Strikethrough", () => ToggleDecoration(VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH), enabled: () => DirectCharacter),
             Item("Text Color…", () => ShowColor(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND), enabled: () => DirectCharacter), Item("Highlight Color…", () => ShowColor(VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND), enabled: () => DirectCharacter),
-            Separator(), Sub("Style", ActionItem("Edit Styles…", ShowStyles), ActionItem("Save as Default Style", SaveStyleDefaults), ActionItem("Reload Code Style Sheet", LoadCodeStyles)),
+            Separator(), Sub("Style", StyleEditorItem(), ActionItem("Save as Default Style", SaveStyleDefaults), ActionItem("Reload Code Style Sheet", LoadCodeStyles)),
             Separator(), Sub("Paragraph", Sub("Alignment", ParagraphAction("Start", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, 1), ParagraphAction("Center", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, 3), ParagraphAction("End", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, 2)),
                 Sub("Writing Direction", ParagraphAction("Automatic", VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION, VIEM_STYLE_VALUE_WRITING_DIRECTION, 0), ParagraphAction("Left to Right", VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION, VIEM_STYLE_VALUE_WRITING_DIRECTION, 1), ParagraphAction("Right to Left", VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION, VIEM_STYLE_VALUE_WRITING_DIRECTION, 2)),
                 Sub("Line Spacing", Spacing("Normal", 1, 0), Spacing("Single", 2, 1), Spacing("1.5 Lines", 2, 1.5f), Spacing("Double", 2, 2))));
         paragraphMenu = Top("Paragraph", "P", ActionItem("Bulleted List", () => View?.SetList(VIEM_LIST_STYLE_BULLET), enabled: () => Rich), ActionItem("Numbered List", () => View?.SetList(VIEM_LIST_STYLE_NUMBERED), enabled: () => Rich), ActionItem("Remove List", () => View?.SetList(VIEM_LIST_STYLE_NONE), enabled: () => Rich),
             ActionItem("Indent", () => View?.IndentList(false), enabled: () => View != null && (View.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0), ActionItem("Unindent", () => View?.IndentList(true), enabled: () => View != null && (View.ListCapabilities() & VIEM_LIST_CAN_UNINDENT) != 0), Separator());
         for (uint level = 0; level <= 6; level++) { uint l = level; paragraphMenu.Items.Add(ActionItem(l == 0 ? "Base Paragraph" : $"Heading {l}", () => View?.SetParagraph(l), l < 6 ? $"Ctrl+{l}" : "", () => Rich)); }
-        paragraphMenu.Items.Add(Separator()); paragraphMenu.Items.Add(ActionItem("Edit Styles…", ShowStyles));
-        characterMenu = Top("Character", "C", ActionItem("Default Paragraph", () => View?.AssignStyle(2, ""), enabled: () => Rich), Separator(), ActionItem("Edit Styles…", ShowStyles));
+        paragraphMenu.Items.Add(Separator()); paragraphMenu.Items.Add(StyleEditorItem());
+        characterMenu = Top("Character", "C", ActionItem("Default Paragraph", () => View?.AssignStyle(2, ""), enabled: () => Rich), Separator(), StyleEditorItem());
         wrapItem = Toggle("Word Wrap", b => View?.Wrap(b));
         Top("View", "V", Toggle("Show Status Bar", b => preferences.Set("appearance", "showStatusBar", b), () => preferences.ShowStatus), Toggle("Show Menu Bar", b => preferences.Set("windows", "showMenu", b), () => preferences.ShowMenu), Separator(), wrapItem,
             Toggle("Flow Source Paragraphs", b => View?.ParagraphFlow(b), () => View?.ParagraphFlowEnabled == true), Toggle("Physical Source Lines", b => View?.LineMode(b ? 1u : 0u), () => View?.CurrentLineMode == 1), Toggle("Show Invisible Characters", b => View?.VisibleWhitespace(b), () => ActivePane?.WhitespaceEnabled == true),
@@ -147,7 +148,18 @@ internal sealed partial class EditorWindow
             var item = ActionItem(style.Name, () => View?.AssignStyle(style.Namespace, style.Id), enabled: () => Rich); item.Tag = style.Id; menu.Items.Insert(menu.Items.Count - 2, item);
         }
     }
-    private void ShowStyles() { if (View == null) return; var style = new StyleWindow(View, preferences); style.Activate(); }
+    private StyleWindow? styleInspector;
+    private MenuFlyoutItem StyleEditorItem() => Item("Edit Styles…", () => { ShowStyles(); return Task.CompletedTask; }, "F8");
+    internal void ShowStyles()
+    {
+        if (View == null) return;
+        if (styleInspector == null) { styleInspector = new StyleWindow(View, preferences); styleInspector.Closed += (_, _) => styleInspector = null; }
+        else styleInspector.Retarget(View);
+        styleInspector.Activate();
+    }
+#if DEBUG
+    internal StyleWindow? StyleInspector => styleInspector;
+#endif
     private void SaveStyleDefaults()
     {
         if (View == null) return;
@@ -167,11 +179,21 @@ internal sealed partial class EditorWindow
         if (View == null) return;
         var view = View;
         var current = view.Typography();
-        var family = new ComboBox { IsEditable = true, Width = 300, ItemsSource = Microsoft.Graphics.Canvas.Text.CanvasTextFormat.GetSystemFontFamilies(), Text = current.Family.Length == 0 ? "Segoe UI" : current.Family, Header = "Font family" };
+        string chosen = current.Family.Length == 0 ? "Segoe UI" : current.Family;
+        var family = new ComboBox { IsEditable = true, Width = 300, ItemsSource = FontCatalog.Families, Text = FontCatalog.DisplayFamily(chosen), Header = "Font family" };
+        family.SelectedItem = FontCatalog.Families.FirstOrDefault(f => string.Equals(f, family.Text, StringComparison.OrdinalIgnoreCase));
+        var variant = new ComboBox { Header = "Variant", Width = 300, PlaceholderText = "Custom / mixed", ItemsSource = FontCatalog.Faces(chosen), SelectedItem = FontCatalog.Current(chosen, current.Info.base_weight, current.Info.slant) };
+        void ChooseFamily(string value) {
+            if (string.Equals(value, FontCatalog.DisplayFamily(chosen), StringComparison.OrdinalIgnoreCase)) return;
+            var face = FontCatalog.ForFamilyChange(value, variant.SelectedItem as FontFace);
+            chosen = value; variant.ItemsSource = FontCatalog.Faces(value); variant.SelectedItem = face;
+        }
+        family.SelectionChanged += (_, _) => { if (family.SelectedItem is string value) ChooseFamily(value); };
+        family.LostFocus += (_, _) => ChooseFamily(family.Text.Trim());
         var size = new NumberBox { Value = current.Info.size, Minimum = 1, Maximum = 256, Header = "Size (DIPs)", SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
-        var stack = new StackPanel { Spacing = 12 }; stack.Children.Add(family); stack.Children.Add(size);
+        var stack = new StackPanel { Spacing = 12 }; stack.Children.Add(family); stack.Children.Add(variant); stack.Children.Add(size);
         var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "Font", Content = stack, PrimaryButtonText = "Apply", CloseButtonText = "Cancel" };
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary) view.SetFont(family.Text, (float)size.Value);
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary) { ChooseFamily(family.Text.Trim()); view.SetFont(chosen, (float)size.Value, variant.SelectedItem as FontFace); }
     }
     private async Task ShowColor(uint property)
     {
@@ -183,5 +205,13 @@ internal sealed partial class EditorWindow
     }
     private unsafe void SetColor(uint property, global::Windows.UI.Color color)
     { var v = CoreView.Enum(VIEM_STYLE_VALUE_COLOR, 0); v.color = new() { red = color.R / 255f, green = color.G / 255f, blue = color.B / 255f, alpha = color.A / 255f }; View?.DirectStyle(property, v); }
-    private async Task ShowSettings() => await CreateSettings().ShowAsync();
+    private SettingsWindow? settingsWindow;
+    internal Task ShowSettings()
+    {
+        if (settingsWindow == null) { settingsWindow = new SettingsWindow(preferences); settingsWindow.Closed += (_, _) => settingsWindow = null; }
+        settingsWindow.Activate(); return Task.CompletedTask;
+    }
+#if DEBUG
+    internal SettingsWindow? SettingsInspector => settingsWindow;
+#endif
 }

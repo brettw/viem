@@ -53,11 +53,7 @@ internal sealed partial class EditorWindow
                     if (Menu.Visibility != Microsoft.UI.Xaml.Visibility.Collapsed || pane.Canvas.ActualHeight <= previous) throw new InvalidOperationException("Menu toggle did not reclaim editor space.");
                     preferences.Set("windows", "showMenu", true);
                     Diagnostics.FrontendSmokeTests.UiChecks.Add("titlebar menu visibility toggle reflows panes");
-                    var styles = new StyleWindow(pane.View, preferences); styles.Activate(); await Task.Delay(350);
-                    await Diagnostics.WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(styles), pane.Canvas.Device, Diagnostics.FrontendSmokeTests.ReportPath + ".styles.png"); styles.Close();
-                    Activate(); var settings = CreateSettings(); var showing = settings.ShowAsync(); await Task.Delay(600);
-                    await Diagnostics.WindowCapture.SaveElement(settings, pane.Canvas.Device, Diagnostics.FrontendSmokeTests.ReportPath + ".settings.png"); settings.Hide(); await showing;
-                    Diagnostics.FrontendSmokeTests.UiChecks.Add("native settings categories open");
+                    await Diagnostics.StyleAndSettingsTests.Run(pane, this, preferences);
                     await Diagnostics.FrontendSmokeTests.FileChecks(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
                     string saved = Path.Combine(preferences.DirectoryPath, "saved.md");
                     await Save(pane, explicitPath: saved);

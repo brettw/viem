@@ -58,9 +58,13 @@ same user/profile.
 The title-bar menu button sits immediately left of the window controls.
 It toggles the top menu bar and remembers its state. The editor, vertically
 stacked panes, status bars and command prompt follow `docs/mac_references`.
+Application windows, menus and dialogs use WinUI compact sizing for keyboard
+and mouse use. Settings uses sidebar categories with a live Theme preview.
 
 - Ctrl+C/X/V always copy/cut/paste; Ctrl+Shift+V pastes plain text.
 - Ctrl+Q retains Visual Block and literal-next input.
+- F8 opens or raises the style inspector outside literal-next input. Font
+  pickers list sorted families and installed variants such as Light or Bold.
 - Ctrl+S / Ctrl+Shift+S save / save as, outside literal-next input.
 - Ctrl+Z / Ctrl+Shift+Z undo / redo, including from Insert mode, outside
   literal-next input. Normal-mode `u` and Ctrl+R remain available.
@@ -100,6 +104,7 @@ advanced typography controls and outgoing RTF are not claimed as implemented.
 `scripts/test-win.ps1` creates a unique profile under `target/windows-validation`.
 It checks native WinUI keyboard focus, text and command-key routing, status-line
 prompt painting and command output (including hidden bars and scrolled documents), vi editing,
+F8/inspector focus, compact controls, font variants and inheritance,
 Unicode and bidi, composition, shared views, source/style
 round trips, clipboard policy, atomic settings/save behavior, recovery ownership,
 second-process launch handoff, menu visibility and large-document layout/cache

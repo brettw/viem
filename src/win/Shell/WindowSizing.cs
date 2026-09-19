@@ -22,4 +22,11 @@ internal static class WindowSizing
         var area = DisplayArea.GetFromWindowId(window.AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
         window.AppWindow.Resize(new SizeInt32(Math.Min(area.Width, (int)(width * scale)), Math.Min(area.Height, (int)(height * scale))));
     }
+    public static void FitClient(Window window, int width, int height)
+    {
+        double scale = Math.Max(96, GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(window))) / 96d;
+        var area = DisplayArea.GetFromWindowId(window.AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
+        var chrome = window.AppWindow.Size.Height - window.AppWindow.ClientSize.Height;
+        window.AppWindow.ResizeClient(new SizeInt32(Math.Min(area.Width - 16, (int)(width * scale)), Math.Min(area.Height - chrome - 16, (int)(height * scale))));
+    }
 }

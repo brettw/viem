@@ -5690,6 +5690,12 @@ The frontend draws only damage regions returned by state/layout changes where
 practical. It may cache native glyph/draw resources separately from core
 metrics, keyed by layout snapshot and metrics generation.
 
+### TODO: macOS style inspector cleanup
+
+Remove the redundant "Properties" heading above the style metadata fields in
+the macOS style inspector, matching the Windows inspector cleanup. Keep the
+field labels and the Character/Paragraph tabs.
+
 ### TODO: macOS pointer selection performance
 
 The shared Rust core already reuses current visible layout during pointer
@@ -5788,9 +5794,31 @@ The window has a Windows menu bar below its title bar. A native toggle button
 immediately to the left of the caption controls shows or hides the menu and
 persists the preference. Panes stack vertically, with native resize dividers,
 independent scrollbars, status bars, cursors, selections, and view options.
-Native file pickers, menus, dialogs, color pickers and font controls use WinUI
-styles. Settings has View, Theme, Editing and Code categories and uses the
-shared portable profile schema; Windows-specific settings stay in `windows`.
+Native menus, dialogs, color pickers and font controls use WinUI compact sizing
+through the application-wide `DensityStyles/Compact.xaml` resource dictionary.
+This is a keyboard-and-mouse writing application; all application windows and
+dialogs MUST inherit these resources rather than override them with touch-sized
+controls. Native system file pickers retain their platform-owned presentation.
+Document typography is independent of control density.
+
+Settings is a modeless window with View, Theme, Editing and Code categories in
+a fixed left sidebar. Theme follows `docs/mac_references/settings_theme.png`:
+Paper/Midnight presets, a live writing preview with caret and selection,
+grouped Editor and Status bar colors, status font/size, and Restore Defaults.
+Validated edits persist through the shared portable profile schema;
+Windows-specific settings stay in `windows`.
+
+Unmodified `F8` opens or raises the modeless style inspector outside literal-next
+input. Menu and keyboard entry must leave focus in the inspector, without an
+always-on-top flag. Character/Paragraph controls are compact and centered;
+the initial window fits its content. Font families are sorted using the current
+culture. Both style and direct-font pickers expose installed font variants.
+Variants retain their PostScript name, weight and slant, preserving a named
+style's fallback families and grouping a face change into one document undo.
+Family changes preserve a matching face name where possible, otherwise choose
+a regular face. Unavailable/custom faces remain unresolved instead of silently
+selecting the first variant. DirectWrite resolves persisted face names back to
+their installed family and width; weight and slant use the stored declarations.
 
 The Windows status line follows the shared command-entry/output contract above:
 an inverse-color prompt replaces the left group, while selectable read-only

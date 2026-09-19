@@ -14,13 +14,14 @@ namespace Viem.Windows.Rendering;
 
 internal sealed unsafe partial class DirectWriteProvider
 {
-    private sealed record MarkerFont(string Family, float Size, ushort Weight, FontStyle Slant, float Spacing, float Shift, string Language, string Features)
+    private sealed record MarkerFont(string Family, FontStretch Stretch, float Size, ushort Weight, FontStyle Slant, float Spacing, float Shift, string Language, string Features)
     {
         public static MarkerFont From(ViemResolvedTextStyleV1 style, float scale)
         {
             var features = new Dictionary<string, uint>();
             for (ulong i = 0; i < style.feature_count; i++) features[Encoding.ASCII.GetString(new ReadOnlySpan<byte>(style.features[i].tag, 4))] = style.features[i].value;
-            return new(ResolveFamily(style), style.size * scale, (ushort)style.weight, DirectWriteProvider.Slant(style.slant), style.letter_spacing * scale,
+            var resolved = ResolveFont(style);
+            return new(resolved.Family, resolved.Stretch, style.size * scale, (ushort)style.weight, DirectWriteProvider.Slant(style.slant), style.letter_spacing * scale,
                 style.baseline_shift * scale, style.has_language != 0 ? Text(style.language) : "", JsonSerializer.Serialize(features));
         }
     }
@@ -50,21 +51,20 @@ internal sealed unsafe partial class DirectWriteProvider
                     cluster = contributors[Math.Max(0, lower - 1)];
                 }
                 var inherited = resources.TryGetValue(cluster.render_run.identifier, out var resource) ? resource.MarkerFont
-                    : new MarkerFont("Segoe UI", Math.Max(1, row.ascent + row.descent), 400, FontStyle.Normal, 0, 0, "", "{}");
+                    : new MarkerFont("Segoe UI", FontStretch.Normal, Math.Max(1, row.ascent + row.descent), 400, FontStyle.Normal, 0, 0, "", "{}");
                 string family = inherited.Family;
+                var stretch = inherited.Stretch;
                 if (Value("font_families") is JsonElement names)
                     foreach (var name in names.EnumerateArray())
                     {
-                        using var memory = new NativeArena(); var raw = memory.Utf8(name.GetString()!); var requested = new ViemResolvedTextStyleV1 { font_families = &raw, font_family_count = 1 };
-                        string resolved = ResolveFamily(requested);
-                        if (resolved != "Segoe UI" || families.Contains(name.GetString()!)) { family = resolved; break; }
-                        family = resolved;
+                        if (FontCatalog.Resolve(name.GetString()!) is not { } resolved) continue;
+                        family = resolved.Family; stretch = resolved.Stretch; break;
                     }
                 ushort weight = Value("weight")?.GetUInt16() ?? inherited.Weight;
                 if (Value("bold")?.GetBoolean() == true) weight = weight < 350 ? (ushort)400 : weight < 550 ? (ushort)700 : (ushort)900;
                 else if (Value("bold")?.GetBoolean() == false && weight >= 600 && Value("weight") == null) weight = 400;
                 var font = inherited with {
-                    Family = family, Size = Value("size") is JsonElement size ? size.GetSingle() * viewport.scale : inherited.Size, Weight = weight,
+                    Family = family, Stretch = stretch, Size = Value("size") is JsonElement size ? size.GetSingle() * viewport.scale : inherited.Size, Weight = weight,
                     Slant = Value("slant")?.GetString() switch { "Upright" => FontStyle.Normal, "Italic" => FontStyle.Italic, "Oblique" => FontStyle.Oblique, _ => inherited.Slant },
                     Spacing = Value("letter_spacing") is JsonElement spacing ? spacing.GetSingle() * viewport.scale : inherited.Spacing,
                     Shift = Value("baseline_shift") is JsonElement shift ? shift.GetSingle() * viewport.scale : inherited.Shift,
@@ -72,7 +72,7 @@ internal sealed unsafe partial class DirectWriteProvider
                 };
                 if (!layouts.TryGetValue((font, marker.Text), out var layout))
                 {
-                    using var format = new CanvasTextFormat { FontFamily = font.Family, FontSize = font.Size, FontWeight = new FontWeight { Weight = font.Weight }, FontStyle = font.Slant, WordWrapping = CanvasWordWrapping.NoWrap,
+                    using var format = new CanvasTextFormat { FontFamily = font.Family, FontStretch = font.Stretch, FontSize = font.Size, FontWeight = new FontWeight { Weight = font.Weight }, FontStyle = font.Slant, WordWrapping = CanvasWordWrapping.NoWrap,
                         Direction = Value("direction")?.GetString() == "RightToLeft" ? CanvasTextDirection.RightToLeftThenTopToBottom : CanvasTextDirection.LeftToRightThenTopToBottom };
                     layout = new CanvasTextLayout(device, marker.Text, format, 1, 10000);
                     layouts.Add((font, marker.Text), layout);

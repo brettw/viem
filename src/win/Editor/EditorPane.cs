@@ -207,6 +207,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
                 case NativeAction.Paste: case NativeAction.PastePlain: await Paste(route.Action == NativeAction.PastePlain); break;
                 case NativeAction.Undo: View.Undo(); break;
                 case NativeAction.Redo: View.Redo(); break;
+                case NativeAction.Styles: window.ShowStyles(); break;
                 case NativeAction.Save: await window.Save(this); break;
                 case NativeAction.SaveAs: await window.Save(this, true); break;
                 case NativeAction.Heading: View.SetParagraph(route.Codepoint); break;

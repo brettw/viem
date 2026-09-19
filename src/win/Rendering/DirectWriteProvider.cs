@@ -43,6 +43,10 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     public long ShapedCharacters { get; private set; }
     public string? LastError { get; private set; }
     public int LiveResourceCount => resources.Count;
+#if DEBUG
+    internal string[] RenderedFontNames(ulong handle) => resources.TryGetValue(handle, out var resource)
+        ? resource.Parts.SelectMany(p => p.Font.GetInformationalStrings(CanvasFontInformation.PostscriptName).Values).Distinct().ToArray() : [];
+#endif
 
     public DirectWriteProvider(CanvasDevice device, DispatcherQueue dispatcher)
     {
@@ -135,7 +139,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         long contextStart = checked((long)request.text_start - (long)request.context_before.length);
         using var format = new CanvasTextFormat
         {
-            FontFamily = ResolveFamily(request.default_style), FontSize = request.default_style.size * request.scale,
+            FontFamily = ResolveFamily(request.default_style), FontStretch = ResolveFont(request.default_style).Stretch, FontSize = request.default_style.size * request.scale,
             FontWeight = new FontWeight { Weight = (ushort)Math.Clamp(request.default_style.weight, 1, 999) },
             FontStyle = Slant(request.default_style.slant), WordWrapping = CanvasWordWrapping.NoWrap,
             Direction = request.paragraph_base_direction == VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT
@@ -237,26 +241,21 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         };
     }
 
-    private static readonly HashSet<string> families = new(CanvasTextFormat.GetSystemFontFamilies(), StringComparer.OrdinalIgnoreCase);
-    private static string ResolveFamily(ViemResolvedTextStyleV1 style)
+    private static string ResolveFamily(ViemResolvedTextStyleV1 style) => ResolveFont(style).Family;
+    private static (string Family, FontStretch Stretch) ResolveFont(ViemResolvedTextStyleV1 style)
     {
         for (ulong i = 0; i < style.font_family_count; i++)
         {
-            string family = Text(style.font_families[i]);
-            string candidate = family.ToLowerInvariant() switch {
-                "monospace" or "menlo" or "monaco" => families.Contains("Cascadia Mono") ? "Cascadia Mono" : "Consolas",
-                "serif" or "times" => "Georgia",
-                "sans-serif" or "system-ui" or "system" or "helvetica" or "helvetica neue" => "Segoe UI",
-                _ => family
-            };
-            if (families.Contains(candidate)) return candidate;
+            if (FontCatalog.Resolve(Text(style.font_families[i])) is { } resolved) return resolved;
         }
-        return "Segoe UI";
+        return ("Segoe UI", FontStretch.Normal);
     }
     private static FontStyle Slant(uint slant) => slant switch { 1 => FontStyle.Italic, 2 => FontStyle.Oblique, _ => FontStyle.Normal };
     private static void ApplyStyle(CanvasTextLayout layout, int start, int count, ViemResolvedTextStyleV1 style, float scale)
     {
-        layout.SetFontFamily(start, count, ResolveFamily(style));
+        var font = ResolveFont(style);
+        layout.SetFontFamily(start, count, font.Family);
+        layout.SetFontStretch(start, count, font.Stretch);
         layout.SetFontSize(start, count, style.size * scale);
         layout.SetFontWeight(start, count, new FontWeight { Weight = (ushort)Math.Clamp(style.weight, 1, 999) });
         layout.SetFontStyle(start, count, Slant(style.slant));
