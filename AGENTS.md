@@ -5428,6 +5428,15 @@ viewport and required command endpoints, rather than retaining every earlier
 page. The low-level command API continues to expose typed demands to callers
 that schedule layout themselves.
 
+Regional layout requests reuse exact cached hard-line geometry when document,
+view configuration, measurement environment, metrics generation, and render
+resource policy still match. Requests retain only immutable cache hits inside
+their requested band, never the whole cache or live height index. Reused caret
+geometry receives the new layout revision; paint is resolved for the current
+request. The existing line, row, and byte budgets also govern these entries.
+Newly exposed lines still use bounded on-demand layout; paging must not trigger
+eager whole-document shaping or expand cache limits.
+
 #### Permitted synchronization primitives
 
 - Immutable snapshot and buffer-piece lifetimes may use atomic reference
@@ -5951,6 +5960,10 @@ native input TextBox is an input-method host, not the document authority.
 IME marked text uses the core's composition overlay and explicit commit/cancel
 protocol. Default font names resolve to installed Windows families; actual
 glyph shapes and font fallback naturally differ from Core Text.
+Localized fallback-font names, color-font classification, and face metrics are
+read once per native glyph run and shared by its clusters. Their lifetime
+follows the existing bounded shaping/render leases, with no document-wide font
+metadata prefetch or independent unbounded font cache.
 Keyboard regressions MUST also exercise the native WinUI input host, including
 text entry, command keys and pane focus. Calling the Rust input wrappers alone
 does not verify Windows event routing.

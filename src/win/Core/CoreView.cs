@@ -45,7 +45,8 @@ internal sealed unsafe partial class CoreView : IDisposable
         entry.plain_text = arena.Utf8(ClipboardText); entry.fragment_json = arena.Utf8(ClipboardFragment);
         var context = New<ViemCommandTurnContextV2>(); context.clipboards = &entry; context.clipboard_count = 1;
         var outcome = New<ViemCoreOutcomeV1>(); ulong batch = 0;
-        uint status = turn(&context, &outcome, &batch);
+        uint status;
+        using (Diagnostics.InputPerformance.Measure("core.turn")) status = turn(&context, &outcome, &batch);
         HostEffects? effects = null;
         try { if (batch != 0) effects = HostEffects.Read(batch); }
         finally { if (batch != 0) Check(viem_effect_batch_release(batch), "Release effects"); }

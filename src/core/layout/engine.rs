@@ -537,6 +537,8 @@ pub struct RegionalHardLineLayout {
     height: f64,
     height_is_exact: bool,
     next_checkpoint: Option<LongLineLayoutCheckpoint>,
+    diagnostics: Vec<ShapingDiagnostic>,
+    render_run_policy: Option<RenderRunPolicy>,
 }
 
 impl RegionalHardLineLayout {
@@ -1101,6 +1103,10 @@ impl RegionalLayoutCache {
 
 fn estimated_regional_line_bytes(line: &RegionalHardLineLayout) -> usize {
     let mut bytes = std::mem::size_of::<RegionalHardLineLayout>();
+    for diagnostic in &line.diagnostics {
+        bytes = bytes.saturating_add(std::mem::size_of::<ShapingDiagnostic>())
+            .saturating_add(diagnostic.message.len());
+    }
     for row in &line.rows {
         bytes = bytes
             .saturating_add(std::mem::size_of::<VisualRow>())
@@ -1538,10 +1544,11 @@ fn layout_epsilon(value: f32) -> f32 {
 }
 
 /// Minimal immutable view input captured for regional worker layout. It
-/// deliberately contains no positioned snapshot, height index, regional cache,
-/// presentation-only horizontal/vertical scroll, errors, or scheduling state.
+/// contains no live view, height index, cache index, errors, or scheduling state.
+/// Only validated immutable cache hits within the requested region are retained.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LayoutJobViewConfiguration {
+    pub(super) cached_lines: BTreeMap<usize, Arc<RegionalHardLineLayout>>,
     pub(super) whitespace: WhitespaceConfiguration,
     width: f32,
     height: f32,
@@ -2014,6 +2021,27 @@ impl ViewLayout {
         self.regional_cache.lines.get(&hard_line).map(Arc::as_ref)
     }
 
+    pub(super) fn capture_regional_cache_hits(
+        &self,
+        document_id: DocumentId,
+        document_revision: Revision,
+        measurement_environment_id: MeasurementEnvironmentId,
+        metrics_generation: MetricsGeneration,
+        document_hard_line_count: usize,
+        range: Range<usize>,
+    ) -> BTreeMap<usize, Arc<RegionalHardLineLayout>> {
+        let identity = RegionalCacheIdentity {
+            document_id, document_revision, measurement_environment_id, metrics_generation,
+            configuration_generation: self.configuration_generation, document_hard_line_count,
+        };
+        if self.regional_cache.identity != Some(identity) {
+            return BTreeMap::new();
+        }
+        self.regional_cache.lines.range(range)
+            .filter(|(_, line)| line.height_is_exact && line.text_coverage == line.hard_line_range)
+            .map(|(index, line)| (*index, Arc::clone(line))).collect()
+    }
+
     /// Ordered compact ranges currently represented by regional cache entries.
     pub fn regional_cached_ranges(&self) -> Vec<Range<usize>> {
         let mut ranges: Vec<Range<usize>> = Vec::new();
@@ -2076,6 +2104,7 @@ impl ViewLayout {
         style_runs: Vec<ShapeStyleRun>,
     ) -> LayoutJobViewConfiguration {
         LayoutJobViewConfiguration {
+            cached_lines: BTreeMap::new(),
             whitespace: self.whitespace.clone(),
             width: self.width,
             height: self.height,
@@ -3373,9 +3402,25 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             .as_ref()
             .map(|line| resolve_line_paragraph(line, paragraph_styles, &default_style));
 
+        let render_run_policy = self.provider.render_run_policy();
+        let cached_line = |slice: &HardLineLayoutSlice| {
+            view.cached_lines.get(&slice.hard_line_index).filter(|cached| {
+                cached.render_run_policy == render_run_policy
+                    && cached.hard_line_range == slice.full_range
+                    && cached.text_coverage == slice.work_range
+                    && slice.checkpoint.is_none()
+            })
+        };
         let fragment_ranges: Vec<Vec<Range<usize>>> = local_line_ranges
             .iter()
-            .map(|line| fragment_range_at_graphemes(region_text, line.clone(), &control))
+            .zip(line_slices)
+            .map(|(line, slice)| {
+                if cached_line(slice).is_some() {
+                    Ok(Vec::new())
+                } else {
+                    fragment_range_at_graphemes(region_text, line.clone(), &control)
+                }
+            })
             .collect::<Result<_, _>>()?;
         let mut flat_fragment_ranges = Vec::new();
         let mut fragment_default_styles = Vec::new();
@@ -3457,6 +3502,18 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         for (line_offset, line_slice) in line_slices.iter().enumerate() {
             control.checkpoint()?;
             let hard_line_index = line_slice.hard_line_index;
+            if let Some(cached) = cached_line(line_slice) {
+                let mut line = cached.as_ref().clone();
+                line.layout_revision = layout_revision;
+                for row in &mut line.rows {
+                    for caret in &mut row.carets {
+                        caret.point.layout_revision = layout_revision;
+                    }
+                }
+                diagnostics.extend(line.diagnostics.iter().cloned());
+                lines.push(line);
+                continue;
+            }
             let line_range = &line_slice.work_range;
             let paragraph = &line_paragraphs[line_offset];
             let count = fragment_ranges[line_offset].len();
@@ -3776,6 +3833,11 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 right_to_left,
             });
             lines.push(RegionalHardLineLayout {
+                render_run_policy,
+                diagnostics: diagnostics.iter().filter(|diagnostic| {
+                    diagnostic.text_range.start < text_coverage_end
+                        && line_range.start < diagnostic.text_range.end
+                }).cloned().collect(),
                 layout_revision,
                 hard_line_index,
                 hard_line_range: line_slice.full_range.clone(),

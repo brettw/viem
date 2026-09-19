@@ -41,6 +41,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     private ulong nextResource;
     public ulong Generation { get; private set; } = 1;
     public long ShapedCharacters { get; private set; }
+    public long FontMetadataReads { get; private set; }
     public string? LastError { get; private set; }
     public int LiveResourceCount => resources.Count;
 #if DEBUG
@@ -113,6 +114,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
 
     private uint ShapeBatch(nint context, ViemShapeRequestV1* requests, ulong count, ViemShapeResponseV1* responses, ulong capacity)
     {
+        using var timing = Diagnostics.InputPerformance.Measure("shape.batch");
         try
         {
             if (capacity < count) return VIEM_STATUS_BUFFER_TOO_SMALL;
@@ -162,6 +164,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         }
         var capture = new GlyphCapture();
         layout.DrawToTextRenderer(capture, Vector2.Zero);
+        FontMetadataReads += capture.RunCount;
         var fragment = new Fragment(layout);
         var line = layout.LineMetrics[0];
         var defaultMetrics = new ViemTextMetricsV1 { ascent = line.Baseline, descent = Math.Max(0, line.Height - line.Baseline), leading = 0 };
@@ -190,9 +193,9 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
                 if (request.style_runs[r].text_start <= (ulong)globalStart && request.style_runs[r].text_end > (ulong)globalStart) { style = request.style_runs[r].style; styleIndex = (int)r; }
             float shift = style.baseline_shift * request.scale;
             for (int p = 0; p < parts.Count; p++) parts[p] = parts[p] with { Offset = parts[p].Offset - new Vector2(0, shift) };
-            float ascent = parts.Count == 0 ? defaultMetrics.ascent : parts.Max(p => p.Font.Ascent * p.Size + shift);
-            float descent = parts.Count == 0 ? defaultMetrics.descent : parts.Max(p => p.Font.Descent * p.Size - shift);
-            float leading = parts.Count == 0 ? 0 : parts.Max(p => Math.Max(0, p.Font.LineGap * p.Size));
+            float ascent = parts.Count == 0 ? defaultMetrics.ascent : parts.Max(p => p.Metadata.Ascent * p.Size + shift);
+            float descent = parts.Count == 0 ? defaultMetrics.descent : parts.Max(p => p.Metadata.Descent * p.Size - shift);
+            float leading = parts.Count == 0 ? 0 : parts.Max(p => Math.Max(0, p.Metadata.LineGap * p.Size));
             var cluster = New<ViemShapedClusterV1>();
             cluster.text_start = (ulong)globalStart;
             cluster.text_end = checked((ulong)(contextStart + byteEnd));
@@ -208,7 +211,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
                 cluster.ink_bounds = new() { x = x, y = y, width = Math.Max(previous.x + previous.width, (float)ink.Right) - x, height = Math.Max(previous.y + previous.height, (float)ink.Bottom) - y };
             }
             cluster.bidi_level = bidi;
-            cluster.fallback_font = arena.Utf8(parts.FirstOrDefault()?.Font.FamilyNames.Values.FirstOrDefault() ?? ResolveFont(style).Family);
+            cluster.fallback_font = arena.Utf8(parts.FirstOrDefault()?.Metadata.Family ?? ResolveFont(style).Family);
             ViemClusterCaretStopV1[] stops = [
                 new() { text_offset = cluster.text_start, inline_offset = (bidi & 1) == 0 ? 0 : cluster.advance, affinity = VIEM_BOUNDARY_AFFINITY_DOWNSTREAM },
                 new() { text_offset = cluster.text_end, inline_offset = (bidi & 1) == 0 ? cluster.advance : 0, affinity = VIEM_BOUNDARY_AFFINITY_UPSTREAM }
@@ -320,15 +323,39 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         public MarkerFont MarkerFont = markerFont;
         public Fragment Fragment = fragment; public List<GlyphPart> Parts = parts; public int References = 1;
         public float Left = left, Baseline = baseline; public ViemShapedBoundsV1 Bounds = bounds;
-        public bool ColorGlyph = parts.Any(p => p.Font.FamilyNames.Values.Any(n => n.Contains("Emoji", StringComparison.OrdinalIgnoreCase)));
+        public bool ColorGlyph = parts.Any(p => p.Metadata.ColorGlyph);
     }
 }
 
-internal sealed record GlyphPart(CanvasFontFace Font, float Size, CanvasGlyph[] Glyphs, uint BidiLevel, Vector2 Offset);
+// DirectWrite's localized font names cross the COM boundary and allocate a
+// dictionary. Read them and face metrics once per native run, not per cluster.
+// Its lifetime follows the bounded shaping/render resources that reference it.
+internal sealed class GlyphFontMetadata
+{
+    public CanvasFontFace Font { get; }
+    public string? Family { get; }
+    public bool ColorGlyph { get; }
+    public float Ascent { get; }
+    public float Descent { get; }
+    public float LineGap { get; }
+    public GlyphFontMetadata(CanvasFontFace font)
+    {
+        Font = font;
+        var names = font.FamilyNames.Values.ToArray();
+        Family = names.FirstOrDefault();
+        ColorGlyph = names.Any(n => n.Contains("Emoji", StringComparison.OrdinalIgnoreCase));
+        Ascent = font.Ascent; Descent = font.Descent; LineGap = font.LineGap;
+    }
+}
+internal sealed record GlyphPart(GlyphFontMetadata Metadata, float Size, CanvasGlyph[] Glyphs, uint BidiLevel, Vector2 Offset)
+{
+    public CanvasFontFace Font => Metadata.Font;
+}
 internal sealed class GlyphCapture : ICanvasTextRenderer
 {
-    private sealed record Run(Vector2 Point, CanvasFontFace Font, float Size, CanvasGlyph[] Glyphs, uint Bidi, int[] Map, int Start, Dictionary<int, int> Ends, float[] Advances);
+    private sealed record Run(Vector2 Point, GlyphFontMetadata Font, float Size, CanvasGlyph[] Glyphs, uint Bidi, int[] Map, int Start, Dictionary<int, int> Ends, float[] Advances);
     private readonly List<Run> runs = [];
+    public int RunCount => runs.Count;
     public bool PixelSnappingDisabled => true;
     public Matrix3x2 Transform => Matrix3x2.Identity;
     public float Dpi => 96;
@@ -337,7 +364,7 @@ internal sealed class GlyphCapture : ICanvasTextRenderer
         var boundaries = clusterMapIndices.Distinct().Order().Append(glyphs.Length).ToArray(); var ends = new Dictionary<int, int>();
         for (int i = 0; i + 1 < boundaries.Length; i++) ends[boundaries[i]] = boundaries[i + 1];
         var advances = new float[glyphs.Length + 1]; for (int i = 0; i < glyphs.Length; i++) advances[i + 1] = advances[i] + glyphs[i].Advance;
-        runs.Add(new(point, fontFace, fontSize, glyphs, bidiLevel, clusterMapIndices, checked((int)characterIndex), ends, advances));
+        runs.Add(new(point, new GlyphFontMetadata(fontFace), fontSize, glyphs, bidiLevel, clusterMapIndices, checked((int)characterIndex), ends, advances));
     }
     public List<GlyphPart> Extract(int start, int end, float left, float baseline)
     {

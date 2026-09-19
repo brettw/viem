@@ -1236,6 +1236,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 .max(row.clusters.len().min(CANCELLATION_CLUSTER_BATCH));
             horizontal_rows.push((hard_line_index, 0, bands));
             lines.push(RegionalHardLineLayout {
+                render_run_policy: self.provider.render_run_policy(),
+                diagnostics: Vec::new(), // Sparse horizontal results are not cached.
                 layout_revision,
                 hard_line_index,
                 hard_line_range: line_range.clone(),

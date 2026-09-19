@@ -132,6 +132,23 @@ internal static class FrontendSmokeTests
             }
             Check(Render(false).AsSpan().SequenceEqual(Render(true)), "reused glyph brushes preserve colored, styled, bidi and emoji pixels");
         });
+        Scenario(string.Concat(Enumerable.Range(0, 2_000).Select(i => $"Paragraph {i}: **office** and *words* in a long paragraph that wraps across several visual rows.\n\n")), 2, (doc, view) => {
+            var source = doc.Source(doc.State.document_revision);
+            Check(view.Provider.ShapedCharacters < 20_000, "large Markdown opening shapes only a viewport band");
+            long metadata = view.Provider.FontMetadataReads, shaped = view.Provider.ShapedCharacters;
+            for (int page = 0; page < 30; page++) view.Key(VIEM_KEY_PAGE_DOWN);
+            Check(view.Provider.FontMetadataReads - metadata < (view.Provider.ShapedCharacters - shaped) / 10,
+                "paging reads native font metadata per run, not per character");
+            Check(view.Layout().Info.coverage_hard_line_start > 0 && view.Layout().Info.coverage_hard_line_end < 2_000,
+                "Markdown paging keeps geometry regional");
+            long beforeReturn = view.Provider.ShapedCharacters;
+            for (int page = 0; page < 5; page++) view.Key(VIEM_KEY_PAGE_UP);
+            Check(view.Provider.ShapedCharacters == beforeReturn, "nearby Markdown pages reuse retained paragraph geometry");
+            view.Provider.InvalidateMetrics();
+            view.Key(VIEM_KEY_PAGE_DOWN);
+            Check(view.Provider.ShapedCharacters > beforeReturn, "paging refreshes cached geometry after font metrics change");
+            Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "Markdown paging preserves source bytes");
+        });
         Scenario("<p>Text</p>", 3, (doc, view) => {
             view.Command("i"); view.ToggleSemantic(VIEM_SEMANTIC_STYLE_STRONG); view.Text("Bold "); view.Key(VIEM_KEY_ESCAPE);
             Check(doc.FormattedText().Contains("Bold Text"), "HTML typing style");

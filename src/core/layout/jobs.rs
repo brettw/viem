@@ -320,8 +320,8 @@ pub struct LayoutJobRequest {
 
 /// Structural accounting for one worker request. Counts are exposed instead of
 /// allocator-specific byte telemetry so tests can assert that capture remains
-/// regional. Positioned rows, height-index nodes, and regional-cache entries
-/// are always zero because the worker view input cannot contain them.
+/// regional. A request may share immutable cache hits in its requested region;
+/// it never retains the live view, the cache index, or the height index.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LayoutJobCaptureStatistics {
     regional_text_bytes: usize,
@@ -329,6 +329,8 @@ pub struct LayoutJobCaptureStatistics {
     document_paint_style_runs: usize,
     document_paragraph_styles: usize,
     view_override_style_runs: usize,
+    retained_positioned_rows: usize,
+    retained_regional_cache_lines: usize,
 }
 
 impl LayoutJobCaptureStatistics {
@@ -353,7 +355,7 @@ impl LayoutJobCaptureStatistics {
     }
 
     pub fn retained_positioned_rows(self) -> usize {
-        0
+        self.retained_positioned_rows
     }
 
     pub fn retained_height_index_nodes(self) -> usize {
@@ -361,7 +363,7 @@ impl LayoutJobCaptureStatistics {
     }
 
     pub fn retained_regional_cache_lines(self) -> usize {
-        0
+        self.retained_regional_cache_lines
     }
 }
 
@@ -422,7 +424,7 @@ impl LayoutJobRequest {
     }
 
     pub fn capture_statistics(&self) -> LayoutJobCaptureStatistics {
-        match &self.input {
+        let mut statistics = match &self.input {
             CapturedLayoutInput::UnwrappedViewport { styles, .. }
             | CapturedLayoutInput::StreamingOverflowSlice { styles, .. } => LayoutJobCaptureStatistics {
                 regional_text_bytes: 0,
@@ -430,6 +432,7 @@ impl LayoutJobRequest {
                 document_paint_style_runs: styles.paint_runs.len(),
                 document_paragraph_styles: styles.paragraphs.len(),
                 view_override_style_runs: self.captured_view.retained_override_style_run_count(),
+                ..Default::default()
             },
             CapturedLayoutInput::Regional { text, styles, .. }
             | CapturedLayoutInput::LongHardLineSlice { text, styles, .. } => {
@@ -441,9 +444,14 @@ impl LayoutJobRequest {
                     view_override_style_runs: self
                         .captured_view
                         .retained_override_style_run_count(),
+                    ..Default::default()
                 }
             }
-        }
+        };
+        statistics.retained_regional_cache_lines = self.captured_view.cached_lines.len();
+        statistics.retained_positioned_rows = self.captured_view.cached_lines.values()
+            .map(|line| line.rows().len()).sum();
+        statistics
     }
 }
 
@@ -1003,6 +1011,12 @@ where
             captured_view,
         )
     };
+    if matches!(&input, CapturedLayoutInput::Regional { .. }) {
+        captured_view.cached_lines = view.capture_regional_cache_hits(
+            document.id(), document.revision(), provider_requirements.measurement_environment_id,
+            provider_requirements.metrics_generation, hard_line_count, range.clone(),
+        );
+    }
     if let LayoutJobRegion::Viewport(viewport) = &region {
         let prefix = view.hard_line_prefix_height(range.start).map_or(0.0, |height| height.height() as f32);
         captured_view.regional_viewport_top = (viewport.viewport_top - prefix).max(0.0);

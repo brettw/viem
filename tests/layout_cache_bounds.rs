@@ -6,6 +6,90 @@ use viem_core::layout::{
 };
 use viem_core::Document;
 
+fn candidate(
+    document: &Document, view: &mut ViewLayout,
+    engine: &mut LayoutEngine<MockTextMeasurementProvider>, job: u64,
+    lines: std::ops::Range<usize>,
+) -> (viem_core::layout::LayoutJobCaptureStatistics, viem_core::layout::LayoutJobCandidate) {
+    let requirements = inspect_layout_provider(engine);
+    let height = view.height();
+    let request = prepare_layout_job(document, view, requirements, LayoutJobId(job),
+        LayoutJobPriority::NewlyExposedRows,
+        LayoutJobRegion::Viewport(ViewportLayoutRegion::new(lines, 0.0, height).unwrap()),
+        LayoutCancellationToken::new()).unwrap();
+    let statistics = request.capture_statistics();
+    let result = compute_layout_job(engine, &request, LayoutExecutionContext::WorkerPool).unwrap();
+    (statistics, result)
+}
+
+#[test]
+fn large_markdown_pages_reuse_only_requested_wrapped_lines() {
+    let source = (0..2_000).map(|line| format!(
+        "Paragraph {line}: **office** and *words* in a long paragraph that wraps over several visual rows.\n\n"
+    )).collect::<String>();
+    let document = Document::from_bytes(source.into_bytes(), viem_core::Encoding::Utf8,
+        viem_core::Format::Markdown).unwrap();
+    let mut view = ViewLayout::new(180.0, 64.0);
+    let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+    install_viewport(&document, &mut view, &mut engine, 1, 0..8);
+    let calls = engine.provider().request_calls();
+    // Prove that reuse is of positioned rows, independent of the shaping cache.
+    engine.clear_caches();
+    let (capture, reused) = candidate(&document, &mut view, &mut engine, 2, 2..4);
+    assert_eq!(capture.retained_regional_cache_lines(), 2);
+    assert!(capture.retained_positioned_rows() > 2);
+    assert_eq!(capture.retained_height_index_nodes(), 0);
+    assert_eq!(reused.regional_snapshot().work_statistics().wrapped_cluster_count(), 0);
+    assert_eq!(reused.regional_snapshot().work_statistics().positioned_cluster_count(), 0);
+    assert_eq!(engine.provider().request_calls(), calls);
+
+    let mut fresh_view = ViewLayout::new(180.0, 64.0);
+    let mut fresh_engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+    let (_, fresh) = candidate(&document, &mut fresh_view, &mut fresh_engine, 1, 2..4);
+    for (cached, recomputed) in reused.regional_snapshot().lines().iter().zip(fresh.regional_snapshot().lines()) {
+        assert_eq!(cached.height(), recomputed.height());
+        let mut expected = recomputed.rows().to_vec();
+        for row in &mut expected {
+            for caret in &mut row.carets { caret.point.layout_revision = reused.regional_snapshot().revision(); }
+        }
+        assert_eq!(cached.rows(), expected);
+    }
+    let (overlap, mixed) = candidate(&document, &mut view, &mut engine, 3, 4..10);
+    assert_eq!(overlap.retained_regional_cache_lines(), 4);
+    assert!(mixed.regional_snapshot().work_statistics().positioned_cluster_count() > 0);
+    let (_, fully_recomputed) = candidate(&document, &mut fresh_view, &mut fresh_engine, 2, 4..10);
+    assert!(mixed.regional_snapshot().work_statistics().positioned_cluster_count()
+        < fully_recomputed.regional_snapshot().work_statistics().positioned_cluster_count());
+}
+
+#[test]
+fn paragraph_geometry_cache_rejects_changed_dependencies() {
+    use viem_core::layout::{MetricsGeneration, MeasurementEnvironmentId, RenderRunPolicy, RenderRunOwner, RenderRunThreading};
+    let mut document = Document::new("office and wrapped words\nsecond paragraph with words\nthird");
+    let mut view = ViewLayout::new(150.0, 64.0);
+    let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+    for change in 0..6 {
+        let job = change * 3 + 1;
+        install_viewport(&document, &mut view, &mut engine, job, 0..2);
+        let (capture, _) = candidate(&document, &mut view, &mut engine, job + 1, 0..2);
+        assert_eq!(capture.retained_regional_cache_lines(), 2);
+        match change {
+            0 => { view.resize(80.0, 64.0); }
+            1 => { view.set_scale(1.5).unwrap(); }
+            2 => engine.provider_mut().set_metrics_generation(MetricsGeneration(2)),
+            3 => engine.provider_mut().set_measurement_environment_id(MeasurementEnvironmentId(2)),
+            4 => { document.insert(0, "new ").unwrap(); }
+            5 => engine.provider_mut().set_render_run_policy(RenderRunPolicy {
+                owner: RenderRunOwner(9), threading: RenderRunThreading::AnyThread,
+            }),
+            _ => unreachable!(),
+        }
+        let (capture, recomputed) = candidate(&document, &mut view, &mut engine, job + 2, 0..2);
+        if change != 5 { assert_eq!(capture.retained_regional_cache_lines(), 0); }
+        assert!(recomputed.regional_snapshot().work_statistics().positioned_cluster_count() > 0);
+    }
+}
+
 fn install_viewport(
     document: &Document,
     view: &mut ViewLayout,

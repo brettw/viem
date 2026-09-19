@@ -1,11 +1,20 @@
-param([switch]$NoBuild, [switch]$PointerInput, [string]$ProfileDocument, [ValidateSet('drag', 'resize')][string]$ProfileScenario = 'drag')
+param([switch]$NoBuild, [switch]$PointerInput, [switch]$Optimized, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page')][string]$ProfileScenario = 'drag')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $projectRoot
 try {
     & python src/win/tools/generate_bindings.py --check
     if ($LASTEXITCODE -ne 0) { throw 'Generated ABI declarations differ from the C header.' }
-    if (!$NoBuild) { & "$PSScriptRoot/build-win.ps1" -Configuration Debug }
+    if (!$NoBuild) {
+        if ($Optimized) {
+            & cargo build --release --locked
+            if ($LASTEXITCODE -ne 0) { throw 'Optimized Rust build failed.' }
+            # Keep diagnostics enabled, with the same Rust and C# optimization
+            # as shipping builds, in a separate output from the running editor.
+            & dotnet build src/win/Viem.Windows.csproj -c Debug --nologo -p:RestoreLockedMode=true -p:Optimize=true -p:RustProfile=release "-p:OutDir=$projectRoot/target/windows-profile/"
+            if ($LASTEXITCODE -ne 0) { throw 'Optimized Windows test build failed.' }
+        } else { & "$PSScriptRoot/build-win.ps1" -Configuration Debug }
+    }
     $testRoot = Join-Path $projectRoot 'target/windows-validation'
     New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
     $reportPath = Join-Path $testRoot ('result-' + [Guid]::NewGuid().ToString('N') + '.json')
@@ -19,6 +28,7 @@ try {
     $env:VIEM_CONFIG_DIR = $reportPath + '.profile'
     try {
         $executable = Join-Path $projectRoot 'target/windows/Viem.Windows/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/Viem.exe'
+        if ($Optimized) { $executable = Join-Path $projectRoot 'target/windows-profile/Viem.exe' }
         $process = Start-Process -FilePath $executable -ArgumentList @('--self-test', ('"' + $reportPath + '"')) -PassThru -WindowStyle Hidden
         if (!$process.WaitForExit(120000)) { $process.Kill(); throw 'Windows integration tests timed out.' }
         if (!(Test-Path -LiteralPath $reportPath)) { throw "Windows app exited $($process.ExitCode) before writing a test report." }
