@@ -35,7 +35,8 @@ internal sealed unsafe class CoreDocument : IDisposable
         Handle = handle;
         try
         {
-            Check(viem_core_configure_syntax(Handle, null, 0), "Configure syntax");
+            byte[] directory = Encoding.UTF8.GetBytes(BundledVimRuntime.SyntaxDirectory);
+            fixed (byte* p = directory) Check(viem_core_configure_syntax(Handle, p, (ulong)directory.Length), "Configure syntax");
             byte[] filename = Encoding.UTF8.GetBytes(path ?? "");
             fixed (byte* p = filename) Check(viem_core_initialize_code_detection(Handle, p, (ulong)filename.Length, (byte)(format == null && path != null ? 1 : 0)), "Detect code language");
         }
@@ -75,15 +76,13 @@ internal sealed unsafe class CoreDocument : IDisposable
         fixed (byte* p = source) Check(viem_core_initialize_startup(Handle, p, (ulong)source.Length, Marshal.GetFunctionPointerForDelegate(callback), null), "Load startup.viem");
         GC.KeepAlive(callback); StartupDiagnostics = string.Join("\n", diagnostics);
     }
-    public void ConfigureDefaults(byte[] indentation, byte[] whitespace, uint width, string vimDirectory, byte[] associations)
+    public void ConfigureDefaults(byte[] indentation, byte[] whitespace, uint width, byte[] associations)
     {
-        string key = Convert.ToBase64String(indentation) + Convert.ToBase64String(whitespace) + width + vimDirectory + Convert.ToBase64String(associations);
+        string key = Convert.ToBase64String(indentation) + Convert.ToBase64String(whitespace) + width + Convert.ToBase64String(associations);
         if (key == configurationKey) return;
         fixed (byte* p = indentation) Check(viem_core_set_indentation_defaults(Handle, p, (ulong)indentation.Length), "Set indentation defaults");
         fixed (byte* p = whitespace) Check(viem_core_set_whitespace_presentation_defaults(Handle, p, (ulong)whitespace.Length), "Set whitespace defaults");
         Check(viem_core_set_text_width_default(Handle, width), "Set text width default");
-        byte[] directory = Encoding.UTF8.GetBytes(vimDirectory);
-        fixed (byte* p = directory) Check(viem_core_configure_syntax(Handle, p, (ulong)directory.Length), "Configure syntax");
         fixed (byte* p = associations) Check(viem_core_set_code_filename_associations_json(Handle, p, (ulong)associations.Length), "Set filename associations");
         configurationKey = key;
     }
@@ -102,6 +101,7 @@ internal sealed unsafe class CoreDocument : IDisposable
         byte changed = 0; Check(viem_core_poll_syntax(Handle, &changed), "Update syntax");
         if (changed != 0) NotifyChanged(); return changed != 0;
     }
+    public string SyntaxDiagnostics => Encoding.UTF8.GetString(Copy((p, n, r) => viem_core_copy_syntax_diagnostics(Handle, p, n, r)));
     public void Dispose()
     {
         if (Handle == 0) return;

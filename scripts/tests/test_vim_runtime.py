@@ -61,6 +61,40 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual((self.assets / "manifest.json").read_bytes(), manifest)
         self.assertEqual(vim.verify(self.assets), 3)
 
+    def test_package_replaces_owned_subtree_and_preserves_neighbors(self):
+        vim.import_runtime(self.source, "fixture", self.assets)
+        (self.assets / "README.md").write_bytes(b"attribution instructions")
+        for name in ["build output", "publish \u65e5\u672c", "relocated app"]:
+            output = self.directory / name
+            owned = output / "Resources" / "vim"
+            owned.mkdir(parents=True)
+            (owned / "obsolete.vim").write_bytes(b"stale")
+            neighbor = output / "Resources" / "keep.txt"
+            neighbor.write_bytes(b"not owned by Vim")
+            self.assertEqual(vim.package(self.assets, output), 3)
+            self.assertFalse((owned / "obsolete.vim").exists())
+            self.assertEqual(neighbor.read_bytes(), b"not owned by Vim")
+            for original in self.assets.rglob("*"):
+                if original.is_file():
+                    self.assertEqual((owned / original.relative_to(self.assets)).read_bytes(), original.read_bytes())
+
+    def test_package_rejects_corrupt_source_before_replacing_output(self):
+        vim.import_runtime(self.source, "fixture", self.assets)
+        (self.assets / "README.md").write_bytes(b"attribution")
+        output = self.directory / "app"
+        vim.package(self.assets, output)
+        (self.assets / "runtime" / "syntax" / "vim.vim").write_bytes(b"corrupt")
+        with self.assertRaisesRegex(ValueError, "differs from manifest"):
+            vim.package(self.assets, output)
+        self.assertEqual(vim.verify(output / "Resources" / "vim"), 3)
+
+    def test_package_rejects_overlapping_source_and_destination(self):
+        vim.import_runtime(self.source, "fixture", self.assets)
+        (self.assets / "README.md").write_bytes(b"attribution")
+        with self.assertRaisesRegex(ValueError, "Unsafe Vim resource destination"):
+            vim.package(self.assets, self.assets.parents[1])
+        self.assertEqual(vim.verify(self.assets), 3)
+
     def test_verification_rejects_symlinked_helpers(self):
         vim.import_runtime(self.source, "fixture", self.assets)
         helper = self.assets / "runtime" / "syntax" / "shared" / "helper.vim"
@@ -71,6 +105,23 @@ class RuntimeTests(unittest.TestCase):
             self.skipTest(f"Symlinks unavailable: {error}")
         with self.assertRaisesRegex(ValueError, "symlinks are unsupported"):
             vim.verify(self.assets)
+
+    def test_package_rejects_redirected_resource_parent(self):
+        vim.import_runtime(self.source, "fixture", self.assets)
+        (self.assets / "README.md").write_bytes(b"attribution")
+        output = self.directory / "app"
+        output.mkdir()
+        external = self.directory / "external"
+        external.mkdir()
+        (external / "keep.txt").write_bytes(b"untouched")
+        try:
+            (output / "Resources").symlink_to(external, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"Symlinks unavailable: {error}")
+        with self.assertRaisesRegex(ValueError, "Unsafe Vim resource destination"):
+            vim.package(self.assets, output)
+        self.assertEqual(list(external.iterdir()), [external / "keep.txt"])
+        self.assertEqual((external / "keep.txt").read_bytes(), b"untouched")
 
 
 if __name__ == "__main__":

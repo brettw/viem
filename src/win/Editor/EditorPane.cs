@@ -142,7 +142,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private void PreferencesChanged() { ApplyTheme(); if (View != null) Run(ApplyPreferences); }
     private void ApplyPreferences()
     {
-        Document.ConfigureDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.VimDirectory, preferences.Associations);
+        Document.ConfigureDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
         View!.Padding(preferences.Margin("top"), preferences.Margin("left"), preferences.Margin("bottom"), preferences.Margin("right")); View.SmartQuotes(preferences.SmartQuotes);
     }
     private void ApplyTheme()

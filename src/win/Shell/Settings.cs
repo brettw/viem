@@ -2,6 +2,7 @@ using System.Text.Json.Nodes;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Viem.Windows.Core;
 
 namespace Viem.Windows.Shell;
 
@@ -16,10 +17,14 @@ internal sealed partial class SettingsWindow : Window
     private readonly SolidColorBrush sectionBorder = new();
     private readonly List<ScrollViewer> sections = [];
     private bool loading = true;
+    private readonly TextBlock syntaxDiagnostics = new() { TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
+    private readonly string? bundledSyntaxDiagnostic = BundledVimRuntime.Diagnostic;
+    private readonly Action editCodeStyles;
 
-    internal SettingsWindow(Preferences preferences)
+    internal SettingsWindow(Preferences preferences, Action editCodeStyles)
     {
         this.preferences = preferences;
+        this.editCodeStyles = editCodeStyles;
         Title = "Settings"; Content = root;
         root.ColumnDefinitions.Add(new() { Width = new(164) }); root.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         var navigation = new StackPanel { Spacing = 12 };
@@ -31,7 +36,7 @@ internal sealed partial class SettingsWindow : Window
         BuildView(Page("View", "\uE7F4", "Arrange your writing space."));
         BuildTheme(Page("Theme", "\uE790", "Make a comfortable space for writing. Changes apply to every window."));
         BuildEditing(Page("Editing", "\uE70F", "Configure typing, indentation, and whitespace."));
-        BuildCode(Page("Code", "\uE943", "Choose syntax files and filename associations."));
+        BuildCode(Page("Code", "\uE943", "Configure code styles and filename associations."));
         categories.SelectionChanged += (_, _) => {
             for (int i = 0; i < sections.Count; i++) sections[i].Visibility = i == categories.SelectedIndex ? Visibility.Visible : Visibility.Collapsed;
         };
@@ -113,9 +118,17 @@ internal sealed partial class SettingsWindow : Window
     }
     private void BuildCode(StackPanel page)
     {
-        Text(page, "Vim syntax directory (optional)", preferences.VimDirectory, value => preferences.Set("code", "vimSyntaxDirectory", value));
-        page.Children.Add(new TextBlock { Text = "Bundled Tree-sitter languages work without a Vim installation. The directory supplies fallback syntax files.", TextWrapping = TextWrapping.Wrap, Opacity = .7 });
+        var styles = new Button { Content = "Edit Code Styles…" };
+        styles.Click += (_, _) => Commit(editCodeStyles); page.Children.Add(styles);
         Text(page, "Filename associations (JSON)", System.Text.Encoding.UTF8.GetString(preferences.Associations), value => preferences.Set("code", "filenameAssociations", JsonNode.Parse(value)), true);
+        page.Children.Add(syntaxDiagnostics);
+        ShowSyntaxDiagnostics([]);
+    }
+    internal void ShowSyntaxDiagnostics(IEnumerable<string> diagnostics)
+    {
+        string message = string.Join("\n", diagnostics.Prepend(bundledSyntaxDiagnostic ?? "").Where(d => !string.IsNullOrWhiteSpace(d)).Distinct());
+        if (syntaxDiagnostics.Text != message) syntaxDiagnostics.Text = message;
+        syntaxDiagnostics.Visibility = message.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
     }
 #if DEBUG
     internal FrameworkElement RootControl => root;

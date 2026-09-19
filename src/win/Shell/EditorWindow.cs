@@ -62,6 +62,7 @@ internal sealed partial class EditorWindow : Window
         Closed += (_, _) => {
             closed = true; poll.Stop(); preferences.Changed -= ApplyPreferences;
             settingsWindow?.Close();
+            codeStyleInspector?.Close();
             var documents = Panes.Select(p => p.Document).Distinct().ToArray();
             foreach (var pane in Panes) pane.Dispose(); Panes.Clear();
             foreach (var doc in documents) if (!App.Instance.Windows.Where(w => w != this).Any(w => w.Panes.Any(p => p.Document == doc))) doc.Dispose();
@@ -73,6 +74,8 @@ internal sealed partial class EditorWindow : Window
         poll.Tick += (_, _) => {
             foreach (var doc in Panes.Select(p => p.Document).Distinct().ToArray()) ActivePane?.Run(() => doc.PollSyntax());
             foreach (var pane in Panes.ToArray()) pane.Poll();
+            if (settingsWindow != null && pollTicks % 10 == 0) ActivePane?.Run(() => settingsWindow.ShowSyntaxDiagnostics(
+                App.Instance.Windows.SelectMany(w => w.Panes).Select(p => p.Document).Distinct().Select(d => d.SyntaxDiagnostics)));
             if (++pollTicks % 50 == 0) Safe(CheckExternalChanges);
         };
         poll.Start();
@@ -110,7 +113,7 @@ internal sealed partial class EditorWindow : Window
         var doc = new CoreDocument(source ?? [], path, format, encoding, fileFormat);
         try
         {
-            doc.ConfigureDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.VimDirectory, preferences.Associations);
+            doc.ConfigureDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
             string defaults = Path.Combine(preferences.DirectoryPath, CoreDocument.FormatName(doc.State.format).Replace(" Source", "").ToLowerInvariant() + "_style.json");
             if (File.Exists(defaults) && doc.State.format != VIEM_FORMAT_CODE) doc.InitializeStyleDefaults(File.ReadAllBytes(defaults));
             if (preferences.StartupCommands.Length > 0) doc.InitializeStartup(preferences.StartupCommands);

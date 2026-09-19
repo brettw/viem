@@ -98,7 +98,7 @@ internal static class FrontendSmokeTests
             view.EditPrompt(prompt, 5, 14, "word"); Check(view.Prompt().Text == "echo word", "UTF-8 command-line selection replacement");
             view.Key(VIEM_KEY_ESCAPE); view.Command("i"); view.Text("x"); view.Key(VIEM_KEY_ESCAPE);
             var before = doc.Source(doc.State.document_revision);
-            doc.ConfigureDefaults("{\"tabstop\":4}"u8.ToArray(), "{}"u8.ToArray(), 72, "", "[]"u8.ToArray());
+            doc.ConfigureDefaults("{\"tabstop\":4}"u8.ToArray(), "{}"u8.ToArray(), 72, "[]"u8.ToArray());
             Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before), "application defaults preserve source");
         });
         Scenario("# Heading\n\nHello **world** and مرحبا.\n", 2, (doc, view) => {
@@ -158,7 +158,7 @@ internal static class FrontendSmokeTests
         });
         Scenario("\talpha  \n", 1, (doc, view) => {
             var before = doc.Source(doc.State.document_revision);
-            doc.ConfigureDefaults("{}"u8.ToArray(), "{\"visibleWhitespace\":{\"style\":{\"size\":180,\"foreground\":{\"red\":1,\"green\":0,\"blue\":0,\"alpha\":1},\"underline\":true}}}"u8.ToArray(), 80, "", "[]"u8.ToArray());
+            doc.ConfigureDefaults("{}"u8.ToArray(), "{\"visibleWhitespace\":{\"style\":{\"size\":180,\"foreground\":{\"red\":1,\"green\":0,\"blue\":0,\"alpha\":1},\"underline\":true}}}"u8.ToArray(), 80, "[]"u8.ToArray());
             view.Refresh(); var layout = view.Layout(); var markers = view.Whitespace(layout.Info);
             Check(markers.Markers.Length > 0 && markers.Style.GetProperty("size").GetSingle() == 180, "whitespace exports portable style declarations");
             using var target = new CanvasRenderTarget(device, 700, 400, 96);

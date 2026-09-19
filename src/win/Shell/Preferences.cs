@@ -51,7 +51,6 @@ internal sealed class Preferences
     public string StatusFontFamily => Get("theme", "statusFontFamily", "System") is "System" or "system-ui" ? "Segoe UI" : Get("theme", "statusFontFamily", "Segoe UI");
     public double StatusFontSize => Get("theme", "statusFontSize", 11d);
     public uint TextWidth => Get("editing", "textWidth", 80u);
-    public string VimDirectory => Get("code", "vimSyntaxDirectory", "");
     public byte[] Indentation => Json(root["editing"]?["indentation"], new JsonObject());
     public byte[] Whitespace => Json(root["editing"]?["whitespacePresentation"], new JsonObject());
     public byte[] Associations => Json(root["code"]?["filenameAssociations"], new JsonArray());
@@ -105,7 +104,7 @@ internal sealed class Preferences
         // Portable validators own indentation, whitespace and language schemas.
         using var doc = new CoreDocument([]);
         doc.ConfigureDefaults(Json(value["editing"]?["indentation"], new JsonObject()), Json(value["editing"]?["whitespacePresentation"], new JsonObject()), 80,
-            value["code"]?["vimSyntaxDirectory"]?.GetValue<string>() ?? "", Json(value["code"]?["filenameAssociations"], new JsonArray()));
+            Json(value["code"]?["filenameAssociations"], new JsonArray()));
     }
     public void Remember(string path)
     {
@@ -122,6 +121,9 @@ internal sealed class Preferences
         string path = Path.Combine(DirectoryPath, "config.json");
         var candidate = File.Exists(path) ? Read(path) : (JsonObject)root.DeepClone();
         edit(candidate);
+        // Ignore retired values of any JSON type, including externally merged
+        // profiles, and remove the key only as part of a successful write.
+        (candidate["code"] as JsonObject)?.Remove("vimSyntaxDirectory");
         candidate = (JsonObject)JsonNode.Parse(candidate.ToJsonString())!;
         Validate(candidate);
         AtomicWrite(path, JsonSerializer.SerializeToUtf8Bytes(candidate, new JsonSerializerOptions { WriteIndented = true }));

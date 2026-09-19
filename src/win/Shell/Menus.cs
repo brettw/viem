@@ -206,12 +206,32 @@ internal sealed partial class EditorWindow
     private unsafe void SetColor(uint property, global::Windows.UI.Color color)
     { var v = CoreView.Enum(VIEM_STYLE_VALUE_COLOR, 0); v.color = new() { red = color.R / 255f, green = color.G / 255f, blue = color.B / 255f, alpha = color.A / 255f }; View?.DirectStyle(property, v); }
     private SettingsWindow? settingsWindow;
+    private StyleWindow? codeStyleInspector;
+    private void ShowCodeStyles()
+    {
+        if (codeStyleInspector == null && ActivePane is { } pane)
+        {
+            // A settings-owned Code view keeps this inspector's global target
+            // stable when the active document or its format changes.
+            var document = new CoreDocument([], format: VIEM_FORMAT_CODE);
+            CoreView? view = null;
+            try
+            {
+                view = new CoreView(document, pane.Canvas.Device, DispatcherQueue, 700, 400);
+                codeStyleInspector = new StyleWindow(view, preferences);
+                codeStyleInspector.Closed += (_, _) => { codeStyleInspector = null; view.Dispose(); document.Dispose(); };
+            }
+            catch { view?.Dispose(); document.Dispose(); throw; }
+        }
+        codeStyleInspector?.Activate();
+    }
     internal Task ShowSettings()
     {
-        if (settingsWindow == null) { settingsWindow = new SettingsWindow(preferences); settingsWindow.Closed += (_, _) => settingsWindow = null; }
+        if (settingsWindow == null) { settingsWindow = new SettingsWindow(preferences, ShowCodeStyles); settingsWindow.Closed += (_, _) => settingsWindow = null; }
         settingsWindow.Activate(); return Task.CompletedTask;
     }
 #if DEBUG
     internal SettingsWindow? SettingsInspector => settingsWindow;
+    internal StyleWindow? CodeStyleInspector => codeStyleInspector;
 #endif
 }

@@ -17,9 +17,11 @@ every file is supported by Viem's bounded native compiler.
 
 macOS packaging verifies this directory, copies it to
 `Viem.app/Contents/Resources/vim`, verifies the copy, and signs the app. Python 3
-with its standard library is required by the packaging verifier. Windows should
-copy the same assets to its application resources and verify the same manifest;
-see `docs/windows-vim-runtime-followup.md`.
+with its standard library is required by the packaging verifier. Windows builds
+and publishes the same assets to `Resources/vim` beside the executable, using
+`scripts/vim-runtime.py package` to replace only that subtree and verify both
+copies. This also runs for direct MSBuild builds and publishing without a build;
+see `docs/windows-vim-runtime-followup.md` for validation.
 
 To intentionally replace the snapshot from an installed Vim runtime:
 

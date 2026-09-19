@@ -2012,7 +2012,7 @@ source-format selection are separate buffer state.
 
 Vim-script filenames, including `.vimrc`, `_vimrc`, `vimrc`, their gVim
 counterparts, and `.vim` files, select Code with the `vim` language. Vim-script
-highlighting uses the configured Vim syntax files and their group links; it
+highlighting uses the bundled Vim syntax files and their group links; it
 does not use a Tree-sitter Vim grammar.
 
 #### Global Code stylesheet and named syntax runs
@@ -2185,8 +2185,12 @@ There is no user-configurable syntax directory or associated path/chooser/
 restore control in Code settings. Native frontends
 resolve its installed resource path and pass it to the core; the Rust core has
 no platform-specific default directory. macOS packages it at
-`Contents/Resources/vim/runtime/syntax`. Windows packaging of the same snapshot
-is tracked in `docs/windows-vim-runtime-followup.md`.
+`Contents/Resources/vim/runtime/syntax`. Windows build and publish outputs place
+the same snapshot at `Resources/vim/runtime/syntax` beside the executable,
+resolved from `AppContext.BaseDirectory`, independently of the working directory.
+Both verify source and packaged inventories/hashes and replace only the owned
+`Resources/vim` subtree, including nested helpers, license and provenance files.
+Validation is documented in `docs/windows-vim-runtime-followup.md`.
 
 The retired `code.vimSyntaxDirectory` setting is ignored and removed on the
 next settings write, preserving unrelated fields. Application resource paths
@@ -2225,7 +2229,7 @@ as unavailable instead of silently choosing a conflicting filename result.
 Markers are data: read only supported language selectors, never expressions,
 paths, shell commands, arbitrary Vim options, `source`, or autocommands. General
 modeline execution is not enabled. The initial profile does not interpret
-`syn=`/`syntax=` as a second override. The syntax-directory setting locates
+`syn=`/`syntax=` as a second override. The bundled syntax directory supplies
 highlighting programs; it does not imply executing sibling `filetype.vim`,
 `scripts.vim`, `ftdetect`, or Vim9 helpers. Bundled and user filename tables and
 package language aliases define the supported detection profile explicitly.
@@ -2265,7 +2269,7 @@ nine. The package IDs include `c`, `cpp`, `rust`, `swift`, `objc`, `c_sharp`,
 `cs`, `javascriptreact`, and `typescriptreact` without confusing filename,
 language-family, grammar, and query identities.
 
-Vim script uses the configured native Vim syntax program. For other selected
+Vim script uses the bundled native Vim syntax program. For other selected
 languages, prefer a registered compatible Tree-sitter package.
 If there is no implementation, it cannot load, required queries are unsupported,
 or current coverage is unavailable/exceeds policy, use the corresponding Vim
@@ -5802,6 +5806,10 @@ own native or custom implementation for the thin vertical caret.
 `scripts/run_windows.ps1` only launches the existing Release build and reports
 the build command if it is missing. Use `scripts/build-win.ps1 -Configuration
 Release` to rebuild; add `-Offline` for already-restored dependencies.
+Python 3 verifies and packages the shared Vim runtime on every build and
+publish, including direct MSBuild builds and publishing without rebuilding.
+`scripts/test-win-vim-runtime.ps1` verifies packaging, relocation, legacy
+settings migration, native highlighting, and missing-resource fallback.
 `scripts/test-win.ps1` checks generated ABI declarations and runs the native
 integration harness with an isolated profile. Development instructions and
 ownership boundaries are in `src/win/README.md`. The screenshots under

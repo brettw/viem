@@ -12,7 +12,8 @@ Prerequisites:
 - Visual Studio 2026 with WinUI development, MSVC x64 tools, and Windows SDK
   10.0.26100.0.
 - .NET SDK 10 and a current `x86_64-pc-windows-msvc` Rust toolchain.
-- Python 3 only for verifying/regenerating the C ABI declarations and icon.
+- Python 3.9+ for packaging/verifying the bundled Vim runtime and for the C ABI
+  declarations and icon tools.
 
 From the repository root in PowerShell:
 
@@ -32,7 +33,12 @@ builds and launches Debug.
 The executable is under
 `target/windows/Viem.Windows/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/Viem.exe`
 (replace `Debug` with `Release` for that build). Keep its adjacent files together:
-the output includes `viem_core.dll`, WinUI and Win2D dependencies. Windows App SDK
+the output includes `viem_core.dll`, WinUI and Win2D dependencies, and
+`Resources/vim` with the shared pinned syntax snapshot, license and provenance.
+Both `dotnet build` and `dotnet publish` verify and replace that runtime subtree;
+publishing with `--no-build` also packages it. No installed Vim is required.
+Resource lookup uses the executable directory, so the app can be relocated or
+launched from another working directory. Windows App SDK
 is self-contained; this development build uses the installed .NET 10 runtime.
 It does not install file associations or an application package.
 
@@ -85,6 +91,11 @@ use the same JSON schema as macOS; unknown nested keys survive updates and
 invalid settings are not overwritten. Recovery uses separate owned swap files,
 never autosaves over the original source, and retains crash leftovers for review.
 
+Code settings provides Edit Code Styles, filename associations, and syntax load
+diagnostics. Vim syntax always uses application resources. Retired
+`code.vimSyntaxDirectory` values are ignored and removed on the next successful
+settings write; unrelated fields survive and resource paths are never saved.
+
 The normative list of known Mac differences is in the **Windows frontend
 requirements** section of [`AGENTS.md`](../../AGENTS.md). In particular,
 printing, AppKit text services and Versions, full document accessibility,
@@ -108,6 +119,10 @@ advanced typography controls and outgoing RTF are not claimed as implemented.
   core or test compiler is involved.
 
 `scripts/test-win.ps1` creates a unique profile under `target/windows-validation`.
+`scripts/test-win-vim-runtime.ps1` additionally checks build/publish inventories,
+stale-file removal, native syntax paint after relocation into a path containing
+spaces and non-ASCII characters, and editing/Tree-sitter with missing resources.
+Use `-NoRustBuild` to reuse the Rust DLL while still exercising MSBuild packaging.
 It checks native WinUI keyboard focus, text and command-key routing, status-line
 prompt painting and command output (including hidden bars and scrolled documents), vi editing,
 F8/inspector focus, compact controls, font variants and inheritance,

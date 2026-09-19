@@ -55,6 +55,29 @@ def verify(assets):
     return len(actual)
 
 
+def package(assets, output):
+    """Replace only the app output's owned Resources/vim subtree."""
+    assets = assets.resolve()
+    count = verify(assets)
+    # Read required attribution before touching an existing installation.
+    (assets / "README.md").read_bytes()
+    output = output.resolve()
+    destination = output / "Resources" / "vim"
+    # Reject redirected resource parents (including Windows junctions) and
+    # overlapping source/output trees before any recursive removal.
+    if (destination.resolve() != destination or destination.is_symlink()
+            or not destination.is_relative_to(output)
+            or assets.is_relative_to(destination)
+            or destination.is_relative_to(assets)):
+        raise ValueError(f"Unsafe Vim resource destination: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(assets, destination, symlinks=True)
+    verify(destination)
+    return count
+
+
 def import_runtime(source, version, assets=ASSETS):
     source = source.resolve()
     if not (source / "LICENSE").is_file() or not (source / "syntax").is_dir():
@@ -89,13 +112,20 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     check = commands.add_parser("verify", help="verify a source or packaged snapshot")
     check.add_argument("assets", nargs="?", type=Path, default=ASSETS)
+    bundle = commands.add_parser("package", help="verify and package a Windows app output")
+    bundle.add_argument("output", type=Path, help="application build or publish directory")
+    bundle.add_argument("--assets", type=Path, default=ASSETS)
     update = commands.add_parser("import", help="replace the repository snapshot from a local runtime")
     update.add_argument("runtime", type=Path)
     update.add_argument("--version", required=True, help="exact source distribution/revision")
     args = parser.parse_args()
     try:
-        count = (verify(args.assets) if args.command == "verify"
-                 else import_runtime(args.runtime, args.version))
+        if args.command == "verify":
+            count = verify(args.assets)
+        elif args.command == "package":
+            count = package(args.assets, args.output)
+        else:
+            count = import_runtime(args.runtime, args.version)
     except (OSError, ValueError, KeyError, TypeError) as error:
         parser.exit(1, f"Vim runtime: {error}\n")
     print(f"Vim runtime: {count} files verified")

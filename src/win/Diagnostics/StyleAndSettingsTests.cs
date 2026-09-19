@@ -94,6 +94,11 @@ internal static class StyleAndSettingsTests
                 Check(settings.CurrentPage.Visibility == Visibility.Visible && settings.CurrentPage.ActualHeight > 0, $"settings sidebar displays category {index + 1}");
             }
             var associations = Children<TextBox>(settings.CurrentPage).Single(t => t.Header as string == "Filename associations (JSON)");
+            Check(Children<TextBox>(settings.CurrentPage).All(t => !(t.Header as string ?? "").Contains("syntax directory", StringComparison.OrdinalIgnoreCase)), "Code settings has no external syntax directory field");
+            var editCodeStyles = Children<Button>(settings.CurrentPage).Single(b => b.Content as string == "Edit Code Styles…");
+            new ButtonAutomationPeer(editCodeStyles).Invoke(); await Task.Delay(150);
+            Check(window.CodeStyleInspector?.Title == "Code Styles", "Code settings opens an explicitly global style inspector from a prose document");
+            window.CodeStyleInspector!.Close(); settings.Activate();
             string original = associations.Text;
             associations.Focus(FocusState.Programmatic); associations.Text = "invalid JSON";
             settings.Categories.Focus(FocusState.Programmatic); await Task.Delay(100);

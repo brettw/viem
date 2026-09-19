@@ -69,9 +69,11 @@ allows at most 256 entries with bounded patterns and language names.
 Vim always uses the bundled runtime; there is no directory setting or associated
 UI. The retired `code.vimSyntaxDirectory` key is ignored and removed on the next
 settings write while unrelated fields are preserved. Syntax includes remain
-within the bundled root. Windows
-packaging and configuration work is described in
-[the Windows follow-up](windows-vim-runtime-followup.md).
+within the bundled root. Windows resolves the same snapshot from
+`AppContext.BaseDirectory/Resources/vim/runtime/syntax`, including after
+relocation or launch from another working directory. Build and publish verify
+and replace only that resource subtree. See the
+[Windows runtime validation](windows-vim-runtime-followup.md).
 
 `code_style.json` beside `config.json` stores the global Code stylesheet using
 sparse overrides and explicit suppression of deleted/renamed built-ins. Both

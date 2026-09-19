@@ -20,6 +20,8 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <RustProfile Condition="'$(Configuration)' == 'Release'">release</RustProfile>
     <RustProfile Condition="'$(RustProfile)' == ''">debug</RustProfile>
+    <VimRuntimePython Condition="'$(VimRuntimePython)' == ''">python</VimRuntimePython>
+    <VimRuntimeScript>$(MSBuildProjectDirectory)/../../scripts/vim-runtime.py</VimRuntimeScript>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.1.3" />
@@ -31,5 +33,30 @@
   </ItemGroup>
   <Target Name="CheckRustLibrary" BeforeTargets="BeforeBuild">
     <Error Condition="!Exists('../../target/$(RustProfile)/viem_core.dll')" Text="Build the Rust core first with scripts/build-win.ps1." />
+  </Target>
+  <Target Name="VerifyBundledVimRuntime" BeforeTargets="PrepareForBuild">
+    <Exec Command="&quot;$(VimRuntimePython)&quot; &quot;$(VimRuntimeScript)&quot; verify" />
+  </Target>
+  <!-- The unpackaged WinUI SDK copies these to build output but does not add
+       them to the .NET publish inventory. Retain their resource-relative paths. -->
+  <Target Name="PublishWinUIResources" AfterTargets="ComputeFilesToPublish" DependsOnTargets="Prep_ComputeProcessXamlFiles">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="@(GeneratedXamlDest)">
+        <RelativePath>$([MSBuild]::MakeRelative('$(TargetDir)', '%(GeneratedXamlDest.Identity)'))</RelativePath>
+        <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+      <ResolvedFileToPublish Include="$(TargetDir)$(AssemblyName).pri">
+        <RelativePath>$(AssemblyName).pri</RelativePath>
+        <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+  <!-- Run for direct MSBuild/Visual Studio builds and publishing without a build.
+       The packager replaces only Resources/vim and verifies both inventories. -->
+  <Target Name="PackageBundledVimRuntime" AfterTargets="Build">
+    <Exec Command="&quot;$(VimRuntimePython)&quot; &quot;$(VimRuntimeScript)&quot; package &quot;$(TargetDir)/.&quot;" />
+  </Target>
+  <Target Name="PublishBundledVimRuntime" AfterTargets="Publish">
+    <Exec Command="&quot;$(VimRuntimePython)&quot; &quot;$(VimRuntimeScript)&quot; package &quot;$(PublishDir)/.&quot;" />
   </Target>
 </Project>

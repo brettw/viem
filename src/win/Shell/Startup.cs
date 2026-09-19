@@ -19,6 +19,14 @@ internal sealed partial class EditorWindow
             Diagnostics.FrontendSmokeTests.Started = true;
             DispatcherQueue.TryEnqueue(async () => {
                 try {
+                    if (Environment.GetEnvironmentVariable("VIEM_TEST_SYNTAX_ONLY") == "1")
+                    {
+                        await Diagnostics.VimRuntimeTests.Run(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
+                        var checks = Diagnostics.FrontendSmokeTests.UiChecks;
+                        File.WriteAllText(Diagnostics.FrontendSmokeTests.ReportPath, JsonSerializer.Serialize(new { passed = true, count = checks.Count, checks }));
+                        Environment.Exit(0);
+                        return;
+                    }
                     if (Environment.GetEnvironmentVariable("VIEM_PERF_DOCUMENT") is string performancePath)
                     {
                         var performancePane = AddPane(NewDocument(File.ReadAllBytes(performancePath), format: VIEM_FORMAT_MARKDOWN));
@@ -57,6 +65,7 @@ internal sealed partial class EditorWindow
                     await Diagnostics.StyleAndSettingsTests.Run(pane, this, preferences);
                     await Diagnostics.WindowPlacementTests.Run(this, preferences.DirectoryPath);
                     await Diagnostics.FrontendSmokeTests.FileChecks(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
+                    await Diagnostics.VimRuntimeTests.Run(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
                     string saved = Path.Combine(preferences.DirectoryPath, "saved.md");
                     await Save(pane, explicitPath: saved);
                     pane.View.Command("ggi"); pane.View.Text("Saved "); pane.View.Key(VIEM_KEY_ESCAPE); await Save(pane);
