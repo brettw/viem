@@ -23,6 +23,12 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   // synchronously announce a metrics change, and duplicate shaping is cheaper
   // than blocking invalidation behind an expensive batch.
   private let stateLock = NSLock()
+  private var shapeBatchCalls: UInt64 = 0
+  var shapeBatchCallCount: UInt64 {
+    stateLock.lock()
+    defer { stateLock.unlock() }
+    return shapeBatchCalls
+  }
   private var generation: UInt64
   private var responseArenas: [ResponseArena] = []
   private var localFontObserver: NSObjectProtocol?
@@ -166,6 +172,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     retiredArenas = responseArenas
     responseArenas.removeAll(keepingCapacity: true)
     callbackGeneration = generation
+    shapeBatchCalls &+= 1
     stateLock.unlock()
     retiredArenas.removeAll(keepingCapacity: false)
 

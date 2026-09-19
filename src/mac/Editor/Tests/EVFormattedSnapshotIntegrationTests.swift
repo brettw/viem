@@ -5,7 +5,7 @@ import XCTest
 
 @MainActor
 final class EVFormattedSnapshotIntegrationTests: XCTestCase {
-    func testTextInputAndAccessibilityUseAggregateCountsAndOnDemandRanges() throws {
+    func testTextInputAndAccessibilityUseAggregateCountsCachedSlicesAndOnDemandRanges() throws {
         let backend = EVCoreDocumentBackend()
         try backend.read(source: Data("A😀B".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -23,8 +23,8 @@ final class EVFormattedSnapshotIntegrationTests: XCTestCase {
         )
         XCTAssertEqual(substring?.string, "😀")
         XCTAssertEqual(actual, NSRange(location: 1, length: 2))
-        XCTAssertEqual(backend.formattedAccessCounters.rangeReadCalls, 1)
-        XCTAssertEqual(backend.formattedAccessCounters.requestedUTF8Bytes, 4)
+        XCTAssertEqual(backend.formattedAccessCounters.rangeReadCalls, 0)
+        XCTAssertEqual(backend.formattedAccessCounters.requestedUTF8Bytes, 0)
         XCTAssertEqual(backend.formattedAccessCounters.fullRangeReadCalls, 0)
         XCTAssertGreaterThan(backend.formattedAccessCounters.utf16ToUTF8BatchCalls, 0)
 
@@ -95,7 +95,9 @@ final class EVFormattedSnapshotIntegrationTests: XCTestCase {
 
         backend.resetFormattedAccessCounters()
         surface.refreshPresentation()
-        assertOnlyBoundedPresentationReads(backend.formattedAccessCounters)
+        XCTAssertGreaterThan(backend.formattedAccessCounters.snapshotInfoCalls, 0)
+        XCTAssertEqual(backend.formattedAccessCounters.rangeReadCalls, 0)
+        XCTAssertEqual(backend.formattedAccessCounters.requestedUTF8Bytes, 0)
 
         backend.resetFormattedAccessCounters()
         surface.view.frame.size = NSSize(width: 850, height: 610)

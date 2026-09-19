@@ -812,6 +812,17 @@ final class EVCoreViewSession {
     private(set) var hasActiveComposition = false
     weak var commandTurnHost: (any EVCommandTurnHost)?
     var hostEffectAccessCounters = EVHostEffectAccessCounters()
+    var presentationExportCounters = EVPresentationExportCounters()
+    private var cachedLayoutExport: EVLayoutExport?
+    var cachedLayoutPaintExport: EVLayoutPaintExport?
+    var cachedWhitespaceExport: EVWhitespaceExportCache?
+
+    /// One bounded entry per export; correctness never depends on retention.
+    func clearPresentationExportCache() {
+        cachedLayoutExport = nil
+        cachedLayoutPaintExport = nil
+        cachedWhitespaceExport = nil
+    }
     var compositionStateDidChange: ((Bool) -> Void)?
     private var mappingTimer: Timer?
 
@@ -838,6 +849,7 @@ final class EVCoreViewSession {
     }
 
     func detach() {
+        clearPresentationExportCache()
         mappingTimer?.invalidate()
         mappingTimer = nil
         if viewID != 0 {
@@ -1401,12 +1413,23 @@ final class EVCoreViewSession {
         return value
     }
 
-    func layoutExport() throws -> EVLayoutExport {
+    func layoutSnapshotInfo() throws -> ViemLayoutSnapshotInfoV1 {
         var info = ViemLayoutSnapshotInfoV1()
         info.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotInfoV1>.size)
         let status = viem_core_view_layout_snapshot_info(document.core, viewID, &info)
         if status == Status.layoutUnavailable { throw EVCoreFrontendError.unavailableLayout }
         try checked(status, operation: "Read layout snapshot")
+        return info
+    }
+
+    func layoutExport() throws -> EVLayoutExport {
+        let info = try layoutSnapshotInfo()
+        if var cached = cachedLayoutExport, cached.info.identity.isSameLayout(as: info.identity) {
+            // Extent estimates and viewport dimensions are cheap live metadata.
+            cached.info = info
+            cached.whitespace = try whitespaceMarkersExport(identity: info.identity)
+            return cached
+        }
         guard info.row_count <= UInt64(Int.max),
               info.cluster_count <= UInt64(Int.max),
               info.caret_count <= UInt64(Int.max)
@@ -1440,9 +1463,12 @@ final class EVCoreViewSession {
         }
         try checked(copied, operation: "Copy layout snapshot")
         let furniture = try layoutDecorationsExport(identity: copiedInfo.identity)
-        return EVLayoutExport(info: copiedInfo, rows: rows, clusters: clusters, carets: carets,
-                              decorations: furniture.0, decorationLabels: furniture.1,
-                              whitespace: try whitespaceMarkersExport(identity: copiedInfo.identity))
+        let exported = EVLayoutExport(info: copiedInfo, rows: rows, clusters: clusters, carets: carets,
+                                      decorations: furniture.0, decorationLabels: furniture.1,
+                                      whitespace: try whitespaceMarkersExport(identity: copiedInfo.identity))
+        presentationExportCounters.geometryCopies &+= 1
+        cachedLayoutExport = exported
+        return exported
     }
 
     /// Font registration can retire the presentation while the view is idle.

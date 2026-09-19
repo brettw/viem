@@ -47,6 +47,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var viewportState = ViemViewportStateV1()
     private(set) var documentState = ViemDocumentStateV1()
     private(set) var presentationRefreshCount: UInt64 = 0
+    /// Changes only when the immutable text drawing inputs or viewport change.
+    /// Selection and caret updates have their own damage tracking in the view.
+    private(set) var immutablePresentationGeneration: UInt64 = 0
+    private var presentedWhitespaceCopyCount: UInt64 = 0
     // The offsets themselves remain scoped to viewPresentation's immutable
     // document revision. This associates that snapshot with its owning view.
     private var selectionPresentationViewID: ViemViewId?
@@ -289,19 +293,33 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                     )
                 }
                 nextLayoutPaint = paint
-                let ranges = layoutUTF8Ranges(
+                let sameLayout = layoutSnapshot?.info.identity.isSameLayout(as: nextLayoutSnapshot.info.identity) == true
+                let sameFormatted = formattedSnapshot?.info.identity.isSameSnapshot(as: nextFormattedSnapshot.info.identity) == true
+                let sameComposition = compositionOverlay?.info.identity.isSameOverlay(
+                    as: nextCompositionOverlay?.info.identity ?? ViemCompositionOverlayIdentityV1()) == true
+                let reuseText = sameLayout && (nextCompositionOverlay != nil
+                    ? sameComposition : sameFormatted && compositionOverlay == nil)
+                let ranges = reuseText ? [] : layoutUTF8Ranges(
                     for: nextLayoutSnapshot,
                     formattedLength: nextCompositionOverlay?.info.utf8_length
                         ?? nextFormattedSnapshot.info.utf8_length
                 )
                 if let nextCompositionOverlay {
                     nextLayoutTextSlices = []
-                    nextCompositionTextSlices = try ranges.map {
-                        try session.compositionTextSlice(in: $0, overlay: nextCompositionOverlay)
+                    if reuseText {
+                        nextCompositionTextSlices = compositionTextSlices
+                    } else {
+                        nextCompositionTextSlices = try ranges.map {
+                            try session.compositionTextSlice(in: $0, overlay: nextCompositionOverlay)
+                        }
                     }
                 } else {
-                    nextLayoutTextSlices = try ranges.map {
-                        try backend.formattedSlice(in: $0, snapshot: nextFormattedSnapshot)
+                    if reuseText {
+                        nextLayoutTextSlices = layoutTextSlices
+                    } else {
+                        nextLayoutTextSlices = try ranges.map {
+                            try backend.formattedSlice(in: $0, snapshot: nextFormattedSnapshot)
+                        }
                     }
                     nextCompositionTextSlices = []
                 }
@@ -346,6 +364,16 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             }
 
             let selectionChanged = selectionPresentationChanged(nextPresentation, viewID: session.viewID)
+            if layoutSnapshot?.info.identity.isSameLayout(
+                as: nextLayoutSnapshot?.info.identity ?? ViemLayoutSnapshotIdentityV1()) != true
+                || viewportState.left != nextViewport.left || viewportState.top != nextViewport.top
+                || layoutSnapshot?.info.viewport_width != nextLayoutSnapshot?.info.viewport_width
+                || layoutSnapshot?.info.viewport_height != nextLayoutSnapshot?.info.viewport_height
+                || presentedWhitespaceCopyCount != session.presentationExportCounters.whitespaceCopies
+                || compositionOverlay?.info.identity.generation != nextCompositionOverlay?.info.identity.generation {
+                immutablePresentationGeneration &+= 1
+            }
+            presentedWhitespaceCopyCount = session.presentationExportCounters.whitespaceCopies
             documentState = nextDocumentState
             formattedSnapshot = nextFormattedSnapshot
             compositionOverlay = nextCompositionOverlay
@@ -524,14 +552,23 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     /// Font registration can retire core geometry without a native input turn.
-    /// Validate cheaply before deriving a scroll target from cached geometry;
+    /// Validate cheaply before hit testing or deriving a scroll target;
     /// copy a new presentation only when geometry was rebuilt or is missing.
-    func refreshGeometryBeforeScrolling() -> Bool {
+    func refreshGeometryBeforeInteraction() -> Bool {
         guard let session else { return false }
         do {
             let rebuilt = try session.refreshLayoutIfNeeded()
-            if rebuilt || layoutSnapshot == nil { refreshPresentation() }
-            return layoutSnapshot != nil
+            let current = try session.layoutSnapshotInfo()
+            let viewport = try session.viewportState()
+            if rebuilt || layoutSnapshot?.info.identity.isSameLayout(as: current.identity) != true
+                || viewportState.left != viewport.left || viewportState.top != viewport.top
+                || layoutSnapshot?.info.viewport_width != current.viewport_width
+                || layoutSnapshot?.info.viewport_height != current.viewport_height {
+                refreshPresentation(advancingSearch: false)
+            }
+            // A failed refresh must never leave an unchecked old hit-test target.
+            return layoutSnapshot?.info.identity.isSameLayout(as: current.identity) == true
+                && viewportState.left == viewport.left && viewportState.top == viewport.top
         } catch {
             report(error)
             return false
@@ -541,7 +578,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     func requestVerticalViewport(top: CGFloat) {
         dismissCommandOutput()
         guard let session else { return }
-        guard refreshGeometryBeforeScrolling() else { return }
+        guard refreshGeometryBeforeInteraction() else { return }
         do {
             _ = try session.setViewportOrigin(
                 left: CGFloat(viewportState.left),
@@ -941,6 +978,15 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
               let lower = UInt64(exactly: utf8Range.lowerBound),
               let upper = UInt64(exactly: utf8Range.upperBound)
         else { return nil }
+        // AppKit asks for selected text when we notify it of a caret/selection
+        // change. Reuse the matching visible slice just as drawing does; larger
+        // or offscreen accessibility/input-method requests still read on demand.
+        if let slice = layoutTextSlices.first(where: {
+            $0.identity.isSameSnapshot(as: snapshot.info.identity)
+                && $0.utf8Range.lowerBound <= lower && upper <= $0.utf8Range.upperBound
+        }) {
+            return slice.text(in: utf8Range)
+        }
         return try? backend.formattedText(in: lower ..< upper, snapshot: snapshot)
     }
 

@@ -5690,53 +5690,56 @@ The frontend draws only damage regions returned by state/layout changes where
 practical. It may cache native glyph/draw resources separately from core
 metrics, keyed by layout snapshot and metrics generation.
 
-### TODO: macOS style inspector cleanup
+### macOS style inspector
 
-Remove the redundant "Properties" heading above the style metadata fields in
-the macOS style inspector, matching the Windows inspector cleanup. Keep the
-field labels and the Character/Paragraph tabs.
+The style inspector presents its metadata fields without a redundant
+"Properties" heading. Keep the field labels and Character/Paragraph tabs.
 
-### TODO: macOS pointer selection performance
+### macOS pointer selection performance
 
-The shared Rust core already reuses current visible layout during pointer
-selection, bounds resize work using previously visible hard lines, and repairs
-retained position state during native Undo/Redo. Those fixes also apply to macOS
-when rebuilt; the remaining work is in the Swift frontend. Windows measurements
-do not establish macOS latency.
+The shared Rust core reuses current visible layout during pointer selection,
+bounds resize work using previously visible hard lines, and repairs retained
+position state during native Undo/Redo. The Swift frontend additionally:
 
-- **Reuse presentation exports.** `EVEditorSurfaceController.refreshPresentation`
-  currently requests fresh geometry, paint, and text slices on every refresh;
-  `EVCoreViewSession.layoutExport` in `EVCoreDocument.swift` allocates and copies
-  the layout arrays each time. Reuse unchanged immutable exports against the
-  full layout identity (view, document, document revision, layout revision,
-  configuration generation, measurement environment, and metrics generation),
-  with separate invalidation for affected paint, whitespace, and composition
-  state. Selection and caret presentation must still update on every change.
-- **Remove the redundant pointer refresh.** `EVEditorView.placeCursor(at:extending:)`
-  performs a full presentation refresh before hit testing, followed by another
-  refresh after input. Replace the first refresh with a cheap validity check,
-  rebuilding only when needed. Preserve stale-layout detection, font/metrics
-  invalidation, composition handling, and drag autoscroll; never hit-test an
-  unchecked old snapshot.
-- **Measure and reduce drawing work.** `EVEditorView.applyPresentation` currently
-  invalidates the whole editor, and drawing visits text clusters even when only
-  selection or caret geometry changed. Core Text glyph resources are already
-  retained, but drawing commands are still issued again. Profile this path on
-  macOS, then use smaller damage regions or bounded cached drawing if the
-  measurements justify it. Any drawing cache must account for viewport, backing
-  scale, appearance, whitespace, and composition changes as well as layout
-  identity, while preserving selection/text/caret drawing order.
+- Keeps one bounded immutable geometry/decorations and paint export per view,
+  validated against the full layout identity: view, document, document revision,
+  layout revision, configuration generation, measurement environment, and
+  metrics generation. Live extent metadata is refreshed separately. Whitespace
+  exports also validate the current viewport; stale explicit requests still
+  fail even when their former export is cached.
+- Reuses visible formatted text slices against their layout and formatted
+  snapshot identities, and composition slices against their overlay identity.
+  Native selected-text queries use those same formatted slices when covered;
+  larger or offscreen text queries retain the checked on-demand path. Selection
+  and caret exports update independently on every presentation refresh.
+- Validates the current core identity and viewport before pointer hits,
+  scrolling, and drag autoscroll. Missing or retired font/metrics geometry is
+  rebuilt, and presentation is refreshed only when the retained snapshot no
+  longer matches. This validity check does not advance search or replay input.
+- Invalidates changed selection rectangles and old/new custom caret cells when
+  text drawing inputs are unchanged. Text ink, selection, whitespace, and caret
+  drawing respect damage clips while preserving their drawing order. Layout,
+  viewport, theme, appearance, backing-scale, and composition changes force a
+  full redraw. The frontend retains overlay geometry, not a second pixel cache.
 
-Validate these changes with repeated selection in `AGENTS.md` and a
-large-document fixture, recording core work, export copies, and drawing costs
-separately on macOS. Add cache-invalidation coverage for edits, Undo/Redo,
-resize/zoom, font metrics, appearance, whitespace, and composition; verify that
-cached or partial redraws match fresh rendering. Unchanged visible selection
-must not trigger new layout work or repeated immutable export copies.
+`EVPresentationCacheIntegrationTests` measures core pointer work, presentation
+refreshes, immutable export copies, and Core Text shaping separately using
+`AGENTS.md` and a 20,000-line fixture. Repeated visible selection MUST NOT trigger
+new shaping, layout identities, or immutable export/text copies.
+`EVPointerDrawingPerformanceTests` compares partial selection frames with fresh
+full rendering pixel-for-pixel and measures drawing separately. Cache and
+invalidation coverage includes edits, Undo/Redo, resize/zoom, font metrics,
+paint styles, viewport changes, theme/appearance, backing properties, whitespace,
+and composition. The million-line bounded-projection test remains required.
+Run native tests through `scripts/test-mac.sh` to rebuild the matching Rust core
+and isolate the test profile from user preferences. Native macOS measurements
+establish behavior on that host; Windows timings are not a macOS latency claim.
+Recorded validation and representative timings are in
+[`docs/mac-pointer-performance.md`](docs/mac-pointer-performance.md).
 
-Mac menu handling already uses native menu-validation callbacks rather than an
-explicit all-menu validation pass after each editor input. The Windows menu
-optimization does not require a direct Mac counterpart.
+Mac menu handling uses native menu-validation callbacks rather than an explicit
+all-menu validation pass after each editor input. The Windows menu optimization
+does not require a direct Mac counterpart.
 
 ### macOS caret realization
 

@@ -475,7 +475,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         let tabsContainer = centeredContainer(tabs, maximumWidth: 260, horizontalInset: 0)
 
         let stack = NSStackView(views: [
-            sectionTitle("Properties"), propertiesContainer, availabilityLabel,
+            propertiesContainer, availabilityLabel,
             separator(), tabsContainer, formattingBox,
             previewBox, bottom,
         ])
@@ -1231,13 +1231,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private func label(_ value: String) -> NSTextField {
         let field = NSTextField(labelWithString: value)
         field.alignment = .right
-        return field
-    }
-
-    private func sectionTitle(_ value: String) -> NSTextField {
-        let field = NSTextField(labelWithString: value)
-        field.font = .systemFont(ofSize: 13, weight: .semibold)
-        field.setAccessibilityRoleDescription("heading")
         return field
     }
 

@@ -22,6 +22,12 @@ struct EVWhitespaceMarkerExport: Codable, Equatable {
     var applicable = true
 }
 
+struct EVWhitespaceExportCache {
+    var identity: ViemLayoutSnapshotIdentityV1
+    var viewport: ViemLayoutRectV1
+    var exported: EVWhitespaceMarkerExport
+}
+
 extension EVCoreDocumentBackend {
     func configureWhitespace(indentation: EVIndentationOptions, presentation: EVWhitespacePresentationOptions) throws {
         let encoder = JSONEncoder()
@@ -46,15 +52,22 @@ extension EVCoreViewSession {
 
     func whitespaceMarkersExport(identity: ViemLayoutSnapshotIdentityV1, expectedViewport: ViemLayoutRectV1? = nil) throws -> EVWhitespaceMarkerExport {
         var expected = identity
-        var viewport: ViemLayoutRectV1
-        if let expectedViewport {
-            viewport = expectedViewport
-        } else {
-            let state = try viewportState()
-            var info = ViemLayoutSnapshotInfoV1()
-            info.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotInfoV1>.size)
-            try checked(viem_core_view_layout_snapshot_info(document.core, viewID, &info), operation: "Read whitespace viewport")
-            viewport = ViemLayoutRectV1(x: state.left, y: state.top, width: info.viewport_width, height: info.viewport_height)
+        let state = try viewportState()
+        let info = try layoutSnapshotInfo()
+        let currentViewport = ViemLayoutRectV1(x: state.left, y: state.top,
+                                               width: info.viewport_width, height: info.viewport_height)
+        var viewport = expectedViewport ?? currentViewport
+        // Let the ABI diagnose stale/invalid explicit requests; cache hits must
+        // satisfy the same identity and viewport checks as an actual copy.
+        if let cached = cachedWhitespaceExport,
+           identity.struct_size >= UInt32(MemoryLayout<ViemLayoutSnapshotIdentityV1>.size),
+           info.identity.isSameLayout(as: identity),
+           cached.identity.isSameLayout(as: identity),
+           viewport.x == currentViewport.x, viewport.y == currentViewport.y,
+           viewport.width == currentViewport.width, viewport.height == currentViewport.height,
+           cached.viewport.x == viewport.x, cached.viewport.y == viewport.y,
+           cached.viewport.width == viewport.width, cached.viewport.height == viewport.height {
+            return cached.exported
         }
         var count: UInt64 = 0
         let queried = viem_core_view_copy_whitespace_markers(document.core, viewID, &expected, &viewport, nil, 0, &count)
@@ -64,6 +77,9 @@ extension EVCoreViewSession {
         try checked(bytes.withUnsafeMutableBufferPointer {
             viem_core_view_copy_whitespace_markers(document.core, viewID, &expected, &viewport, $0.baseAddress, UInt64($0.count), &count)
         }, operation: "Copy whitespace markers")
-        return try JSONDecoder().decode(EVWhitespaceMarkerExport.self, from: Data(bytes))
+        let exported = try JSONDecoder().decode(EVWhitespaceMarkerExport.self, from: Data(bytes))
+        presentationExportCounters.whitespaceCopies &+= 1
+        cachedWhitespaceExport = EVWhitespaceExportCache(identity: identity, viewport: viewport, exported: exported)
+        return exported
     }
 }

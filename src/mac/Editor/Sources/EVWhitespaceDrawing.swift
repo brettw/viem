@@ -7,20 +7,26 @@ import ViemCoreTextProvider
 extension EVEditorView {
     /// Whitespace is decoration on an exact snapshot. Only ink is scaled and
     /// clipped here; the original text, hit testing and row widths stay intact.
-    func drawWhitespaceMarkers(_ snapshot: EVLayoutExport, in context: CGContext) {
+    func drawWhitespaceMarkers(_ snapshot: EVLayoutExport, dirtyRect: NSRect? = nil, in context: CGContext) {
         guard let session = surface?.session else { return }
+        let damage = dirtyRect ?? visibleRect
+        let markers = snapshot.whitespace.markers.filter { marker in
+            guard snapshot.rows.indices.contains(marker.rowIndex), marker.width > 0, marker.height > 0 else { return false }
+            let origin = viewPoint(fromLayoutPoint: CGPoint(x: marker.x, y: marker.y))
+            return CGRect(origin: origin, size: CGSize(width: marker.width, height: marker.height)).intersects(damage)
+        }
+        guard !markers.isEmpty else { return }
         let style = snapshot.whitespace.style
         let scale = CGFloat(surface?.zoomScale ?? 1)
-        let clustersByRow = Dictionary(grouping: snapshot.clusters, by: { Int($0.row_index) })
+        let markerRows = Set(markers.map(\.rowIndex))
+        let clustersByRow = Dictionary(grouping: snapshot.clusters.filter { markerRows.contains(Int($0.row_index)) }, by: { Int($0.row_index) })
             .mapValues { $0.sorted { $0.x < $1.x } }
         let paint = surface?.layoutPaint.flatMap { $0.info.identity.isSameLayout(as: snapshot.info.identity) ? $0 : nil }
         var fonts: [WhitespaceFontKey: (CTFont, CoreTextRenderAttributes)] = [:]
         var lines: [WhitespaceLineKey: CTLine] = [:]
-        for marker in snapshot.whitespace.markers {
-            guard snapshot.rows.indices.contains(marker.rowIndex), marker.width > 0, marker.height > 0 else { continue }
+        for marker in markers {
             let origin = viewPoint(fromLayoutPoint: CGPoint(x: marker.x, y: marker.y))
             let rect = CGRect(origin: origin, size: CGSize(width: marker.width, height: marker.height))
-            guard rect.intersects(visibleRect) else { continue }
             let row = snapshot.rows[marker.rowIndex]
             let cluster = Self.whitespaceCluster(at: marker.x, in: clustersByRow[marker.rowIndex] ?? [])
             let fontKey = WhitespaceFontKey(identifier: cluster?.render_run.identifier ?? 0,

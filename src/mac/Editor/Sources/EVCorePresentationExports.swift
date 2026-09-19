@@ -77,6 +77,15 @@ struct EVFormattedAccessCounters: Equatable {
     let legacyWholeCopyCalls: UInt64 = 0
 }
 
+/// Successful immutable payload copies across the Swift/C boundary, separate
+/// from core layout work and the independently refreshed caret/selection.
+struct EVPresentationExportCounters: Equatable {
+    var geometryCopies: UInt64 = 0
+    var paintCopies: UInt64 = 0
+    var whitespaceCopies: UInt64 = 0
+    var compositionTextCopies: UInt64 = 0
+}
+
 struct EVLayoutPaintExport {
     var info: ViemLayoutPaintInfoV1
     var runs: [ViemPaintStyleRunV1]
@@ -181,6 +190,7 @@ extension EVCoreViewSession {
         guard required == UInt64(bytes.count), String(bytes: bytes, encoding: .utf8) != nil else {
             throw EVCoreFrontendError.invalidUTF8
         }
+        presentationExportCounters.compositionTextCopies &+= 1
         return EVCompositionTextSlice(
             identity: overlay.info.identity,
             utf8Range: range,
@@ -228,6 +238,10 @@ extension EVCoreViewSession {
             viem_core_view_layout_paint_info(document.core, viewID, &info),
             operation: "Read layout paint"
         )
+        if let cached = cachedLayoutPaintExport,
+           cached.info.identity.isSameLayout(as: info.identity) {
+            return cached
+        }
         guard info.paint_run_count <= UInt64(Int.max) else {
             throw EVCoreFrontendError.core(
                 operation: "Read layout paint",
@@ -276,7 +290,10 @@ extension EVCoreViewSession {
                 status: UInt32(VIEM_STATUS_CORE_FAILURE)
             )
         }
-        return EVLayoutPaintExport(info: copiedInfo, runs: runs)
+        let exported = EVLayoutPaintExport(info: copiedInfo, runs: runs)
+        presentationExportCounters.paintCopies &+= 1
+        cachedLayoutPaintExport = exported
+        return exported
     }
 
     func commandLineExport() throws -> EVCommandLineExport {
@@ -387,6 +404,15 @@ extension ViemLayoutSnapshotIdentityV1 {
             && configuration_generation == other.configuration_generation
             && measurement_environment_id == other.measurement_environment_id
             && metrics_generation == other.metrics_generation
+    }
+}
+
+extension ViemCompositionOverlayIdentityV1 {
+    func isSameOverlay(as other: ViemCompositionOverlayIdentityV1) -> Bool {
+        view_id == other.view_id
+            && document_id == other.document_id
+            && document_revision == other.document_revision
+            && generation == other.generation
     }
 }
 

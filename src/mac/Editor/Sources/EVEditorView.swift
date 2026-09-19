@@ -100,6 +100,33 @@ private struct EVTextInputSelectionState: Equatable {
     let compositionSelectionEnd: UInt64
 }
 
+private struct EVEditorDrawingIdentity: Equatable {
+    let contentGeneration: UInt64
+    let bounds: NSRect
+    let viewport: NSRect
+    let backingScale: CGFloat
+    let appearance: String
+    let themeGeneration: UInt64
+}
+
+private struct EVEditorOverlayDrawingState {
+    let identity: EVEditorDrawingIdentity
+    let selection: [NSRect]
+    let caret: NSRect?
+    let hasComposition: Bool
+}
+
+private struct EVSelectionDamageKey: Hashable {
+    let x: CGFloat
+    let y: CGFloat
+    let width: CGFloat
+    let height: CGFloat
+
+    init(_ rect: NSRect) {
+        x = rect.minX; y = rect.minY; width = rect.width; height = rect.height
+    }
+}
+
 @MainActor
 class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     // Padding is part of the core canvas, never fixed window chrome.
@@ -131,6 +158,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private var lastCustomCaretState: EVCustomCaretState?
     private var lastTextInputSelectionState: EVTextInputSelectionState?
     private var textInputGeometryUpdateActive = false
+    private var lastOverlayDrawingState: EVEditorOverlayDrawingState?
+    private(set) var presentationDamageRects: [NSRect] = []
     private(set) var isActiveTextSurface = false
     // Injectable like the blink clock: an AppKit unit-test process does not
     // own the foreground application's activation lifecycle.
@@ -153,7 +182,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private lazy var customCaretBlinkController: EVCustomCaretBlinkController = {
         let controller = EVCustomCaretBlinkController()
         controller.onVisibilityChange = { [weak self] _ in
-            self?.needsDisplay = true
+            self?.invalidateCustomCaret()
         }
         return controller
     }()
@@ -314,36 +343,51 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         updateCustomCaretPresentation()
         updateInsertionIndicator()
         updateCompletionPopup()
-        needsDisplay = true
+        invalidatePresentationDamage()
         surface?.refreshStatusBarActivity()
     }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
+        lastOverlayDrawingState = nil
+        invalidateDrawing(in: [bounds])
         EVCaretAppearanceResolver.shared.noteEffectiveAppearanceChange()
     }
 
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        lastOverlayDrawingState = nil
+        invalidateDrawing(in: [bounds])
+    }
+
     override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.saveGState()
+        defer {
+            context.restoreGState()
+            consumeDrawingDamage(in: dirtyRect)
+        }
+        // AppKit normally supplies this clip, but explicit clipping also makes
+        // offscreen and partial drawing obey the same alpha-compositing rules.
+        context.clip(to: dirtyRect)
         let snapshot = surface?.layoutSnapshot
         let paint = snapshot.flatMap(exactLayoutPaint(for:))
         let background = paint.map { nativeCanvas($0.info) }
             ?? resolvedColor(.textBackgroundColor)
         background.setFill()
         dirtyRect.fill()
-        if let snapshot,
-           let context = NSGraphicsContext.current?.cgContext
-        {
+        if let snapshot {
             context.saveGState()
             context.clip(to: textViewportRect)
             let clusters = drawingClusters(in: dirtyRect, snapshot: snapshot)
             if let paint { drawPaintBackgrounds(clusters, paint: paint) }
-            drawSelection(snapshot, in: context)
+            drawSelection(snapshot, dirtyRect: dirtyRect, in: context)
             drawText(snapshot, clusters: clusters, paint: paint, in: context)
             drawParagraphDecorations(snapshot, dirtyRect: dirtyRect, in: context)
             if let paint { drawTextDecorations(snapshot, clusters: clusters, paint: paint) }
-            drawWhitespaceMarkers(snapshot, in: context)
+            drawWhitespaceMarkers(snapshot, dirtyRect: dirtyRect, in: context)
             drawMarkedText(snapshot, clusters: clusters, in: context)
-            drawCustomCaret(snapshot, in: context)
+            drawCustomCaret(snapshot, dirtyRect: dirtyRect, in: context)
             context.restoreGState()
         }
     }
@@ -358,10 +402,111 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         reconcileMarkedTextWithCore()
         updateDocumentScrollbars()
         updateCustomCaretPresentation()
-        needsDisplay = true
+        invalidatePresentationDamage()
         updateInsertionIndicator()
         updateCompletionPopup()
         notifyTextInputStateChanged()
+    }
+
+    /// Retain only overlay rectangles, never pixels or a second document model.
+    /// A content/environment change repaints the viewport. Stable geometry
+    /// needs only the changed selection rectangles and old/new caret cells.
+    private func invalidatePresentationDamage() {
+        guard let surface, let snapshot = surface.layoutSnapshot else {
+            lastOverlayDrawingState = nil
+            invalidateDrawing(in: [bounds])
+            return
+        }
+        let state = EVEditorOverlayDrawingState(
+            identity: EVEditorDrawingIdentity(
+                contentGeneration: surface.immutablePresentationGeneration,
+                bounds: bounds,
+                viewport: textViewportRect,
+                backingScale: window?.backingScaleFactor ?? 1,
+                appearance: effectiveAppearance.name.rawValue,
+                themeGeneration: EVThemeStore.shared.generation),
+            selection: selectionRectsForDrawing(in: snapshot),
+            caret: customCaretDamageRect(snapshot),
+            hasComposition: compositionActive || surface.compositionOverlay != nil)
+        defer { lastOverlayDrawingState = state }
+        guard let previous = lastOverlayDrawingState,
+              previous.identity == state.identity,
+              !previous.hasComposition, !state.hasComposition else {
+            invalidateDrawing(in: [bounds])
+            return
+        }
+        let previousSelection = Set(previous.selection.map(EVSelectionDamageKey.init))
+        let nextSelection = Set(state.selection.map(EVSelectionDamageKey.init))
+        var damage = previous.selection.filter { !nextSelection.contains(EVSelectionDamageKey($0)) }
+        damage += state.selection.filter { !previousSelection.contains(EVSelectionDamageKey($0)) }
+        if let rect = previous.caret { damage.append(rect) }
+        if let rect = state.caret { damage.append(rect) }
+        // Pixel-aligned expansion covers antialiasing and caret outlines. Ink
+        // crossing a damaged cell is included by drawingClusters(in:).
+        let fringe = 1 / max(state.identity.backingScale, 1)
+        let rectangles = damage.map {
+            $0.insetBy(dx: -fringe, dy: -fringe).integral.intersection(bounds)
+        }.filter { !$0.isEmpty }
+        invalidateDrawing(in: rectangles)
+    }
+
+    /// AppKit coalesces multiple presentation/focus notifications before a
+    /// paint. Preserve their accumulated damage until it has actually drawn;
+    /// a later caret update must not hide an earlier full-content invalidation.
+    private func invalidateDrawing(in rectangles: [NSRect]) {
+        for rectangle in rectangles {
+            var merged = rectangle.intersection(bounds)
+            guard !merged.isEmpty else { continue }
+            setNeedsDisplay(merged)
+            var index = 0
+            while index < presentationDamageRects.count {
+                let existing = presentationDamageRects[index]
+                if existing.intersects(merged) || existing.contains(merged) || merged.contains(existing) {
+                    merged = merged.union(existing)
+                    presentationDamageRects.remove(at: index)
+                    index = 0
+                } else { index += 1 }
+            }
+            presentationDamageRects.append(merged)
+        }
+        // Hidden views can receive arbitrarily many updates before a draw.
+        if presentationDamageRects.count > 64 {
+            presentationDamageRects = [presentationDamageRects.reduce(NSRect.null) { $0.union($1) }]
+        }
+    }
+
+    private func consumeDrawingDamage(in drawn: NSRect) {
+        presentationDamageRects = presentationDamageRects.flatMap { rect -> [NSRect] in
+            let intersection = rect.intersection(drawn)
+            guard !intersection.isEmpty else { return [rect] }
+            return [
+                NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: intersection.minY - rect.minY),
+                NSRect(x: rect.minX, y: intersection.maxY, width: rect.width, height: rect.maxY - intersection.maxY),
+                NSRect(x: rect.minX, y: intersection.minY, width: intersection.minX - rect.minX, height: intersection.height),
+                NSRect(x: intersection.maxX, y: intersection.minY, width: rect.maxX - intersection.maxX, height: intersection.height),
+            ].filter { !$0.isEmpty }
+        }
+    }
+
+    private func customCaretDamageRect(_ snapshot: EVLayoutExport) -> NSRect? {
+        guard let surface, surface.viewPresentation.mode != UInt32(VIEM_MODE_COMMAND_LINE),
+              !(isCaretActive && surface.viewPresentation.mode == UInt32(VIEM_MODE_INSERT))
+        else { return nil }
+        let geometry = caretItemGeometry(snapshot)
+        guard var rect = geometry.rect else { return nil }
+        if geometry.cluster == nil || rect.width < 1 {
+            rect.size.width = minimumCaretWidth(near: geometry.cluster, in: snapshot)
+        }
+        return isCaretActive ? rect : Self.inactiveCaretRect(rect, mode: surface.viewPresentation.mode)
+    }
+
+    private func invalidateCustomCaret() {
+        if let previous = lastOverlayDrawingState?.caret {
+            invalidateDrawing(in: [previous.insetBy(dx: -1, dy: -1).integral])
+        }
+        if let snapshot = surface?.layoutSnapshot, let rect = customCaretDamageRect(snapshot) {
+            invalidateDrawing(in: [rect.insetBy(dx: -1, dy: -1).integral])
+        }
     }
 
     func hideCompletionPopup() { completionPopup.hide() }
@@ -1228,7 +1373,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func scrollDocument(axis: EVDocumentScrollbars.Axis, fraction: Double) {
-        guard let surface, surface.refreshGeometryBeforeScrolling(),
+        guard let surface, surface.refreshGeometryBeforeInteraction(),
               let snapshot = surface.layoutSnapshot, let session = surface.session else { return }
         let value = min(max(fraction, 0), 1)
         beginTextInputGeometryUpdate()
@@ -1739,7 +1884,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         if compositionActive {
             cancelActiveMarkedText(using: session, discardInputContext: true)
         }
-        surface.refreshPresentation()
+        guard surface.refreshGeometryBeforeInteraction() else { return }
         guard let snapshot = surface.layoutSnapshot else { return }
         let layoutPoint = layoutPoint(fromViewPoint: local)
         surface.performInput {
@@ -1750,7 +1895,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
-        guard surface.refreshGeometryBeforeScrolling() else { return }
+        guard surface.refreshGeometryBeforeInteraction() else { return }
         guard let snapshot = surface.layoutSnapshot else { return }
         documentScrollbars.noteScrollActivity()
         let phases = event.phase.union(event.momentumPhase)
@@ -2701,7 +2846,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     @discardableResult
     func performDragAutoscrollStep() -> Bool {
         guard let surface else { return false }
-        guard surface.refreshGeometryBeforeScrolling() else { return false }
+        guard surface.refreshGeometryBeforeInteraction() else { return false }
         guard let location = dragAutoscrollLocation,
               let session = surface.session
         else { return false }
@@ -2983,10 +3128,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         )
     }
 
-    private func drawSelection(_ snapshot: EVLayoutExport, in _: CGContext) {
+    private func drawSelection(_ snapshot: EVLayoutExport, dirtyRect: NSRect, in _: CGContext) {
         let color = EVThemeStore.shared.theme.selection.color
         color.setFill()
-        for rect in selectionRectsForDrawing(in: snapshot) where rect.intersects(bounds) {
+        for rect in selectionRectsForDrawing(in: snapshot) where rect.intersects(dirtyRect) {
             rect.fill()
         }
     }
@@ -3058,7 +3203,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         return rect
     }
 
-    private func drawCustomCaret(_ snapshot: EVLayoutExport, in context: CGContext) {
+    private func drawCustomCaret(_ snapshot: EVLayoutExport, dirtyRect: NSRect, in context: CGContext) {
         guard let surface else { return }
         let mode = surface.viewPresentation.mode
         let active = isCaretActive
@@ -3079,6 +3224,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         if geometry.cluster == nil || rect.width < 1 {
             rect.size.width = minimumCaretWidth(near: geometry.cluster, in: snapshot)
         }
+        guard rect.insetBy(dx: -1, dy: -1).intersects(dirtyRect) else { return }
 
         if customPresentation == .inactiveOutline {
             rect = Self.inactiveCaretRect(rect, mode: mode)
