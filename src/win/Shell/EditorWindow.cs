@@ -7,7 +7,6 @@ using Microsoft.UI.Windowing;
 using Viem.Windows.Core;
 using Viem.Windows.Editor;
 using Windows.Storage.Pickers;
-using Windows.Graphics;
 using System.Security.Cryptography;
 using static Viem.Windows.Interop.Native;
 
@@ -16,6 +15,7 @@ namespace Viem.Windows.Shell;
 internal sealed partial class EditorWindow : Window
 {
     private readonly Preferences preferences;
+    private readonly Action capturePlacement;
     private readonly Grid root = new();
     private readonly Grid titleBar = new() { Height = 32 };
     private readonly Grid titleDrag = new() { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
@@ -35,8 +35,9 @@ internal sealed partial class EditorWindow : Window
     private int pollTicks;
     internal nint Hwnd => WinRT.Interop.WindowNative.GetWindowHandle(this);
 
-    public EditorWindow(Preferences preferences, CoreDocument? document = null)
+    public EditorWindow(Preferences preferences, CoreDocument? document = null, DocumentWindowPlacement? placement = null)
     {
+        using var startup = Diagnostics.StartupPerformance.Measure("window.initialize");
         this.preferences = preferences;
         if (document != null)
         {
@@ -49,7 +50,7 @@ internal sealed partial class EditorWindow : Window
         titleBar.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); titleBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleBar.ColumnDefinitions.Add(new() { Width = new(138) });
         titleBar.Children.Add(titleDrag); titleDrag.Children.Add(titleText); titleBar.Children.Add(menuToggle); Grid.SetColumn(menuToggle, 1);
         ExtendsContentIntoTitleBar = true; SetTitleBar(titleDrag);
-        AppWindow.Resize(new SizeInt32(1100, 780));
+        capturePlacement = (placement ?? App.Instance.WindowPlacement).Track(this);
         WindowSizing.Appearance(this, preferences.Midnight);
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Standard;
         titleBar.SizeChanged += (_, _) => UpdateCaptionInset();
@@ -65,14 +66,22 @@ internal sealed partial class EditorWindow : Window
             foreach (var doc in documents) if (!App.Instance.Windows.Where(w => w != this).Any(w => w.Panes.Any(p => p.Document == doc))) doc.Dispose();
         };
         preferences.Changed += ApplyPreferences;
-        BuildMenus(); ApplyPreferences();
-        AddPane(document ?? NewDocument());
+        using (Diagnostics.StartupPerformance.Measure("window.menus")) BuildMenus();
+        ApplyPreferences();
+        using (Diagnostics.StartupPerformance.Measure("window.initialPane")) AddPane(document ?? NewDocument());
         poll.Tick += (_, _) => {
             foreach (var doc in Panes.Select(p => p.Document).Distinct().ToArray()) ActivePane?.Run(() => doc.PollSyntax());
             foreach (var pane in Panes.ToArray()) pane.Poll();
             if (++pollTicks % 50 == 0) Safe(CheckExternalChanges);
         };
         poll.Start();
+    }
+    public new void Close()
+    {
+        // WinUI's Closed event may run after the HWND is gone. Sample before
+        // native teardown, including a move whose Changed callback is queued.
+        capturePlacement();
+        base.Close();
     }
     private void UpdateCaptionInset()
     {

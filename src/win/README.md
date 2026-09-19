@@ -17,15 +17,17 @@ Prerequisites:
 From the repository root in PowerShell:
 
 ```powershell
-.\scripts\run_windows.ps1
-.\scripts\build-win.ps1 -Run
 .\scripts\build-win.ps1 -Configuration Release
+.\scripts\run_windows.ps1
+.\scripts\build-win.ps1 -Configuration Debug -Run
 .\scripts\test-win.ps1
 cargo test --locked
 ```
 
-`run_windows.ps1` builds Release and launches the app. Add `-Offline` to use
-already-restored dependencies. `build-win.ps1 -Run` builds and launches Debug.
+`run_windows.ps1` only launches the existing Release build. Rebuild explicitly
+with `build-win.ps1 -Configuration Release` after code changes; add `-Offline`
+to use already-restored dependencies. `build-win.ps1 -Configuration Debug -Run`
+builds and launches Debug.
 
 The executable is under
 `target/windows/Viem.Windows/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/Viem.exe`
@@ -60,6 +62,9 @@ It toggles the top menu bar and remembers its state. The editor, vertically
 stacked panes, status bars and command prompt follow `docs/mac_references`.
 Application windows, menus and dialogs use WinUI compact sizing for keyboard
 and mouse use. Settings uses sidebar categories with a live Theme preview.
+Document windows remember their last normal size and position, restore onto an
+available monitor, and cascade additional windows. Maximized, minimized and
+fullscreen bounds do not replace the saved normal frame.
 
 - Ctrl+C/X/V always copy/cut/paste; Ctrl+Shift+V pastes plain text.
 - Ctrl+Q retains Visual Block and literal-next input.
@@ -99,7 +104,8 @@ advanced typography controls and outgoing RTF are not claimed as implemented.
 - `Shell`: windows, menus, settings, style inspector, file operations, recovery
   and same-user process handoff.
 - `Diagnostics`: Debug-only tests running against the actual Rust DLL and
-  WinUI/DirectWrite UI thread. No stand-in core or test compiler is involved.
+  WinUI/DirectWrite UI thread, plus opt-in Release startup tracing. No stand-in
+  core or test compiler is involved.
 
 `scripts/test-win.ps1` creates a unique profile under `target/windows-validation`.
 It checks native WinUI keyboard focus, text and command-key routing, status-line
@@ -107,7 +113,8 @@ prompt painting and command output (including hidden bars and scrolled documents
 F8/inspector focus, compact controls, font variants and inheritance,
 Unicode and bidi, composition, shared views, source/style
 round trips, clipboard policy, atomic settings/save behavior, recovery ownership,
-second-process launch handoff, menu visibility and large-document layout/cache
+second-process launch handoff, window placement across sessions and monitor
+changes, menu visibility and large-document layout/cache
 behavior. It also writes screenshots of the real editor, split prompt, style
 inspector and Settings. It does not overwrite the system clipboard or use the
 normal application profile. Atomic file replacement must be permitted by the
@@ -126,6 +133,15 @@ Add `-ProfileScenario resize` to measure 100 width changes through the same
 core resize, presentation refresh, and drawing path. This reports CPU work for
 reflow and rendering; it does not measure native window-manager presentation.
 The default scenario is `drag`.
+
+To measure empty-editor startup, run `scripts/test-win-startup.ps1` (add
+`-NoBuild` to reuse the Release build). It launches three separate processes
+with isolated empty profiles, checks that startup loads no font-picker lists
+or face descriptions, and writes JSON traces under `target/windows-validation`.
+`-Runs` changes the launch count. Timings end at the first editor draw callback;
+they measure elapsed startup time, not physical display presentation or a cold boot.
+Normal launches do not collect traces. Font discovery uses cached, indexed
+lookups for requested families/faces; complete family lists load on picker use.
 
 Regenerate `Assets/Viem.ico` with `python src/win/tools/build_icon.py` when the
 existing iconset changes. The script only packages those PNGs into an ICO;

@@ -16,6 +16,7 @@ internal sealed class Preferences
     public byte[] StartupCommands { get; private set; } = [];
     public Preferences(string? directory = null)
     {
+        using var startupTiming = Diagnostics.StartupPerformance.Measure("preferences.read");
         DirectoryPath = directory ?? Environment.GetEnvironmentVariable("VIEM_CONFIG_DIR") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".viem");
         string path = Path.Combine(DirectoryPath, "config.json");
         try
@@ -37,6 +38,12 @@ internal sealed class Preferences
     public T Get<T>(string section, string key, T fallback)
     { try { var node = root[section]?[key]; return node == null ? fallback : node.GetValue<T>(); } catch { return fallback; } }
     public bool ShowMenu => Get("windows", "showMenu", true);
+    public WindowFrame? DocumentWindowFrame => WindowFrame.Read(root["windows"]?["documentFrame"]);
+    public void SetDocumentWindowFrame(WindowFrame frame)
+    {
+        if (!frame.IsValid) throw new InvalidDataException("Document window frame must have finite coordinates and positive dimensions.");
+        Update(candidate => Merge(candidate, new JsonObject { ["windows"] = new JsonObject { ["documentFrame"] = frame.Json } }), notify: false);
+    }
     public bool ShowStatus => Get("appearance", "showStatusBar", true);
     public bool SmartQuotes => Get("editing", "smartQuotes", false);
     public bool Midnight => Theme.Background.R * .2126 + Theme.Background.G * .7152 + Theme.Background.B * .0722 < 128;
@@ -90,6 +97,8 @@ internal sealed class Preferences
         if (value["theme"]?["statusFontFamily"] is JsonNode family && (family.GetValue<string>().Length is 0 or >= 256)) throw new InvalidDataException("Invalid status font family.");
         if (value["view"]?["margins"] is JsonNode margins) { if (margins is not JsonObject) throw new InvalidDataException("Invalid margins."); foreach (string edge in new[] { "top", "left", "bottom", "right" }) Number(margins[edge], 0, 1000, edge + " margin"); }
         foreach (var (section, key) in new[] { ("editing", "smartQuotes"), ("appearance", "showStatusBar"), ("windows", "showMenu") }) if (value[section]?[key] is JsonNode boolean) _ = boolean.GetValue<bool>();
+        if (value["windows"] is JsonObject windows && windows.ContainsKey("documentFrame") && WindowFrame.Read(windows["documentFrame"]) == null)
+            throw new InvalidDataException("Document window frame must have finite coordinates and positive dimensions.");
         Number(value["editing"]?["textWidth"], 1, uint.MaxValue, "text width", true);
         if (value["recentDocuments"] is JsonNode recent)
         { if (recent is not JsonArray array) throw new InvalidDataException("Invalid recent documents."); foreach (var path in array) if (path == null || path.GetValue<string>().Length > 16384) throw new InvalidDataException("Invalid recent path."); }
@@ -107,7 +116,7 @@ internal sealed class Preferences
         });
     }
     public void ClearRecent() => Update(candidate => candidate["recentDocuments"] = new JsonArray());
-    private void Update(Action<JsonObject> edit)
+    private void Update(Action<JsonObject> edit, bool notify = true)
     {
         if (!writable) throw new InvalidOperationException(Error);
         string path = Path.Combine(DirectoryPath, "config.json");
@@ -116,7 +125,7 @@ internal sealed class Preferences
         candidate = (JsonObject)JsonNode.Parse(candidate.ToJsonString())!;
         Validate(candidate);
         AtomicWrite(path, JsonSerializer.SerializeToUtf8Bytes(candidate, new JsonSerializerOptions { WriteIndented = true }));
-        root = candidate; Changed?.Invoke();
+        root = candidate; if (notify) Changed?.Invoke();
     }
     public static void AtomicWrite(string path, byte[] contents)
     {

@@ -9,16 +9,20 @@ public partial class App : Application
     internal List<EditorWindow> Windows { get; } = [];
     internal List<string> Arguments { get; } = [];
     internal Preferences Preferences { get; } = new();
+    internal DocumentWindowPlacement WindowPlacement { get; }
     private InstanceBroker? broker;
     public App()
     {
+        using var startup = Diagnostics.StartupPerformance.Measure("app.initialize");
         InitializeComponent();
+        WindowPlacement = new(Preferences);
 #if DEBUG
         UnhandledException += (_, e) => { Diagnostics.FrontendSmokeTests.WriteFailure(e.Exception); };
 #endif
     }
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
+        Diagnostics.StartupPerformance.Mark("app.launched");
         broker = new InstanceBroker(Preferences.DirectoryPath);
         if (!broker.IsPrimary)
         {
@@ -27,9 +31,10 @@ public partial class App : Application
             broker.Dispose(); Exit(); return;
         }
         var window = new EditorWindow(Preferences);
+        Diagnostics.StartupPerformance.Mark("window.constructed");
         Windows.Add(window);
         window.Closed += (_, _) => Windows.Remove(window);
-        window.Activate();
+        using (Diagnostics.StartupPerformance.Measure("window.activate")) window.Activate();
         broker.Listen(window.DispatcherQueue, request => {
             var target = Windows.LastOrDefault(w => w.IsWindowActive) ?? Windows.LastOrDefault();
             target?.ReceiveInvocation(request);

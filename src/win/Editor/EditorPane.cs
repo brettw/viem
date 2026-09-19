@@ -81,7 +81,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         AutomationProperties.SetName(format, "Document format"); AutomationProperties.SetName(vertical, "Vertical document scroll"); AutomationProperties.SetName(horizontal, "Horizontal document scroll");
         inputLayer.IsHitTestVisible = true; input.IsHitTestVisible = false;
         Canvas.CreateResources += (_, _) => { try { Attach(); } catch (Exception error) { ready.TrySetException(error); Report(error); } };
-        Canvas.Draw += (_, args) => Run(() => Draw(args.DrawingSession));
+        Canvas.Draw += (_, args) => Run(() => { Draw(args.DrawingSession); if (snapshot != null) Diagnostics.StartupPerformance.FirstDraw(DispatcherQueue); });
         Canvas.SizeChanged += (_, _) => { if (View != null) Run(() => View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight)); };
         Canvas.PointerPressed += OnPointerPressed;
         Canvas.PointerMoved += (_, e) => { if (dragging && View != null) { var p = dragPoint = e.GetCurrentPoint(Canvas).Position; Run(() => View.Place((float)Math.Clamp(p.X, 0, Canvas.ActualWidth), (float)Math.Clamp(p.Y, 0, Canvas.ActualHeight), true)); } };
@@ -129,9 +129,10 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
     private void Attach()
     {
+        using var startup = Diagnostics.StartupPerformance.Measure("editor.attach");
         InvalidateDrawingCache();
         if (View != null) { View.Provider.ResetDevice(Canvas.Device); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); return; }
-        View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight);
+        using (Diagnostics.StartupPerformance.Measure("editor.createView")) View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight);
         View.Changed += Refresh; View.Effects += ApplyEffects;
         ApplyPreferences(); Refresh(); if (IsActive) FocusEditor();
         ready.TrySetResult(View);

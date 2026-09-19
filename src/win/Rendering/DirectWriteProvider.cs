@@ -137,9 +137,10 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         string text = before + interior + after;
         var map = new Utf8IndexMap(text);
         long contextStart = checked((long)request.text_start - (long)request.context_before.length);
+        var defaultFont = ResolveFont(request.default_style);
         using var format = new CanvasTextFormat
         {
-            FontFamily = ResolveFamily(request.default_style), FontStretch = ResolveFont(request.default_style).Stretch, FontSize = request.default_style.size * request.scale,
+            FontFamily = defaultFont.Family, FontStretch = defaultFont.Stretch, FontSize = request.default_style.size * request.scale,
             FontWeight = new FontWeight { Weight = (ushort)Math.Clamp(request.default_style.weight, 1, 999) },
             FontStyle = Slant(request.default_style.slant), WordWrapping = CanvasWordWrapping.NoWrap,
             Direction = request.paragraph_base_direction == VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT
@@ -207,7 +208,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
                 cluster.ink_bounds = new() { x = x, y = y, width = Math.Max(previous.x + previous.width, (float)ink.Right) - x, height = Math.Max(previous.y + previous.height, (float)ink.Bottom) - y };
             }
             cluster.bidi_level = bidi;
-            cluster.fallback_font = arena.Utf8(parts.FirstOrDefault()?.Font.FamilyNames.Values.FirstOrDefault() ?? ResolveFamily(style));
+            cluster.fallback_font = arena.Utf8(parts.FirstOrDefault()?.Font.FamilyNames.Values.FirstOrDefault() ?? ResolveFont(style).Family);
             ViemClusterCaretStopV1[] stops = [
                 new() { text_offset = cluster.text_start, inline_offset = (bidi & 1) == 0 ? 0 : cluster.advance, affinity = VIEM_BOUNDARY_AFFINITY_DOWNSTREAM },
                 new() { text_offset = cluster.text_end, inline_offset = (bidi & 1) == 0 ? cluster.advance : 0, affinity = VIEM_BOUNDARY_AFFINITY_UPSTREAM }
@@ -241,7 +242,6 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         };
     }
 
-    private static string ResolveFamily(ViemResolvedTextStyleV1 style) => ResolveFont(style).Family;
     private static (string Family, FontStretch Stretch) ResolveFont(ViemResolvedTextStyleV1 style)
     {
         for (ulong i = 0; i < style.font_family_count; i++)

@@ -21,6 +21,16 @@ internal static class StyleAndSettingsTests
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
     private static void Check(bool condition, string name)
     { if (!condition) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
+    internal static void StartupFontChecks()
+    {
+        Check(!FontCatalog.FamilyListLoaded && FontCatalog.FaceDescriptionsRead == 0,
+            "empty editor starts without loading font picker lists or enumerating font faces");
+        Check(FontCatalog.Resolve("SF Pro")?.Family == "Segoe UI" && FontCatalog.Resolve("system-ui")?.Family == "Segoe UI",
+            "portable system font aliases resolve to the Windows system family");
+        Check(FontCatalog.Resolve("viem-missing-startup-font") == null && FontCatalog.Named("viem-missing-startup-font") == null
+            && FontCatalog.FaceDescriptionsRead == 0 && !FontCatalog.FamilyListLoaded,
+            "missing document fonts do not trigger a system-wide face scan");
+    }
     private static IEnumerable<T> Children<T>(DependencyObject root) where T : DependencyObject
     {
         if (root is T match) yield return match;
@@ -95,6 +105,13 @@ internal static class StyleAndSettingsTests
         Check(FontCatalog.Families.SequenceEqual(FontCatalog.Families.OrderBy(f => f, StringComparer.CurrentCultureIgnoreCase)), "font family menus use culture-aware alphabetical order");
         var faces = FontCatalog.Faces("Segoe UI");
         var face = faces.First(f => f.Weight == 700 && f.Slant == FontStyle.Italic);
+        int descriptions = FontCatalog.FaceDescriptionsRead;
+        Check(FontCatalog.Faces("segoe ui").SequenceEqual(faces) && FontCatalog.FaceDescriptionsRead == descriptions,
+            "repeated family variant requests reuse cached discovery");
+        Check(FontCatalog.Named(face.Name) == face, "indexed PostScript lookup retains exact face metadata");
+        descriptions = FontCatalog.FaceDescriptionsRead;
+        Check(FontCatalog.Named(face.Name.ToLowerInvariant()) == face && FontCatalog.FaceDescriptionsRead == descriptions,
+            "repeated PostScript requests reuse cached discovery case-insensitively");
         Check(FontCatalog.Current(face.Name, face.Weight, 1) == face && FontCatalog.Current(face.Name, 617, 1) == null, "font variants match effective traits and leave unknown combinations unresolved");
         Check(FontCatalog.ForFamilyChange("Consolas", face)?.StyleName == face.StyleName, "family changes preserve a matching variant name");
         Check(FontCatalog.Faces("system-ui").Length > 1 && FontCatalog.Faces("viem-missing-font").Length == 0, "font variants resolve generic families without substituting unknown fonts");

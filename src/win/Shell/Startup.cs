@@ -27,6 +27,7 @@ internal sealed partial class EditorWindow
                         Environment.Exit(0);
                         return;
                     }
+                    Diagnostics.StyleAndSettingsTests.StartupFontChecks();
                     await Diagnostics.InputRoutingTests.Run(pane);
                     await Diagnostics.CommandStatusTests.Run(pane, this, preferences);
                     var scrolled = AddPane(NewDocument(Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("A paragraph in a large document.\n", 5000)))));
@@ -54,6 +55,7 @@ internal sealed partial class EditorWindow
                     preferences.Set("windows", "showMenu", true);
                     Diagnostics.FrontendSmokeTests.UiChecks.Add("titlebar menu visibility toggle reflows panes");
                     await Diagnostics.StyleAndSettingsTests.Run(pane, this, preferences);
+                    await Diagnostics.WindowPlacementTests.Run(this, preferences.DirectoryPath);
                     await Diagnostics.FrontendSmokeTests.FileChecks(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
                     string saved = Path.Combine(preferences.DirectoryPath, "saved.md");
                     await Save(pane, explicitPath: saved);

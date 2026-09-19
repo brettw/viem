@@ -24,6 +24,7 @@ internal sealed unsafe class CoreDocument : IDisposable
     public bool IsReadOnly => (State.flags & VIEM_DOCUMENT_STATE_READ_ONLY) != 0;
     public CoreDocument(byte[] source, string? path = null, uint? format = null, uint encoding = 0, uint fileFormat = 0)
     {
+        using var startup = Diagnostics.StartupPerformance.Measure("document.create");
         if (viem_core_abi_version() != VIEM_CORE_ABI_VERSION) throw new InvalidOperationException("Rebuild Viem and its Rust library together: the ABI versions differ.");
         FilePath = path;
         var options = New<ViemDocumentOptions>();

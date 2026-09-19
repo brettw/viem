@@ -5782,8 +5782,9 @@ own native or custom implementation for the thin vertical caret.
 
 `src/win/Viem.Windows.csproj` builds the unpackaged x64 C# / WinUI 3 frontend.
 `scripts/build-win.ps1` builds the matching Rust DLL and Windows executable;
-`scripts/run_windows.ps1` builds Release and launches the app, with an optional
-`-Offline` switch for already-restored dependencies.
+`scripts/run_windows.ps1` only launches the existing Release build and reports
+the build command if it is missing. Use `scripts/build-win.ps1 -Configuration
+Release` to rebuild; add `-Offline` for already-restored dependencies.
 `scripts/test-win.ps1` checks generated ABI declarations and runs the native
 integration harness with an isolated profile. Development instructions and
 ownership boundaries are in `src/win/README.md`. The screenshots under
@@ -5800,6 +5801,17 @@ This is a keyboard-and-mouse writing application; all application windows and
 dialogs MUST inherit these resources rather than override them with touch-sized
 controls. Native system file pickers retain their platform-owned presentation.
 Document typography is independent of control density.
+
+Document windows retain the last normal size and position in
+`windows.documentFrame`, matching the macOS lifecycle contract. On Windows
+these are physical desktop coordinates; monitor-relative work areas must be
+translated to desktop coordinates before fitting. Restore before activation,
+move onto the best available monitor before shrinking oversized dimensions,
+and cascade later new windows by the native caption height. Reactivation does
+not reposition an existing window. Minimized, maximized and fullscreen bounds
+do not replace normal geometry. Coalesce persistence until move/resize becomes
+idle, flush the final normal frame on close, and avoid preference-change
+notifications that would invalidate editor layout while saving placement.
 
 Settings is a modeless window with View, Theme, Editing and Code categories in
 a fixed left sidebar. Theme follows `docs/mac_references/settings_theme.png`:
@@ -5819,6 +5831,17 @@ Family changes preserve a matching face name where possible, otherwise choose
 a regular face. Unavailable/custom faces remain unresolved instead of silently
 selecting the first variant. DirectWrite resolves persisted face names back to
 their installed family and width; weight and slant use the stored declarations.
+
+Startup MUST NOT enumerate every installed font face or load font-picker lists
+before the first editor draw. Resolve document fonts through indexed DirectWrite
+family/PostScript-name queries, cache matches and misses, and load sorted picker
+families only when a picker needs them. The portable `SF Pro` system-font alias
+maps to Segoe UI on Windows. Missing/custom document fonts must not trigger a
+whole-system face scan. Native tests cover this startup constraint and preserve
+variant selection, fallback, and layout invalidation coverage.
+`scripts/test-win-startup.ps1` measures Release launches with isolated empty
+profiles and records activation-to-first-draw elapsed timings and font discovery
+counts; it does not measure compositor presentation or cold-boot disk latency.
 
 The Windows status line follows the shared command-entry/output contract above:
 an inverse-color prompt replaces the left group, while selectable read-only
