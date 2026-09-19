@@ -19,6 +19,74 @@ internal static class InputRoutingTests
     [DllImport("user32.dll")] private static extern bool GetKeyboardState([Out] byte[] state);
     [DllImport("user32.dll")] private static extern bool SetKeyboardState(byte[] state);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool PostMessage(nint hwnd, uint message, nuint wparam, nint lparam);
+    [StructLayout(LayoutKind.Sequential)] private struct NativePoint { public int X, Y; }
+    [DllImport("user32.dll")] private static extern nint WindowFromPoint(NativePoint point);
+    [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out NativePoint point);
+    [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
+    [DllImport("user32.dll")] private static extern bool ClientToScreen(nint hwnd, ref NativePoint point);
+    [StructLayout(LayoutKind.Sequential)] private struct MouseInput { public int X, Y; public uint Data, Flags, Time; public nuint Extra; }
+    [StructLayout(LayoutKind.Sequential)] private struct NativeInput { public uint Type; public MouseInput Mouse; }
+    [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint count, NativeInput[] inputs, int size);
+
+    internal static async Task Drag(Window owner, FrameworkElement element, IReadOnlyList<global::Windows.Foundation.Point> fractions, Action<int> inspect)
+    {
+        element.Focus(FocusState.Programmatic);
+        await Task.Delay(150);
+        // The automation peer for a windowed flyout omits the owner's client
+        // origin. Map XAML root coordinates explicitly to physical screen pixels.
+        var logical = element.TransformToVisual(owner.Content).TransformBounds(new(0, 0, element.ActualWidth, element.ActualHeight));
+        var origin = new NativePoint();
+        if (!ClientToScreen(WinRT.Interop.WindowNative.GetWindowHandle(owner), ref origin)) throw new InvalidOperationException("Cannot map the test window's client origin.");
+        double scale = element.XamlRoot.RasterizationScale;
+        var bounds = new global::Windows.Foundation.Rect(origin.X + logical.X * scale, origin.Y + logical.Y * scale, logical.Width * scale, logical.Height * scale);
+        bool Owned(nint hwnd)
+        {
+            GetWindowThreadProcessId(hwnd, out uint process);
+            return hwnd != 0 && process == Environment.ProcessId;
+        }
+        NativePoint Position(global::Windows.Foundation.Point fraction) => new() {
+            X = (int)Math.Round(bounds.X + bounds.Width * fraction.X), Y = (int)Math.Round(bounds.Y + bounds.Height * fraction.Y)
+        };
+        void Move(NativePoint point)
+        {
+            // WinUI's pointer pipeline ignores posted legacy mouse messages.
+            // Only drive a real pointer while both the foreground window and
+            // every point in the drag belong to this isolated test process.
+            if (!Owned(GetForegroundWindow()) || !Owned(WindowFromPoint(point)))
+                throw new InvalidOperationException("The pointer test target is not owned by the test application.");
+            NativeInput[] input = [new() { Mouse = new() {
+                X = (int)Math.Round((point.X - GetSystemMetrics(76)) * 65535d / (GetSystemMetrics(78) - 1)),
+                Y = (int)Math.Round((point.Y - GetSystemMetrics(77)) * 65535d / (GetSystemMetrics(79) - 1)),
+                Flags = 0xE001 // MOVE | ABSOLUTE | VIRTUALDESK | MOVE_NOCOALESCE
+            } }];
+            if (SendInput(1, input, Marshal.SizeOf<NativeInput>()) != 1) throw new InvalidOperationException("Cannot position the test pointer.");
+        }
+        void Button(uint flags)
+        {
+            NativeInput[] input = [new() { Mouse = new() { Flags = flags } }];
+            if (SendInput(1, input, Marshal.SizeOf<NativeInput>()) != 1) throw new InvalidOperationException("Cannot send the test pointer button.");
+        }
+        if (!GetCursorPos(out var original)) throw new InvalidOperationException("Cannot save the pointer position.");
+        var position = Position(fractions[0]);
+        Move(position); Button(0x0002);
+        try
+        {
+            for (int i = 0; i < fractions.Count; i++)
+            {
+                position = Position(fractions[i]); Move(position);
+                await Task.Delay(8); inspect(i);
+            }
+        }
+        finally
+        {
+            Button(0x0004);
+            if (Owned(GetForegroundWindow()) && GetCursorPos(out var current) && Math.Abs(current.X - position.X) <= 1 && Math.Abs(current.Y - position.Y) <= 1)
+                SetCursorPos(original.X, original.Y);
+        }
+        await Task.Delay(60);
+    }
 
     private static T? Find<T>(DependencyObject root) where T : DependencyObject
     {

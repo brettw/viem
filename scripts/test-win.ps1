@@ -1,4 +1,4 @@
-param([switch]$NoBuild, [string]$ProfileDocument, [ValidateSet('drag', 'resize')][string]$ProfileScenario = 'drag')
+param([switch]$NoBuild, [switch]$PointerInput, [string]$ProfileDocument, [ValidateSet('drag', 'resize')][string]$ProfileScenario = 'drag')
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $projectRoot
@@ -12,6 +12,8 @@ try {
     $oldProfile = $env:VIEM_CONFIG_DIR
     $oldPerformanceDocument = $env:VIEM_PERF_DOCUMENT
     $oldPerformanceScenario = $env:VIEM_PERF_SCENARIO
+    $oldPointerInput = $env:VIEM_TEST_POINTER_INPUT
+    $env:VIEM_TEST_POINTER_INPUT = if ($PointerInput) { '1' } else { $null }
     $env:VIEM_PERF_SCENARIO = $ProfileScenario
     if ($ProfileDocument) { $env:VIEM_PERF_DOCUMENT = (Resolve-Path -LiteralPath $ProfileDocument).Path }
     $env:VIEM_CONFIG_DIR = $reportPath + '.profile'
@@ -25,6 +27,6 @@ try {
         if ($ProfileDocument) { Write-Output "$ProfileScenario CPU benchmark completed. Report: $reportPath" }
         else { Write-Output "$($report.count) Windows integration checks passed. Report: $reportPath" }
     }
-    finally { $env:VIEM_CONFIG_DIR = $oldProfile; $env:VIEM_PERF_DOCUMENT = $oldPerformanceDocument; $env:VIEM_PERF_SCENARIO = $oldPerformanceScenario }
+    finally { $env:VIEM_CONFIG_DIR = $oldProfile; $env:VIEM_PERF_DOCUMENT = $oldPerformanceDocument; $env:VIEM_PERF_SCENARIO = $oldPerformanceScenario; $env:VIEM_TEST_POINTER_INPUT = $oldPointerInput }
 }
 finally { Pop-Location }

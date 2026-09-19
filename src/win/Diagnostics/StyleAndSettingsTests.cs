@@ -42,6 +42,10 @@ internal static class StyleAndSettingsTests
         window.Activate(); pane.FocusEditor(); await Task.Delay(100);
         await InputRoutingTests.Key(VirtualKey.F8); await Task.Delay(350);
         var styles = window.StyleInspector ?? throw new InvalidOperationException("F8 did not open the style inspector.");
+        // These chrome/control checks inspect Base Paragraph explicitly. F8 now
+        // correctly starts at the caret's style, covered by the following tests.
+        styles.StylePicker.SelectedItem = ((StyleDefinition[])styles.StylePicker.ItemsSource).Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
+        await Task.Delay(100);
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(styles);
         Check(GetForegroundWindow() == hwnd, "native F8 opens the inspector and retains foreground focus");
         Check(styles.AppWindow.Presenter is OverlappedPresenter { IsAlwaysOnTop: false }, "style inspector is a normal window, not always on top");
@@ -72,6 +76,7 @@ internal static class StyleAndSettingsTests
             && KeyPolicy.Route(VirtualKey.F8, false, false, false, true).Kind == VIEM_KEY_FUNCTION, "modified and literal-next F8 remain core function keys");
         await FontChecks(pane, preferences);
         await CodeStyleChecks(pane, preferences);
+        await StyleInspectorBehaviorTests.Run(pane, preferences);
 
         window.Activate(); await window.ShowSettings(); await Task.Delay(350);
         var settings = window.SettingsInspector!;

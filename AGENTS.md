@@ -4718,6 +4718,14 @@ their ownership or move their edits into document history.
   Never choose an arbitrary first style from a mixed selection. Merely focusing
   or moving in another document does not change the editor's target or following
   context. The target-closure policy below remains applicable.
+- Both native frontends coalesce caret following until half a second has elapsed
+  without a logical caret or selection change. Schedule a one-shot timer only
+  after an actual change and restart it on subsequent changes. Defer both the
+  current-style query and the control reload, so rapid dragging does neither.
+  An unchanged presentation does not schedule or extend the timer. Opening or
+  explicitly reopening the inspector selects immediately. Explicit style
+  navigation, retargeting and closure cancel pending following work; idle
+  inspectors do not poll for styles.
 - An explicit Style picker or hierarchy-navigation choice remains selected
   until the followed view's caret or selection actually changes. Scrolling,
   repainting, syntax publication, style edits, and document or stylesheet
@@ -5853,6 +5861,26 @@ input. Menu and keyboard entry must leave focus in the inspector, without an
 always-on-top flag. The inspector is not resizable or maximizable. Its compact,
 centered Character/Paragraph tabs share one fixed-height formatting area; the
 window fits the form, preview, and bottom buttons without spare bottom space.
+Complete the populated inspector's measure/arrange layout while hidden before
+fitting its native window. Opening must not expose intermediate sizes, retain
+an initial template measurement's excess height, or repeatedly resize in
+response to layout events.
+Opening, reopening and idle caret following use the macOS current-style rules
+above, including mixed selections and displayed Code syntax styles. Standalone
+Code settings has no caret-following context. Windows color wells and their
+popups resolve an undeclared emergency foreground through the active editor
+theme, while retaining explicit and inherited authored colors and alpha.
+Enabling such a foreground override copies the theme color. Opening or closing
+an unchanged picker creates no edit; a changed choice commits once on popup
+close. Refreshing the inspector does not overwrite an open popup draft, and
+retargeting or closing disconnects it. Color changes update the swatch and
+inspector preview live, with drawing coalesced to the next frame. Previewing
+does not edit document source, add undo entries, or persist global Code styles.
+Opening a color picker cancels pending caret following so it cannot retarget
+or rebuild the edited style during a color gesture.
+The picker uses the horizontal layout, compact input controls, and a 256-pixel
+square spectrum with numeric and alpha inputs. Its native flyout can extend
+outside the inspector's bounds without clipping to the dialog.
 Top labels are close to their fields and vertically centered. Based on and
 Next paragraph have accessible ↗ buttons that navigate by stable style ID
 without changing the relationship. Parent choices exclude inheritance cycles.

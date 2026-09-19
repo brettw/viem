@@ -19,9 +19,13 @@ internal sealed partial class EditorWindow
             Diagnostics.FrontendSmokeTests.Started = true;
             DispatcherQueue.TryEnqueue(async () => {
                 try {
-                    if (Environment.GetEnvironmentVariable("VIEM_TEST_SYNTAX_ONLY") == "1")
+                    if (Environment.GetEnvironmentVariable("VIEM_TEST_SYNTAX_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "1")
                     {
-                        await Diagnostics.VimRuntimeTests.Run(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
+                        if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "1")
+                            await Diagnostics.StyleInspectorBehaviorTests.Run(pane, preferences);
+                        else
+                            await Diagnostics.VimRuntimeTests.Run(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
                         var checks = Diagnostics.FrontendSmokeTests.UiChecks;
                         File.WriteAllText(Diagnostics.FrontendSmokeTests.ReportPath, JsonSerializer.Serialize(new { passed = true, count = checks.Count, checks }));
                         Environment.Exit(0);

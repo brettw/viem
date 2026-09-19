@@ -27,6 +27,7 @@ internal static class WindowSizing
         double scale = Math.Max(96, GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(window))) / 96d;
         var area = DisplayArea.GetFromWindowId(window.AppWindow.Id, DisplayAreaFallback.Nearest).WorkArea;
         var chrome = window.AppWindow.Size.Height - window.AppWindow.ClientSize.Height;
-        window.AppWindow.ResizeClient(new SizeInt32(Math.Min(area.Width - 16, (int)(width * scale)), Math.Min(area.Height - chrome - 16, (int)(height * scale))));
+        var size = new SizeInt32(Math.Min(area.Width - 16, (int)(width * scale)), Math.Min(area.Height - chrome - 16, (int)(height * scale)));
+        if (window.AppWindow.ClientSize != size) window.AppWindow.ResizeClient(size);
     }
 }

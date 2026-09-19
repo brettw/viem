@@ -5,13 +5,19 @@ using static Viem.Windows.Interop.Abi;
 
 namespace Viem.Windows.Core;
 
+internal readonly record struct StyleKey(uint Namespace, string Id);
+
 internal sealed record StyleDefinition(ViemStyleDefinitionV1 Native, string Id, string Name, string Parent, string Next, Dictionary<uint, ViemStylePropertyV1> Properties)
 {
     public override string ToString() => Name;
     public uint Namespace => Native.namespace_id;
+    public StyleKey Key => new(Namespace, Id);
     public bool Has(uint capability) => (Native.capabilities & capability) != 0;
     public bool Declares(uint property) => Properties.TryGetValue(property, out var p) && (p.flags & VIEM_STYLE_PROPERTY_DECLARED) != 0;
     public ViemStyleValueV1 Value(uint property) => Properties.TryGetValue(property, out var p) ? p.effective : default;
+    public bool UsesThemeForeground => !Properties.TryGetValue(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND, out var property)
+        || (!Declares(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND) && property.contributor_style_id.length == 0
+            && property.contributor_kind == VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY);
 }
 internal sealed record StyleSheet(ViemStyleSheetIdentityV1 Identity, StyleDefinition[] Styles, byte[] Strings, ViemStyleValueItemV1[] Items)
 {
@@ -23,6 +29,28 @@ internal sealed record StyleSheet(ViemStyleSheetIdentityV1 Identity, StyleDefini
 
 internal sealed unsafe partial class CoreView
 {
+    // Opening and idle caret following share the macOS named-style policy.
+    // Query only retained core assignments/runs, never typography or syntax work.
+    public StyleKey? CurrentStyleEditorKey(StyleSheet sheet)
+    {
+        var state = Document.State;
+        var info = New<ViemSelectedStylesInfoV1>();
+        uint status = viem_core_view_selected_styles_export(Document.Handle, Id, state.document_revision, &info, null, 0);
+        if (status != VIEM_STATUS_BUFFER_TOO_SMALL) Check(status, "Read selected styles");
+        var bytes = new byte[checked((int)(info.paragraph_id_bytes + info.character_id_bytes))];
+        fixed (byte* p = bytes) Check(viem_core_view_selected_styles_export(Document.Handle, Id, state.document_revision, &info, p, (ulong)bytes.Length), "Read selected styles");
+        if (info.document_id != state.document_id || info.document_revision != state.document_revision
+            || info.style_sheet_revision != sheet.Identity.style_sheet_revision
+            || (!UsesGlobalStyles && (sheet.Identity.document_id != state.document_id || sheet.Identity.document_revision != state.document_revision))) return null;
+        int split = checked((int)info.paragraph_id_bytes);
+        string paragraph = System.Text.Encoding.UTF8.GetString(bytes.AsSpan(0, split));
+        string character = System.Text.Encoding.UTF8.GetString(bytes.AsSpan(split));
+        if ((info.flags & VIEM_SELECTED_STYLE_CHARACTER_MIXED) == 0 && character.Length > 0
+            && sheet.Styles.Any(s => s.Id == character && s.Namespace == 2)) return new(2, character);
+        if ((info.flags & VIEM_SELECTED_STYLE_PARAGRAPH_MIXED) == 0 && paragraph.Length > 0
+            && sheet.Styles.Any(s => s.Id == paragraph && s.Namespace == 1)) return new(1, paragraph);
+        return null;
+    }
     public bool UsesGlobalStyles => Document.State.format == VIEM_FORMAT_CODE;
     public ViemLogicalSelectionIdentityV1 LogicalSelection()
     { var value = New<ViemLogicalSelectionIdentityV1>(); Check(viem_core_view_list_selection(Document.Handle, Id, &value), "Read formatting selection"); return value; }

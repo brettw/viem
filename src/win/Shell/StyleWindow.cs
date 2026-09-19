@@ -43,18 +43,15 @@ internal sealed partial class StyleWindow : Window
     private readonly TextBlock error = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12, Visibility = Visibility.Collapsed };
     private readonly List<Action> refreshFields = [];
 
-    public StyleWindow(CoreView view, Preferences preferences)
+    public StyleWindow(CoreView initialView, Preferences preferences, bool followCaret = true)
     {
-        this.view = view; this.preferences = preferences;
+        view = initialView; this.preferences = preferences;
         Title = view.UsesGlobalStyles ? "Code Styles" : "Document Styles";
         var scroll = new ScrollViewer { Content = root, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, RequestedTheme = preferences.Midnight ? ElementTheme.Dark : ElementTheme.Light, Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(32, 32, 32) : Theme.Rgb(250, 250, 250)) };
         Content = scroll;
         root.RequestedTheme = preferences.Midnight ? ElementTheme.Dark : ElementTheme.Light;
-        WindowSizing.Resize(this, ClientWidth, 640);
         if (AppWindow.Presenter is OverlappedPresenter presenter) { presenter.IsResizable = false; presenter.IsMaximizable = false; }
-        // Fit after layout, including collapsed guidance/error rows. Both tabs
-        // share a fixed formatting area so switching tabs never resizes the window.
-        root.SizeChanged += (_, _) => { if (!closed && root.ActualHeight > 0) WindowSizing.FitClient(this, ClientWidth, (int)Math.Ceiling(root.ActualHeight)); };
+        preview.ClearColor = preferences.Theme.Background;
         WindowSizing.Appearance(this, preferences.Midnight);
         var properties = new Grid { RowSpacing = 5, ColumnSpacing = 10, Margin = new(12, 0, 12, 4) };
         properties.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); properties.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
@@ -65,7 +62,7 @@ internal sealed partial class StyleWindow : Window
         stylePicker.VerticalAlignment = delete.VerticalAlignment = VerticalAlignment.Center;
         var createMenu = new MenuFlyout();
         foreach (var (title, space) in new[] { ("Paragraph style", 1u), ("Character style", 2u) })
-        { var item = space == 1 ? createParagraph : new MenuFlyoutItem { Text = title }; item.Click += (_, _) => Try(() => { string id = view.CreateStyle(space, "New " + title); Load(id); }); createMenu.Items.Add(item); }
+        { var item = space == 1 ? createParagraph : new MenuFlyoutItem { Text = title }; item.Click += (_, _) => Try(() => { string id = view.CreateStyle(space, "New " + title); CancelCaretFollow(); Load(new(space, id)); }); createMenu.Items.Add(item); }
         create.Flyout = createMenu;
         Field(properties, "Style", choiceRow); Field(properties, "Name", name); Field(properties, "Style type", kind); Field(properties, "Based on", Relationship(parent, visitParent)); Field(properties, "Next paragraph", Relationship(next, visitNext));
         Add(properties);
@@ -85,17 +82,17 @@ internal sealed partial class StyleWindow : Window
         restoreDefaults.HorizontalAlignment = HorizontalAlignment.Left;
         restoreDefaults.Click += (_, _) => Try(() => view.ReplaceCodeStyles([])); buttons.Children.Add(restoreDefaults);
         var close = new Button { Content = "Close", MinWidth = 82 }; close.Click += (_, _) => Close(); buttons.Children.Add(close); Grid.SetColumn(close, 1); Add(buttons);
-        visitParent.Click += (_, _) => Navigate(selected.Parent);
-        visitNext.Click += (_, _) => Navigate(selected.Next);
-        stylePicker.SelectionChanged += (_, _) => { if (!loading && stylePicker.SelectedItem is StyleDefinition style) Load(style.Id); };
+        visitParent.Click += (_, _) => Navigate(new(selected.Namespace, selected.Parent));
+        visitNext.Click += (_, _) => Navigate(new(1, selected.Next));
+        stylePicker.SelectionChanged += (_, _) => { if (!loading && stylePicker.SelectedItem is StyleDefinition style) Navigate(style.Key); };
         name.LostFocus += (_, _) => { if (!loading && name.Text != selected.Name) Try(() => view.EditStyleString(selected, VIEM_STYLE_EDIT_SET_DISPLAY_NAME, 0, name.Text)); };
         parent.SelectionChanged += (_, _) => { if (loading) return; Try(() => { string id = parent.SelectedItem is StyleDefinition p ? p.Id : ""; view.EditStyleString(selected, id.Length == 0 ? VIEM_STYLE_EDIT_CLEAR_PARENT : VIEM_STYLE_EDIT_SET_PARENT, 0, id); }); };
         next.SelectionChanged += (_, _) => { if (loading) return; Try(() => { string id = next.SelectedItem is StyleDefinition p ? p.Id : ""; view.EditStyleString(selected, id.Length == 0 ? VIEM_STYLE_EDIT_CLEAR_NEXT_STYLE : VIEM_STYLE_EDIT_SET_NEXT_STYLE, 0, id); }); };
         delete.Click += (_, _) => Try(() => { view.DeleteStyle(selected); Load(); });
-        view.Document.Changed += DocumentChanged;
-        view.Disposed += Close;
-        Closed += (_, _) => { closed = true; view.Document.Changed -= DocumentChanged; view.Disposed -= Close; preview.RemoveFromVisualTree(); };
-        Load();
+        AttachView(followCaret);
+        preferences.Changed += ThemeChanged;
+        Closed += (_, _) => { closed = true; DetachView(); DismissColorPickers(); preferences.Changed -= ThemeChanged; preview.RemoveFromVisualTree(); };
+        Load(followCaret: followCaret);
     }
     private readonly TextBlock availability = new() { FontSize = 12, Opacity = .65, TextWrapping = TextWrapping.Wrap };
     private readonly ToggleButton characterTab = new() { Content = "Character", FontSize = 13, Width = 130, Padding = new(12, 3, 12, 3) };
@@ -108,10 +105,10 @@ internal sealed partial class StyleWindow : Window
     }
     internal void Retarget(CoreView nextView)
     {
-        if (view == nextView) return;
-        view.Document.Changed -= DocumentChanged; view.Disposed -= Close;
-        view = nextView; view.Document.Changed += DocumentChanged; view.Disposed += Close;
-        Load();
+        if (!CommitPendingName()) return;
+        DetachView(); DismissColorPickers();
+        view = nextView; AttachView(true);
+        Load(followCaret: true);
     }
     private void Add(FrameworkElement item) => root.Children.Add(item);
     private Border Separator() => new() { Height = 1, Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(58, 58, 58) : Theme.Rgb(210, 210, 210)) };
@@ -122,39 +119,43 @@ internal sealed partial class StyleWindow : Window
         row.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); row.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         row.Children.Add(picker); Grid.SetColumn(visit, 1); row.Children.Add(visit); return row;
     }
-    private void Navigate(string id)
+    private void Navigate(StyleKey key)
     {
-        if (id.Length == 0 || id == selected.Id) return;
-        if (name.Text != selected.Name) Try(() => view.EditStyleString(selected, VIEM_STYLE_EDIT_SET_DISPLAY_NAME, 0, name.Text));
-        if (error.Visibility != Visibility.Visible) Load(id);
+        if (key.Id.Length == 0) return;
+        if (!CommitPendingName()) return;
+        CancelCaretFollow();
+        if (key != selected.Key) Load(key);
     }
-    private void UpdateNavigation(Button button, string id, string relationship)
+    private void UpdateNavigation(Button button, StyleKey key, string relationship)
     {
-        var destination = sheet.Styles.FirstOrDefault(s => s.Id == id && s.Id != selected.Id);
+        var destination = sheet.Styles.FirstOrDefault(s => s.Key == key && s.Key != selected.Key);
         button.IsEnabled = destination != null;
         string label = destination == null ? "Go to " + relationship : "Go to " + destination.Name;
         AutomationProperties.SetName(button, label); ToolTipService.SetToolTip(button, label);
     }
     private bool IsDescendant(StyleDefinition style)
     {
-        var visited = new HashSet<string>();
-        while (visited.Add(style.Id)) {
-            if (style.Id == selected.Id) return true;
-            var ancestor = sheet.Styles.FirstOrDefault(s => s.Id == style.Parent);
+        var visited = new HashSet<StyleKey>();
+        while (visited.Add(style.Key)) {
+            if (style.Key == selected.Key) return true;
+            var ancestor = sheet.Styles.FirstOrDefault(s => s.Id == style.Parent && s.Namespace == style.Namespace);
             if (ancestor == null) break; style = ancestor;
         }
         return false;
     }
     private static void Field(Grid grid, string label, FrameworkElement value)
     { int row = grid.RowDefinitions.Count; grid.RowDefinitions.Add(new() { Height = GridLength.Auto, MinHeight = 24 }); var text = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right }; Grid.SetRow(text, row); grid.Children.Add(text); Grid.SetRow(value, row); Grid.SetColumn(value, 1); grid.Children.Add(value); }
-    private void DocumentChanged() { if (!updating && !closed) Load(selected?.Id); }
-    private void Load(string? id = null)
+    private void Load(StyleKey? key = null, bool followCaret = false, StyleSheet? snapshot = null)
     {
         if (view.Id == 0) { EnableChildren(root, false); return; }
         loading = true;
         try
         {
-            sheet = view.Styles();
+            sheet = snapshot ?? view.Styles();
+            if (followCaret) key = CurrentCaretStyle(sheet);
+#if DEBUG
+            StyleLoads++;
+#endif
             Title = view.UsesGlobalStyles ? "Code Styles" : "Document Styles";
             availability.Text = view.UsesGlobalStyles ? "Shared by every Code document. Changes are saved to code_style.json." : "";
             availability.Visibility = view.UsesGlobalStyles ? Visibility.Visible : Visibility.Collapsed;
@@ -162,19 +163,34 @@ internal sealed partial class StyleWindow : Window
             create.IsEnabled = view.UsesGlobalStyles || view.Document.State.format is VIEM_FORMAT_HTML or VIEM_FORMAT_HTML_SOURCE or VIEM_FORMAT_RTF;
             createParagraph.Visibility = view.UsesGlobalStyles ? Visibility.Collapsed : Visibility.Visible;
             var styles = sheet.Styles.Where(s => s.Native.role != VIEM_STYLE_ROLE_DOCUMENT && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0).ToArray();
-            selected = styles.FirstOrDefault(s => s.Id == id) ?? styles.FirstOrDefault(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0) ?? styles[0];
+            var chosen = styles.FirstOrDefault(s => s.Key == key) ?? styles.FirstOrDefault(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0) ?? styles[0];
+            if (selected != null && (selected.Id != chosen.Id || selected.Namespace != chosen.Namespace)) DismissColorPickers();
+            selected = chosen;
             stylePicker.ItemsSource = styles; stylePicker.SelectedItem = selected;
             name.Text = selected.Name; name.IsReadOnly = !selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DISPLAY_NAME); kind.Text = selected.Namespace == 1 ? "Paragraph" : "Character";
             var parents = new object[] { selected.Namespace == 2 ? "Default Paragraph" : "None" }.Concat(styles.Where(s => s.Namespace == selected.Namespace && !IsDescendant(s))).ToArray(); parent.ItemsSource = parents; parent.SelectedItem = parents.OfType<StyleDefinition>().FirstOrDefault(s => s.Id == selected.Parent) ?? parents[0]; parent.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_PARENT);
             var following = new object[] { "Same Style" }.Concat(styles.Where(s => s.Namespace == 1)).ToArray(); next.ItemsSource = following; next.SelectedItem = following.OfType<StyleDefinition>().FirstOrDefault(s => s.Id == selected.Next) ?? following[0]; next.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE);
             delete.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_DELETE);
-            UpdateNavigation(visitParent, selected.Parent, "parent style"); UpdateNavigation(visitNext, selected.Next, "next paragraph style");
+            UpdateNavigation(visitParent, new(selected.Namespace, selected.Parent), "parent style"); UpdateNavigation(visitNext, new(1, selected.Next), "next paragraph style");
             paragraphTab.IsEnabled = selected.Namespace == 1;
             if (!paragraphTab.IsEnabled) SelectTab(false);
             EnableChildren(paragraph, true); EnableChildren(character, true);
             foreach (var refresh in refreshFields) refresh();
             if (selected.Namespace != 1 || !selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS)) EnableChildren(paragraph, false);
             if (!selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS)) EnableChildren(character, false);
+            // Measure the populated controls before the first Activate. Resizing
+            // from SizeChanged exposed successive startup layouts and flashes.
+            // Later loads resize only when guidance/error rows change the size.
+            root.Measure(new global::Windows.Foundation.Size(ClientWidth, double.PositiveInfinity));
+            if (!AppWindow.IsVisible)
+            {
+                // Initial template bindings settle during arrange. Complete that
+                // hidden layout before using DesiredSize for the native window.
+                root.Arrange(new global::Windows.Foundation.Rect(0, 0, ClientWidth, root.DesiredSize.Height));
+                root.UpdateLayout();
+                root.Measure(new global::Windows.Foundation.Size(ClientWidth, double.PositiveInfinity));
+            }
+            WindowSizing.FitClient(this, ClientWidth, (int)Math.Ceiling(root.DesiredSize.Height));
             preview.Invalidate();
         }
         finally { loading = false; }
@@ -191,13 +207,13 @@ internal sealed partial class StyleWindow : Window
         try
         {
             if (view.UsesGlobalStyles) before = view.ExportStyleDefaults();
-            error.Text = ""; error.Visibility = Visibility.Collapsed; action(); string id = selected.Id;
+            error.Text = ""; error.Visibility = Visibility.Collapsed; action(); var key = selected.Key;
             if (view.UsesGlobalStyles) { Preferences.AtomicWrite(Path.Combine(preferences.DirectoryPath, "code_style.json"), view.ExportStyleDefaults()); foreach (var doc in App.Instance.Windows.SelectMany(w => w.Panes).Select(p => p.Document).Distinct()) doc.NotifyChanged(); }
-            Load(id);
+            Load(key);
         }
         catch (Exception e) {
             if (before != null) view.ReplaceCodeStyles(before);
-            error.Text = e.Message; error.Visibility = Visibility.Visible; Load(selected.Id);
+            error.Text = e.Message; error.Visibility = Visibility.Visible; Load(selected.Key);
         }
         finally { updating = false; }
     }
@@ -221,7 +237,9 @@ internal sealed partial class StyleWindow : Window
         using var context = new CanvasTextFormat { FontFamily = "Segoe UI", FontSize = 12 };
         var muted = preferences.Theme.Foreground; muted.A = 190;
         drawing.DrawText("Previous paragraph gives the style context.", 20, 20, muted, context);
-        drawing.DrawTextLayout(layout, 20, 40, preferences.Theme.Foreground);
+        var background = PreviewColor(VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND);
+        if (background.A > 0) drawing.FillRectangle(20, 40, (float)layout.LayoutBounds.Width, (float)layout.LayoutBounds.Height, background);
+        drawing.DrawTextLayout(layout, 20, 40, PreviewColor(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND));
         drawing.DrawText("Following paragraph shows spacing and inheritance.", 20, Math.Min(114, 44 + (float)layout.LayoutBounds.Height), muted, context);
     }
 }

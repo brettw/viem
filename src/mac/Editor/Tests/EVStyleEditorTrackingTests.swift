@@ -7,6 +7,7 @@ import XCTest
 
 @MainActor
 final class EVStyleEditorTrackingTests: XCTestCase {
+    private var coordinatorToSettle: EVStyleEditorCoordinator?
     private let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
     private let inlineCode = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code"))
 
@@ -14,6 +15,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         let surface = try markdownSurface()
         let original = try surface.backend.recoverySnapshot()
         let coordinator = EVStyleEditorCoordinator.shared
+        coordinatorToSettle = coordinator
         coordinator.close()
         defer { coordinator.close() }
         moveCaret(7, in: surface)
@@ -53,6 +55,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         let surface = try markdownSurface()
         moveCaret(7, in: surface)
         let coordinator = EVStyleEditorCoordinator { _ in nil }
+        coordinatorToSettle = coordinator
         coordinator.show(document: surface, sender: nil)
         defer { coordinator.close() }
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
@@ -100,6 +103,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         let unrelated = try markdownSurface()
         moveCaret(7, in: first)
         let coordinator = EVStyleEditorCoordinator { _ in nil }
+        coordinatorToSettle = coordinator
         coordinator.show(document: first, sender: nil)
         defer { coordinator.close() }
         moveCaret(17, in: otherView)
@@ -132,12 +136,14 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         let original = try surface.backend.recoverySnapshot()
         moveCaret(7, in: surface)
         let coordinator = EVStyleEditorCoordinator.shared
+        coordinatorToSettle = coordinator
         coordinator.close()
         defer { coordinator.close() }
         surface.perform(menuCommand: .editCharacterStyles, sender: nil)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
 
         surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 10))
+        coordinator.settleSelectionFollowForTesting()
         let headingSelection = try session.selectedNamedStyles()
         XCTAssertTrue(headingSelection.characterMixed)
         XCTAssertNil(headingSelection.character)
@@ -157,6 +163,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
                        "Mixed character assignments open the uniform current paragraph style")
 
         surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 20))
+        coordinator.settleSelectionFollowForTesting()
         let mixedParagraphs = try session.selectedNamedStyles()
         XCTAssertTrue(mixedParagraphs.paragraphMixed)
         XCTAssertNil(mixedParagraphs.paragraph)
@@ -190,6 +197,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         let captureKey = EVStyleKey(namespace: .character, id: capture)
         let original = try backend.recoverySnapshot()
         let coordinator = EVStyleEditorCoordinator.shared
+        coordinatorToSettle = coordinator
         coordinator.close()
         defer { coordinator.close() }
         for command in [EVMenuCommand.editCharacterStyles, .editParagraphStyles, .editStyles] {
@@ -230,6 +238,52 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         XCTAssertEqual(try backend.recoverySnapshot(), original)
     }
 
+    func testRapidSelectionChangesWaitForHalfAnIdleSecondAndDoNotPollWhileUnchanged() async throws {
+        let surface = try markdownSurface()
+        moveCaret(7, in: surface)
+        let coordinator = EVStyleEditorCoordinator { _ in nil }
+        coordinator.show(document: surface, sender: nil)
+        defer { coordinator.close() }
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
+        XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
+        let before = try surface.backend.recoverySnapshot()
+        let count = coordinator.caretFollowQueryCount
+        for index in 0..<30 {
+            moveCaret(index.isMultiple(of: 2) ? 1 : 7, in: surface)
+            try await Task.sleep(for: .milliseconds(40))
+            XCTAssertEqual(coordinator.caretFollowQueryCount, count)
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
+        }
+        moveCaret(1, in: surface)
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(coordinator.caretFollowQueryCount, count)
+        XCTAssertTrue(coordinator.selectionFollowScheduledForTesting)
+        try await Task.sleep(for: .milliseconds(450))
+        XCTAssertEqual(coordinator.caretFollowQueryCount, count + 1)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
+        XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
+        for _ in 0..<30 { surface.refreshPresentation() }
+        moveCaret(1, in: surface)
+        XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
+        try await Task.sleep(for: .milliseconds(1100))
+        XCTAssertEqual(coordinator.caretFollowQueryCount, count + 1)
+
+        moveCaret(7, in: surface)
+        XCTAssertTrue(coordinator.selectionFollowScheduledForTesting)
+        coordinator.selectStyle(.baseParagraph)
+        XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
+        try await Task.sleep(for: .milliseconds(1100))
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
+        XCTAssertEqual(coordinator.caretFollowQueryCount, count + 1)
+        moveCaret(1, in: surface)
+        coordinator.close()
+        XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
+        try await Task.sleep(for: .milliseconds(1100))
+        XCTAssertEqual(coordinator.caretFollowQueryCount, count + 1)
+        XCTAssertEqual(try surface.backend.recoverySnapshot(), before)
+        XCTAssertFalse(surface.canUndo)
+    }
+
     private func markdownSurface() throws -> EVEditorSurfaceController {
         let backend = EVCoreDocumentBackend(configuration: configuration())
         try backend.read(source: Data("# Title `code` tail\n\nBody".utf8), typeName: EVDocument.markdownType)
@@ -255,6 +309,8 @@ final class EVStyleEditorTrackingTests: XCTestCase {
     private func moveCaret(_ offset: Int, in surface: EVEditorSurfaceController) {
         surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: offset, length: 0))
         XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(offset))
+        // These tests exercise selection policy independently of wall-clock timing.
+        coordinatorToSettle?.settleSelectionFollowForTesting()
     }
 
     private func control<T: NSView>(_ type: T.Type, label: String, in root: NSView) throws -> T {

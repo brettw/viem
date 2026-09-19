@@ -23,7 +23,7 @@ internal sealed partial class StyleWindow
         var group = new StackPanel { Spacing = 3 };
         if (caption || reserveCaption) {
             var title = new TextBlock { Text = caption ? label : "", FontSize = 11, Opacity = .65, Height = 17 };
-            title.Tapped += (_, _) => { if (!loading && selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS) && !ShowsValue(property)) Try(() => view.DeclareEffectiveStyle(selected, property, sheet)); };
+            title.Tapped += (_, _) => { if (!loading && selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS) && !ShowsValue(property)) Try(() => DeclareEffective(property)); };
             group.Children.Add(title);
         }
         var body = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Height = 28 };
@@ -39,7 +39,7 @@ internal sealed partial class StyleWindow
         });
         enabled.Click += (_, _) => {
             if (loading) return;
-            Try(() => { if (enabled.IsChecked == true) view.DeclareEffectiveStyle(selected, property, sheet);
+            Try(() => { if (enabled.IsChecked == true) DeclareEffective(property);
                 else view.EditStyle(selected, VIEM_STYLE_EDIT_CLEAR_DECLARATION, property, default); });
         };
         return group;
@@ -84,22 +84,6 @@ internal sealed partial class StyleWindow
         refreshFields.Add(() => button.IsChecked = ShowsValue(property) && selected.Value(property).enum_value != 0);
         button.Click += (_, _) => Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property,
             CoreView.Enum(property == VIEM_STYLE_PROPERTY_CHARACTER_SLANT ? VIEM_STYLE_VALUE_FONT_SLANT : VIEM_STYLE_VALUE_BOOLEAN, button.IsChecked == true ? 1u : 0u)));
-    }
-    private void ColorControl(Panel row, string label, uint property)
-    {
-        var well = new Border { Width = 28, Height = 24, CornerRadius = new(12), BorderThickness = new(1), BorderBrush = new SolidColorBrush(global::Windows.UI.Color.FromArgb(160, 150, 150, 150)) };
-        var button = new Button { Content = well, Padding = new(0), MinWidth = 28, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new(0) };
-        var picker = new ColorPicker { IsAlphaEnabled = true, Width = 300 };
-        var flyout = new Flyout { Content = picker }; button.Flyout = flyout;
-        Property(row, label, property, button);
-        global::Windows.UI.Color original = default;
-        refreshFields.Add(() => {
-            var color = selected.Value(property).color;
-            picker.Color = global::Windows.UI.Color.FromArgb((byte)(color.alpha * 255), (byte)(color.red * 255), (byte)(color.green * 255), (byte)(color.blue * 255));
-            well.Background = new SolidColorBrush(picker.Color);
-        });
-        flyout.Opened += (_, _) => original = picker.Color;
-        flyout.Closed += (_, _) => { if (!loading && ShowsValue(property) && picker.Color != original) Try(() => SetColor(property, picker.Color)); };
     }
     private void SetColor(uint property, global::Windows.UI.Color color)
     {

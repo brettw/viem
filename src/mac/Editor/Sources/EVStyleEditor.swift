@@ -49,6 +49,8 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
     private var targetWindowObserver: NSObjectProtocol?
     private var selectionObserver: NSObjectProtocol?
     private weak var followedDocument: EVEditorSurfaceController?
+    private var selectionFollowTimer: Timer?
+    private(set) var caretFollowQueryCount = 0
     private var globalSession: EVCodeStyleSession?
 
     var styleWindow: NSWindow? { controller?.window }
@@ -138,6 +140,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         if isNewWindow {
             let content = EVStyleEditorViewController()
             content.onClose = { [weak self] in self?.controller?.close() }
+            content.onExplicitStyleSelection = { [weak self] in self?.cancelPendingSelectionFollow() }
             let panel = EVStyleEditorPanel(
                 contentRect: NSRect(x: 0, y: 0, width: 760, height: 650),
                 styleMask: [.titled, .closable, .resizable, .utilityWindow],
@@ -222,17 +225,49 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             guard let self, let document else { return }
             MainActor.assumeIsolated {
                 guard (document.backend.sourceFormat == .code) == globalCode else { return }
-                self.contentController?.followCaretStyle(document.currentStyleEditorKey())
+                self.scheduleSelectionFollow(of: document, globalCode: globalCode)
             }
         }
     }
 
     private func stopFollowingSelection() {
+        cancelPendingSelectionFollow()
         if let selectionObserver {
             NotificationCenter.default.removeObserver(selectionObserver)
             self.selectionObserver = nil
         }
         followedDocument = nil
+    }
+
+    private func scheduleSelectionFollow(of document: EVEditorSurfaceController, globalCode: Bool) {
+        cancelPendingSelectionFollow()
+        // Selection notifications already filter out unchanged presentations,
+        // scrolling, repainting, syntax results and stylesheet-only revisions.
+        // Delay the named-style query itself, not only the control refresh.
+        let timer = Timer(timeInterval: 0.5, repeats: false) { [weak self, weak document] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.selectionFollowTimer = nil
+                guard let document, self.followedDocument === document,
+                      (document.backend.sourceFormat == .code) == globalCode else { return }
+                self.caretFollowQueryCount += 1
+                self.contentController?.followCaretStyle(document.currentStyleEditorKey())
+            }
+        }
+        selectionFollowTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func cancelPendingSelectionFollow() {
+        selectionFollowTimer?.invalidate()
+        selectionFollowTimer = nil
+    }
+
+    var selectionFollowScheduledForTesting: Bool { selectionFollowTimer != nil }
+    func settleSelectionFollowForTesting() {
+        let timer = selectionFollowTimer
+        timer?.fire()
+        timer?.invalidate()
     }
 
     private func observeTargetWindow(of document: EVEditorSurfaceController) {
@@ -278,6 +313,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
 @MainActor
 final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     var onClose: (() -> Void)?
+    var onExplicitStyleSelection: (() -> Void)?
     var themeStore = EVThemeStore.shared
     private var themeObserver: NSObjectProtocol?
 
@@ -564,6 +600,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
 
     func selectStyle(_ key: EVStyleKey) {
         guard hasTarget, snapshot?.definition(for: key) != nil else { return }
+        onExplicitStyleSelection?()
         endContinuousStyleEdit(reportUnexpectedFailure: false)
         selectedStyleKey = key
         selectPopupItem(for: key)

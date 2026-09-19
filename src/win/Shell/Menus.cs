@@ -218,7 +218,7 @@ internal sealed partial class EditorWindow
             try
             {
                 view = new CoreView(document, pane.Canvas.Device, DispatcherQueue, 700, 400);
-                codeStyleInspector = new StyleWindow(view, preferences);
+                codeStyleInspector = new StyleWindow(view, preferences, followCaret: false);
                 codeStyleInspector.Closed += (_, _) => { codeStyleInspector = null; view.Dispose(); document.Dispose(); };
             }
             catch { view?.Dispose(); document.Dispose(); throw; }
