@@ -45,13 +45,20 @@ internal static class StyleAndSettingsTests
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(styles);
         Check(GetForegroundWindow() == hwnd, "native F8 opens the inspector and retains foreground focus");
         Check(styles.AppWindow.Presenter is OverlappedPresenter { IsAlwaysOnTop: false }, "style inspector is a normal window, not always on top");
+        Check(styles.AppWindow.Presenter is OverlappedPresenter { IsResizable: false, IsMaximizable: false }, "style inspector has fixed dimensions and cannot be maximized");
         Check(styles.FontFamilyControl.ActualHeight is > 0 and <= 28 && window.Menu.ActualHeight <= 32,
             $"compact resources reach editor menus and inspector controls ({window.Menu.ActualHeight}, {styles.FontFamilyControl.ActualHeight})");
+        Check(Children<TextBox>(styles.FontFamilyControl).Any(t => t.Text == styles.FontFamilyControl.Text && t.Text.Length > 0), "style font is visible in the native editable picker on first opening");
         Check(!Children<TextBlock>(styles.RootControl).Any(t => t.Text == "Properties" || t.Text.StartsWith("Changes apply live")), "style inspector omits redundant headings and guidance");
         Check(styles.RootControl.ActualHeight <= styles.RootControl.XamlRoot.Size.Height + 1 && styles.RootControl.XamlRoot.Size.Height - styles.RootControl.ActualHeight < 24,
             "style inspector initially fits its content without spare bottom space");
         await WindowCapture.Save(hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".styles.png");
-        new ToggleButtonAutomationPeer(styles.ParagraphTab).Toggle(); await Task.Delay(100);
+        var characterSize = styles.AppWindow.ClientSize;
+        styles.ParagraphTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await Task.Delay(200);
+        Check(styles.ParagraphPanel.Visibility == Visibility.Visible && styles.CharacterPanel.Visibility == Visibility.Collapsed, "native Paragraph tab displays paragraph controls");
+        Check(styles.AppWindow.ClientSize == characterSize, "character and paragraph tabs occupy the same fixed window size");
+        Check(styles.RestoreDefaults.Visibility == Visibility.Collapsed, "document styles do not offer a global reset");
+        Check(!styles.VisitParent.IsEnabled && !styles.VisitNext.IsEnabled, "base paragraph has no relationship navigation targets");
         await WindowCapture.Save(hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".styles-paragraph.png");
         window.Activate(); pane.FocusEditor(); await Task.Delay(100);
         Check(GetForegroundWindow() == window.Hwnd, "editor can be raised above the modeless style inspector");
@@ -64,6 +71,7 @@ internal static class StyleAndSettingsTests
         Check(KeyPolicy.Route(VirtualKey.F8, false, true, false).Kind == VIEM_KEY_FUNCTION
             && KeyPolicy.Route(VirtualKey.F8, false, false, false, true).Kind == VIEM_KEY_FUNCTION, "modified and literal-next F8 remain core function keys");
         await FontChecks(pane, preferences);
+        await CodeStyleChecks(pane, preferences);
 
         window.Activate(); await window.ShowSettings(); await Task.Delay(350);
         var settings = window.SettingsInspector!;
@@ -137,6 +145,7 @@ internal static class StyleAndSettingsTests
         var inspector = new StyleWindow(view, preferences); inspector.Activate(); await Task.Delay(200);
         try {
             inspector.StylePicker.SelectedItem = ((StyleDefinition[])inspector.StylePicker.ItemsSource).Single(s => s.Id == id);
+            Check(!inspector.ParagraphTab.IsEnabled, "character styles disable the paragraph tab");
             Check(inspector.FontVariantControl.SelectedItem as FontFace == face, "style inspector displays the stored font variant");
             await Task.Delay(150);
             await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".styles-font.png");
@@ -146,6 +155,7 @@ internal static class StyleAndSettingsTests
             Check(inspector.Error.Length == 0 && sheet.StringList(style.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).SequenceEqual(new[] { regular.Name, "serif" })
                 && style.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value == 0, "choosing a variant in the native picker applies its traits and preserves fallbacks");
             view.EditStyle(style, VIEM_STYLE_EDIT_CLEAR_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES, default);
+            Check(inspector.FontFamilyControl.Text.Length == 0 && !inspector.FontFamilyControl.IsEnabled, "inherited font fields are empty until overridden");
             var declare = Children<CheckBox>(inspector.RootControl).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Declare Font family");
             declare.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
             Check(inspector.Error.Length == 0 && inspector.FontFamilyControl.IsEnabled
@@ -153,6 +163,27 @@ internal static class StyleAndSettingsTests
             view.EditStyleFont(style, ["viem-missing-font", "serif"], null); await Task.Delay(100);
             Check(inspector.FontFamilyControl.Text == "viem-missing-font" && inspector.FontVariantControl.SelectedItem == null,
                 "unavailable document fonts remain visible without selecting a substitute variant");
+            string parentId = view.CreateStyle(1, "Parent"), childId = view.CreateStyle(1, "Child");
+            var child = view.Styles().Styles.Single(s => s.Id == childId);
+            view.EditStyleString(child, VIEM_STYLE_EDIT_SET_PARENT, 0, parentId);
+            view.EditStyleString(child, VIEM_STYLE_EDIT_SET_NEXT_STYLE, 0, parentId);
+            inspector.StylePicker.SelectedItem = ((StyleDefinition[])inspector.StylePicker.ItemsSource).Single(s => s.Id == childId);
+            byte[] related = doc.Source(doc.State.document_revision);
+            new ButtonAutomationPeer(inspector.VisitParent).Invoke(); await Task.Delay(100);
+            Check(((StyleDefinition)inspector.StylePicker.SelectedItem).Id == parentId
+                && !((object[])inspector.ParentPicker.ItemsSource).OfType<StyleDefinition>().Any(s => s.Id == childId), "parent arrow selects the referenced style and parent choices exclude descendants");
+            inspector.StylePicker.SelectedItem = ((StyleDefinition[])inspector.StylePicker.ItemsSource).Single(s => s.Id == childId);
+            new ButtonAutomationPeer(inspector.VisitNext).Invoke(); await Task.Delay(100);
+            Check(((StyleDefinition)inspector.StylePicker.SelectedItem).Id == parentId && related.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision)), "next paragraph arrow navigates without editing styles");
+            inspector.StylePicker.SelectedItem = ((StyleDefinition[])inspector.StylePicker.ItemsSource).Single(s => s.Id == childId);
+            inspector.ParagraphTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
+            var declareAlignment = Children<CheckBox>(inspector.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Declare Alignment");
+            declareAlignment.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
+            byte[] alignmentBefore = doc.Source(doc.State.document_revision);
+            var center = Children<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(inspector.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Align center");
+            center.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
+            Check(inspector.Error.Length == 0 && view.Styles().Styles.Single(s => s.Id == childId).Value(VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT).enum_value == 3, "native paragraph alignment buttons apply the chosen alignment");
+            view.Undo(); Check(alignmentBefore.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision)), "one undo restores a paragraph alignment change");
         }
         finally { inspector.Close(); }
         view.SelectAll(); byte[] directBefore = doc.Source(doc.State.document_revision);
@@ -163,6 +194,47 @@ internal static class StyleAndSettingsTests
             var variant = FontCatalog.Faces(family).First(f => f.Weight != 400 && f.Slant == FontStyle.Normal);
             view.SelectAll(); view.SetFont(family, 18, variant);
             Check(view.Layout().Clusters.SelectMany(c => view.Provider.RenderedFontNames(c.render_run.identifier)).Contains(variant.Name), $"DirectWrite renders the selected {family} {variant.StyleName} face");
+        }
+    }
+    private static async Task CodeStyleChecks(EditorPane pane, Preferences preferences)
+    {
+        using var doc = new CoreDocument("A Code style sample."u8.ToArray(), format: VIEM_FORMAT_CODE);
+        using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+        byte[] before = view.ExportStyleDefaults(), source = doc.Source(doc.State.document_revision);
+        string file = Path.Combine(preferences.DirectoryPath, "code_style.json");
+        byte[]? saved = File.Exists(file) ? File.ReadAllBytes(file) : null;
+        var inspector = new StyleWindow(view, preferences); inspector.Activate(); await Task.Delay(200);
+        try {
+            Check(inspector.RestoreDefaults.Visibility == Visibility.Visible, "Code Styles exposes Restore Defaults");
+            Check(Children<CheckBox>(inspector.CharacterPanel).All(c => c.IsChecked == true && !c.IsEnabled), "base paragraph overrides are checked and fixed while values remain editable");
+            string parentId = view.CreateStyle(2, "Parent"), childId = view.CreateStyle(2, "Child");
+            var child = view.Styles().Styles.Single(s => s.Id == childId);
+            view.EditStyleString(child, VIEM_STYLE_EDIT_SET_PARENT, 0, parentId);
+            inspector.StylePicker.SelectedItem = ((StyleDefinition[])inspector.StylePicker.ItemsSource).Single(s => s.Id == childId);
+            byte[] related = view.ExportStyleDefaults();
+            new ButtonAutomationPeer(inspector.VisitParent).Invoke(); await Task.Delay(100);
+            Check(((StyleDefinition)inspector.StylePicker.SelectedItem).Id == parentId
+                && !((object[])inspector.ParentPicker.ItemsSource).OfType<StyleDefinition>().Any(s => s.Id == childId), "parent arrow selects the referenced style and parent choices exclude descendants");
+            Check(related.AsSpan().SequenceEqual(view.ExportStyleDefaults()), "Code parent navigation does not edit shared styles");
+            byte[] modified = view.ExportStyleDefaults(); Preferences.AtomicWrite(file, modified);
+            using (var locked = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.None)) {
+                new ButtonAutomationPeer(inspector.RestoreDefaults).Invoke();
+                await Task.Delay(100);
+                Check(inspector.Error.Length > 0 && modified.AsSpan().SequenceEqual(view.ExportStyleDefaults()), "failed Code defaults persistence restores the previous global styles");
+            }
+            new ButtonAutomationPeer(inspector.RestoreDefaults).Invoke(); await Task.Delay(150);
+            Check(inspector.Error.Length == 0 && !view.Styles().Styles.Any(s => s.Id == childId || s.Id == parentId)
+                && File.ReadAllBytes(file).AsSpan().SequenceEqual(view.ExportStyleDefaults()), "Restore Defaults replaces and persists shared Code styles");
+            Check(source.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision)), "style reset and navigation preserve Code source bytes");
+            inspector.CharacterTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await Task.Delay(200);
+            await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".code-styles-character.png");
+            inspector.ParagraphTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await Task.Delay(200);
+            Check(inspector.ParagraphPanel.Visibility == Visibility.Visible, "Code Styles also exposes base paragraph properties");
+            await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".code-styles-paragraph.png");
+        }
+        finally {
+            inspector.Close(); view.ReplaceCodeStyles(before);
+            if (saved != null) Preferences.AtomicWrite(file, saved); else File.Delete(file);
         }
     }
 }

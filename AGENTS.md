@@ -5822,8 +5822,20 @@ Windows-specific settings stay in `windows`.
 
 Unmodified `F8` opens or raises the modeless style inspector outside literal-next
 input. Menu and keyboard entry must leave focus in the inspector, without an
-always-on-top flag. Character/Paragraph controls are compact and centered;
-the initial window fits its content. Font families are sorted using the current
+always-on-top flag. The inspector is not resizable or maximizable. Its compact,
+centered Character/Paragraph tabs share one fixed-height formatting area; the
+window fits the form, preview, and bottom buttons without spare bottom space.
+Top labels are close to their fields and vertically centered. Based on and
+Next paragraph have accessible ↗ buttons that navigate by stable style ID
+without changing the relationship. Parent choices exclude inheritance cycles.
+Inherited entry fields are empty; enabling an override starts with its resolved
+value. Base Paragraph's override boxes stay checked and disabled. Character
+styles disable the Paragraph tab. The paragraph pane uses alignment icon buttons
+and aligned columns for indents and spacing. The font ellipsis edits the ordered
+fallback family list. Code Styles includes Restore Defaults, which replaces and
+persists the shared defaults; a write failure restores the previous global
+styles. Document Styles does not offer this global action.
+Font families are sorted using the current
 culture. Both style and direct-font pickers expose installed font variants.
 Variants retain their PostScript name, weight and slant, preserving a named
 style's fallback families and grouping a face change into one document undo.
@@ -5929,7 +5941,9 @@ the portable document or vi command contract:
   spacing. A system font panel, per-font OpenType feature discovery, and the
   full Mac typography menus are omitted. Existing source OpenType features
   still participate in DirectWrite shaping. The inspector preview currently
-  demonstrates font and alignment rather than the complete paragraph layout.
+  demonstrates font, decoration, tracking, and alignment in surrounding text
+  rather than the complete paragraph layout. Mac's click-through activation of
+  disabled inherited controls is not yet implemented; use the override checkbox.
 - Per-span explicit bidi overrides are retained in source but are not realized
   by the Win2D adapter; their inspector control is omitted. Unicode bidi and
   explicit paragraph direction are supported.

@@ -151,4 +151,19 @@ internal sealed unsafe partial class CoreView
         else { var copy = r; Apply(o => { var request = copy; return viem_core_view_delete_style(Document.Handle, Id, &request, o); }); }
     }
     public byte[] ExportStyleDefaults() { ulong revision = Document.State.document_revision; return UsesGlobalStyles ? Copy(viem_code_export_style_json) : Copy((p, n, r) => viem_core_export_style_defaults(Document.Handle, revision, p, n, r)); }
+    public void ReplaceCodeStyles(byte[] json)
+    {
+        if (!UsesGlobalStyles) throw new InvalidOperationException("Only Code Styles have shared defaults.");
+        fixed (byte* bytes = json) Check(viem_code_replace_style_json(bytes, (ulong)json.Length), "Restore Code styles");
+        Document.NotifyChanged(); Refresh();
+    }
+    public void DeclareEffectiveStyle(StyleDefinition style, uint property, StyleSheet sheet)
+    {
+        var effective = style.Value(property);
+        if (property == VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES) { EditStyleFont(style, sheet.StringList(effective), null); return; }
+        var value = New<ViemStyleEditValueV1>(); value.kind = effective.kind; value.number = effective.number; value.enum_value = effective.enum_value; value.color = effective.color;
+        // An absent background is a transparent declaration when overridden.
+        if (property == VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND && effective.kind == VIEM_STYLE_VALUE_NONE) value.kind = VIEM_STYLE_VALUE_COLOR;
+        EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, property, value);
+    }
 }

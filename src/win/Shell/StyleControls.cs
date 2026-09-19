@@ -1,0 +1,161 @@
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Media;
+using Viem.Windows.Core;
+using Windows.UI.Text;
+using static Viem.Windows.Interop.Native;
+
+namespace Viem.Windows.Shell;
+
+internal sealed partial class StyleWindow
+{
+    private bool IsBase => (selected.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0;
+    private bool ShowsValue(uint property) => IsBase || selected.Declares(property);
+    private static StackPanel Row(StackPanel target)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+        target.Children.Add(row); return row;
+    }
+    private StackPanel Property(Panel row, string label, uint property, FrameworkElement editor, bool caption = true, bool reserveCaption = false)
+    {
+        var group = new StackPanel { Spacing = 3 };
+        if (caption || reserveCaption) {
+            var title = new TextBlock { Text = caption ? label : "", FontSize = 11, Opacity = .65, Height = 17 };
+            title.Tapped += (_, _) => { if (!loading && selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS) && !ShowsValue(property)) Try(() => view.DeclareEffectiveStyle(selected, property, sheet)); };
+            group.Children.Add(title);
+        }
+        var body = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Height = 28 };
+        var enabled = new CheckBox { MinWidth = 0, MinHeight = 0, Padding = new(0), VerticalAlignment = VerticalAlignment.Center };
+        editor.VerticalAlignment = VerticalAlignment.Center;
+        AutomationProperties.SetName(enabled, "Declare " + label); AutomationProperties.SetName(editor, label);
+        ToolTipService.SetToolTip(enabled, "Override inherited");
+        body.Children.Add(enabled); body.Children.Add(editor); group.Children.Add(body); row.Children.Add(group);
+        refreshFields.Add(() => {
+            bool editable = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS);
+            enabled.IsChecked = ShowsValue(property); enabled.IsEnabled = editable && !IsBase;
+            SetEnabled(editor, editable && ShowsValue(property));
+        });
+        enabled.Click += (_, _) => {
+            if (loading) return;
+            Try(() => { if (enabled.IsChecked == true) view.DeclareEffectiveStyle(selected, property, sheet);
+                else view.EditStyle(selected, VIEM_STYLE_EDIT_CLEAR_DECLARATION, property, default); });
+        };
+        return group;
+    }
+    private static void SetEnabled(FrameworkElement element, bool enabled)
+    {
+        if (element is Control control) control.IsEnabled = enabled;
+        else if (element is Panel panel) EnableChildren(panel, enabled);
+    }
+    private static StackPanel Inline(params UIElement[] elements)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        foreach (var element in elements) row.Children.Add(element); return row;
+    }
+    private static TextBlock Unit(string text) => new() { Text = text, FontSize = 11, Opacity = .65, VerticalAlignment = VerticalAlignment.Center };
+    private static FontIcon Icon(string glyph) => new() { Glyph = glyph, FontSize = 16, Opacity = .7, VerticalAlignment = VerticalAlignment.Center, Width = 18 };
+    private void Number(Panel row, string label, uint property, float min = -1000, float max = 1000, bool caption = true, string? icon = null)
+    {
+        var value = new NumberBox { Width = caption ? 104 : 82, Minimum = min, Maximum = max, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        AutomationProperties.SetName(value, label);
+        var body = Inline(value, Unit("pt"));
+        if (icon != null) body.Children.Insert(0, Icon(icon));
+        var group = Property(row, label, property, body, caption);
+        if (caption) group.Width = 188;
+        refreshFields.Add(() => value.Value = ShowsValue(property) ? selected.Value(property).number : double.NaN);
+        value.ValueChanged += (_, _) => { if (!loading && double.IsFinite(value.Value)) Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property, CoreView.Number((float)value.Value))); };
+    }
+    private void Choice(Panel row, string label, uint property, uint valueKind, string[] choices, uint[] values)
+    {
+        var combo = new ComboBox { Width = 162, ItemsSource = choices };
+        Property(row, label, property, combo);
+        refreshFields.Add(() => combo.SelectedIndex = ShowsValue(property) ? Array.IndexOf(values, selected.Value(property).enum_value) : -1);
+        combo.SelectionChanged += (_, _) => { if (!loading && combo.SelectedIndex >= 0) Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property, CoreView.Enum(valueKind, values[combo.SelectedIndex]))); };
+    }
+    private void Boolean(Panel row, string label, uint property)
+    {
+        var button = new ToggleButton { Content = label, Width = 32, MinWidth = 0, Padding = new(0), FontSize = 14 };
+        if (label == "B") button.FontWeight = Microsoft.UI.Text.FontWeights.Bold;
+        if (label == "I") button.FontStyle = FontStyle.Italic;
+        if (label is "U" or "S") button.Content = new TextBlock { Text = label, TextDecorations = label == "U" ? TextDecorations.Underline : TextDecorations.Strikethrough, FontSize = 14 };
+        Property(row, label, property, button, caption: false, reserveCaption: true);
+        refreshFields.Add(() => button.IsChecked = ShowsValue(property) && selected.Value(property).enum_value != 0);
+        button.Click += (_, _) => Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property,
+            CoreView.Enum(property == VIEM_STYLE_PROPERTY_CHARACTER_SLANT ? VIEM_STYLE_VALUE_FONT_SLANT : VIEM_STYLE_VALUE_BOOLEAN, button.IsChecked == true ? 1u : 0u)));
+    }
+    private void ColorControl(Panel row, string label, uint property)
+    {
+        var well = new Border { Width = 28, Height = 24, CornerRadius = new(12), BorderThickness = new(1), BorderBrush = new SolidColorBrush(global::Windows.UI.Color.FromArgb(160, 150, 150, 150)) };
+        var button = new Button { Content = well, Padding = new(0), MinWidth = 28, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new(0) };
+        var picker = new ColorPicker { IsAlphaEnabled = true, Width = 300 };
+        var flyout = new Flyout { Content = picker }; button.Flyout = flyout;
+        Property(row, label, property, button);
+        global::Windows.UI.Color original = default;
+        refreshFields.Add(() => {
+            var color = selected.Value(property).color;
+            picker.Color = global::Windows.UI.Color.FromArgb((byte)(color.alpha * 255), (byte)(color.red * 255), (byte)(color.green * 255), (byte)(color.blue * 255));
+            well.Background = new SolidColorBrush(picker.Color);
+        });
+        flyout.Opened += (_, _) => original = picker.Color;
+        flyout.Closed += (_, _) => { if (!loading && ShowsValue(property) && picker.Color != original) Try(() => SetColor(property, picker.Color)); };
+    }
+    private void SetColor(uint property, global::Windows.UI.Color color)
+    {
+        var value = CoreView.Enum(VIEM_STYLE_VALUE_COLOR, 0); value.color = new() { red = color.R / 255f, green = color.G / 255f, blue = color.B / 255f, alpha = color.A / 255f };
+        view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property, value);
+    }
+    private void BuildCharacter()
+    {
+        BuildFontRow();
+        var row = Row(character);
+        Boolean(row, "B", VIEM_STYLE_PROPERTY_CHARACTER_BOLD); Boolean(row, "I", VIEM_STYLE_PROPERTY_CHARACTER_SLANT);
+        Boolean(row, "U", VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE); Boolean(row, "S", VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH);
+        ColorControl(row, "Text Color", VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND); ColorControl(row, "Background Color", VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND);
+        character.Children.Add(Separator());
+        row = Row(character); Number(row, "Tracking", VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING, icon: "\uE8D2"); Number(row, "Baseline", VIEM_STYLE_PROPERTY_CHARACTER_BASELINE_SHIFT, icon: "\uE74A");
+    }
+    private void BuildParagraph()
+    {
+        var top = new Grid(); top.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); top.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        paragraph.Children.Add(top);
+        var alignment = Inline(); var buttons = new List<ToggleButton>();
+        foreach (var (label, glyph, value) in new[] { ("Align start", "\uE8E4", 1u), ("Align center", "\uE8E3", 3u), ("Align end", "\uE8E2", 2u) }) {
+            var button = new ToggleButton { Content = new FontIcon { Glyph = glyph, FontSize = 16 }, Width = 36, MinWidth = 0, Padding = new(0) };
+            AutomationProperties.SetName(button, label); ToolTipService.SetToolTip(button, label); alignment.Children.Add(button); buttons.Add(button);
+            button.Click += (_, _) => Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, CoreView.Enum(VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, value)));
+            refreshFields.Add(() => button.IsChecked = ShowsValue(VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT) && selected.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT).enum_value == value);
+        }
+        Property(top, "Alignment", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, alignment, caption: false, reserveCaption: true);
+        Choice(top, "Direction", VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION, VIEM_STYLE_VALUE_WRITING_DIRECTION, ["Automatic", "Left to Right", "Right to Left"], [0, 1, 2]); Grid.SetColumn((FrameworkElement)top.Children.Last(), 1);
+        paragraph.Children.Add(Separator());
+        var row = Row(paragraph);
+        Number(row, "Start indent", VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT, icon: "\uE8A0"); Number(row, "End indent", VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT, icon: "\uE89F"); Number(row, "First line", VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT, icon: "\uE8A0");
+        row = Row(paragraph);
+        Number(row, "Space before", VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_BEFORE, min: 0, icon: "\uE74A"); Number(row, "Space after", VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_AFTER, min: 0, icon: "\uE74B");
+        var spacing = new ComboBox { ItemsSource = new[] { "Normal", "Multiple", "At least", "Exact" }, Width = 112, MinWidth = 0 };
+        var amount = new NumberBox { Minimum = .01, Maximum = 1000, Width = 60, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        AutomationProperties.SetName(spacing, "Line spacing"); AutomationProperties.SetName(amount, "Line spacing amount");
+        Property(row, "Line spacing", VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING, Inline(spacing, amount));
+        refreshFields.Add(() => {
+            var v = selected.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING);
+            spacing.SelectedIndex = ShowsValue(VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING) ? (int)v.enum_value - 1 : -1;
+            amount.IsEnabled = ShowsValue(VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING) && spacing.SelectedIndex > 0;
+            amount.Value = amount.IsEnabled ? v.number : double.NaN;
+        });
+        spacing.SelectionChanged += (_, _) => {
+            if (loading || spacing.SelectedIndex < 0) return;
+            var current = selected.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING);
+            float number = spacing.SelectedIndex == 0 ? 0 : current.enum_value == (uint)spacing.SelectedIndex + 1 && current.number > 0 ? current.number
+                : spacing.SelectedIndex == 1 ? 1 : selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number;
+            Try(() => SetLineSpacing((uint)spacing.SelectedIndex + 1, number));
+        };
+        amount.ValueChanged += (_, _) => { if (!loading && double.IsFinite(amount.Value) && spacing.SelectedIndex > 0) Try(() => SetLineSpacing((uint)spacing.SelectedIndex + 1, (float)amount.Value)); };
+    }
+    private void SetLineSpacing(uint kind, float number)
+    {
+        var value = CoreView.Enum(VIEM_STYLE_VALUE_LINE_SPACING, kind); value.number = number;
+        view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING, value);
+    }
+}
