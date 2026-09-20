@@ -53,7 +53,10 @@ internal sealed partial class EditorWindow
                         || Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") is "1" or "all")
                     {
                         if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "all")
+                        {
+                            Diagnostics.StyleAndSettingsTests.StartupFontChecks();
                             await Diagnostics.StyleAndSettingsTests.Run(pane, this, preferences);
+                        }
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "1")
                             await Diagnostics.StyleInspectorBehaviorTests.Run(pane, preferences);
                         else

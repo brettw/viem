@@ -78,7 +78,9 @@ fn export_toggle_preserves_content_customized_appearance_and_exact_history() {
     let exported = document.source_bytes();
     let markup = String::from_utf8(exported.clone()).unwrap();
     assert!(markup.ends_with(source));
-    assert!(markup.contains("p {\n  font-family: 'SF Pro';\n  font-size: 23pt;"), "{markup}");
+    let family = if DEFAULT_FONT_FAMILY == "system-ui" { "system-ui".to_owned() }
+        else { format!("'{DEFAULT_FONT_FAMILY}'") };
+    assert!(markup.contains(&format!("p {{\n  font-family: {family};\n  font-size: 23pt;")), "{markup}");
     assert!(!markup.contains("text-indent:"), "{markup}");
     assert!(!markup.contains("vertical-align:"), "{markup}");
     assert!(!markup.contains("letter-spacing:"), "{markup}");

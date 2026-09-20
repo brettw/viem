@@ -25,8 +25,8 @@ internal static class StyleAndSettingsTests
     {
         Check(!FontCatalog.FamilyListLoaded && FontCatalog.FaceDescriptionsRead == 0,
             "empty editor starts without loading font picker lists or enumerating font faces");
-        Check(FontCatalog.Resolve("SF Pro")?.Family == "Segoe UI" && FontCatalog.Resolve("system-ui")?.Family == "Segoe UI",
-            "portable system font aliases resolve to the Windows system family");
+        Check(FontCatalog.Resolve("system-ui")?.Family == "Segoe UI" && FontCatalog.Resolve("Segoe UI")?.Family == "Segoe UI",
+            "Windows default and generic system fonts resolve to Segoe UI");
         Check(FontCatalog.Resolve("viem-missing-startup-font") == null && FontCatalog.Named("viem-missing-startup-font") == null
             && FontCatalog.FaceDescriptionsRead == 0 && !FontCatalog.FamilyListLoaded,
             "missing document fonts do not trigger a system-wide face scan");
@@ -53,6 +53,12 @@ internal static class StyleAndSettingsTests
         Check(styles.FontFamilyControl.ActualHeight is > 0 and <= 28 && window.Menu.ActualHeight <= 32,
             $"compact resources reach editor menus and inspector controls ({window.Menu.ActualHeight}, {styles.FontFamilyControl.ActualHeight})");
         Check(Children<TextBox>(styles.FontFamilyControl).Any(t => t.Text == styles.FontFamilyControl.Text && t.Text.Length > 0), "style font is visible in the native editable picker on first opening");
+        Check(styles.FontFamilyControl.Text == "Segoe UI", "the default document style displays Segoe UI in the Windows font picker");
+        bool sfProInstalled = FontCatalog.Families.Contains("SF Pro", StringComparer.OrdinalIgnoreCase);
+        Check(sfProInstalled ? FontCatalog.Resolve("SF Pro")?.Family == "SF Pro" : FontCatalog.Resolve("SF Pro") == null && FontCatalog.Faces("SF Pro").Length == 0,
+            "SF Pro resolves only when installed and never aliases Segoe UI");
+        Check(((IEnumerable<string>)styles.FontFamilyControl.ItemsSource).Contains("SF Pro", StringComparer.OrdinalIgnoreCase) == sfProInstalled,
+            "the default Windows font picker offers SF Pro only when installed");
         Check(!Children<TextBlock>(styles.RootControl).Any(t => t.Text == "Properties" || t.Text.StartsWith("Changes apply live")), "style inspector omits redundant headings and guidance");
         Check(styles.RootControl.ActualHeight <= styles.RootControl.XamlRoot.Size.Height + 1 && styles.RootControl.XamlRoot.Size.Height - styles.RootControl.ActualHeight < 24,
             "style inspector initially fits its content without spare bottom space");

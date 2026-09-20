@@ -41,8 +41,10 @@ fn native_style_export_is_optional_minimal_and_exactly_undoable() {
     let enabled = set_export(&mut document, true);
     let saved = String::from_utf8(document.source_bytes()).unwrap();
     assert!(saved.contains("data-viem-version=\"2\""), "{saved}");
+    let family = if DEFAULT_FONT_FAMILY == "system-ui" { "system-ui".to_owned() }
+        else { format!("'{DEFAULT_FONT_FAMILY}'") };
     assert!(
-        saved.contains("p {\n  font-family: 'SF Pro';\n  font-size: 14pt;\n  margin-block-start: 7pt;\n  margin-block-end: 7pt;\n}"),
+        saved.contains(&format!("p {{\n  font-family: {family};\n  font-size: 14pt;\n  margin-block-start: 7pt;\n  margin-block-end: 7pt;\n}}")),
         "{saved}"
     );
     for omitted in [

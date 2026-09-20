@@ -5,7 +5,7 @@
 //! work without giving it ownership of document or view state.
 
 pub use crate::document::{BoundaryAffinity, FontSlant};
-use crate::document::{DocumentId, Revision};
+use crate::document::{DocumentId, Revision, DEFAULT_FONT_FAMILY};
 use std::ops::Range;
 
 /// Identity for all font-resolution and measurement inputs owned by a provider.
@@ -87,7 +87,7 @@ pub struct ResolvedTextStyle {
 impl Default for ResolvedTextStyle {
     fn default() -> Self {
         Self {
-            font_families: vec!["SF Pro".to_owned()],
+            font_families: vec![DEFAULT_FONT_FAMILY.to_owned()],
             size: 14.0,
             weight: 400.0,
             relative_bold: false,

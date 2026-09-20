@@ -816,7 +816,8 @@ Every style sheet defines one distinguished style, **Base Paragraph**. It is
 the root of the paragraph hierarchy, has no parent, provides complete paragraph
 layout and default character values, and cannot be deleted. It is the default
 paragraph assignment and the fallback selection for style-editing UI. Its
-initial generated font is **SF Pro at 14 layout units**; Code uses the system
+initial generated font is **SF Pro on macOS and Segoe UI on Windows, at 14
+layout units**; other hosts use `system-ui`. Code uses the system
 monospace family at the same size. Every other paragraph style derives through
 it. Adapters identify source-backed and generated declarations.
 
@@ -5971,8 +5972,12 @@ their installed family and width; weight and slant use the stored declarations.
 Startup MUST NOT enumerate every installed font face or load font-picker lists
 before the first editor draw. Resolve document fonts through indexed DirectWrite
 family/PostScript-name queries, cache matches and misses, and load sorted picker
-families only when a picker needs them. The portable `SF Pro` system-font alias
-maps to Segoe UI on Windows. Missing/custom document fonts must not trigger a
+families only when a picker needs them. Windows generated text styles and
+emergency shaping defaults request Segoe UI; `system-ui` resolves to Segoe UI.
+SF Pro is a macOS default, not a Windows alias or built-in font choice: Windows
+offers and resolves it only when installed. Explicit authored font requests
+remain preserved, with unavailable families following normal fallback rules.
+Missing/custom document fonts must not trigger a
 whole-system face scan. Native tests cover this startup constraint and preserve
 variant selection, fallback, and layout invalidation coverage.
 The read-only system font index is shared across family lookups and independent

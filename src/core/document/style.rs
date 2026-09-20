@@ -4,6 +4,16 @@ pub mod code;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Initial generated text family, shared by document and emergency shaping
+/// defaults. Authored font requests remain unchanged across platforms.
+pub const DEFAULT_FONT_FAMILY: &str = if cfg!(target_os = "macos") {
+    "SF Pro"
+} else if cfg!(target_os = "windows") {
+    "Segoe UI"
+} else {
+    "system-ui"
+};
+
 /// Opaque stable identity of a block or character style. The string is a
 /// serialization-friendly token, not the user-visible style name.
 #[derive(
@@ -410,7 +420,7 @@ impl Default for StyleSheet {
                 next_paragraph_style: None,
                 role: BlockRole::Paragraph,
                 character: CharacterProperties {
-                    font_families: Some(vec!["SF Pro".to_owned()]),
+                    font_families: Some(vec![DEFAULT_FONT_FAMILY.to_owned()]),
                     size: Some(14.0),
                     weight: Some(400),
                     slant: Some(FontSlant::Upright),
@@ -657,7 +667,7 @@ pub struct ResolvedCharacterStyle {
 impl Default for ResolvedCharacterStyle {
     fn default() -> Self {
         Self {
-            font_families: vec!["SF Pro".to_owned()],
+            font_families: vec![DEFAULT_FONT_FAMILY.to_owned()],
             size: 14.0,
             weight: 400,
             base_weight: 400,
@@ -3157,12 +3167,31 @@ mod tests {
     }
 
     #[test]
+    fn generated_and_emergency_fonts_follow_the_host_platform() {
+        let expected = if cfg!(target_os = "macos") { "SF Pro" }
+            else if cfg!(target_os = "windows") { "Segoe UI" } else { "system-ui" };
+        assert_eq!(DEFAULT_FONT_FAMILY, expected);
+        for format in [crate::document::Format::PlainText, crate::document::Format::Markdown,
+            crate::document::Format::MarkdownSource, crate::document::Format::Html,
+            crate::document::Format::HtmlSource, crate::document::Format::Rtf] {
+            let sheet = StyleSheet::for_format(format);
+            assert_eq!(sheet.block_style(&sheet.base_paragraph).unwrap().character.font_families,
+                Some(vec![expected.to_owned()]), "{format:?}");
+        }
+        assert_eq!(ResolvedCharacterStyle::default().font_families, [expected]);
+        assert_eq!(crate::layout::ResolvedTextStyle::default().font_families, [expected]);
+        let code = code::default_sheet();
+        assert_eq!(code.block_style(&code.base_paragraph).unwrap().character.font_families,
+            Some(vec!["monospace".into()]));
+    }
+
+    #[test]
     fn base_paragraph_is_the_only_styling_root() {
         let sheet = StyleSheet::default();
         let paragraph = sheet.block_style(&sheet.base_paragraph).unwrap();
         assert_eq!(paragraph.based_on, None);
         assert_eq!(paragraph.character.size, Some(14.0));
-        assert_eq!(paragraph.character.font_families, Some(vec!["SF Pro".into()]));
+        assert_eq!(paragraph.character.font_families, Some(vec![DEFAULT_FONT_FAMILY.into()]));
         assert_eq!(sheet.block_style_metadata(&sheet.base_paragraph).unwrap().display_name, "Base Paragraph");
         assert!(sheet.block_style(&"Document".into()).is_none());
         assert!(sheet.character_style(&"Character".into()).is_none());

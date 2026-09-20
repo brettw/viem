@@ -104,9 +104,7 @@ internal static class FontCatalog
         string candidate = requested.ToLowerInvariant() switch {
             "monospace" or "menlo" or "monaco" => IsFamily("Cascadia Mono") ? "Cascadia Mono" : "Consolas",
             "serif" or "times" => "Georgia",
-            // The portable default is the Mac system-font alias "SF Pro".
-            // Map it before lookup, rather than scanning for an absent face.
-            "sans-serif" or "system-ui" or "system" or "sf pro" or "-apple-system" or "helvetica" or "helvetica neue" => "Segoe UI",
+            "sans-serif" or "system-ui" or "system" or "-apple-system" or "helvetica" or "helvetica neue" => "Segoe UI",
             _ => requested
         };
         if (IsFamily(candidate)) return (candidate, FontStretch.Normal);

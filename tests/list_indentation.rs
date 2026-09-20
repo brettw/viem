@@ -224,33 +224,26 @@ fn quoted_markdown_list_indentation_preserves_every_quote_marker() {
 #[test]
 fn legacy_source_list_definitions_remain_active_and_lossless() {
     let source="<style id=\"viem-styles\" data-viem-version=\"2\">li {\n  --viem-inherit: \"character-font-families character-size\";\n  font-family: 'SF Pro';\n  font-size: 14pt;\n  margin-inline-start: 16pt;\n}\n</style><ul><li>Bullet</li></ul><ol><li>Number</li></ol>";
-    let document = open(source, Format::Html);
-    assert_eq!(document.source_bytes(), source.as_bytes());
-    assert_eq!(
-        document
-            .projection()
-            .blocks()
-            .iter()
-            .map(|b| b.style.0.as_str())
-            .collect::<Vec<_>>(),
-        ["List1", "List1"]
-    );
-    let sheet = document.projection().style_sheet();
-    assert_eq!(
-        sheet
-            .block_style(&"List1".into())
-            .unwrap()
-            .block
-            .leading_indent,
-        Some(48.0)
-    );
-    assert_eq!(
-        sheet
-            .block_styles()
-            .filter(|style| style.id.is_internal_list())
-            .count(),
-        8
-    );
+    for family in ["'SF Pro'", "'Segoe UI'", "system-ui"] {
+        let source = source.replace("'SF Pro'", family);
+        let document = open(&source, Format::Html);
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        assert_eq!(
+            document.projection().blocks().iter().map(|b| b.style.0.as_str()).collect::<Vec<_>>(),
+            ["List1", "List1"]
+        );
+        let sheet = document.projection().style_sheet();
+        assert_eq!(sheet.block_style(&"List1".into()).unwrap().block.leading_indent, Some(48.0));
+        assert_eq!(sheet.block_styles().filter(|style| style.id.is_internal_list()).count(), 8);
+        assert_eq!(viem_core::layout::DocumentLayoutStyles::semantic_character_at(document.projection(), 0, false)
+            .unwrap().font_families, [DEFAULT_FONT_FAMILY]);
+
+        // A foreign default must not relax validation of other declarations.
+        let opaque = source.replace("font-size: 14pt;", "font-size: 14pt;\n  future-property: keep;");
+        let document = open(&opaque, Format::Html);
+        assert_eq!(document.source_bytes(), opaque.as_bytes());
+        assert_eq!(document.projection().blocks()[0].style.0, "BulletedList1");
+    }
 }
 #[test]
 fn deeper_authored_levels_use_fourth_style_plus_structural_inset() {

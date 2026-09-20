@@ -11379,7 +11379,7 @@ mod tests {
         assert_eq!(families.declared.kind, super::VIEM_STYLE_VALUE_STRING_LIST);
         let family = value_items[families.declared.first_item as usize];
         assert_eq!(family.kind, super::VIEM_STYLE_VALUE_ITEM_STRING);
-        assert_eq!(style_arena_text(&strings, family.string), "SF Pro");
+        assert_eq!(style_arena_text(&strings, family.string), crate::document::DEFAULT_FONT_FAMILY);
 
         let heading = definitions
             .iter()

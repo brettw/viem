@@ -6336,7 +6336,7 @@ mod tests {
         );
         assert!((snapshot.rows[0].ascent - 24.0 * 0.78).abs() < 0.001);
         assert!((snapshot.rows[1].ascent - 14.0 * 0.78).abs() < 0.001);
-        assert_eq!(snapshot.rows[0].clusters[0].fallback_font.as_ref(), "SF Pro");
+        assert_eq!(snapshot.rows[0].clusters[0].fallback_font.as_ref(), crate::document::DEFAULT_FONT_FAMILY);
     }
 
     #[test]
@@ -6434,7 +6434,7 @@ mod tests {
         assert!((view.snapshot().unwrap().rows[0].ascent - 14.0 * 0.78).abs() < 0.001);
         assert_eq!(
             view.snapshot().unwrap().rows[0].clusters[0].fallback_font.as_ref(),
-            "SF Pro"
+            crate::document::DEFAULT_FONT_FAMILY
         );
     }
 

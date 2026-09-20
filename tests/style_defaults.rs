@@ -14,6 +14,20 @@ fn lists(document: &Document) -> Vec<String> {
 }
 
 #[test]
+fn native_defaults_do_not_replace_authored_font_requests() {
+    for (format, source) in [
+        (Format::Html, "<p style=\"font-family: 'SF Pro'\">Text</p>"),
+        (Format::Rtf, r"{\rtf1\ansi\deff0{\fonttbl{\f0 SF Pro;}}\f0 Text}"),
+    ] {
+        let document = open(source, format);
+        let style = viem_core::layout::DocumentLayoutStyles::semantic_character_at(
+            document.projection(), 0, false).unwrap();
+        assert_eq!(style.font_families, ["SF Pro"], "{format:?}");
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
 fn rich_default_list_paragraph_styles_are_assignable_source_backed_and_undoable() {
     for (format, source) in [
         (Format::Html, "<p data-keep='x'>Words</p><!--keep-->"),

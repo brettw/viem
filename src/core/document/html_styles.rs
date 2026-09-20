@@ -694,6 +694,8 @@ pub(super) fn read_with_semantics(text: &str, semantic_tokens: &[html::Token]) -
     }
     // Only the exact declared grammar is adopted. Unknown declarations/whitespace
     // remain opaque and never become targets for rule replacement.
+    let has_base_rule = definitions.iter().any(|definition|
+        definition.is_block() && definition.style_id() == &sheet.base_paragraph);
     rules.retain(|rule| {
         let id = rule.definition.style_id();
         let character = !rule.definition.is_block();
@@ -703,6 +705,8 @@ pub(super) fn read_with_semantics(text: &str, semantic_tokens: &[html::Token]) -
             write_rule_for_selector(&sheet, id, character, rule.selector(text))
         };
         canonical.as_deref() == Some(&text[rule.range.clone()])
+            || (rule.version == 2 && !has_base_rule
+                && matches_foreign_default_font(&sheet, rule, text))
             // Early v2 tombstones inherited the body font. Retain that exact
             // import spelling; all subsequent authoring uses Paragraph CSS.
             || (rule.version == 2
@@ -744,6 +748,32 @@ pub(super) fn read_with_semantics(text: &str, semantic_tokens: &[html::Token]) -
         close,
         empty_v2_marker,
     }
+}
+
+fn matches_foreign_default_font(sheet: &StyleSheet, rule: &Rule, text: &str) -> bool {
+    // A partial exported sheet can inherit its font from the host's generated
+    // Paragraph. Its passive CSS still records the exporting host's family.
+    // Validate that spelling against a temporary default, retaining exact
+    // grammar checks without importing the foreign font as a declaration.
+    let source = &text[rule.range.clone()];
+    let Some((_, body)) = source.split_once(" {\n") else { return false; };
+    let declarations = html::declarations(body);
+    let family = match declarations.iter().find(|(key, _)| *key == "font-family").map(|(_, value)| *value) {
+        Some("'SF Pro'") => "SF Pro",
+        Some("'Segoe UI'") => "Segoe UI",
+        Some("system-ui") => "system-ui",
+        _ => return false,
+    };
+    if family == DEFAULT_FONT_FAMILY { return false; }
+    let mut validation = sheet.clone();
+    let mut paragraph = sheet.block_style(&sheet.base_paragraph).unwrap().clone();
+    paragraph.character.font_families = Some(vec![family.to_owned()]);
+    let metadata = sheet.block_style_metadata(&sheet.base_paragraph).unwrap().clone();
+    if validation.install_source_definitions(&[StyleDefinitionEdit::InsertBlock { style: paragraph, metadata }]).is_err() {
+        return false;
+    }
+    write_rule_for_selector(&validation, rule.definition.style_id(), !rule.definition.is_block(), rule.selector(text))
+        .as_deref() == Some(source)
 }
 
 pub(super) fn select_class(sheet: &StyleSheet, classes: &str, character: bool) -> Option<StyleId> {
@@ -2118,13 +2148,15 @@ mod tests {
     fn version_two_native_rules_have_simple_css_and_round_trip_exact_definitions() {
         let mut sheet = StyleSheet::for_format(Format::Html);
         sheet.ensure_list_level(3);
+        let family = crate::document::DEFAULT_FONT_FAMILY;
+        let css_family = if family == "system-ui" { family.to_owned() } else { format!("'{family}'") };
         assert_eq!(
             write_rule(&sheet, &sheet.base_paragraph, false).unwrap(),
-            "p {\n  font-family: 'SF Pro';\n  font-size: 14pt;\n  margin-block-start: 7pt;\n  margin-block-end: 7pt;\n}\n"
+            format!("p {{\n  font-family: {css_family};\n  font-size: 14pt;\n  margin-block-start: 7pt;\n  margin-block-end: 7pt;\n}}\n")
         );
         assert_eq!(
             write_rule(&sheet, &"List1".into(), false).unwrap(),
-            "li {\n  --viem-inherit: \"character-font-families character-size\";\n  font-family: 'SF Pro';\n  font-size: 14pt;\n}\n"
+            format!("li {{\n  --viem-inherit: \"character-font-families character-size\";\n  font-family: {css_family};\n  font-size: 14pt;\n}}\n")
         );
         let rules = sheet
             .block_styles()
