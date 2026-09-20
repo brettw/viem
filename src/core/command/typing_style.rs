@@ -5,10 +5,14 @@ use crate::document::{ResolvedCharacterStyle, StyleId, StyleProperty, StylePrope
 pub(super) struct TypingStyle {
     pub named: Option<StyleId>,
     pub values: Vec<(StyleProperty, StylePropertyValue)>,
+    pub inherited: Option<crate::document::ReplacementTypingContext>,
 }
 impl TypingStyle {
     pub fn is_empty(&self) -> bool {
-        self.named.is_none() && self.values.is_empty()
+        self.named.is_none() && self.values.is_empty() && self.inherited.is_none()
+    }
+    pub fn for_repeat(&self) -> Self {
+        Self { named: self.named.clone(), values: self.values.clone(), inherited: None }
     }
 }
 // Values enter only after finite-value validation by Document.
@@ -18,8 +22,9 @@ impl CommandInterpreter {
         &mut self,
         named: Option<StyleId>,
         values: Vec<(StyleProperty, StylePropertyValue)>,
+        inherited: Option<crate::document::ReplacementTypingContext>,
     ) {
-        self.typing_style = TypingStyle { named, values };
+        self.typing_style = TypingStyle { named, values, inherited };
     }
     /// Publish validated pending style after a native paragraph transaction,
     /// retaining its place in the insert-session repeat program.
@@ -28,11 +33,11 @@ impl CommandInterpreter {
         named: Option<StyleId>,
         values: Vec<(StyleProperty, StylePropertyValue)>,
     ) {
-        self.restore_typing_style(named, values);
+        self.restore_typing_style(named, values, None);
         if let Some(session) = self.insert_session.as_mut() {
             if !session.replaying_program {
                 if let Some(program) = session.repeat_program.as_mut() {
-                    program.push(EditSessionStep::TypingStyle(self.typing_style.clone()));
+                    program.push(EditSessionStep::TypingStyle(self.typing_style.for_repeat()));
                 }
             }
         }
@@ -42,6 +47,9 @@ impl CommandInterpreter {
     }
     pub(crate) fn typing_properties(&self) -> &[(StyleProperty, StylePropertyValue)] {
         &self.typing_style.values
+    }
+    pub(crate) fn typing_inherited_context(&self) -> Option<&crate::document::ReplacementTypingContext> {
+        self.typing_style.inherited.as_ref()
     }
     pub fn set_typing_named_style(
         &mut self,
@@ -58,7 +66,7 @@ impl CommandInterpreter {
             if let Some(session) = self.insert_session.as_mut() {
                 if !session.replaying_program {
                     if let Some(program) = session.repeat_program.as_mut() {
-                        program.push(EditSessionStep::TypingStyle(self.typing_style.clone()));
+                        program.push(EditSessionStep::TypingStyle(self.typing_style.for_repeat()));
                     }
                 }
             }
@@ -113,7 +121,7 @@ impl CommandInterpreter {
             if let Some(session) = self.insert_session.as_mut() {
                 if !session.replaying_program {
                     if let Some(program) = session.repeat_program.as_mut() {
-                        program.push(EditSessionStep::TypingStyle(next.clone()));
+                        program.push(EditSessionStep::TypingStyle(next.for_repeat()));
                     }
                 }
             }
@@ -125,7 +133,7 @@ impl CommandInterpreter {
         self.typing_style.values.retain(|(p, _)| *p != property);
         if let Some(session) = self.insert_session.as_mut() {
             if let Some(program) = session.repeat_program.as_mut() {
-                program.push(EditSessionStep::TypingStyle(self.typing_style.clone()));
+                program.push(EditSessionStep::TypingStyle(self.typing_style.for_repeat()));
             }
         }
     }
@@ -137,7 +145,7 @@ impl CommandInterpreter {
         if let Some(session) = self.insert_session.as_mut() {
             if !session.replaying_program {
                 if let Some(program) = session.repeat_program.as_mut() {
-                    program.push(EditSessionStep::TypingStyle(self.typing_style.clone()));
+                    program.push(EditSessionStep::TypingStyle(self.typing_style.for_repeat()));
                 }
             }
         }
@@ -147,6 +155,9 @@ impl CommandInterpreter {
         document: &Document,
         style: &mut ResolvedCharacterStyle,
     ) -> Result<(), DocumentError> {
+        if let Some(context) = &self.typing_style.inherited {
+            *style = context.character.clone();
+        }
         if let Some(named) = &self.typing_style.named {
             *style = document.typing_named_style_at(
                 self.cursor,

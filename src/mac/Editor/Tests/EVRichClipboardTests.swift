@@ -218,6 +218,31 @@ import XCTest
         }
     }
 
+    func testNativePasteNormalizesLineEndingsAndShowsUnsupportedNullWithoutPrompt() throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let input = "é\0\r\nx\0y\rz"
+        let source = "<p>AB</p>"
+        for matchStyle in [false, true] {
+            pasteboard.clearContents()
+            XCTAssertTrue(pasteboard.setString(input, forType: .string))
+            let (backend, view, session) = try surface(source, type: EVDocument.htmlType, pasteboard: pasteboard)
+            try keys("a", session: session, surface: view)
+            view.perform(menuCommand: matchStyle ? .pasteAndMatchStyle : .paste, sender: nil)
+            XCTAssertEqual(try backend.formattedText(), "Aé␀\nx␀y\nzB")
+            XCTAssertEqual(pasteboard.string(forType: .string), input)
+            XCTAssertNil(view.commandOutput)
+            XCTAssertNil(NSApp.modalWindow)
+            let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
+            let reopened = EVCoreDocumentBackend()
+            try reopened.read(source: saved, typeName: EVDocument.htmlType)
+            XCTAssertEqual(try reopened.formattedText(), "Aé␀\nx␀y\nzB")
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+            _ = try session.undo()
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+        }
+    }
+
     func testCodePastesRichClipboardAsExactPlainQuotesAndCopiesWithoutTypography() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }

@@ -335,11 +335,13 @@ fn join_following_paragraph(
     range: &Range<usize>,
     replacement: &str,
 ) -> Result<Option<Vec<(Range<usize>, String)>>, DocumentError> {
-    if range.is_empty() || replacement.contains('\n') {
+    if range.is_empty() {
         return Ok(None);
     }
-    if let Some(patches) = join_code_into_previous(document, range, replacement)? {
-        return Ok(Some(patches));
+    if !replacement.contains('\n') {
+        if let Some(patches) = join_code_into_previous(document, range, replacement)? {
+            return Ok(Some(patches));
+        }
     }
     let projection = document.projection();
     let blocks = projection.blocks_for_region(range);
@@ -481,7 +483,7 @@ fn join_code_into_previous(
     let tail_source = projection.source_insertion_point(range.end, range.end != code.range.end)
         .ok_or(DocumentError::AmbiguousProjection)?..body.end;
     ranges.push(separator.start..tail_source.start);
-    let mut tail_syntax = tail.split('\n').map(super::projection::escape_markdown_insert)
+    let mut tail_syntax = tail.split('\n').map(|text| super::projection::escape_markdown_insert_in_encoding(text, document.encoding()))
         .collect::<Vec<_>>().join("<br>");
     if let Some(closing) = &closing_range {
         let following = code.range.end < projection.text_tree().byte_len();
@@ -507,7 +509,7 @@ fn join_code_into_previous(
     let last = merged.len() - 1;
     Ok(Some(merged.into_iter().enumerate().map(|(index, source)| {
         let mut syntax = if index == 0 {
-            super::projection::escape_markdown_insert(replacement)
+            super::projection::escape_markdown_insert_in_encoding(replacement, document.encoding())
         } else { String::new() };
         if index == last { syntax.push_str(&tail_syntax); }
         (source, syntax)
@@ -817,7 +819,7 @@ pub(super) fn preserve_edited_inline_delimiters(
     Ok(())
 }
 
-fn edited_source_fragment(
+pub(super) fn edited_source_fragment(
     document: &Document,
     content: &Range<usize>,
     patches: &[super::SourcePatch],
@@ -905,7 +907,7 @@ pub(super) fn clear_patches(
     } else {
         format!("{marker}{}", pad(suffix))
     };
-    let text = super::projection::escape_markdown_insert(&document.text()[selected.clone()]);
+    let text = super::projection::escape_markdown_insert_in_encoding(&document.text()[selected.clone()], document.encoding());
     Ok(vec![
         (opening, open),
         (source, format!("{prefix_end}{text}{suffix_start}")),

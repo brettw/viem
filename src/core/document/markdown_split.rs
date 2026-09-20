@@ -1,4 +1,4 @@
-//! Keep inline delimiter scopes valid when a formatted hard break splits them.
+//! Keep inline delimiter scopes valid when edits split or join formatted lines.
 use super::*;
 
 struct Scope {
@@ -6,6 +6,7 @@ struct Scope {
     opening: Range<usize>,
     closing: Range<usize>,
     marker: String,
+    closing_marker: String,
 }
 
 pub(super) fn patches(
@@ -32,140 +33,37 @@ fn patches_with_separator(
     separator: &str,
     insertion_source: Option<usize>,
 ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
-    if document.format() != Format::Markdown
-        || !replacement.contains('\n')
-        || !document
-            .projection()
-            .hard_breaks_for_region(range)
-            .is_empty()
-    {
+    if document.format() != Format::Markdown {
         return Ok(None);
     }
     let projection = document.projection();
-    let Some(line) = projection
+    let crosses_break = !projection.hard_breaks_for_region(range).is_empty();
+    if !replacement.contains('\n') && !crosses_break {
+        return Ok(None);
+    }
+    let Some(mut line) = projection
         .hard_line_at_offset(range.start)
         .and_then(|index| projection.hard_line_range(index))
     else {
         return Ok(None);
     };
-    if range.end > line.end {
-        return Ok(None);
-    }
-    let mut pending = projection
-        .style_spans_for_region(
-            &(range.start.saturating_sub(1)
-                ..range
-                    .end
-                    .saturating_add(1)
-                    .min(projection.text_tree().byte_len())),
-        )
-        .into_iter()
-        .filter_map(|span| {
-            let StyleApplication::Semantic(style) = span.application else {
-                return None;
-            };
-            Some((span.range, style))
-        })
-        .collect::<Vec<_>>();
-    let mut index = 0;
-    while index < pending.len() {
-        let extent = pending[index].0.clone();
-        for at in [extent.start, extent.end] {
-            for span in projection.style_spans_for_region(
-                &(at.saturating_sub(1)
-                    ..at.saturating_add(1).min(projection.text_tree().byte_len())),
-            ) {
-                let StyleApplication::Semantic(style) = span.application else {
-                    continue;
-                };
-                if extent.start <= span.range.start
-                    && span.range.end <= extent.end
-                    && !pending
-                        .iter()
-                        .any(|(range, old_style)| range == &span.range && *old_style == style)
-                {
-                    pending.push((span.range, style));
-                }
-            }
-        }
-        index += 1;
-    }
-    let mut scopes: Vec<Scope> = Vec::new();
-    // Inner scopes can share a visible endpoint with outer scopes. Resolve the
-    // adjacent delimiters first, then step over them to recover outer spelling.
-    while !pending.is_empty() {
-        let mut progress = false;
-        for index in (0..pending.len()).rev() {
-            let (formatted, style) = &pending[index];
-            let Some(source) = projection.source_range(formatted.clone()) else {
-                continue;
-            };
-            let mut opening_end = source.start;
-            let mut closing_start = source.end;
-            loop {
-                let Some(inner) = scopes.iter().find(|scope| {
-                    scope.opening.end == opening_end && scope.formatted.start == formatted.start
-                }) else {
-                    break;
-                };
-                opening_end = inner.opening.start;
-            }
-            loop {
-                let Some(inner) = scopes.iter().find(|scope| {
-                    scope.closing.start == closing_start && scope.formatted.end == formatted.end
-                }) else {
-                    break;
-                };
-                closing_start = inner.closing.end;
-            }
-            let mut matched = None;
-            if *style == SemanticInlineStyle::Code {
-                if let Some((opening, closing)) =
-                    super::super::markdown_code::delimiter_ranges(document, &source)?
-                {
-                    let bytes = document
-                        .state()
-                        .source
-                        .bytes_in(opening.clone())
-                        .ok_or(DocumentError::AmbiguousProjection)?;
-                    let marker = document
-                        .encoding()
-                        .decode_region(&bytes, opening.start)?
-                        .text;
-                    matched = Some((opening, closing, marker));
-                }
-            } else {
-                for marker in markdown_style_markers(*style) {
-                    let bytes = document.encoding().encode_fragment(marker)?;
-                    let Some(start) = opening_end.checked_sub(bytes.len()) else {
-                        continue;
-                    };
-                    let opening = start..opening_end;
-                    let closing = closing_start..closing_start + bytes.len();
-                    if document.state().source.bytes_in(opening.clone()).as_ref() == Some(&bytes)
-                        && document.state().source.bytes_in(closing.clone()).as_ref()
-                            == Some(&bytes)
-                    {
-                        matched = Some((opening, closing, (*marker).to_owned()));
-                        break;
-                    }
-                }
-            }
-            if let Some((opening, closing, marker)) = matched {
-                scopes.push(Scope {
-                    formatted: formatted.clone(),
-                    opening,
-                    closing,
-                    marker,
-                });
-                pending.remove(index);
-                progress = true;
-            }
-        }
-        if !progress {
+    if crosses_break {
+        // An inline hard break belongs to the same paragraph on both sides.
+        // Its source hull can include an emphasis/link closing delimiter;
+        // perform the same scope transition as a split so retained text on
+        // either side keeps its original inline context.
+        if !projection.blocks_for_region(range).iter().any(|block| {
+            block.range.start <= range.start && range.end <= block.range.end
+        }) {
             return Ok(None);
         }
+        let Some(last) = projection.hard_line_at_offset(range.end)
+            .and_then(|index| projection.hard_line_range(index)) else { return Ok(None); };
+        line.end = last.end;
+    } else if range.end > line.end {
+        return Ok(None);
     }
+    let Some(mut scopes) = inline_scopes(document, range, &line)? else { return Ok(None); };
     let mut source = if range.is_empty() {
         let Some(at) = insertion_source.or_else(|| projection.source_insertion_point(range.start, true)) else {
             return Ok(None);
@@ -268,6 +166,203 @@ fn patches_with_separator(
     Ok(Some(supporting))
 }
 
+fn inline_scopes(
+    document: &Document,
+    range: &Range<usize>,
+    line: &Range<usize>,
+) -> Result<Option<Vec<Scope>>, ModelTransactionError> {
+    let projection = document.projection();
+    let mut pending = projection
+        .style_spans_for_region(
+            &(range.start.saturating_sub(1)
+                ..range
+                    .end
+                    .saturating_add(1)
+                    .min(projection.text_tree().byte_len())),
+        )
+        .into_iter()
+        .filter_map(|span| {
+            let StyleApplication::Semantic(style) = span.application else {
+                return None;
+            };
+            Some((span.range, style))
+        })
+        .collect::<Vec<_>>();
+    let mut index = 0;
+    while index < pending.len() {
+        let extent = pending[index].0.clone();
+        for at in [extent.start, extent.end] {
+            for span in projection.style_spans_for_region(
+                &(at.saturating_sub(1)
+                    ..at.saturating_add(1).min(projection.text_tree().byte_len())),
+            ) {
+                let StyleApplication::Semantic(style) = span.application else {
+                    continue;
+                };
+                if extent.start <= span.range.start
+                    && span.range.end <= extent.end
+                    && !pending
+                        .iter()
+                        .any(|(range, old_style)| range == &span.range && *old_style == style)
+                {
+                    pending.push((span.range, style));
+                }
+            }
+        }
+        index += 1;
+    }
+    let mut scopes = link_scopes(document, &line)?;
+    // Inner scopes can share a visible endpoint with outer scopes. Resolve the
+    // adjacent delimiters first, then step over them to recover outer spelling.
+    while !pending.is_empty() {
+        let mut progress = false;
+        for index in (0..pending.len()).rev() {
+            let (formatted, style) = &pending[index];
+            let Some(source) = projection.source_range(formatted.clone()) else {
+                continue;
+            };
+            let mut opening_end = source.start;
+            let mut closing_start = source.end;
+            loop {
+                let Some(inner) = scopes.iter().find(|scope| {
+                    scope.opening.end == opening_end && scope.formatted.start == formatted.start
+                }) else {
+                    break;
+                };
+                opening_end = inner.opening.start;
+            }
+            loop {
+                let Some(inner) = scopes.iter().find(|scope| {
+                    scope.closing.start == closing_start && scope.formatted.end == formatted.end
+                }) else {
+                    break;
+                };
+                closing_start = inner.closing.end;
+            }
+            let mut matched = None;
+            if *style == SemanticInlineStyle::Code {
+                if let Some((opening, closing)) =
+                    super::super::markdown_code::delimiter_ranges(document, &source)?
+                {
+                    let bytes = document
+                        .state()
+                        .source
+                        .bytes_in(opening.clone())
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    let marker = document
+                        .encoding()
+                        .decode_region(&bytes, opening.start)?
+                        .text;
+                    matched = Some((opening, closing, marker));
+                }
+            } else {
+                for marker in markdown_style_markers(*style) {
+                    let bytes = document.encoding().encode_fragment(marker)?;
+                    let Some(start) = opening_end.checked_sub(bytes.len()) else {
+                        continue;
+                    };
+                    let opening = start..opening_end;
+                    let closing = closing_start..closing_start + bytes.len();
+                    if document.state().source.bytes_in(opening.clone()).as_ref() == Some(&bytes)
+                        && document.state().source.bytes_in(closing.clone()).as_ref()
+                            == Some(&bytes)
+                    {
+                        matched = Some((opening, closing, (*marker).to_owned()));
+                        break;
+                    }
+                }
+            }
+            if let Some((opening, closing, marker)) = matched {
+                scopes.push(Scope {
+                    formatted: formatted.clone(),
+                    opening,
+                    closing,
+                    closing_marker: marker.clone(),
+                    marker,
+                });
+                pending.remove(index);
+                progress = true;
+            }
+        }
+        if !progress {
+            return Ok(None);
+        }
+    }
+    Ok(Some(scopes))
+}
+
+/// Once every byte of an emphasis body is consumed, its paired delimiters
+/// have no content to style. Remove them in the same local source transaction
+/// so a following typing event cannot combine them with its new delimiters.
+pub(super) fn remove_empty_emphasis(
+    document: &Document,
+    edits: &[TextEdit],
+    patches: &mut Vec<SourcePatch>,
+) -> Result<(), ModelTransactionError> {
+    for edit in edits.iter().filter(|edit| !edit.range.is_empty()) {
+        let projection = document.projection();
+        let first = projection.hard_line_at_offset(edit.range.start)
+            .and_then(|index| projection.hard_line_range(index))
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let last = projection.hard_line_at_offset(edit.range.end)
+            .and_then(|index| projection.hard_line_range(index))
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let Some(mut scopes) = inline_scopes(document, &edit.range, &(first.start..last.end))? else {
+            continue;
+        };
+        scopes.sort_by_key(|scope| std::cmp::Reverse(scope.opening.start));
+        for scope in scopes {
+            if !scope.marker.starts_with(['*', '_']) { continue; }
+            let body = scope.opening.end..scope.closing.start;
+            if super::super::markdown_code::edited_source_fragment(document, &body, patches)?.is_empty() {
+                let mut support = Vec::new();
+                super::super::source_edit::append_uncovered_deletions(&scope.opening, patches, &mut support);
+                super::super::source_edit::append_uncovered_deletions(&scope.closing, patches, &mut support);
+                patches.extend(support);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A link label cannot contain a paragraph separator. Split its original
+/// delimiters just like emphasis, retaining the destination's exact spelling
+/// on both surviving labels and dropping wrappers around an empty label.
+fn link_scopes(document: &Document, line: &Range<usize>) -> Result<Vec<Scope>, DocumentError> {
+    let projection = document.projection();
+    let spans = projection.style_spans_for_region(line).into_iter()
+        .filter(|span| span.application == StyleApplication::Automatic("Link".into()))
+        .collect::<Vec<_>>();
+    if spans.is_empty() { return Ok(Vec::new()); }
+    let source = projection.source_range(line.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+    let physical = &document.state().source_hard_lines;
+    let first = physical.line_at_offset(source.start).and_then(|at| physical.get(at))
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let last = physical.line_at_offset(source.end.saturating_sub(1).max(source.start))
+        .and_then(|at| physical.get(at)).ok_or(DocumentError::AmbiguousProjection)?;
+    let bytes = document.state().source.bytes_in(first.start..last.end)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let decoded = document.encoding().decode_region(&bytes, first.start)?;
+    let normalized = normalize(&decoded, document.file_format());
+    let mapper = super::super::rich_text::Builder::new(&normalized, document.revision());
+    let mut scopes = Vec::new();
+    for link in super::super::links::markdown_links_in(&normalized.text, 0..normalized.text.len()) {
+        let label = mapper.source_range(link.label.clone());
+        let Some(span) = spans.iter().find(|span| projection.source_range(span.range.clone())
+            .is_some_and(|source| label.start <= source.start && source.end <= label.end)) else { continue; };
+        let opening = link.range.start..link.label.start;
+        let closing = link.label.end..link.range.end;
+        scopes.push(Scope {
+            formatted: span.range.clone(),
+            opening: mapper.source_range(opening.clone()),
+            closing: mapper.source_range(closing.clone()),
+            marker: normalized.text[opening].to_owned(),
+            closing_marker: normalized.text[closing].to_owned(),
+        });
+    }
+    Ok(scopes)
+}
+
 // A reopened `*` followed by whitespace at physical line start is a list
 // label. Its alternate spelling keeps the inline role, including in malformed
 // input where a second adjacent `*` was previously literal visible content.
@@ -285,6 +380,7 @@ fn avoid_list_prefix(
     let scope = &mut scopes[*index];
     if scope.marker == "*" && text.starts_with([' ', '\t']) {
         scope.marker = "_".to_owned();
+        scope.closing_marker = "_".to_owned();
         if source_end <= scope.closing.start {
             patches.push(SourcePatch::primary(
                 scope.closing.clone(),
@@ -302,7 +398,7 @@ fn transition(scopes: &[Scope], current: &mut Vec<usize>, next: &[usize], syntax
         .take_while(|(left, right)| left == right)
         .count();
     for &index in current[shared..].iter().rev() {
-        syntax.push_str(&scopes[index].marker);
+        syntax.push_str(&scopes[index].closing_marker);
     }
     for &index in &next[shared..] {
         syntax.push_str(&scopes[index].marker);

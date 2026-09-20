@@ -609,7 +609,7 @@ impl CommandInterpreter {
         self.enter_insert(document, InsertPlacement::Before, 1);
         let mut program = EditSessionProgram::default();
         if !self.typing_style.is_empty() {
-            program.push(EditSessionStep::TypingStyle(self.typing_style.clone()));
+            program.push(EditSessionStep::TypingStyle(self.typing_style.for_repeat()));
         }
         program.append_text(&external_text_register_value(document, text));
         if let Some(session) = self.insert_session.as_mut() {

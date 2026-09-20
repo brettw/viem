@@ -9,6 +9,205 @@ use super::{
 };
 use std::ops::Range;
 
+/// The first replaced paragraph and character contexts, captured before their
+/// source is deleted. These are source syntax values, not stale source offsets.
+/// Paragraph separators do not supply character scopes; retaining the selected
+/// text's scopes also retains semantic identity such as a link destination.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ReplacementTypingContext {
+    scopes: Vec<(String, String)>,
+    pub character: super::ResolvedCharacterStyle,
+    pub named: Option<super::StyleId>,
+    pub link: Option<String>,
+    pub paragraph: ReplacementParagraphStyle,
+    paragraph_scope: Option<(String, String)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ReplacementParagraphStyle {
+    pub style: super::StyleId,
+    pub direct: super::BlockProperties,
+    pub defaults: CharacterProperties,
+}
+
+impl ReplacementParagraphStyle {
+    pub(crate) fn matches(&self, document: &Document, at: usize) -> bool {
+        document.projection().blocks_for_region(&(at..at)).iter()
+            .find(|block| block.range.contains(&at) || block.range.start == at)
+            .is_some_and(|block| block.style == self.style && block.direct_paragraph == self.direct
+                && block.direct_default_character == self.defaults)
+    }
+}
+
+fn inline_scopes<'a>(tokens: &'a [Token], at: usize) -> Vec<&'a Token> {
+    let stack = super::html_paragraph::stack_at(tokens, at);
+    let first = stack.iter().rposition(|token| matches!(&token.kind,
+        TokenKind::Tag(tag) if super::html_paragraph::structural(&tag.name)))
+        .map_or(0, |index| index + 1);
+    stack[first..].to_vec()
+}
+
+impl Document {
+    pub(crate) fn replacement_typing_context(
+        &self,
+        range: Range<usize>,
+    ) -> Result<Option<ReplacementTypingContext>, DocumentError> {
+        if !self.format().is_wysiwyg() || range.is_empty() {
+            return Ok(None);
+        }
+        self.validate_range(&range)?;
+        let blocks = self.projection().blocks_for_region(&range);
+        let Some(owner) = blocks.iter().find(|block|
+            block.range.start <= range.start && range.start <= block.range.end) else { return Ok(None) };
+        let paragraph = ReplacementParagraphStyle { style: owner.style.clone(), direct: owner.direct_paragraph.clone(),
+            defaults: owner.direct_default_character.clone() };
+        // Paragraph separators have no character style of their own. Skip
+        // only structural separators, retaining authored hard breaks/spaces.
+        let mut sample = range.start;
+        while sample < range.end && blocks.iter().any(|block| block.range.end == sample)
+            && self.projection().text_tree().slice(sample..sample + 1).as_deref() == Ok("\n")
+        { sample += 1; }
+        let separators_only = sample == range.end;
+        let character = if separators_only {
+            crate::layout::DocumentLayoutStyles::semantic_character_at(self.projection(), range.start, true)
+                .map_err(|_| DocumentError::AmbiguousProjection)?
+        } else {
+            super::rich_text::resolved_character_at(self.projection(), sample)
+                .ok_or(DocumentError::AmbiguousProjection)?
+        };
+        let named = self.projection().selected_named_styles(
+            if separators_only { range.start..range.start } else { sample..sample },
+            if separators_only { BoundaryAffinity::Upstream } else { BoundaryAffinity::Downstream },
+        ).character;
+        let link = if separators_only { None } else { self.link_at(self.text_point(sample)?)? };
+        if self.format() != Format::Html {
+            return Ok(Some(ReplacementTypingContext { scopes: Vec::new(), character, named, link, paragraph, paragraph_scope: None }));
+        }
+        let paragraph_source = super::rich_text::block_source_point(self.projection(), owner)?;
+        let source = if separators_only { paragraph_source } else {
+            let end = self.hard_line_snapshot().next_grapheme_boundary(sample)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let contributor = super::source_edit::complete_contributors(
+                self.projection(), &super::TextEdit::new(sample..end, ""),
+            )?;
+            super::rich_text::text_source_runs(self, &contributor.range)?[0].start
+        };
+        let decoded = self.encoding().decode(&self.source_bytes())?;
+        let input = super::line_endings::normalize(&decoded, self.file_format());
+        let position = input.units.get(input.units.partition_point(|unit| unit.source.end <= source))
+            .map_or(input.text.len(), |unit| unit.normalized.start);
+        let tokens = html::tokenize(&input.text);
+        let paragraph_position = input.units.get(input.units.partition_point(|unit| unit.source.end <= paragraph_source))
+            .map_or(input.text.len(), |unit| unit.normalized.start);
+        // A cleared document loses enclosing paragraph context as well as its
+        // immediate tag: quote/container defaults and nested list ancestry
+        // belong to that first paragraph. The document envelope survives the
+        // clear itself, and opaque tables are never reconstructed as text.
+        let owners = super::html_paragraph::stack_at(&tokens, paragraph_position).into_iter()
+            .filter(|token| matches!(&token.kind, TokenKind::Tag(tag)
+                if super::html_paragraph::structural(&tag.name)
+                    && !matches!(tag.name.as_str(), "html" | "body" | "head" | "table")))
+            .collect::<Vec<_>>();
+        let paragraph_scope = (!owners.is_empty()).then(|| (
+            owners.iter().map(|token| &input.text[token.range.clone()]).collect(),
+            owners.iter().rev().map(|token| closing(token)).collect(),
+        ));
+        let scopes = if separators_only { Vec::new() } else { inline_scopes(&tokens, position).into_iter()
+            .map(|token| (input.text[token.range.clone()].to_owned(), closing(token)))
+            .collect() };
+        Ok(Some(ReplacementTypingContext { scopes, character, named, link, paragraph, paragraph_scope }))
+    }
+}
+
+pub(super) fn replacement_insertion(
+    document: &Document,
+    at: usize,
+    affinity: BoundaryAffinity,
+    text: &str,
+    protective_spaces: &[usize],
+    inherited: &ReplacementTypingContext,
+) -> Result<Option<Insertion>, DocumentError> {
+    if document.format() != Format::Html || text.is_empty() {
+        return Ok(None);
+    }
+    let source = if document.projection().text_tree().byte_len() == 0 {
+        super::rich_text::text_source_range(document, &(at..at))?.start
+    } else {
+        super::source_edit::insertion_point(document.projection(), at, Some(affinity))
+            .ok_or(DocumentError::AmbiguousProjection)?
+    };
+    let decoded = document.encoding().decode(&document.source_bytes())?;
+    let input = super::line_endings::normalize(&decoded, document.file_format());
+    let position = input.units.get(input.units.partition_point(|unit| unit.source.end <= source))
+        .map_or(input.text.len(), |unit| unit.normalized.start);
+    let tokens = html::tokenize(&input.text);
+    if document.projection().text_tree().byte_len() == 0
+        && !inherited.paragraph.matches(document, at)
+        && !super::html_paragraph::stack_at(&tokens, position).iter().any(|token|
+            matches!(&token.kind, TokenKind::Tag(tag) if super::html_paragraph::structural(&tag.name)
+                && !matches!(tag.name.as_str(), "html" | "body" | "head" | "table")))
+    {
+        if let Some((opening, closing)) = &inherited.paragraph_scope {
+            let prefix = inherited.scopes.iter().map(|(open, _)| open.as_str()).collect::<String>();
+            let suffix = inherited.scopes.iter().rev().map(|(_, close)| close.as_str()).collect::<String>();
+            let mut edit = super::TextEdit::new(at..at, text);
+            edit.html_protective_spaces = protective_spaces.to_vec();
+            let escaped = super::rich_text::escape_html_text_edit(document, source, &edit)?;
+            return Ok(Some(Insertion {
+                source: source..source,
+                source_caret: position + opening.len() + prefix.len() + escaped.len(),
+                syntax: format!("{opening}{prefix}{escaped}{suffix}{closing}"),
+            }));
+        }
+    }
+    let current = inline_scopes(&tokens, position);
+    let common = current.iter().zip(&inherited.scopes)
+        .take_while(|(token, (open, _))| input.text[token.range.clone()] == *open)
+        .count();
+    if common == current.len() && common == inherited.scopes.len() {
+        return Ok(None);
+    }
+    // Consume no syntax when exiting a fully removed inline run. Inserting
+    // after its existing closing tags avoids creating a second empty scope
+    // after the new text, which would capture the next typing event again.
+    let mut exit = position;
+    let mut remaining = current.len();
+    for token in tokens.iter().filter(|token| token.range.start >= position) {
+        if remaining == common || token.range.start != exit { break; }
+        let TokenKind::Tag(tag) = &token.kind else { break };
+        let TokenKind::Tag(expected) = &current[remaining - 1].kind else { unreachable!() };
+        if !tag.end || tag.name != expected.name { break; }
+        remaining -= 1;
+        exit = token.range.end;
+    }
+    if remaining == common && exit != position {
+        let prefix = inherited.scopes[common..].iter().map(|(open, _)| open.as_str()).collect::<String>();
+        let suffix = inherited.scopes[common..].iter().rev().map(|(_, close)| close.as_str()).collect::<String>();
+        let mapper = super::rich_text::Builder::new(&input, document.revision());
+        let source = mapper.source_range(exit..exit).start;
+        let mut edit = super::TextEdit::new(at..at, text);
+        edit.html_protective_spaces = protective_spaces.to_vec();
+        let escaped = super::rich_text::escape_html_text_edit(document, source, &edit)?;
+        return Ok(Some(Insertion {
+            source: source..source,
+            source_caret: exit + prefix.len() + escaped.len(),
+            syntax: format!("{prefix}{escaped}{suffix}"),
+        }));
+    }
+    let prefix = current[common..].iter().rev().map(|token| closing(token)).collect::<String>()
+        + &inherited.scopes[common..].iter().map(|(open, _)| open.as_str()).collect::<String>();
+    let suffix = inherited.scopes[common..].iter().rev().map(|(_, close)| close.as_str()).collect::<String>()
+        + &current[common..].iter().map(|token| &input.text[token.range.clone()]).collect::<String>();
+    let mut edit = super::TextEdit::new(at..at, text);
+    edit.html_protective_spaces = protective_spaces.to_vec();
+    let escaped = super::rich_text::escape_html_text_edit(document, source, &edit)?;
+    Ok(Some(Insertion {
+        source: source..source,
+        source_caret: position + prefix.len() + escaped.len(),
+        syntax: format!("{prefix}{escaped}{suffix}"),
+    }))
+}
+
 pub(super) fn retained_inline_syntax(
     document: &Document,
     source: Range<usize>,

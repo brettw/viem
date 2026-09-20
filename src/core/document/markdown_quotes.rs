@@ -62,7 +62,7 @@ pub(super) fn empty_insertion_patches(
             .len();
     Ok(Some(vec![(
         at..at,
-        super::projection::escape_markdown_insert(replacement),
+        super::projection::escape_markdown_insert_in_encoding(replacement, document.encoding()),
     )]))
 }
 

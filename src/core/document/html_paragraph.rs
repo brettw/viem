@@ -327,6 +327,130 @@ pub(super) fn split_whitespace_protections(
     Ok(patches)
 }
 
+/// Some HTML syntax makes an otherwise visible leading item disappear after
+/// deleting preceding content. Preserve that item explicitly instead of letting
+/// an incremental projection disagree with a freshly opened source document.
+pub(super) fn preserve_deleted_content_boundaries(
+    document: &super::Document,
+    edits: &[&super::TextEdit],
+    patches: &mut Vec<super::SourcePatch>,
+) -> Result<(), DocumentError> {
+    if document.format() != super::Format::Html {
+        return Ok(());
+    }
+    let mut ordered = edits.to_vec();
+    ordered.sort_by_key(|edit| (edit.range.start, edit.range.end));
+    let mut candidates = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for edit in &ordered {
+        if !edit.replacement.is_empty() || edit.range.is_empty() { continue; }
+        for block in document.projection().blocks_for_region(&edit.range) {
+            if edit.range.start != block.range.start || !seen.insert(block.id) { continue; }
+            let mut end = block.range.start;
+            for edit in &ordered {
+                if edit.range.start == end && edit.replacement.is_empty() {
+                    end = edit.range.end;
+                }
+            }
+            let leading_break = end < block.range.end
+                && document.projection().text_tree().slice(end..end + 1).as_deref() == Ok("\n");
+            let empty_item = end == block.range.end
+                && matches!(block.kind, super::BlockKind::ListItem { .. });
+            if leading_break || empty_item { candidates.push((block, end, leading_break)); }
+        }
+    }
+    if candidates.is_empty() { return Ok(()); }
+    let input = super::line_endings::normalize(
+        &document.encoding().decode(&document.source_bytes())?, document.file_format(),
+    );
+    let tokens = html::tokenize(&input.text);
+    let mapper = super::rich_text::Builder::new(&input, document.revision());
+    let normalized_at = |source| input.units.get(input.units.partition_point(|unit| unit.source.end <= source))
+        .map_or(input.text.len(), |unit| unit.normalized.start);
+    let mut support = Vec::new();
+    for (block, end, leading_break) in candidates {
+        if leading_break {
+            let Some(span) = document.projection().provenance_for_region(&(end..end + 1))
+                .into_iter().find(|span| span.formatted == (end..end + 1)) else { continue; };
+            let at = normalized_at(span.source.start);
+            let spelling = &input.text[at..normalized_at(span.source.end)];
+            if spelling != "\n" && !html::reference(spelling, false)
+                .is_some_and(|(value, length)| value == "\n" && length == spelling.len()) { continue; }
+            let stack = stack_at(&tokens, at);
+            let Some(open) = stack.iter().rev().find(|token|
+                matches!(&token.kind, TokenKind::Tag(tag) if tag.name == "pre")) else { continue; };
+            let prefix = mapper.source_range(open.range.end..at);
+            if edited_source_region(document, patches, prefix)?.as_deref() == Some(&[])
+                && !patches.iter().any(|patch| patch.range().start < span.source.end && span.source.start < patch.range().end)
+            {
+                // HTML suppresses the first LF after <pre>, including an
+                // &#10; reference. A br retains exactly this visible hard break.
+                support.push(super::SourcePatch::primary(span.source, document.encoding().encode_fragment("<br>")?));
+            }
+        } else {
+            let source = super::rich_text::block_source_point(document.projection(), &block)?;
+            let at = normalized_at(source);
+            let stack = stack_at(&tokens, at);
+            let Some(owner) = stack.iter().rposition(|token|
+                matches!(&token.kind, TokenKind::Tag(tag) if tag.name == "li")) else { continue; };
+            if stack[owner + 1..].iter().any(|token|
+                matches!(&token.kind, TokenKind::Tag(tag) if html::owns_paragraph(tag, document.projection().style_sheet()))) { continue; }
+            let opening = stack[owner];
+            let Some(child) = tokens.iter().filter(|token| token.range.start >= at)
+                .take_while(|token| !matches!(&token.kind, TokenKind::Tag(tag) if tag.name == "li"))
+                .find(|token| {
+                matches!(&token.kind, TokenKind::Tag(tag) if !tag.end && matches!(tag.name.as_str(), "ul" | "ol"))
+                    && stack_at(&tokens, token.range.start).iter().rev().find(|token|
+                        matches!(&token.kind, TokenKind::Tag(tag) if tag.name == "li"))
+                        .is_some_and(|owner| owner.range.start == opening.range.start)
+            }) else { continue; };
+            let child_source = mapper.source_range(child.range.clone());
+            if patches.iter().any(|patch| patch.range().start < child_source.end && child_source.start < patch.range().end) { continue; }
+            let prefix = mapper.source_range(opening.range.end..child.range.start);
+            let Some(bytes) = edited_source_region(document, patches, prefix)? else { continue; };
+            let decoded = document.encoding().decode_region(&bytes, 0)?;
+            let empty_body = html::tokenize(&decoded.text).into_iter().all(|token| match token.kind {
+                TokenKind::Text => decoded.text[token.range].chars().all(super::html_whitespace::collapsible),
+                TokenKind::Opaque => decoded.text[token.range].starts_with("<!--"),
+                _ => false,
+            });
+            if empty_body {
+                // A li containing only a nested list is an ancestry container.
+                // This edit retained its body paragraph, so give that now-empty
+                // paragraph an explicit owner before the unchanged child list.
+                support.push(super::SourcePatch::primary(child_source.start..child_source.start,
+                    document.encoding().encode_fragment("<p></p>")?));
+            }
+        }
+    }
+    patches.extend(support);
+    Ok(())
+}
+
+fn edited_source_region(
+    document: &super::Document,
+    patches: &[super::SourcePatch],
+    range: Range<usize>,
+) -> Result<Option<Vec<u8>>, DocumentError> {
+    let mut relevant = patches.iter().filter(|patch| {
+        let patch = patch.range();
+        patch.start < range.end && range.start < patch.end
+            || patch.is_empty() && range.start <= patch.start && patch.start <= range.end
+    }).collect::<Vec<_>>();
+    relevant.sort_by_key(|patch| (patch.range().start, patch.range().end));
+    let mut result = Vec::new();
+    let mut at = range.start;
+    for patch in relevant {
+        let part = patch.range();
+        if part.start < at || part.end > range.end { return Ok(None); }
+        result.extend(document.state().source.bytes_in(at..part.start).ok_or(DocumentError::AmbiguousProjection)?);
+        result.extend_from_slice(patch.replacement());
+        at = part.end;
+    }
+    result.extend(document.state().source.bytes_in(at..range.end).ok_or(DocumentError::AmbiguousProjection)?);
+    Ok(Some(result))
+}
+
 /// Deleting complete paragraphs explicitly consumes their structural boundary,
 /// whose projection has no text byte. Unknown descendants remain untouched.
 pub(super) fn deletion_patches(
@@ -335,10 +459,12 @@ pub(super) fn deletion_patches(
     range: &Range<usize>,
     whole_line: bool,
 ) -> Result<Option<Vec<(Range<usize>, String)>>, DocumentError> {
-    if whole_line {
-        if let Some(patches) = partial_paragraph_line_deletion(document, range)? {
-            return Ok(Some(patches));
-        }
+    if whole_line && partial_paragraph_line_range(document, range).is_some() {
+        // A partial paragraph keeps its structural owner. Let the shared
+        // text translator preserve boundary whitespace and retained parts of
+        // multi-character entities rather than deleting raw contributor runs.
+        // line_deletion_range already chooses any native hard break to remove.
+        return Ok(None);
     }
     if !whole_line
         && !document
@@ -536,25 +662,6 @@ pub(super) fn deletion_patches(
     }
     result.sort_by_key(|(range, _)| (range.start, range.end));
     Ok(Some(result))
-}
-
-/// A hard-line deletion inside a paragraph removes its text and its native
-/// break, retaining the paragraph/list owner. At a paragraph's final hard line,
-/// the preceding intra-paragraph break is the delimiter to remove: the following
-/// synthetic separator belongs to the surviving adjacent paragraph.
-fn partial_paragraph_line_deletion(
-    document: &super::Document,
-    range: &Range<usize>,
-) -> Result<Option<Vec<(Range<usize>, String)>>, DocumentError> {
-    let Some(range) = partial_paragraph_line_range(document, range) else {
-        return Ok(None);
-    };
-    Ok(Some(
-        super::rich_text::text_source_runs(document, &range)?
-            .into_iter()
-            .map(|source| (source, String::new()))
-            .collect(),
-    ))
 }
 
 /// Name the actual hard-break item removed by a line deletion. Commands still

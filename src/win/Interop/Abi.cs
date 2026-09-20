@@ -18,7 +18,7 @@ internal static unsafe class Abi
         if (status == VIEM_STATUS_OK) return;
         string explanation = status switch
         {
-            VIEM_STATUS_VERIFICATION_FAILED => "This edit cannot preserve the format's text and structure.",
+            VIEM_STATUS_VERIFICATION_FAILED => "The edit failed an internal consistency check.",
             VIEM_STATUS_AMBIGUOUS_PROJECTION => "This edit is not supported for the selected content structure.",
             VIEM_STATUS_UNREPRESENTABLE_CHARACTER => "The document's encoding cannot represent this character.",
             VIEM_STATUS_UNSUPPORTED_OPERATION => "This operation is not supported for the current format or selection.",

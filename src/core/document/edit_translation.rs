@@ -12,7 +12,9 @@ impl Document {
     ) -> Result<Vec<SourcePatch>, ModelTransactionError> {
         let mut patches = Vec::new();
         let mut rich_edits = Vec::new();
+        let mut logical_edits = Vec::new();
         for (edit, payload) in edits {
+            logical_edits.push(edit);
             if let Some(translated) = self.translate_source_edit(edit, payload)? {
                 patches.extend(translated);
             } else {
@@ -26,6 +28,7 @@ impl Document {
             self,
             &rich_edits,
         )?);
+        super::super::html_paragraph::preserve_deleted_content_boundaries(self, &logical_edits, &mut patches)?;
         Ok(patches)
     }
 
@@ -140,6 +143,7 @@ impl Document {
                     self.format(),
                     in_code,
                     self.file_format(),
+                    self.encoding(),
                 )
             }
         } else {
@@ -171,6 +175,7 @@ impl Document {
         if self.format() == Format::Markdown {
             markdown_block_styles::preserve_deleted_source_prefixes(self, edits, patches)?;
             super::super::markdown_code::preserve_edited_inline_delimiters(self, edits, patches)?;
+            markdown_split::remove_empty_emphasis(self, edits, patches)?;
             markdown_block_styles::remove_empty_continuation_prefixes(self, edits, patches)?;
             markdown_block_styles::preserve_deleted_boundary_spaces(self, edits, patches)?;
             markdown_block_styles::preserve_deleted_source_prefixes(self, edits, patches)?;
@@ -181,6 +186,7 @@ impl Document {
                 paragraph_break_ranges,
                 patches,
             )?;
+            markdown_block_styles::preserve_retained_literals(self, edits, patches)?;
         }
         Ok(())
     }

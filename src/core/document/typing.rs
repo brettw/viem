@@ -2,7 +2,7 @@
 //! stages never publish history. Their local patch lists are composed against
 //! the original source, then verified and committed as one model transaction.
 use super::*;
-use crate::document::{FontSlant, StylePropertyValue};
+use crate::document::{Color, FontSlant, StylePropertyValue};
 
 use super::replacement::PatchComposition;
 
@@ -276,7 +276,9 @@ impl Document {
             && matches!(bold)
             && matches!(slant)
             && matches!(foreground)
-            && p.background.map_or(true, |v| Some(v) == current.background)
+            && p.background.map_or(true, |v| {
+                Some(v) == current.background || v.alpha == 0.0 && current.background.is_none()
+            })
             && matches!(underline)
             && matches!(strikethrough)
             && p.language
@@ -306,10 +308,27 @@ impl Document {
         if enabled && containing.is_some() || !enabled && containing.is_none() {
             return Ok(self.no_op_prepared());
         }
-        let source = self
+        let mut source = self
             .projection()
             .source_range(range.clone())
             .ok_or(DocumentError::AmbiguousProjection)?;
+        if enabled && self.format() == Format::Markdown {
+            // Code keeps its interior literal. Emphasis on the complete
+            // inherited Code run must enclose its delimiters, not become
+            // newly visible asterisks inside the backticks.
+            for span in self.projection().style_spans_for_region(&range) {
+                if span.application != StyleApplication::Semantic(SemanticInlineStyle::Code)
+                    || span.range.start < range.start || range.end < span.range.end {
+                    continue;
+                }
+                let content = self.projection().source_range(span.range.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                if let Some((opening, closing)) = super::super::markdown_code::delimiter_ranges(self, &content)? {
+                    if span.range.start == range.start { source.start = source.start.min(opening.start); }
+                    if span.range.end == range.end { source.end = source.end.max(closing.end); }
+                }
+            }
+        }
         let mut patches = Vec::new();
         if enabled {
             let preceding = self
@@ -342,18 +361,23 @@ impl Document {
                 } else {
                     self.markdown_style_removal_patches(&content, style)?[1].range()
                 };
-                let marker = self
-                    .state()
-                    .source
-                    .bytes_in(closing.clone())
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                patches.push(SourcePatch::primary(closing, Vec::new()));
-                patches.push(SourcePatch::primary(source.end..source.end, marker));
-                return if self.format() == Format::MarkdownSource {
-                    self.prepare_html_source_patches(patches)
-                } else {
-                    self.prepare_source_only_patches(patches)
-                };
+                // A touching formatted run can still live inside a link or
+                // another source scope. Moving its closing delimiter across
+                // that hidden syntax would create crossing Markdown scopes.
+                if closing.end == source.start {
+                    let marker = self
+                        .state()
+                        .source
+                        .bytes_in(closing.clone())
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    patches.push(SourcePatch::primary(closing, Vec::new()));
+                    patches.push(SourcePatch::primary(source.end..source.end, marker));
+                    return if self.format() == Format::MarkdownSource {
+                        self.prepare_html_source_patches(patches)
+                    } else {
+                        self.prepare_source_only_patches(patches)
+                    };
+                }
             }
         }
         if enabled {
@@ -474,6 +498,62 @@ impl Document {
         named: Option<&StyleId>,
         values: &[(StyleProperty, StylePropertyValue)],
     ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        self.prepare_insertion_with_typing_context(edit, named, values, None)
+    }
+
+    pub(crate) fn prepare_insertion_with_typing_context(
+        &self,
+        edit: FormattedPayloadEdit,
+        named: Option<&StyleId>,
+        values: &[(StyleProperty, StylePropertyValue)],
+        inherited: Option<&super::super::ReplacementTypingContext>,
+    ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        // The captured first character supplies inheritance, while deliberate
+        // pending menu choices still win. Only differing properties are later
+        // written, so paragraph defaults remain sparse whenever they survive.
+        let inherited_named = inherited.filter(|_| self.format() != Format::Html)
+            .map(|context| context.named.clone().unwrap_or_else(|| StyleId::from("")));
+        let effective_named = named.or(inherited_named.as_ref());
+        let inherited_values = if named.is_none() {
+            inherited.map(|context| {
+                use StyleProperty as P;
+                use StylePropertyValue as V;
+                let c = &context.character;
+                let mut result = vec![
+                    (P::CharacterBold, V::Boolean(c.bold)),
+                    (P::CharacterSlant, V::FontSlant(c.slant)),
+                ];
+                if self.format().is_rich_text() {
+                    result.splice(0..0, [
+                        (P::CharacterFontFamilies, V::FontFamilies(c.font_families.clone())),
+                        (P::CharacterSize, V::Float(c.size)),
+                        (P::CharacterWeight, V::FontWeight(c.base_weight)),
+                    ]);
+                    result.extend([
+                        (P::CharacterUnderline, V::Boolean(c.underline)),
+                        (P::CharacterStrikethrough, V::Boolean(c.strikethrough)),
+                        (P::CharacterDirection, V::WritingDirection(c.direction)),
+                        (P::CharacterOpenTypeFeatures, V::OpenTypeFeatures(c.open_type_features.clone())),
+                        (P::CharacterLetterSpacing, V::Float(c.letter_spacing)),
+                        (P::CharacterScriptPosition, V::ScriptPosition(c.script_position)),
+                    ]);
+                    if !c.foreground_is_default { result.push((P::CharacterForeground, V::Color(c.foreground))); }
+                    // A cleared character highlight must override a surviving
+                    // paragraph's highlight. Transparent and absent are
+                    // visually equivalent; context matching avoids writing a
+                    // redundant override when no highlight survives.
+                    result.push((P::CharacterBackground, V::Color(c.background.unwrap_or(Color {
+                        red: 0.0, green: 0.0, blue: 0.0, alpha: 0.0,
+                    }))));
+                    if let Some(v) = &c.language { result.push((P::CharacterLanguage, V::Text(v.clone()))); }
+                }
+                result.retain(|(property, _)| !values.iter().any(|(explicit, _)| explicit == property));
+                result.extend_from_slice(values);
+                result
+            })
+        } else { None };
+        let values = inherited_values.as_deref().unwrap_or(values);
+        let named = effective_named;
         if let Some(style) = named {
             self.validate_typing_named_style(style)?;
         }
@@ -481,6 +561,7 @@ impl Document {
         let properties = self.validate_typing_properties(values)?;
         let mut at = edit.range.start;
         if named.is_none()
+            && inherited.is_none()
             && self.format().is_markdown()
             && edit.payload.text().trim().is_empty()
         {
@@ -520,7 +601,19 @@ impl Document {
                 },
                 &properties,
             );
-        let structural = if edit.range.is_empty() && !context_matches {
+        let inherited_insertion = if edit.range.is_empty() {
+            inherited.map(|context| super::super::html_typing::replacement_insertion(
+                self, at, affinity, edit.payload.text(), &edit.html_protective_spaces, context,
+            ).and_then(|insertion| match insertion {
+                Some(value) => Ok(Some(value)),
+                None => super::markdown_typing::replacement_insertion(self, at, affinity, edit.payload.text(), context),
+            })).transpose()?.flatten()
+        } else {
+            None
+        };
+        let structural = if inherited_insertion.is_some() {
+            inherited_insertion
+        } else if edit.range.is_empty() && !context_matches {
             super::super::html_typing::insertion(
                 self,
                 at,
@@ -542,6 +635,8 @@ impl Document {
             None
         };
         if structural.is_none() && (edit.range.is_empty() || single_replacement) && context_matches
+            && (inherited.is_none() || self.format() == Format::Html)
+            && inherited.is_none_or(|context| context.paragraph.matches(self, at))
         {
             // Replacing one already-matching grapheme retains its existing
             // source-backed style, so no redundant wrapper/table edit is needed.
@@ -629,7 +724,7 @@ impl Document {
             Ok(())
         };
         let first = if let Some(insertion) = structural {
-            let patches = vec![SourcePatch::primary(
+            let mut patches = vec![SourcePatch::primary(
                 insertion.source,
                 self.encoding().encode_fragment(&insertion.syntax)?,
             )
@@ -639,7 +734,11 @@ impl Document {
                 at = caret - edit.payload.text().len();
                 scratch.prepare_html_source_patches(patches)?
             } else {
-                scratch.prepare_text_edits_with_patches(vec![edit.text_edit()], Some(patches))?
+                let mut edits = vec![edit.text_edit()];
+                let support = scratch.html_boundary_space_edits(&mut edits)?;
+                patches.extend(scratch.translate_source_edits(support.iter().map(|edit| (edit, None)))?);
+                edits.extend(support);
+                scratch.prepare_text_edits_with_patches(edits, Some(patches))?
             }
         } else {
             scratch.prepare_formatted_payload_edits(vec![edit])?
@@ -700,6 +799,52 @@ impl Document {
             *selection = new_start..*caret;
             publish(scratch, prepared, sources, formatted)
         };
+        if let Some(context) = inherited {
+            // Clearing all content deliberately removes its source owners.
+            // Replacement restores the first paragraph's assignment before
+            // character traits, so headings stay headings and a later Return
+            // still observes that paragraph style's following-style rule.
+            let paragraph = &context.paragraph;
+            let current = scratch.projection().blocks_for_region(&(selection.start..selection.start))
+                .into_iter().find(|block| block.range.contains(&selection.start) || block.range.start == selection.start)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            if current.style != paragraph.style {
+                let request = if let Some((ordered, _)) = paragraph.style.list_family_level() {
+                    ModelRequest::SetListStyle {
+                        document: scratch.id(), revision: scratch.revision(), range: selection.start..selection.start,
+                        style: Some(if ordered { super::super::ListStyle::Numbered } else { super::super::ListStyle::Bullet }),
+                    }
+                } else {
+                    ModelRequest::SetParagraphStyle {
+                        document: scratch.id(), revision: scratch.revision(),
+                        range: selection.start..selection.start, style: paragraph.style.clone(),
+                    }
+                };
+                let prepared = scratch.prepare_model_request(request)?;
+                apply(&mut scratch, prepared, &mut selection, &mut caret, &mut sources, &mut formatted)?;
+            }
+            if self.format().is_rich_text() {
+                let current = scratch.projection().blocks_for_region(&(selection.start..selection.start))
+                    .into_iter().find(|block| block.range.contains(&selection.start) || block.range.start == selection.start)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let clear = current.direct_paragraph.declared_properties()
+                    .difference(&paragraph.direct.declared_properties()).copied().collect::<BTreeSet<_>>();
+                if !clear.is_empty() {
+                    let target = TextRange::new(scratch.text_point(selection.start)?, scratch.text_point(selection.start)?)?;
+                    let prepared = scratch.prepare_persisted_style_intent(PersistedStyleIntent::ClearDirectBlockProperties {
+                        target: StyleBlockTarget::Paragraphs(target), properties: clear,
+                    })?;
+                    apply(&mut scratch, prepared, &mut selection, &mut caret, &mut sources, &mut formatted)?;
+                }
+                if current.direct_paragraph != paragraph.direct && !paragraph.direct.declared_properties().is_empty() {
+                    let target = TextRange::new(scratch.text_point(selection.start)?, scratch.text_point(selection.start)?)?;
+                    let prepared = scratch.prepare_persisted_style_intent(PersistedStyleIntent::SetDirectBlockProperties {
+                        target: StyleBlockTarget::Paragraphs(target), properties: paragraph.direct.clone(),
+                    })?;
+                    apply(&mut scratch, prepared, &mut selection, &mut caret, &mut sources, &mut formatted)?;
+                }
+            }
+        }
         if let Some(style) = named {
             let prepared = scratch.prepare_character_style_choice(selection.clone(), style.clone())?;
             apply(

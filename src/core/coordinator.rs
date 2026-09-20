@@ -6946,6 +6946,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         let select_commit = invoking_commands.select_composition_commit(&self.document);
         let typing_properties = invoking_commands.typing_properties().to_vec();
         let typing_named = invoking_commands.typing_named_style().cloned();
+        let typing_inherited = self.document.replacement_typing_context(session.replacement_range())?
+            .or_else(|| invoking_commands.typing_inherited_context().cloned());
         let request = session.prepare_commit_with_input_policy(&self.document, invoking_commands)?;
         let replaced_empty_range = request.edit().range.is_empty();
         let inserted_text = request.edit().replacement.clone();
@@ -7014,7 +7016,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         if let Some(select_commit) = select_commit {
             target_commands.finish_select_composition_commit(&mut self.document, select_commit, caret_offset, &inserted_text);
         }
-        target_commands.restore_typing_style(typing_named, typing_properties);
+        target_commands.restore_typing_style(typing_named, typing_properties, typing_inherited);
         for (id, commands) in next_commands {
             self.views
                 .get_mut(&id)

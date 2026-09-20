@@ -21,8 +21,8 @@ fn core_text(text: &str) -> CoreEvent {
 }
 
 #[test]
-fn failed_latin1_markdown_replacement_rolls_back_register_document_cursor_and_history() {
-    let source = b"*a* *b*".to_vec();
+fn failed_latin1_markdown_code_replacement_rolls_back_register_document_cursor_and_history() {
+    let source = b"`a` *b*".to_vec();
     let mut document =
         Document::from_bytes(source.clone(), Encoding::Latin1, Format::Markdown).unwrap();
     let mut commands = CommandInterpreter::new();
@@ -31,7 +31,7 @@ fn failed_latin1_markdown_replacement_rolls_back_register_document_cursor_and_hi
     commands.handle(&mut document, command_key('r')).unwrap();
     let error = commands
         .handle(&mut document, command_key('😀'))
-        .expect_err("Latin-1 cannot encode the replacement character");
+        .expect_err("Latin-1 code cannot use a prose character reference");
 
     assert_eq!(
         error,

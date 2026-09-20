@@ -13,6 +13,7 @@ use super::{
     StyleSheetRevision, TextRange,
 };
 use std::ops::Range;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Stable identity for a transformation implementation. Versions change when
 /// the same implementation identity changes observable projection or reverse-
@@ -238,6 +239,9 @@ pub struct TransformationPipelineSnapshot {
     configuration: PipelineConfigurationIdentity,
     stages: Vec<TransformationStageSnapshot>,
     hard_lines: HardLineSnapshot,
+    /// Persistent regional context distinguishes escapable Markdown prose from
+    /// literal code without materializing the document's compatibility text.
+    markdown_projection: Option<super::FormattedDocument>,
 }
 
 impl TransformationPipelineSnapshot {
@@ -271,7 +275,7 @@ impl TransformationPipelineSnapshot {
 
         // Reverse projection walks the conceptual stages from output to source.
         for stage in self.stages.iter().rev() {
-            let disposition = self.stage_disposition(stage.role, intent);
+            let disposition = self.stage_disposition(stage.role, range, intent);
             reports.push(StageCapabilityReport {
                 stage: stage.identity,
                 disposition,
@@ -467,6 +471,7 @@ impl TransformationPipelineSnapshot {
     fn stage_disposition(
         &self,
         role: TransformationStageRole,
+        range: TextRange,
         intent: &PipelineEditIntent,
     ) -> StageEditDisposition {
         match role {
@@ -485,7 +490,8 @@ impl TransformationPipelineSnapshot {
                         // encoding stage sees newly authored syntax.
                         return StageEditDisposition::PassThrough;
                     }
-                    match self.configuration.encoding.encode_fragment(replacement) {
+                    let literal = self.markdown_literal_replacement_text(range, replacement);
+                    match self.configuration.encoding.encode_fragment(literal.as_deref().unwrap_or(replacement)) {
                         Ok(_) => StageEditDisposition::Translated,
                         Err(DocumentError::UnrepresentableCharacter {
                             encoding,
@@ -507,6 +513,45 @@ impl TransformationPipelineSnapshot {
                 _ => StageEditDisposition::PassThrough,
             },
         }
+    }
+
+    /// Mirror the Markdown translator's line-local source-run distribution.
+    /// Prose segments become character references before encoding; only code
+    /// segments still require their literal characters to be representable.
+    fn markdown_literal_replacement_text(&self, range: TextRange, replacement: &str) -> Option<String> {
+        if self.configuration.encoding != Encoding::Latin1
+            || replacement.chars().all(|ch| ch as u32 <= 0xff)
+        {
+            return None;
+        }
+        let projection = self.markdown_projection.as_ref()?;
+        let range = range.start().offset()..range.end().offset();
+        if !replacement.contains('\n') {
+            if let Some(runs) = projection.line_local_visible_source_runs(range.clone()) {
+                let graphemes = replacement.graphemes(true).collect::<Vec<_>>();
+                let mut at = 0;
+                let mut literal = String::new();
+                let last = runs.len() - 1;
+                for (index, run) in runs.into_iter().enumerate() {
+                    let take = if index == last {
+                        graphemes.len() - at
+                    } else {
+                        projection.text_tree().slice(run.formatted.clone()).ok()?
+                            .graphemes(true).count().min(graphemes.len() - at)
+                    };
+                    if projection.markdown_replacement_begins_in_code(&run.formatted) {
+                        for grapheme in &graphemes[at..at + take] { literal.push_str(grapheme); }
+                    }
+                    at += take;
+                }
+                return Some(literal);
+            }
+        }
+        Some(if projection.markdown_replacement_begins_in_code(&range) {
+            replacement.to_owned()
+        } else {
+            String::new()
+        })
     }
 
     fn format_stage_disposition(&self, intent: &PipelineEditIntent) -> StageEditDisposition {
@@ -688,6 +733,7 @@ impl Document {
             configuration,
             stages,
             hard_lines: self.hard_line_snapshot(),
+            markdown_projection: (self.format() == Format::Markdown).then(|| self.projection().clone()),
         }
     }
 }
@@ -853,6 +899,39 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn latin1_markdown_capabilities_distinguish_escaped_prose_and_literal_code() {
+        for (format, source, selected, replacement, supported) in [
+            (Format::Markdown, "**prose**", 0..5, "中", true),
+            (Format::Markdown, "[link](https://example.test/)", 0..4, "中", true),
+            (Format::Markdown, "", 0..0, "中", true),
+            (Format::Markdown, "`code`", 0..4, "中", false),
+            (Format::Markdown, "```\ncode\n```", 0..4, "中", false),
+            (Format::Markdown, "a `b`", 0..3, "中", true),
+            (Format::Markdown, "a `b`", 0..3, "AA中", false),
+            (Format::MarkdownSource, "**prose**", 2..7, "中", false),
+            (Format::PlainText, "prose", 0..5, "中", false),
+        ] {
+            let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Latin1, format).unwrap();
+            let range = TextRange::new(document.text_point(selected.start).unwrap(), document.text_point(selected.end).unwrap()).unwrap();
+            let snapshot = document.transformation_pipeline_snapshot();
+            let report = snapshot.capabilities(range, &PipelineEditIntent::ReplaceText {
+                replacement: replacement.to_owned(),
+            }).unwrap();
+            assert_eq!(report.decision == PipelineCapabilityDecision::Supported, supported, "{format:?} {source} {replacement}: {:?}", report.decision);
+            if !supported {
+                assert!(matches!(report.decision, PipelineCapabilityDecision::NeedsPolicy {
+                    request: PipelinePolicyRequest::UnrepresentableCharacter { encoding: Encoding::Latin1, character: '中' }, ..
+                }));
+            }
+            assert_eq!(document.replace(selected, replacement).is_ok(), supported, "{format:?} {source} {replacement}");
+            // The original context stays valid after a supported edit.
+            assert_eq!(snapshot.capabilities(range, &PipelineEditIntent::ReplaceText {
+                replacement: replacement.to_owned(),
+            }).unwrap().decision, report.decision);
+        }
     }
 
     #[test]

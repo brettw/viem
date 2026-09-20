@@ -581,6 +581,9 @@ impl CommandInterpreter {
         extent: LineExtent,
         applications: usize,
     ) -> Result<CommandOutput, DocumentError> {
+        let inherited_typing = if operator == Operator::Change && extent.source.is_none() {
+            document.replacement_typing_context(extent.text.clone())?
+        } else { None };
         if matches!(
             operator,
             Operator::Yank | Operator::Delete | Operator::Change
@@ -750,6 +753,7 @@ impl CommandInterpreter {
             if operator == Operator::Change {
                 document.begin_edit_group();
             }
+            let mut changed_cursor = None;
             if matches!(
                 operator,
                 Operator::Indent | Operator::Outdent | Operator::Reindent
@@ -758,6 +762,8 @@ impl CommandInterpreter {
                 document.apply_edits(edits)?;
             } else if operator == Operator::Delete && extent.whole {
                 document.delete_visual_text(range.clone())?;
+            } else if operator == Operator::Change {
+                changed_cursor = Some(delete_with_cursor(document, range.clone())?);
             } else {
                 document.replace(range.clone(), &replacement)?;
             }
@@ -772,7 +778,7 @@ impl CommandInterpreter {
                     },
                 );
             }
-            self.cursor = range.start.min(document.text().len());
+            self.cursor = changed_cursor.unwrap_or_else(|| range.start.min(document.text().len()));
             CommandOutput {
                 document_changed: before != document.revision(),
                 cursor_moved: true,
@@ -781,6 +787,7 @@ impl CommandInterpreter {
         };
         if operator == Operator::Change {
             output.merge(self.enter_insert(document, InsertPlacement::Before, 1));
+            self.typing_style.inherited = inherited_typing;
             // The change itself already opened the shared undo group.
             document.end_edit_group();
         } else {

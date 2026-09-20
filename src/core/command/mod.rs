@@ -2929,10 +2929,12 @@ impl CommandInterpreter {
         let edit_line_edge = matches!(self.mode, Mode::Insert | Mode::Replace)
             && matches!(event, InputEvent::Key(Key::Home | Key::End));
         self.record_event(&event);
-        let result = match self.handle_selection_input(document, &event, None)? {
-            Some(output) => Ok(output),
-            None => self.dispatch_event(document, event),
-        };
+        let result = self.handle_selection_input(document, &event, None).and_then(|output| {
+            match output {
+                Some(output) => Ok(output),
+                None => self.dispatch_event(document, event),
+            }
+        });
         match result {
             Ok(mut output) => {
                 if !edit_line_edge {
@@ -3859,6 +3861,13 @@ impl CommandInterpreter {
         document: &Document,
         name: char,
     ) -> Result<Option<RegisterValue>, RegisterReadError> {
+        if self.mode != Mode::CommandLine {
+            if let Some(target) = clipboard::ClipboardTarget::from_register(name) {
+                return self.clipboard_context.read(target)
+                    .map(|snapshot| Some(snapshot.content().to_paste_register(document.format())))
+                    .ok_or(RegisterReadError::ClipboardUnavailable(target));
+            }
+        }
         self.registers.read_for_put(
             name,
             RegisterReadContext::new(
@@ -9039,6 +9048,9 @@ impl CommandInterpreter {
             }
             Operator::Delete | Operator::Change => {
                 let value = register_value(document, &lines, &extent, register);
+                let inherited_typing = if operator == Operator::Change {
+                    document.replacement_typing_context(extent.range.clone())?
+                } else { None };
                 let mut edit_range = extent.range.clone();
                 let mut replacement = "";
                 if extent.kind == MotionKind::Linewise && operator == Operator::Delete {
@@ -9053,11 +9065,18 @@ impl CommandInterpreter {
                 if operator == Operator::Change {
                     document.begin_edit_group();
                 }
+                let mut changed_cursor = None;
                 let result = if full_selection && replacement.is_empty() {
                     document.clear_document_content()
                 } else if operator == Operator::Delete && extent.kind == MotionKind::Linewise
                 {
                     document.delete_lines(edit_range.clone())
+                } else if operator == Operator::Change {
+                    commit_model_with_cursor(document, ModelRequest::ApplyTextEdits {
+                        document: document.id(), revision: document.revision(),
+                        edits: vec![TextEdit::new(edit_range.clone(), replacement)],
+                    }, edit_range.start, Association::BeforeInsertion)
+                        .map(|cursor| changed_cursor = Some(cursor))
                 } else {
                     document.replace(edit_range.clone(), replacement)
                 };
@@ -9068,13 +9087,14 @@ impl CommandInterpreter {
                     return Err(error);
                 }
                 self.delete_register(register, value, deletion_class);
-                self.cursor = edit_range.start.min(document.projection().text_tree().byte_len());
+                self.cursor = changed_cursor.unwrap_or_else(|| edit_range.start.min(document.projection().text_tree().byte_len()));
                 let mut output = CommandOutput {
                     document_changed: true,
                     cursor_moved: true,
                     ..CommandOutput::complete()
                 };
                 if operator == Operator::Change {
+                    self.typing_style.inherited = inherited_typing;
                     self.mode = Mode::Insert;
                     self.insert_session = Some(InsertSession {
                         placement: InsertPlacement::Before,
@@ -10597,16 +10617,22 @@ impl CommandInterpreter {
             document.commit_model_transaction(prepared).map_err(command_document_error)?;
             self.cursor += input.len();
         } else if !self.typing_style.is_empty() {
-            self.cursor = document
-                .insert_with_typing_style(
+            let (prepared, cursor) = document
+                .prepare_insertion_with_typing_context(
                     edit,
                     self.typing_style.named.as_ref(),
                     &self.typing_style.values,
+                    self.typing_style.inherited.as_ref(),
                 )
                 .map_err(command_document_error)?;
+            document.commit_model_transaction(prepared).map_err(command_document_error)?;
+            self.cursor = cursor;
         } else {
             self.cursor = commit_typing_payload(document, edit)?;
         }
+        // The authored payload now supplies the adjacent typing context,
+        // including when an explicit rich clipboard fragment was inserted.
+        self.typing_style.inherited = None;
         self.finish_typing_caret(document)?;
         if let Some(session) = self.insert_session.as_mut() {
             session.record_inserted_intent(&value, intent, None);
@@ -10962,7 +10988,7 @@ impl CommandInterpreter {
         };
         let mut program = EditSessionProgram::default();
         if !self.typing_style.is_empty() {
-            program.push(EditSessionStep::TypingStyle(self.typing_style.clone()));
+            program.push(EditSessionStep::TypingStyle(self.typing_style.for_repeat()));
         }
         self.insert_session = Some(InsertSession {
             placement,
@@ -11111,7 +11137,8 @@ impl CommandInterpreter {
                         }
                         EditSessionStep::LiteralText(value) => self.insert_quoted_text(document, value)?,
                         EditSessionStep::TypingStyle(value) => {
-                            self.typing_style = Default::default();
+                            let inherited = self.typing_style.inherited.take();
+                            self.typing_style = typing_style::TypingStyle { inherited, ..Default::default() };
                             if let Some(named) = &value.named {
                                 self.set_typing_named_style(document, named.clone())?;
                             }

@@ -612,6 +612,11 @@ retained unless the edit necessarily changes that source region.
   replacement/diagnostic projections tied to the original opaque bytes. Merely
   opening or saving must not replace those bytes with a Unicode replacement
   character.
+- Inserting immediately after a dangling final UTF-16 byte repairs that byte
+  to encoded U+FFFD when necessary to keep subsequent code units aligned. This
+  is an automatic local supporting patch in the insertion transaction; it
+  preserves the visible diagnostic and requires no modal question. Undo restores
+  the exact malformed bytes. Edits elsewhere do not repair unrelated bytes.
 - Unchanged decoded text is saved by copying its original bytes, not by
   re-encoding it.
 - New or changed Unicode text is encoded using the original encoding when it
@@ -619,6 +624,11 @@ retained unless the edit necessarily changes that source region.
   use a semantically exact format escape, change the document encoding and any
   declarations, or reject/request a user decision. Silent substitution or data
   loss is forbidden.
+- HTML and RTF use exact native escapes for otherwise unencodable input.
+  Markdown WYSIWYG prose uses numeric references where they reproduce the
+  requested Unicode character. Code spans/fences and literal/source views retain
+  exact literal semantics; an entity spelling must not masquerade as a character
+  there. Ordinary input never silently changes the file's encoding.
 
 ### Shared text line-ending projection
 
@@ -978,6 +988,24 @@ typing style. At paragraph start or end, the only interior side is used. Empty
 paragraphs retain an explicit paragraph-style assignment and typing-character
 declarations even though they contain no text.
 
+Replacing a nonempty text selection inherits the character style and direct
+character declarations of its first selected character in document order,
+independent of selection direction. The context is captured before deleting
+the range and applies to continued typing. An interior style or link that is
+completely consumed must not leak into a replacement beginning in ordinary
+text. A replacement beginning in styled or linked text retains that context,
+even when it consumes the entire original run. Explicit pending typing
+formatting takes precedence over this inherited context.
+
+Leading paragraph separators are skipped when finding that first selected text
+character; ordinary spaces still count. A selection containing only separators
+uses its pre-edit insertion context and does not inherit a hyperlink from a
+neighboring paragraph. Empty paragraphs supply their explicit typing context or
+paragraph defaults. Replacing a whole paragraph retains the first selected
+paragraph's style assignment and direct paragraph declarations, including when
+the selection consumes the entire document. Joining paragraphs retains the first
+paragraph's style, with retained text keeping its character formatting.
+
 Choosing an assignable character style with no selection sets a view-local
 pending named style for subsequent typing. This retains the style's identity,
 separate from direct character declarations, and immediately updates character
@@ -1037,6 +1065,17 @@ the selection's beginning. Flat edits, formatted payloads, clipboard replacement
 and keyboard commands share this structural translation. Source patches that
 share structural delimiters are composed before one atomic publication; logical
 selection ranges and position maps remain unchanged by supporting source edits.
+
+Deleting a displayed row obeys the same rules as deleting a character range.
+HTML line/owner deletion must protect retained spaces that become exposed at a
+paragraph edge using the existing nonbreaking-space policy. Markdown deletion
+and replacement must escape retained literal punctuation when newly adjacent
+text or a new line boundary would otherwise activate markup. These are local
+supporting source repairs, not reasons to reject an ordinary visible-text edit.
+Completely consumed Markdown emphasis/link scopes remove their now-empty
+delimiters; replacement typing recreates the first character's semantic context.
+Candidate verification remains an internal consistency guard; a mismatch is an
+editor defect, not a user-facing limitation of deleting formatted text.
 
 #### Lists and future structured blocks
 
@@ -1809,6 +1848,13 @@ Each adapter has corpus, property, and targeted golden tests. At minimum:
   corresponding to the selection, including markup in WYSIWYG views. Paste
   and Match Style ignores the private fragment and uses plain text. Malformed
   external private data cannot prevent ordinary commands or plain-text paste.
+- External plain-text paste normalizes CRLF and standalone CR to semantic hard
+  breaks. Private payloads retain their declared break semantics. When pasting
+  into HTML WYSIWYG, NUL becomes the visible U+2400 SYMBOL FOR NULL (`␀`), because
+  HTML cannot retain the exact character. These transformations never ask modal
+  questions or rewrite the clipboard. Exact internal registers, command-prompt
+  input, literal-input commands, and representable NUL characters retain their
+  existing semantics.
 
 ### Format interpretation and conversion
 

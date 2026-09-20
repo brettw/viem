@@ -132,6 +132,42 @@ impl ClipboardContent {
             .clone()
             .unwrap_or_else(|| RegisterValue::characterwise(self.plain_text.clone()))
     }
+
+    /// Interpret external plain text as prose input, without modifying the
+    /// clipboard or exact Vim registers. Private payloads already describe
+    /// their line breaks; only controls the destination cannot store change.
+    pub(crate) fn to_paste_register(&self, format: crate::document::Format) -> RegisterValue {
+        let value = self.to_register();
+        let normalize_breaks = self.portable_register.is_none();
+        let replace_null = format == crate::document::Format::Html;
+        if !(normalize_breaks && value.text.contains('\r')
+            || replace_null && value.text.contains('\0'))
+        {
+            return value;
+        }
+        let mut text = String::with_capacity(value.text.len());
+        let mut breaks = Vec::with_capacity(value.hard_break_offsets().len());
+        let mut characters = value.text.char_indices().peekable();
+        while let Some((at, character)) = characters.next() {
+            if normalize_breaks && character == '\r' {
+                if characters.peek().is_some_and(|(_, next)| *next == '\n') {
+                    characters.next();
+                }
+                breaks.push(text.len());
+                text.push('\n');
+            } else {
+                if value.is_hard_break(at) {
+                    breaks.push(text.len());
+                }
+                text.push(if replace_null && character == '\0' { '␀' } else { character });
+            }
+        }
+        // A changed private fragment must not replay its original source over
+        // the sanitized text. In particular, an RTF NUL pasted into HTML uses
+        // the ordinary cross-format text path with the visible null marker.
+        RegisterValue::try_new(text, value.kind, breaks)
+            .expect("clipboard normalization preserves valid semantic break positions")
+    }
 }
 
 /// Immutable provider read captured outside an editor coordinator turn.

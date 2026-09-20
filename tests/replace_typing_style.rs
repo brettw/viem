@@ -323,7 +323,7 @@ fn styled_replace_counts_backspace_and_dot_keep_one_undo_unit() {
 }
 #[test]
 fn failed_styled_replace_batch_never_commits_a_prefix_or_discards_its_frontier() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::MarkdownSource] {
         let (mut core, view) = start(format, b"word".to_vec(), Encoding::Latin1, 0);
         style(&mut core, view, SemanticInlineStyle::Emphasis, true);
         key(&mut core, view, Key::Char('a'));
@@ -337,4 +337,24 @@ fn failed_styled_replace_batch_never_commits_a_prefix_or_discards_its_frontier()
         key(&mut core, view, Key::Backspace);
         assert_eq!(core.document().source_bytes(), b"word");
     }
+}
+
+#[test]
+fn latin1_styled_markdown_replace_uses_escapes_and_restores_each_grapheme() {
+    let (mut core, view) = start(Format::Markdown, b"word".to_vec(), Encoding::Latin1, 0);
+    style(&mut core, view, SemanticInlineStyle::Emphasis, true);
+    key(&mut core, view, Key::Char('a'));
+    let before = core.document().source_bytes();
+    core.handle(view, CoreEvent::Input(InputEvent::text("b猫"))).unwrap();
+    assert_eq!(core.document().text(), "ab猫d");
+    let reopened = Document::from_bytes(core.document().source_bytes(), Encoding::Latin1, Format::Markdown).unwrap();
+    assert_eq!(reopened.text(), core.document().text());
+    assert_eq!(DocumentLayoutStyles::semantic_character_at(reopened.projection(), 2, false).unwrap().slant,
+        viem_core::document::FontSlant::Italic);
+    key(&mut core, view, Key::Backspace);
+    assert_eq!(core.document().text(), "abrd");
+    key(&mut core, view, Key::Backspace);
+    assert_eq!(core.document().source_bytes(), before);
+    key(&mut core, view, Key::Backspace);
+    assert_eq!(core.document().source_bytes(), b"word");
 }

@@ -895,10 +895,13 @@ pub(super) fn resolved_character_at(
     let mut paragraph_style = &block.style;
     let mut paragraph_defaults = &block.direct_default_character;
     let mut direct = CharacterProperties::default();
+    let mut semantic = CharacterProperties::default();
     let mut named = None;
     let spans = document.style_spans_for_region(&(at..at + 1));
     for span in spans.iter().filter(|span| span.range.contains(&at)) {
         match &span.application {
+            StyleApplication::Semantic(super::SemanticInlineStyle::Strong) => semantic.bold = Some(true),
+            StyleApplication::Semantic(super::SemanticInlineStyle::Emphasis) => semantic.slant = Some(super::FontSlant::Italic),
             StyleApplication::Direct(properties) => overlay(&mut direct, properties),
             StyleApplication::Named(id) => named = Some(id),
             StyleApplication::SourceParagraph { style, defaults } => {
@@ -908,6 +911,7 @@ pub(super) fn resolved_character_at(
             _ => {}
         }
     }
+    overlay(&mut semantic, &direct);
     document
         .style_sheet()
         .resolve_assigned_paragraph_style(
@@ -916,7 +920,7 @@ pub(super) fn resolved_character_at(
             &block.direct_paragraph,
             paragraph_defaults,
             named,
-            &direct,
+            &semantic,
         )
         .ok()
         .map(|resolved| resolved.character)

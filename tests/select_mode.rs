@@ -443,7 +443,7 @@ fn selected_clean_character_style_survives_replacement_and_replacement_undo() {
     }
 }
 #[test]
-fn select_all_delete_clears_rich_structure_and_enters_insert() {
+fn select_all_delete_clears_content_and_retains_paragraph_style_for_replacement() {
     use viem_core::layout::MockTextMeasurementProvider;
     use viem_core::{Core, CoreEvent};
     for (format, source) in [
@@ -466,13 +466,11 @@ fn select_all_delete_clears_rich_structure_and_enters_insert() {
             .unwrap();
         assert_eq!(core.document().text(), "");
         assert_eq!(core.command_state(v).unwrap().mode(), Mode::Insert);
-        core.handle(v, CoreEvent::Input(InputEvent::Text("plain".into())))
+        assert!(core.document().projection().blocks().iter().all(|block| block.style.0 != "Block quote"));
+        core.handle(v, CoreEvent::Input(InputEvent::Text("replacement".into())))
             .unwrap();
-        let source = String::from_utf8(core.document().source_bytes()).unwrap();
-        assert!(
-            !source.contains("blockquote") && !source.contains("> plain"),
-            "{source}"
-        );
+        assert_eq!(core.document().text(), "replacement");
+        assert_eq!(core.document().projection().blocks()[0].style.0, "Block quote");
     }
 }
 #[test]

@@ -51,7 +51,7 @@ pub(crate) use replacement::RecordedReplacement;
 
 use super::formatted_text::{FormattedTextSpliceStats, LogicalGraphemeSnapshot};
 use super::line_endings::{detect, normalize, normalize_literal};
-use super::projection::{escape_markdown_insert, project, splice_line_local_projection};
+use super::projection::{escape_markdown_insert, escape_markdown_insert_in_encoding, project, splice_line_local_projection};
 use super::source_line_index::SourceHardLineSpliceStats;
 use super::transfer::{self, HardLineTransfer};
 use super::{
@@ -3012,6 +3012,7 @@ impl Document {
                 &mut source_patches,
             )?;
         }
+        let repaired_utf16 = self.repair_incomplete_utf16_insertions(&edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;
 
         if translate_source && self.source_edit_requires_reprojection(&edits, &source_patches)? {
@@ -3021,7 +3022,11 @@ impl Document {
             // the old one. Commit the exact translated source intention and
             // derive its complete formatted change from authoritative parsing.
             // Proven ordinary line edits retain the incremental path below.
-            return self.prepare_reprojected_source_patches(source_patches);
+            let mut prepared = self.prepare_reprojected_source_patches(source_patches)?;
+            if repaired_utf16 {
+                prepared.summary.conversion_warnings.push(super::ConversionWarning::RepairedTruncatedUtf16);
+            }
+            return Ok(prepared);
         }
 
         let persistent_edits = edits
@@ -3135,7 +3140,9 @@ impl Document {
                 formatted_splices,
                 projection_work,
                 style_change: None,
-                conversion_warnings: Vec::new(),
+                conversion_warnings: if repaired_utf16 {
+                    vec![super::ConversionWarning::RepairedTruncatedUtf16]
+                } else { Vec::new() },
             },
             text_position_map,
             None,
@@ -3189,6 +3196,21 @@ impl Document {
                     return Ok(None);
                 }
             }
+            if old_end < range.end && segment.is_empty() {
+                // A retained two-space hard break becomes an ordinary blank
+                // line once its preceding body disappears. An explicit break
+                // keeps its original inline role and exact visible boundary.
+                if let Some(source) = self.projection().source_range(old_end..old_end + 1) {
+                    let bytes = self.state().source.bytes_in(source.clone())
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    let decoded = self.encoding().decode_region(&bytes, source.start)?;
+                    let normalized = normalize(&decoded, self.file_format());
+                    if normalized.text == "  \n" || normalized.text == "\\\n" {
+                        let syntax = "<br>";
+                        patches.push(SourcePatch::primary(source, self.encoding().encode_fragment(&syntax)?));
+                    }
+                }
+            }
             old_at = old_end + 1;
             replacement_at = replacement_end + 1;
         }
@@ -3234,6 +3256,14 @@ impl Document {
                 .markdown_replacement_begins_in_code(&run.formatted);
             let syntax = if in_code {
                 segment
+            } else if !segment.is_empty() && segment.chars().all(|ch| matches!(ch, ' ' | '\t'))
+                && self.projection().hard_line_at_offset(run.formatted.start)
+                    .and_then(|index| self.projection().hard_line_range(index))
+                    .is_some_and(|line| formatted_range.start <= line.start && line.end <= formatted_range.end)
+            {
+                // Whitespace replacing a complete visible line is authored
+                // text, not an empty physical line or hard-break padding.
+                segment.chars().map(|ch| if ch == ' ' { "&#32;" } else { "&#9;" }).collect()
             } else {
                 self.escape_markdown_source_text(run.source.start, &segment)?
             };
@@ -3255,7 +3285,7 @@ impl Document {
         source_at: usize,
         text: &str,
     ) -> Result<String, DocumentError> {
-        let mut escaped = escape_markdown_insert(text);
+        let mut escaped = escape_markdown_insert_in_encoding(text, self.encoding());
         let Some(line) = self.state().source_hard_lines.line_at_offset(source_at) else {
             return Err(DocumentError::AmbiguousProjection);
         };
@@ -3442,6 +3472,7 @@ impl Document {
                 .map(|edit| &edit.range),
             &mut source_patches,
         )?;
+        let repaired_utf16 = self.repair_incomplete_utf16_insertions(&text_edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;
         // A literal CR can combine with a following bare LF under DOS.
         // Source grammar may reshape paragraphs, but must not silently consume
@@ -3449,7 +3480,11 @@ impl Document {
         if edits.iter().all(|edit| !edit.payload.text().contains('\r'))
             && self.source_edit_requires_reprojection(&text_edits, &source_patches)?
         {
-            return self.prepare_reprojected_source_patches(source_patches);
+            let mut prepared = self.prepare_reprojected_source_patches(source_patches)?;
+            if repaired_utf16 {
+                prepared.summary.conversion_warnings.push(super::ConversionWarning::RepairedTruncatedUtf16);
+            }
+            return Ok(prepared);
         }
 
         let source = apply_source_patches(&self.state().source, &source_patches)?;
@@ -3507,7 +3542,9 @@ impl Document {
                 formatted_splices,
                 projection_work,
                 style_change: None,
-                conversion_warnings: Vec::new(),
+                conversion_warnings: if repaired_utf16 {
+                    vec![super::ConversionWarning::RepairedTruncatedUtf16]
+                } else { Vec::new() },
             },
             text_position_map,
             None,
@@ -6523,7 +6560,13 @@ impl Document {
         } else {
             super::rtf::escape(&edit.replacement)
         };
-        if patch.replacement != self.state().encoding.encode_fragment(&canonical)? {
+        let Ok(canonical_bytes) = self.state().encoding.encode_fragment(&canonical) else {
+            // A prose character reference may be representable even though
+            // its decoded text is not. This literal-fragment fast path cannot
+            // prove that edit; let ordinary source parsing verify it instead.
+            return Ok(None);
+        };
+        if patch.replacement != canonical_bytes {
             return Ok(None);
         }
         let inherited_html_whitespace = if self.format() == Format::Html {
@@ -6844,6 +6887,15 @@ impl Document {
             }
             provenance.sort_by_key(|span| span.formatted.start);
             decoded_bytes = parsed_bytes + old_patch_bytes.len() + rtf_boundary_context_bytes;
+        }
+        if self.format() == Format::Html && new_text.is_empty() && provenance.is_empty() {
+            // An emptied paragraph still owns an editable insertion boundary.
+            // The sentinel fragment has no text contributor to supply it;
+            // retain the exact inside-owner boundary of the erased body.
+            provenance.push(super::ProvenanceSpan {
+                formatted: 0..0,
+                source: patch.range.start..patch.range.start,
+            });
         }
         let mut sampled_at = if compacted_html_space.is_some() {
             edit.range.start - 1
@@ -7962,6 +8014,7 @@ fn structured_payload_syntax(
     format: Format,
     in_code: bool,
     file_format: FileFormat,
+    encoding: super::Encoding,
 ) -> String {
     if format == Format::Html {
         return super::html::escape(payload.text());
@@ -7975,7 +8028,7 @@ fn structured_payload_syntax(
     for &hard_break in payload.break_offsets() {
         let segment = &payload.text()[start..hard_break];
         if escape_markdown {
-            syntax.push_str(&escape_markdown_insert(segment));
+            syntax.push_str(&if in_code { escape_markdown_insert(segment) } else { escape_markdown_insert_in_encoding(segment, encoding) });
         } else {
             syntax.push_str(segment);
         }
@@ -7989,7 +8042,7 @@ fn structured_payload_syntax(
     }
     let segment = &payload.text()[start..];
     if escape_markdown {
-        syntax.push_str(&escape_markdown_insert(segment));
+        syntax.push_str(&if in_code { escape_markdown_insert(segment) } else { escape_markdown_insert_in_encoding(segment, encoding) });
     } else {
         syntax.push_str(segment);
     }

@@ -5,6 +5,73 @@ use crate::document::{line_endings, paragraph_flow, BlockKind};
 use std::collections::BTreeSet;
 use std::ops::Range;
 
+/// Removing literal text can expose punctuation as newly active Markdown:
+/// deleting `!` from an unsupported image spelling, for example, must leave
+/// the displayed brackets rather than silently turn them into a hidden link.
+/// Reparse only the affected physical lines and escape only retained literal
+/// contributors which that candidate would consume as syntax.
+pub(super) fn preserve_retained_literals(
+    document: &Document,
+    edits: &[TextEdit],
+    patches: &mut Vec<SourcePatch>,
+) -> Result<(), DocumentError> {
+    let mut support = Vec::new();
+    for edit in edits {
+        if document.projection().markdown_replacement_begins_in_code(&edit.range) {
+            continue;
+        }
+        let text = document.projection().text_tree();
+        let is_boundary = |ch: char| ch.is_ascii_punctuation() || matches!(ch, ' ' | '\t');
+        let mut start = edit.range.start;
+        while let Some(previous) = document.previous_grapheme_boundary(start) {
+            if !text.slice(previous..start).map_err(DocumentError::FormattedTextStorage)?
+                .chars().all(is_boundary) { break; }
+            start = previous;
+        }
+        let mut end = edit.range.end;
+        while let Some(next) = document.next_grapheme_boundary(end) {
+            if !text.slice(end..next).map_err(DocumentError::FormattedTextStorage)?
+                .chars().all(is_boundary) { break; }
+            end = next;
+        }
+        let spans = document.projection().provenance_for_region(&(start..end))
+            .into_iter().filter(|span| {
+                !span.formatted.is_empty() && !span.source.is_empty()
+                    && !(edit.range.start < span.formatted.end && span.formatted.start < edit.range.end)
+                    && !patches.iter().any(|patch| patch.range.start < span.source.end && span.source.start < patch.range.end)
+                    && text.slice(span.formatted.clone()).is_ok_and(|text| text.chars().all(|ch| ch.is_ascii_punctuation()))
+            }).collect::<Vec<_>>();
+        let Some(last) = spans.last() else { continue; };
+        let Some(candidate) = project_local_candidate(document, &(start..end), &last.source, patches, false)? else {
+            continue;
+        };
+        let projected = crate::document::projection::project(&candidate.normalized, super::Format::Markdown,
+            document.revision(), 0, candidate.source_len);
+        for span in spans {
+            let visible = text.slice(span.formatted.clone()).map_err(DocumentError::FormattedTextStorage)?;
+            if document.state().source.bytes_in(span.source.clone())
+                != Some(document.encoding().encode_fragment(&visible)?) {
+                continue;
+            }
+            let delta = candidate.patches.iter().filter(|patch| patch.range.end <= span.source.start)
+                .map(|patch| patch.replacement.len() as isize - patch.range.len() as isize).sum::<isize>();
+            let at = (span.source.start - candidate.source_start).checked_add_signed(delta)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let after = at..at + span.source.len();
+            if !projected.provenance_contained_in_source(&after).iter().any(|mapped| {
+                mapped.source == after && !mapped.formatted.is_empty()
+                    && projected.text_tree().slice(mapped.formatted.clone()).as_deref() == Ok(visible.as_str())
+            }) {
+                escape_retained_punctuation(document, span.formatted.start, &mut support)?;
+            }
+        }
+    }
+    support.sort_by_key(|patch| (patch.range.start, patch.range.end));
+    support.dedup_by(|left, right| left.range == right.range);
+    patches.extend(support);
+    Ok(())
+}
+
 /// A consumed physical break also owns the following line's hidden quote or
 /// list-continuation prefix. Otherwise that prefix becomes visible mid-line.
 pub(super) fn preserve_deleted_source_prefixes(
@@ -137,7 +204,7 @@ pub(super) fn preserve_deleted_boundary_spaces(
                 // into the following paragraph separator. A following break
                 // may instead legitimately acquire the newly empty body's
                 // source contributor; preserve_join_boundaries owns that side.
-                if edit.range.end <= span.formatted.start { continue; }
+                if edit.range.end <= span.formatted.start && !edit.replacement.contains('\n') { continue; }
                 let bytes = document
                     .state()
                     .source
@@ -150,7 +217,7 @@ pub(super) fn preserve_deleted_boundary_spaces(
                 if raw.text != "  \n" && raw.text != "\\\n" {
                     continue;
                 }
-                format!("<br>{}", document.file_format().spelling())
+                "<br>".to_owned()
             } else {
                 "&#32;".to_owned()
             };
@@ -429,13 +496,12 @@ fn escape_retained_punctuation(
     at: usize,
     support: &mut Vec<SourcePatch>,
 ) -> Result<(), DocumentError> {
-    let Some(character) = document.text()[at..]
-        .chars()
-        .next()
-        .filter(char::is_ascii_punctuation)
-    else {
+    let Some(end) = document.next_grapheme_boundary(at) else {
         return Ok(());
     };
+    let text = document.projection().text_tree().slice(at..end)
+        .map_err(DocumentError::FormattedTextStorage)?;
+    let Some(character) = text.chars().next().filter(char::is_ascii_punctuation) else { return Ok(()); };
     let range = at..at + character.len_utf8();
     let Some(span) = document
         .projection()

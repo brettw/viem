@@ -19,7 +19,7 @@ public enum EVCoreFrontendError: LocalizedError, Equatable {
         case let .core(operation, status):
             switch status {
             case UInt32(VIEM_STATUS_VERIFICATION_FAILED):
-                "This edit cannot preserve the format's text and structure."
+                "The edit failed an internal consistency check."
             case UInt32(VIEM_STATUS_AMBIGUOUS_PROJECTION):
                 "This edit is not supported for the selected content structure."
             case UInt32(VIEM_STATUS_UNREPRESENTABLE_CHARACTER):

@@ -1,7 +1,7 @@
 use viem_core::command::{CommandStatus, InputEvent, Key};
 use viem_core::document::{
-    Association, BoundaryAffinity, DeletionRecovery, Document, DocumentError, Encoding, Format,
-    ModelRequest, ModelTransactionError, ProjectionWorkScope, TextEdit,
+    Association, BoundaryAffinity, DeletionRecovery, Document, Encoding, Format,
+    ModelRequest, ProjectionWorkScope, TextEdit,
 };
 use viem_core::layout::MockTextMeasurementProvider;
 use viem_core::{Core, CoreEvent};
@@ -178,7 +178,7 @@ fn markdown_source_typing_before_an_empty_paragraph_keeps_separator_ownership() 
 }
 
 #[test]
-fn utf16_append_after_a_truncated_code_unit_is_an_atomic_opaque_conflict() {
+fn utf16_append_after_a_truncated_code_unit_repairs_only_that_unit_atomically() {
     for (encoding, source) in [
         (Encoding::Utf16Be, vec![0, b'a', b' ']),
         (Encoding::Utf16Le, vec![b'a', 0, b' ']),
@@ -187,19 +187,20 @@ fn utf16_append_after_a_truncated_code_unit_is_an_atomic_opaque_conflict() {
             Document::from_bytes(source.clone(), encoding, Format::PlainText).unwrap();
         assert_eq!(document.text(), "a\u{fffd}");
         let before = document.revision();
-        let result = document.prepare_model_request(ModelRequest::ApplyTextEdits {
+        let prepared = document.prepare_model_request(ModelRequest::ApplyTextEdits {
             document: document.id(),
             revision: before,
             edits: vec![TextEdit::new(4..4, "word")],
-        });
-        assert!(matches!(
-            result,
-            Err(ModelTransactionError::Document(DocumentError::OpaqueDecodingConflict {
-                source_range
-            })) if source_range == (2..3)
-        ));
+        }).unwrap();
+        assert_eq!(prepared.summary().source_patches()[0].range(), 2..3);
+        assert_eq!(prepared.summary().source_patches()[1].range(), 3..3);
         assert_eq!(document.source_bytes(), source);
         assert_eq!(document.revision(), before);
+        document.commit_model_transaction(prepared).unwrap();
+        assert_eq!(document.text(), "a\u{fffd}word");
+        assert!(document.decoding_diagnostics().is_empty());
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source);
         document.insert(1, "word").unwrap();
         assert_eq!(document.text(), "aword\u{fffd}");
         assert_eq!(document.source_bytes().last(), Some(&b' '));

@@ -5313,11 +5313,11 @@ impl<'a> MarkdownBuilder<'a> {
             }
 
             if !self.preserve_markers {
-                if let Some((length, whitespace)) = markdown_inline_whitespace_reference(&self.source_text[at..end]) {
+                if let Some((length, character)) = markdown_inline_character_reference(&self.source_text[at..end]) {
                     if let (Some(first), Some(last)) = (self.unit_at(at), self.unit_at(at + length - 1)) {
                         let source = first.source.start..last.source.end;
                         let output_start = self.output.len();
-                        self.output.push(whitespace);
+                        self.output.push(character);
                         self.provenance.push(ProvenanceSpan {
                             formatted: output_start..self.output.len(), source,
                         });
@@ -5679,9 +5679,11 @@ pub(super) fn markdown_inline_break_length(text: &str) -> Option<usize> {
     (bytes.get(at) == Some(&b'>')).then_some(at + 1)
 }
 
-/// Numeric whitespace references keep authored list-body padding visible.
+/// Numeric character references preserve authored prose in its source encoding.
+/// Controls other than TAB stay literal: a reference is not an implicit hard
+/// break, source NUL replacement, or carriage-return normalization instruction.
 /// Source views and code retain their literal spelling, like inline br syntax.
-fn markdown_inline_whitespace_reference(text: &str) -> Option<(usize, char)> {
+fn markdown_inline_character_reference(text: &str) -> Option<(usize, char)> {
     let body = text.strip_prefix("&#")?;
     let end = body.find(';').filter(|end| *end <= 8)?;
     let digits = &body[..end];
@@ -5692,8 +5694,9 @@ fn markdown_inline_whitespace_reference(text: &str) -> Option<(usize, char)> {
         if !digits.bytes().all(|byte| byte.is_ascii_digit()) { return None; }
         digits.parse::<u32>().ok()?
     };
-    let whitespace = match value { 9 => '\t', 32 => ' ', _ => return None };
-    Some((end + 3, whitespace))
+    let character = char::from_u32(value)?;
+    if character.is_control() && character != '\t' { return None; }
+    Some((end + 3, character))
 }
 
 pub(crate) fn escape_markdown_insert(text: &str) -> String {
@@ -5705,6 +5708,28 @@ pub(crate) fn escape_markdown_insert(text: &str) -> String {
         escaped.push(ch);
     }
     escaped
+}
+
+/// Markdown prose and link destinations can represent an otherwise
+/// unencodable scalar with a character reference. Code spans, code blocks and
+/// source-visible text must not use this: references are literal there.
+pub(crate) fn markdown_character_references(text: &str, encoding: super::Encoding) -> String {
+    if encoding != super::Encoding::Latin1 {
+        return text.to_owned();
+    }
+    let mut escaped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if ch as u32 > 0xff {
+            escaped.push_str(&format!("&#x{:X};", ch as u32));
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped
+}
+
+pub(crate) fn escape_markdown_insert_in_encoding(text: &str, encoding: super::Encoding) -> String {
+    markdown_character_references(&escape_markdown_insert(text), encoding)
 }
 
 #[cfg(test)]

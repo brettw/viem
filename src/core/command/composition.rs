@@ -322,11 +322,14 @@ impl CompositionSession {
         // and its selection/generation remain owned by the input method.
         let mut assisted = self.clone();
         assisted.marked_text = value.text;
+        let inherited = document.replacement_typing_context(self.replacement_range())
+            .map_err(CompositionError::Document)?;
         assisted.prepare_commit_with_typing_style(
             document,
             commands.typing_named_style(),
             commands.typing_properties(),
             commands.insertion_boundary_affinity(),
+            commands.typing_inherited_context().or(inherited.as_ref()),
         )
     }
 
@@ -336,8 +339,9 @@ impl CompositionSession {
         named: Option<&crate::document::StyleId>,
         values: &[(StyleProperty, StylePropertyValue)],
         affinity: BoundaryAffinity,
+        inherited: Option<&crate::document::ReplacementTypingContext>,
     ) -> Result<CompositionCommitRequest, CompositionError> {
-        if named.is_none() && values.is_empty() || self.marked_text.is_empty() {
+        if named.is_none() && values.is_empty() && inherited.is_none() || self.marked_text.is_empty() {
             return self.prepare_commit(document);
         }
         self.validate_document(document)?;
@@ -353,11 +357,12 @@ impl CompositionSession {
         )
         .expect("composition literal text has validated semantic break offsets");
         let (prepared, caret_offset) = document
-            .prepare_insertion_with_typing_style(
+            .prepare_insertion_with_typing_context(
                 FormattedPayloadEdit::new(edit.range.clone(), payload)
                     .with_boundary_affinity(affinity),
                 named,
                 values,
+                inherited,
             )
             .map_err(composition_model_error)?;
         Ok(CompositionCommitRequest {

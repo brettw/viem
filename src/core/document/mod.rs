@@ -31,6 +31,7 @@ mod html_quotes;
 mod html_source;
 mod html_styles;
 mod html_typing;
+pub(crate) use html_typing::ReplacementTypingContext;
 mod html_whitespace;
 mod lists;
 mod markdown_blocks;
@@ -2272,18 +2273,13 @@ impl Document {
                 source_range.start <= opaque.start && opaque.end <= source_range.end;
             let formatted_contains =
                 formatted_range.start <= visible.start && visible.end <= formatted_range.end;
-            let joins_incomplete_code_unit = source_range.is_empty()
-                && source_range.start == opaque.end
-                && diagnostic.kind == DecodingDiagnosticKind::TruncatedUtf16CodeUnit;
-
             // Reverse projection may replace an opaque source extent only
             // when the semantic edit selected the entire visible diagnostic
             // item and the resulting source patch contains all of its bytes.
-            // Appending encoded UTF-16 after an incomplete unit would consume
-            // its dangling byte and shift the alignment of every new unit.
-            if joins_incomplete_code_unit
-                || ((source_overlaps || formatted_overlaps)
-                    && !(source_contains && formatted_contains))
+            // A necessary repair before appending after an incomplete UTF-16
+            // unit is added explicitly by text transaction preparation.
+            if (source_overlaps || formatted_overlaps)
+                && !(source_contains && formatted_contains)
             {
                 return Err(DocumentError::OpaqueDecodingConflict {
                     source_range: opaque.clone(),
@@ -2291,6 +2287,51 @@ impl Document {
             }
         }
         Ok(())
+    }
+
+    /// Appending after a dangling UTF-16 byte would pair that byte with the
+    /// first new byte and misdecode every following unit. Preserve its visible
+    /// diagnostic as a real U+FFFD before insertion, in the same transaction.
+    /// Untouched malformed bytes and completely selected diagnostics keep
+    /// their usual preservation/deletion behavior.
+    fn repair_incomplete_utf16_insertions(
+        &self,
+        edits: &[TextEdit],
+        patches: &mut Vec<SourcePatch>,
+    ) -> Result<bool, DocumentError> {
+        if !matches!(self.encoding(), Encoding::Utf16Le | Encoding::Utf16Be)
+            || self.format() == Format::Rtf
+            || self.source_byte_len() % 2 == 0
+        {
+            return Ok(false);
+        }
+        for edit in edits.iter().filter(|edit| edit.range.is_empty() && !edit.replacement.is_empty()) {
+            for diagnostic in self.projection().decoding_diagnostics_for_region(&edit.range) {
+                if diagnostic.kind != DecodingDiagnosticKind::TruncatedUtf16CodeUnit
+                    || diagnostic.formatted_range.end != edit.range.start
+                    || diagnostic.source_range.end != self.source_byte_len()
+                {
+                    continue;
+                }
+                let invalid = diagnostic.source_range;
+                // A batch may already delete or replace the diagnostic. Its
+                // removal restores alignment without any supporting repair.
+                if patches.iter().any(|patch| ranges_overlap(&patch.range(), &invalid))
+                    || !patches.iter().any(|patch| {
+                        patch.range() == (invalid.end..invalid.end)
+                            && !patch.replacement().is_empty()
+                    })
+                {
+                    continue;
+                }
+                patches.push(SourcePatch::primary(
+                    invalid,
+                    self.encoding().encode_fragment("\u{fffd}")?,
+                ));
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn commit_candidate(

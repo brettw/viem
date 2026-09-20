@@ -278,8 +278,8 @@ pub(super) fn insertion_patches(
     let mut start = 0;
     let mut number = ordinal;
     for &boundary in edit.payload.break_offsets() {
-        syntax.push_str(&escape_markdown_insert(
-            &edit.payload.text()[start..boundary],
+        syntax.push_str(&escape_markdown_insert_in_encoding(
+            &edit.payload.text()[start..boundary], document.encoding(),
         ));
         syntax.push_str(document.file_format().spelling());
         if !(insert_before_label && boundary + 1 == edit.payload.text().len()) {
@@ -293,7 +293,7 @@ pub(super) fn insertion_patches(
         }
         start = boundary + 1;
     }
-    syntax.push_str(&escape_markdown_insert(&edit.payload.text()[start..]));
+    syntax.push_str(&escape_markdown_insert_in_encoding(&edit.payload.text()[start..], document.encoding()));
     let source_at = if insert_before_label {
         line.start
     } else {

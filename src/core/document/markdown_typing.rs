@@ -1,5 +1,54 @@
-//! Source-local structural exits for pending Markdown emphasis changes.
+//! Source-local inline and paragraph scopes for replacement typing.
 use super::*;
+
+pub(super) fn replacement_insertion(
+    document: &Document,
+    at: usize,
+    affinity: BoundaryAffinity,
+    text: &str,
+    inherited: &super::super::ReplacementTypingContext,
+) -> Result<Option<super::super::html_typing::Insertion>, DocumentError> {
+    if document.format() != Format::Markdown || text.is_empty() {
+        return Ok(None);
+    }
+    if inherited.paragraph.style.0 == "Code Block" && document.projection().text_tree().byte_len() == 0 {
+        // Whole-document replacement cleared the original fence. Recreate
+        // its paragraph role before inserting literal code, including syntax
+        // that would otherwise be escaped as ordinary Markdown prose.
+        let width = text.split(|ch| ch != '`').map(str::len).max().unwrap_or(0).saturating_add(1).max(3);
+        let fence = "`".repeat(width);
+        let newline = document.file_format().spelling();
+        let source = document.source_byte_len();
+        let body = text.replace('\n', newline);
+        let prefix = format!("{fence}{newline}");
+        return Ok(Some(super::super::html_typing::Insertion {
+            source: source..source,
+            source_caret: source + prefix.len() + body.len(),
+            syntax: format!("{prefix}{body}{newline}{fence}"),
+        }));
+    }
+    let Some(destination) = &inherited.link else { return Ok(None) };
+    let source = document.projection().source_insertion_point(
+        at, affinity == BoundaryAffinity::Downstream && at < document.text().len(),
+    ).ok_or(DocumentError::AmbiguousProjection)?;
+    let current = if affinity == BoundaryAffinity::Upstream && at > 0 {
+        document.hard_line_snapshot().previous_grapheme_boundary(at).unwrap_or(at)
+    } else { at };
+    if current < document.text().len()
+        && document.link_at(document.text_point(current)?)?.as_ref() == Some(destination)
+    {
+        return Ok(None);
+    }
+    let destination = destination.replace('&', "&amp;").replace('<', "&lt;")
+        .replace('>', "&gt;").replace('\\', "&#92;").replace('\n', "&#10;").replace('\r', "&#13;");
+    let destination = super::super::projection::markdown_character_references(&destination, document.encoding());
+    let escaped = escape_markdown_insert_in_encoding(text, document.encoding());
+    Ok(Some(super::super::html_typing::Insertion {
+        source: source..source,
+        source_caret: source + 1 + escaped.len(),
+        syntax: format!("[{escaped}](<{destination}>)"),
+    }))
+}
 
 struct Scope {
     range: Range<usize>,
@@ -74,6 +123,7 @@ pub(super) fn insertion(
 ) -> Result<Option<super::super::html_typing::Insertion>, DocumentError> {
     if !document.format().is_markdown()
         || text.is_empty()
+        || document.projection().text_tree().byte_len() == 0
         || text.contains('\n')
         || desired.bold != Some(false) && desired.slant != Some(crate::document::FontSlant::Upright)
     {
@@ -181,7 +231,7 @@ pub(super) fn insertion(
     let escaped = if document.format() == Format::MarkdownSource {
         text.to_owned()
     } else {
-        escape_markdown_insert(text)
+        escape_markdown_insert_in_encoding(text, document.encoding())
     };
     let source = projection
         .source_insertion_point(point, true)
