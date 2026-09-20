@@ -51,6 +51,17 @@ fn inline_scopes(index: &HtmlScopeIndex, at: usize) -> Vec<Arc<HtmlScope>> {
     stack
 }
 
+/// At a scope's first insertion boundary, insert outside its original opening
+/// syntax instead of manufacturing an empty left-hand copy during a split.
+fn before_indexed_openings(index: &HtmlScopeIndex, scopes: &[Arc<HtmlScope>], at: usize) -> Option<usize> {
+    if scopes.is_empty() { return None; }
+    let mut position = at;
+    for scope in scopes.iter().rev() {
+        position = index.adjacent_opening_before(position, scope)?;
+    }
+    Some(position)
+}
+
 impl Document {
     pub(crate) fn replacement_typing_context(
         &self,
@@ -174,12 +185,26 @@ pub(super) fn replacement_insertion(
         .projection()
         .html_scope_index()
         .ok_or(DocumentError::AmbiguousProjection)?;
+    let owners = index.scopes_at(source).into_iter().filter(|scope| {
+        super::html_paragraph::structural(&scope.tag.name)
+            && !matches!(scope.tag.name.as_str(), "html" | "body" | "head" | "table")
+    }).collect::<Vec<_>>();
+    // Whole-content deletion leaves a bare placeholder. Restore the selected
+    // paragraph context without replacing authored attributes or metadata.
+    let empty_paragraph = owners.first().filter(|owner|
+        owners.len() == 1 && owner.opening.as_ref() == "<p>")
+        .and_then(|owner| {
+            let start = index.adjacent_opening_before(source, owner)?;
+            let (name, end) = index.adjacent_closing_at(source)?;
+            if name != "p" { return None; }
+            let bytes = document.state().source.bytes_in(source..end)?;
+            let decoded = document.encoding().decode_region(&bytes, source).ok()?;
+            let input = super::line_endings::normalize(&decoded, document.file_format());
+            (input.text == "</p>").then_some(start..end)
+        });
     if document.projection().text_tree().byte_len() == 0
         && !inherited.paragraph.matches(document, at)
-        && !index.scopes_at(source).iter().any(|scope| {
-            super::html_paragraph::structural(&scope.tag.name)
-                && !matches!(scope.tag.name.as_str(), "html" | "body" | "head" | "table")
-        })
+        && (owners.is_empty() || empty_paragraph.is_some())
     {
         if let Some((opening, closing)) = &inherited.paragraph_scope {
             let prefix = inherited.scopes.iter().map(|(open, _)| open.as_str()).collect::<String>();
@@ -187,8 +212,9 @@ pub(super) fn replacement_insertion(
             let mut edit = super::TextEdit::new(at..at, text);
             edit.html_protective_spaces = protective_spaces.to_vec();
             let escaped = super::rich_text::escape_html_text_edit(document, source, &edit)?;
+            let replacement = empty_paragraph.unwrap_or(source..source);
             return Ok(Some(Insertion {
-                source: source..source,
+                source: replacement,
                 source_caret: 0, // Used only by source-view insertion.
                 syntax: format!("{opening}{prefix}{escaped}{suffix}{closing}"),
             }));
@@ -235,6 +261,18 @@ pub(super) fn replacement_insertion(
         return Ok(Some(Insertion {
             source: source..source,
             source_caret: 0,
+            syntax: format!("{prefix}{escaped}{suffix}"),
+        }));
+    }
+    if let Some(entry) = before_indexed_openings(index, &current[common..], source) {
+        let prefix = inherited.scopes[common..].iter().map(|(open, _)| open.as_str()).collect::<String>();
+        let suffix = inherited.scopes[common..].iter().rev().map(|(_, close)| close.as_str()).collect::<String>();
+        let mut edit = super::TextEdit::new(at..at, text);
+        edit.html_protective_spaces = protective_spaces.to_vec();
+        let escaped = super::rich_text::escape_html_text_edit(document, entry, &edit)?;
+        return Ok(Some(Insertion {
+            source: entry..entry,
+            source_caret: 0, // Used only by source-view insertion.
             syntax: format!("{prefix}{escaped}{suffix}"),
         }));
     }
@@ -516,6 +554,8 @@ fn indexed_insertion(
     }
     let (source, prefix, suffix) = if remaining == first {
         (exit, opening, closing_preserved)
+    } else if let Some(entry) = before_indexed_openings(index, &open[first..], source) {
+        (entry, opening, closing_preserved)
     } else {
         let close = open[first..]
             .iter()

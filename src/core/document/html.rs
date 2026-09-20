@@ -932,13 +932,32 @@ fn project_tokens_with_style_context(
                     // paragraph's base direction, including its first text run.
                     frame.paragraph.base_direction = inherited_paragraph_direction;
                 }
+                // HTML5 drops exactly one initial LF in pre, including a
+                // character reference or a preprocessed CR/CRLF. An empty
+                // paragraph's typing boundary belongs after that ignored
+                // source: inserting before it would turn it into a new visible
+                // line. Keep the original spelling untouched.
+                let mut inner_start = token.range.end;
+                if tag.name == "pre" {
+                    let tail = &input.text[inner_start..];
+                    let ignored = if tail.starts_with("\r\n") {
+                        2
+                    } else if tail.starts_with(['\n', '\r']) {
+                        1
+                    } else {
+                        reference(tail, false)
+                            .filter(|(value, _)| value == "\n")
+                            .map_or(0, |(_, length)| length)
+                    };
+                    inner_start += ignored;
+                }
                 if paragraph_element && !inside_pre && !frame.hidden && !frame.opaque {
                     if let Some(range) = pending_break.take() {
                         emit_block_boundary(&mut builder, &stack, range);
                     }
                     builder.kind = frame.kind.clone();
                     builder.paragraph = frame.paragraph.clone();
-                    builder.empty_boundary_at(token.range.end);
+                    builder.empty_boundary_at(inner_start);
                 }
                 if paragraph_element && !inside_pre && !frame.hidden && !frame.opaque {
                     builder.kind = frame.kind.clone();
@@ -947,7 +966,7 @@ fn project_tokens_with_style_context(
                     builder.paragraph_style = frame.paragraph_style.clone();
                 }
                 frame.output_start = builder.text.len();
-                frame.source_inner_start = builder.source_range(token.range.clone()).end;
+                frame.source_inner_start = builder.source_range(inner_start..inner_start).start;
                 if !void(&tag.name) {
                     stack.push(frame);
                 }
@@ -1160,6 +1179,7 @@ pub(super) fn list_item_has_explicit_value(input: &NormalizedText, source_at: us
 pub(super) fn list_patches(
     input: &NormalizedText,
     targets: &[(Range<usize>, Option<super::ListStyle>, u64, Option<u64>)],
+    reuse_paragraph_owners: bool,
 ) -> Result<Vec<(Range<usize>, String)>, super::DocumentError> {
     // Recovered elements identify omitted paragraph/list end tags without
     // regenerating their untouched body bytes. Synthetic closes are authored
@@ -1280,15 +1300,13 @@ pub(super) fn list_patches(
                 String::new(),
             ));
             for (open, close, _) in &children {
-                let contains_paragraph = tokens[*open + 1..*close].iter().any(|token| matches!(&token.kind, TokenKind::Tag(tag) if !tag.end && paragraph(&tag.name)));
-                let name = if contains_paragraph { "div" } else { "p" };
-                let mut opening = input.text[tokens[*open].range.clone()].to_owned();
-                opening.replace_range(1..3, name);
-                let mut closing = input.text[tokens[*close].range.clone()].to_owned();
-                if closing.is_empty() {
-                    closing = format!("</{name}>");
-                } else {
-                    closing.replace_range(2..4, name);
+                let source = &selected.iter()
+                    .find(|(index, _)| owners[*index] == Some(*open)).unwrap().1.0;
+                let (opening, closing, needs_paragraph) = list_item_exit_syntax(
+                    &input.text, &tokens, *open, *close, source.is_empty(), reuse_paragraph_owners,
+                );
+                if needs_paragraph {
+                    result.push((source.clone(), "<p></p>".to_owned()));
                 }
                 result.push((mapper.source_range(tokens[*open].range.clone()), opening));
                 result.push((mapper.source_range(tokens[*close].range.clone()), closing));
@@ -1316,12 +1334,26 @@ pub(super) fn list_patches(
                 else {
                     break;
                 };
-                for index in [*item_open, *item_close, *outer, *outer_close] {
-                    if removed_ancestors.insert(index) {
-                        result.push((
-                            mapper.source_range(tokens[index].range.clone()),
-                            String::new(),
-                        ));
+                for (open, close) in [(*item_open, *item_close), (*outer, *outer_close)] {
+                    let TokenKind::Tag(tag) = &tokens[open].kind else { unreachable!() };
+                    // These ancestors were structural scaffolding, rather
+                    // than selected items. Retain any authored metadata and
+                    // inherited declarations in a non-list scope.
+                    let retain_scope = !tag.attributes.is_empty();
+                    for (index, end) in [(open, false), (close, true)] {
+                        if removed_ancestors.insert(index) {
+                            let mut replacement = String::new();
+                            if retain_scope {
+                                replacement = input.text[tokens[index].range.clone()].to_owned();
+                                if replacement.is_empty() {
+                                    replacement = "</div>".to_owned();
+                                } else {
+                                    let start = if end { 2 } else { 1 };
+                                    replacement.replace_range(start..start + tag.name.len(), "div");
+                                }
+                            }
+                            result.push((mapper.source_range(tokens[index].range.clone()), replacement));
+                        }
                     }
                 }
                 child_list = *outer;
@@ -1404,6 +1436,16 @@ pub(super) fn list_patches(
             } else {
                 closing.replace_range(2..2 + tag.name.len(), desired_tag);
             }
+            if target.is_none() && tag.name == "li" {
+                let (item_opening, item_closing, needs_paragraph) = list_item_exit_syntax(
+                    &input.text, &tokens, *open, *close, source.is_empty(), reuse_paragraph_owners,
+                );
+                opening = item_opening;
+                closing = item_closing;
+                if needs_paragraph {
+                    result.push((source.clone(), "<p></p>".to_owned()));
+                }
+            }
             let (leave_parent, resume_parent) = if tag.name == "li" {
                 let parent = parent.ok_or(super::DocumentError::AmbiguousProjection)?;
                 let TokenKind::Tag(parent_tag) = &tokens[parent].kind else {
@@ -1485,6 +1527,83 @@ pub(super) fn list_patches(
         }
     }
     Ok(result)
+}
+
+fn list_item_exit_syntax(
+    input: &str,
+    tokens: &[Token],
+    open: usize,
+    close: usize,
+    empty: bool,
+    reuse_paragraph_owners: bool,
+) -> (String, String, bool) {
+    let TokenKind::Tag(item) = &tokens[open].kind else { unreachable!() };
+    let body = &tokens[open + 1..close];
+    let has_paragraph = body.iter().any(|token|
+        matches!(&token.kind, TokenKind::Tag(tag) if !tag.end && paragraph(&tag.name)));
+    let has_block = has_paragraph || reuse_paragraph_owners && body.iter().any(|token|
+        matches!(&token.kind, TokenKind::Tag(tag) if !tag.end && block(&tag.name)));
+    // A p cannot enclose a div or another flow container: HTML would close it
+    // immediately and manufacture a second empty paragraph at the trailing
+    // end tag. Retain those authored containers and give an empty item exactly
+    // one explicit paragraph at its existing source caret instead.
+    let needs_paragraph = reuse_paragraph_owners && empty && has_block && !has_paragraph;
+    if reuse_paragraph_owners && (item_has_complete_paragraph_body(input, tokens, open, close)
+        || needs_paragraph && item.attributes.is_empty())
+    {
+        return (String::new(), String::new(), needs_paragraph);
+    }
+    let name = if has_block { "div" } else { "p" };
+    let mut opening = input[tokens[open].range.clone()].to_owned();
+    opening.replace_range(1..1 + item.name.len(), name);
+    let mut closing = input[tokens[close].range.clone()].to_owned();
+    if closing.is_empty() {
+        closing = format!("</{name}>");
+    } else {
+        closing.replace_range(2..2 + item.name.len(), name);
+    }
+    (opening, closing, needs_paragraph)
+}
+
+/// A list item whose body already has paragraph owners needs no replacement
+/// owner when list treatment is removed. Keep its child paragraphs (including
+/// empty continuation paragraphs) and nested lists exactly as authored. Item
+/// attributes still need a container so their scope and metadata survive.
+fn item_has_complete_paragraph_body(
+    input: &str,
+    tokens: &[Token],
+    open: usize,
+    close: usize,
+) -> bool {
+    let TokenKind::Tag(item) = &tokens[open].kind else { return false };
+    if item.name != "li" || !item.attributes.is_empty() {
+        return false;
+    }
+    let mut depth = 0usize;
+    let mut has_paragraph = false;
+    for token in &tokens[open + 1..close] {
+        match &token.kind {
+            TokenKind::Tag(tag) if tag.end => depth = depth.saturating_sub(1),
+            TokenKind::Tag(tag) => {
+                if depth == 0 {
+                    if heading_or_paragraph(&tag.name) || tag.name == "pre" {
+                        has_paragraph = true;
+                    } else if !matches!(tag.name.as_str(), "ul" | "ol") {
+                        return false;
+                    }
+                }
+                if !void(&tag.name) {
+                    depth += 1;
+                }
+            }
+            _ if depth > 0 => {}
+            TokenKind::Opaque => {}
+            TokenKind::Text if input[token.range.clone()].bytes().all(css_space) => {}
+            TokenKind::MappedText { text, .. } if text.bytes().all(css_space) => {}
+            _ => return false,
+        }
+    }
+    has_paragraph && depth == 0
 }
 
 /// Canonical text spelling. Semantic edits normalize collapsible spacing to

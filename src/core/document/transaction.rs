@@ -709,6 +709,28 @@ impl SourcePatch {
         self
     }
 
+    /// Add supporting syntax without losing the authored-text provenance used
+    /// to simplify protective HTML spaces when typing continues.
+    pub(super) fn insert_replacement_syntax(&mut self, syntax: &[u8], before: bool) {
+        if self.generated_text {
+            self.generated_text_ranges = if self.replacement.is_empty() {
+                Vec::new()
+            } else {
+                vec![0..self.replacement.len()]
+            };
+            self.generated_text = false;
+        }
+        if before {
+            for range in &mut self.generated_text_ranges {
+                range.start += syntax.len();
+                range.end += syntax.len();
+            }
+            self.replacement.splice(..0, syntax.iter().copied());
+        } else {
+            self.replacement.extend_from_slice(syntax);
+        }
+    }
+
     pub fn part(&self) -> SourcePartId {
         self.part
     }
@@ -2918,6 +2940,11 @@ impl Document {
         range: Range<usize>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&range)?;
+        if self.format() == Format::Html
+            && range.start == 0 && range.end == self.projection().text_tree().byte_len()
+        {
+            return self.prepare_clear_document_content();
+        }
         let range = if self.format() == Format::Html {
             super::html_paragraph::line_deletion_range(self, &range)
         } else {
@@ -3069,6 +3096,8 @@ impl Document {
                 &mut source_patches,
             )?;
         }
+        super::html_inline_cleanup::remove_empty_edited_scopes(self, &edits, &mut source_patches)?;
+        super::html_paragraph_typing::materialize(self, &edits, &mut source_patches)?;
         let repaired_utf16 = self.repair_incomplete_utf16_insertions(&edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;
 
@@ -3529,6 +3558,8 @@ impl Document {
                 .map(|edit| &edit.range),
             &mut source_patches,
         )?;
+        super::html_inline_cleanup::remove_empty_edited_scopes(self, &text_edits, &mut source_patches)?;
+        super::html_paragraph_typing::materialize(self, &text_edits, &mut source_patches)?;
         let repaired_utf16 = self.repair_incomplete_utf16_insertions(&text_edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;
         // A literal CR can combine with a following bare LF under DOS.
@@ -4551,7 +4582,12 @@ impl Document {
             let source = if let (Some(first), Some(last)) = (spans.first(), spans.last()) {
                 first.source.start..last.source.end
             } else {
-                super::rich_text::text_source_range(self, &body)?
+                // Several empty continuation paragraphs still identify one
+                // list item. Their synthetic separators have no contiguous
+                // source range; the first paragraph's editable boundary
+                // identifies the structural owner without consuming them.
+                let at = super::rich_text::block_source_point(self.projection(), &block)?;
+                at..at
             };
             let original_ordinal = if let super::BlockKind::ListItem { ordinal, .. } = kind {
                 Some(*ordinal)
@@ -4567,7 +4603,7 @@ impl Document {
         let decoded = self.state().encoding.decode(&bytes)?;
         let normalized = normalize(&decoded, self.file_format());
         let raw_patches = if self.format() == Format::Html {
-            super::html::list_patches(&normalized, &targets)?
+            super::html::list_patches(&normalized, &targets, true)?
         } else {
             super::rtf::list_patches(&normalized, &targets, self.projection())?
         };

@@ -510,7 +510,7 @@ fn complex_and_malformed_rich_sources_no_op_save_exactly_without_external_effect
 }
 
 #[test]
-fn rich_body_replacement_uses_discontiguous_patches_preserving_all_intervening_syntax() {
+fn rich_body_replacement_preserves_metadata_and_cleans_emptied_character_scopes() {
     for (format, source) in [
         (
             Format::Html,
@@ -528,7 +528,7 @@ fn rich_body_replacement_uses_discontiguous_patches_preserving_all_intervening_s
         if format == Format::Html {
             assert_eq!(
                 actual,
-                "<p><b foo='bar'>replacement</b><i></i></p><!--keep-->"
+                "<p><b foo='bar'>replacement</b></p><!--keep-->"
             );
         } else {
             assert!(actual.contains(r"{\b\unknown42 replacement}"));

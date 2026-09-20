@@ -23,7 +23,7 @@ fn deleting_pre_prefix_preserves_newly_leading_lf_after_reopening() {
             ("ab&#10; c", "<br> c"),
             ("\nab\n c", "\n\n c"),
             ("ab<br class='keep'> c", "<br class='keep'> c"),
-            ("<b>ab</b>\n c", "<b></b>\n c"),
+            ("<b>ab</b>\n c", "<br> c"),
             ("ab<!--keep-->\n c", "<!--keep-->\n c"),
         ] {
             for batch in [false, true] {
@@ -68,9 +68,16 @@ fn deleting_parent_list_body_preserves_empty_paragraph_and_nested_ownership() {
                 let mut document = html(bytes.clone(), encoding);
                 let before = document.projection().blocks()[0].clone();
                 let original_list = document.projection().list_structure();
-                let original_character =
+                let mut original_character =
                     DocumentLayoutStyles::semantic_character_at(document.projection(), 0, false)
                         .unwrap();
+                // Empty character scopes are removed with their consumed text.
+                // The retained list-item paragraph keeps its own declarations;
+                // pending replacement typography belongs to the editing view.
+                if body == "<b>ab</b>" {
+                    original_character.bold = false;
+                    original_character.weight = original_character.base_weight;
+                }
                 let edits = if batch {
                     vec![TextEdit::new(0..1, ""), TextEdit::new(1..2, "")]
                 } else {

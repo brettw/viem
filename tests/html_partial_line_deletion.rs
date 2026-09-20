@@ -78,7 +78,7 @@ fn partial_line_delete_preserves_unselected_markup_and_register_extent() {
     assert_eq!(commands.register('a').unwrap().text, "More\n");
     assert_eq!(
         std::str::from_utf8(&document.source_bytes()).unwrap(),
-        "<ol start='4'><li data-keep='yes'><b>First</b><i></i><!--keep--></li><li>Second</li></ol>"
+        "<ol start='4'><li data-keep='yes'><b>First</b><!--keep--></li><li>Second</li></ol>"
     );
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source.as_bytes());

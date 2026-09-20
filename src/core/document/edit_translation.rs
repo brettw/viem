@@ -423,7 +423,7 @@ impl Document {
         }
         let patches = if self.format() == Format::Html {
             if let Some(patches) = super::super::html_merge::patches(self, &input, edit)? {
-                Some(patches)
+                return Ok(Some(patches));
             } else if edit.replacement.is_empty() {
                 super::super::html_paragraph::deletion_patches(self, &input, &edit.range, false)?
             } else {

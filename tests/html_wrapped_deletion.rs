@@ -88,8 +88,16 @@ fn every_wrapped_visual_row_can_be_deleted_with_exact_undo() {
                     &original[row.text_range.clone()]
                 );
                 let changed = core.document().source_bytes();
-                assert!(changed.starts_with(b"<p data-keep='yes'>"));
-                assert!(changed.ends_with(b"</p><!--tail-->"));
+                if row.text_range == (0..original.len()) {
+                    // Deleting the only complete visual line explicitly
+                    // clears the document's owner, leaving a normal p.
+                    assert!(changed.starts_with(b"<p></p>"));
+                    assert!(changed.ends_with(b"<!--tail-->"));
+                    assert_eq!(core.document().projection().blocks().len(), 1);
+                } else {
+                    assert!(changed.starts_with(b"<p data-keep='yes'>"));
+                    assert!(changed.ends_with(b"</p><!--tail-->"));
+                }
                 assert_eq!(
                     html(std::str::from_utf8(&changed).unwrap()).text(),
                     core.document().text()

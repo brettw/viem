@@ -337,6 +337,26 @@ pub(super) fn preserve_deleted_content_boundaries(
     edits: &[&super::TextEdit],
     patches: &mut Vec<super::SourcePatch>,
 ) -> Result<(), DocumentError> {
+    preserve_content_boundaries(document, edits, patches, false)
+}
+
+/// Removing an emptied inline scope can expose the first LF in a pre block or
+/// leave a list item's retained empty body without a paragraph before children.
+/// Recheck those existing owners without repeating anonymous paragraph seeds.
+pub(super) fn preserve_after_inline_cleanup(
+    document: &super::Document,
+    edits: &[super::TextEdit],
+    patches: &mut Vec<super::SourcePatch>,
+) -> Result<(), DocumentError> {
+    preserve_content_boundaries(document, &edits.iter().collect::<Vec<_>>(), patches, true)
+}
+
+fn preserve_content_boundaries(
+    document: &super::Document,
+    edits: &[&super::TextEdit],
+    patches: &mut Vec<super::SourcePatch>,
+    after_inline_cleanup: bool,
+) -> Result<(), DocumentError> {
     if document.format() != super::Format::Html {
         return Ok(());
     }
@@ -396,6 +416,7 @@ pub(super) fn preserve_deleted_content_boundaries(
             if !stack.iter().any(|token| matches!(&token.kind, TokenKind::Tag(tag)
                 if html::owns_paragraph(tag, document.projection().style_sheet()) || tag.name == "blockquote"))
             {
+                if after_inline_cleanup { continue; }
                 // Bare text in a container (or an atomic block with no text
                 // owner) does not keep its paragraph after its last character
                 // disappears. Preserve the unselected surrounding boundaries
@@ -440,7 +461,7 @@ pub(super) fn preserve_deleted_content_boundaries(
             });
             let next_is_paragraph = matches!(&child.kind, TokenKind::Tag(tag)
                 if html::owns_paragraph(tag, document.projection().style_sheet()));
-            if empty_body || next_is_paragraph {
+            if empty_body || next_is_paragraph && !after_inline_cleanup {
                 // A nested list alone supplies ancestry, and the first child
                 // paragraph otherwise absorbs an empty implicit item body.
                 // Give the retained body its own owner before that child.

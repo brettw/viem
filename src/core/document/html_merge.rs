@@ -201,7 +201,7 @@ pub(super) fn patches(
     document: &Document,
     input: &super::line_endings::NormalizedText,
     edit: &TextEdit,
-) -> Result<Option<Vec<(Range<usize>, String)>>, DocumentError> {
+) -> Result<Option<Vec<super::SourcePatch>>, DocumentError> {
     let paragraphs = super::edit_boundary::merged_paragraphs(document, &edit.range);
     let Some(last) = paragraphs.last() else {
         return Ok(None);
@@ -363,24 +363,27 @@ pub(super) fn patches(
             matches!(&token.kind, TokenKind::Tag(tag)
             if tag.name != "li" && html::owns_paragraph(tag, document.projection().style_sheet()))
         });
-    let bridge = format!(
-        "{replacement}{}{}{}{whitespace_open}{character_open}{}",
-        close(&left[left_depth..]),
-        retained_metadata(input, &tokens, start..end),
-        if empty_paragraph { "<p></p>" } else { "" },
-        open(&right[right_depth..])
-    );
-    let restore = format!(
-        "{}{character_close}{whitespace_close}{}{}{}",
-        close(&right_tail[tail_depth..]),
-        close(&owner[common..]),
-        retained_metadata(input, &tokens, tail..resume),
-        open(&following_stack[common..])
-    );
+    let before_containers = unselected_empty_containers(document, input, &tokens, start..end);
+    let after_containers = unselected_empty_containers(document, input, &tokens, tail..resume);
     let converter = super::rich_text::Builder::new(input, document.revision());
+    let mut bridge = document.encoding().encode_fragment(&format!(
+        "{replacement}{}", close(&left[left_depth..])))?;
+    bridge.extend(retained_metadata(document, input, &tokens, start..end, &before_containers, false)?);
+    bridge.extend(document.encoding().encode_fragment(&format!(
+        "{}{whitespace_open}{character_open}{}",
+        if empty_paragraph { "<p></p>" } else { "" }, open(&right[right_depth..])))?);
+    let mut restore = document.encoding().encode_fragment(&format!(
+        "{}{character_close}{whitespace_close}{}",
+        close(&right_tail[tail_depth..]), close(&owner[common..])))?;
+    for range in &before_containers {
+        restore.extend(document.state().source.bytes_in(converter.source_range(range.clone()))
+            .ok_or(DocumentError::AmbiguousProjection)?);
+    }
+    restore.extend(retained_metadata(document, input, &tokens, tail..resume, &after_containers, true)?);
+    restore.extend(document.encoding().encode_fragment(&open(&following_stack[common..]))?);
     let mut patches = vec![
-        (converter.source_range(start..end), bridge),
-        (converter.source_range(tail..resume), restore),
+        super::SourcePatch::primary(converter.source_range(start..end), bridge),
+        super::SourcePatch::primary(converter.source_range(tail..resume), restore),
     ];
     if let Some(token) = flow_owner {
         let TokenKind::Tag(tag) = &token.kind else {
@@ -396,20 +399,34 @@ pub(super) fn patches(
         let mut opening = opening.to_owned();
         opening.replace_range(range, &replacement);
         opening.replace_range(1..2, "div");
-        patches.push((converter.source_range(token.range.clone()), opening));
+        patches.push(super::SourcePatch::primary(converter.source_range(token.range.clone()),
+            document.encoding().encode_fragment(&opening)?));
     }
     Ok(Some(patches))
 }
 
 fn retained_metadata(
+    document: &Document,
     input: &super::line_endings::NormalizedText,
     tokens: &[Token],
     range: Range<usize>,
-) -> String {
-    let mut result = String::new();
+    containers: &[Range<usize>],
+    include_containers: bool,
+) -> Result<Vec<u8>, DocumentError> {
+    let mut result = Vec::new();
+    let converter = super::rich_text::Builder::new(input, document.revision());
     let mut hidden = Vec::new();
     for token in tokens {
         if token.range.end <= range.start || token.range.start >= range.end {
+            continue;
+        }
+        let container = containers.partition_point(|range| range.end <= token.range.start);
+        if containers.get(container).is_some_and(|range|
+            range.start <= token.range.start && token.range.end <= range.end) {
+            if include_containers {
+                result.extend(document.state().source.bytes_in(converter.source_range(token.range.clone()))
+                    .ok_or(DocumentError::AmbiguousProjection)?);
+            }
             continue;
         }
         let keep = match &token.kind {
@@ -428,10 +445,75 @@ fn retained_metadata(
             _ => !hidden.is_empty(),
         };
         if keep {
-            result.push_str(
-                &input.text[token.range.start.max(range.start)..token.range.end.min(range.end)],
-            );
+            let retained = token.range.start.max(range.start)..token.range.end.min(range.end);
+            result.extend(document.state().source.bytes_in(converter.source_range(retained))
+                .ok_or(DocumentError::AmbiguousProjection)?);
         }
     }
-    result
+    Ok(result)
+}
+
+/// Transparent empty containers have no paragraph separator to select. A merge
+/// must retain their exact bytes outside the surviving paragraph: placing a
+/// block container inside a p would cause HTML recovery to split it again.
+fn unselected_empty_containers(
+    document: &Document,
+    input: &super::line_endings::NormalizedText,
+    tokens: &[Token],
+    range: Range<usize>,
+) -> Vec<Range<usize>> {
+    let mut retained = Vec::new();
+    let converter = super::rich_text::Builder::new(input, document.revision());
+    let mut open: Vec<(&Token, usize)> = Vec::new();
+    let mut content_owners = 0;
+    let mut hidden: Option<(&str, usize)> = None;
+    for token in tokens.iter().filter(|token|
+        range.start <= token.range.start && token.range.end <= range.end) {
+        let TokenKind::Tag(tag) = &token.kind else { continue; };
+        if let Some((name, depth)) = hidden {
+            if tag.name == name {
+                hidden = if tag.end && depth == 1 { None } else {
+                    Some((name, if tag.end { depth - 1 } else { depth + 1 }))
+                };
+            }
+            continue;
+        }
+        if !tag.end && html::hidden(&tag.name) {
+            // A template may contain paragraph, break, or object syntax;
+            // none makes its otherwise empty container selected content.
+            hidden = Some((&tag.name, 1));
+            continue;
+        }
+        if !tag.end {
+            if html::owns_paragraph(tag, document.projection().style_sheet())
+                || tag.name == "blockquote" || html::atomic(&tag.name) || tag.name == "br" {
+                content_owners += 1;
+            }
+            if !html::void(&tag.name) { open.push((token, content_owners)); }
+            continue;
+        }
+        let Some(depth) = open.iter().rposition(|(opening, _)|
+            matches!(&opening.kind, TokenKind::Tag(open_tag) if open_tag.name == tag.name))
+            else { continue; };
+        let (opening, previous_owners) = open[depth];
+        open.truncate(depth);
+        let TokenKind::Tag(open_tag) = &opening.kind else { unreachable!(); };
+        if previous_owners != content_owners || !html::block(&open_tag.name)
+            || open_tag.name == "blockquote" || html::list_element(&open_tag.name)
+            || html::owns_paragraph(open_tag, document.projection().style_sheet()) {
+            continue;
+        }
+        let extent = opening.range.start..token.range.end;
+        // The source query deliberately ignores empty caret anchors: only
+        // real visible contributors make the container part of the selection.
+        if document.projection().provenance_contained_in_source(
+            &converter.source_range(extent.clone())).iter().any(|span| !span.formatted.is_empty()) {
+            continue;
+        }
+        // A retained outer scope already includes its untouched descendants.
+        while retained.last().is_some_and(|previous: &Range<usize>|
+            extent.start <= previous.start) { retained.pop(); }
+        retained.push(extent);
+    }
+    retained
 }

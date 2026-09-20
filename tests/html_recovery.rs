@@ -22,9 +22,11 @@ fn direct(document: &Document, at: usize) -> CharacterProperties {
 
 #[test]
 fn active_formatting_reconstructs_after_explicit_and_implied_paragraph_closes() {
-    for source in [
-        "<p><b data-x='keep'>one</p>two</b>three",
-        "<p><b data-x='keep'>one<p>two</b>three",
+    for (source, expected) in [
+        ("<p><b data-x='keep'>one</p>two</b>three",
+         "<p><b data-x='keep'>one</p><p>TWO</b>three</p>"),
+        ("<p><b data-x='keep'>one<p>two</b>three",
+         "<p><b data-x='keep'>one<p>TWO</b>three"),
     ] {
         let mut document = open(source);
         assert_eq!(document.text(), "one\ntwothree");
@@ -36,7 +38,7 @@ fn active_formatting_reconstructs_after_explicit_and_implied_paragraph_closes() 
         assert_eq!(document.text(), "one\nTWOthree");
         assert_eq!(
             document.source_bytes(),
-            source.replace("two", "TWO").as_bytes()
+            expected.as_bytes()
         );
         assert!(document.undo());
         assert_eq!(document.source_bytes(), source.as_bytes());

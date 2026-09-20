@@ -279,7 +279,7 @@ fn clearing_selected_atomic_objects_removes_their_opaque_bodies() {
                 .unwrap_or_else(|error| panic!("{object}, line={line_selection}: {error}"));
             assert_eq!(core.document().text(), "", "{object}");
             let saved = String::from_utf8(core.document().source_bytes()).unwrap();
-            assert_eq!(saved, "<!doctype html><html><head><meta charset='utf-8'><script>keep()</script></head><body><!--outside--></body></html>", "{object}");
+            assert_eq!(saved, "<!doctype html><html><head><meta charset='utf-8'><script>keep()</script></head><body><!--outside--><p></p></body></html>", "{object}");
             verify_reopen_and_history(&mut core, view, Format::Html, &source).unwrap();
         }
     }
@@ -296,7 +296,7 @@ fn clear_document_keeps_complete_nested_hidden_templates() {
     assert_eq!(core.document().text(), "");
     assert_eq!(
         core.document().source_bytes(),
-        format!("{hidden}<!--keep-->").as_bytes()
+        format!("<p></p>{hidden}<!--keep-->").as_bytes()
     );
     verify_reopen_and_history(&mut core, view, Format::Html, &source).unwrap();
 }

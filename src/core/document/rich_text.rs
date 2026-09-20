@@ -165,6 +165,23 @@ impl<'a> Builder<'a> {
             if let Some(index) = self.pending_empty_seed.take() {
                 self.provenance.remove(index);
             }
+            // A new paragraph owns this empty line. A closed, transparent
+            // sibling may have supplied an earlier seed at the same logical
+            // boundary; retaining it would redirect typing into that sibling
+            // and create an unintended paragraph before the actual owner.
+            while self.provenance.last().is_some_and(|span|
+                span.formatted == (self.text.len()..self.text.len()) && span.source.is_empty())
+            {
+                self.provenance.pop();
+            }
+            // Point annotations belong to that same discarded empty context.
+            // In particular, a preceding whitespace-preserving container must
+            // not make the new paragraph's spaces behave as preformatted text.
+            while self.spans.last().is_some_and(|span|
+                span.range == (self.text.len()..self.text.len()))
+            {
+                self.spans.pop();
+            }
             let at = self.text.len();
             self.pending_empty_seed = Some(self.provenance.len());
             self.provenance.push(ProvenanceSpan {

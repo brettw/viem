@@ -2526,7 +2526,7 @@ fn list_assignment_patches(
             targets.push((source.clone(), Some(ListStyle::Bullet), 1, None));
         }
     }
-    for (range, mut text) in html::list_patches(input, &targets)? {
+    for (range, mut text) in html::list_patches(input, &targets, true)? {
         let generated = html::tokenize(&text);
         let mut edits = Vec::new();
         for token in generated {
@@ -2609,7 +2609,11 @@ pub(super) fn paragraph_assignment_patches(
                 .into_iter()
                 .map(|source| (source, None, 1, Some(1)))
                 .collect::<Vec<_>>();
-            let mut patches = html::list_patches(input, &targets)?;
+            // Backspace exits an item through the base Paragraph assignment.
+            // That path must reuse existing p owners just like Remove List.
+            // Assigning a different named paragraph still rewrites the owner
+            // tags generated below.
+            let mut patches = html::list_patches(input, &targets, element == "p")?;
             for (_, text) in &mut patches {
                 let mut edits = Vec::new();
                 for token in html::tokenize(text) {

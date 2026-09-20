@@ -1028,6 +1028,17 @@ it into the next Insert or Replace session. Text and its pending style commit
 together in one verified transaction; failed preparation preserves the pending
 style and editor state.
 
+Direct character choices without a selection likewise remain pending view
+state. Moving the caret or starting a new selection discards pending character
+choices without creating source syntax, dirty state, or an undo entry. Typing
+outside an existing character scope must not manufacture an empty copy of that
+scope at a split boundary. When an HTML text edit consumes the final content of
+a character-only scope, remove its now-empty delimiters, including nested
+scopes, in the same verified undoable transaction. Preserve contained comments,
+unrelated authored empty scopes, unknown elements, and scopes carrying anchors
+or other non-formatting metadata. Paragraph owners are not character cleanup
+targets.
+
 With a selection, character-style assignment applies to the selected text in
 each containing block. Format wrappers must remain inside paragraph, heading,
 list-item, and preformatted containers, splitting into multiple local patches
@@ -1366,6 +1377,29 @@ The initial structural mapping is:
   and
 - unsupported containers are structurally transparent only when their visible
   descendant text and boundaries can be projected without ambiguity.
+
+Typing into an empty HTML WYSIWYG document authors an explicit `p` element.
+Nonempty text edits in an anonymous prose paragraph materialize that paragraph's
+`p` owner when needed, preserving its existing inline content and surrounding
+source. Existing paragraph owners (including headings, list items, preformatted
+blocks, and assigned block containers) are reused. This is local editing policy,
+not normalization on open, save, or navigation; unrelated paragraphs and empty
+containers retain their original bytes. Empty character-scope cleanup does not
+authorize collapsing paragraph boundaries or removing empty paragraph owners.
+Deleting only a paragraph's text retains its empty owner and paragraph style.
+Deleting a paragraph separator merges the adjacent paragraphs and retains the
+first paragraph's style; intentional blank paragraphs remain until their own
+boundaries are deleted. Explicit whole-document content deletion, including
+linewise deletion of every paragraph, leaves one normal empty `p`. Replacement
+typing can still restore the first selected paragraph's captured context.
+Deleting nothing in an already empty normal paragraph leaves its source intact.
+These operations preserve unrelated empty containers, comments, hidden metadata,
+and source-only whitespace. Supporting source patches may move an untouched
+empty container to the following boundary when it cannot remain inside the
+merged paragraph, retaining its exact bytes and preventing style leakage.
+An empty preformatted paragraph's insertion boundary follows any initial line
+ending ignored by HTML parsing; typing retains that original source spelling
+without exposing a new visible line.
 
 Heading 1 through Heading 6 have stable adapter-defined style identities,
 derive from Base Paragraph, and exist even when no Viem stylesheet is present.
@@ -7146,7 +7180,14 @@ clear inherited modern numbering with `\ls0`; the original selector resumes
 at the existing following-paragraph boundary when necessary.
 
 HTML lists use `ul`/`ol` and `li`, retaining unrelated attributes and descendant
-markup. Canonical RTF list paragraphs use scoped groups with `\ls0\li400\fi-200`,
+markup. Leaving an HTML list converts the current item into a paragraph in
+place, reusing existing paragraph children instead of creating another empty
+placeholder. Intentional continuation paragraphs and nested lists remain. An
+attribute-free item wrapper is removed when its children already supply the
+paragraph owners; a container remains when needed to retain attributes or mixed
+block content. After leaving an empty item, another Backspace deletes its
+preceding paragraph separator and merges normally.
+Canonical RTF list paragraphs use scoped groups with `\ls0\li400\fi-200`,
 `\pntext`, and the standard `\pn` destination: `\pnlvlblt` for bullets or
 `\pnlvlbody\pndec\pnstartN` with `\pntxta .` for decimal numbering. Clearing a
 list uses a scoped `\ls0\li0\fi0` and `\pnlvlbody` reset. The scope includes

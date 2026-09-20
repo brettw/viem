@@ -195,6 +195,10 @@ fn eof_typing_keeps_large_document_projection_and_layout_local() {
     let unaffected = document.projection().blocks()[5000].id;
     let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
     engine.set_cache_capacity(10_010);
+    // This test retains the complete document plus both tail revisions. The
+    // default byte budget may evict the original tail even when the entry
+    // capacity is sufficient, making an undo legitimately shape it again.
+    engine.set_shape_cache_byte_budgets(128 * 1024 * 1024, 1024 * 1024);
     let mut view = ViewLayout::new(600., 300.);
     engine.relayout(&document, &mut view).unwrap();
     let shaped = engine.provider().request_calls();
@@ -225,4 +229,5 @@ fn eof_typing_keeps_large_document_projection_and_layout_local() {
     assert_eq!(document.source_bytes(), source.as_bytes());
     engine.relayout(&document, &mut view).unwrap();
     assert!(engine.provider().request_calls() - shaped <= 1);
+    assert_eq!(engine.shaping_cache_statistics().eviction_count, 0);
 }

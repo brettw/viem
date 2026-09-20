@@ -285,6 +285,24 @@ impl HtmlScopeIndex {
         result
     }
 
+    /// Find the original opening immediately before a boundary in this snapshot.
+    pub(super) fn adjacent_opening_before(
+        &self,
+        source_offset: usize,
+        scope: &Arc<HtmlScope>,
+    ) -> Option<usize> {
+        let (_, entry) = self.entry_at(source_offset.checked_sub(1)?)?;
+        if entry.range.end == source_offset
+            && matches!(entry.kind, Kind::Tag { closing: None, .. })
+            && !same_context(&entry.before, &entry.after)
+            && equivalent_context(entry.after.as_ref(), Some(scope))
+        {
+            Some(entry.range.start)
+        } else {
+            None
+        }
+    }
+
     pub(super) fn adjacent_closing_at(&self, source_offset: usize) -> Option<(String, usize)> {
         let (_, entry) = self.entry_at(source_offset)?;
         match entry.kind {
@@ -546,6 +564,15 @@ mod tests {
                 _ => None,
             });
             assert_eq!(index.adjacent_closing_at(source_at), closing);
+            for (scope, token) in index.scopes_at(source_at).iter().zip(
+                super::super::html_paragraph::stack_at(&tokens, at),
+            ) {
+                let expected = (token.range.end == at)
+                    .then(|| mapper.source_range(token.range.clone()).start);
+                assert_eq!(index.adjacent_opening_before(source_at, scope), expected,
+                    "opening at {source_at} ({at}) for {} in {:?}", scope.tag.name, input.text);
+            }
+
             let link = links
                 .iter()
                 .find(|link| link.label.contains(&at))

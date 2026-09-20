@@ -105,30 +105,46 @@ fn projected_text(source: &str) -> String {
 }
 
 #[test]
-fn deleting_all_lines_retains_the_first_paragraphs_container_style() {
+fn deleting_all_lines_clears_selected_paragraph_treatments() {
     for source in [
         "<blockquote><p>a</p><p>b</p></blockquote>",
         "<blockquote style='color:red'><h2>a</h2><p>b</p></blockquote>",
         "<div data-keep='yes'><pre>a\nb</pre><p>c</p></div>",
     ] {
         let mut document = document(source);
-        let before = document.projection().blocks()[0].clone();
         document.delete_lines(0..document.text().len()).unwrap();
         assert_eq!(document.text(), "");
+        assert_eq!(document.source_bytes(), b"<p></p>");
         let reopened =
             Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Html).unwrap();
         for after in [document.projection(), reopened.projection()] {
+            assert_eq!(after.blocks().len(), 1, "{source}");
+            assert_eq!(after.blocks()[0].style.0, "Paragraph", "{source}");
+            assert_eq!(after.blocks()[0].direct_default_character, Default::default(), "{source}");
+            assert_eq!(after.blocks()[0].direct_paragraph, Default::default(), "{source}");
+        }
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn deleting_only_paragraph_text_retains_its_owner_and_style() {
+    for source in [
+        "<blockquote><p>a</p></blockquote>",
+        "<blockquote style='color:red'><h2>a</h2></blockquote>",
+        "<div data-keep='yes'><pre>a</pre></div>",
+    ] {
+        let mut document = document(source);
+        let before = document.projection().blocks()[0].clone();
+        document.replace(0..document.text().len(), "").unwrap();
+        assert_eq!(document.text(), "");
+        assert_eq!(document.source_bytes(), source.replacen(">a<", "><", 1).as_bytes());
+        let reopened = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Html).unwrap();
+        for after in [document.projection(), reopened.projection()] {
             assert_eq!(after.blocks()[0].style, before.style, "{source}");
-            assert_eq!(
-                after.blocks()[0].direct_default_character,
-                before.direct_default_character,
-                "{source}"
-            );
-            assert_eq!(
-                after.blocks()[0].direct_paragraph,
-                before.direct_paragraph,
-                "{source}"
-            );
+            assert_eq!(after.blocks()[0].direct_default_character, before.direct_default_character, "{source}");
+            assert_eq!(after.blocks()[0].direct_paragraph, before.direct_paragraph, "{source}");
         }
         assert!(document.undo());
         assert_eq!(document.source_bytes(), source.as_bytes());
