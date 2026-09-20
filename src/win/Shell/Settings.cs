@@ -100,7 +100,7 @@ internal sealed partial class SettingsWindow : Window
         Number(page, "Text width (columns for gq / gw)", preferences.TextWidth, 1, uint.MaxValue, n => preferences.Set("editing", "textWidth", n), 250);
         var editing = preferences.Editing;
         var indentation = editing["indentation"] as JsonObject ?? new JsonObject();
-        void Indent<T>(string key, T value) => preferences.Set("editing", "indentation", new JsonObject { [key] = System.Text.Json.JsonSerializer.SerializeToNode(value) });
+        void Indent(string key, JsonNode? value) => preferences.Set("editing", "indentation", new JsonObject { [key] = value });
         page.Children.Add(new TextBlock { Text = "Indentation and tabs", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
         var row = Row(page);
         foreach (var (key, title, fallback, min) in new[] { ("tabstop", "Tab stop", 2, 1), ("shiftwidth", "Shift width", 2, 0), ("softtabstop", "Soft tab stop", 2, -1) })
@@ -108,7 +108,7 @@ internal sealed partial class SettingsWindow : Window
         foreach (var (key, title) in new[] { ("autoindent", "Auto indent"), ("expandtab", "Insert spaces for tabs"), ("smarttab", "Smart tabs"), ("continueCommentsOnEnter", "Continue comments with Enter"), ("continueCommentsOnOpenLine", "Continue comments with o / O") })
             Check(page, title, indentation[key]?.GetValue<bool>() ?? true, value => Indent(key, value));
         var whitespace = editing["whitespacePresentation"] as JsonObject ?? new JsonObject(); var visible = whitespace["visibleWhitespace"] as JsonObject ?? new JsonObject();
-        void Whitespace<T>(string key, T value) => preferences.Set("editing", "whitespacePresentation", new JsonObject { [key] = System.Text.Json.JsonSerializer.SerializeToNode(value) });
+        void Whitespace(string key, JsonNode? value) => preferences.Set("editing", "whitespacePresentation", new JsonObject { [key] = value });
         page.Children.Add(new TextBlock { Text = "Whitespace", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
         Choice(page, "Code indentation width", ["Paragraph en", "Spaces"], whitespace["codeWhitespace"]?.GetValue<string>() == "spaces" ? 1 : 0, n => Whitespace("codeWhitespace", n == 0 ? "paragraphEn" : "spaces"));
         Choice(page, "Other formats indentation width", ["Spaces", "Paragraph en"], whitespace["otherWhitespace"]?.GetValue<string>() == "paragraphEn" ? 1 : 0, n => Whitespace("otherWhitespace", n == 0 ? "spaces" : "paragraphEn"));

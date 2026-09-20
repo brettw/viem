@@ -1,4 +1,4 @@
-param([switch]$NoBuild, [switch]$PointerInput, [switch]$Optimized, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page', 'scroll', 'roundtrip')][string]$ProfileScenario = 'drag', [switch]$DisablePrelayout, [ValidateRange(1, 1000)][int]$ProfileIntervalMs = 16, [string]$ConfigFile)
+param([switch]$NoBuild, [switch]$PointerInput, [switch]$Optimized, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page', 'scroll', 'roundtrip')][string]$ProfileScenario = 'drag', [switch]$DisablePrelayout, [ValidateRange(1, 1000)][int]$ProfileIntervalMs = 16, [string]$ConfigFile, [string]$Executable)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $projectRoot
@@ -32,8 +32,10 @@ try {
     $env:VIEM_CONFIG_DIR = $reportPath + '.profile'
     if ($ConfigFile) { New-Item -ItemType Directory -Path $env:VIEM_CONFIG_DIR -Force | Out-Null; Copy-Item -LiteralPath $ConfigFile -Destination (Join-Path $env:VIEM_CONFIG_DIR 'config.json') }
     try {
-        $executable = Join-Path $projectRoot 'target/windows/Viem.Windows/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/Viem.exe'
-        if ($Optimized) { $executable = Join-Path $projectRoot 'target/windows-profile/Viem.exe' }
+        if (!$Executable) {
+            $Executable = Join-Path $projectRoot 'target/windows/Viem.Windows/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/Viem.exe'
+            if ($Optimized) { $Executable = Join-Path $projectRoot 'target/windows-profile/Viem.exe' }
+        }
         $process = Start-Process -FilePath $executable -ArgumentList @('--self-test', ('"' + $reportPath + '"')) -PassThru -WindowStyle Hidden
         if (!$process.WaitForExit(120000)) { $process.Kill(); throw 'Windows integration tests timed out.' }
         if (!(Test-Path -LiteralPath $reportPath)) { throw "Windows app exited $($process.ExitCode) before writing a test report." }

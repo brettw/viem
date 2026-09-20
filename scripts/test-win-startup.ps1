@@ -1,4 +1,4 @@
-param([switch]$NoBuild, [ValidateRange(1, 20)][int]$Runs = 3, [string]$Label = 'startup', [string]$ProfileDocument, [string]$ConfigFile)
+param([switch]$NoBuild, [ValidateRange(1, 20)][int]$Runs = 3, [string]$Label = 'startup', [string]$ProfileDocument, [string]$ConfigFile, [string]$Executable, [string]$ProfileDirectory)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $projectRoot
@@ -10,21 +10,28 @@ try {
     $oldReport = $env:VIEM_STARTUP_REPORT
     $oldExit = $env:VIEM_STARTUP_EXIT
     $oldDocument = $env:VIEM_STARTUP_DOCUMENT
-    if ($ProfileDocument) { $env:VIEM_STARTUP_DOCUMENT = (Resolve-Path -LiteralPath $ProfileDocument).Path }
+    $env:VIEM_STARTUP_DOCUMENT = if ($ProfileDocument) { (Resolve-Path -LiteralPath $ProfileDocument).Path } else { $null }
+    if (!$Executable) { $Executable = Join-Path $projectRoot 'target/windows/Viem.Windows/bin/x64/Release/net10.0-windows10.0.26100.0/win-x64/Viem.exe' }
+    $Executable = (Resolve-Path -LiteralPath $Executable).Path
     try {
         for ($run = 1; $run -le $Runs; $run++) {
             $reportPath = Join-Path $testRoot ($Label + '-' + [Guid]::NewGuid().ToString('N') + '.json')
             $env:VIEM_CONFIG_DIR = $reportPath + '.profile'
+            if ($ProfileDirectory) {
+                New-Item -ItemType Directory -Path $env:VIEM_CONFIG_DIR -Force | Out-Null
+                Get-ChildItem -LiteralPath $ProfileDirectory -File | Where-Object { $_.Name -in @('config.json', 'startup.viem') -or $_.Name -like '*_style.json' } |
+                    ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $env:VIEM_CONFIG_DIR $_.Name) }
+            }
             if ($ConfigFile) { New-Item -ItemType Directory -Path $env:VIEM_CONFIG_DIR -Force | Out-Null; Copy-Item -LiteralPath $ConfigFile -Destination (Join-Path $env:VIEM_CONFIG_DIR 'config.json') }
             $env:VIEM_STARTUP_REPORT = $reportPath
             $env:VIEM_STARTUP_EXIT = '1'
-            $executable = Join-Path $projectRoot 'target/windows/Viem.Windows/bin/x64/Release/net10.0-windows10.0.26100.0/win-x64/Viem.exe'
             $launch = @{ FilePath = $executable; PassThru = $true; WindowStyle = 'Hidden' }
             if ($ProfileDocument) { $launch.ArgumentList = '"' + $env:VIEM_STARTUP_DOCUMENT + '"' }
             $process = Start-Process @launch
             if (!$process.WaitForExit(30000)) { $process.Kill(); throw 'Startup measurement timed out.' }
             if (!(Test-Path -LiteralPath $reportPath)) { throw "App exited $($process.ExitCode) without a startup report." }
             $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+            if ($report.error) { throw $report.error }
             $first = $report.events | Where-Object name -eq 'editor.firstDraw'
             $activation = $report.events | Where-Object name -eq 'window.activate'
             if (!$first -or !$activation) { throw 'Startup trace is missing activation or the first editor draw.' }

@@ -5877,9 +5877,13 @@ own native or custom implementation for the thin vertical caret.
 
 `src/win/Viem.Windows.csproj` builds the unpackaged x64 C# / WinUI 3 frontend.
 `scripts/build-win.ps1` builds the matching Rust DLL and Windows executable;
-`scripts/run_windows.ps1` only launches the existing Release build and reports
+`scripts/run-win.ps1` only launches the existing Release build and reports
 the build command if it is missing. Use `scripts/build-win.ps1 -Configuration
 Release` to rebuild; add `-Offline` for already-restored dependencies.
+Release packaging runs `dotnet publish` with ReadyToRun compilation, including
+the managed framework projections, at the existing executable location. A plain
+`dotnet build -c Release` compiles optimized IL but does not perform that publish
+step. Debug builds retain their normal JIT/debugging behavior.
 Python 3 verifies and packages the shared Vim runtime on every build and
 publish, including direct MSBuild builds and publishing without rebuilding.
 `scripts/test-win-vim-runtime.ps1` verifies packaging, relocation, legacy
@@ -5983,9 +5987,18 @@ variant selection, fallback, and layout invalidation coverage.
 The read-only system font index is shared across family lookups and independent
 shapers, and may be prepared on a worker while the shell and document load.
 Creating a new index for each font family is unnecessary startup work.
-`scripts/test-win-startup.ps1` measures Release launches with isolated empty
-profiles and records activation-to-first-draw elapsed timings and font discovery
-counts; it does not measure compositor presentation or cold-boot disk latency.
+`scripts/test-win-startup.ps1` measures Release launches with isolated profiles,
+optional copied settings and an optional reference executable. Opt-in tracing
+starts at the managed entry point, records startup phases, JIT CPU time, first
+draw and font discovery counts, and checks initial document geometry. Separate
+first launches of newly built/relocated output from repeated launches; these
+measurements do not measure compositor presentation or cold-boot disk latency.
+Fixed startup JSON records use generated serialization metadata. Updating recent
+files refreshes their menus without reapplying editor settings, while settings
+edits merged from disk must still notify the editor.
+Initial preferences are read and validated on a worker during native WinUI
+initialization, then handed to the application before any window is created.
+The worker must not construct UI controls or retain a core validation document.
 
 The Windows status line follows the shared command-entry/output contract above:
 an inverse-color prompt replaces the left group, while selectable read-only
@@ -6028,9 +6041,13 @@ IME marked text uses the core's composition overlay and explicit commit/cancel
 protocol. Default font names resolve to installed Windows families; actual
 glyph shapes and font fallback naturally differ from Core Text.
 Localized fallback-font names, color-font classification, and face metrics are
-read once per native glyph run and shared by its clusters. Their lifetime
-follows the existing bounded shaping/render leases, with no document-wide font
-metadata prefetch or independent unbounded font cache.
+shared across equivalent DirectWrite font faces, using native face-reference
+equality rather than transient Win2D wrapper identity. Each shaper retains at
+most 32 face descriptions and 1,024 exact single-glyph ink queries, in addition
+to its leased render resources. Ink keys include size, glyph, advances, offsets
+and bidi direction. Metrics/device changes clear these caches, and disposal
+releases their retained faces. Workers own independent caches. Native tests
+cover large-document reuse, invalidation, size changes and rendered pixels.
 Keyboard regressions MUST also exercise the native WinUI input host, including
 text entry, command keys and pane focus. Calling the Rust input wrappers alone
 does not verify Windows event routing.

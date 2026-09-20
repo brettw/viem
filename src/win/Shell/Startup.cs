@@ -49,10 +49,20 @@ internal sealed partial class EditorWindow
             Diagnostics.FrontendSmokeTests.Started = true;
             DispatcherQueue.TryEnqueue(async () => {
                 try {
-                    if (Environment.GetEnvironmentVariable("VIEM_TEST_SYNTAX_ONLY") == "1"
+                    if (Environment.GetEnvironmentVariable("VIEM_TEST_STARTUP_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_SYNTAX_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") is "1" or "all")
                     {
-                        if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "all")
+                        if (Environment.GetEnvironmentVariable("VIEM_TEST_STARTUP_ONLY") == "1")
+                        {
+                            Diagnostics.StyleAndSettingsTests.StartupFontChecks();
+                            await Diagnostics.FrontendSmokeTests.FileChecks(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
+                            await Diagnostics.BackgroundLayoutTests.Run(pane.Canvas.Device, DispatcherQueue);
+                            Diagnostics.FrontendSmokeTests.Run(pane.Canvas.Device, DispatcherQueue);
+                            Environment.Exit(0);
+                            return;
+                        }
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "all")
                         {
                             Diagnostics.StyleAndSettingsTests.StartupFontChecks();
                             await Diagnostics.StyleAndSettingsTests.Run(pane, this, preferences);
@@ -187,7 +197,8 @@ internal sealed partial class EditorWindow
     private sealed record LaunchArguments(string[] Filenames, int? SplitCount, ulong? InitialLine, string? Error);
     private static unsafe LaunchArguments ParseArguments(string[] args)
     {
-        byte[] input = JsonSerializer.SerializeToUtf8Bytes(args);
+        using var timing = Diagnostics.StartupPerformance.Measure("arguments.parse");
+        byte[] input = JsonSerializer.SerializeToUtf8Bytes(args, FrontendJsonContext.Default.StringArray);
         byte[] output = Abi.Copy((p, n, r) => { fixed (byte* data = input) return viem_parse_launch_arguments(data, (ulong)input.Length, p, n, r); });
         using var document = JsonDocument.Parse(output);
         var root = document.RootElement;

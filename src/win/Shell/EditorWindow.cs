@@ -40,19 +40,23 @@ internal sealed partial class EditorWindow : Window
         using var startup = Diagnostics.StartupPerformance.Measure("window.initialize");
         this.preferences = preferences;
         menuToggle.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
+        Diagnostics.StartupPerformance.Mark("window.resourcesReady");
         if (document != null)
         {
             var owner = App.Instance.Windows.FirstOrDefault(w => w.savedSources.ContainsKey(document));
             if (owner != null) savedSources[document] = owner.savedSources[document];
         }
-        Title = "Viem"; Content = root;
+        Title = "Viem";
+        using (Diagnostics.StartupPerformance.Measure("window.attachContent")) Content = root;
         root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
         root.Children.Add(titleBar); root.Children.Add(Menu); Grid.SetRow(Menu, 1); root.Children.Add(paneGrid); Grid.SetRow(paneGrid, 2);
         titleBar.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); titleBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleBar.ColumnDefinitions.Add(new() { Width = new(138) });
         titleBar.Children.Add(titleDrag); titleDrag.Children.Add(titleText); titleBar.Children.Add(menuToggle); Grid.SetColumn(menuToggle, 1);
         ExtendsContentIntoTitleBar = true; SetTitleBar(titleDrag);
+        Diagnostics.StartupPerformance.Mark("window.chromeReady");
         capturePlacement = (placement ?? App.Instance.WindowPlacement).Track(this);
         WindowSizing.Appearance(this, preferences.Midnight);
+        Diagnostics.StartupPerformance.Mark("window.placementReady");
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Standard;
         titleBar.SizeChanged += (_, _) => UpdateCaptionInset();
         AutomationProperties.SetName(menuToggle, "Show menu bar"); ToolTipService.SetToolTip(menuToggle, "Show or hide the menu bar");
@@ -60,7 +64,7 @@ internal sealed partial class EditorWindow : Window
         Activated += (_, e) => { IsWindowActive = e.WindowActivationState != WindowActivationState.Deactivated; foreach (var pane in Panes) pane.Canvas.Invalidate(); };
         AppWindow.Closing += (_, e) => { if (!closing) { e.Cancel = true; Safe(RequestClose); } };
         Closed += (_, _) => {
-            closed = true; poll.Stop(); preferences.Changed -= ApplyPreferences;
+            closed = true; poll.Stop(); preferences.Changed -= ApplyPreferences; preferences.RecentChanged -= RefreshRecentMenu;
             settingsWindow?.Close();
             codeStyleInspector?.Close();
             var documents = Panes.Select(p => p.Document).Distinct().ToArray();
@@ -68,6 +72,7 @@ internal sealed partial class EditorWindow : Window
             foreach (var doc in documents) if (!App.Instance.Windows.Where(w => w != this).Any(w => w.Panes.Any(p => p.Document == doc))) doc.Dispose();
         };
         preferences.Changed += ApplyPreferences;
+        preferences.RecentChanged += RefreshRecentMenu;
         using (Diagnostics.StartupPerformance.Measure("window.menus")) BuildMenus();
         ApplyPreferences();
         if (openLaunchFiles && HasLaunchFiles())
@@ -121,6 +126,7 @@ internal sealed partial class EditorWindow : Window
     }
     private CoreDocument ConfigureNewDocument(CoreDocument doc, byte[] source, string? path)
     {
+        using var startup = Diagnostics.StartupPerformance.Measure("document.configure");
         try
         {
             doc.ConfigureDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
@@ -144,6 +150,7 @@ internal sealed partial class EditorWindow : Window
     partial void OnPaneReady(EditorPane pane);
     internal EditorPane AddPane(CoreDocument doc, int? position = null)
     {
+        using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
         var pane = new EditorPane(this, doc, preferences); pane.Focused += SetActive;
         pane.RememberedArgument = ActivePane?.RememberedArgument ?? ulong.MaxValue;
         Panes.Insert(position ?? Panes.Count, pane); RebuildPanes(); SetActive(pane); return pane;
@@ -206,12 +213,14 @@ internal sealed partial class EditorWindow : Window
     }
     internal async Task OpenPath(string path, bool split = false, bool force = false)
     {
+        using var startup = Diagnostics.StartupPerformance.Measure("document.open");
         path = ResolvePath(path);
         var existing = App.Instance.Windows.SelectMany(w => w.Panes.Select(p => (Window: w, Pane: p))).FirstOrDefault(x => x.Pane.Document.FilePath is string named && FileIdentity.Same(named, path));
         if (existing.Pane != null && !split) { existing.Window.Activate(); existing.Pane.FocusEditor(); preferences.Remember(path); return; }
         var old = ActivePane;
         if (!split && old != null && !force && old.Document.IsDirty && App.Instance.Windows.SelectMany(w => w.Panes).Count(p => p.Document == old.Document) == 1) throw new InvalidOperationException("E37: No write since last change (add ! to override).");
-        byte[] bytes = File.Exists(path) ? await File.ReadAllBytesAsync(path) : [];
+        byte[] bytes;
+        using (Diagnostics.StartupPerformance.Measure("document.read")) bytes = File.Exists(path) ? await File.ReadAllBytesAsync(path) : [];
         RecoverySnapshot? recovered = null; bool readOnly = false;
         if (existing.Pane == null)
         {

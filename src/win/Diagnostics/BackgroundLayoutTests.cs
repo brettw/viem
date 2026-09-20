@@ -83,6 +83,31 @@ internal static class BackgroundLayoutTests
         view.Dispose();
         await Idle(view);
         Check(view.Provider.LiveResourceCount == 0, "closing with queued or active pre-layout releases all native resources");
+
+        // Distinct source lines share a small glyph alphabet. Scrolling must
+        // shape new paragraphs without repeating the native ink query per line.
+        using var repeated = new CoreDocument(Encoding.UTF8.GetBytes(string.Concat(
+            Enumerable.Range(0, 10_000).Select(i => $"Line {i}: repeated letters abcdef ghijkl mnopqr stuvwx yz.\n"))));
+        using var inkView = new CoreView(repeated, device, dispatcher, 600, 400);
+        inkView.BackgroundLayout.Enabled = false;
+        long queries = inkView.Provider.GlyphBoundsQueries, characters = inkView.Provider.ShapedCharacters;
+        for (int page = 0; page < 12; page++) inkView.Key(VIEM_KEY_PAGE_DOWN);
+        Check(inkView.Provider.GlyphBoundsQueries - queries < (inkView.Provider.ShapedCharacters - characters) / 10,
+            "large-file paging reuses glyph ink bounds across distinct source lines");
+        Check(inkView.Provider.CachedGlyphBounds is > 0 and <= 1024, "native glyph ink cache remains size bounded");
+        var pixels = Pixels(inkView);
+        queries = inkView.Provider.GlyphBoundsQueries;
+        inkView.Provider.InvalidateMetrics(); inkView.Resize(600, 400);
+        Check(inkView.Provider.GlyphBoundsQueries > queries && pixels.AsSpan().SequenceEqual(Pixels(inkView)),
+            "metrics invalidation recomputes native ink bounds and preserves rendering");
+        queries = inkView.Provider.GlyphBoundsQueries;
+        inkView.Provider.ResetDevice(device); inkView.Resize(600, 400);
+        Check(inkView.Provider.GlyphBoundsQueries > queries, "device replacement invalidates native ink bounds");
+        queries = inkView.Provider.GlyphBoundsQueries;
+        inkView.Zoom(1.5f);
+        Check(inkView.Provider.GlyphBoundsQueries > queries, "different glyph sizes cannot reuse old native ink bounds");
+        inkView.Dispose();
+        Check(inkView.Provider.CachedGlyphBounds == 0, "disposing a view releases its cached native font faces and ink bounds");
     }
 }
 #endif

@@ -48,12 +48,27 @@ internal static class FrontendSmokeTests
         Check(DocumentRecovery.Candidates(path, profile).Length == 0, "document close cleans recovery slots");
         string config = Path.Combine(test, "config.json");
         File.WriteAllText(config, "{\"version\":1,\"future\":42,\"editing\":{\"future\":true,\"indentation\":{\"tabstop\":4,\"future\":1}}}");
-        var preferences = new Preferences(test); preferences.Set("editing", "indentation", new { shiftwidth = 3 });
+        var preferences = new Preferences(test); preferences.Set("editing", "indentation", new System.Text.Json.Nodes.JsonObject { ["shiftwidth"] = 3 });
         using (var json = JsonDocument.Parse(File.ReadAllText(config)))
             Check(json.RootElement.GetProperty("future").GetInt32() == 42 && json.RootElement.GetProperty("editing").GetProperty("indentation").GetProperty("future").GetInt32() == 1, "settings preserve unknown nested keys");
         byte[] before = File.ReadAllBytes(config); bool rejected = false;
-        try { preferences.Set("editing", "indentation", new { tabstop = 0 }); } catch { rejected = true; }
+        try { preferences.Set("editing", "indentation", new System.Text.Json.Nodes.JsonObject { ["tabstop"] = 0 }); } catch { rejected = true; }
         Check(rejected && File.ReadAllBytes(config).AsSpan().SequenceEqual(before), "invalid preferences leave prior file untouched");
+        int settingsChanges = 0, recentChanges = 0;
+        preferences.Changed += () => settingsChanges++;
+        preferences.RecentChanged += () => recentChanges++;
+        preferences.Remember(path);
+        Check(settingsChanges == 0 && recentChanges == 1 && new Preferences(test).Recent.SequenceEqual(new[] { path }),
+            "remembering an open file persists the recent menu without refreshing document settings");
+        var external = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(config))!;
+        external["appearance"] = new System.Text.Json.Nodes.JsonObject { ["showStatusBar"] = false };
+        File.WriteAllText(config, external.ToJsonString());
+        preferences.Remember(path);
+        Check(settingsChanges == 1 && !preferences.ShowStatus,
+            "recent-file updates still merge and notify externally changed editor settings");
+        preferences.ClearRecent();
+        Check(settingsChanges == 1 && recentChanges == 2 && new Preferences(test).Recent.Length == 0,
+            "clearing recent files updates only the recent menu");
         File.WriteAllText(config, "{\"version\":99}"); preferences = new Preferences(test);
         Check(preferences.Error != null && File.ReadAllText(config) == "{\"version\":99}", "unsupported config version is reported and preserved");
     }

@@ -18,11 +18,16 @@ internal sealed unsafe partial class DirectWriteProvider
     {
         public static MarkerFont From(ViemResolvedTextStyleV1 style, float scale)
         {
-            var features = new Dictionary<string, uint>();
-            for (ulong i = 0; i < style.feature_count; i++) features[Encoding.ASCII.GetString(new ReadOnlySpan<byte>(style.features[i].tag, 4))] = style.features[i].value;
+            string features = "{}";
+            if (style.feature_count != 0)
+            {
+                var values = new Dictionary<string, uint>();
+                for (ulong i = 0; i < style.feature_count; i++) values[Encoding.ASCII.GetString(new ReadOnlySpan<byte>(style.features[i].tag, 4))] = style.features[i].value;
+                features = JsonSerializer.Serialize(values, FontFeaturesJsonContext.Default.Features);
+            }
             var resolved = ResolveFont(style);
             return new(resolved.Family, resolved.Stretch, style.size * scale, (ushort)style.weight, DirectWriteProvider.Slant(style.slant), style.letter_spacing * scale,
-                style.baseline_shift * scale, style.has_language != 0 ? Text(style.language) : "", JsonSerializer.Serialize(features));
+                style.baseline_shift * scale, style.has_language != 0 ? Text(style.language) : "", features);
         }
     }
 

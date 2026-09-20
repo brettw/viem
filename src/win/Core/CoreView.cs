@@ -24,17 +24,21 @@ internal sealed unsafe partial class CoreView : IDisposable
     public CoreView(CoreDocument document, CanvasDevice device, DispatcherQueue dispatcher, float width, float height, ViemLayoutInsetsV1 padding = default)
     {
         Document = document;
-        Provider = new(device, dispatcher);
+        using (Diagnostics.StartupPerformance.Measure("view.provider")) Provider = new(device, dispatcher);
         var table = Provider.Table;
         var options = New<ViemViewOptionsV1>(); options.execution_context = VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN; options.width = Math.Max(1, width); options.height = Math.Max(1, height);
         options.padding_top = padding.top; options.padding_left = padding.left;
         options.padding_bottom = padding.bottom; options.padding_right = padding.right;
         var outcome = New<ViemCoreOutcomeV1>(); ulong id = 0;
-        uint status = viem_core_view_add(document.Handle, &options, &table, &id, &outcome);
+        uint status;
+        using (Diagnostics.StartupPerformance.Measure("view.initialLayout")) status = viem_core_view_add(document.Handle, &options, &table, &id, &outcome);
         if (status != 0) { string detail = Provider.LastError ?? ""; Provider.Dispose(); throw new InvalidOperationException($"Create editor view failed ({status}). {detail}"); }
         Id = id; Outcome = outcome;
-        BackgroundLayout = new(this, dispatcher);
-        BackgroundLayout.Update();
+        using (Diagnostics.StartupPerformance.Measure("view.backgroundSetup"))
+        {
+            BackgroundLayout = new(this, dispatcher);
+            BackgroundLayout.Update();
+        }
     }
     public ViemViewPresentationV1 Presentation { get { var p = New<ViemViewPresentationV1>(); Check(viem_core_view_presentation(Document.Handle, Id, &p), "Read presentation"); return p; } }
     public ViemViewportStateV1 Viewport { get { var p = New<ViemViewportStateV1>(); Check(viem_core_view_viewport_state(Document.Handle, Id, &p), "Read viewport"); return p; } }

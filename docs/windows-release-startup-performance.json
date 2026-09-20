@@ -1,0 +1,4932 @@
+{
+  "measured_date": "2026-09-19",
+  "baseline_commit": "d46e85e2b22de4c35ddd25a2bc2e6437bcd3b811",
+  "machine": {
+    "cpu": "Intel Xeon E5-1650 v3 @ 3.50 GHz",
+    "os": "Windows 10 x64 build 19045",
+    "dotnet_sdk": "10.0.401",
+    "dotnet_runtime": "10.0.12",
+    "windows_app_sdk": "2.1.3",
+    "win2d": "1.3.2"
+  },
+  "fixture": {
+    "source": "src/win/Shell/EditorWindow.cs at baseline commit",
+    "bytes": 31646,
+    "lines": 444,
+    "sha256": "96dd5fc1ffbcd45ae2862b3debe63fa73d0f0e9b0851c4bff3a0f799859ddcbd"
+  },
+  "method": "Five sequential alternating original / ReadyToRun-only / final launches per scenario, copied settings in isolated profiles, builds/tests stopped. Endpoint: first editor Draw callback completed, not compositor presentation. First rebuilt launch excluded from repeated-launch summaries. Raw phase scopes and process-wide JIT CPU overlap; only representative_phases_ms is additive.",
+  "first_after_final_build_ms": 1004.4992,
+  "groups": {
+    "final4-baseline-empty": {
+      "runs": 5,
+      "process_ms": [
+        1029.23,
+        1018.1,
+        974.34,
+        1007.1,
+        998.09
+      ],
+      "median_ms": 1007.1,
+      "mean_ms": 1005.37,
+      "representative_report": "target\\windows-validation\\final4-baseline-empty-82201c1dc57e4facb1cdccc85b8f652f.json",
+      "representative_ms": 1007.0997,
+      "geometry": {
+        "width": 1258.6666259765625,
+        "height": 858,
+        "top": 0,
+        "firstBaseline": 25.107422,
+        "canvasY": 61.33333206176758,
+        "revision": 1,
+        "configuration": 2,
+        "shaped": 0
+      },
+      "representative_shape_scopes_ms": {
+        "shape.fontSetup": 11.313,
+        "shape.nativeCapture": 24.376,
+        "shape.clusters": 9.199,
+        "shape.foreground": 54.272
+      },
+      "reports": [
+        "target/windows-validation/final4-baseline-empty-b28a08d067e84d428b6481b3748a1a11.json",
+        "target/windows-validation/final4-baseline-empty-ce38a99c48b24979873ee0c6b1f8c4d9.json",
+        "target/windows-validation/final4-baseline-empty-353f7549c20b4cf8832b4b30b0cc3084.json",
+        "target/windows-validation/final4-baseline-empty-82201c1dc57e4facb1cdccc85b8f652f.json",
+        "target/windows-validation/final4-baseline-empty-9eea78be373742cd8ec87ffc51906b88.json"
+      ]
+    },
+    "final4-r2r-empty": {
+      "runs": 5,
+      "process_ms": [
+        799.38,
+        771.26,
+        705.81,
+        816.84,
+        769.14
+      ],
+      "median_ms": 771.26,
+      "mean_ms": 772.48,
+      "representative_report": "target\\windows-validation\\final4-r2r-empty-088ad5ebd0e04fe78812967a77927de5.json",
+      "representative_ms": 771.2608,
+      "geometry": {
+        "width": 1258.6666259765625,
+        "height": 858,
+        "top": 0,
+        "firstBaseline": 25.107422,
+        "canvasY": 61.33333206176758,
+        "revision": 1,
+        "configuration": 2,
+        "shaped": 0
+      },
+      "representative_jit_cpu_ms": 209.0926,
+      "representative_scopes_ms": {
+        "runtime.comWrappers": 1.663,
+        "document.create": 0.119,
+        "preferences.read": 35.993,
+        "app.initialize": 5.483,
+        "application.construct": 46.889,
+        "instance.broker": 4.532,
+        "window.menus": 16.972,
+        "pane.initialize": 24.849,
+        "window.initialPane": 60.263,
+        "window.initialize": 230.379,
+        "window.construct": 267.962,
+        "window.activate": 37.219,
+        "view.provider": 2.15,
+        "view.initialLayout": 34.412,
+        "view.backgroundSetup": 0.204,
+        "editor.createView": 37.407,
+        "editor.attach": 51.726,
+        "editor.draw": 4.117
+      },
+      "representative_shape_scopes_ms": {
+        "shape.fontSetup": 4.686,
+        "shape.nativeCapture": 18.507,
+        "shape.clusters": 7.208,
+        "shape.foreground": 33.391
+      },
+      "reports": [
+        "target/windows-validation/final4-r2r-empty-8925078abea24da687201e83d331db9d.json",
+        "target/windows-validation/final4-r2r-empty-088ad5ebd0e04fe78812967a77927de5.json",
+        "target/windows-validation/final4-r2r-empty-d4e063ebb51547c99fdd922858a8adca.json",
+        "target/windows-validation/final4-r2r-empty-f97d5b90d0ff43088ce95103a90744cd.json",
+        "target/windows-validation/final4-r2r-empty-b9001a38b3454b86a840803e2f7dee43.json"
+      ]
+    },
+    "final4-optimized-empty": {
+      "runs": 5,
+      "process_ms": [
+        816.98,
+        732.76,
+        787.79,
+        700.57,
+        740.44
+      ],
+      "median_ms": 740.44,
+      "mean_ms": 755.71,
+      "representative_report": "target\\windows-validation\\final4-optimized-empty-6b8e381cd8f0431185b9f28c37b13a4b.json",
+      "representative_ms": 740.4437,
+      "geometry": {
+        "width": 1258.6666259765625,
+        "height": 858,
+        "top": 0,
+        "firstBaseline": 25.107421875,
+        "canvasY": 61.33333206176758,
+        "revision": 1,
+        "configuration": 2,
+        "shaped": 0,
+        "fontMetadataReads": 1,
+        "glyphBoundsQueries": 0,
+        "glyphBoundsHits": 0
+      },
+      "representative_phases_ms": {
+        "process_loader_runtime_to_main": 97.773,
+        "winui_application_start": 87.259,
+        "application_preferences_instance": 61.762,
+        "window_shell_controls_menus": 231.723,
+        "window_activate": 30.461,
+        "document_open_configure_pane": 62.486,
+        "winui_arrange_resources_dispatch": 103.38,
+        "view_provider_initial_layout": 42.01,
+        "editor_status_input_attach": 16.347,
+        "draw_dispatch_and_submit": 7.218,
+        "window_activation_dispatch": 0.026
+      },
+      "representative_jit_cpu_ms": 196.9355,
+      "representative_scopes_ms": {
+        "runtime.comWrappers": 1.814,
+        "document.create": 0.16,
+        "preferences.read": 27.503,
+        "preferences.join": 0.023,
+        "app.initialize": 14.643,
+        "application.construct": 16.427,
+        "instance.broker": 4.011,
+        "window.attachContent": 0.061,
+        "window.menus": 18.436,
+        "arguments.parse": 0.052,
+        "document.configure": 0.279,
+        "pane.initialize": 23.498,
+        "pane.construct": 61.936,
+        "window.initialPane": 62.486,
+        "window.initialize": 257.715,
+        "window.construct": 294.209,
+        "window.activate": 30.461,
+        "view.provider": 3.099,
+        "view.initialLayout": 37.786,
+        "view.backgroundSetup": 0.195,
+        "editor.createView": 42.01,
+        "editor.attach": 58.356,
+        "editor.draw": 4.293
+      },
+      "representative_shape_scopes_ms": {
+        "shape.fontSetup": 5.181,
+        "shape.nativeCapture": 20.858,
+        "shape.clusters": 7.974,
+        "shape.foreground": 36.692
+      },
+      "reports": [
+        "target/windows-validation/final4-optimized-empty-513fe99f5d9d4624a7252c50400dbbda.json",
+        "target/windows-validation/final4-optimized-empty-d13d7e0cadd34facbef968bdfca62a1b.json",
+        "target/windows-validation/final4-optimized-empty-266684af06574582ac64081abe2a76c0.json",
+        "target/windows-validation/final4-optimized-empty-1bc563bb4c5e4d9498c3c406e448ea54.json",
+        "target/windows-validation/final4-optimized-empty-6b8e381cd8f0431185b9f28c37b13a4b.json"
+      ]
+    },
+    "final4-baseline-csharp": {
+      "runs": 5,
+      "process_ms": [
+        1235.57,
+        1253.44,
+        1393.54,
+        1221.98,
+        1219.13
+      ],
+      "median_ms": 1235.57,
+      "mean_ms": 1264.73,
+      "representative_report": "target\\windows-validation\\final4-baseline-csharp-b489fbd776d24d1d8e7df9b3a04b46de.json",
+      "representative_ms": 1235.573,
+      "geometry": {
+        "width": 1258.6666259765625,
+        "height": 858,
+        "top": 0,
+        "firstBaseline": 22.988281,
+        "canvasY": 61.33333206176758,
+        "revision": 5,
+        "configuration": 7,
+        "shaped": 4286
+      },
+      "representative_shape_scopes_ms": {
+        "shape.fontSetup": 15.742,
+        "shape.nativeCapture": 55.655,
+        "shape.clusters": 70.064,
+        "shape.foreground": 158.435
+      },
+      "reports": [
+        "target/windows-validation/final4-baseline-csharp-b489fbd776d24d1d8e7df9b3a04b46de.json",
+        "target/windows-validation/final4-baseline-csharp-f0262ac0da8c41d3bc4058f8c493b529.json",
+        "target/windows-validation/final4-baseline-csharp-aa44a38b73ec4fd985214436ebdb9c3b.json",
+        "target/windows-validation/final4-baseline-csharp-c7b6f889f1ea4dd0870abdd18c6f8f7d.json",
+        "target/windows-validation/final4-baseline-csharp-905f0434787448b99ab92689616c8bf7.json"
+      ]
+    },
+    "final4-r2r-csharp": {
+      "runs": 5,
+      "process_ms": [
+        1018.2,
+        1008.54,
+        974.2,
+        962.82,
+        1074.89
+      ],
+      "median_ms": 1008.54,
+      "mean_ms": 1007.73,
+      "representative_report": "target\\windows-validation\\final4-r2r-csharp-fa7e71d3c0554387aec3d2e08eec4245.json",
+      "representative_ms": 1008.5389,
+      "geometry": {
+        "width": 1258.6666259765625,
+        "height": 858,
+        "top": 0,
+        "firstBaseline": 22.988281,
+        "canvasY": 61.33333206176758,
+        "revision": 5,
+        "configuration": 5,
+        "shaped": 4286
+      },
+      "representative_jit_cpu_ms": 256.3697,
+      "representative_scopes_ms": {
+        "runtime.comWrappers": 1.665,
+        "document.create": 0.125,
+        "preferences.read": 34.926,
+        "app.initialize": 5.838,
+        "application.construct": 46.163,
+        "instance.broker": 3.942,
+        "window.menus": 18.908,
+        "window.initialize": 172.424,
+        "window.construct": 211.017,
+        "window.activate": 36.501,
+        "pane.initialize": 17.331,
+        "preferences.remember": 21.403,
+        "view.provider": 2.068,
+        "view.initialLayout": 144.715,
+        "view.backgroundSetup": 0.212,
+        "editor.createView": 147.649,
+        "editor.attach": 168.92,
+        "editor.draw": 13.179
+      },
+      "representative_shape_scopes_ms": {
+        "shape.fontSetup": 8.42,
+        "shape.nativeCapture": 49.716,
+        "shape.clusters": 62.79,
+        "shape.foreground": 131.229
+      },
+      "reports": [
+        "target/windows-validation/final4-r2r-csharp-ef9f30d032a44c12a3b908f4fb5fff93.json",
+        "target/windows-validation/final4-r2r-csharp-fa7e71d3c0554387aec3d2e08eec4245.json",
+        "target/windows-validation/final4-r2r-csharp-b057920170f24a3da271e198c46aca83.json",
+        "target/windows-validation/final4-r2r-csharp-5cf2d62a1ee94236aed3629d11293b8d.json",
+        "target/windows-validation/final4-r2r-csharp-1ccc2d9e5e174789a07cb1362317b625.json"
+      ]
+    },
+    "final4-optimized-csharp": {
+      "runs": 5,
+      "process_ms": [
+        1003.71,
+        976.51,
+        1000.27,
+        852.27,
+        982.28
+      ],
+      "median_ms": 982.28,
+      "mean_ms": 963.01,
+      "representative_report": "target\\windows-validation\\final4-optimized-csharp-7df9d10dfdaa4fd4b101286286b81dfc.json",
+      "representative_ms": 982.2835,
+      "geometry": {
+        "width": 1258.6666259765625,
+        "height": 858,
+        "top": 0,
+        "firstBaseline": 22.98828125,
+        "canvasY": 61.33333206176758,
+        "revision": 5,
+        "configuration": 6,
+        "shaped": 4286,
+        "fontMetadataReads": 1,
+        "glyphBoundsQueries": 77,
+        "glyphBoundsHits": 4209
+      },
+      "representative_phases_ms": {
+        "process_loader_runtime_to_main": 117.666,
+        "winui_application_start": 89.151,
+        "application_preferences_instance": 65.66,
+        "window_shell_controls_menus": 217.26,
+        "window_activate": 41.926,
+        "document_open_configure_pane": 144.681,
+        "winui_arrange_resources_dispatch": 104.111,
+        "view_provider_initial_layout": 157.059,
+        "editor_status_input_attach": 20.82,
+        "draw_dispatch_and_submit": 23.921,
+        "window_activation_dispatch": 0.03
+      },
+      "representative_jit_cpu_ms": 266.132,
+      "representative_scopes_ms": {
+        "runtime.comWrappers": 2.377,
+        "document.create": 0.118,
+        "preferences.read": 29.02,
+        "preferences.join": 0.024,
+        "app.initialize": 14.444,
+        "application.construct": 16.271,
+        "instance.broker": 4.663,
+        "window.attachContent": 0.091,
+        "window.menus": 19.099,
+        "arguments.parse": 0.151,
+        "window.initialize": 176.698,
+        "window.construct": 217.26,
+        "window.activate": 41.926,
+        "document.read": 16.67,
+        "document.configure": 42.396,
+        "pane.initialize": 18.463,
+        "pane.construct": 60.659,
+        "preferences.remember": 14.646,
+        "document.open": 144.681,
+        "view.provider": 4.308,
+        "view.initialLayout": 151.529,
+        "view.backgroundSetup": 0.192,
+        "editor.createView": 157.059,
+        "editor.attach": 177.878,
+        "editor.draw": 20.054
+      },
+      "representative_shape_scopes_ms": {
+        "shape.fontSetup": 11.629,
+        "shape.nativeCapture": 55.426,
+        "shape.clusters": 57.008,
+        "shape.foreground": 137.037
+      },
+      "reports": [
+        "target/windows-validation/final4-optimized-csharp-b0107fbdb025467dad925bc339d63749.json",
+        "target/windows-validation/final4-optimized-csharp-10b229910c8b405f86aa8558e5525968.json",
+        "target/windows-validation/final4-optimized-csharp-9a5cab107ff14cf68618e795fff71815.json",
+        "target/windows-validation/final4-optimized-csharp-81ae93ed53a246e78b71115001be3738.json",
+        "target/windows-validation/final4-optimized-csharp-7df9d10dfdaa4fd4b101286286b81dfc.json"
+      ]
+    }
+  },
+  "representative_final_traces": {
+    "empty": {
+      "processMilliseconds": 740.4437,
+      "fontPickerListLoaded": false,
+      "fontFaceDescriptionsRead": 0,
+      "nativeAot": false,
+      "events": [
+        {
+          "name": "process.main",
+          "milliseconds": 0.1069,
+          "thread": 2,
+          "jitMilliseconds": 14.3288,
+          "jitMethods": 33
+        },
+        {
+          "name": "runtime.comWrappers",
+          "milliseconds": 4.4489,
+          "duration": 1.8143,
+          "thread": 2
+        },
+        {
+          "name": "application.start",
+          "milliseconds": 4.4703,
+          "thread": 2,
+          "jitMilliseconds": 15.6068,
+          "jitMethods": 42
+        },
+        {
+          "name": "document.create",
+          "milliseconds": 33.9162,
+          "duration": 2.7639,
+          "thread": 4
+        },
+        {
+          "name": "preferences.read",
+          "milliseconds": 45.2085,
+          "duration": 27.5031,
+          "thread": 4
+        },
+        {
+          "name": "application.callback",
+          "milliseconds": 87.3658,
+          "thread": 2,
+          "jitMilliseconds": 52.2698,
+          "jitMethods": 264
+        },
+        {
+          "name": "preferences.join",
+          "milliseconds": 88.5722,
+          "duration": 0.0227,
+          "thread": 2
+        },
+        {
+          "name": "app.initialize",
+          "milliseconds": 104.9979,
+          "duration": 14.6435,
+          "thread": 2
+        },
+        {
+          "name": "application.construct",
+          "milliseconds": 104.9993,
+          "duration": 16.4265,
+          "thread": 2
+        },
+        {
+          "name": "app.launched",
+          "milliseconds": 143.384,
+          "thread": 2,
+          "jitMilliseconds": 82.0047,
+          "jitMethods": 462
+        },
+        {
+          "name": "instance.broker",
+          "milliseconds": 149.1259,
+          "duration": 4.0109,
+          "thread": 2
+        },
+        {
+          "name": "window.resourcesReady",
+          "milliseconds": 186.2943,
+          "thread": 2,
+          "jitMilliseconds": 86.6025,
+          "jitMethods": 482
+        },
+        {
+          "name": "window.attachContent",
+          "milliseconds": 186.4476,
+          "duration": 0.0615,
+          "thread": 2
+        },
+        {
+          "name": "window.chromeReady",
+          "milliseconds": 294.153,
+          "thread": 2,
+          "jitMilliseconds": 99.3904,
+          "jitMethods": 533
+        },
+        {
+          "name": "window.placementReady",
+          "milliseconds": 326.2616,
+          "thread": 2,
+          "jitMilliseconds": 115.4451,
+          "jitMethods": 639
+        },
+        {
+          "name": "window.menus",
+          "milliseconds": 364.6107,
+          "duration": 18.4364,
+          "thread": 2
+        },
+        {
+          "name": "arguments.parse",
+          "milliseconds": 380.7867,
+          "duration": 3.2954,
+          "thread": 2
+        },
+        {
+          "name": "document.create",
+          "milliseconds": 380.9501,
+          "duration": 0.1596,
+          "thread": 2
+        },
+        {
+          "name": "document.configure",
+          "milliseconds": 381.3258,
+          "duration": 0.279,
+          "thread": 2
+        },
+        {
+          "name": "pane.initialize",
+          "milliseconds": 440.7142,
+          "duration": 23.4977,
+          "thread": 2
+        },
+        {
+          "name": "pane.construct",
+          "milliseconds": 443.2738,
+          "duration": 61.9363,
+          "thread": 2
+        },
+        {
+          "name": "window.initialPane",
+          "milliseconds": 443.2749,
+          "duration": 62.4857,
+          "thread": 2
+        },
+        {
+          "name": "window.initialize",
+          "milliseconds": 443.3357,
+          "duration": 257.7152,
+          "thread": 2
+        },
+        {
+          "name": "window.construct",
+          "milliseconds": 443.3362,
+          "duration": 294.2085,
+          "thread": 2
+        },
+        {
+          "name": "window.constructed",
+          "milliseconds": 443.3367,
+          "thread": 2,
+          "jitMilliseconds": 145.3994,
+          "jitMethods": 748
+        },
+        {
+          "name": "window.activate",
+          "milliseconds": 473.8234,
+          "duration": 30.4611,
+          "thread": 2
+        },
+        {
+          "name": "view.provider",
+          "milliseconds": 581.1305,
+          "duration": 3.099,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 589.9068,
+          "duration": 5.1812,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 610.7674,
+          "duration": 20.8576,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 618.7425,
+          "duration": 7.974,
+          "thread": 2
+        },
+        {
+          "name": "shape.foreground",
+          "milliseconds": 618.8441,
+          "duration": 36.6921,
+          "thread": 2
+        },
+        {
+          "name": "view.initialLayout",
+          "milliseconds": 619.0194,
+          "duration": 37.7856,
+          "thread": 2
+        },
+        {
+          "name": "view.backgroundSetup",
+          "milliseconds": 619.2179,
+          "duration": 0.1954,
+          "thread": 2
+        },
+        {
+          "name": "editor.createView",
+          "milliseconds": 619.2319,
+          "duration": 42.0096,
+          "thread": 2
+        },
+        {
+          "name": "arguments.parse",
+          "milliseconds": 635.5415,
+          "duration": 0.0518,
+          "thread": 2
+        },
+        {
+          "name": "editor.attach",
+          "milliseconds": 635.5594,
+          "duration": 58.3565,
+          "thread": 2
+        },
+        {
+          "name": "editor.draw",
+          "milliseconds": 641.4888,
+          "duration": 4.2932,
+          "thread": 2
+        },
+        {
+          "name": "editor.firstDraw",
+          "milliseconds": 642.7777,
+          "thread": 2,
+          "jitMilliseconds": 196.9355,
+          "jitMethods": 1090
+        },
+        {
+          "name": "editor.draw",
+          "milliseconds": 710.7387,
+          "duration": 0.1434,
+          "thread": 2
+        },
+        {
+          "name": "editor.draw",
+          "milliseconds": 1262.0442,
+          "duration": 0.1189,
+          "thread": 2
+        }
+      ],
+      "frames": [
+        {
+          "milliseconds": 642.7712,
+          "geometry": {
+            "width": 1258.6666259765625,
+            "height": 858,
+            "top": 0,
+            "firstBaseline": 25.107421875,
+            "canvasY": 61.33333206176758,
+            "revision": 1,
+            "configuration": 2,
+            "shaped": 0,
+            "fontMetadataReads": 1,
+            "glyphBoundsQueries": 0,
+            "glyphBoundsHits": 0
+          }
+        },
+        {
+          "milliseconds": 710.8615,
+          "geometry": {
+            "width": 1258.6666259765625,
+            "height": 858,
+            "top": 0,
+            "firstBaseline": 25.107421875,
+            "canvasY": 61.33333206176758,
+            "revision": 1,
+            "configuration": 2,
+            "shaped": 0,
+            "fontMetadataReads": 1,
+            "glyphBoundsQueries": 0,
+            "glyphBoundsHits": 0
+          }
+        },
+        {
+          "milliseconds": 1262.2344,
+          "geometry": {
+            "width": 1258.6666259765625,
+            "height": 858,
+            "top": 0,
+            "firstBaseline": 25.107421875,
+            "canvasY": 61.33333206176758,
+            "revision": 1,
+            "configuration": 2,
+            "shaped": 0,
+            "fontMetadataReads": 1,
+            "glyphBoundsQueries": 0,
+            "glyphBoundsHits": 0
+          }
+        }
+      ]
+    },
+    "csharp": {
+      "processMilliseconds": 982.2835,
+      "fontPickerListLoaded": false,
+      "fontFaceDescriptionsRead": 0,
+      "nativeAot": false,
+      "events": [
+        {
+          "name": "process.main",
+          "milliseconds": 0.1733,
+          "thread": 2,
+          "jitMilliseconds": 16.5972,
+          "jitMethods": 33
+        },
+        {
+          "name": "runtime.comWrappers",
+          "milliseconds": 6.5116,
+          "duration": 2.3775,
+          "thread": 2
+        },
+        {
+          "name": "application.start",
+          "milliseconds": 6.5441,
+          "thread": 2,
+          "jitMilliseconds": 18.3705,
+          "jitMethods": 42
+        },
+        {
+          "name": "document.create",
+          "milliseconds": 29.3198,
+          "duration": 2.875,
+          "thread": 4
+        },
+        {
+          "name": "preferences.read",
+          "milliseconds": 40.9378,
+          "duration": 29.0205,
+          "thread": 4
+        },
+        {
+          "name": "application.callback",
+          "milliseconds": 89.3248,
+          "thread": 2,
+          "jitMilliseconds": 57.9729,
+          "jitMethods": 264
+        },
+        {
+          "name": "preferences.join",
+          "milliseconds": 90.5314,
+          "duration": 0.0238,
+          "thread": 2
+        },
+        {
+          "name": "app.initialize",
+          "milliseconds": 106.8014,
+          "duration": 14.4441,
+          "thread": 2
+        },
+        {
+          "name": "application.construct",
+          "milliseconds": 106.8026,
+          "duration": 16.2706,
+          "thread": 2
+        },
+        {
+          "name": "app.launched",
+          "milliseconds": 148.8875,
+          "thread": 2,
+          "jitMilliseconds": 87.9589,
+          "jitMethods": 462
+        },
+        {
+          "name": "instance.broker",
+          "milliseconds": 154.9835,
+          "duration": 4.6632,
+          "thread": 2
+        },
+        {
+          "name": "window.resourcesReady",
+          "milliseconds": 196.2506,
+          "thread": 2,
+          "jitMilliseconds": 92.6937,
+          "jitMethods": 482
+        },
+        {
+          "name": "window.attachContent",
+          "milliseconds": 196.446,
+          "duration": 0.0906,
+          "thread": 2
+        },
+        {
+          "name": "window.chromeReady",
+          "milliseconds": 283.2581,
+          "thread": 2,
+          "jitMilliseconds": 107.0609,
+          "jitMethods": 533
+        },
+        {
+          "name": "window.placementReady",
+          "milliseconds": 315.8781,
+          "thread": 2,
+          "jitMilliseconds": 123.7808,
+          "jitMethods": 639
+        },
+        {
+          "name": "window.menus",
+          "milliseconds": 354.4542,
+          "duration": 19.0993,
+          "thread": 2
+        },
+        {
+          "name": "arguments.parse",
+          "milliseconds": 372.1246,
+          "duration": 4.1207,
+          "thread": 2
+        },
+        {
+          "name": "window.initialize",
+          "milliseconds": 372.2437,
+          "duration": 176.698,
+          "thread": 2
+        },
+        {
+          "name": "window.construct",
+          "milliseconds": 372.2444,
+          "duration": 217.2596,
+          "thread": 2
+        },
+        {
+          "name": "window.constructed",
+          "milliseconds": 372.2451,
+          "thread": 2,
+          "jitMilliseconds": 144.5252,
+          "jitMethods": 725
+        },
+        {
+          "name": "window.activate",
+          "milliseconds": 414.2006,
+          "duration": 41.9264,
+          "thread": 2
+        },
+        {
+          "name": "arguments.parse",
+          "milliseconds": 452.3551,
+          "duration": 0.1512,
+          "thread": 2
+        },
+        {
+          "name": "document.read",
+          "milliseconds": 474.9368,
+          "duration": 16.6699,
+          "thread": 2
+        },
+        {
+          "name": "document.create",
+          "milliseconds": 480.9093,
+          "duration": 2.069,
+          "thread": 4
+        },
+        {
+          "name": "document.configure",
+          "milliseconds": 523.5737,
+          "duration": 42.3957,
+          "thread": 2
+        },
+        {
+          "name": "pane.initialize",
+          "milliseconds": 568.2062,
+          "duration": 18.4628,
+          "thread": 2
+        },
+        {
+          "name": "pane.construct",
+          "milliseconds": 584.2532,
+          "duration": 60.6591,
+          "thread": 2
+        },
+        {
+          "name": "document.create",
+          "milliseconds": 584.8249,
+          "duration": 0.1267,
+          "thread": 2
+        },
+        {
+          "name": "document.create",
+          "milliseconds": 588.0021,
+          "duration": 0.1176,
+          "thread": 2
+        },
+        {
+          "name": "preferences.remember",
+          "milliseconds": 598.9194,
+          "duration": 14.6458,
+          "thread": 2
+        },
+        {
+          "name": "document.open",
+          "milliseconds": 598.9208,
+          "duration": 144.681,
+          "thread": 2
+        },
+        {
+          "name": "view.provider",
+          "milliseconds": 668.2117,
+          "duration": 4.3075,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 682.2339,
+          "duration": 7.5559,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 709.9956,
+          "duration": 27.7268,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 736.4821,
+          "duration": 26.4855,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 736.9153,
+          "duration": 0.1497,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 737.6868,
+          "duration": 0.7704,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 739.992,
+          "duration": 2.3046,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 740.798,
+          "duration": 0.0998,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 741.3637,
+          "duration": 0.5651,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 741.5676,
+          "duration": 0.2033,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 741.7514,
+          "duration": 0.0722,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 742.183,
+          "duration": 0.4312,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 742.3929,
+          "duration": 0.2094,
+          "thread": 2
+        },
+        {
+          "name": "shape.foreground",
+          "milliseconds": 742.5153,
+          "duration": 72.475,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 744.3391,
+          "duration": 0.0727,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 744.8209,
+          "duration": 0.4812,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 744.9714,
+          "duration": 0.1499,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 745.169,
+          "duration": 0.0647,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 745.6282,
+          "duration": 0.4586,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 745.8321,
+          "duration": 0.2033,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 746.0118,
+          "duration": 0.0598,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 746.4676,
+          "duration": 0.4553,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 746.6019,
+          "duration": 0.1338,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 746.7466,
+          "duration": 0.0594,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 747.1878,
+          "duration": 0.4408,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 747.3208,
+          "duration": 0.1325,
+          "thread": 2
+        },
+        {
+          "name": "shape.foreground",
+          "milliseconds": 747.4227,
+          "duration": 3.3091,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 747.9718,
+          "duration": 0.066,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 748.4059,
+          "duration": 0.4336,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 748.5696,
+          "duration": 0.1633,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 748.7233,
+          "duration": 0.0632,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 749.1667,
+          "duration": 0.443,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 749.3583,
+          "duration": 0.1911,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 749.5021,
+          "duration": 0.059,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 749.9502,
+          "duration": 0.4477,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 750.137,
+          "duration": 0.1864,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 750.2968,
+          "duration": 0.0583,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 750.7231,
+          "duration": 0.4258,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 750.8129,
+          "duration": 0.0892,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 750.9692,
+          "duration": 0.0642,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 751.4505,
+          "duration": 0.4808,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 751.6694,
+          "duration": 0.2184,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 751.8299,
+          "duration": 0.0611,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 752.2853,
+          "duration": 0.455,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 752.322,
+          "duration": 0.0363,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 752.4795,
+          "duration": 0.0611,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 752.9356,
+          "duration": 0.4557,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 753.2081,
+          "duration": 0.2719,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 753.3871,
+          "duration": 0.0582,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 753.8236,
+          "duration": 0.4361,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 753.8808,
+          "duration": 0.0568,
+          "thread": 2
+        },
+        {
+          "name": "shape.foreground",
+          "milliseconds": 753.9932,
+          "duration": 6.1078,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 755.3724,
+          "duration": 0.0856,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 755.866,
+          "duration": 0.4932,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 756.076,
+          "duration": 0.2095,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 756.2401,
+          "duration": 0.0607,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 756.6698,
+          "duration": 0.4291,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 756.857,
+          "duration": 0.1867,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 757.0395,
+          "duration": 0.0701,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 757.4666,
+          "duration": 0.4266,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 757.6808,
+          "duration": 0.2137,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 757.846,
+          "duration": 0.059,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 758.2865,
+          "duration": 0.4401,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 758.5646,
+          "duration": 0.2776,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 758.7271,
+          "duration": 0.0578,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 759.1875,
+          "duration": 0.46,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 759.7656,
+          "duration": 0.5651,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 759.9572,
+          "duration": 0.0674,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 760.4069,
+          "duration": 0.4494,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 761.2535,
+          "duration": 0.8461,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 761.4429,
+          "duration": 0.0589,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 761.9008,
+          "duration": 0.4575,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 762.7437,
+          "duration": 0.8425,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 762.9549,
+          "duration": 0.1061,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 763.3836,
+          "duration": 0.4235,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 763.5696,
+          "duration": 0.1854,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 763.7528,
+          "duration": 0.059,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 764.1803,
+          "duration": 0.4271,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 764.3658,
+          "duration": 0.185,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 764.5517,
+          "duration": 0.0645,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 764.9755,
+          "duration": 0.4233,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 765.2174,
+          "duration": 0.2415,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 765.3902,
+          "duration": 0.0648,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 765.8076,
+          "duration": 0.4169,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 766.0665,
+          "duration": 0.2584,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 766.2288,
+          "duration": 0.0571,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 766.6506,
+          "duration": 0.4215,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 766.9235,
+          "duration": 0.2723,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 767.1043,
+          "duration": 0.0586,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 767.563,
+          "duration": 0.4583,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 767.9332,
+          "duration": 0.3695,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 768.1126,
+          "duration": 0.0574,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 768.5327,
+          "duration": 0.4196,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 768.75,
+          "duration": 0.2167,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 768.9116,
+          "duration": 0.0575,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 769.3402,
+          "duration": 0.4282,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 769.4902,
+          "duration": 0.1495,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 769.6701,
+          "duration": 0.0575,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 770.0846,
+          "duration": 0.414,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 770.3852,
+          "duration": 0.3001,
+          "thread": 2
+        },
+        {
+          "name": "shape.foreground",
+          "milliseconds": 770.5179,
+          "duration": 15.2583,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 774.616,
+          "duration": 0.1087,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 775.1311,
+          "duration": 0.5141,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 775.5274,
+          "duration": 0.3958,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 775.738,
+          "duration": 0.0649,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 776.1679,
+          "duration": 0.4296,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 776.4036,
+          "duration": 0.2351,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 776.5886,
+          "duration": 0.0804,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 777.0249,
+          "duration": 0.4359,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 777.1513,
+          "duration": 0.1259,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 777.3301,
+          "duration": 0.0582,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 777.7772,
+          "duration": 0.4466,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 778.0847,
+          "duration": 0.3069,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 778.2509,
+          "duration": 0.0606,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 778.7085,
+          "duration": 0.4571,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 779.4876,
+          "duration": 0.7786,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 779.6311,
+          "duration": 0.0574,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 780.059,
+          "duration": 0.4274,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 780.1033,
+          "duration": 0.0438,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 780.2459,
+          "duration": 0.0574,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 780.6795,
+          "duration": 0.4333,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 781.0226,
+          "duration": 0.3425,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 781.1848,
+          "duration": 0.0741,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 781.6051,
+          "duration": 0.4197,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 781.785,
+          "duration": 0.1793,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 781.9491,
+          "duration": 0.0614,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 782.3724,
+          "duration": 0.4229,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 782.8434,
+          "duration": 0.4704,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 782.9953,
+          "duration": 0.0645,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 783.4518,
+          "duration": 0.4558,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 783.6089,
+          "duration": 0.1567,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 783.7485,
+          "duration": 0.0574,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 784.1577,
+          "duration": 0.4087,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 784.2236,
+          "duration": 0.0653,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 784.3808,
+          "duration": 0.0557,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 784.8202,
+          "duration": 0.4389,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 785.2408,
+          "duration": 0.4202,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 785.3988,
+          "duration": 0.0561,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 785.8321,
+          "duration": 0.4329,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 786.1694,
+          "duration": 0.3368,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 786.3044,
+          "duration": 0.0545,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 786.7134,
+          "duration": 0.4085,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 786.784,
+          "duration": 0.0702,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 786.9387,
+          "duration": 0.055,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 787.3715,
+          "duration": 0.4324,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 787.545,
+          "duration": 0.1731,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 787.7091,
+          "duration": 0.0557,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 788.2021,
+          "duration": 0.4925,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 788.9421,
+          "duration": 0.7396,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 789.0895,
+          "duration": 0.0587,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 789.5626,
+          "duration": 0.4726,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 790.1273,
+          "duration": 0.5642,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 790.2767,
+          "duration": 0.0644,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 790.7142,
+          "duration": 0.4372,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 791.5145,
+          "duration": 0.7999,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 791.672,
+          "duration": 0.0559,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 792.0943,
+          "duration": 0.4219,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 792.6357,
+          "duration": 0.5408,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 792.7989,
+          "duration": 0.0632,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 793.2084,
+          "duration": 0.4091,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 793.4749,
+          "duration": 0.266,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 793.6523,
+          "duration": 0.0605,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 794.0618,
+          "duration": 0.4091,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 794.409,
+          "duration": 0.3469,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 794.5883,
+          "duration": 0.0549,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 794.9922,
+          "duration": 0.4035,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 795.2469,
+          "duration": 0.2542,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 795.4049,
+          "duration": 0.0565,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 795.8224,
+          "duration": 0.4171,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 796.163,
+          "duration": 0.3401,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 796.3355,
+          "duration": 0.0559,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 796.7654,
+          "duration": 0.4295,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 797.0596,
+          "duration": 0.2937,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 797.2483,
+          "duration": 0.0723,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 797.6722,
+          "duration": 0.4234,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 805.1214,
+          "duration": 7.4491,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 805.3693,
+          "duration": 0.1002,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 805.9429,
+          "duration": 0.5731,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 809.5479,
+          "duration": 3.6047,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 809.8092,
+          "duration": 0.0708,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 810.2802,
+          "duration": 0.4705,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 810.7977,
+          "duration": 0.517,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 811.0077,
+          "duration": 0.0518,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 811.4132,
+          "duration": 0.404,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 811.7406,
+          "duration": 0.3269,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 811.95,
+          "duration": 0.0543,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 812.3415,
+          "duration": 0.3912,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 812.4524,
+          "duration": 0.1102,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 812.6771,
+          "duration": 0.0682,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 813.1055,
+          "duration": 0.428,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 813.3683,
+          "duration": 0.2622,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 813.5747,
+          "duration": 0.0524,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 813.9596,
+          "duration": 0.3845,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 814.0966,
+          "duration": 0.1366,
+          "thread": 2
+        },
+        {
+          "name": "shape.foreground",
+          "milliseconds": 814.2498,
+          "duration": 39.887,
+          "thread": 2
+        },
+        {
+          "name": "view.initialLayout",
+          "milliseconds": 819.8804,
+          "duration": 151.5287,
+          "thread": 2
+        },
+        {
+          "name": "view.backgroundSetup",
+          "milliseconds": 820.075,
+          "duration": 0.1916,
+          "thread": 2
+        },
+        {
+          "name": "editor.createView",
+          "milliseconds": 820.0756,
+          "duration": 157.0586,
+          "thread": 2
+        },
+        {
+          "name": "editor.attach",
+          "milliseconds": 840.8703,
+          "duration": 177.8782,
+          "thread": 2
+        },
+        {
+          "name": "editor.draw",
+          "milliseconds": 863.5671,
+          "duration": 20.0542,
+          "thread": 2
+        },
+        {
+          "name": "editor.firstDraw",
+          "milliseconds": 864.7909,
+          "thread": 2,
+          "jitMilliseconds": 266.132,
+          "jitMethods": 1512
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 902.2308,
+          "duration": 0.1273,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 902.916,
+          "duration": 0.6839,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 903.1469,
+          "duration": 0.2305,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 903.3799,
+          "duration": 0.0608,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 903.7995,
+          "duration": 0.4188,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 904.0542,
+          "duration": 0.2541,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 904.2622,
+          "duration": 0.0527,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 904.6872,
+          "duration": 0.4246,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 904.9508,
+          "duration": 0.2631,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 905.1878,
+          "duration": 0.0686,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 905.6319,
+          "duration": 0.4436,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 906.1589,
+          "duration": 0.5266,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 906.3465,
+          "duration": 0.0537,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 906.7493,
+          "duration": 0.4024,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 906.8055,
+          "duration": 0.0559,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 906.9505,
+          "duration": 0.0516,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 907.3473,
+          "duration": 0.3964,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 907.523,
+          "duration": 0.1751,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 907.6946,
+          "duration": 0.0504,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 908.1013,
+          "duration": 0.4064,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 908.3664,
+          "duration": 0.2646,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 908.5718,
+          "duration": 0.0521,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 908.9803,
+          "duration": 0.408,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 909.0831,
+          "duration": 0.1024,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 909.2555,
+          "duration": 0.0512,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 909.6492,
+          "duration": 0.3933,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 909.8295,
+          "duration": 0.1799,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 910.003,
+          "duration": 0.0521,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 910.4129,
+          "duration": 0.4095,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 910.6672,
+          "duration": 0.2539,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 910.843,
+          "duration": 0.0549,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 911.2602,
+          "duration": 0.4168,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 911.5191,
+          "duration": 0.2585,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 911.731,
+          "duration": 0.0523,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 912.1494,
+          "duration": 0.418,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 912.3297,
+          "duration": 0.1799,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 912.5382,
+          "duration": 0.053,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 912.9646,
+          "duration": 0.426,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 913.3233,
+          "duration": 0.3582,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 913.4961,
+          "duration": 0.0517,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 913.8898,
+          "duration": 0.3933,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 914.004,
+          "duration": 0.1138,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 914.2118,
+          "duration": 0.0511,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 914.6287,
+          "duration": 0.4166,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 915.0059,
+          "duration": 0.3768,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 915.2126,
+          "duration": 0.0513,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 915.616,
+          "duration": 0.4029,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 915.8137,
+          "duration": 0.1973,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 915.9887,
+          "duration": 0.0522,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 916.4782,
+          "duration": 0.4891,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 916.86,
+          "duration": 0.3815,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 917.0348,
+          "duration": 0.0528,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 917.4707,
+          "duration": 0.4354,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 917.8698,
+          "duration": 0.3986,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 918.0435,
+          "duration": 0.053,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 918.4397,
+          "duration": 0.3958,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 918.6624,
+          "duration": 0.2223,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 918.8671,
+          "duration": 0.0522,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 919.2631,
+          "duration": 0.3955,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 919.3155,
+          "duration": 0.0519,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 919.4879,
+          "duration": 0.0521,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 919.8846,
+          "duration": 0.3962,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 919.9691,
+          "duration": 0.084,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 920.1406,
+          "duration": 0.0515,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 920.5364,
+          "duration": 0.3954,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 920.5762,
+          "duration": 0.0394,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 920.7487,
+          "duration": 0.0529,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 921.177,
+          "duration": 0.4279,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 921.314,
+          "duration": 0.1367,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 921.6571,
+          "duration": 0.1634,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 922.5806,
+          "duration": 0.9223,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 923.0978,
+          "duration": 0.5166,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 923.2663,
+          "duration": 0.0677,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 923.7099,
+          "duration": 0.4432,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 923.9615,
+          "duration": 0.2512,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 924.1357,
+          "duration": 0.0524,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 924.5635,
+          "duration": 0.4273,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 924.6653,
+          "duration": 0.1014,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 924.8711,
+          "duration": 0.0534,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 925.3139,
+          "duration": 0.4423,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 925.4007,
+          "duration": 0.0863,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 925.5834,
+          "duration": 0.0622,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 925.9911,
+          "duration": 0.4073,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 926.0323,
+          "duration": 0.0408,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 926.205,
+          "duration": 0.0516,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 926.5999,
+          "duration": 0.3944,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 926.7326,
+          "duration": 0.1322,
+          "thread": 2
+        },
+        {
+          "name": "shape.fontSetup",
+          "milliseconds": 926.9371,
+          "duration": 0.051,
+          "thread": 2
+        },
+        {
+          "name": "shape.nativeCapture",
+          "milliseconds": 927.3389,
+          "duration": 0.4014,
+          "thread": 2
+        },
+        {
+          "name": "shape.clusters",
+          "milliseconds": 927.5367,
+          "duration": 0.1974,
+          "thread": 2
+        },
+        {
+          "name": "shape.foreground",
+          "milliseconds": 927.6545,
+          "duration": 25.8427,
+          "thread": 2
+        },
+        {
+          "name": "editor.draw",
+          "milliseconds": 1007.3477,
+          "duration": 15.5808,
+          "thread": 2
+        },
+        {
+          "name": "editor.draw",
+          "milliseconds": 1506.6044,
+          "duration": 0.3546,
+          "thread": 2
+        }
+      ],
+      "frames": [
+        {
+          "milliseconds": 864.7845,
+          "geometry": {
+            "width": 1258.6666259765625,
+            "height": 858,
+            "top": 0,
+            "firstBaseline": 22.98828125,
+            "canvasY": 61.33333206176758,
+            "revision": 5,
+            "configuration": 6,
+            "shaped": 4286,
+            "fontMetadataReads": 1,
+            "glyphBoundsQueries": 77,
+            "glyphBoundsHits": 4209
+          }
+        },
+        {
+          "milliseconds": 1007.6009,
+          "geometry": {
+            "width": 1258.6666259765625,
+            "height": 858,
+            "top": 0,
+            "firstBaseline": 22.98828125,
+            "canvasY": 61.33333206176758,
+            "revision": 6,
+            "configuration": 7,
+            "shaped": 6085,
+            "fontMetadataReads": 1,
+            "glyphBoundsQueries": 81,
+            "glyphBoundsHits": 6004
+          }
+        },
+        {
+          "milliseconds": 1506.9484,
+          "geometry": {
+            "width": 1258.6666259765625,
+            "height": 858,
+            "top": 0,
+            "firstBaseline": 22.98828125,
+            "canvasY": 61.33333206176758,
+            "revision": 6,
+            "configuration": 7,
+            "shaped": 6085,
+            "fontMetadataReads": 1,
+            "glyphBoundsQueries": 81,
+            "glyphBoundsHits": 6004
+          }
+        }
+      ]
+    }
+  },
+  "experiments": {
+    "native_aot": "Build succeeded; initial layout failed in Win2D CanvasLineMetrics array marshalling (NotSupportedException). Not enabled.",
+    "composite_r2r": "No repeatable improvement; not enabled.",
+    "graphics_device_preparation": "A separate worker moved device initialization into window construction without a clear total-time win; removed. Prior five-run means with preload: empty 758.31 ms, C# 970.99 ms. Without: empty 755.71 ms, C# 963.01 ms. Different batches, not statistically conclusive."
+  },
+  "validation": {
+    "startup_rendering": "114 native checks passed on the final build (result-c8cca4d525a14c9c8b0708a94552e4b7.json)",
+    "styles_settings": "121 native checks passed on the final build (result-55a24dcc6ee44583900c257cc65b62ef.json)",
+    "broad_suite": "Not all green: intermittent CommandStatusTests read-only-output menu target and StyleInspectorBehaviorTests live Code-color assertions. Unchanged baseline passed 338 checks in one comparison. No blanket regression-free claim."
+  },
+  "saved_profile_confirmation": {
+    "copied_files": [
+      "config.json",
+      "code_style.json",
+      "markdown_style.json"
+    ],
+    "groups": {
+      "profile-baseline-empty": {
+        "runs": 5,
+        "process_ms": [
+          1168.55,
+          1005.65,
+          1125.63,
+          1076.15,
+          929.31
+        ],
+        "median_ms": 1076.15,
+        "mean_ms": 1061.06,
+        "representative_report": "target\\windows-validation\\profile-baseline-empty-153b20a852d840c39a9fbcc0b2d28360.json",
+        "representative_ms": 1076.1471,
+        "geometry": {
+          "width": 1258.6666259765625,
+          "height": 858,
+          "top": 0,
+          "firstBaseline": 25.107422,
+          "canvasY": 61.33333206176758,
+          "revision": 1,
+          "configuration": 2,
+          "shaped": 0
+        },
+        "representative_shape_scopes_ms": {
+          "shape.fontSetup": 10.926,
+          "shape.nativeCapture": 42.705,
+          "shape.clusters": 13.855,
+          "shape.foreground": 74.404
+        }
+      },
+      "profile-optimized-empty": {
+        "runs": 5,
+        "process_ms": [
+          744.23,
+          740.51,
+          747.89,
+          760.15,
+          740.54
+        ],
+        "median_ms": 744.23,
+        "mean_ms": 746.66,
+        "representative_report": "target\\windows-validation\\profile-optimized-empty-4e8e8c8734c14c43af2f1ae1c414efc8.json",
+        "representative_ms": 744.2255,
+        "geometry": {
+          "width": 1258.6666259765625,
+          "height": 858,
+          "top": 0,
+          "firstBaseline": 25.107421875,
+          "canvasY": 61.33333206176758,
+          "revision": 1,
+          "configuration": 2,
+          "shaped": 0,
+          "fontMetadataReads": 1,
+          "glyphBoundsQueries": 0,
+          "glyphBoundsHits": 0
+        },
+        "representative_phases_ms": {
+          "process_loader_runtime_to_main": 123.85,
+          "winui_application_start": 95.797,
+          "application_preferences_instance": 69.921,
+          "window_shell_controls_menus": 212.102,
+          "window_activate": 24.007,
+          "document_open_configure_pane": 52.867,
+          "winui_arrange_resources_dispatch": 99.419,
+          "view_provider_initial_layout": 40.929,
+          "editor_status_input_attach": 17.9,
+          "draw_dispatch_and_submit": 7.405,
+          "window_activation_dispatch": 0.027
+        },
+        "representative_jit_cpu_ms": 204.6599,
+        "representative_scopes_ms": {
+          "runtime.comWrappers": 2.426,
+          "document.create": 0.148,
+          "preferences.read": 34.007,
+          "preferences.join": 0.022,
+          "app.initialize": 14.361,
+          "application.construct": 16.658,
+          "instance.broker": 4.524,
+          "window.attachContent": 0.114,
+          "window.menus": 19.697,
+          "arguments.parse": 0.039,
+          "document.configure": 0.267,
+          "pane.initialize": 19.138,
+          "pane.construct": 52.337,
+          "window.initialPane": 52.867,
+          "window.initialize": 224.824,
+          "window.construct": 264.969,
+          "window.activate": 24.007,
+          "view.provider": 2.872,
+          "view.initialLayout": 37.09,
+          "view.backgroundSetup": 0.182,
+          "editor.createView": 40.929,
+          "editor.attach": 58.829,
+          "editor.draw": 4.546
+        },
+        "representative_shape_scopes_ms": {
+          "shape.fontSetup": 5.265,
+          "shape.nativeCapture": 20.525,
+          "shape.clusters": 7.649,
+          "shape.foreground": 36.039
+        }
+      },
+      "profile-baseline-csharp": {
+        "runs": 5,
+        "process_ms": [
+          1405.44,
+          1413.57,
+          1442.03,
+          1349.03,
+          1404.13
+        ],
+        "median_ms": 1405.44,
+        "mean_ms": 1402.84,
+        "representative_report": "target\\windows-validation\\profile-baseline-csharp-a007ea23985f4d2f8297d76003b0b90a.json",
+        "representative_ms": 1405.4447,
+        "geometry": {
+          "width": 1258.6666259765625,
+          "height": 858,
+          "top": 0,
+          "firstBaseline": 26.15,
+          "canvasY": 61.33333206176758,
+          "revision": 5,
+          "configuration": 7,
+          "shaped": 4286
+        },
+        "representative_shape_scopes_ms": {
+          "shape.fontSetup": 42.458,
+          "shape.nativeCapture": 179.233,
+          "shape.clusters": 69.582,
+          "shape.foreground": 307.871
+        }
+      },
+      "profile-optimized-csharp": {
+        "runs": 5,
+        "process_ms": [
+          1078.44,
+          1113.5,
+          1174.29,
+          1451.54,
+          1078.82
+        ],
+        "median_ms": 1113.5,
+        "mean_ms": 1179.32,
+        "representative_report": "target\\windows-validation\\profile-optimized-csharp-0e09d364bed54c0a847065c7261cb54b.json",
+        "representative_ms": 1113.4967,
+        "geometry": {
+          "width": 1258.6666259765625,
+          "height": 858,
+          "top": 0,
+          "firstBaseline": 26.149999618530273,
+          "canvasY": 61.33333206176758,
+          "revision": 5,
+          "configuration": 7,
+          "shaped": 4286,
+          "fontMetadataReads": 1,
+          "glyphBoundsQueries": 176,
+          "glyphBoundsHits": 4110
+        },
+        "representative_phases_ms": {
+          "process_loader_runtime_to_main": 111.182,
+          "winui_application_start": 98.246,
+          "application_preferences_instance": 87.569,
+          "window_shell_controls_menus": 197.46,
+          "window_activate": 36.251,
+          "document_open_configure_pane": 135.081,
+          "winui_arrange_resources_dispatch": 87.444,
+          "view_provider_initial_layout": 326.779,
+          "editor_status_input_attach": 17.286,
+          "draw_dispatch_and_submit": 16.174,
+          "window_activation_dispatch": 0.025
+        },
+        "representative_jit_cpu_ms": 278.6185,
+        "representative_scopes_ms": {
+          "runtime.comWrappers": 1.773,
+          "document.create": 0.104,
+          "preferences.read": 26.013,
+          "preferences.join": 0.039,
+          "app.initialize": 17.745,
+          "application.construct": 21.274,
+          "instance.broker": 3.8,
+          "window.attachContent": 0.066,
+          "window.menus": 17.384,
+          "arguments.parse": 0.126,
+          "window.initialize": 158.649,
+          "window.construct": 197.46,
+          "window.activate": 36.251,
+          "document.read": 17.744,
+          "document.configure": 38.184,
+          "pane.initialize": 16.303,
+          "pane.construct": 53.242,
+          "preferences.remember": 13.417,
+          "document.open": 135.081,
+          "view.provider": 5.173,
+          "fonts.matchingFaces": 29.055,
+          "view.initialLayout": 320.65,
+          "view.backgroundSetup": 0.221,
+          "editor.createView": 326.779,
+          "editor.attach": 344.065,
+          "editor.draw": 13.418
+        },
+        "representative_shape_scopes_ms": {
+          "shape.fontSetup": 39.864,
+          "shape.nativeCapture": 184.554,
+          "shape.clusters": 60.339,
+          "shape.foreground": 297.175
+        }
+      }
+    },
+    "representative_final_traces": {
+      "empty": {
+        "processMilliseconds": 744.2255,
+        "fontPickerListLoaded": false,
+        "fontFaceDescriptionsRead": 0,
+        "nativeAot": false,
+        "events": [
+          {
+            "name": "process.main",
+            "milliseconds": 0.139,
+            "thread": 2,
+            "jitMilliseconds": 16.5811,
+            "jitMethods": 33
+          },
+          {
+            "name": "runtime.comWrappers",
+            "milliseconds": 5.8783,
+            "duration": 2.426,
+            "thread": 2
+          },
+          {
+            "name": "application.start",
+            "milliseconds": 5.9072,
+            "thread": 2,
+            "jitMilliseconds": 18.2815,
+            "jitMethods": 42
+          },
+          {
+            "name": "document.create",
+            "milliseconds": 52.0559,
+            "duration": 5.2982,
+            "thread": 4
+          },
+          {
+            "name": "preferences.read",
+            "milliseconds": 62.1427,
+            "duration": 34.0069,
+            "thread": 4
+          },
+          {
+            "name": "application.callback",
+            "milliseconds": 95.9362,
+            "thread": 2,
+            "jitMilliseconds": 58.3232,
+            "jitMethods": 264
+          },
+          {
+            "name": "preferences.join",
+            "milliseconds": 97.0595,
+            "duration": 0.0224,
+            "thread": 2
+          },
+          {
+            "name": "app.initialize",
+            "milliseconds": 113.7163,
+            "duration": 14.3606,
+            "thread": 2
+          },
+          {
+            "name": "application.construct",
+            "milliseconds": 113.7179,
+            "duration": 16.6578,
+            "thread": 2
+          },
+          {
+            "name": "app.launched",
+            "milliseconds": 159.7288,
+            "thread": 2,
+            "jitMilliseconds": 88.6916,
+            "jitMethods": 462
+          },
+          {
+            "name": "instance.broker",
+            "milliseconds": 165.8544,
+            "duration": 4.5245,
+            "thread": 2
+          },
+          {
+            "name": "window.resourcesReady",
+            "milliseconds": 206.9711,
+            "thread": 2,
+            "jitMilliseconds": 93.8798,
+            "jitMethods": 482
+          },
+          {
+            "name": "window.attachContent",
+            "milliseconds": 207.2663,
+            "duration": 0.1142,
+            "thread": 2
+          },
+          {
+            "name": "window.chromeReady",
+            "milliseconds": 288.386,
+            "thread": 2,
+            "jitMilliseconds": 109.1931,
+            "jitMethods": 533
+          },
+          {
+            "name": "window.placementReady",
+            "milliseconds": 321.3441,
+            "thread": 2,
+            "jitMilliseconds": 126.2248,
+            "jitMethods": 638
+          },
+          {
+            "name": "window.menus",
+            "milliseconds": 360.5468,
+            "duration": 19.6968,
+            "thread": 2
+          },
+          {
+            "name": "arguments.parse",
+            "milliseconds": 377.897,
+            "duration": 2.941,
+            "thread": 2
+          },
+          {
+            "name": "document.create",
+            "milliseconds": 378.0482,
+            "duration": 0.1478,
+            "thread": 2
+          },
+          {
+            "name": "document.configure",
+            "milliseconds": 378.4152,
+            "duration": 0.2672,
+            "thread": 2
+          },
+          {
+            "name": "pane.initialize",
+            "milliseconds": 428.2654,
+            "duration": 19.1377,
+            "thread": 2
+          },
+          {
+            "name": "pane.construct",
+            "milliseconds": 430.7651,
+            "duration": 52.3374,
+            "thread": 2
+          },
+          {
+            "name": "window.initialPane",
+            "milliseconds": 430.7662,
+            "duration": 52.8673,
+            "thread": 2
+          },
+          {
+            "name": "window.initialize",
+            "milliseconds": 430.8252,
+            "duration": 224.8239,
+            "thread": 2
+          },
+          {
+            "name": "window.construct",
+            "milliseconds": 430.826,
+            "duration": 264.969,
+            "thread": 2
+          },
+          {
+            "name": "window.constructed",
+            "milliseconds": 430.8266,
+            "thread": 2,
+            "jitMilliseconds": 154.4597,
+            "jitMethods": 748
+          },
+          {
+            "name": "window.activate",
+            "milliseconds": 454.8603,
+            "duration": 24.0073,
+            "thread": 2
+          },
+          {
+            "name": "view.provider",
+            "milliseconds": 557.8468,
+            "duration": 2.8715,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 566.576,
+            "duration": 5.2653,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 587.1055,
+            "duration": 20.5254,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 594.7558,
+            "duration": 7.6486,
+            "thread": 2
+          },
+          {
+            "name": "shape.foreground",
+            "milliseconds": 594.8659,
+            "duration": 36.0392,
+            "thread": 2
+          },
+          {
+            "name": "view.initialLayout",
+            "milliseconds": 595.0305,
+            "duration": 37.0898,
+            "thread": 2
+          },
+          {
+            "name": "view.backgroundSetup",
+            "milliseconds": 595.2158,
+            "duration": 0.1821,
+            "thread": 2
+          },
+          {
+            "name": "editor.createView",
+            "milliseconds": 595.2274,
+            "duration": 40.9293,
+            "thread": 2
+          },
+          {
+            "name": "arguments.parse",
+            "milliseconds": 613.0916,
+            "duration": 0.0394,
+            "thread": 2
+          },
+          {
+            "name": "editor.attach",
+            "milliseconds": 613.1088,
+            "duration": 58.8294,
+            "thread": 2
+          },
+          {
+            "name": "editor.draw",
+            "milliseconds": 619.199,
+            "duration": 4.5461,
+            "thread": 2
+          },
+          {
+            "name": "editor.firstDraw",
+            "milliseconds": 620.5142,
+            "thread": 2,
+            "jitMilliseconds": 204.6599,
+            "jitMethods": 1090
+          },
+          {
+            "name": "editor.draw",
+            "milliseconds": 675.3666,
+            "duration": 0.1639,
+            "thread": 2
+          },
+          {
+            "name": "editor.draw",
+            "milliseconds": 1229.0891,
+            "duration": 0.1168,
+            "thread": 2
+          }
+        ],
+        "frames": [
+          {
+            "milliseconds": 620.5074,
+            "geometry": {
+              "width": 1258.6666259765625,
+              "height": 858,
+              "top": 0,
+              "firstBaseline": 25.107421875,
+              "canvasY": 61.33333206176758,
+              "revision": 1,
+              "configuration": 2,
+              "shaped": 0,
+              "fontMetadataReads": 1,
+              "glyphBoundsQueries": 0,
+              "glyphBoundsHits": 0
+            }
+          },
+          {
+            "milliseconds": 675.4861,
+            "geometry": {
+              "width": 1258.6666259765625,
+              "height": 858,
+              "top": 0,
+              "firstBaseline": 25.107421875,
+              "canvasY": 61.33333206176758,
+              "revision": 1,
+              "configuration": 2,
+              "shaped": 0,
+              "fontMetadataReads": 1,
+              "glyphBoundsQueries": 0,
+              "glyphBoundsHits": 0
+            }
+          },
+          {
+            "milliseconds": 1229.2922,
+            "geometry": {
+              "width": 1258.6666259765625,
+              "height": 858,
+              "top": 0,
+              "firstBaseline": 25.107421875,
+              "canvasY": 61.33333206176758,
+              "revision": 1,
+              "configuration": 2,
+              "shaped": 0,
+              "fontMetadataReads": 1,
+              "glyphBoundsQueries": 0,
+              "glyphBoundsHits": 0
+            }
+          }
+        ]
+      },
+      "csharp": {
+        "processMilliseconds": 1113.4967,
+        "fontPickerListLoaded": false,
+        "fontFaceDescriptionsRead": 1,
+        "nativeAot": false,
+        "events": [
+          {
+            "name": "process.main",
+            "milliseconds": 0.0978,
+            "thread": 2,
+            "jitMilliseconds": 15.4429,
+            "jitMethods": 33
+          },
+          {
+            "name": "runtime.comWrappers",
+            "milliseconds": 4.1167,
+            "duration": 1.7734,
+            "thread": 2
+          },
+          {
+            "name": "application.start",
+            "milliseconds": 4.1375,
+            "thread": 2,
+            "jitMilliseconds": 16.7055,
+            "jitMethods": 42
+          },
+          {
+            "name": "document.create",
+            "milliseconds": 24.0758,
+            "duration": 2.7033,
+            "thread": 4
+          },
+          {
+            "name": "preferences.read",
+            "milliseconds": 34.0089,
+            "duration": 26.0127,
+            "thread": 4
+          },
+          {
+            "name": "application.callback",
+            "milliseconds": 98.3438,
+            "thread": 2,
+            "jitMilliseconds": 58.8214,
+            "jitMethods": 264
+          },
+          {
+            "name": "preferences.join",
+            "milliseconds": 100.5862,
+            "duration": 0.0387,
+            "thread": 2
+          },
+          {
+            "name": "app.initialize",
+            "milliseconds": 121.8605,
+            "duration": 17.7454,
+            "thread": 2
+          },
+          {
+            "name": "application.construct",
+            "milliseconds": 121.8616,
+            "duration": 21.2743,
+            "thread": 2
+          },
+          {
+            "name": "app.launched",
+            "milliseconds": 180.6791,
+            "thread": 2,
+            "jitMilliseconds": 101.2603,
+            "jitMethods": 462
+          },
+          {
+            "name": "instance.broker",
+            "milliseconds": 185.9118,
+            "duration": 3.7995,
+            "thread": 2
+          },
+          {
+            "name": "window.resourcesReady",
+            "milliseconds": 225.3577,
+            "thread": 2,
+            "jitMilliseconds": 107.3969,
+            "jitMethods": 482
+          },
+          {
+            "name": "window.attachContent",
+            "milliseconds": 225.5112,
+            "duration": 0.0662,
+            "thread": 2
+          },
+          {
+            "name": "window.chromeReady",
+            "milliseconds": 300.0728,
+            "thread": 2,
+            "jitMilliseconds": 122.1904,
+            "jitMethods": 533
+          },
+          {
+            "name": "window.placementReady",
+            "milliseconds": 331.672,
+            "thread": 2,
+            "jitMilliseconds": 138.6046,
+            "jitMethods": 638
+          },
+          {
+            "name": "window.menus",
+            "milliseconds": 367.7626,
+            "duration": 17.3838,
+            "thread": 2
+          },
+          {
+            "name": "arguments.parse",
+            "milliseconds": 383.253,
+            "duration": 3.7993,
+            "thread": 2
+          },
+          {
+            "name": "window.initialize",
+            "milliseconds": 383.3726,
+            "duration": 158.6493,
+            "thread": 2
+          },
+          {
+            "name": "window.construct",
+            "milliseconds": 383.3733,
+            "duration": 197.4605,
+            "thread": 2
+          },
+          {
+            "name": "window.constructed",
+            "milliseconds": 383.3737,
+            "thread": 2,
+            "jitMilliseconds": 158.4706,
+            "jitMethods": 725
+          },
+          {
+            "name": "window.activate",
+            "milliseconds": 419.6488,
+            "duration": 36.2506,
+            "thread": 2
+          },
+          {
+            "name": "arguments.parse",
+            "milliseconds": 454.3085,
+            "duration": 0.1259,
+            "thread": 2
+          },
+          {
+            "name": "document.read",
+            "milliseconds": 477.0017,
+            "duration": 17.7442,
+            "thread": 2
+          },
+          {
+            "name": "document.create",
+            "milliseconds": 485.583,
+            "duration": 3.6541,
+            "thread": 4
+          },
+          {
+            "name": "document.configure",
+            "milliseconds": 524.078,
+            "duration": 38.1842,
+            "thread": 2
+          },
+          {
+            "name": "pane.initialize",
+            "milliseconds": 563.9297,
+            "duration": 16.3034,
+            "thread": 2
+          },
+          {
+            "name": "pane.construct",
+            "milliseconds": 577.3376,
+            "duration": 53.2422,
+            "thread": 2
+          },
+          {
+            "name": "document.create",
+            "milliseconds": 577.9271,
+            "duration": 0.1421,
+            "thread": 2
+          },
+          {
+            "name": "document.create",
+            "milliseconds": 581.0143,
+            "duration": 0.1039,
+            "thread": 2
+          },
+          {
+            "name": "preferences.remember",
+            "milliseconds": 590.7746,
+            "duration": 13.4174,
+            "thread": 2
+          },
+          {
+            "name": "document.open",
+            "milliseconds": 590.7758,
+            "duration": 135.0806,
+            "thread": 2
+          },
+          {
+            "name": "view.provider",
+            "milliseconds": 647.927,
+            "duration": 5.1732,
+            "thread": 2
+          },
+          {
+            "name": "fonts.matchingFaces",
+            "milliseconds": 682.8351,
+            "duration": 29.0549,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 688.0336,
+            "duration": 35.7021,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 711.4749,
+            "duration": 23.4336,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 737.3621,
+            "duration": 25.8857,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 737.6881,
+            "duration": 0.1622,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 740.4506,
+            "duration": 2.7614,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 742.5066,
+            "duration": 2.0556,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 743.3494,
+            "duration": 0.0957,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 746.2582,
+            "duration": 2.9083,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 746.5915,
+            "duration": 0.3322,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 746.7807,
+            "duration": 0.073,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 749.21,
+            "duration": 2.4289,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 749.6263,
+            "duration": 0.4159,
+            "thread": 2
+          },
+          {
+            "name": "shape.foreground",
+            "milliseconds": 749.7146,
+            "duration": 100.0222,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 752.9864,
+            "duration": 0.0734,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 755.4172,
+            "duration": 2.4303,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 755.7041,
+            "duration": 0.2865,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 755.8858,
+            "duration": 0.0574,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 758.2401,
+            "duration": 2.3539,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 758.5639,
+            "duration": 0.3235,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 758.7154,
+            "duration": 0.0566,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 761.1772,
+            "duration": 2.4616,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 761.548,
+            "duration": 0.3701,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 761.7544,
+            "duration": 0.0726,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 764.2238,
+            "duration": 2.4689,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 764.4741,
+            "duration": 0.2499,
+            "thread": 2
+          },
+          {
+            "name": "shape.foreground",
+            "milliseconds": 764.5891,
+            "duration": 11.8248,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 768.7619,
+            "duration": 0.1141,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 772.7129,
+            "duration": 3.9504,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 773.2119,
+            "duration": 0.4985,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 773.4325,
+            "duration": 0.0803,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 777.4264,
+            "duration": 3.9935,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 778.2246,
+            "duration": 0.7972,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 778.4417,
+            "duration": 0.0858,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 782.2728,
+            "duration": 3.8306,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 782.7339,
+            "duration": 0.4604,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 782.9207,
+            "duration": 0.0796,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 786.6492,
+            "duration": 3.7278,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 786.7705,
+            "duration": 0.1207,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 786.9408,
+            "duration": 0.0786,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 790.7206,
+            "duration": 3.7792,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 790.9467,
+            "duration": 0.2254,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 791.0946,
+            "duration": 0.078,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 794.8543,
+            "duration": 3.7592,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 794.9054,
+            "duration": 0.0502,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 795.1094,
+            "duration": 0.0765,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 797.4484,
+            "duration": 2.3385,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 797.8526,
+            "duration": 0.4038,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 798.029,
+            "duration": 0.0638,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 800.7071,
+            "duration": 2.6778,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 800.8601,
+            "duration": 0.1526,
+            "thread": 2
+          },
+          {
+            "name": "shape.foreground",
+            "milliseconds": 800.9489,
+            "duration": 32.3261,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 802.736,
+            "duration": 0.0649,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 805.1144,
+            "duration": 2.378,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 805.3092,
+            "duration": 0.1943,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 805.5124,
+            "duration": 0.0596,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 807.7721,
+            "duration": 2.2593,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 807.9651,
+            "duration": 0.1926,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 808.1597,
+            "duration": 0.0528,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 810.4883,
+            "duration": 2.3283,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 810.8828,
+            "duration": 0.394,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 811.0638,
+            "duration": 0.0558,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 813.4118,
+            "duration": 2.3476,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 813.9539,
+            "duration": 0.5418,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 814.1715,
+            "duration": 0.0543,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 816.4756,
+            "duration": 2.2926,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 817.0949,
+            "duration": 0.6188,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 817.3103,
+            "duration": 0.054,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 819.6353,
+            "duration": 2.3246,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 820.6762,
+            "duration": 1.0405,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 820.8888,
+            "duration": 0.0539,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 823.2312,
+            "duration": 2.3421,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 824.2079,
+            "duration": 0.9763,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 824.4234,
+            "duration": 0.0552,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 826.7257,
+            "duration": 2.3018,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 826.9174,
+            "duration": 0.1913,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 827.1383,
+            "duration": 0.0582,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 829.5172,
+            "duration": 2.3784,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 829.6912,
+            "duration": 0.1736,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 829.8934,
+            "duration": 0.0552,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 832.1521,
+            "duration": 2.2583,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 832.5497,
+            "duration": 0.3972,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 832.7564,
+            "duration": 0.0531,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 835.0179,
+            "duration": 2.2611,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 835.3345,
+            "duration": 0.3162,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 835.5492,
+            "duration": 0.0559,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 837.8132,
+            "duration": 2.2637,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 838.1483,
+            "duration": 0.3346,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 838.3552,
+            "duration": 0.053,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 840.6284,
+            "duration": 2.2727,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 840.9868,
+            "duration": 0.3579,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 841.181,
+            "duration": 0.0533,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 843.4906,
+            "duration": 2.3092,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 843.8,
+            "duration": 0.3091,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 843.9529,
+            "duration": 0.0536,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 846.316,
+            "duration": 2.3627,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 846.4696,
+            "duration": 0.1531,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 846.6839,
+            "duration": 0.0658,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 849.0538,
+            "duration": 2.3696,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 849.3524,
+            "duration": 0.2982,
+            "thread": 2
+          },
+          {
+            "name": "shape.foreground",
+            "milliseconds": 849.4903,
+            "duration": 46.8382,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 857.2682,
+            "duration": 0.0799,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 859.6179,
+            "duration": 2.3492,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 860.1041,
+            "duration": 0.4857,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 860.338,
+            "duration": 0.0719,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 863.1137,
+            "duration": 2.7752,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 863.4413,
+            "duration": 0.3272,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 863.6566,
+            "duration": 0.0562,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 865.8828,
+            "duration": 2.2258,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 865.9943,
+            "duration": 0.111,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 866.1927,
+            "duration": 0.0545,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 868.4607,
+            "duration": 2.2677,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 868.7526,
+            "duration": 0.2913,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 868.9508,
+            "duration": 0.0526,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 871.2497,
+            "duration": 2.2984,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 871.993,
+            "duration": 0.7429,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 872.1889,
+            "duration": 0.0548,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 874.3939,
+            "duration": 2.2047,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 874.4389,
+            "duration": 0.0445,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 874.634,
+            "duration": 0.0542,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 876.986,
+            "duration": 2.3516,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 877.3561,
+            "duration": 0.3693,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 877.496,
+            "duration": 0.0539,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 879.8012,
+            "duration": 2.3047,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 879.9608,
+            "duration": 0.1591,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 880.1594,
+            "duration": 0.0534,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 882.4857,
+            "duration": 2.3259,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 883.0281,
+            "duration": 0.5419,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 883.2336,
+            "duration": 0.0529,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 885.4563,
+            "duration": 2.2223,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 885.6791,
+            "duration": 0.2225,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 885.8873,
+            "duration": 0.0531,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 888.1102,
+            "duration": 2.2226,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 888.1693,
+            "duration": 0.0585,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 888.3623,
+            "duration": 0.0526,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 890.6408,
+            "duration": 2.278,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 891.1666,
+            "duration": 0.5255,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 891.3742,
+            "duration": 0.0526,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 893.7935,
+            "duration": 2.419,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 894.1425,
+            "duration": 0.3486,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 894.3258,
+            "duration": 0.0532,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 896.6077,
+            "duration": 2.2816,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 896.6667,
+            "duration": 0.0584,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 896.8633,
+            "duration": 0.0536,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 899.1047,
+            "duration": 2.241,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 899.2738,
+            "duration": 0.1686,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 899.4722,
+            "duration": 0.0533,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 901.8251,
+            "duration": 2.3525,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 902.5248,
+            "duration": 0.6992,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 902.7354,
+            "duration": 0.0676,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 905.0394,
+            "duration": 2.3036,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 905.5553,
+            "duration": 0.5156,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 905.7546,
+            "duration": 0.0548,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 908.1069,
+            "duration": 2.3519,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 908.9539,
+            "duration": 0.8465,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 909.1617,
+            "duration": 0.0527,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 911.9412,
+            "duration": 2.779,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 912.5197,
+            "duration": 0.5781,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 912.9454,
+            "duration": 0.2469,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 919.9918,
+            "duration": 7.0451,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 920.7726,
+            "duration": 0.7796,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 920.9959,
+            "duration": 0.0559,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 923.3038,
+            "duration": 2.3074,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 923.6095,
+            "duration": 0.3051,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 923.8041,
+            "duration": 0.0528,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 926.1013,
+            "duration": 2.2969,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 926.338,
+            "duration": 0.2364,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 926.5698,
+            "duration": 0.0671,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 929.1782,
+            "duration": 2.6079,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 929.5558,
+            "duration": 0.3771,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 929.7574,
+            "duration": 0.075,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 932.068,
+            "duration": 2.3101,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 932.4782,
+            "duration": 0.4098,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 932.6926,
+            "duration": 0.0535,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 935.0877,
+            "duration": 2.3948,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 942.036,
+            "duration": 6.9479,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 942.3058,
+            "duration": 0.1027,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 944.9684,
+            "duration": 2.6622,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 948.5495,
+            "duration": 3.5806,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 948.7975,
+            "duration": 0.0709,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 951.3084,
+            "duration": 2.5104,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 951.8202,
+            "duration": 0.5114,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 952.0293,
+            "duration": 0.0557,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 954.4317,
+            "duration": 2.4018,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 954.8628,
+            "duration": 0.4307,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 955.0847,
+            "duration": 0.0524,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 957.4438,
+            "duration": 2.3587,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 957.5508,
+            "duration": 0.1065,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 957.7488,
+            "duration": 0.0527,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 960.0884,
+            "duration": 2.3392,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 960.3901,
+            "duration": 0.3012,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 960.5551,
+            "duration": 0.0524,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 962.9663,
+            "duration": 2.4108,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 963.1095,
+            "duration": 0.141,
+            "thread": 2
+          },
+          {
+            "name": "shape.foreground",
+            "milliseconds": 963.2506,
+            "duration": 106.1636,
+            "thread": 2
+          },
+          {
+            "name": "view.initialLayout",
+            "milliseconds": 968.7463,
+            "duration": 320.6503,
+            "thread": 2
+          },
+          {
+            "name": "view.backgroundSetup",
+            "milliseconds": 968.97,
+            "duration": 0.2205,
+            "thread": 2
+          },
+          {
+            "name": "editor.createView",
+            "milliseconds": 968.9706,
+            "duration": 326.7788,
+            "thread": 2
+          },
+          {
+            "name": "editor.attach",
+            "milliseconds": 986.2385,
+            "duration": 344.0651,
+            "thread": 2
+          },
+          {
+            "name": "editor.draw",
+            "milliseconds": 1001.0795,
+            "duration": 13.4178,
+            "thread": 2
+          },
+          {
+            "name": "editor.firstDraw",
+            "milliseconds": 1002.4124,
+            "thread": 2,
+            "jitMilliseconds": 278.6185,
+            "jitMethods": 1546
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 1041.054,
+            "duration": 0.108,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 1043.56,
+            "duration": 2.5048,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 1043.8119,
+            "duration": 0.2514,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 1044.0448,
+            "duration": 0.0762,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 1047.1729,
+            "duration": 3.1275,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 1047.5304,
+            "duration": 0.357,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 1047.7339,
+            "duration": 0.0574,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 1050.1412,
+            "duration": 2.4069,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 1050.4024,
+            "duration": 0.2606,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 1050.5544,
+            "duration": 0.054,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 1052.9843,
+            "duration": 2.4295,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 1053.5039,
+            "duration": 0.5191,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 1053.6507,
+            "duration": 0.053,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 1056.0458,
+            "duration": 2.3947,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 1056.1051,
+            "duration": 0.0588,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 1056.2605,
+            "duration": 0.0575,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 1058.7085,
+            "duration": 2.4477,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 1058.8806,
+            "duration": 0.1716,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 1059.0948,
+            "duration": 0.0531,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 1062.0581,
+            "duration": 2.963,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 1062.3469,
+            "duration": 0.2883,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 1062.534,
+            "duration": 0.057,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 1064.9536,
+            "duration": 2.4192,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 1065.0567,
+            "duration": 0.1024,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 1065.2678,
+            "duration": 0.0554,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 1067.6084,
+            "duration": 2.3403,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 1067.9356,
+            "duration": 0.3266,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 1068.1665,
+            "duration": 0.0582,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 1070.5309,
+            "duration": 2.3641,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 1070.826,
+            "duration": 0.2946,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 1071.0332,
+            "duration": 0.0539,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 1073.4039,
+            "duration": 2.3704,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 1073.6881,
+            "duration": 0.2837,
+            "thread": 2
+          },
+          {
+            "name": "shape.fontSetup",
+            "milliseconds": 1073.9014,
+            "duration": 0.0622,
+            "thread": 2
+          },
+          {
+            "name": "shape.nativeCapture",
+            "milliseconds": 1076.276,
+            "duration": 2.3742,
+            "thread": 2
+          },
+          {
+            "name": "shape.clusters",
+            "milliseconds": 1076.4667,
+            "duration": 0.1902,
+            "thread": 2
+          },
+          {
+            "name": "shape.foreground",
+            "milliseconds": 1076.6208,
+            "duration": 35.9042,
+            "thread": 2
+          },
+          {
+            "name": "editor.draw",
+            "milliseconds": 1146.5969,
+            "duration": 15.6868,
+            "thread": 2
+          },
+          {
+            "name": "editor.draw",
+            "milliseconds": 1660.7289,
+            "duration": 0.2817,
+            "thread": 2
+          }
+        ],
+        "frames": [
+          {
+            "milliseconds": 1002.406,
+            "geometry": {
+              "width": 1258.6666259765625,
+              "height": 858,
+              "top": 0,
+              "firstBaseline": 26.149999618530273,
+              "canvasY": 61.33333206176758,
+              "revision": 5,
+              "configuration": 7,
+              "shaped": 4286,
+              "fontMetadataReads": 1,
+              "glyphBoundsQueries": 176,
+              "glyphBoundsHits": 4110
+            }
+          },
+          {
+            "milliseconds": 1146.8604,
+            "geometry": {
+              "width": 1258.6666259765625,
+              "height": 858,
+              "top": 0,
+              "firstBaseline": 26.149999618530273,
+              "canvasY": 61.33333206176758,
+              "revision": 6,
+              "configuration": 8,
+              "shaped": 5060,
+              "fontMetadataReads": 1,
+              "glyphBoundsQueries": 180,
+              "glyphBoundsHits": 4880
+            }
+          },
+          {
+            "milliseconds": 1660.9699,
+            "geometry": {
+              "width": 1258.6666259765625,
+              "height": 858,
+              "top": 0,
+              "firstBaseline": 26.149999618530273,
+              "canvasY": 61.33333206176758,
+              "revision": 6,
+              "configuration": 8,
+              "shaped": 5060,
+              "fontMetadataReads": 1,
+              "glyphBoundsQueries": 180,
+              "glyphBoundsHits": 4880
+            }
+          }
+        ]
+      }
+    }
+  }
+}

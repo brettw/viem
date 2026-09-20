@@ -66,6 +66,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
 
     public EditorPane(EditorWindow window, CoreDocument document, Preferences preferences)
     {
+        using var startup = Diagnostics.StartupPerformance.Measure("pane.initialize");
         this.window = window; Document = document; this.preferences = preferences;
         prompt = new(this, preferences) { Visibility = Visibility.Collapsed };
         RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) }); RowDefinitions.Add(new() { Height = GridLength.Auto }); RowDefinitions.Add(new() { Height = GridLength.Auto });
@@ -82,14 +83,16 @@ internal sealed partial class EditorPane : Grid, IDisposable
         inputLayer.IsHitTestVisible = true; input.IsHitTestVisible = false;
         Canvas.CreateResources += (_, _) => { try { Attach(); } catch (Exception error) { ready.TrySetException(error); Report(error); } };
         Canvas.Draw += (_, args) => Run(() => {
-            Draw(args.DrawingSession);
+            using (Diagnostics.StartupPerformance.Measure("editor.draw")) Draw(args.DrawingSession);
             if (snapshot != null && Diagnostics.StartupPerformance.Enabled)
-                Diagnostics.StartupPerformance.FirstDraw(DispatcherQueue, Document.FilePath, new {
+                Diagnostics.StartupPerformance.FirstDraw(DispatcherQueue, Document.FilePath, new() {
                     width = Canvas.ActualWidth, height = Canvas.ActualHeight, top = viewport.top,
                     firstBaseline = snapshot.Rows.FirstOrDefault().baseline - viewport.top,
                     canvasY = Canvas.TransformToVisual(null).TransformPoint(new Point()).Y,
                     revision = viewport.layout_revision, configuration = viewport.configuration_generation,
-                    shaped = View!.Provider.ShapedCharacters });
+                    shaped = View!.Provider.ShapedCharacters,
+                    fontMetadataReads = View.Provider.FontMetadataReads,
+                    glyphBoundsQueries = View.Provider.GlyphBoundsQueries, glyphBoundsHits = View.Provider.GlyphBoundsHits });
         });
         Canvas.SizeChanged += (_, _) => { if (View != null) Run(() => { using var timing = Diagnostics.StartupPerformance.Measure("editor.resize"); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); }); };
         Canvas.PointerPressed += OnPointerPressed;
@@ -175,7 +178,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         format.Flyout = flyout;
     }
     public void FocusEditor() { if (!disposed) input.Focus(FocusState.Programmatic); }
-    public void Report(Exception error) { LastError = error; ShowCommandOutput(error.Message); }
+    public void Report(Exception error) { LastError = error; Diagnostics.StartupPerformance.Failed(error); ShowCommandOutput(error.Message); }
     public void Run(Action action) { try { action(); } catch (Exception e) { Report(e); } }
     public void SetMessage(string text) { ShowCommandOutput(text); }
     private void ResetBlink() { caretVisible = true; blink.Stop(); blink.Start(); Canvas.Invalidate(); prompt.Blink(true); }

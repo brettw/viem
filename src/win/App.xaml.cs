@@ -8,13 +8,15 @@ public partial class App : Application
     internal static App Instance => (App)Current;
     internal List<EditorWindow> Windows { get; } = [];
     internal List<string> Arguments { get; } = [];
-    internal Preferences Preferences { get; } = new();
+    internal Preferences Preferences { get; }
     internal DocumentWindowPlacement WindowPlacement { get; }
     private InstanceBroker? broker;
-    public App()
+    internal App(Preferences preferences)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("app.initialize");
+        Preferences = preferences;
         InitializeComponent();
+        if (Diagnostics.StartupPerformance.Enabled) UnhandledException += (_, e) => Diagnostics.StartupPerformance.Failed(e.Exception);
         WindowPlacement = new(Preferences);
 #if DEBUG
         UnhandledException += (_, e) => { Diagnostics.FrontendSmokeTests.WriteFailure(e.Exception); };
@@ -24,14 +26,15 @@ public partial class App : Application
     {
         Diagnostics.StartupPerformance.Mark("app.launched");
         Rendering.FontCatalog.PrepareSystemFonts();
-        broker = new InstanceBroker(Preferences.DirectoryPath);
+        using (Diagnostics.StartupPerformance.Measure("instance.broker")) broker = new InstanceBroker(Preferences.DirectoryPath);
         if (!broker.IsPrimary)
         {
             try { await broker.Redirect(new(Environment.GetCommandLineArgs().Skip(1).ToArray(), Environment.CurrentDirectory)); }
             catch (Exception error) { _ = MessageBox(0, error.Message, "Viem could not open the file", 0x10); }
             broker.Dispose(); Exit(); return;
         }
-        var window = new EditorWindow(Preferences, openLaunchFiles: true);
+        EditorWindow window;
+        using (Diagnostics.StartupPerformance.Measure("window.construct")) window = new EditorWindow(Preferences, openLaunchFiles: true);
         Diagnostics.StartupPerformance.Mark("window.constructed");
         Windows.Add(window);
         window.Closed += (_, _) => Windows.Remove(window);

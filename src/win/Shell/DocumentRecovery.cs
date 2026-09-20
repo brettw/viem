@@ -72,10 +72,10 @@ internal sealed class DocumentRecovery : IDisposable
         }
         throw new IOException("Could not claim a recovery slot for " + path);
     }
-    internal static byte[] Encode(RecoveryRecord record) => [.. Magic, .. JsonSerializer.SerializeToUtf8Bytes(record)];
+    internal static byte[] Encode(RecoveryRecord record) => [.. Magic, .. JsonSerializer.SerializeToUtf8Bytes(record, FrontendJsonContext.Default.RecoveryRecord)];
     internal static RecoveryRecord? Read(string path)
     {
-        try { byte[] bytes = File.ReadAllBytes(path); if (!bytes.AsSpan().StartsWith(Magic)) return null; var value = JsonSerializer.Deserialize<RecoveryRecord>(bytes.AsSpan(Magic.Length)); return value?.version == 1 ? value : null; }
+        try { byte[] bytes = File.ReadAllBytes(path); if (!bytes.AsSpan().StartsWith(Magic)) return null; var value = JsonSerializer.Deserialize(bytes.AsSpan(Magic.Length), FrontendJsonContext.Default.RecoveryRecord); return value?.version == 1 ? value : null; }
         catch { return null; }
     }
     private bool OwnsSlot() => (File.GetAttributes(Slot) & FileAttributes.ReparsePoint) == 0 && Read(Slot)?.owner == record.owner;

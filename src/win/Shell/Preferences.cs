@@ -13,6 +13,7 @@ internal sealed class Preferences
     private bool writable = true;
     public string? Error { get; private set; }
     public event Action? Changed;
+    public event Action? RecentChanged;
     public byte[] StartupCommands { get; private set; } = [];
     public Preferences(string? directory = null)
     {
@@ -54,13 +55,13 @@ internal sealed class Preferences
     public byte[] Indentation => Json(root["editing"]?["indentation"], new JsonObject());
     public byte[] Whitespace => Json(root["editing"]?["whitespacePresentation"], new JsonObject());
     public byte[] Associations => Json(root["code"]?["filenameAssociations"], new JsonArray());
-    private static byte[] Json(JsonNode? value, JsonNode fallback) => JsonSerializer.SerializeToUtf8Bytes(value ?? fallback);
+    private static byte[] Json(JsonNode? value, JsonNode fallback) => JsonSerializer.SerializeToUtf8Bytes(value ?? fallback, FrontendJsonContext.Default.JsonNode);
     public JsonObject Editing => root["editing"] is JsonObject value ? (JsonObject)value.DeepClone() : new();
     public float Margin(string edge) { try { return Math.Clamp(root["view"]?["margins"]?[edge]?.GetValue<float>() ?? 10, 0, 1000); } catch { return 10; } }
     public string[] Recent => root["recentDocuments"] is JsonArray a ? a.Select(v => v?.GetValue<string>() ?? "").Where(v => v.Length > 0).Take(10).ToArray() : [];
-    public void Set<T>(string section, string key, T value)
+    public void Set(string section, string key, JsonNode? value)
     {
-        Update(candidate => { if (candidate[section] is not JsonObject) candidate[section] = new JsonObject(); Merge((JsonObject)candidate[section]!, new JsonObject { [key] = JsonSerializer.SerializeToNode(value) }); });
+        Update(candidate => { if (candidate[section] is not JsonObject) candidate[section] = new JsonObject(); Merge((JsonObject)candidate[section]!, new JsonObject { [key] = value?.DeepClone() }); });
     }
     public void SetSections(JsonObject values) => Update(candidate => Merge(candidate, values));
     private static void Merge(JsonObject target, JsonObject source)
@@ -108,14 +109,15 @@ internal sealed class Preferences
     }
     public void Remember(string path)
     {
+        using var startup = Diagnostics.StartupPerformance.Measure("preferences.remember");
         path = Path.GetFullPath(path);
         Update(candidate => {
             var existing = (candidate["recentDocuments"] as JsonArray)?.Select(v => v!.GetValue<string>()) ?? [];
             candidate["recentDocuments"] = new JsonArray(new[] { path }.Concat(existing.Where(v => !FileIdentity.Same(v, path))).Take(10).Select(v => (JsonNode?)JsonValue.Create(v)).ToArray());
-        });
+        }, recentOnly: true);
     }
-    public void ClearRecent() => Update(candidate => candidate["recentDocuments"] = new JsonArray());
-    private void Update(Action<JsonObject> edit, bool notify = true)
+    public void ClearRecent() => Update(candidate => candidate["recentDocuments"] = new JsonArray(), recentOnly: true);
+    private void Update(Action<JsonObject> edit, bool notify = true, bool recentOnly = false)
     {
         if (!writable) throw new InvalidOperationException(Error);
         string path = Path.Combine(DirectoryPath, "config.json");
@@ -126,8 +128,14 @@ internal sealed class Preferences
         (candidate["code"] as JsonObject)?.Remove("vimSyntaxDirectory");
         candidate = (JsonObject)JsonNode.Parse(candidate.ToJsonString())!;
         Validate(candidate);
-        AtomicWrite(path, JsonSerializer.SerializeToUtf8Bytes(candidate, new JsonSerializerOptions { WriteIndented = true }));
-        root = candidate; if (notify) Changed?.Invoke();
+        AtomicWrite(path, JsonSerializer.SerializeToUtf8Bytes(candidate, FrontendJsonContext.Indented.JsonObject));
+        // Opening a file changes the recent menu, not theme, margins, or layout.
+        // Still publish external settings edits merged from disk on this write.
+        bool settingsChanged = !recentOnly || root.Select(p => p.Key).Union(candidate.Select(p => p.Key))
+            .Where(key => key != "recentDocuments").Any(key => !JsonNode.DeepEquals(root[key], candidate[key]));
+        root = candidate;
+        if (notify && settingsChanged) Changed?.Invoke();
+        else if (notify && recentOnly) RecentChanged?.Invoke();
     }
     public static void AtomicWrite(string path, byte[] contents)
     {

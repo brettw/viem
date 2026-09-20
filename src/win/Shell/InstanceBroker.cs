@@ -26,7 +26,7 @@ internal sealed class InstanceBroker : IDisposable
     {
         using var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         await client.ConnectAsync(5000);
-        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(invocation);
+        byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(invocation, FrontendJsonContext.Default.OpenInvocation);
         if (bytes.Length > 1_048_576) throw new InvalidDataException("The launch request is too large.");
         await client.WriteAsync(BitConverter.GetBytes(bytes.Length)); await client.WriteAsync(bytes); await client.FlushAsync();
         byte[] ack = new byte[1]; using var timeout = new CancellationTokenSource(5000); await client.ReadExactlyAsync(ack, timeout.Token);
@@ -45,7 +45,7 @@ internal sealed class InstanceBroker : IDisposable
                     byte[] size = new byte[4]; await server.ReadExactlyAsync(size, timeout.Token); int length = BitConverter.ToInt32(size);
                     if (length is < 1 or > 1_048_576) throw new InvalidDataException("Invalid launch request length.");
                     byte[] bytes = new byte[length]; await server.ReadExactlyAsync(bytes, timeout.Token);
-                    var invocation = JsonSerializer.Deserialize<OpenInvocation>(bytes) ?? throw new InvalidDataException("Invalid launch request.");
+                    var invocation = JsonSerializer.Deserialize(bytes, FrontendJsonContext.Default.OpenInvocation) ?? throw new InvalidDataException("Invalid launch request.");
                     if (invocation.Arguments == null || invocation.Arguments.Any(a => a == null) || !Path.IsPathFullyQualified(invocation.Directory)) throw new InvalidDataException("Invalid launch arguments.");
                     bool accepted = dispatcher.TryEnqueue(() => receive(invocation));
                     await server.WriteAsync(new byte[] { accepted ? (byte)1 : (byte)0 }, timeout.Token);

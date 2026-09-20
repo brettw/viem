@@ -12,7 +12,7 @@ using Viem.Windows.Shell;
 
 namespace Viem.Windows.Editor;
 
-internal sealed class CommandPrompt : Grid, IDisposable
+internal sealed partial class CommandPrompt : Grid, IDisposable
 {
     private readonly CanvasControl canvas = new();
     private readonly EditorPane pane;

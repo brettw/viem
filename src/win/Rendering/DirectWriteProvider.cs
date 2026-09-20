@@ -42,6 +42,10 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     private ConcurrentDictionary<ulong, Resource> resources => shared.Resources;
     private readonly List<ulong> responseResources = [];
     private NativeArena arena = new();
+    private readonly Dictionary<GlyphInkKey, global::Windows.Foundation.Rect> inkBounds = new();
+    private readonly Dictionary<nint, GlyphFontMetadata> fontMetadata = new();
+    private ulong inkGeneration;
+    internal int CachedGlyphBounds => inkBounds.Count;
     public ulong Generation => frozenGeneration ?? (ulong)Volatile.Read(ref shared.Generation);
     public long ShapedCharacters { get; private set; }
     public long BackgroundShapedCharacters => Interlocked.Read(ref shared.BackgroundCharacters);
@@ -196,6 +200,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
 
     private ViemShapeResponseV1 Shape(ViemShapeRequestV1 request)
     {
+        if (inkGeneration != Generation) { inkBounds.Clear(); fontMetadata.Clear(); inkGeneration = Generation; }
         string before = Text(request.context_before), interior = Text(request.text), after = Text(request.context_after);
         string text = before + interior + after;
         var map = new Utf8IndexMap(text);
@@ -225,22 +230,20 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             int last = map.Utf16((int)Math.Min(map.ByteLength, (long)run.text_end - contextStart));
             if (last > first) ApplyStyle(layout, first, last - first, run.style, request.scale);
         }
-        var capture = new GlyphCapture();
+        var capture = new GlyphCapture(GetFontMetadata);
         fontTiming.Dispose();
         fontCpu.Dispose();
         using (Diagnostics.StartupPerformance.Measure("shape.nativeCapture"))
         using (IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.nativeCapture")) layout.DrawToTextRenderer(capture, Vector2.Zero);
         using var clusterTiming = Diagnostics.StartupPerformance.Measure("shape.clusters");
         using var clusterCpu = IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.clusters");
-        FontMetadataReads += capture.RunCount;
         var fragment = new Fragment(layout);
         var line = layout.LineMetrics[0];
         var defaultMetrics = new ViemTextMetricsV1 { ascent = line.Baseline, descent = Math.Max(0, line.Height - line.Baseline), leading = 0 };
         var clusters = new List<ViemShapedClusterV1>();
-        // Repeated letters in one shaping fragment have identical native ink
-        // queries. Keep exact arguments (including offsets), not rounded font
-        // approximations; this cache dies with the request and is size bounded.
-        var inkBounds = new Dictionary<GlyphInkKey, global::Windows.Foundation.Rect>();
+        // The same glyph occurs on many lines. Keep exact native face/size/run
+        // arguments across fragments, bounded to 1,024 entries per shaper and
+        // scoped to its device/metrics generation. Workers own separate caches.
         var fontNames = new Dictionary<string, ViemUtf8Slice>(StringComparer.Ordinal);
         var markerFonts = new Dictionary<int, MarkerFont>();
         var positions = new List<float>();
@@ -421,10 +424,29 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         arena.Dispose();
         foreach (ulong id in responseResources) ReleaseResource(id);
         responseResources.Clear();
+        inkBounds.Clear();
+        fontMetadata.Clear();
         measurement.Dispose();
         GC.KeepAlive(generationCallback); GC.KeepAlive(shapeCallback); GC.KeepAlive(retainCallback);
     }
     private sealed record Lease(DirectWriteProvider Provider, ulong[] Ids);
+    private GlyphFontMetadata GetFontMetadata(CanvasFontFace font)
+    {
+        nint reference = GlyphFontMetadata.NativeReference(font);
+        try
+        {
+            if (reference != 0)
+                foreach (var entry in fontMetadata)
+                    if (GlyphFontMetadata.SameFace(reference, entry.Key)) return entry.Value;
+            FontMetadataReads++;
+            var metadata = new GlyphFontMetadata(font);
+            // CanvasFontFace owns the native reference. DirectWrite's Equals
+            // compares faces (including simulations), not wrapper addresses.
+            if (reference != 0 && fontMetadata.Count < 32) fontMetadata[reference] = metadata;
+            return metadata;
+        }
+        finally { if (reference != 0) Marshal.Release(reference); GC.KeepAlive(font); }
+    }
     private sealed class SharedResources
     {
         public readonly ulong Owner = (ulong)Interlocked.Increment(ref nextOwner);
@@ -443,10 +465,33 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
 }
 
 // DirectWrite's localized font names cross the COM boundary and allocate a
-// dictionary. Read them and face metrics once per native run, not per cluster.
-// Its lifetime follows the bounded shaping/render resources that reference it.
-internal sealed class GlyphFontMetadata
+// dictionary. Win2D can create a new CanvasFontFace wrapper for every text run;
+// its underlying DirectWrite face is the stable identity shared between lines.
+internal sealed unsafe class GlyphFontMetadata
 {
+    internal static nint NativeReference(CanvasFontFace font)
+    {
+        // ICanvasResourceWrapperNative from Win2D's Microsoft.Graphics.Canvas.native.h.
+        Guid wrapperId = new("5F10688D-EA55-4D55-A3B0-4DDB55C0C20A");
+        nint wrapper = 0;
+        try
+        {
+            if (Marshal.QueryInterface(((WinRT.IWinRTObject)font).NativeObject.ThisPtr, in wrapperId, out wrapper) < 0) return 0;
+            Guid referenceId = new("5E7FA7CA-DDE3-424C-89F0-9FCD6FED58CD"); // IDWriteFontFaceReference, dwrite_3.h
+            nint resource = 0;
+            var getResource = (delegate* unmanaged[Stdcall]<nint, nint, float, Guid*, nint*, int>)(*(nint**)wrapper)[3];
+            if (getResource(wrapper, 0, 0, &referenceId, &resource) >= 0) return resource; // caller releases
+            if (resource != 0) Marshal.Release(resource);
+            return 0;
+        }
+        finally
+        {
+            if (wrapper != 0) Marshal.Release(wrapper);
+            GC.KeepAlive(font);
+        }
+    }
+    internal static bool SameFace(nint left, nint right) => left == right
+        || ((delegate* unmanaged[Stdcall]<nint, nint, int>)(*(nint**)left)[5])(left, right) != 0;
     public CanvasFontFace Font { get; }
     public string? Family { get; }
     public bool ColorGlyph { get; }
@@ -466,7 +511,10 @@ internal readonly record struct GlyphPart(GlyphFontMetadata Metadata, float Size
 {
     public CanvasFontFace Font => Metadata.Font;
 }
-internal sealed class GlyphCapture : ICanvasTextRenderer
+// Generate the WinRT callable wrapper at build time instead of discovering
+// the renderer interface through reflection on the first shaped fragment.
+[WinRT.GeneratedWinRTExposedType]
+internal sealed partial class GlyphCapture(Func<CanvasFontFace, GlyphFontMetadata> metadataFor) : ICanvasTextRenderer
 {
     private sealed record Run(Vector2 Point, GlyphFontMetadata Font, float Size, CanvasGlyph[] Glyphs, uint Bidi, int[] Map, int Start, Dictionary<int, int> Ends, float[] Advances);
     private readonly List<Run> runs = [];
@@ -479,7 +527,7 @@ internal sealed class GlyphCapture : ICanvasTextRenderer
         var boundaries = clusterMapIndices.Distinct().Order().Append(glyphs.Length).ToArray(); var ends = new Dictionary<int, int>();
         for (int i = 0; i + 1 < boundaries.Length; i++) ends[boundaries[i]] = boundaries[i + 1];
         var advances = new float[glyphs.Length + 1]; for (int i = 0; i < glyphs.Length; i++) advances[i + 1] = advances[i] + glyphs[i].Advance;
-        runs.Add(new(point, new GlyphFontMetadata(fontFace), fontSize, glyphs, bidiLevel, clusterMapIndices, checked((int)characterIndex), ends, advances));
+        runs.Add(new(point, metadataFor(fontFace), fontSize, glyphs, bidiLevel, clusterMapIndices, checked((int)characterIndex), ends, advances));
     }
     public List<GlyphPart> Extract(int start, int end, float left, float baseline)
     {

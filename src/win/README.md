@@ -19,16 +19,22 @@ From the repository root in PowerShell:
 
 ```powershell
 .\scripts\build-win.ps1 -Configuration Release
-.\scripts\run_windows.ps1
+.\scripts\run-win.ps1
 .\scripts\build-win.ps1 -Configuration Debug -Run
 .\scripts\test-win.ps1
 cargo test --locked
 ```
 
-`run_windows.ps1` only launches the existing Release build. Rebuild explicitly
+`run-win.ps1` only launches the existing Release build. Rebuild explicitly
 with `build-win.ps1 -Configuration Release` after code changes; add `-Offline`
 to use already-restored dependencies. `build-win.ps1 -Configuration Debug -Run`
 builds and launches Debug.
+
+Release uses `dotnet publish` and ReadyToRun compilation to precompile Viem and
+its managed WinUI/Win2D projections. The script preserves the executable path
+below. A direct `dotnet build -c Release` does not perform this precompilation;
+use the build script for startup measurements. The first online restore also
+fetches the SDK's matching Crossgen2 compiler; later `-Offline` builds reuse it.
 
 The executable is under
 `target/windows/Viem.Windows/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/Viem.exe`
@@ -155,8 +161,17 @@ with isolated empty profiles, checks that startup loads no font-picker lists
 or face descriptions, and writes JSON traces under `target/windows-validation`.
 `-Runs` changes the launch count. Timings end at the first editor draw callback;
 they measure elapsed startup time, not physical display presentation or a cold boot.
+Use `-ProfileDocument <path>` for a real command-line file open, `-ConfigFile
+<path>` to copy settings into each isolated profile, and `-Executable <path>`
+to compare a preserved build. First launches of new/rebuilt output should be
+reported separately from repeated launches. Traces include framework, shell,
+document and layout phases plus JIT CPU time; overlapping scopes are not additive.
+`-ProfileDirectory <path>` copies that profile's settings, startup commands and
+style defaults into each isolated test profile, leaving the original untouched.
 Normal launches do not collect traces. Font discovery uses cached, indexed
 lookups for requested families/faces; complete family lists load on picker use.
+The [Release startup measurements](../../docs/windows-release-startup-performance.md)
+record the before/after timings, remaining phases and validation limits.
 
 Regenerate `Assets/Viem.ico` with `python src/win/tools/build_icon.py` when the
 existing iconset changes. The script only packages those PNGs into an ICO;
