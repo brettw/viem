@@ -39,12 +39,12 @@ extension EVEditorView {
                 let inherited = cluster.flatMap {
                     session.provider.renderRegistry.resolvedFont(identifier: $0.render_run.identifier, metricsGeneration: $0.render_run.metrics_generation)
                 } ?? CTFontCreateWithName(CoreTextMeasurementProvider.defaultFontFamily as CFString, CGFloat(row.ascent + row.descent), nil)
-                font = Self.whitespaceFont(style, inherited: inherited, scale: scale)
                 let inheritedAttributes = cluster.flatMap {
                     session.provider.renderRegistry.textAttributes(identifier: $0.render_run.identifier,
                         metricsGeneration: $0.render_run.metrics_generation)
-                } ?? CoreTextRenderAttributes()
+                } ?? CoreTextRenderAttributes(scriptBaseSize: CTFontGetSize(inherited))
                 textAttributes = Self.whitespaceTextAttributes(style, inherited: inheritedAttributes, scale: scale)
+                font = Self.whitespaceFont(style, inherited: inherited, scale: scale, inheritedAttributes: inheritedAttributes)
                 fonts[fontKey] = (font, textAttributes)
             }
             let foreground = style.foreground?.color
@@ -68,7 +68,7 @@ extension EVEditorView {
             var descent: CGFloat = 0
             let width = CGFloat(CTLineGetTypographicBounds(line, &ascent, &descent, nil))
             let fit = Self.whitespaceInkScale(width: width, ascent: ascent, descent: descent, slot: rect.size)
-            let shift = textAttributes.baselineShift * fit
+            let shift = textAttributes.scriptOffset * fit
             context.saveGState()
             context.clip(to: rect)
             if let background = style.background { context.setFillColor(background.color.cgColor); context.fill(rect) }
@@ -102,7 +102,8 @@ extension EVEditorView {
     static func whitespaceTextAttributes(_ style: EVVisibleWhitespaceStyle,
         inherited: CoreTextRenderAttributes, scale: CGFloat) -> CoreTextRenderAttributes {
         CoreTextRenderAttributes(
-            baselineShift: style.baselineShift.map { CGFloat($0) * scale } ?? inherited.baselineShift,
+            scriptPosition: style.scriptPosition.map { $0 == .normal ? 0 : $0 == .superscript ? 1 : 2 } ?? inherited.scriptPosition,
+            scriptBaseSize: style.size.map { CGFloat($0) * scale } ?? inherited.scriptBaseSize,
             letterSpacing: style.letterSpacing.map { CGFloat($0) * scale } ?? inherited.letterSpacing,
             language: style.language ?? inherited.language,
             writingDirection: style.direction.map {
@@ -125,8 +126,12 @@ extension EVEditorView {
         return clusters[lower - 1]
     }
 
-    static func whitespaceFont(_ style: EVVisibleWhitespaceStyle, inherited: CTFont, scale: CGFloat) -> CTFont {
-        let size = style.size.map { CGFloat($0) * scale } ?? CTFontGetSize(inherited)
+    static func whitespaceFont(_ style: EVVisibleWhitespaceStyle, inherited: CTFont, scale: CGFloat,
+        inheritedAttributes: CoreTextRenderAttributes? = nil) -> CTFont {
+        let inheritedSize = inheritedAttributes?.scriptBaseSize ?? CTFontGetSize(inherited)
+        let position = style.scriptPosition.map { $0 == .normal ? 0 : $0 == .superscript ? 1 : 2 }
+            ?? Int(inheritedAttributes?.scriptPosition ?? 0)
+        let size = (style.size.map { CGFloat($0) * scale } ?? inheritedSize) * (position == 0 ? 1 : 0.7)
         let descriptor = CTFontCopyFontDescriptor(inherited)
         if style.fontFamilies == nil, style.weight == nil, style.bold == nil, style.slant == nil {
             let overrides = style.openTypeFeatures.map { features in

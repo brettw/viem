@@ -437,6 +437,32 @@ pub(super) fn overlay_block(target: &mut BlockProperties, source: &BlockProperti
     target.merge_declarations(source);
 }
 
+/// HTML direction on a paragraph supplies both the paragraph base and an
+/// inherited character direction. Permit that one native side effect while
+/// verifying every other effective character property and all outside runs.
+pub(super) fn paragraph_direction_edit_verified(
+    before: &FormattedDocument,
+    after: &FormattedDocument,
+    ranges: &[Range<usize>],
+) -> bool {
+    let mut boundaries = vec![0, before.text().len()];
+    for span in before.style_spans().iter().chain(after.style_spans()) {
+        boundaries.extend([span.range.start, span.range.end]);
+    }
+    for block in before.blocks() { boundaries.extend([block.range.start, block.range.end]); }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    boundaries.windows(2).all(|pair| {
+        if before.text().get(pair[0]..pair[1]) == Some("\n") { return true; }
+        let Some(mut expected) = resolved_character_at(before, pair[0]) else { return false; };
+        let Some(actual) = resolved_character_at(after, pair[0]) else { return false; };
+        if ranges.iter().any(|range| range.start <= pair[0] && pair[1] <= range.end) {
+            expected.direction = actual.direction;
+        }
+        expected == actual
+    })
+}
+
 pub(super) fn character_clear_verified(
     before: &FormattedDocument,
     after: &FormattedDocument,

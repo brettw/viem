@@ -1059,7 +1059,7 @@ fn style_runs(
                 "bold":style.bold,"slant":style.slant,"foreground":style.foreground,"foreground_is_default":style.foreground_is_default,
                 "background":style.background,"underline":style.underline,"strikethrough":style.strikethrough,"language":style.language,
                 "direction":style.direction,"open_type_features":style.open_type_features,"letter_spacing":style.letter_spacing,
-                "baseline_shift":style.baseline_shift}));
+                "script_position":style.script_position}));
         }
     }
     Ok((characters, paragraphs))

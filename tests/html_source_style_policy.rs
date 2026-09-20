@@ -147,8 +147,8 @@ fn enabled_source_style_translation_writes_native_css_and_reopens() {
 }
 
 #[test]
-fn source_relative_baseline_is_parsed_against_configured_paragraph_size() {
-    for (value, expected) in [("super", 8.), ("sub", -4.8)] {
+fn source_script_position_retains_configured_paragraph_size() {
+    for (value, expected) in [("super", ScriptPosition::Superscript), ("sub", ScriptPosition::Subscript)] {
         let mut document = open("<p>Words</p><!--keep-->");
         edit_paragraph_size(&mut document, 24.);
         let at = document.text().find("Words").unwrap();
@@ -158,7 +158,7 @@ fn source_relative_baseline_is_parsed_against_configured_paragraph_size() {
         let resolved =
             DocumentLayoutStyles::semantic_character_at(document.projection(), at, false).unwrap();
         assert_eq!(resolved.size, 24.);
-        assert_eq!(resolved.baseline_shift, expected);
+        assert_eq!(resolved.script_position, expected);
         let saved = String::from_utf8(document.source_bytes()).unwrap();
         assert!(
             !saved.contains("font-size") && !saved.contains("<style"),
@@ -168,7 +168,7 @@ fn source_relative_baseline_is_parsed_against_configured_paragraph_size() {
 }
 
 #[test]
-fn saved_defaults_apply_to_existing_source_relative_baselines_on_open() {
+fn saved_defaults_apply_to_existing_source_script_positions_on_open() {
     let mut template = open("<p>Words</p>");
     edit_paragraph_size(&mut template, 24.);
     let defaults = template.export_style_defaults().unwrap();
@@ -179,7 +179,7 @@ fn saved_defaults_apply_to_existing_source_relative_baselines_on_open() {
     let resolved =
         DocumentLayoutStyles::semantic_character_at(document.projection(), at, false).unwrap();
     assert_eq!(resolved.size, 24.);
-    assert_eq!(resolved.baseline_shift, 8.);
+    assert_eq!(resolved.script_position, ScriptPosition::Superscript);
     assert_eq!(document.source_bytes(), source.as_bytes());
     assert!(!document.history_status().is_dirty);
     assert!(!document.history_status().can_undo);

@@ -58,7 +58,8 @@ public struct EVVisibleWhitespaceStyle: Codable, Equatable, Sendable {
   public var direction: Direction?
   public var openTypeFeatures: [String: UInt32]?
   public var letterSpacing: Float?
-  public var baselineShift: Float?
+  public enum ScriptPosition: String, Codable, Sendable { case normal = "Normal", superscript = "Superscript", subscriptPosition = "Subscript" }
+  public var scriptPosition: ScriptPosition?
 
   public init() {}
 
@@ -77,15 +78,15 @@ public struct EVVisibleWhitespaceStyle: Codable, Equatable, Sendable {
       && (openTypeFeatures.map { $0.keys.allSatisfy { tag in
         tag.utf8.count == 4 && tag.utf8.allSatisfy { (0x20...0x7e).contains($0) }
       }} ?? true)
-      && (letterSpacing?.isFinite ?? true) && (baselineShift?.isFinite ?? true)
+      && (letterSpacing?.isFinite ?? true)
   }
 
-  public static let propertyNames = ["font_families", "size", "weight", "bold", "slant", "foreground", "background", "underline", "strikethrough", "language", "direction", "open_type_features", "letter_spacing", "baseline_shift"]
+  public static let propertyNames = ["font_families", "size", "weight", "bold", "slant", "foreground", "background", "underline", "strikethrough", "language", "direction", "open_type_features", "letter_spacing", "script_position"]
 
   private enum CodingKeys: String, CodingKey {
     case fontFamilies = "font_families", size, weight, bold, slant, foreground, background
     case underline, strikethrough, language, direction, openTypeFeatures = "open_type_features"
-    case letterSpacing = "letter_spacing", baselineShift = "baseline_shift"
+    case letterSpacing = "letter_spacing", scriptPosition = "script_position"
   }
 }
 

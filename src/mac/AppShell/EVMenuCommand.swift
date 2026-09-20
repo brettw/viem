@@ -56,16 +56,12 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case italic
     case underline
     case strikethrough
-    case bigger
-    case smaller
-    case defaultLigatures
+    case defaultLigatures = 307
     case allLigatures
     case noLigatures
     case superscript = 312
-    case subscriptBaseline
-    case raiseBaseline
-    case lowerBaseline
-    case openTypeFeatures
+    case subscriptText
+    case openTypeFeatures = 316
     case showColors
     case textColor
     case highlightColor

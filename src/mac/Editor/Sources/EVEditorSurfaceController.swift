@@ -396,6 +396,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             if isViewLoaded {
                 editorView.applyPresentation()
             }
+            EVTypographyPanels.shared.documentDidRefresh(self)
             if selectionChanged {
                 NotificationCenter.default.post(name: .viemEditorSelectionDidChange, object: self)
             }
@@ -642,6 +643,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         if backend.sourceFormat == .code {
             if (300..<400).contains(menuCommand.rawValue) { return }
         }
+        if performAdditionalFormatCommand(menuCommand) { return }
         switch menuCommand {
         case .heading0, .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
             performHeadingShortcut(level: UInt32(menuCommand.rawValue - EVMenuCommand.heading0.rawValue))
@@ -751,8 +753,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             EVTypographyPanels.shared.showFonts(for: self)
         case .showColors, .textColor, .highlightColor:
             EVTypographyPanels.shared.showColors(for: self, highlight: menuCommand == .highlightColor)
-        case .bigger, .smaller:
-            changeFontSize(increasing: menuCommand == .bigger)
         case .italic:
             toggleSemanticStyle(UInt32(VIEM_SEMANTIC_STYLE_EMPHASIS), session: session)
         case .underline, .strikethrough:
@@ -766,7 +766,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .alignStart, .alignCenter, .alignEnd,
              .directionAutomatic, .directionLeftToRight, .directionRightToLeft,
              .lineSpacingNormal, .lineSpacingSingle, .lineSpacingOneAndHalf, .lineSpacingDouble:
-            if let (property, value) = directParagraphEdit(for: menuCommand) {
+            if canEditParagraphFormatting,
+               menuCommand != .directionAutomatic || canUseAutomaticParagraphDirection,
+               let (property, value) = directParagraphEdit(for: menuCommand) {
                 performInput { _ = try session.editDirectProperty(property, value: value, expected: session.listSelection()) }
             }
         case .editCharacterStyles, .editParagraphStyles, .editStyles:
@@ -809,6 +811,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             }
             return .disabled
         }
+        if let formatPresentation = additionalFormatPresentation(menuCommand) { return formatPresentation }
         return switch menuCommand {
         case .heading0, .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
             headingShortcutPresentation(level: UInt32(menuCommand.rawValue - EVMenuCommand.heading0.rawValue))
@@ -890,7 +893,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 UInt32(VIEM_SEMANTIC_STYLE_STRONG),
                 session: session
             )
-        case .showFonts, .showColors, .textColor, .highlightColor, .bigger, .smaller, .openTypeFeatures:
+        case .showFonts, .showColors, .textColor, .highlightColor:
+            EVMenuItemPresentation(isEnabled: canInspectTypography)
+        case .openTypeFeatures:
             EVMenuItemPresentation(isEnabled: canEditTypography)
         case .italic:
             semanticStyleMenuPresentation(
@@ -898,7 +903,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 session: session
             )
         case .underline, .strikethrough:
-            if [.html, .htmlSource, .rtf].contains(backend.sourceFormat), let session,
+            if canEditTypography, let session,
                let state = try? session.decorationState(menuCommand == .underline ? .characterUnderline : .characterStrikethrough) {
                 EVMenuItemPresentation(isEnabled: true,
                     state: state == UInt32(VIEM_SEMANTIC_STYLE_STATE_ON) ? .on
@@ -907,8 +912,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .alignStart, .alignCenter, .alignEnd,
              .directionAutomatic, .directionLeftToRight, .directionRightToLeft,
              .lineSpacingNormal, .lineSpacingSingle, .lineSpacingOneAndHalf, .lineSpacingDouble:
-            EVMenuItemPresentation(isEnabled: [.html, .htmlSource, .rtf].contains(backend.sourceFormat)
-                && (try? session?.listSelection()) != nil)
+            paragraphFormattingPresentation(menuCommand)
         case .saveDefaultStyle:
             EVMenuItemPresentation(isEnabled: backend.sourceFormat != .code, title: "Save as default \(backend.sourceFormat.defaultStyleName) style")
         case .reloadStyleSheet:
@@ -931,7 +935,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
     }
 
-    private func directParagraphEdit(for command: EVMenuCommand) -> (EVStyleProperty, EVStyleValue)? {
+    func directParagraphEdit(for command: EVMenuCommand) -> (EVStyleProperty, EVStyleValue?)? {
         switch command {
         case .alignStart: (.paragraphAlignment, .paragraphAlignment(UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_START)))
         case .alignCenter: (.paragraphAlignment, .paragraphAlignment(UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER)))

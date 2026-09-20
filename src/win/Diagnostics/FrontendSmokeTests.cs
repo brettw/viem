@@ -191,6 +191,29 @@ internal static class FrontendSmokeTests
             using var actual = JsonDocument.Parse(importedView.ClipboardJson(0, (ulong)Encoding.UTF8.GetByteCount(text))); using var expected = JsonDocument.Parse(fragment);
             Check(actual.RootElement.GetProperty("character_runs")[0].GetProperty("size").GetSingle() == expected.RootElement.GetProperty("character_runs")[0].GetProperty("size").GetSingle(), "HTML clipboard preserves point sizes");
         });
+        Scenario("<p>x<sup>2</sup> H<sub>2</sub>O</p>", VIEM_FORMAT_HTML, (doc, view) => {
+            string fragment = Encoding.UTF8.GetString(view.ClipboardJson(0, (ulong)Encoding.UTF8.GetByteCount(doc.FormattedText())));
+            string html = ClipboardFormats.Html(fragment);
+            Check(html.Contains("<sup>") && html.Contains("<sub>"), "Windows HTML clipboard writes semantic script tags");
+            using var imported = new CoreDocument(Encoding.UTF8.GetBytes(html), format: VIEM_FORMAT_HTML);
+            using var importedView = new CoreView(imported, device, dispatcher, 700, 400);
+            using var actual = JsonDocument.Parse(importedView.ClipboardJson(0, (ulong)Encoding.UTF8.GetByteCount(imported.FormattedText())));
+            Check(actual.RootElement.GetProperty("character_runs").EnumerateArray().Any(run => run.GetProperty("script_position").GetString() == "Superscript")
+                && actual.RootElement.GetProperty("character_runs").EnumerateArray().Any(run => run.GetProperty("script_position").GetString() == "Subscript"), "script clipboard data survives HTML reopening");
+        });
+        Scenario(string.Concat(Enumerable.Repeat("<p>Wide words with superscript and subscript.</p>", 25_000)), VIEM_FORMAT_HTML, (doc, view) => {
+            var normal = view.Layout(); long shaped = view.Provider.ShapedCharacters;
+            view.Command("ggviw"); view.ToggleScript(VIEM_SCRIPT_POSITION_SUPERSCRIPT);
+            var superscript = view.Layout();
+            Check(!CoreView.SameLayout(normal.Info.identity, superscript.Info.identity)
+                && superscript.Clusters[0].advance < normal.Clusters[0].advance, "superscript invalidates metrics and DirectWrite reduces glyph size");
+            Check(view.Provider.ShapedCharacters - shaped < 40_000 && superscript.Info.coverage_hard_line_end < 25_000,
+                "script changes reshape a bounded region of a large document");
+            view.ToggleScript(VIEM_SCRIPT_POSITION_SUBSCRIPT);
+            Check(view.Typography().Info.script_position == VIEM_SCRIPT_POSITION_SUBSCRIPT, "subscript replaces superscript in direct formatting");
+            view.Undo(); Check(view.Typography().Info.script_position == VIEM_SCRIPT_POSITION_SUPERSCRIPT, "undo restores the prior script position");
+            view.Undo(); Check(view.Typography().Info.script_position == VIEM_SCRIPT_POSITION_NORMAL, "undo restores normal script and cached geometry");
+        });
         Scenario("\talpha  \n", 1, (doc, view) => {
             var before = doc.Source(doc.State.document_revision);
             doc.ConfigureDefaults("{}"u8.ToArray(), "{\"visibleWhitespace\":{\"style\":{\"size\":180,\"foreground\":{\"red\":1,\"green\":0,\"blue\":0,\"alpha\":1},\"underline\":true}}}"u8.ToArray(), 80, "[]"u8.ToArray());

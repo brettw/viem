@@ -81,6 +81,7 @@ internal static class StyleAndSettingsTests
         Check(KeyPolicy.Route(VirtualKey.F8, false, true, false).Kind == VIEM_KEY_FUNCTION
             && KeyPolicy.Route(VirtualKey.F8, false, false, false, true).Kind == VIEM_KEY_FUNCTION, "modified and literal-next F8 remain core function keys");
         await FontChecks(pane, preferences);
+        await FormatMenuTests.Run(preferences);
         await CodeStyleChecks(pane, preferences);
         await StyleInspectorBehaviorTests.Run(pane, preferences);
 
@@ -176,6 +177,27 @@ internal static class StyleAndSettingsTests
             declare.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
             Check(inspector.Error.Length == 0 && inspector.FontFamilyControl.IsEnabled
                 && view.Styles().Styles.Single(s => s.Id == id).Declares(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES), "an inherited font family can be enabled with the native declaration checkbox");
+            var scriptDeclaration = Children<CheckBox>(inspector.CharacterPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Declare Superscript / Subscript");
+            var superscript = Children<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(inspector.CharacterPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Superscript");
+            var subscript = Children<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(inspector.CharacterPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Subscript");
+            Check(!superscript.IsEnabled && !subscript.IsEnabled && scriptDeclaration.IsChecked == false,
+                "one inherited declaration checkbox controls both script buttons");
+            scriptDeclaration.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
+            superscript.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
+            Check(superscript.IsChecked == true && subscript.IsChecked == false
+                && view.Styles().Styles.Single(s => s.Id == id).Value(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION).enum_value == VIEM_SCRIPT_POSITION_SUPERSCRIPT,
+                "native x² button declares superscript");
+            subscript.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
+            Check(superscript.IsChecked == false && subscript.IsChecked == true
+                && view.Styles().Styles.Single(s => s.Id == id).Value(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION).enum_value == VIEM_SCRIPT_POSITION_SUBSCRIPT,
+                "native x₂ button clears superscript and declares subscript");
+            subscript.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
+            Check(superscript.IsChecked == false && subscript.IsChecked == false
+                && view.Styles().Styles.Single(s => s.Id == id).Value(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION).enum_value == VIEM_SCRIPT_POSITION_NORMAL,
+                "toggling the active script button off explicitly restores normal text");
+            scriptDeclaration.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
+            Check(!view.Styles().Styles.Single(s => s.Id == id).Declares(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION)
+                && !Children<TextBlock>(inspector.CharacterPanel).Any(t => t.Text == "Baseline"), "clearing the shared checkbox restores inheritance and the numeric baseline field is removed");
             view.EditStyleFont(style, ["viem-missing-font", "serif"], null); await Task.Delay(100);
             Check(inspector.FontFamilyControl.Text == "viem-missing-font" && inspector.FontVariantControl.SelectedItem == null,
                 "unavailable document fonts remain visible without selecting a substitute variant");
@@ -211,6 +233,14 @@ internal static class StyleAndSettingsTests
             view.SelectAll(); view.SetFont(family, 18, variant);
             Check(view.Layout().Clusters.SelectMany(c => view.Provider.RenderedFontNames(c.render_run.identifier)).Contains(variant.Name), $"DirectWrite renders the selected {family} {variant.StyleName} face");
         }
+        view.SelectAll();
+        if (view.SemanticStyle(VIEM_SEMANTIC_STYLE_STRONG).state != VIEM_SEMANTIC_STYLE_STATE_ON) view.ToggleSemantic(VIEM_SEMANTIC_STYLE_STRONG);
+        byte[] boldBeforeFace = doc.Source(doc.State.document_revision);
+        var regularFace = faces.First(f => f.Weight == 400 && f.Slant == FontStyle.Normal);
+        view.SetFont(regularFace.Family, 18, regularFace);
+        Check(view.SemanticStyle(VIEM_SEMANTIC_STYLE_STRONG).state == VIEM_SEMANTIC_STYLE_STATE_ON
+            && view.Typography().Info.base_weight == 400, "atomic direct face selection preserves independent semantic Bold");
+        view.Undo(); Check(boldBeforeFace.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision)), "one undo restores the full face selection while retaining semantic Bold");
     }
     private static async Task CodeStyleChecks(EditorPane pane, Preferences preferences)
     {

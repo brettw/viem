@@ -14,6 +14,8 @@
 //! capacity, then provide a sufficiently large buffer. Returned byte strings
 //! are length-delimited and never NUL-terminated.
 
+mod formatting;
+pub use formatting::*;
 mod argument_list;
 pub use argument_list::*;
 mod external_change;
@@ -56,7 +58,7 @@ use crate::document::{
     DocumentError, DocumentId, DocumentStyleAssignment, Encoding, FileFormat, FileFormatOrigin,
     FontSlant, Format, FormatOperation, FormattedTextError, HardLineQueryError,
     HistorySemanticChangeKind, HistorySemanticSummary, LineSpacing, ModelTransactionError,
-    ParagraphAlignment, Revision,
+    ParagraphAlignment, Revision, ScriptPosition,
     SemanticInlineStyle, SourceArtifactDigest, StyleContribution, StyleContributionOrigin,
     StyleDefinitionFieldEdit, StyleDefinitionOrigin, StyleDependency, StyleError, StyleId,
     StyleNamespace, StyleProperty, StylePropertyValue, StyleSheetRevision, StyleTransactionError,
@@ -808,7 +810,7 @@ pub struct ViemResolvedTextStyleV1 {
     pub size: f32,
     pub weight: f32,
     pub letter_spacing: f32,
-    pub baseline_shift: f32,
+    pub script_position: u32,
     pub font_families: *const ViemUtf8Slice,
     pub font_family_count: u64,
     pub language: ViemUtf8Slice,
@@ -1250,7 +1252,7 @@ pub const VIEM_STYLE_PROPERTY_CHARACTER_LANGUAGE: u32 = 22;
 pub const VIEM_STYLE_PROPERTY_CHARACTER_DIRECTION: u32 = 23;
 pub const VIEM_STYLE_PROPERTY_CHARACTER_OPEN_TYPE_FEATURES: u32 = 24;
 pub const VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING: u32 = 25;
-pub const VIEM_STYLE_PROPERTY_CHARACTER_BASELINE_SHIFT: u32 = 26;
+pub const VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION: u32 = 26;
 
 pub const VIEM_STYLE_VALUE_NONE: u32 = 0;
 pub const VIEM_STYLE_VALUE_FLOAT: u32 = 1;
@@ -1264,6 +1266,10 @@ pub const VIEM_STYLE_VALUE_WRITING_DIRECTION: u32 = 8;
 pub const VIEM_STYLE_VALUE_OPEN_TYPE_FEATURES: u32 = 9;
 pub const VIEM_STYLE_VALUE_LINE_SPACING: u32 = 10;
 pub const VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT: u32 = 11;
+pub const VIEM_STYLE_VALUE_SCRIPT_POSITION: u32 = 12;
+pub const VIEM_SCRIPT_POSITION_NORMAL: u32 = 0;
+pub const VIEM_SCRIPT_POSITION_SUPERSCRIPT: u32 = 1;
+pub const VIEM_SCRIPT_POSITION_SUBSCRIPT: u32 = 2;
 
 pub const VIEM_STYLE_VALUE_ITEM_STRING: u32 = 1;
 pub const VIEM_STYLE_VALUE_ITEM_OPEN_TYPE_FEATURE: u32 = 2;
@@ -2781,7 +2787,7 @@ impl MarshalledStyle {
             size: style.size,
             weight: style.weight,
             letter_spacing: style.letter_spacing,
-            baseline_shift: style.baseline_shift,
+            script_position: style.script_position as u32,
             font_families: slice_pointer(&font_families),
             font_family_count: font_families.len() as u64,
             language: style
@@ -5138,7 +5144,7 @@ fn style_property_to_ffi(property: StyleProperty) -> u32 {
             VIEM_STYLE_PROPERTY_CHARACTER_OPEN_TYPE_FEATURES
         }
         StyleProperty::CharacterLetterSpacing => VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING,
-        StyleProperty::CharacterBaselineShift => VIEM_STYLE_PROPERTY_CHARACTER_BASELINE_SHIFT,
+        StyleProperty::CharacterScriptPosition => VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION,
     }
 }
 
@@ -5172,6 +5178,10 @@ fn style_value_to_ffi(
         StylePropertyValue::Float(value) => {
             output.kind = VIEM_STYLE_VALUE_FLOAT;
             output.number = *value;
+        }
+        StylePropertyValue::ScriptPosition(value) => {
+            output.kind = VIEM_STYLE_VALUE_SCRIPT_POSITION;
+            output.enum_value = *value as u32;
         }
         StylePropertyValue::FontWeight(value) => {
             output.kind = VIEM_STYLE_VALUE_UNSIGNED;
@@ -5301,8 +5311,8 @@ fn declared_character_property(
         StyleProperty::CharacterLetterSpacing => {
             properties.letter_spacing.map(StylePropertyValue::Float)
         }
-        StyleProperty::CharacterBaselineShift => {
-            properties.baseline_shift.map(StylePropertyValue::Float)
+        StyleProperty::CharacterScriptPosition => {
+            properties.script_position.map(StylePropertyValue::ScriptPosition)
         }
         _ => None,
     }
@@ -5381,8 +5391,8 @@ fn effective_character_property(
         StyleProperty::CharacterLetterSpacing => {
             Some(StylePropertyValue::Float(properties.letter_spacing))
         }
-        StyleProperty::CharacterBaselineShift => {
-            Some(StylePropertyValue::Float(properties.baseline_shift))
+        StyleProperty::CharacterScriptPosition => {
+            Some(StylePropertyValue::ScriptPosition(properties.script_position))
         }
         _ => None,
     }
@@ -6790,7 +6800,7 @@ fn parse_style_property(raw: u32) -> Result<StyleProperty, ViemStatus> {
             Ok(StyleProperty::CharacterOpenTypeFeatures)
         }
         VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING => Ok(StyleProperty::CharacterLetterSpacing),
-        VIEM_STYLE_PROPERTY_CHARACTER_BASELINE_SHIFT => Ok(StyleProperty::CharacterBaselineShift),
+        VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION => Ok(StyleProperty::CharacterScriptPosition),
         _ => Err(ViemStatus::InvalidStyleValue),
     }
 }
@@ -6865,14 +6875,24 @@ unsafe fn parse_style_property_value<O>(
         | StyleProperty::ParagraphLeadingIndent
         | StyleProperty::ParagraphTrailingIndent
         | StyleProperty::CharacterSize
-        | StyleProperty::CharacterLetterSpacing
-        | StyleProperty::CharacterBaselineShift => {
+        | StyleProperty::CharacterLetterSpacing => {
             if value.kind != VIEM_STYLE_VALUE_FLOAT {
                 return Err(invalid());
             }
             style_edit_value_has_no_array(value)?;
             style_edit_value_has_no_text(value)?;
             Ok(StylePropertyValue::Float(value.number))
+        }
+        StyleProperty::CharacterScriptPosition => {
+            if value.kind != VIEM_STYLE_VALUE_SCRIPT_POSITION { return Err(invalid()); }
+            style_edit_value_has_no_array(value)?;
+            style_edit_value_has_no_text(value)?;
+            Ok(StylePropertyValue::ScriptPosition(match value.enum_value {
+                VIEM_SCRIPT_POSITION_NORMAL => ScriptPosition::Normal,
+                VIEM_SCRIPT_POSITION_SUPERSCRIPT => ScriptPosition::Superscript,
+                VIEM_SCRIPT_POSITION_SUBSCRIPT => ScriptPosition::Subscript,
+                _ => return Err(invalid()),
+            }))
         }
         StyleProperty::CharacterWeight => {
             if value.kind != VIEM_STYLE_VALUE_UNSIGNED {
@@ -9919,7 +9939,7 @@ pub unsafe extern "C" fn viem_core_view_decoration_state(
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ViemTypographyInfoV1 {
     pub struct_size: u32,
-    /// bit0 bold, bit1 mixed, bit2 default foreground.
+    /// bit0 bold, bit1 mixed, bit2 default foreground, bit3 mixed script.
     pub flags: u32,
     pub document_id: u64,
     pub document_revision: u64,
@@ -9930,6 +9950,9 @@ pub struct ViemTypographyInfoV1 {
     pub base_weight: u32,
     pub slant: u32,
     pub foreground: ViemRgbaV1,
+    pub script_position: u32,
+    pub has_background: u32,
+    pub background: ViemRgbaV1,
 }
 
 /// # Safety
@@ -9960,8 +9983,8 @@ pub unsafe extern "C" fn viem_core_view_typography_export(
             if core.document().revision().0 != expected_revision {
                 return Err(ViemStatus::StaleRevision);
             }
-            let (style, mixed) = core
-                .selected_typography(ViewId(view))
+            let (style, mixed, script_mixed) = core
+                .selected_typography_details(ViewId(view))
                 .map_err(core_status)?;
             let family = style
                 .font_families
@@ -9981,7 +10004,8 @@ pub unsafe extern "C" fn viem_core_view_typography_export(
                 struct_size: size_of::<ViemTypographyInfoV1>() as u32,
                 flags: u32::from(style.bold)
                     | (u32::from(mixed) << 1)
-                    | (u32::from(style.foreground_is_default) << 2),
+                    | (u32::from(style.foreground_is_default) << 2)
+                    | (u32::from(script_mixed) << 3),
                 document_id: core.document().id().0,
                 document_revision: expected_revision,
                 font_family_bytes: family.len() as u64,
@@ -10000,6 +10024,9 @@ pub unsafe extern "C" fn viem_core_view_typography_export(
                     blue: style.foreground.blue,
                     alpha: style.foreground.alpha,
                 },
+                script_position: style.script_position as u32,
+                has_background: u32::from(style.background.is_some()),
+                background: style.background.map(color_to_ffi).unwrap_or_default(),
             };
             Ok((info, family, features))
         })?;
@@ -11553,6 +11580,7 @@ mod tests {
         assert!(kinds.contains(&super::VIEM_STYLE_VALUE_OPEN_TYPE_FEATURES));
         assert!(kinds.contains(&super::VIEM_STYLE_VALUE_LINE_SPACING));
         assert!(kinds.contains(&super::VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT));
+        assert!(kinds.contains(&super::VIEM_STYLE_VALUE_SCRIPT_POSITION));
         assert!(export.value_items.iter().any(|item| {
             item.kind == super::VIEM_STYLE_VALUE_ITEM_OPEN_TYPE_FEATURE
                 && style_arena_text(&export.strings, item.string) == "kern"

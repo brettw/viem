@@ -5,7 +5,7 @@ use super::line_endings::NormalizedText;
 use super::rich_text::Builder;
 use super::{
     BlockKind, BlockProperties, CharacterProperties, Color, FontSlant, FormattedDocument,
-    LineSpacing, ParagraphAlignment, Revision, StyleSheet, WritingDirection,
+    LineSpacing, ParagraphAlignment, Revision, ScriptPosition, StyleSheet, WritingDirection,
 };
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -627,6 +627,7 @@ pub(super) fn project_tokens_with_configuration(
                     continue;
                 }
                 let mut frame = stack.last().cloned().unwrap_or_default();
+                let inherited_paragraph_direction = frame.paragraph.base_direction;
                 frame.name = tag.name.clone();
                 frame.list_container_only =
                     tag.name == "li" && container_items.contains(&token.range.start);
@@ -752,6 +753,8 @@ pub(super) fn project_tokens_with_configuration(
                     "b" | "strong" => frame.character.bold = Some(true),
                     "i" | "em" => frame.character.slant = Some(FontSlant::Italic),
                     "u" => frame.character.underline = Some(true),
+                    "sup" => frame.character.script_position = Some(ScriptPosition::Superscript),
+                    "sub" => frame.character.script_position = Some(ScriptPosition::Subscript),
                     "s" | "strike" | "del" => frame.character.strikethrough = Some(true),
                     "ol" => {
                         frame.list_counter = tag
@@ -841,34 +844,6 @@ pub(super) fn project_tokens_with_configuration(
                 }
                 if let Some(css) = tag.attribute("style") {
                     apply_css(css, &mut frame.character, &mut frame.paragraph);
-                    let paragraph_style =
-                        frame
-                            .paragraph_style
-                            .clone()
-                            .unwrap_or_else(|| match frame.kind {
-                                BlockKind::Heading(level) => {
-                                    format!("Heading{level}").as_str().into()
-                                }
-                                BlockKind::ListItem { ordered, level, .. } => {
-                                    builder.style_sheet.list_style_id(ordered, level)
-                                }
-                                _ => builder.style_sheet.base_paragraph.clone(),
-                            });
-                    let document_style = super::DocumentStyleAssignment::new(
-                        builder.style_sheet.base_paragraph.clone(),
-                    );
-                    if let Ok(resolved) = builder.style_sheet.resolve_assigned_paragraph_style(
-                        &document_style,
-                        &paragraph_style,
-                        &frame.paragraph,
-                        &CharacterProperties::default(),
-                        frame.named_character.as_ref(),
-                        &frame.character,
-                    ) {
-                        if let Some(shift) = relative_baseline(css, resolved.character.size) {
-                            frame.character.baseline_shift = Some(shift);
-                        }
-                    }
                     for (name, value) in cascade_declarations(css) {
                         if name.eq_ignore_ascii_case("white-space") {
                             match value.trim().to_ascii_lowercase().as_str() {
@@ -902,6 +877,11 @@ pub(super) fn project_tokens_with_configuration(
                 if let Some(dir) = tag.attribute("dir").and_then(direction) {
                     frame.character.direction = Some(dir);
                     frame.paragraph.base_direction = Some(dir);
+                }
+                if !block(&tag.name) {
+                    // Inline bidi scopes affect characters, never the containing
+                    // paragraph's base direction, including its first text run.
+                    frame.paragraph.base_direction = inherited_paragraph_direction;
                 }
                 if paragraph_element && !inside_pre && !frame.hidden && !frame.opaque {
                     if let Some(range) = pending_break.take() {
@@ -1653,10 +1633,11 @@ fn decode_references(input: &str, attribute: bool) -> String {
     }
     out
 }
-fn direction(value: &str) -> Option<WritingDirection> {
+pub(super) fn direction(value: &str) -> Option<WritingDirection> {
     match value.trim().to_ascii_lowercase().as_str() {
         "ltr" => Some(WritingDirection::LeftToRight),
         "rtl" => Some(WritingDirection::RightToLeft),
+        "auto" => Some(WritingDirection::Natural),
         _ => None,
     }
 }
@@ -2016,22 +1997,6 @@ fn font_features(value: &str) -> Option<BTreeMap<String, u32>> {
     }
     Some(features)
 }
-fn relative_baseline(css: &str, size: f32) -> Option<f32> {
-    let mut result = None;
-    for (key, value) in cascade_declarations(css) {
-        if key != "vertical-align" {
-            continue;
-        }
-        match value.to_ascii_lowercase().as_str() {
-            "super" => result = Some(size / 3.0),
-            "sub" => result = Some(-size / 5.0),
-            "baseline" => result = Some(0.0),
-            value if length(value).is_some() => result = None,
-            _ => {}
-        }
-    }
-    result
-}
 pub(super) fn apply_css(
     css: &str,
     character: &mut CharacterProperties,
@@ -2111,12 +2076,17 @@ pub(super) fn apply_css(
                 }
             }
             "vertical-align" => {
-                if let Some(n) = length(&lower) {
-                    character.baseline_shift = Some(n);
+                if let Some(position) = match lower.as_str() {
+                    "super" => Some(ScriptPosition::Superscript),
+                    "sub" => Some(ScriptPosition::Subscript),
+                    "baseline" => Some(ScriptPosition::Normal),
+                    _ => None,
+                } {
+                    character.script_position = Some(position);
                 }
             }
             "direction" => {
-                if let Some(d) = direction(&lower) {
+                if let Some(d) = direction(&lower).filter(|direction| *direction != WritingDirection::Natural) {
                     character.direction = Some(d);
                     paragraph.base_direction = Some(d);
                 }
@@ -2178,9 +2148,6 @@ pub(super) fn apply_css(
             }
             _ => {}
         }
-    }
-    if let Some(shift) = relative_baseline(css, character.size.unwrap_or(14.0)) {
-        character.baseline_shift = Some(shift);
     }
 }
 
@@ -2269,7 +2236,7 @@ pub(super) fn character_css(properties: &CharacterProperties) -> String {
         }
         declarations.push(format!("text-decoration-line: {}", values.join(" ")));
     }
-    if let Some(direction) = properties.direction {
+    if let Some(direction) = properties.direction.filter(|value| *value != WritingDirection::Natural) {
         declarations.push(format!(
             "direction: {}",
             match direction {
@@ -2295,8 +2262,15 @@ pub(super) fn character_css(properties: &CharacterProperties) -> String {
     if let Some(spacing) = properties.letter_spacing {
         declarations.push(format!("letter-spacing: {spacing}pt"));
     }
-    if let Some(shift) = properties.baseline_shift {
-        declarations.push(format!("vertical-align: {shift}pt"));
+    if let Some(position) = properties.script_position {
+        declarations.push(format!(
+            "vertical-align: {}",
+            match position {
+                ScriptPosition::Normal => "baseline",
+                ScriptPosition::Superscript => "super",
+                ScriptPosition::Subscript => "sub",
+            }
+        ));
     }
     declarations.join("; ")
 }
@@ -2324,13 +2298,27 @@ pub(super) fn character_wrapper(properties: &CharacterProperties) -> (String, St
         rest.strikethrough = None;
         tags.push("s");
     }
+    match rest.script_position {
+        Some(ScriptPosition::Superscript) => {
+            rest.script_position = None;
+            tags.push("sup");
+        }
+        Some(ScriptPosition::Subscript) => {
+            rest.script_position = None;
+            tags.push("sub");
+        }
+        _ => {}
+    }
+    let natural_direction = rest.direction == Some(WritingDirection::Natural);
+    if natural_direction { rest.direction = None; }
     let css = character_css(&rest);
     let mut opening = String::new();
     let mut closing = String::new();
     // A numeric face weight is authored outside b, so the inner semantic tag
     // still means emphasis relative to that face instead of CSS overriding it.
-    if !css.is_empty() || properties.language.is_some() || tags.is_empty() {
+    if !css.is_empty() || properties.language.is_some() || natural_direction || tags.is_empty() {
         opening.push_str("<span");
+        if natural_direction { opening.push_str(" dir=\"auto\""); }
         if !css.is_empty() {
             opening.push_str(&format!(" style=\"{}\"", attribute_escape(&css)));
         }

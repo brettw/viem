@@ -263,6 +263,16 @@ _Static_assert(VIEM_EFFECT_BATCH_INFO_V1_SIZE == sizeof(ViemEffectBatchInfoV1),
 _Static_assert(offsetof(ViemEffectBatchInfoV1, ex_mark_count) ==
     {effect_batch_mark_count}, "effect batch mark count offset");
 _Static_assert(sizeof(ViemResolvedTextStyleV1) == {style}, "style");
+_Static_assert(offsetof(ViemResolvedTextStyleV1, script_position) == {style_script}, "script position offset");
+_Static_assert(_Generic(((ViemResolvedTextStyleV1 *)0)->script_position, uint32_t: 1, default: 0), "script position is an enum integer");
+_Static_assert(sizeof(ViemTypographyInfoV1) == {typography_info}, "typography info size");
+_Static_assert(offsetof(ViemTypographyInfoV1, script_position) == {typography_script}, "typography script offset");
+_Static_assert(offsetof(ViemTypographyInfoV1, background) == {typography_background}, "typography background offset");
+_Static_assert(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION == {script_property}, "script property tag");
+_Static_assert(VIEM_STYLE_VALUE_SCRIPT_POSITION == {script_value}, "script value tag");
+static ViemStatus (*direct_properties)(ViemCoreHandle, ViemViewId, const ViemDirectStyleEditV1 *, uint64_t, ViemCoreOutcomeV1 *) = viem_core_view_edit_direct_properties;
+static ViemStatus (*copy_formatting)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, ViemStyleSheetInfoV1 *, ViemStylePropertyV1 *, uint64_t, ViemStyleValueItemV1 *, uint64_t, uint8_t *, uint64_t) = viem_core_view_copy_formatting;
+static ViemStatus (*typography_export)(ViemCoreHandle, ViemViewId, uint64_t, ViemTypographyInfoV1 *, uint8_t *, uint64_t, ViemOpenTypeFeatureV1 *, uint64_t) = viem_core_view_typography_export;
 _Static_assert(sizeof(ViemShapeStyleRunV1) == {style_run}, "style run");
 _Static_assert(sizeof(ViemShapedClusterV1) == {cluster}, "cluster");
 _Static_assert(sizeof(ViemShapingDiagnosticV1) == {diagnostic}, "diagnostic");
@@ -650,6 +660,12 @@ static void typecheck(void) {{
         effect_batch_info = std::mem::size_of::<ViemEffectBatchInfoV1>(),
         effect_batch_mark_count = std::mem::offset_of!(ViemEffectBatchInfoV1, ex_mark_count),
         style = std::mem::size_of::<ViemResolvedTextStyleV1>(),
+        style_script = std::mem::offset_of!(ViemResolvedTextStyleV1, script_position),
+        typography_info = std::mem::size_of::<ViemTypographyInfoV1>(),
+        typography_script = std::mem::offset_of!(ViemTypographyInfoV1, script_position),
+        typography_background = std::mem::offset_of!(ViemTypographyInfoV1, background),
+        script_property = VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION,
+        script_value = VIEM_STYLE_VALUE_SCRIPT_POSITION,
         style_run = std::mem::size_of::<ViemShapeStyleRunV1>(),
         cluster = std::mem::size_of::<ViemShapedClusterV1>(),
         diagnostic = std::mem::size_of::<ViemShapingDiagnosticV1>(),

@@ -1,6 +1,7 @@
 //! Structural exits from inline formatting retain original source tokens. A
 //! caret can cross closing syntax without changing the document; a mid-run
 //! insertion locally splits the enclosing scopes in one source transaction.
+use super::ScriptPosition;
 use super::html::{self, Token, TokenKind};
 use super::{
     BoundaryAffinity, CharacterProperties, Document, DocumentError, FontSlant, Format,
@@ -106,6 +107,8 @@ fn declarations(token: &Token) -> CharacterProperties {
         "b" | "strong" => result.bold = Some(true),
         "i" | "em" => result.slant = Some(FontSlant::Italic),
         "u" => result.underline = Some(true),
+        "sup" => result.script_position = Some(ScriptPosition::Superscript),
+        "sub" => result.script_position = Some(ScriptPosition::Subscript),
         "s" | "strike" | "del" => result.strikethrough = Some(true),
         _ => {}
     }
@@ -118,6 +121,7 @@ fn declarations(token: &Token) -> CharacterProperties {
     result.direction = match tag.attribute("dir") {
         Some("ltr") => Some(super::WritingDirection::LeftToRight),
         Some("rtl") => Some(super::WritingDirection::RightToLeft),
+        Some("auto") => Some(super::WritingDirection::Natural),
         _ => result.direction,
     };
     result
@@ -129,6 +133,7 @@ fn disabled(token: &Token, desired: &CharacterProperties) -> bool {
             && own.slant.is_some_and(|value| value != FontSlant::Upright)
         || desired.underline == Some(false) && own.underline == Some(true)
         || desired.strikethrough == Some(false) && own.strikethrough == Some(true)
+        || desired.script_position.zip(own.script_position).is_some_and(|(desired, own)| desired != own)
 }
 fn closing(token: &Token) -> String {
     let TokenKind::Tag(tag) = &token.kind else {
@@ -229,7 +234,7 @@ fn values(properties: CharacterProperties) -> Vec<(StyleProperty, StylePropertyV
         OpenTypeFeatures
     );
     add!(letter_spacing, CharacterLetterSpacing, Float);
-    add!(baseline_shift, CharacterBaselineShift, Float);
+    add!(script_position, CharacterScriptPosition, ScriptPosition);
     result
 }
 impl Document {

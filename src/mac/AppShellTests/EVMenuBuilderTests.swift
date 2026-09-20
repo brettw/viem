@@ -121,7 +121,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Emoji & Symbols",
         ])
         XCTAssertEqual(try titles(in: submenu("Format", of: menu)), [
-            "Show Fonts", "Bold", "Italic", "Underline", "Strikethrough", "Bigger", "Smaller", "Ligatures", "Baseline", "OpenType Features",
+            "Show Fonts", "Bold", "Italic", "Underline", "Strikethrough", "Superscript", "Subscript", "Ligatures", "OpenType Features",
             "Show Colors", "Text Color…", "Highlight Color…", "Style", "Paragraph", "Copy Style", "Paste Style", "Clear Direct Character Formatting",
             "Clear Direct Paragraph Formatting", "Clear All Direct Formatting",
         ])
@@ -161,7 +161,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Transformations", "-", "Start Dictation…", "Emoji & Symbols",
         ])
         XCTAssertEqual(tokens(in: try submenu("Format", of: main)), [
-            "Show Fonts", "-", "Bold", "Italic", "Underline", "Strikethrough", "-", "Bigger", "Smaller", "-", "Ligatures", "Baseline", "OpenType Features", "-",
+            "Show Fonts", "-", "Bold", "Italic", "Underline", "Strikethrough", "-", "Superscript", "Subscript", "-", "Ligatures", "OpenType Features", "-",
             "Show Colors", "Text Color…", "Highlight Color…", "-", "Style", "-", "Paragraph", "-", "Copy Style", "Paste Style",
             "Clear Direct Character Formatting", "Clear Direct Paragraph Formatting",
             "Clear All Direct Formatting",
@@ -203,17 +203,17 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
 
         let font = format
-        XCTAssertEqual(Array(tokens(in: font).prefix(13)), [
+        XCTAssertEqual(Array(tokens(in: font).prefix(12)), [
             "Show Fonts", "-", "Bold", "Italic", "Underline", "Strikethrough", "-",
-            "Bigger", "Smaller", "-", "Ligatures", "Baseline",
+            "Superscript", "Subscript", "-", "Ligatures",
             "OpenType Features",
         ])
         XCTAssertEqual(tokens(in: try submenu("Ligatures", of: font)), [
             "Use Default Ligatures", "Use All Ligatures", "Use No Ligatures",
         ])
-        XCTAssertEqual(tokens(in: try submenu("Baseline", of: font)), [
-            "Superscript", "Subscript", "Raise", "Lower",
-        ])
+        XCTAssertNil(font.item(withTitle: "Baseline"))
+        XCTAssertNil(font.item(withTitle: "Bigger"))
+        XCTAssertNil(font.item(withTitle: "Smaller"))
         XCTAssertEqual(tokens(in: format).filter { ["Show Colors", "Text Color…", "Highlight Color…"].contains($0) }, [
             "Show Colors", "Text Color…", "Highlight Color…",
         ])
@@ -601,16 +601,14 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
 
         let font = format
-        XCTAssertEqual(Array(titles(in: font).prefix(10)), [
-            "Show Fonts", "Bold", "Italic", "Underline", "Strikethrough", "Bigger", "Smaller",
-            "Ligatures", "Baseline", "OpenType Features",
+        XCTAssertEqual(Array(titles(in: font).prefix(9)), [
+            "Show Fonts", "Bold", "Italic", "Underline", "Strikethrough", "Superscript", "Subscript",
+            "Ligatures", "OpenType Features",
         ])
         XCTAssertEqual(try titles(in: submenu("Ligatures", of: font)), [
             "Use Default Ligatures", "Use All Ligatures", "Use No Ligatures",
         ])
-        XCTAssertEqual(try titles(in: submenu("Baseline", of: font)), [
-            "Superscript", "Subscript", "Raise", "Lower",
-        ])
+        XCTAssertNil(font.item(withTitle: "Baseline"))
         XCTAssertEqual(titles(in: format).filter { ["Show Colors", "Text Color…", "Highlight Color…"].contains($0) }, [
             "Show Colors", "Text Color…", "Highlight Color…",
         ])

@@ -857,7 +857,7 @@ mod tests {
             assert_eq!(document.source_bytes(), source.as_bytes());
             let converted = convert(&document, Format::Html).unwrap();
             assert!(
-                converted.source.contains("vertical-align: 10pt"),
+                converted.source.contains("<sup>Word</sup>"),
                 "{}",
                 converted.source
             );

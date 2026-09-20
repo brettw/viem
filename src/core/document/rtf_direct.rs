@@ -25,7 +25,7 @@ pub(super) fn character_property(name: &str, number: Option<i32>) -> Option<Styl
         "lang" => CharacterLanguage,
         "rtlch" | "ltrch" => CharacterDirection,
         "expndtw" | "expnd" => CharacterLetterSpacing,
-        "up" | "dn" | "super" | "sub" | "nosupersub" => CharacterBaselineShift,
+        "super" | "sub" | "nosupersub" => CharacterScriptPosition,
         _ => return None,
     })
 }

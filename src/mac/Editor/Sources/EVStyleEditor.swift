@@ -1469,6 +1469,8 @@ private func format(_ value: EVStyleValue?) -> String {
     case let .color(color): colorHex(color)
     case let .string(value): value
     case let .stringList(values): values.isEmpty ? "None" : values.joined(separator: " → ")
+    case let .scriptPosition(value):
+        value == 1 ? "Superscript" : value == 2 ? "Subscript" : "Normal"
     case let .fontSlant(value):
         value == UInt32(VIEM_FONT_SLANT_ITALIC) ? "Italic" : (value == UInt32(VIEM_FONT_SLANT_OBLIQUE) ? "Oblique" : "Upright")
     case let .writingDirection(value):

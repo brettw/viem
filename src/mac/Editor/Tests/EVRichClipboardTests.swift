@@ -48,6 +48,19 @@ import XCTest
         XCTAssertTrue(font.fontDescriptor.symbolicTraits.contains(trait), "Missing \(trait) at \(substring)")
     }
 
+    func testNativeRTFCopyRetainsSuperscriptAndSubscriptSemantics() throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let source = "<p>x<sup>2</sup> H<sub>2</sub>O</p>"
+        let (backend, view, session) = try surface(source, type: EVDocument.htmlType, pasteboard: pasteboard)
+        try selectAll(session: session, surface: view)
+        view.editorView.copyDocumentSelection(nil)
+        let attributed = try richText(pasteboard, expected: "x2 H2O")
+        XCTAssertEqual((attributed.attribute(.superscript, at: 1, effectiveRange: nil) as? NSNumber)?.intValue, 1)
+        XCTAssertEqual((attributed.attribute(.superscript, at: 4, effectiveRange: nil) as? NSNumber)?.intValue, -1)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+    }
+
     func testNativeCopyExportsVisibleUnicodeWithCharacterAndParagraphFormatting() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }

@@ -434,7 +434,7 @@ impl Document {
                     .then_some(resolved.direction),
                 open_type_features: Some(resolved.open_type_features),
                 letter_spacing: Some(resolved.letter_spacing),
-                baseline_shift: Some(resolved.baseline_shift),
+                script_position: Some(resolved.script_position),
             };
             let mut named = None;
             let mut code = false;

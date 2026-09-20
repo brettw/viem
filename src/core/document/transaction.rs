@@ -5,6 +5,8 @@
 //! the candidate state needed for publication.  Commit only rechecks the
 //! captured model preconditions and installs that already-verified candidate.
 
+#[path = "direct_style.rs"]
+mod direct_style;
 #[path = "clear_content.rs"]
 mod clear_content;
 #[path = "fragments.rs"]
@@ -63,7 +65,7 @@ use super::{
     HistorySourcePatch, HistoryTransactionSummary, MappingOutcome, PipelineCapabilityDecision,
     PipelineEditIntent, PipelinePolicyRequest, PositionError, PositionMap, Revision,
     SemanticInlineStyle, SourcePartId, Splice, StyleApplication, StyleDefinitionEdit,
-    StyleDefinitionOrigin, StyleError, StyleId, StyleInvalidationEffect, StyleProperty, StyleSheet,
+    StyleDefinitionOrigin, StyleError, StyleId, StyleInvalidationEffect, StyleProperty, StylePropertyValue, StyleSheet,
     StyleSheetRevision, StyleSpan, TextEdit, TextRange, UnsupportedEditReason,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -204,6 +206,12 @@ pub enum ModelRequest {
         range: Range<usize>,
         values: Vec<(StyleProperty, super::StylePropertyValue)>,
     },
+    EditDirectProperties {
+        document: DocumentId,
+        revision: Revision,
+        range: Range<usize>,
+        values: Vec<(StyleProperty, Option<StylePropertyValue>)>,
+    },
     EditDirectProperty {
         document: DocumentId,
         revision: Revision,
@@ -343,7 +351,7 @@ impl ModelRequest {
     pub fn document(&self) -> DocumentId {
         match self {
             Self::SetDirectCharacterProperties { document, .. } => *document,
-            Self::EditDirectProperty { document, .. } => *document,
+            Self::EditDirectProperty { document, .. } | Self::EditDirectProperties { document, .. } => *document,
             Self::ReplacePhysicalSource { document, .. } => *document,
             Self::ApplyFragmentEdits { document, .. }
             | Self::ApplyTextEdits { document, .. }
@@ -371,7 +379,7 @@ impl ModelRequest {
     pub fn revision(&self) -> Revision {
         match self {
             Self::SetDirectCharacterProperties { revision, .. } => *revision,
-            Self::EditDirectProperty { revision, .. } => *revision,
+            Self::EditDirectProperty { revision, .. } | Self::EditDirectProperties { revision, .. } => *revision,
             Self::ReplacePhysicalSource { revision, .. } => *revision,
             Self::ApplyFragmentEdits { revision, .. }
             | Self::ApplyTextEdits { revision, .. }
@@ -1065,6 +1073,7 @@ impl Document {
         self.validate_request_target(&request)?;
         match request {
             ModelRequest::ApplyFragmentEdits { edits, .. } => self.prepare_fragment_edits(edits),
+            ModelRequest::EditDirectProperties { range, values, .. } => self.prepare_direct_properties(range, values),
             ModelRequest::SetDirectCharacterProperties { range, values, .. } => {
                 let range =
                     TextRange::new(self.text_point(range.start)?, self.text_point(range.end)?)?;
@@ -3789,6 +3798,7 @@ impl Document {
         let mut desired = Vec::new();
         let mut expected = Vec::new();
         let mut changed = false;
+        let mut direction_ranges = Vec::new();
         for block in self.projection().blocks() {
             let mut properties = block.direct_paragraph.clone();
             let selected = if range.is_empty() {
@@ -3808,6 +3818,9 @@ impl Document {
                 }
                 if properties != block.direct_paragraph {
                     changed = true;
+                    if self.format() == Format::Html && properties.base_direction != block.direct_paragraph.base_direction {
+                        direction_ranges.push(block.range.clone());
+                    }
                     // HTML needs the paragraph's source element. RTF instead
                     // edits each contributing run below and need not have one
                     // contiguous source range across controls and groups.
@@ -3857,7 +3870,11 @@ impl Document {
         {
             return Err(DocumentError::VerificationFailed.into());
         }
-        if after.style_spans() != self.projection().style_spans() {
+        if direction_ranges.is_empty() {
+            if after.style_spans() != self.projection().style_spans() {
+                return Err(DocumentError::VerificationFailed.into());
+            }
+        } else if !super::rich_text::paragraph_direction_edit_verified(self.projection(), after, &direction_ranges) {
             return Err(DocumentError::VerificationFailed.into());
         }
         Ok(prepared)

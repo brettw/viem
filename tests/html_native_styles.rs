@@ -320,8 +320,8 @@ fn generated_native_code_style_edits_recompute_relative_source_formatting_withou
         let after =
             DocumentLayoutStyles::semantic_character_at(document.projection(), 0, false).unwrap();
         assert_eq!(after.size, 28.);
-        assert_eq!(after.baseline_shift, 28. / 3.);
-        assert_ne!(after.baseline_shift, before.baseline_shift);
+        assert_eq!(after.script_position, ScriptPosition::Superscript);
+        assert_eq!(after.script_position, before.script_position);
         assert!(committed.summary().source_patches().is_empty());
         assert_eq!(document.source_bytes(), source.as_bytes());
         assert!(!document.is_dirty());
@@ -377,7 +377,7 @@ fn native_source_style_intent_with_export_off_keeps_source_clean() {
     let after =
         DocumentLayoutStyles::semantic_character_at(document.projection(), 0, false).unwrap();
     assert_eq!(after.size, 28.);
-    assert_eq!(after.baseline_shift, 28. / 3.);
+    assert_eq!(after.script_position, ScriptPosition::Superscript);
     assert!(document.undo());
     assert!(!document.is_dirty());
     assert!(document.redo());

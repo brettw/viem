@@ -102,17 +102,17 @@ impl MockTextMeasurementProvider {
     }
 
     fn metrics(style: &ResolvedTextStyle, scale: f32) -> TextMetrics {
-        let em = style.size * scale;
-        let baseline_shift = style.baseline_shift * scale;
+        let em = style.size * style.script_position.font_scale() * scale;
+        let displacement = style.script_position.displacement(style.size) * scale;
         TextMetrics {
-            ascent: em * 0.78 + baseline_shift.max(0.0),
-            descent: em * 0.22 + (-baseline_shift).max(0.0),
+            ascent: em * 0.78 + displacement.max(0.0),
+            descent: em * 0.22 + (-displacement).max(0.0),
             leading: em * 0.12,
         }
     }
 
     fn cluster_advance(text: &str, style: &ResolvedTextStyle, scale: f32) -> f32 {
-        let em = style.size * scale;
+        let em = style.size * style.script_position.font_scale() * scale;
         let mut width = text.chars().map(Self::scalar_width).sum::<f32>();
         if text == "fi" || text == "fl" {
             width *= 0.88;
@@ -147,7 +147,7 @@ impl MockTextMeasurementProvider {
             pair,
             Some(('A', 'V' | 'W' | 'Y') | ('T', 'a' | 'o') | ('W', 'a') | ('Y', 'o'))
         ) {
-            -0.12 * style.size * scale
+            -0.12 * style.size * style.script_position.font_scale() * scale
         } else {
             0.0
         }
@@ -233,7 +233,7 @@ impl MockTextMeasurementProvider {
         mix(&style.weight.to_bits().to_le_bytes());
         mix(&[u8::from(style.relative_bold)]);
         mix(&style.letter_spacing.to_bits().to_le_bytes());
-        mix(&style.baseline_shift.to_bits().to_le_bytes());
+        mix(&(style.script_position as u32).to_le_bytes());
         mix(&request.scale.to_bits().to_le_bytes());
         mix(&request.metrics_generation.0.to_le_bytes());
         mix(&request.measurement_environment_id.0.to_le_bytes());

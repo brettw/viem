@@ -152,6 +152,33 @@ pub enum ParagraphAlignment {
     Center,
 }
 
+/// Semantic script placement. Font size remains the base size; shaping applies
+/// the common script scale and displacement once.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[repr(u32)]
+pub enum ScriptPosition {
+    #[default]
+    Normal = 0,
+    Superscript = 1,
+    Subscript = 2,
+}
+
+impl ScriptPosition {
+    pub fn font_scale(self) -> f32 {
+        match self {
+            Self::Normal => 1.0,
+            Self::Superscript | Self::Subscript => 0.7,
+        }
+    }
+    pub fn displacement(self, base_size: f32) -> f32 {
+        match self {
+            Self::Normal => 0.0,
+            Self::Superscript => base_size / 3.0,
+            Self::Subscript => -base_size / 5.0,
+        }
+    }
+}
+
 /// Sparse character declarations. `None` means inherit/leave unchanged.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -170,7 +197,7 @@ pub struct CharacterProperties {
     pub direction: Option<WritingDirection>,
     pub open_type_features: Option<BTreeMap<String, u32>>,
     pub letter_spacing: Option<f32>,
-    pub baseline_shift: Option<f32>,
+    pub script_position: Option<ScriptPosition>,
 }
 
 impl CharacterProperties {
@@ -431,7 +458,7 @@ impl Default for StyleSheet {
                     direction: Some(WritingDirection::Natural),
                     open_type_features: Some(BTreeMap::new()),
                     letter_spacing: Some(0.0),
-                    baseline_shift: Some(0.0),
+                    script_position: Some(ScriptPosition::Normal),
                     ..CharacterProperties::default()
                 },
                 block: BlockProperties {
@@ -661,7 +688,7 @@ pub struct ResolvedCharacterStyle {
     pub direction: WritingDirection,
     pub open_type_features: BTreeMap<String, u32>,
     pub letter_spacing: f32,
-    pub baseline_shift: f32,
+    pub script_position: ScriptPosition,
 }
 
 impl Default for ResolvedCharacterStyle {
@@ -687,7 +714,7 @@ impl Default for ResolvedCharacterStyle {
             direction: WritingDirection::Natural,
             open_type_features: BTreeMap::new(),
             letter_spacing: 0.0,
-            baseline_shift: 0.0,
+            script_position: ScriptPosition::Normal,
         }
     }
 }
@@ -719,7 +746,7 @@ impl ResolvedCharacterStyle {
         compare!(direction, StyleProperty::CharacterDirection);
         compare!(open_type_features, StyleProperty::CharacterOpenTypeFeatures);
         compare!(letter_spacing, StyleProperty::CharacterLetterSpacing);
-        compare!(baseline_shift, StyleProperty::CharacterBaselineShift);
+        compare!(script_position, StyleProperty::CharacterScriptPosition);
         changed
     }
 }
@@ -822,7 +849,7 @@ pub enum StyleProperty {
     CharacterDirection,
     CharacterOpenTypeFeatures,
     CharacterLetterSpacing,
-    CharacterBaselineShift,
+    CharacterScriptPosition,
 }
 
 /// Namespace of one normalized style definition. IDs are unique only within
@@ -847,6 +874,7 @@ pub enum StylePropertyValue {
     OpenTypeFeatures(BTreeMap<String, u32>),
     LineSpacing(LineSpacing),
     ParagraphAlignment(ParagraphAlignment),
+    ScriptPosition(ScriptPosition),
 }
 
 /// One field of an existing style definition. Each successful edit is a
@@ -904,7 +932,7 @@ impl StyleProperty {
             | Self::CharacterDirection
             | Self::CharacterOpenTypeFeatures
             | Self::CharacterLetterSpacing
-            | Self::CharacterBaselineShift => StyleInvalidationEffect::Shaping,
+            | Self::CharacterScriptPosition => StyleInvalidationEffect::Shaping,
         }
     }
 }
@@ -945,7 +973,7 @@ pub(crate) const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 14] = [
     StyleProperty::CharacterDirection,
     StyleProperty::CharacterOpenTypeFeatures,
     StyleProperty::CharacterLetterSpacing,
-    StyleProperty::CharacterBaselineShift,
+    StyleProperty::CharacterScriptPosition,
 ];
 
 /// The normalized declaration layer which supplied a resolved property's
@@ -2655,7 +2683,7 @@ sparse_property_operations! {
     direction => CharacterDirection(WritingDirection),
     open_type_features => CharacterOpenTypeFeatures(OpenTypeFeatures),
     letter_spacing => CharacterLetterSpacing(Float),
-    baseline_shift => CharacterBaselineShift(Float),
+    script_position => CharacterScriptPosition(ScriptPosition),
 }
 
 sparse_property_operations! {
@@ -2708,9 +2736,7 @@ pub(super) fn validate_character_properties(
         && properties
             .letter_spacing
             .map_or(true, |value| value.is_finite())
-        && properties
-            .baseline_shift
-            .map_or(true, |value| value.is_finite());
+;
     if valid {
         Ok(())
     } else {
@@ -2911,10 +2937,10 @@ fn record_character_winners(
             &origin,
         );
     }
-    if properties.baseline_shift.is_some() {
+    if properties.script_position.is_some() {
         record_winner(
             contributions,
-            StyleProperty::CharacterBaselineShift,
+            StyleProperty::CharacterScriptPosition,
             &origin,
         );
     }
@@ -3043,8 +3069,8 @@ fn apply_character_properties(
     if let Some(value) = properties.letter_spacing {
         resolved.letter_spacing = value;
     }
-    if let Some(value) = properties.baseline_shift {
-        resolved.baseline_shift = value;
+    if let Some(value) = properties.script_position {
+        resolved.script_position = value;
     }
 }
 
@@ -4054,7 +4080,7 @@ mod tests {
                 ..BlockProperties::default()
             };
             let direct_character = CharacterProperties {
-                baseline_shift: (next() & 1 != 0).then_some((next() % 8) as f32),
+                script_position: (next() & 1 != 0).then_some(if next() & 1 == 0 { ScriptPosition::Superscript } else { ScriptPosition::Subscript }),
                 ..CharacterProperties::default()
             };
             let ordinary = sheet

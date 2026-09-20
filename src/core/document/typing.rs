@@ -282,7 +282,7 @@ impl Document {
             && matches!(direction)
             && matches!(open_type_features)
             && matches!(letter_spacing)
-            && matches!(baseline_shift)
+            && matches!(script_position)
     }
 
     pub(super) fn prepare_typing_markdown_style(

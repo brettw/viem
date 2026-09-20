@@ -3,7 +3,7 @@ import AppKit
 /// Original 24-point SVG drawings share one optical grid and stroke weight.
 @MainActor
 enum EVStyleIcons {
-    enum Symbol: String { case alignStart, alignCenter, alignEnd, before, after, firstIndent, leadingIndent, trailingIndent, tracking, baseline, features, lineSpacing }
+    enum Symbol: String { case alignStart, alignCenter, alignEnd, before, after, firstIndent, leadingIndent, trailingIndent, tracking, features, lineSpacing }
     static func image(_ symbol: Symbol) -> NSImage {
         let strokes: String
         switch symbol {
@@ -16,7 +16,6 @@ enum EVStyleIcons {
         case .leadingIndent: strokes = "M10 5h10M10 10h7M10 15h10M10 20h7M2 12h5M4 9l3 3-3 3"
         case .trailingIndent: strokes = "M4 5h10M7 10h7M4 15h10M7 20h7M22 12h-5M20 9l-3 3 3 3"
         case .tracking: strokes = "M3 15l4-11 4 11M5 11h4M13 15l4-11 4 11M15 11h4M3 20h18M6 18l-3 2 3 2M18 18l3 2-3 2"
-        case .baseline: strokes = "M4 16l4-11 4 11M6 12h4M3 20h11M19 18V4M16 7l3-3 3 3"
         case .features: strokes = "M7 20V7c0-5 6-5 6-2M4 10h9M16 10v10M16 5v.2"
         case .lineSpacing: strokes = "M10 5h11M10 12h8M10 19h11M4 4v16M2 6l2-2 2 2M2 18l2 2 2-2"
         }

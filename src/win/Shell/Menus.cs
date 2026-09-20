@@ -18,8 +18,9 @@ internal sealed partial class EditorWindow
     private MenuFlyoutItem undoItem = null!, redoItem = null!;
     private ToggleMenuFlyoutItem wrapItem = null!, boldItem = null!, italicItem = null!;
     private CoreView? View => ActivePane?.View;
-    private bool Rich => View != null && ActivePane!.Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_HTML or VIEM_FORMAT_RTF;
-    private bool DirectCharacter => View != null && ActivePane!.Document.State.format is VIEM_FORMAT_HTML or VIEM_FORMAT_RTF && View.LogicalSelection().kind is VIEM_LOGICAL_SELECTION_KIND_CHARACTER or VIEM_LOGICAL_SELECTION_KIND_LINE;
+    private bool Rich => View != null && ActivePane!.Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE or VIEM_FORMAT_HTML or VIEM_FORMAT_HTML_SOURCE or VIEM_FORMAT_RTF;
+    private bool RichCharacterDocument => View != null && ActivePane!.Document.State.format is VIEM_FORMAT_HTML or VIEM_FORMAT_HTML_SOURCE or VIEM_FORMAT_RTF;
+    private bool DirectCharacter => View?.CanFormatCharacter == true;
     private MenuFlyoutItem Item(string text, Func<Task> action, string shortcut = "", Func<bool>? enabled = null)
     {
         var item = new MenuFlyoutItem { Text = text, KeyboardAcceleratorTextOverride = shortcut };
@@ -83,11 +84,12 @@ internal sealed partial class EditorWindow
         boldItem = Toggle("Bold", _ => View?.ToggleSemantic(VIEM_SEMANTIC_STYLE_STRONG));
         italicItem = Toggle("Italic", _ => View?.ToggleSemantic(VIEM_SEMANTIC_STYLE_EMPHASIS));
         validation.Add((boldItem, () => CanSemantic(VIEM_SEMANTIC_STYLE_STRONG))); validation.Add((italicItem, () => CanSemantic(VIEM_SEMANTIC_STYLE_EMPHASIS)));
-        Top("Format", "O", Item("Font…", ShowFontDialog, enabled: () => DirectCharacter), boldItem, italicItem,
-            ActionItem("Underline", () => ToggleDecoration(VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE), enabled: () => DirectCharacter),
-            ActionItem("Strikethrough", () => ToggleDecoration(VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH), enabled: () => DirectCharacter),
-            Item("Text Color…", () => ShowColor(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND), enabled: () => DirectCharacter), Item("Highlight Color…", () => ShowColor(VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND), enabled: () => DirectCharacter),
-            Separator(), Sub("Style", StyleEditorItem(), ActionItem("Save as Default Style", SaveStyleDefaults), ActionItem("Reload Code Style Sheet", LoadCodeStyles)),
+        Top("Format", "O", Item("Font…", ShowFontDialog, enabled: () => RichCharacterDocument), boldItem, italicItem,
+            DecorationItem("Underline", VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE),
+            DecorationItem("Strikethrough", VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH),
+            ScriptItem("Superscript", VIEM_SCRIPT_POSITION_SUPERSCRIPT), ScriptItem("Subscript", VIEM_SCRIPT_POSITION_SUBSCRIPT),
+            Item("Text Color…", () => ShowColor(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND), enabled: () => RichCharacterDocument), Item("Highlight Color…", () => ShowColor(VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND), enabled: () => RichCharacterDocument),
+            Separator(), Sub("Style", StyleEditorItem(), ActionItem("Save as Default Style", SaveStyleDefaults, enabled: () => View != null), ActionItem("Reload Code Style Sheet", LoadCodeStyles)),
             Separator(), Sub("Paragraph", Sub("Alignment", ParagraphAction("Start", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, 1), ParagraphAction("Center", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, 3), ParagraphAction("End", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, 2)),
                 Sub("Writing Direction", ParagraphAction("Automatic", VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION, VIEM_STYLE_VALUE_WRITING_DIRECTION, 0), ParagraphAction("Left to Right", VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION, VIEM_STYLE_VALUE_WRITING_DIRECTION, 1), ParagraphAction("Right to Left", VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION, VIEM_STYLE_VALUE_WRITING_DIRECTION, 2)),
                 Sub("Line Spacing", Spacing("Normal", 1, 0), Spacing("Single", 2, 1), Spacing("1.5 Lines", 2, 1.5f), Spacing("Double", 2, 2))));
@@ -111,8 +113,20 @@ internal sealed partial class EditorWindow
     private void Select(string command) { View?.Key(VIEM_KEY_ESCAPE); View?.Command(command); }
     private bool CanSemantic(uint style) { if (View == null) return false; var p = View.SemanticStyle(style); return (p.flags & (VIEM_SEMANTIC_STYLE_CAN_SET | VIEM_SEMANTIC_STYLE_CAN_CLEAR)) != 0; }
     private void ToggleDecoration(uint property) => View?.DirectStyle(property, CoreView.Enum(VIEM_STYLE_VALUE_BOOLEAN, View.DecorationState(property) == 1 ? 0u : 1u));
-    private MenuFlyoutItem ParagraphAction(string text, uint property, uint kind, uint value) => ActionItem(text, () => View?.DirectStyle(property, CoreView.Enum(kind, value)), enabled: () => Rich);
-    private MenuFlyoutItem Spacing(string name, uint kind, float amount) => ActionItem(name, () => SetSpacing(kind, amount), enabled: () => Rich);
+    private ToggleMenuFlyoutItem DecorationItem(string text, uint property)
+    {
+        var item = Toggle(text, _ => ToggleDecoration(property), () => View?.DecorationState(property) == VIEM_SEMANTIC_STYLE_STATE_ON);
+        validation.Add((item, () => DirectCharacter)); return item;
+    }
+    private ToggleMenuFlyoutItem ScriptItem(string text, uint position)
+    {
+        var item = Toggle(text, _ => View?.ToggleScript(position), () => View is { } view && view.Typography().Info is var info && info.script_position == position && (info.flags & 8) == 0);
+        validation.Add((item, () => DirectCharacter)); return item;
+    }
+    private MenuFlyoutItem ParagraphAction(string text, uint property, uint kind, uint value) => ActionItem(text,
+        () => View?.DirectStyle(property, CoreView.Enum(kind, value)),
+        enabled: () => View?.CanFormatParagraph == true && !(property == VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION && value == 0 && ActivePane!.Document.State.format == VIEM_FORMAT_RTF));
+    private MenuFlyoutItem Spacing(string name, uint kind, float amount) => ActionItem(name, () => SetSpacing(kind, amount), enabled: () => View?.CanFormatParagraph == true);
     private static string HistoryCategory(uint value) => value switch { 1 => "Typing", 2 => "Style", 3 => "Line Endings", 4 => "Move Lines", 6 => "Document Format", _ => "Edit" };
     private void ValidateMenus()
     {
@@ -174,37 +188,28 @@ internal sealed partial class EditorWindow
         foreach (var doc in App.Instance.Windows.SelectMany(w => w.Panes).Select(p => p.Document).Distinct()) doc.NotifyChanged();
     }
     private unsafe void SetSpacing(uint kind, float amount) { var v = CoreView.Enum(VIEM_STYLE_VALUE_LINE_SPACING, kind); v.number = amount; View?.DirectStyle(VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING, v); }
-    private async Task ShowFontDialog()
+    private FontPanelWindow? fontPanel;
+    private readonly Dictionary<uint, ColorPanelWindow> colorPanels = [];
+    private Task ShowFontDialog()
     {
-        if (View == null) return;
-        var view = View;
-        var current = view.Typography();
-        string chosen = current.Family.Length == 0 ? "Segoe UI" : current.Family;
-        var family = new ComboBox { IsEditable = true, Width = 300, ItemsSource = FontCatalog.Families, Text = FontCatalog.DisplayFamily(chosen), Header = "Font family" };
-        family.SelectedItem = FontCatalog.Families.FirstOrDefault(f => string.Equals(f, family.Text, StringComparison.OrdinalIgnoreCase));
-        var variant = new ComboBox { Header = "Variant", Width = 300, PlaceholderText = "Custom / mixed", ItemsSource = FontCatalog.Faces(chosen), SelectedItem = FontCatalog.Current(chosen, current.Info.base_weight, current.Info.slant) };
-        void ChooseFamily(string value) {
-            if (string.Equals(value, FontCatalog.DisplayFamily(chosen), StringComparison.OrdinalIgnoreCase)) return;
-            var face = FontCatalog.ForFamilyChange(value, variant.SelectedItem as FontFace);
-            chosen = value; variant.ItemsSource = FontCatalog.Faces(value); variant.SelectedItem = face;
-        }
-        family.SelectionChanged += (_, _) => { if (family.SelectedItem is string value) ChooseFamily(value); };
-        family.LostFocus += (_, _) => ChooseFamily(family.Text.Trim());
-        var size = new NumberBox { Value = current.Info.size, Minimum = 1, Maximum = 256, Header = "Size (DIPs)", SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
-        var stack = new StackPanel { Spacing = 12 }; stack.Children.Add(family); stack.Children.Add(variant); stack.Children.Add(size);
-        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = "Font", Content = stack, PrimaryButtonText = "Apply", CloseButtonText = "Cancel" };
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary) { ChooseFamily(family.Text.Trim()); view.SetFont(chosen, (float)size.Value, variant.SelectedItem as FontFace); }
+        if (View == null) return Task.CompletedTask;
+        if (fontPanel == null) { fontPanel = new FontPanelWindow(View, preferences); fontPanel.Closed += (_, _) => fontPanel = null; }
+        else fontPanel.Retarget(View);
+        fontPanel.Activate(); return Task.CompletedTask;
     }
-    private async Task ShowColor(uint property)
+    private Task ShowColor(uint property)
     {
-        var picker = new ColorPicker { IsAlphaEnabled = true, IsColorSpectrumVisible = true };
-        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, Title = property == VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND ? "Text Color" : "Highlight Color", Content = picker, PrimaryButtonText = "Apply", SecondaryButtonText = "Default", CloseButtonText = "Cancel" };
-        var result = await dialog.ShowAsync();
-        if (result == ContentDialogResult.Primary) SetColor(property, picker.Color);
-        else if (result == ContentDialogResult.Secondary) View?.DirectStyle(property, default, true);
+        if (View == null) return Task.CompletedTask;
+        if (!colorPanels.TryGetValue(property, out var panel)) {
+            panel = new ColorPanelWindow(View, preferences, property); colorPanels[property] = panel;
+            panel.Closed += (_, _) => colorPanels.Remove(property);
+        } else panel.Retarget(View);
+        panel.Activate(); return Task.CompletedTask;
     }
-    private unsafe void SetColor(uint property, global::Windows.UI.Color color)
-    { var v = CoreView.Enum(VIEM_STYLE_VALUE_COLOR, 0); v.color = new() { red = color.R / 255f, green = color.G / 255f, blue = color.B / 255f, alpha = color.A / 255f }; View?.DirectStyle(property, v); }
+#if DEBUG
+    internal FontPanelWindow? FontPanel => fontPanel;
+    internal ColorPanelWindow? ColorPanel(uint property) => colorPanels.GetValueOrDefault(property);
+#endif
     private SettingsWindow? settingsWindow;
     private StyleWindow? codeStyleInspector;
     private void ShowCodeStyles()

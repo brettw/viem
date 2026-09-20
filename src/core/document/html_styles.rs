@@ -341,9 +341,13 @@ fn properties(
         |v: &f32| v.to_string()
     );
     item!(
-        "character-baseline-shift",
-        character.baseline_shift,
-        |v: &f32| v.to_string()
+        "character-script-position",
+        character.script_position,
+        |v: &ScriptPosition| match v {
+            ScriptPosition::Normal => "normal",
+            ScriptPosition::Superscript => "superscript",
+            ScriptPosition::Subscript => "subscript",
+        }.to_owned()
     );
     item!(
         "paragraph-spacing-before",
@@ -443,7 +447,12 @@ fn parse_property(
             c.open_type_features = Some(features);
         }
         "character-letter-spacing" => c.letter_spacing = Some(float()?),
-        "character-baseline-shift" => c.baseline_shift = Some(float()?),
+        "character-script-position" => c.script_position = Some(match value {
+            "normal" => ScriptPosition::Normal,
+            "superscript" => ScriptPosition::Superscript,
+            "subscript" => ScriptPosition::Subscript,
+            _ => return None,
+        }),
         "paragraph-spacing-before" => b.spacing_before = Some(float()?),
         "paragraph-spacing-after" => b.spacing_after = Some(float()?),
         "paragraph-line-spacing" => {
@@ -831,7 +840,7 @@ pub(super) fn remove_named_overrides(
         direction,
         open_type_features,
         letter_spacing,
-        baseline_shift
+        script_position
     );
 }
 
@@ -1197,7 +1206,7 @@ fn minimal_style_css(
             direction: Some(WritingDirection::Natural),
             open_type_features: Some(BTreeMap::new()),
             letter_spacing: Some(0.0),
-            baseline_shift: Some(0.0),
+            script_position: Some(ScriptPosition::Normal),
             ..Default::default()
     };
     if let Some((previous, _)) = &previous_list {
@@ -1228,7 +1237,7 @@ fn minimal_style_css(
         direction,
         open_type_features,
         letter_spacing,
-        baseline_shift
+        script_position
     );
     // A relative emphasis needs its base weight even when that base is inherited.
     if c.bold.is_some() && c.weight.is_none() {

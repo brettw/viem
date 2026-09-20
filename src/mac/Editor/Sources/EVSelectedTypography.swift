@@ -12,6 +12,9 @@ struct EVSelectedTypography: Equatable {
   let bold: Bool
   let slant: UInt32
   let foreground: EVStyleColor?
+  let background: EVStyleColor?
+  let scriptPosition: UInt32
+  let scriptMixed: Bool
   let features: [EVOpenTypeFeature]
   let mixed: Bool
 }
@@ -50,6 +53,11 @@ extension EVCoreViewSession {
         : EVStyleColor(
           red: info.foreground.red,
           green: info.foreground.green, blue: info.foreground.blue, alpha: info.foreground.alpha),
+      background: info.has_background == 0 ? nil : EVStyleColor(
+        red: info.background.red, green: info.background.green,
+        blue: info.background.blue, alpha: info.background.alpha),
+      scriptPosition: info.script_position,
+      scriptMixed: info.flags & 8 != 0,
       features: features.map {
         EVOpenTypeFeature(
           tag: String(decoding: [$0.tag.0, $0.tag.1, $0.tag.2, $0.tag.3], as: UTF8.self),

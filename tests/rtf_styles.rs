@@ -372,7 +372,7 @@ fn native_style_unicode_names_and_resource_patches_round_trip_exactly() {
 }
 
 #[test]
-fn plain_resets_named_character_overrides_default_font_and_baseline() {
+fn plain_resets_named_character_overrides_default_font_and_script_position() {
     let source=br"{\rtf1\ansi\deff3{\fonttbl{\f0 Arial;}{\f3 Georgia;}}{\colortbl;\red255\green0\blue0;}{\stylesheet{\s0\b\fs32 Normal;}{\*\cs7\i Accent;}}\s0\cs7\f0\fs36\cf1\super old\plain new}";
     let document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
     let span = document
@@ -395,7 +395,7 @@ fn plain_resets_named_character_overrides_default_font_and_baseline() {
     assert_eq!(span.weight, Some(400));
     assert_eq!(span.size, Some(12.0));
     assert_eq!(span.slant, Some(FontSlant::Upright));
-    assert_eq!(span.baseline_shift, Some(0.0));
+    assert_eq!(span.script_position, Some(ScriptPosition::Normal));
     assert_eq!(span.foreground, None);
     assert!(!document
         .projection()

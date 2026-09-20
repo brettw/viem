@@ -52,6 +52,11 @@ internal sealed unsafe partial class CoreView
         return null;
     }
     public bool UsesGlobalStyles => Document.State.format == VIEM_FORMAT_CODE;
+    public bool CanFormatCharacter => Document.State.format is VIEM_FORMAT_HTML or VIEM_FORMAT_HTML_SOURCE or VIEM_FORMAT_RTF
+        && (LogicalSelection().kind is VIEM_LOGICAL_SELECTION_KIND_CHARACTER or VIEM_LOGICAL_SELECTION_KIND_LINE
+            || Presentation.mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE);
+    public bool CanFormatParagraph => Document.State.format is VIEM_FORMAT_HTML or VIEM_FORMAT_HTML_SOURCE or VIEM_FORMAT_RTF
+        && LogicalSelection().kind != VIEM_LOGICAL_SELECTION_KIND_BLOCK;
     public ViemLogicalSelectionIdentityV1 LogicalSelection()
     { var value = New<ViemLogicalSelectionIdentityV1>(); Check(viem_core_view_list_selection(Document.Handle, Id, &value), "Read formatting selection"); return value; }
     public ViemSemanticStylePresentationV1 SemanticStyle(uint style)
@@ -70,6 +75,12 @@ internal sealed unsafe partial class CoreView
         var selection = LogicalSelection();
         Apply(o => { var request = New<ViemDirectStyleEditV1>(); request.property = property; request.operation = clear ? VIEM_STYLE_EDIT_CLEAR_DECLARATION : VIEM_STYLE_EDIT_SET_DECLARATION;
             request.expected_selection = selection; request.value = value; return viem_core_view_edit_direct_style(Document.Handle, Id, &request, o); });
+    }
+    public void ToggleScript(uint position)
+    {
+        var current = Typography().Info;
+        DirectStyle(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION, Enum(VIEM_STYLE_VALUE_SCRIPT_POSITION,
+            current.script_position == position && (current.flags & 8) == 0 ? VIEM_SCRIPT_POSITION_NORMAL : position));
     }
     public void DirectFontFamily(string family)
     {
@@ -93,13 +104,19 @@ internal sealed unsafe partial class CoreView
     {
         using var arena = new NativeArena(); var item = New<ViemStyleEditValueItemV1>(); item.kind = VIEM_STYLE_VALUE_ITEM_STRING; item.text = arena.Utf8(face?.Name ?? family);
         var font = New<ViemStyleEditValueV1>(); font.kind = VIEM_STYLE_VALUE_STRING_LIST; font.items = &item; font.item_count = 1;
-        var selection = LogicalSelection(); var requests = new ViemDirectStyleEditV1[face == null ? 2 : 4];
+        var semantic = face == null ? VIEM_SEMANTIC_STYLE_STATE_MIXED : SemanticStyle(VIEM_SEMANTIC_STYLE_STRONG).state;
+        bool preserveBold = face != null && semantic != VIEM_SEMANTIC_STYLE_STATE_MIXED;
+        var selection = LogicalSelection(); var requests = new ViemDirectStyleEditV1[face == null ? 2 : preserveBold ? 5 : 4];
         for (int i = 0; i < requests.Length; i++) { requests[i] = New<ViemDirectStyleEditV1>(); requests[i].operation = VIEM_STYLE_EDIT_SET_DECLARATION; requests[i].expected_selection = selection; }
         requests[0].property = VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES; requests[0].value = font;
         requests[1].property = VIEM_STYLE_PROPERTY_CHARACTER_SIZE; requests[1].value = Number(size);
         if (face != null) {
             requests[2].property = VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT; requests[2].value = Enum(VIEM_STYLE_VALUE_UNSIGNED, face.Weight);
             requests[3].property = VIEM_STYLE_PROPERTY_CHARACTER_SLANT; requests[3].value = Enum(VIEM_STYLE_VALUE_FONT_SLANT, face.Slant == global::Windows.UI.Text.FontStyle.Normal ? 0u : face.Slant == global::Windows.UI.Text.FontStyle.Italic ? 1u : 2u);
+            if (preserveBold) {
+                requests[4].property = VIEM_STYLE_PROPERTY_CHARACTER_BOLD;
+                requests[4].value = Enum(VIEM_STYLE_VALUE_BOOLEAN, semantic == VIEM_SEMANTIC_STYLE_STATE_ON ? 1u : 0u);
+            }
         }
         Apply(o => { fixed (ViemDirectStyleEditV1* p = requests) return viem_core_view_edit_direct_character_batch(Document.Handle, Id, p, (ulong)requests.Length, o); });
     }

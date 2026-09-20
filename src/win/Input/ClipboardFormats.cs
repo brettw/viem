@@ -58,7 +58,12 @@ internal static class ClipboardFormats
                 int start = Math.Max(first, run.GetProperty("start").GetInt32()), end = Math.Min(last, run.GetProperty("end").GetInt32());
                 if (end <= start) continue;
                 if (start > position) html.Append(Content(position, start));
-                html.Append("<span style=\"").Append(WebUtility.HtmlEncode(CharacterCss(run))).Append("\">").Append(Content(start, end)).Append("</span>"); position = end;
+                string? script = run.GetProperty("script_position").GetString() switch { "Superscript" => "sup", "Subscript" => "sub", _ => null };
+                html.Append("<span style=\"").Append(WebUtility.HtmlEncode(CharacterCss(run))).Append("\">");
+                if (script != null) html.Append('<').Append(script).Append('>');
+                html.Append(Content(start, end));
+                if (script != null) html.Append("</").Append(script).Append('>');
+                html.Append("</span>"); position = end;
             }
             if (position < last) html.Append(Content(position, last));
         }
@@ -94,7 +99,7 @@ internal static class ClipboardFormats
             if (!run.GetProperty("foreground_is_default").GetBoolean()) css.Append("color:").Append(CssColor(run.GetProperty("foreground"))).Append(';');
             if (run.GetProperty("background").ValueKind != JsonValueKind.Null) css.Append("background-color:").Append(CssColor(run.GetProperty("background"))).Append(';');
             css.Append("letter-spacing:").Append(run.GetProperty("letter_spacing").GetDouble().ToString(System.Globalization.CultureInfo.InvariantCulture)).Append("pt;");
-            css.Append("vertical-align:").Append(run.GetProperty("baseline_shift").GetDouble().ToString(System.Globalization.CultureInfo.InvariantCulture)).Append("pt;");
+            css.Append("vertical-align:baseline;");
             if (run.GetProperty("direction").GetString() != "Natural") css.Append("unicode-bidi:bidi-override;direction:").Append(run.GetProperty("direction").GetString() == "RightToLeft" ? "rtl;" : "ltr;");
             var features = run.GetProperty("open_type_features").EnumerateObject().Select(p => CssString(p.Name) + " " + p.Value.GetUInt32()).ToArray();
             if (features.Length > 0) css.Append("font-feature-settings:").Append(string.Join(",", features)).Append(';');

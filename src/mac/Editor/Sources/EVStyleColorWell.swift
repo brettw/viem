@@ -34,6 +34,7 @@ final class EVStyleColorWell: NSColorWell {
 
     @objc func showColorPanel() {
         guard isEnabled, window != nil else { return }
+        EVTypographyPanels.shared.stopFollowingColors()
         let panel = NSColorPanel.shared
         // Clear direct formatting's target before activation seeds the panel,
         // so merely opening it cannot change the previous owner's selection.

@@ -9,6 +9,27 @@ import Testing
 
 @Suite("Core Text measurement provider")
 struct CoreTextMeasurementProviderTests {
+  @Test("Script position scales glyphs, moves their origin, and distinguishes cached render data")
+  func scriptPositionRendering() throws {
+    let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 182)
+    for scale: Float in [1, 2] {
+      var handles: [UInt64] = []
+      for position: UInt32 in [0, 1, 2] {
+        let result = try shape(provider: provider, text: "x2", globalStart: 0,
+          purpose: UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
+          fontSize: 30, scriptPosition: position, scale: scale)
+        let run = try #require(result.clusters.first?.renderRun)
+        let font = try #require(provider.renderRegistry.resolvedFont(identifier: run.identifier, metricsGeneration: run.metrics_generation))
+        let attributes = try #require(provider.renderRegistry.textAttributes(identifier: run.identifier, metricsGeneration: run.metrics_generation))
+        #expect(abs(CTFontGetSize(font) - CGFloat((position == 0 ? 30 : 21) * scale)) < 0.001)
+        #expect(attributes.scriptPosition == position)
+        #expect(abs(attributes.scriptOffset - CGFloat((position == 1 ? 10 : position == 2 ? -6 : 0) * scale)) < 0.001)
+        handles.append(run.identifier)
+      }
+      #expect(Set(handles).count == 3)
+    }
+  }
+
   @Test("ASCII indentation retains separate tab and space geometry around shaped text")
   func indentationWhitespaceClusters() throws {
     let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 181)
@@ -566,6 +587,7 @@ private func shape(
   fontFamily: String = "SF Pro",
   fontSize: Float = 14,
   letterSpacing: Float = 0,
+  scriptPosition: UInt32 = 0,
   scale: Float = 1,
   expectedStatus: UInt32? = 0
 ) throws -> ShapeResult {
@@ -600,6 +622,7 @@ private func shape(
             style.size = fontSize
             style.weight = 400
             style.letter_spacing = letterSpacing
+            style.script_position = scriptPosition
             style.font_family_count = 1
             style.font_families = withUnsafePointer(to: &family) { $0 }
             style.features = featureBuffer.baseAddress

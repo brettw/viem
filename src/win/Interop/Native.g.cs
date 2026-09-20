@@ -273,7 +273,7 @@ internal unsafe struct ViemResolvedTextStyleV1
     public float @size;
     public float @weight;
     public float @letter_spacing;
-    public float @baseline_shift;
+    public uint @script_position;
     public ViemUtf8Slice* @font_families;
     public ulong @font_family_count;
     public ViemUtf8Slice @language;
@@ -1203,6 +1203,9 @@ internal unsafe struct ViemTypographyInfoV1
     public uint @base_weight;
     public uint @slant;
     public ViemRgbaV1 @foreground;
+    public uint @script_position;
+    public uint @has_background;
+    public ViemRgbaV1 @background;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -1562,7 +1565,7 @@ internal static unsafe partial class Native
     public const uint VIEM_STYLE_PROPERTY_CHARACTER_DIRECTION = 23u;
     public const uint VIEM_STYLE_PROPERTY_CHARACTER_OPEN_TYPE_FEATURES = 24u;
     public const uint VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING = 25u;
-    public const uint VIEM_STYLE_PROPERTY_CHARACTER_BASELINE_SHIFT = 26u;
+    public const uint VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION = 26u;
     public const uint VIEM_STYLE_PROPERTY_CHARACTER_BOLD = 27u;
     public const uint VIEM_STYLE_VALUE_NONE = 0u;
     public const uint VIEM_STYLE_VALUE_FLOAT = 1u;
@@ -1576,6 +1579,10 @@ internal static unsafe partial class Native
     public const uint VIEM_STYLE_VALUE_OPEN_TYPE_FEATURES = 9u;
     public const uint VIEM_STYLE_VALUE_LINE_SPACING = 10u;
     public const uint VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT = 11u;
+    public const uint VIEM_STYLE_VALUE_SCRIPT_POSITION = 12u;
+    public const uint VIEM_SCRIPT_POSITION_NORMAL = 0u;
+    public const uint VIEM_SCRIPT_POSITION_SUPERSCRIPT = 1u;
+    public const uint VIEM_SCRIPT_POSITION_SUBSCRIPT = 2u;
     public const uint VIEM_STYLE_VALUE_ITEM_STRING = 1u;
     public const uint VIEM_STYLE_VALUE_ITEM_OPEN_TYPE_FEATURE = 2u;
     public const uint VIEM_STYLE_LINE_SPACING_NORMAL = 1u;
@@ -1588,6 +1595,7 @@ internal static unsafe partial class Native
     public const uint VIEM_STYLE_PROPERTY_DECLARED = (1u << 0);
     public const uint VIEM_STYLE_PROPERTY_EFFECTIVE_PRESENT = (1u << 1);
     public const uint VIEM_STYLE_PROPERTY_CONTRIBUTOR_HAS_STYLE = (1u << 2);
+    public const uint VIEM_STYLE_PROPERTY_MIXED = (1u << 3);
     public const uint VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY = 1u;
     public const uint VIEM_STYLE_CONTRIBUTOR_BLOCK_STYLE = 2u;
     public const uint VIEM_STYLE_CONTRIBUTOR_CHARACTER_STYLE = 3u;
@@ -1939,6 +1947,10 @@ internal static unsafe partial class Native
     public static extern uint viem_core_view_end_style_edit_group(ulong @core, ulong @view, ViemStyleEditGroupV1* @group);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_edit_direct_style(ulong @handle, ulong @view, ViemDirectStyleEditV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_edit_direct_properties(ulong @core, ulong @view, ViemDirectStyleEditV1* @requests, ulong @count, ViemCoreOutcomeV1* @out_outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_copy_formatting(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected_selection, ViemStyleSheetInfoV1* @out_info, ViemStylePropertyV1* @out_properties, ulong @property_capacity, ViemStyleValueItemV1* @out_items, ulong @item_capacity, byte* @out_strings, ulong @string_capacity);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_edit_direct_character_batch(ulong @handle, ulong @view, ViemDirectStyleEditV1* @requests, ulong @count, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

@@ -29,7 +29,7 @@ final class EVVisibleWhitespaceStyleTests: XCTestCase {
             .setDeclaration(.characterDirection, .writingDirection(2)),
             .setDeclaration(.characterOpenTypeFeatures, .openTypeFeatures([EVOpenTypeFeature(tag: "liga", setting: 0)])),
             .setDeclaration(.characterLetterSpacing, .float(0.25)),
-            .setDeclaration(.characterBaselineShift, .float(-1)),
+            .setDeclaration(.characterScriptPosition, .scriptPosition(2)),
         ]
         XCTAssertTrue(session.apply(mutations))
         let style = session.style
@@ -38,6 +38,7 @@ final class EVVisibleWhitespaceStyleTests: XCTestCase {
         XCTAssertEqual(style.weight, 450)
         XCTAssertEqual(style.slant, .oblique)
         XCTAssertEqual(style.direction, .rightToLeft)
+        XCTAssertEqual(style.scriptPosition, .subscriptPosition)
         XCTAssertEqual(style.language, "fr")
         XCTAssertEqual(style.openTypeFeatures, ["liga": 0])
         XCTAssertEqual(configuration.whitespacePresentation.visibleWhitespace.style, style)
@@ -84,6 +85,8 @@ final class EVVisibleWhitespaceStyleTests: XCTestCase {
         let (directory, configuration) = fixture()
         let session = EVVisibleWhitespaceStyleSession(configuration: configuration)
         XCTAssertFalse(session.apply([.setDeclaration(.characterSize, .float(0))]))
+        XCTAssertFalse(session.apply([.setDeclaration(.characterScriptPosition, .scriptPosition(3))]))
+        XCTAssertFalse(session.apply([.setDeclaration(.characterScriptPosition, .float(1))]))
         XCTAssertFalse(session.apply([.setDeclaration(.characterWeight, .unsigned(1001))]))
         XCTAssertFalse(session.apply([.setDeclaration(.characterLanguage, .string(""))]))
         XCTAssertFalse(session.apply([.setDeclaration(.paragraphFirstLineIndent, .float(4))]))

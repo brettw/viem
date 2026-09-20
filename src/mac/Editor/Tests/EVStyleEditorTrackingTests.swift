@@ -244,6 +244,10 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         let coordinator = EVStyleEditorCoordinator { _ in nil }
         coordinator.show(document: surface, sender: nil)
         defer { coordinator.close() }
+        // Let AppKit finish the first panel presentation before measuring idle
+        // time: its initial drawing can otherwise delay the first 40 ms task
+        // resumption long enough for a correctly scheduled timer to fire.
+        try await Task.sleep(for: .milliseconds(700))
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
         XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
         let before = try surface.backend.recoverySnapshot()
@@ -270,7 +274,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
 
         moveCaret(7, in: surface)
         XCTAssertTrue(coordinator.selectionFollowScheduledForTesting)
-        coordinator.selectStyle(.baseParagraph)
+        coordinator.selectStyle(EVStyleKey.baseParagraph)
         XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
         try await Task.sleep(for: .milliseconds(1100))
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)

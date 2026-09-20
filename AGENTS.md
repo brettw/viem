@@ -879,8 +879,9 @@ Initial character properties include:
 - optional foreground/background colors (unspecified foreground uses the theme);
 - underline and strike decoration;
 - language and writing-direction override;
-- OpenType feature settings; and
-- letter spacing and baseline shift.
+- OpenType feature settings;
+- letter spacing; and
+- script position: Normal, Superscript, or Subscript.
 
 Bold is a sparse semantic Boolean separate from the selected face's base weight.
 Resolution adds 300 to that base weight, capped at 1000; native face selection
@@ -1339,14 +1340,18 @@ The initial semantic inline element mappings are:
 - `b` and `strong` contribute bold weight;
 - `i` and `em` contribute italic slant;
 - `u` contributes underline;
-- `s`, `strike`, and `del` contribute strike decoration; and
+- `s`, `strike`, and `del` contribute strike decoration;
+- `sup` and `sub` contribute exclusive superscript and subscript; and
 - `span` contributes no property by itself but can carry a supported class or
   inline declaration.
 
 `lang` contributes the supported language property and `dir` contributes the
-supported writing-direction override when their values are understood. Other
-attributes do not affect the normalized projection unless this section later
-adds an explicit mapping.
+supported writing-direction override when their values are understood.
+Explicit Automatic direction writes `dir="auto"` in HTML, including when it
+must override an inherited LTR/RTL value. It is distinct from clearing a direct
+declaration. RTF has no corresponding explicit automatic-direction control, so
+that menu choice is disabled there. Other attributes do not affect the
+normalized projection unless this section later adds an explicit mapping.
 
 For example, `<b foo="bar">text</b>` projects `text` as bold. The unknown
 `foo` attribute remains byte-identical through text edits inside the element
@@ -1374,8 +1379,7 @@ The initial supported Character-property mappings are:
 - `text-decoration-line`, and the `text-decoration` shorthand when its value is
   only `none`, `underline`, and/or `line-through`, -> underline and strike decoration;
 - `letter-spacing` -> letter spacing;
-- `vertical-align`, for supported length, `super`, and `sub` values -> baseline
-  shift;
+- `vertical-align` values `baseline`, `super`, and `sub` -> script position;
 - `font-feature-settings` -> OpenType feature settings; and
 - `direction` -> writing-direction override.
 
@@ -1396,15 +1400,16 @@ and lowercase property names in schema order. It does not claim to preserve the
 semantics of arbitrary CSS shorthand, variables, `calc()`, viewport units,
 media queries, or selector cascades.
 
-For `vertical-align`, Viem normalizes `super` to an upward baseline shift of
-one third of the element's effective font size and `sub` to a downward shift of
-one fifth of that size. `baseline` is an explicit zero shift. The effective
-font size includes the document, paragraph, named character, inherited inline,
-and element's own valid declarations, independently of CSS declaration order.
-This deterministic import policy does not depend on browser or platform font
-metrics. The resulting normalized property is an absolute point length;
-authored direct formatting writes that length in `pt`, and reprojecting an
-unchanged keyword reevaluates it against the then-effective font size.
+Script position is a semantic enum, independent of font size: Normal,
+Superscript, or Subscript. Superscript and subscript are mutually exclusive;
+selecting the active choice again restores Normal. Rendering uses 70% of the
+resolved font size and offsets superscript upward by one third of the original
+size or subscript downward by one fifth. Normal retains the original size and
+position. HTML `sup`/`sub` and CSS `vertical-align: super/sub/baseline` map to
+these values; new simple inline edits use `sup`/`sub` tags. RTF uses
+`\super`, `\sub`, and `\nosupersub`. Arbitrary CSS vertical lengths and RTF
+`\up`/`\dn` remain untouched source but do not contribute formatting.
+There is no editable numeric baseline-shift property.
 
 Element semantics and style sources resolve in this order, with later sources
 winning for supported properties:
@@ -1651,7 +1656,7 @@ The adapter evaluates supported formatting as scoped state:
 - `\fN` and `\fsN` map through the font table to font request and size;
 - `\cfN` and supported background/highlight controls map through the color
   table;
-- supported language, direction, character-spacing, baseline, and feature
+- supported language, direction, character-spacing, script-position, and feature
   controls map to their corresponding Character properties; and
 - `\liN`, `\riN`, `\fiN`, `\sbN`, `\saN`, `\slN`/`\slmultN`,
   `\ql`/`\qc`/`\qr`, and paragraph-direction controls map to the supported
@@ -4503,17 +4508,12 @@ The menu hierarchy is:
   - Italic (`Command-I`)
   - Underline (`Command-U`)
   - Strikethrough
-  - Bigger
-  - Smaller
+  - Superscript
+  - Subscript
   - Ligatures
     - Use Default Ligatures
     - Use All Ligatures
     - Use No Ligatures
-  - Baseline
-    - Superscript
-    - Subscript
-    - Raise
-    - Lower
   - OpenType Features (available features of the current resolved font)
   - Show Colors
   - Text Color…
@@ -4592,6 +4592,20 @@ The menu hierarchy is:
   - separator
   - Release Notes
   - Report a Problem…
+
+The Format font and color commands open persistent native choosers. On macOS
+these are the system Fonts and Colors panels; Windows uses modeless windows
+with native WinUI font and color controls. Text Color and Highlight Color
+initialize from the current foreground and background, including transparent
+backgrounds. While a chooser remains open, caret/selection changes in its
+invoking view refresh its values and editing target after a 150ms coalescing
+delay. Invoking the command from another view explicitly retargets the panel;
+unrelated document or pane activation alone does not retarget it.
+Programmatic refreshes do not mutate source or create undo entries. A gesture
+resolves the latest target before committing, so it cannot act on the previous
+caret during a pending refresh. Unsupported formats or modes remain visible
+but cannot apply direct formatting. All exposed Format actions have handlers;
+availability follows format capabilities and current selection/mode.
 
 The Windows frontend uses `Control-0` through `Control-5` for the same
 paragraph/heading assignments. Heading 6 is menu-only because `Control-6`
@@ -4831,7 +4845,9 @@ property without an editor control):
 - an original SVG feature button opening the selected font’s supported OpenType
   feature menu, with checkmarks and the same catalog as Format > OpenType Features;
 - letter spacing; and
-- baseline shift.
+- exclusive Superscript and Subscript buttons labeled **x²** and **x₂**, with
+  one shared **Override inherited** checkbox. Both off explicitly means Normal;
+  clearing the checkbox inherits script position.
 
 Font family/fallback and native face/base weight have independent override
 checkboxes. An explicit face weight remains visible and editable when its font
@@ -4842,7 +4858,7 @@ icons and separate B/I/U actions. Paragraph controls use corresponding alignment
 indentation, and spacing groups. The reference images guide density and grouping;
 the interface must not be a tall generic attribute list. **Text Color**,
 **Background Color**, and **OpenType** captions appear above their controls,
-like Tracking and Baseline. The B/I/U/strike buttons reserve the same caption
+like Tracking and Script. The B/I/U/strike buttons reserve the same caption
 space so their override checkboxes align vertically with the color checkboxes.
 Separate adjacent property sections on a row with one em before each subsequent
 checkbox; keep each checkbox close to its own control.
@@ -4871,9 +4887,9 @@ share the same weight and slant.
 Font-family fallback order requires an ordered editor rather than a single-font
 field. Primary and fallback font-name dropdowns request 20 visible font rows;
 native AppKit may constrain their height to available screen space. Native font
-and color panels may be used as transient choosers, but they
-must update the same selected style and must not become alternate persistence
-or undo authorities.
+and color panels remain modeless and update the same selected style while owned
+by the inspector. They must not become alternate persistence or undo authorities;
+opening a direct-formatting panel transfers ownership from the inspector.
 
 #### Paragraph tab
 
@@ -4900,7 +4916,7 @@ applicable value form the committed declaration.
 Numeric style fields have native up/down steppers on their right edge. A
 step uses the displayed resolved value and creates an explicit declaration;
 the override checkbox can restore inheritance. Invalid drafts disable the stepper without
-committing. Indents, paragraph spacing, baseline offsets, and tracking retain
+committing. Indents, paragraph spacing, and tracking retain
 their supported signed ranges. Held autorepeat is one continuous undo gesture.
 
 #### Live application, preview, and undo
@@ -5694,7 +5710,7 @@ On a style definition, assignment, or direct-formatting change, resolve the
 property difference and invalidate by effect:
 
 - font, size, weight, slant, language/direction, OpenType features, letter
-  spacing, or baseline changes invalidate affected shaping and downstream wrap
+  spacing, or script-position changes invalidate affected shaping and downstream wrap
   and height results;
 - paragraph indents, spacing, line spacing, alignment, or structural
   contributions invalidate affected paragraph wrap/position/height results but
@@ -6105,11 +6121,12 @@ the portable document or vi command contract:
   not claimed. IME protocol checks do not substitute for testing every installed
   Windows IME or speech-input service.
 - The modeless style inspector exposes inheritance, names, fonts, colors,
-  decoration, tracking, baseline, paragraph direction/alignment/indents and
-  spacing. A system font panel, per-font OpenType feature discovery, and the
-  full Mac typography menus are omitted. Existing source OpenType features
-  still participate in DirectWrite shaping. The inspector preview currently
-  demonstrates font, decoration, tracking, and alignment in surrounding text
+  decoration, tracking, script position, paragraph direction/alignment/indents and
+  spacing. Font and color commands open persistent modeless WinUI control
+  windows. Per-font OpenType feature discovery and the full Mac typography
+  menus are omitted. Existing source OpenType features still participate in
+  DirectWrite shaping. The inspector preview currently demonstrates font,
+  decoration, script position, tracking, and alignment in surrounding text
   rather than the complete paragraph layout. Mac's click-through activation of
   disabled inherited controls is not yet implemented; use the override checkbox.
 - Per-span explicit bidi overrides are retained in source but are not realized

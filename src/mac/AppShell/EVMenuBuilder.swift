@@ -337,8 +337,8 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         font.addItem(coreItem("Underline", command: .underline, key: "u"))
         font.addItem(coreItem("Strikethrough", command: .strikethrough))
         font.addItem(.separator())
-        font.addItem(coreItem("Bigger", command: .bigger))
-        font.addItem(coreItem("Smaller", command: .smaller))
+        font.addItem(coreItem("Superscript", command: .superscript))
+        font.addItem(coreItem("Subscript", command: .subscriptText))
         font.addItem(.separator())
 
         let ligatures = NSMenu(title: "Ligatures")
@@ -347,12 +347,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         ligatures.addItem(coreItem("Use No Ligatures", command: .noLigatures))
         font.addItem(submenuItem("Ligatures", submenu: ligatures))
 
-        let baseline = NSMenu(title: "Baseline")
-        baseline.addItem(coreItem("Superscript", command: .superscript))
-        baseline.addItem(coreItem("Subscript", command: .subscriptBaseline))
-        baseline.addItem(coreItem("Raise", command: .raiseBaseline))
-        baseline.addItem(coreItem("Lower", command: .lowerBaseline))
-        font.addItem(submenuItem("Baseline", submenu: baseline))
         let features = NSMenu(title: "OpenType Features")
         features.delegate = self
         openTypeMenu = features

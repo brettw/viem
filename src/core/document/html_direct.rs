@@ -34,6 +34,8 @@ fn inline(name: &str) -> bool {
             | "small"
             | "big"
             | "code"
+            | "sup"
+            | "sub"
     )
 }
 fn clear_character(
@@ -57,6 +59,11 @@ fn tag_with_properties(
     if let Some(css) = tag.attribute("style") {
         html::apply_css(css, &mut character, &mut paragraph);
     }
+    if let Some(direction) = tag.attribute("dir").and_then(html::direction) {
+        character.direction = Some(direction);
+        paragraph.base_direction = Some(direction);
+    }
+    let replacing_direction = block.is_some_and(|block| block.base_direction != paragraph.base_direction);
     let clearing_masked_bold = clear.contains(&StyleProperty::CharacterWeight)
         && character.weight.is_some() && character.bold.is_none();
     clear_character(
@@ -79,13 +86,14 @@ fn tag_with_properties(
                         | StyleProperty::CharacterDirection
                         | StyleProperty::CharacterOpenTypeFeatures
                         | StyleProperty::CharacterLetterSpacing
-                        | StyleProperty::CharacterBaselineShift
+                        | StyleProperty::CharacterScriptPosition
                 )
             })
             .copied()
             .collect(),
     )?;
-    if (matches!(name.as_str(), "b" | "strong")
+    if (matches!(name.as_str(), "sup" | "sub") && clear.contains(&StyleProperty::CharacterScriptPosition))
+        || (matches!(name.as_str(), "b" | "strong")
         && (clear.contains(&StyleProperty::CharacterBold) || clearing_masked_bold))
         || (matches!(name.as_str(), "i" | "em") && clear.contains(&StyleProperty::CharacterSlant))
         || (name == "u" && clear.contains(&StyleProperty::CharacterUnderline))
@@ -95,7 +103,12 @@ fn tag_with_properties(
         name = "span".into();
     }
     if let Some(block) = block {
+        if replacing_direction { character.direction = None; }
         paragraph = block.clone();
+    } else if clear.contains(&StyleProperty::CharacterDirection) && !self::paragraph(&name) {
+        // An inline direction has no independent paragraph declaration. Avoid
+        // recreating its removed character declaration through block CSS.
+        paragraph.base_direction = None;
     }
     let mut unsupported = Vec::new();
     if let Some(css) = tag.attribute("style") {
@@ -123,11 +136,14 @@ fn tag_with_properties(
         if !seen.insert(key)
             || key == "style"
             || (key == "lang" && clear.contains(&StyleProperty::CharacterLanguage))
-            || (key == "dir" && clear.contains(&StyleProperty::CharacterDirection))
+            || (key == "dir" && (replacing_direction || clear.contains(&StyleProperty::CharacterDirection)))
         {
             continue;
         }
         out.push_str(&format!(" {key}={}", attribute(value)));
+    }
+    if replacing_direction && paragraph.base_direction == Some(WritingDirection::Natural) {
+        out.push_str(" dir=\"auto\"");
     }
     if !css.is_empty() {
         out.push_str(&format!(" style={}", attribute(&css)));
@@ -258,6 +274,12 @@ pub(super) fn clear_character_patches(
         }
         if matches!(tag.name.as_str(), "i" | "em") {
             original.slant = Some(FontSlant::Italic);
+        }
+        if tag.name == "sup" {
+            original.script_position = Some(ScriptPosition::Superscript);
+        }
+        if tag.name == "sub" {
+            original.script_position = Some(ScriptPosition::Subscript);
         }
         if tag.name == "u" {
             original.underline = Some(true);

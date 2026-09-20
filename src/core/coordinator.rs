@@ -43,6 +43,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod input_layout;
 mod prelayout;
+mod formatting;
 mod startup;
 mod ex_files;
 mod completion;
@@ -302,6 +303,10 @@ pub enum CoreEvent {
             crate::document::StyleProperty,
             crate::document::StylePropertyValue,
         )>,
+    },
+    EditDirectProperties {
+        expected: LogicalSelectionIdentity,
+        values: Vec<(crate::document::StyleProperty, Option<crate::document::StylePropertyValue>)>,
     },
     EditDirectProperty {
         expected: LogicalSelectionIdentity,
@@ -1054,6 +1059,15 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self,
         view_id: ViewId,
     ) -> Result<(crate::document::ResolvedCharacterStyle, bool), CoreError> {
+        self.selected_typography_details(view_id).map(|(style, mixed, _)| (style, mixed))
+    }
+
+    /// The script-specific flag keeps unrelated font/color differences from
+    /// changing Superscript and Subscript menu toggle behavior.
+    pub fn selected_typography_details(
+        &self,
+        view_id: ViewId,
+    ) -> Result<(crate::document::ResolvedCharacterStyle, bool, bool), CoreError> {
         let view = self
             .views
             .get(&view_id)
@@ -1076,7 +1090,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             view.commands
                 .apply_typing_presentation(&self.document, &mut first)?;
         }
-        let mixed = if let Some(range) = range.filter(|range| !range.is_empty()) {
+        let (mixed, script_mixed) = if let Some(range) = range.filter(|range| !range.is_empty()) {
             let styles =
                 DocumentLayoutStyles::resolve_region(self.document.projection(), range.clone())
                     .map_err(LayoutError::from)?;
@@ -1092,21 +1106,21 @@ impl<P: TextMeasurementProvider> Core<P> {
             for paragraph in &styles.paragraphs {
                 boundaries.insert(paragraph.text_range.start.max(range.start));
             }
-            boundaries
-                .into_iter()
-                .filter(|at| *at < range.end)
-                .any(|at| {
-                    DocumentLayoutStyles::semantic_character_at(
-                        self.document.projection(),
-                        at,
-                        false,
-                    )
-                    .is_ok_and(|value| value != first)
-                })
+            let mut mixed = false;
+            let mut script_mixed = false;
+            for at in boundaries.into_iter().filter(|at| *at < range.end) {
+                let value = DocumentLayoutStyles::semantic_character_at(
+                    self.document.projection(), at, false,
+                ).map_err(LayoutError::from)?;
+                mixed |= value != first;
+                script_mixed |= value.script_position != first.script_position;
+                if mixed && script_mixed { break; }
+            }
+            (mixed, script_mixed)
         } else {
-            false
+            (false, false)
         };
-        Ok((first, mixed))
+        Ok((first, mixed, script_mixed))
     }
 
     /// Return native Bold/Italic presentation from the authoritative logical
@@ -4978,6 +4992,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                     },
                 );
             }
+            CoreEvent::EditDirectProperties { expected, values } => {
+                return self.edit_direct_properties(view_id, expected, values);
+            }
             CoreEvent::EditDirectProperty {
                 expected,
                 property,
@@ -6105,6 +6122,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             CoreEvent::SetDirectCharacterProperties { .. }
             | CoreEvent::EditDirectProperty { .. }
+            | CoreEvent::EditDirectProperties { .. }
             | CoreEvent::SetFileFormat { .. }
             | CoreEvent::SetIncludeStyleDefinitionsInFile { .. }
             | CoreEvent::SetFormat { .. }

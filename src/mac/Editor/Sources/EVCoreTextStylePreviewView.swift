@@ -245,8 +245,9 @@ final class EVCoreTextStylePreviewView: NSView {
         if case let .float(value)? = values[.characterLetterSpacing] {
             attributes.merge(letterSpacingAttributes(CGFloat(value))) { _, value in value }
         }
-        if case let .float(value)? = values[.characterBaselineShift] {
-            attributes[NSAttributedString.Key(kCTBaselineOffsetAttributeName as String)] = CGFloat(value)
+        if case let .scriptPosition(value)? = values[.characterScriptPosition] {
+            let size = requestedFontDescription(from: values).size
+            attributes[NSAttributedString.Key(kCTBaselineOffsetAttributeName as String)] = value == 1 ? size / 3 : value == 2 ? -size / 5 : 0
         }
         return attributes
     }
@@ -283,7 +284,10 @@ final class EVCoreTextStylePreviewView: NSView {
         if case let .openTypeFeatures(value)? = values[.characterOpenTypeFeatures] {
             features = value.map { ($0.tag, $0.setting) }
         } else { features = [] }
-        return resolveFont(families: requested.families, size: requested.size,
+        let scripted: Bool
+        if case let .scriptPosition(value)? = values[.characterScriptPosition] { scripted = value != 0 }
+        else { scripted = false }
+        return resolveFont(families: requested.families, size: requested.size * (scripted ? 0.7 : 1),
             cssWeight: CGFloat(bold ? min(weight + 300, 1000) : weight),
             slant: slant, features: features, relativeBold: bold)
 

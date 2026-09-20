@@ -86,6 +86,22 @@ internal sealed partial class StyleWindow
         button.Click += (_, _) => Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property,
             CoreView.Enum(property == VIEM_STYLE_PROPERTY_CHARACTER_SLANT ? VIEM_STYLE_VALUE_FONT_SLANT : VIEM_STYLE_VALUE_BOOLEAN, button.IsChecked == true ? 1u : 0u)));
     }
+    private void ScriptPosition(Panel row)
+    {
+        var buttons = Inline();
+        foreach (var (label, text, position) in new[] {
+            ("Superscript", "x²", VIEM_SCRIPT_POSITION_SUPERSCRIPT),
+            ("Subscript", "x₂", VIEM_SCRIPT_POSITION_SUBSCRIPT) }) {
+            var button = new ToggleButton { Content = text, Width = 36, MinWidth = 0, Padding = new(0), FontSize = 16 };
+            AutomationProperties.SetName(button, label); ToolTipService.SetToolTip(button, label); buttons.Children.Add(button);
+            refreshFields.Add(() => button.IsChecked = ShowsValue(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION)
+                && selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION).enum_value == position);
+            button.Click += (_, _) => Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION,
+                VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION, CoreView.Enum(VIEM_STYLE_VALUE_SCRIPT_POSITION,
+                    button.IsChecked == true ? position : VIEM_SCRIPT_POSITION_NORMAL)));
+        }
+        Property(row, "Superscript / Subscript", VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION, buttons);
+    }
     private void SetColor(uint property, global::Windows.UI.Color color, ViemStyleEditGroupV1? group = null)
     {
         var value = CoreView.Enum(VIEM_STYLE_VALUE_COLOR, 0); value.color = new() { red = color.R / 255f, green = color.G / 255f, blue = color.B / 255f, alpha = color.A / 255f };
@@ -99,7 +115,7 @@ internal sealed partial class StyleWindow
         Boolean(row, "U", VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE); Boolean(row, "S", VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH);
         ColorControl(row, "Text Color", VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND); ColorControl(row, "Background Color", VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND);
         character.Children.Add(Separator());
-        row = Row(character); Number(row, "Tracking", VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING, icon: "\uE8D2"); Number(row, "Baseline", VIEM_STYLE_PROPERTY_CHARACTER_BASELINE_SHIFT, icon: "\uE74A");
+        row = Row(character); Number(row, "Tracking", VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING, icon: "\uE8D2"); ScriptPosition(row);
     }
     private void BuildParagraph()
     {

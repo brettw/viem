@@ -111,6 +111,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private var fields: [EVStyleProperty: NSTextField] = [:]
     private var steppers: [EVStyleProperty: EVStyleStepper] = [:]
     private var lastLineValues: [UInt32: Float] = [:]
+    private var scriptButtons: [UInt32: NSButton] = [:]
     private var buttons: [EVStyleProperty: NSButton] = [:]
     private var wells: [EVStyleProperty: EVStyleColorWell] = [:]
     private var directions: [EVStyleProperty: NSPopUpButton] = [:]
@@ -172,7 +173,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         ])
         let metrics = row([
             numeric(.characterLetterSpacing, title: "Tracking", icon: .tracking),
-            numeric(.characterBaselineShift, title: "Baseline", icon: .baseline),
+            labeled("Script", control: scriptControls(), property: .characterScriptPosition),
             direction(.characterDirection, title: "Direction"),
         ])
         configure(characterView, rows: [familyRow, appearance, separator(), metrics])
@@ -235,6 +236,11 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         buttons[.characterBold]?.state = isOverridden(.characterBold) && boolean(.characterBold) ? .on : .off
         buttons[.characterSlant]?.state = isOverridden(.characterSlant) && unsigned(.characterSlant) != 0 ? .on : .off
         for property in [EVStyleProperty.characterUnderline, .characterStrikethrough] { buttons[property]?.state = isOverridden(property) && boolean(property) ? .on : .off }
+        for (position, button) in scriptButtons {
+            button.state = isOverridden(.characterScriptPosition) && unsigned(.characterScriptPosition) == position ? .on : .off
+            button.isEnabled = isOverridden(.characterScriptPosition)
+            setHelp(button, .characterScriptPosition)
+        }
         for (property, button) in buttons { button.isEnabled = isOverridden(property); setHelp(button, property) }
         for (property, field) in fields {
             field.stringValue = isOverridden(property) ? Self.numberText(number(property, fallback: property == .characterSize ? 14 : 0)) : ""
@@ -444,6 +450,27 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         return overrideGroup(property, control: button)
     }
 
+    private func scriptControls() -> NSView {
+        let values: [(UInt32, String, String)] = [(1, "x²", "Superscript"), (2, "x₂", "Subscript")]
+        let controls = values.map { position, title, label in
+            let button = NSButton(title: title, target: self, action: #selector(scriptChanged(_:)))
+            button.setButtonType(.pushOnPushOff)
+            button.bezelStyle = .texturedRounded
+            button.font = .systemFont(ofSize: 14)
+            button.tag = Int(position)
+            button.setAccessibilityLabel(label)
+            button.widthAnchor.constraint(equalToConstant: 34).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 27).isActive = true
+            scriptButtons[position] = button
+            return button
+        }
+        return overrideGroup(.characterScriptPosition, control: row(controls, spacing: 3))
+    }
+
+    @objc private func scriptChanged(_ sender: NSButton) {
+        send([.setDeclaration(.characterScriptPosition, .scriptPosition(sender.state == .on ? UInt32(sender.tag) : 0))])
+    }
+
     private func overrideGroup(_ property: EVStyleProperty, control: NSView) -> NSView {
         let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(overrideChanged(_:)))
         checkbox.controlSize = .small
@@ -485,6 +512,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private func enableOverride(_ property: EVStyleProperty) {
         guard canEdit(property), !isOverridden(property) else { return }
         var value = definition?.properties[property]?.effective
+        if property == .characterScriptPosition, value == nil { value = .scriptPosition(0) }
         if property == .characterBackground, value == nil {
             value = .color(EVStyleColor(red: 0, green: 0, blue: 0, alpha: 0))
         }
@@ -539,7 +567,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         switch definition?.properties[property]?.effective { case let .float(value)?: value; case let .unsigned(value)?: Float(value); default: fallback }
     }
     private func unsigned(_ property: EVStyleProperty) -> UInt32 {
-        switch definition?.properties[property]?.effective { case let .fontSlant(value)?, let .writingDirection(value)?, let .paragraphAlignment(value)?: value; default: 0 }
+        switch definition?.properties[property]?.effective { case let .fontSlant(value)?, let .writingDirection(value)?, let .paragraphAlignment(value)?, let .scriptPosition(value)?: value; default: 0 }
     }
     private func boolean(_ property: EVStyleProperty) -> Bool { if case let .boolean(value)? = definition?.properties[property]?.effective { return value }; return false }
     private func string(_ property: EVStyleProperty) -> String { if case let .string(value)? = definition?.properties[property]?.effective { return value }; return "" }

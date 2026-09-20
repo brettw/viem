@@ -74,7 +74,7 @@ private final class EVOpenTypeMenuAction: NSObject {
     surface.performInput {
       _ = try session.editDirectProperty(
         .characterOpenTypeFeatures,
-        value: self.tag == nil ? nil : .openTypeFeatures(features.sorted { $0.tag < $1.tag }),
+        value: .openTypeFeatures(self.tag == nil ? [] : features.sorted { $0.tag < $1.tag }),
         expected: self.selection)
     }
   }

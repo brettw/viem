@@ -21,6 +21,22 @@ impl CommandInterpreter {
     ) {
         self.typing_style = TypingStyle { named, values };
     }
+    /// Publish validated pending style after a native paragraph transaction,
+    /// retaining its place in the insert-session repeat program.
+    pub(crate) fn install_typing_style(
+        &mut self,
+        named: Option<StyleId>,
+        values: Vec<(StyleProperty, StylePropertyValue)>,
+    ) {
+        self.restore_typing_style(named, values);
+        if let Some(session) = self.insert_session.as_mut() {
+            if !session.replaying_program {
+                if let Some(program) = session.repeat_program.as_mut() {
+                    program.push(EditSessionStep::TypingStyle(self.typing_style.clone()));
+                }
+            }
+        }
+    }
     pub(crate) fn typing_named_style(&self) -> Option<&StyleId> {
         self.typing_style.named.as_ref()
     }
@@ -174,7 +190,7 @@ impl CommandInterpreter {
                     style.open_type_features = v.clone()
                 }
                 (StyleProperty::CharacterLetterSpacing, V::Float(v)) => style.letter_spacing = *v,
-                (StyleProperty::CharacterBaselineShift, V::Float(v)) => style.baseline_shift = *v,
+                (StyleProperty::CharacterScriptPosition, V::ScriptPosition(v)) => style.script_position = *v,
                 _ => {}
             }
         }

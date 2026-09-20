@@ -82,6 +82,11 @@ fullscreen bounds do not replace the saved normal frame.
 - Ctrl+Q retains Visual Block and literal-next input.
 - F8 opens or raises the style inspector outside literal-next input. Font
   pickers list sorted families and installed variants such as Light or Bold.
+- Format opens persistent WinUI font and color panels. Their values follow
+  the chosen pane's caret after a 150 ms idle delay; edits apply to rich-text
+  selections or Insert/Replace typing styles. Superscript and Subscript are
+  exclusive top-level actions. The style inspector's x²/x₂ buttons share one
+  inheritance checkbox; numeric baseline offsets are not supported.
 - Ctrl+S / Ctrl+Shift+S save / save as, outside literal-next input.
 - Ctrl+Z / Ctrl+Shift+Z undo / redo, including from Insert mode, outside
   literal-next input. Normal-mode `u` and Ctrl+R remain available.
@@ -132,6 +137,8 @@ Use `-NoRustBuild` to reuse the Rust DLL while still exercising MSBuild packagin
 It checks native WinUI keyboard focus, text and command-key routing, status-line
 prompt painting and command output (including hidden bars and scrolled documents), vi editing,
 F8/inspector focus, compact controls, font variants and inheritance,
+Format actions, exclusive script controls, persistent font/color panels and
+coalesced caret synchronization,
 Unicode and bidi, composition, shared views, source/style
 round trips, clipboard policy, atomic settings/save behavior, recovery ownership,
 second-process launch handoff, window placement across sessions and monitor

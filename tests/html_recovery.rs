@@ -89,21 +89,21 @@ fn pre_wrap_uses_the_same_comment_and_important_cascade_as_other_properties() {
 }
 
 #[test]
-fn super_and_sub_normalize_against_effective_size_and_reopen_as_exact_points() {
+fn super_and_sub_retain_semantic_position_through_font_changes_and_reopen() {
     for (css, expected) in [
-        ("vertical-align:super;font-size:30pt", 10.0),
-        ("font-size:30pt;vertical-align:super", 10.0),
-        ("vertical-align:sub;font-size:30pt", -6.0),
-        ("vertical-align:super;vertical-align:2pt", 2.0),
-        ("vertical-align:super;vertical-align:baseline", 0.0),
+        ("vertical-align:super;font-size:30pt", ScriptPosition::Superscript),
+        ("font-size:30pt;vertical-align:super", ScriptPosition::Superscript),
+        ("vertical-align:sub;font-size:30pt", ScriptPosition::Subscript),
+        ("vertical-align:super;vertical-align:2pt", ScriptPosition::Superscript),
+        ("vertical-align:super;vertical-align:baseline", ScriptPosition::Normal),
     ] {
         let source = format!("<p><span style='{css}'>Text</span></p>");
         let document = open(&source);
-        assert_eq!(direct(&document, 0).baseline_shift, Some(expected));
+        assert_eq!(direct(&document, 0).script_position, Some(expected));
         assert_eq!(document.source_bytes(), source.as_bytes());
     }
     let mut document = open("<h2><span style='vertical-align:super'>Text</span></h2>");
-    assert_eq!(direct(&document, 0).baseline_shift, Some(22.0 / 3.0));
+    assert_eq!(direct(&document, 0).script_position, Some(ScriptPosition::Superscript));
     use viem_core::document::*;
     let mut heading = document
         .projection()
@@ -122,7 +122,7 @@ fn super_and_sub_normalize_against_effective_size_and_reopen_as_exact_points() {
             }),
         ))
         .unwrap();
-    assert_eq!(direct(&document, 0).baseline_shift, Some(10.0));
+    assert_eq!(direct(&document, 0).script_position, Some(ScriptPosition::Superscript));
     let range = TextRange::new(
         document.text_point(0).unwrap(),
         document.text_point(4).unwrap(),
@@ -135,14 +135,14 @@ fn super_and_sub_normalize_against_effective_size_and_reopen_as_exact_points() {
             StyleModelIntent::Persisted(PersistedStyleIntent::SetDirectCharacterProperties {
                 range,
                 properties: CharacterProperties {
-                    baseline_shift: Some(4.5),
+                    script_position: Some(ScriptPosition::Subscript),
                     ..Default::default()
                 },
             }),
         ))
         .unwrap();
     let reopened = open(&String::from_utf8(document.source_bytes()).unwrap());
-    assert_eq!(direct(&reopened, 0).baseline_shift, Some(4.5));
+    assert_eq!(direct(&reopened, 0).script_position, Some(ScriptPosition::Subscript));
 }
 
 #[test]

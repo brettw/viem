@@ -4,7 +4,7 @@ use super::line_endings::NormalizedText;
 use super::rich_text::Builder;
 use super::{
     BlockProperties, CharacterProperties, Color, FontSlant, FormattedDocument, LineSpacing,
-    ParagraphAlignment, Revision, WritingDirection,
+    ParagraphAlignment, Revision, ScriptPosition, WritingDirection,
 };
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -514,7 +514,7 @@ pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, 
                 open_type_features: Some(BTreeMap::new()),
                 language: tables.default_language.clone(),
                 letter_spacing: Some(0.0),
-                baseline_shift: Some(0.0),
+                script_position: Some(ScriptPosition::Normal),
                 ..Default::default()
             };
         }
@@ -608,15 +608,9 @@ pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, 
         }
         "expndtw" => state.character.letter_spacing = twips,
         "expnd" => state.character.letter_spacing = number.map(|n| n as f32 / 4.0),
-        "up" => state.character.baseline_shift = Some(number.unwrap_or(6) as f32 / 2.0),
-        "dn" => state.character.baseline_shift = Some(-(number.unwrap_or(6) as f32) / 2.0),
-        "super" => {
-            state.character.baseline_shift = Some(state.character.size.unwrap_or(12.0) * 0.35)
-        }
-        "sub" => {
-            state.character.baseline_shift = Some(-state.character.size.unwrap_or(12.0) * 0.20)
-        }
-        "nosupersub" => state.character.baseline_shift = Some(0.0),
+        "super" => state.character.script_position = Some(ScriptPosition::Superscript),
+        "sub" => state.character.script_position = Some(ScriptPosition::Subscript),
+        "nosupersub" => state.character.script_position = Some(ScriptPosition::Normal),
         "viemfeatures" if number == Some(0) => {
             state.character.open_type_features = Some(BTreeMap::new())
         }
@@ -661,6 +655,8 @@ pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, 
     if let Some(sl) = state.sl {
         state.paragraph.line_spacing = Some(if state.slmult {
             LineSpacing::Multiplier(sl as f32 / 240.0)
+        } else if sl == 0 {
+            LineSpacing::Normal
         } else if sl < 0 {
             LineSpacing::Exact(-(sl as f32) / 20.0)
         } else {
@@ -1501,8 +1497,12 @@ pub(super) fn character_patches(
     if let Some(spacing) = properties.letter_spacing {
         control.push_str(&format!("\\expndtw{}", exact_scaled(spacing, 20.0)?));
     }
-    if let Some(shift) = properties.baseline_shift {
-        control.push_str(&format!("\\up{}", exact_scaled(shift, 2.0)?));
+    if let Some(position) = properties.script_position {
+        control.push_str(match position {
+            ScriptPosition::Normal => "\\nosupersub",
+            ScriptPosition::Superscript => "\\super",
+            ScriptPosition::Subscript => "\\sub",
+        });
     }
     let group_end = |destination: &str| {
         header_group(&tokens, destination).map(|group| {

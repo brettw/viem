@@ -633,7 +633,7 @@ typedef struct ViemResolvedTextStyleV1 {
   float size;
   float weight;
   float letter_spacing;
-  float baseline_shift;
+  uint32_t script_position;
   const ViemUtf8Slice *font_families;
   uint64_t font_family_count;
   ViemUtf8Slice language;
@@ -988,7 +988,7 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_PROPERTY_CHARACTER_DIRECTION 23u
 #define VIEM_STYLE_PROPERTY_CHARACTER_OPEN_TYPE_FEATURES 24u
 #define VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING 25u
-#define VIEM_STYLE_PROPERTY_CHARACTER_BASELINE_SHIFT 26u
+#define VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION 26u
 #define VIEM_STYLE_PROPERTY_CHARACTER_BOLD 27u
 
 #define VIEM_STYLE_VALUE_NONE 0u
@@ -1003,6 +1003,11 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_VALUE_OPEN_TYPE_FEATURES 9u
 #define VIEM_STYLE_VALUE_LINE_SPACING 10u
 #define VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT 11u
+#define VIEM_STYLE_VALUE_SCRIPT_POSITION 12u
+
+#define VIEM_SCRIPT_POSITION_NORMAL 0u
+#define VIEM_SCRIPT_POSITION_SUPERSCRIPT 1u
+#define VIEM_SCRIPT_POSITION_SUBSCRIPT 2u
 
 #define VIEM_STYLE_VALUE_ITEM_STRING 1u
 #define VIEM_STYLE_VALUE_ITEM_OPEN_TYPE_FEATURE 2u
@@ -1019,6 +1024,8 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_PROPERTY_DECLARED (1u << 0)
 #define VIEM_STYLE_PROPERTY_EFFECTIVE_PRESENT (1u << 1)
 #define VIEM_STYLE_PROPERTY_CONTRIBUTOR_HAS_STYLE (1u << 2)
+/* Selection-format snapshots only: selected runs disagree on this property. */
+#define VIEM_STYLE_PROPERTY_MIXED (1u << 3)
 
 #define VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY 1u
 #define VIEM_STYLE_CONTRIBUTOR_BLOCK_STYLE 2u
@@ -2438,12 +2445,28 @@ ViemStatus viem_core_view_edit_direct_style(ViemCoreHandle handle, ViemViewId vi
     const ViemDirectStyleEditV1 *request, ViemCoreOutcomeV1 *out_outcome);
 /* Atomically sets 1..32 distinct character properties on one exact selection.
    Every request must use SET_DECLARATION and the same expected selection. */
+/* Atomic character/paragraph set-or-clear batch with one verified transaction. */
+ViemStatus viem_core_view_edit_direct_properties(
+    ViemCoreHandle core, ViemViewId view,
+    const ViemDirectStyleEditV1 *requests, uint64_t count,
+    ViemCoreOutcomeV1 *out_outcome);
+/* Effective caret/selection formatting. Two-pass, snapshot/selection checked.
+ * Property values use the existing value-item/string arenas. No definitions or
+ * dependencies are emitted. An absent optional property has effective NONE. */
+ViemStatus viem_core_view_copy_formatting(
+    ViemCoreHandle core, ViemViewId view,
+    const ViemLogicalSelectionIdentityV1 *expected_selection,
+    ViemStyleSheetInfoV1 *out_info,
+    ViemStylePropertyV1 *out_properties, uint64_t property_capacity,
+    ViemStyleValueItemV1 *out_items, uint64_t item_capacity,
+    uint8_t *out_strings, uint64_t string_capacity);
+
 ViemStatus viem_core_view_edit_direct_character_batch(ViemCoreHandle handle, ViemViewId view,
     const ViemDirectStyleEditV1 *requests, uint64_t count, ViemCoreOutcomeV1 *out_outcome);
 /* Returns the semantic Off/On/Mixed constants for underline/strike. */
 typedef struct ViemTypographyInfoV1 {
   uint32_t struct_size;
-  /* bit0 semantic bold; bit1 mixed; bit2 theme-default foreground. */
+  /* bit0 semantic bold; bit1 mixed; bit2 theme-default foreground; bit3 mixed script. */
   uint32_t flags;
   uint64_t document_id;
   uint64_t document_revision;
@@ -2454,6 +2477,9 @@ typedef struct ViemTypographyInfoV1 {
   uint32_t base_weight;
   uint32_t slant;
   ViemRgbaV1 foreground;
+  uint32_t script_position;
+  uint32_t has_background;
+  ViemRgbaV1 background;
 } ViemTypographyInfoV1;
 
 /* Zero-capacity query returns BufferTooSmall with exact sizes. All buffers

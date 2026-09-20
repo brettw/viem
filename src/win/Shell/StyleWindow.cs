@@ -233,7 +233,9 @@ internal sealed partial class StyleWindow : Window
         if (selected == null) return;
         string family = sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES));
         var resolved = FontCatalog.Resolve(family) ?? (Family: "Segoe UI", Stretch: FontStretch.Normal);
-        using var format = new CanvasTextFormat { FontFamily = resolved.Family, FontStretch = resolved.Stretch, FontSize = Math.Max(8, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number), WordWrapping = CanvasWordWrapping.Wrap };
+        float size = Math.Max(8, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number);
+        uint script = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION).enum_value;
+        using var format = new CanvasTextFormat { FontFamily = resolved.Family, FontStretch = resolved.Stretch, FontSize = DirectWriteProvider.ScriptSize(size, script), WordWrapping = CanvasWordWrapping.Wrap };
         uint weight = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value;
         if (selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_BOLD).enum_value != 0) weight = Math.Min(1000, weight + 300);
         format.FontWeight = new FontWeight { Weight = (ushort)Math.Clamp(weight, 1, 999) };
@@ -247,9 +249,10 @@ internal sealed partial class StyleWindow : Window
         using var context = new CanvasTextFormat { FontFamily = "Segoe UI", FontSize = 12 };
         var muted = preferences.Theme.Foreground; muted.A = 190;
         drawing.DrawText("Previous paragraph gives the style context.", 20, 20, muted, context);
+        float sampleY = 40 - DirectWriteProvider.ScriptOffset(size, script);
         var background = PreviewColor(VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND);
-        if (background.A > 0) drawing.FillRectangle(20, 40, (float)layout.LayoutBounds.Width, (float)layout.LayoutBounds.Height, background);
-        drawing.DrawTextLayout(layout, 20, 40, PreviewColor(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND));
+        if (background.A > 0) drawing.FillRectangle(20, sampleY, (float)layout.LayoutBounds.Width, (float)layout.LayoutBounds.Height, background);
+        drawing.DrawTextLayout(layout, 20, sampleY, PreviewColor(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND));
         drawing.DrawText("Following paragraph shows spacing and inheritance.", 20, Math.Min(114, 44 + (float)layout.LayoutBounds.Height), muted, context);
     }
 }

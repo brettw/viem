@@ -150,14 +150,14 @@ fn disabling_export_keeps_relative_source_formatting_at_the_configured_size() {
         let resolved =
             DocumentLayoutStyles::semantic_character_at(document.projection(), 0, false).unwrap();
         assert_eq!(resolved.size, 30.);
-        assert_eq!(resolved.baseline_shift, 10.);
+        assert_eq!(resolved.script_position, ScriptPosition::Superscript);
     }
     document.insert(1, "B").unwrap();
     assert_eq!(
         DocumentLayoutStyles::semantic_character_at(document.projection(), 0, false)
             .unwrap()
-            .baseline_shift,
-        10.
+            .script_position,
+        ScriptPosition::Superscript
     );
 }
 
