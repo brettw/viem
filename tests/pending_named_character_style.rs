@@ -161,11 +161,11 @@ fn named_identity_and_sparse_direct_overrides_remain_separate() {
         core.selected_typography(view).unwrap().0.slant,
         FontSlant::Upright
     );
-    assert_eq!(core.selected_typography(view).unwrap().0.size, 22.);
+    assert_eq!(core.selected_typography(view).unwrap().0.size, 12.);
     text(&mut core, view, "y");
     let style = DocumentLayoutStyles::character_at(core.document().projection(), 1, false).unwrap();
     assert_eq!(style.slant, FontSlant::Upright);
-    assert_eq!(style.size, 22.);
+    assert_eq!(style.size, 12.);
 }
 
 #[test]
@@ -371,4 +371,107 @@ fn default_paragraph_typing_in_unstyled_html_keeps_ordinary_source() {
     key(&mut core, view, Key::Escape);
     key(&mut core, view, Key::Char('u'));
     assert_eq!(core.document().source_bytes(), source.as_bytes());
+}
+
+#[test]
+fn pending_style_choice_discards_surrounding_traits_before_normal_insert_or_replace() {
+    for (format, source, named) in [
+        (Format::Html, "<p><span style='font-size:30pt;color:red'><b><sup>word</sup></b></span></p><!--keep-->", "Code"),
+        (Format::Rtf, r"{\rtf1{\stylesheet{\*\cs2\i Accent;}}{\fs60\b\super word}{\*\opaque keep}}", "RtfC2"),
+        (Format::Markdown, "***word***", "Code"),
+    ] {
+        for chosen in [named, ""] {
+            for entry in ['i', 'a', 'R'] {
+                let (mut core, view) = fixture(format, source);
+                let expected = core.document().typing_named_style_at(0, viem_core::document::BoundaryAffinity::Downstream, &chosen.into()).unwrap();
+                assign(&mut core, view, chosen);
+                assert_eq!(core.selected_typography(view).unwrap().0, expected);
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+                key(&mut core, view, Key::Char(entry));
+                let start = core.command_state(view).unwrap().cursor();
+                text(&mut core, view, "XY");
+                for at in start..start + 2 {
+                    assert_eq!(DocumentLayoutStyles::semantic_character_at(core.document().projection(), at, false).unwrap(), expected,
+                        "{format:?} {chosen} {entry}: {:?}", String::from_utf8_lossy(&core.document().source_bytes()));
+                }
+                key(&mut core, view, Key::Escape);
+                key(&mut core, view, Key::Char('u'));
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+            }
+        }
+    }
+}
+
+#[test]
+fn reselecting_pending_style_resets_new_overrides_and_preserves_named_identity() {
+    let (mut core, view) = fixture(Format::Html, "<p><b>word</b></p>");
+    key(&mut core, view, Key::Char('i'));
+    assign(&mut core, view, "Code");
+    core.handle(view, CoreEvent::SetDirectCharacterProperties {
+        expected: core.list_selection_identity(view).unwrap(),
+        values: vec![(StyleProperty::CharacterSize, StylePropertyValue::Float(22.))],
+    }).unwrap();
+    assert_eq!(core.selected_typography(view).unwrap().0.size, 22.);
+    assign(&mut core, view, "Code");
+    assert_eq!(core.selected_typography(view).unwrap().0.size, 14.);
+    assert!(!core.selected_typography(view).unwrap().0.bold);
+    text(&mut core, view, "X");
+    named_at(core.document(), 0..1, "Code");
+    let resolved = DocumentLayoutStyles::semantic_character_at(core.document().projection(), 0, false).unwrap();
+    assert_eq!(resolved.size, 14.);
+    assert!(!resolved.bold);
+}
+
+#[test]
+fn select_replacement_keeps_later_direct_edits_after_a_clean_named_choice() {
+    use viem_core::command::NavigationKey;
+    use viem_core::document::{ParagraphAlignment, ScriptPosition};
+    for chosen in ["Code", ""] {
+        for operation in 0..5 {
+            let source = "<p><span style='color:red;font-size:30pt'><b><sup>word</sup></b></span></p>";
+            let (mut core, view) = fixture(Format::Html, source);
+            key(&mut core, view, Key::ModifiedNavigation { key: NavigationKey::Right, modifiers: 1 });
+            assign(&mut core, view, chosen);
+            let expected = core.list_selection_identity(view).unwrap();
+            let event = match operation {
+                0 => CoreEvent::EditDirectProperty { expected, property: StyleProperty::CharacterSize,
+                    value: Some(StylePropertyValue::Float(21.)) },
+                1 => CoreEvent::SetDirectCharacterProperties { expected, values: vec![(
+                    StyleProperty::CharacterScriptPosition,
+                    StylePropertyValue::ScriptPosition(ScriptPosition::Subscript),
+                )] },
+                2 => CoreEvent::EditDirectProperties { expected, values: vec![
+                    (StyleProperty::CharacterSize, Some(StylePropertyValue::Float(22.))),
+                    (StyleProperty::ParagraphAlignment, Some(StylePropertyValue::ParagraphAlignment(ParagraphAlignment::Center))),
+                ] },
+                3 => CoreEvent::SetSelectionSemanticStyle { expected, style: SemanticInlineStyle::Strong, enabled: true },
+                _ => {
+                    core.handle(view, CoreEvent::EditDirectProperty { expected,
+                        property: StyleProperty::CharacterSize, value: Some(StylePropertyValue::Float(23.)),
+                    }).unwrap();
+                    CoreEvent::EditDirectProperties { expected: core.list_selection_identity(view).unwrap(),
+                        values: vec![(StyleProperty::CharacterSize, None)] }
+                }
+            };
+            core.handle(view, event).unwrap();
+            let expected_style = DocumentLayoutStyles::semantic_character_at(core.document().projection(), 0, false).unwrap();
+            let after_formatting = core.document().source_bytes();
+            let revision = core.document().revision();
+            assert!(core.handle(view, CoreEvent::SetDirectCharacterProperties {
+                expected: core.list_selection_identity(view).unwrap(),
+                values: vec![(StyleProperty::CharacterSize, StylePropertyValue::Float(f32::NAN))],
+            }).is_err());
+            assert_eq!(core.document().revision(), revision);
+            assert_eq!(core.document().source_bytes(), after_formatting);
+            text(&mut core, view, "XY");
+            assert_eq!(core.document().text(), "XYord");
+            for at in 0..2 {
+                assert_eq!(DocumentLayoutStyles::semantic_character_at(core.document().projection(), at, false).unwrap(),
+                    expected_style, "choice={chosen}, operation={operation}");
+            }
+            key(&mut core, view, Key::Escape);
+            key(&mut core, view, Key::Char('u'));
+            assert_eq!(core.document().source_bytes(), after_formatting);
+        }
+    }
 }

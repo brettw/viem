@@ -161,7 +161,7 @@ final class EVAccessibilityIntegrationTests: XCTestCase {
         let view = surface.editorView
 
         view.setAccessibilitySelectedTextRange(NSRange(location: 1, length: 2))
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
         XCTAssertEqual(surface.selectedUTF8Ranges(), [1 ..< 5])
         XCTAssertEqual(view.accessibilitySelectedText(), "😀")
         XCTAssertFalse(view.hasMarkedText())

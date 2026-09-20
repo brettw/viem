@@ -663,7 +663,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             pastePlainText()
         case .delete:
             performInput {
-                if self.isVisualMode {
+                if self.isTextSelectionMode {
+                    _ = try session.sendKey(kind: UInt32(VIEM_KEY_DELETE))
+                } else if self.hasSelection {
                     _ = try self.sendCommandCharacter("d", session: session)
                 } else if self.viewPresentation.mode == UInt32(VIEM_MODE_NORMAL) {
                     _ = try self.sendCommandCharacter("x", session: session)
@@ -674,15 +676,15 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .selectAll:
             performInput { try session.selectAll() }
         case .selectWord:
-            performInput { try self.sendNormalSequence(["v", "i", "w"], session: session) }
+            performInput { try self.selectNativeRange(["v", "i", "w"], sender: sender, session: session) }
         case .selectSentence:
-            performInput { try self.sendNormalSequence(["v", "i", "s"], session: session) }
+            performInput { try self.selectNativeRange(["v", "i", "s"], sender: sender, session: session) }
         case .selectParagraph:
-            performInput { try self.sendNormalSequence(["v", "i", "p"], session: session) }
+            performInput { try self.selectNativeRange(["v", "i", "p"], sender: sender, session: session) }
         case .selectHardLine:
-            performInput { try self.sendNormalSequence(["V"], session: session) }
+            performInput { try self.selectNativeRange(["V"], sender: sender, session: session) }
         case .selectVisualRow:
-            performInput { try self.sendNormalSequence(["g", "0", "v", "g", "$"], session: session) }
+            performInput { try self.selectNativeRange(["g", "0", "v", "g", "$"], sender: sender, session: session) }
         case .find:
             performInput { try self.sendNormalSequence(["/"], session: session) }
         case .findAndReplace:
@@ -694,16 +696,16 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .useSelectionForFind:
             useCurrentSelectionForFind(session: session)
         case .jumpToSelection:
-            guard isVisualMode else { NSSound.beep(); return }
+            guard hasSelection else { NSSound.beep(); return }
             performInput { _ = try session.revealSelection() }
         case .makeUppercase:
-            guard isVisualMode else { NSSound.beep(); return }
+            guard hasSelection else { NSSound.beep(); return }
             performInput { _ = try self.sendCommandCharacter("U", session: session) }
         case .makeLowercase:
-            guard isVisualMode else { NSSound.beep(); return }
+            guard hasSelection else { NSSound.beep(); return }
             performInput { _ = try self.sendCommandCharacter("u", session: session) }
         case .toggleCase:
-            guard isVisualMode || viewPresentation.mode == UInt32(VIEM_MODE_NORMAL) else {
+            guard hasSelection || viewPresentation.mode == UInt32(VIEM_MODE_NORMAL) else {
                 NSSound.beep()
                 return
             }
@@ -837,16 +839,16 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .copy, .copySource, .cut:
             // The core owns the logical Visual selection even when none of
             // its geometry is materialized in the current viewport.
-            EVMenuItemPresentation(isEnabled: isVisualMode)
+            EVMenuItemPresentation(isEnabled: hasSelection)
         case .paste, .pasteAndMatchStyle:
             EVMenuItemPresentation(isEnabled: pasteboard.viemCanReadString())
         case .delete:
             .enabled
         case .makeUppercase, .makeLowercase:
-            EVMenuItemPresentation(isEnabled: isVisualMode)
+            EVMenuItemPresentation(isEnabled: hasSelection)
         case .toggleCase:
             EVMenuItemPresentation(
-                isEnabled: isVisualMode || viewPresentation.mode == UInt32(VIEM_MODE_NORMAL)
+                isEnabled: hasSelection || viewPresentation.mode == UInt32(VIEM_MODE_NORMAL)
             )
         case .wordWrap:
             EVMenuItemPresentation(isEnabled: true, state: wrapEnabled ? .on : .off)
@@ -877,7 +879,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 isEnabled: selectedUTF8Ranges().contains(where: { !$0.isEmpty })
             )
         case .jumpToSelection:
-            EVMenuItemPresentation(isEnabled: isVisualMode)
+            EVMenuItemPresentation(isEnabled: hasSelection)
         case .zoomIn:
             EVMenuItemPresentation(
                 isEnabled: ((try? session?.adjacentZoomScale(from: zoomScale, increasing: true)) ?? zoomScale) != zoomScale
@@ -926,14 +928,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
     }
 
-    var isVisualMode: Bool {
-        switch viewPresentation.mode {
-        case UInt32(VIEM_MODE_VISUAL_CHARACTER), UInt32(VIEM_MODE_VISUAL_LINE), UInt32(VIEM_MODE_VISUAL_BLOCK):
-            true
-        default:
-            false
-        }
-    }
+    var hasSelection: Bool { EVSelectionModes.hasSelection(viewPresentation.mode) }
+    var isTextSelectionMode: Bool { EVSelectionModes.isTextSelection(viewPresentation.mode) }
 
     func directParagraphEdit(for command: EVMenuCommand) -> (EVStyleProperty, EVStyleValue?)? {
         switch command {
@@ -953,6 +949,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     var isVisualBlockMode: Bool {
         viewPresentation.mode == UInt32(VIEM_MODE_VISUAL_BLOCK)
+            || viewPresentation.mode == UInt32(VIEM_MODE_SELECT_BLOCK)
+            || viewPresentation.mode == UInt32(VIEM_MODE_SELECTION_BLOCK)
     }
 
     var wrapEnabled: Bool {
@@ -1088,7 +1086,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     func selectedUTF8Ranges() -> [Range<Int>] {
-        guard isVisualMode,
+        guard hasSelection,
               let visualSelection,
               visualSelection.info.identity.kind != UInt32(VIEM_VISUAL_SELECTION_KIND_NONE)
         else { return [] }
@@ -1134,12 +1132,12 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     private func copyOrCutSelection(cut: Bool) {
-        guard isVisualMode, let session else { NSSound.beep(); return }
+        guard hasSelection, let session else { NSSound.beep(); return }
         performInput {
             // Native Copy and Cut preserve the selected text exactly, including an
             // absent final newline. The core's internal linewise register can
             // still retain its Vim shape for subsequent register commands.
-            if viewPresentation.mode == UInt32(VIEM_MODE_VISUAL_LINE),
+            if [UInt32(VIEM_MODE_VISUAL_LINE), UInt32(VIEM_MODE_SELECT_LINE), UInt32(VIEM_MODE_SELECTION_LINE)].contains(viewPresentation.mode),
                let range = selectedUTF8Range(), let snapshot = formattedSnapshot {
                 let json = try backend.clipboardFragmentJSON(in: range, snapshot: snapshot)
                 nativeCopyRepresentations = try EVClipboardFragment.decode(json).representations(json: json)
@@ -1334,10 +1332,39 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
     }
 
+    func selectFromPointer(_ event: NSEvent, returningTo mode: UInt32) {
+        guard let session else { return }
+        performInput { try self.selectNativeRange(event.clickCount >= 3 ? ["V"] : ["v", "i", "w"], sender: event, session: session, returningTo: mode) }
+    }
+
+    private func selectNativeRange(_ characters: [Character], sender: Any?, session: EVCoreViewSession, returningTo mode: UInt32? = nil) throws {
+        let returnMode = mode ?? viewPresentation.mode
+        let before = viewPresentation
+        if [UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE)].contains(before.mode) {
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+            if before.document_revision == viewPresentation.document_revision {
+                var point = ViemLayoutCaretPointV1()
+                point.document_revision = before.document_revision
+                point.text_offset = before.cursor_utf8_offset
+                point.affinity = before.cursor_affinity
+                _ = try session.placeCursor(point, extendSelection: false)
+            }
+        }
+        try sendNormalSequence(characters, session: session)
+        let mouse = (sender as? NSEvent).map { [.leftMouseDown, .leftMouseDragged].contains($0.type) } == true
+        _ = try session.setSelectionOrigin(mouse ? UInt32(VIEM_SELECTION_ORIGIN_MOUSE) : UInt32(VIEM_SELECTION_ORIGIN_KEY), returningTo: returnMode)
+    }
+
     private func sendCommandCharacter(
         _ character: Character,
         session: EVCoreViewSession
     ) throws -> ViemCoreOutcomeV1 {
+        // Native menu actions are commands even when ordinary typed characters
+        // replace a Select-mode range. This also keeps synthesized viw working
+        // when selectmode includes cmd.
+        if EVSelectionModes.isTextSelection(session.lastOutcome.mode) {
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: 111)
+        }
         guard character.unicodeScalars.count == 1,
               let scalar = character.unicodeScalars.first
         else {
@@ -1469,6 +1496,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case UInt32(VIEM_MODE_VISUAL_CHARACTER): "VISUAL"
         case UInt32(VIEM_MODE_VISUAL_LINE): "VISUAL LINE"
         case UInt32(VIEM_MODE_VISUAL_BLOCK): "VISUAL BLOCK"
+        case UInt32(VIEM_MODE_SELECTION_CHARACTER), UInt32(VIEM_MODE_SELECTION_LINE), UInt32(VIEM_MODE_SELECTION_BLOCK): "SELECTION"
+        case UInt32(VIEM_MODE_SELECT_CHARACTER): "SELECT"
+        case UInt32(VIEM_MODE_SELECT_LINE): "SELECT LINE"
+        case UInt32(VIEM_MODE_SELECT_BLOCK): "SELECT BLOCK"
         case UInt32(VIEM_MODE_COMMAND_LINE): "COMMAND"
         default: "NORMAL"
         }
@@ -1580,6 +1611,9 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
                 return try fragment.representations(json: json)
             }
             return EVClipboardRepresentations(plainText: write.plainText)
+        }
+        for effect in batch.exEffects {
+            try EVSelectionPreferences.apply(effect.options, from: backend)
         }
         for content in representations {
             guard pasteboard.viemWrite(content) else {
@@ -1761,6 +1795,9 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         case UInt32(VIEM_EX_OPTION_CONTINUE_COMMENTS_ON_OPEN_LINE): name = "continuecommentsonopenline"
         case UInt32(VIEM_EX_OPTION_LIST): name = "list"
         case UInt32(VIEM_EX_OPTION_LISTCHARS): name = "listchars"
+        case UInt32(VIEM_EX_OPTION_AUTOSELECT): name = "autoselect"
+        case UInt32(VIEM_EX_OPTION_KEYMODEL): name = "keymodel"
+        case UInt32(VIEM_EX_OPTION_SELECTMODE): name = "selectmode"
 
         default: name = "option\(option.name)"
         }

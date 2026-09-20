@@ -490,7 +490,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private func customCaretDamageRect(_ snapshot: EVLayoutExport) -> NSRect? {
         guard let surface, surface.viewPresentation.mode != UInt32(VIEM_MODE_COMMAND_LINE),
-              !(isCaretActive && surface.viewPresentation.mode == UInt32(VIEM_MODE_INSERT))
+              !(isCaretActive && EVSelectionModes.hasInsertionCaret(surface.viewPresentation.mode))
         else { return nil }
         let geometry = caretItemGeometry(snapshot)
         guard var rect = geometry.rect else { return nil }
@@ -559,7 +559,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
         let presentation = surface.viewPresentation
         guard isCustomCaretMode(presentation.mode)
-                || (presentation.mode == UInt32(VIEM_MODE_INSERT) && !isCaretActive) else {
+                || (EVSelectionModes.hasInsertionCaret(presentation.mode) && !isCaretActive) else {
             lastCustomCaretState = nil
             customCaretBlinkController.stop()
             return
@@ -655,7 +655,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     override func accessibilitySelectedText() -> String? {
         guard let surface else { return nil }
         guard let context = accessibilityLayoutContext() else { return nil }
-        if isVisualMode(context.presentation.mode) {
+        if EVSelectionModes.hasSelection(context.presentation.mode) {
             guard let selection = accessibilitySelection(in: context),
                   let ranges = accessibilityUTF8Ranges(in: selection)
             else { return nil }
@@ -685,7 +685,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     override func accessibilitySelectedTextRanges() -> [NSValue]? {
         guard let surface else { return nil }
         guard let context = accessibilityLayoutContext() else { return nil }
-        if isVisualMode(context.presentation.mode) {
+        if EVSelectionModes.hasSelection(context.presentation.mode) {
             guard let selection = accessibilitySelection(in: context),
                   let ranges = accessibilityUTF8Ranges(in: selection)
             else { return nil }
@@ -986,7 +986,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         in context: EVAccessibilityLayoutContext
     ) -> EVVisualSelectionExport? {
         guard let surface else { return nil }
-        guard isVisualMode(context.presentation.mode),
+        guard EVSelectionModes.hasSelection(context.presentation.mode),
               let selection = try? surface.session?.visualSelectionExport(),
               selection.info.identity.kind != UInt32(VIEM_VISUAL_SELECTION_KIND_NONE),
               selection.info.identity.layout.isSameLayout(as: context.snapshot.info.identity)
@@ -1029,18 +1029,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         return pieces.joined()
     }
 
-    private func isVisualMode(_ mode: UInt32) -> Bool {
-        mode == UInt32(VIEM_MODE_VISUAL_CHARACTER)
-            || mode == UInt32(VIEM_MODE_VISUAL_LINE)
-            || mode == UInt32(VIEM_MODE_VISUAL_BLOCK)
-    }
-
     private func accessibilityReplacementTarget() -> Range<Int>? {
         guard let surface else { return nil }
         guard surface.compositionOverlay == nil else { return nil }
         guard let context = accessibilityLayoutContext() else { return nil }
         let target: Range<Int>
-        if isVisualMode(context.presentation.mode) {
+        if EVSelectionModes.hasSelection(context.presentation.mode) {
             guard let selection = accessibilitySelection(in: context),
                   let ranges = accessibilityUTF8Ranges(in: selection),
                   ranges.count == 1
@@ -1065,6 +1059,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
               let session = surface.session
         else { return false }
 
+        // Reasserting the same native range must preserve its exact core kind
+        // and direction, including a linewise selection ending at a hard break.
+        if surface.selectedUTF8Ranges() == [range] { return true }
+
         do {
             let start = try session.caretGeometry(
                 offset: UInt64(range.lowerBound),
@@ -1075,10 +1073,21 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             if range.isEmpty {
                 end = nil
             } else {
-                guard let activeOffset = finalGraphemeStart(in: range) else { return false }
+                // AX supplies a half-open range. Pointer Select ranges use
+                // insertion boundaries; optional Vim Visual ranges include
+                // the final grapheme instead.
+                let autoselect = try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_AUTOSELECT), from: surface.backend)
+                let activeOffset: Int
+                let nativeSelection = autoselect == "1"
+                if nativeSelection {
+                    activeOffset = range.upperBound
+                } else {
+                    guard let final = finalGraphemeStart(in: range) else { return false }
+                    activeOffset = final
+                }
                 end = try session.caretGeometry(
                     offset: UInt64(activeOffset),
-                    affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM),
+                    affinity: UInt32(nativeSelection ? VIEM_BOUNDARY_AFFINITY_UPSTREAM : VIEM_BOUNDARY_AFFINITY_DOWNSTREAM),
                     in: context.snapshot.info
                 ).point
             }
@@ -1453,6 +1462,13 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             surface.perform(menuCommand: key == "=" ? .zoomIn : .zoomOut, sender: event)
             return
         }
+        if !compositionActive, surface.commandLine?.prompt == nil,
+           let navigation = navigationInput(for: event) {
+            surface.performInput {
+                _ = try session.sendKey(kind: navigation.kind, modifiers: navigation.modifiers)
+            }
+            return
+        }
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command) {
             guard surface.acceptCompletionForNativeInput() else { return }
             super.keyDown(with: event)
@@ -1558,7 +1574,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             NSSound.beep()
             return
         }
-        surface.performInput { _ = try session.sendKey(kind: kind) }
+        let modifiers = NSStringFromSelector(selector).contains("AndModifySelection")
+            ? UInt32(VIEM_KEY_MODIFIER_SHIFT) : 0
+        surface.performInput { _ = try session.sendKey(kind: kind, modifiers: modifiers) }
         reconcileMarkedTextWithCore()
     }
 
@@ -1602,7 +1620,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
         let mode = surface.viewPresentation.mode
         switch mode {
-        case UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE):
+        case UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE),
+             UInt32(VIEM_MODE_SELECT_CHARACTER), UInt32(VIEM_MODE_SELECT_LINE),
+             UInt32(VIEM_MODE_SELECTION_CHARACTER), UInt32(VIEM_MODE_SELECTION_LINE):
             let explicitReplacement: Range<Int>?
             if replacementRange.location == NSNotFound {
                 explicitReplacement = nil
@@ -1619,6 +1639,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             } else {
                 surface.performInput { _ = try session.sendText(value) }
             }
+
+        case UInt32(VIEM_MODE_SELECT_BLOCK), UInt32(VIEM_MODE_SELECTION_BLOCK):
+            guard !value.isEmpty else { return }
+            surface.performInput { _ = try session.sendText(value) }
 
         case UInt32(VIEM_MODE_COMMAND_LINE):
             if replacementRange.location == NSNotFound {
@@ -1703,10 +1727,44 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
+    /// Normalize platform navigation before the portable keymodel policy runs.
+    /// Home/End without Control still go through AppKit's user key bindings.
+    private func navigationInput(for event: NSEvent) -> (kind: UInt32, modifiers: UInt32)? {
+        let flags = event.modifierFlags
+        let kind: UInt32
+        switch event.keyCode {
+        case 123:
+            kind = UInt32(flags.contains(.command) ? VIEM_KEY_HOME
+                : !flags.intersection([.option, .control]).isEmpty ? VIEM_KEY_WORD_LEFT : VIEM_KEY_LEFT)
+        case 124:
+            kind = UInt32(flags.contains(.command) ? VIEM_KEY_END
+                : !flags.intersection([.option, .control]).isEmpty ? VIEM_KEY_WORD_RIGHT : VIEM_KEY_RIGHT)
+        case 126:
+            kind = UInt32(flags.contains(.command) ? VIEM_KEY_DOCUMENT_START : VIEM_KEY_UP)
+        case 125:
+            kind = UInt32(flags.contains(.command) ? VIEM_KEY_DOCUMENT_END : VIEM_KEY_DOWN)
+        case 115 where flags.contains(.control): kind = UInt32(VIEM_KEY_DOCUMENT_START)
+        case 119 where flags.contains(.control): kind = UInt32(VIEM_KEY_DOCUMENT_END)
+        case 116: kind = UInt32(VIEM_KEY_PAGE_UP)
+        case 121: kind = UInt32(VIEM_KEY_PAGE_DOWN)
+        default: return nil
+        }
+        var modifiers: UInt32 = 0
+        if flags.contains(.shift) { modifiers |= UInt32(VIEM_KEY_MODIFIER_SHIFT) }
+        if flags.contains(.control) { modifiers |= UInt32(VIEM_KEY_MODIFIER_CONTROL) }
+        if flags.contains(.option) { modifiers |= UInt32(VIEM_KEY_MODIFIER_ALT) }
+        if flags.contains(.command) { modifiers |= UInt32(VIEM_KEY_MODIFIER_COMMAND) }
+        return (kind, modifiers)
+    }
+
     private func keyKind(for selector: Selector) -> UInt32? {
-        switch selector {
+        let navigation = NSSelectorFromString(NSStringFromSelector(selector)
+            .replacingOccurrences(of: "AndModifySelection", with: ""))
+        return switch navigation {
         case #selector(moveLeft(_:)), #selector(moveBackward(_:)): UInt32(VIEM_KEY_LEFT)
         case #selector(moveRight(_:)), #selector(moveForward(_:)): UInt32(VIEM_KEY_RIGHT)
+        case #selector(moveWordLeft(_:)), #selector(moveWordBackward(_:)): UInt32(VIEM_KEY_WORD_LEFT)
+        case #selector(moveWordRight(_:)), #selector(moveWordForward(_:)): UInt32(VIEM_KEY_WORD_RIGHT)
         case #selector(moveUp(_:)): UInt32(VIEM_KEY_UP)
         case #selector(moveDown(_:)): UInt32(VIEM_KEY_DOWN)
         case #selector(moveToBeginningOfLine(_:)), #selector(moveToBeginningOfParagraph(_:)): UInt32(VIEM_KEY_HOME)
@@ -1852,11 +1910,20 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         stopDragAutoscroll()
         window?.makeFirstResponder(self)
         customCaretBlinkController.restartAfterActivity()
+        let returnMode = surface?.viewPresentation.mode ?? UInt32(VIEM_MODE_NORMAL)
+        if event.clickCount >= 2, let surface, let session = surface.session,
+           [UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE)].contains(surface.viewPresentation.mode) {
+            if compositionActive {
+                cancelActiveMarkedText(using: session, discardInputContext: true)
+            }
+            // Escape can move an insertion caret to the preceding grapheme.
+            // Normalize before hit testing so word/line selection uses the
+            // pointer location rather than that preceding character.
+            surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
+        }
         placeCursor(for: event, extending: event.modifierFlags.contains(.shift))
-        if event.clickCount >= 3 {
-            surface?.perform(menuCommand: .selectHardLine, sender: event)
-        } else if event.clickCount == 2 {
-            surface?.perform(menuCommand: .selectWord, sender: event)
+        if event.clickCount >= 2 {
+            surface?.selectFromPointer(event, returningTo: returnMode)
         }
     }
 
@@ -1995,7 +2062,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 || markedRangeValue().map { $0 == replacementRange } == true)
         let mode = surface.viewPresentation.mode
         switch mode {
-        case UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE):
+        case UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE),
+             UInt32(VIEM_MODE_SELECT_CHARACTER), UInt32(VIEM_MODE_SELECT_LINE),
+             UInt32(VIEM_MODE_SELECTION_CHARACTER), UInt32(VIEM_MODE_SELECTION_LINE):
             let target: Range<Int>
             if keepsCurrentTarget,
                case let .document(documentTarget)? = markedTextTarget
@@ -2056,7 +2125,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         case UInt32(VIEM_MODE_NORMAL),
              UInt32(VIEM_MODE_VISUAL_CHARACTER),
              UInt32(VIEM_MODE_VISUAL_LINE),
-             UInt32(VIEM_MODE_VISUAL_BLOCK):
+             UInt32(VIEM_MODE_VISUAL_BLOCK), UInt32(VIEM_MODE_SELECT_BLOCK), UInt32(VIEM_MODE_SELECTION_BLOCK):
             let target: EVCommandInputMarkedTarget
             if keepsCurrentTarget,
                case let .commandInput(existing)? = markedTextTarget
@@ -2396,8 +2465,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 let presentation = try session.presentation()
                 guard session.hasActiveComposition,
                       presentation.mode == documentTarget.mode,
-                      documentTarget.mode == UInt32(VIEM_MODE_INSERT)
-                        || documentTarget.mode == UInt32(VIEM_MODE_REPLACE)
+                      EVSelectionModes.canCompose(documentTarget.mode)
                 else { return }
                 try self.withoutInputContextDiscard {
                     _ = try session.commitComposition(value)
@@ -2778,8 +2846,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         case let .document(documentTarget):
             remainsValid = surface.session?.hasActiveComposition == true
                 && surface.viewPresentation.mode == documentTarget.mode
-                && (documentTarget.mode == UInt32(VIEM_MODE_INSERT)
-                    || documentTarget.mode == UInt32(VIEM_MODE_REPLACE))
+                && EVSelectionModes.canCompose(documentTarget.mode)
         case let .commandLine(commandLineTarget):
             remainsValid = surface.session?.hasActiveComposition != true
                 && surface.viewPresentation.mode == UInt32(VIEM_MODE_COMMAND_LINE)
@@ -3194,7 +3261,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     static func inactiveCaretRect(_ rect: NSRect, mode: UInt32) -> NSRect {
-        if mode == UInt32(VIEM_MODE_INSERT) {
+        if EVSelectionModes.hasInsertionCaret(mode) {
             return NSRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height)
         }
         if mode == UInt32(VIEM_MODE_REPLACE) {
@@ -3208,7 +3275,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         let mode = surface.viewPresentation.mode
         let active = isCaretActive
         if mode == UInt32(VIEM_MODE_COMMAND_LINE) { return }
-        if active && mode == UInt32(VIEM_MODE_INSERT) { return }
+        if active && EVSelectionModes.hasInsertionCaret(mode) { return }
 
         let customPresentation: EVCustomCaretPresentation
         if active {
@@ -3376,7 +3443,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
         let mode = surface.viewPresentation.mode
         let active = isCaretActive
-        guard mode == UInt32(VIEM_MODE_INSERT), active,
+        guard EVSelectionModes.hasInsertionCaret(mode), active,
               var rect = caretRect(
                   offset: presentationCaretUTF8Offset,
                   affinity: presentationCaretAffinity,

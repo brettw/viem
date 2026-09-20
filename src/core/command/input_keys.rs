@@ -50,6 +50,11 @@ impl CommandInterpreter {
     }
 
     pub(super) fn normalized_input_key(&self, key: Key) -> Key {
+        if self.mode == Mode::CommandLine {
+            if let Key::ModifiedNavigation { key, .. } = key { return key.key(); }
+        }
+        if self.is_native_selection() && key == Key::Tab { return key; }
+        if self.is_text_selection() && NavigationKey::from_key(key).is_some() { return key; }
         if self.literal_input_pending() {
             return key;
         }
@@ -244,6 +249,9 @@ mod tests {
             ] {
                 let run = |last| {
                     let mut core = Core::new(Document::new("abc def\n  second\n  third"));
+                    // Native stopsel deliberately distinguishes an arrow from
+                    // its Vim control alias; this test isolates alias motions.
+                    assert!(core.set_selection_option(true, ""));
                     let view = core.add_view(MockTextMeasurementProvider::new(), 35., 150.);
                     for input in [Key::Char('j'), Key::Char('l')]
                         .into_iter()

@@ -51,7 +51,7 @@ import XCTest
                 view.perform(menuCommand: .selectAll, sender: nil)
                 XCTAssertEqual(view.selectedUTF8Ranges(), [0..<text.utf8.count], "\(type) \(mode)")
                 XCTAssertEqual(view.editorView.accessibilitySelectedText(), text)
-                XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
+                XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
                 view.perform(menuCommand: .copy, sender: nil)
                 let expectedCopy = (type == EVDocument.markdownSourceType || type == EVDocument.htmlSourceType) ? source : text
                 XCTAssertEqual(pasteboard.text, expectedCopy, "\(type) \(mode)")
@@ -89,7 +89,10 @@ import XCTest
                 view.perform(menuCommand: .selectAll, sender: nil)
                 view.perform(menuCommand: .delete, sender: nil)
                 XCTAssertEqual(try backend.formattedText(), "")
+                XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
                 let cleared = try backend.serializedSource(typeName: type)
+                // Keep deletion and subsequent typing in separate undo groups.
+                _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
                 _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 105)
                 _ = try session.sendText("plain")
                 _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))

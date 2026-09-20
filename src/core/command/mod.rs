@@ -8,6 +8,9 @@ pub mod argument_list;
 pub mod caret;
 pub mod clipboard;
 pub mod composition;
+mod selection;
+use selection::SelectionBehavior;
+pub use selection::{NavigationKey, SelectionOptions, SelectionOrigin};
 pub mod completion;
 pub mod ex;
 mod ex_addresses;
@@ -194,6 +197,8 @@ pub enum Key {
     Ctrl(char),
     /// Function key 1..=35; modifiers are Shift=1, Control=2, Alt=4, Command=8.
     Function { number: u8, modifiers: u8 },
+    /// Native navigation with Shift/Control/Alt/Command modifier bits.
+    ModifiedNavigation { key: NavigationKey, modifiers: u8 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -684,6 +689,7 @@ struct FindState {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct VisualMemory {
+    exclusive: bool,
     mode: Mode,
     anchor: usize,
     active: usize,
@@ -1257,6 +1263,7 @@ pub(crate) struct BufferCommandState {
     ex_state: ExExecutionState,
     fileformats: Vec<FileFormat>,
     search_options: search_regex::SearchOptions,
+    pub(crate) selection_options: SelectionOptions,
     search_highlight_suppressed: bool,
     last_search: Option<(SearchDirection, String)>,
     last_repeat: Option<RepeatAction>,
@@ -1274,6 +1281,15 @@ pub struct CommandInterpreter {
     mapping_pending: Vec<Key>,
     mapping_suppressed: bool,
     mode: Mode,
+    selection_behavior: SelectionBehavior,
+    select_visual_return: SelectionBehavior,
+    selection_exclusive: bool,
+    selection_return_mode: Mode,
+    select_register_pending: bool,
+    select_delete_register: Option<char>,
+    select_visual_once: bool,
+    select_visual_just_started: bool,
+    select_visual_yanked: bool,
     cursor: usize,
     position_revision: Option<Revision>,
     boundary_affinity: BoundaryAffinity,
@@ -1313,6 +1329,7 @@ pub struct CommandInterpreter {
     visual_source_anchor: Option<crate::document::SourcePoint>,
     fileformats: Vec<FileFormat>,
     search_options: search_regex::SearchOptions,
+    selection_options: SelectionOptions,
     search_highlight_suppressed: bool,
     last_search: Option<(SearchDirection, String)>,
     last_repeat: Option<RepeatAction>,
@@ -1405,6 +1422,15 @@ impl CommandInterpreter {
             mapping_pending: Vec::new(),
             mapping_suppressed: false,
             mode: Mode::Normal,
+            selection_behavior: SelectionBehavior::Visual,
+            select_visual_return: SelectionBehavior::Select,
+            selection_exclusive: false,
+            selection_return_mode: Mode::Normal,
+            select_register_pending: false,
+            select_delete_register: None,
+            select_visual_once: false,
+            select_visual_just_started: false,
+            select_visual_yanked: false,
             cursor: 0,
             position_revision: None,
             boundary_affinity: BoundaryAffinity::Downstream,
@@ -1437,6 +1463,7 @@ impl CommandInterpreter {
             visual_source_anchor: None,
             fileformats: vec![FileFormat::Unix, FileFormat::Dos],
             search_options: search_regex::SearchOptions::default(),
+            selection_options: SelectionOptions::default(),
             search_highlight_suppressed: false,
             last_search: None,
             last_repeat: None,
@@ -1490,6 +1517,7 @@ impl CommandInterpreter {
             ex_state: self.ex_state.clone(),
             fileformats: self.fileformats.clone(),
             search_options: self.search_options,
+            selection_options: self.selection_options.clone(),
             search_highlight_suppressed: self.search_highlight_suppressed,
             last_search: self.last_search.clone(),
             last_repeat: self.last_repeat.clone(),
@@ -1510,6 +1538,7 @@ impl CommandInterpreter {
         self.ex_state.clone_from(&state.ex_state);
         self.fileformats.clone_from(&state.fileformats);
         self.search_options = state.search_options;
+        self.selection_options = state.selection_options.clone();
         self.search_highlight_suppressed = state.search_highlight_suppressed;
         self.last_search.clone_from(&state.last_search);
         self.last_repeat.clone_from(&state.last_repeat);
@@ -1960,6 +1989,7 @@ impl CommandInterpreter {
             && before.visual_anchor.is_some()
             && self.last_visual
                 == before.visual_anchor.map(|anchor| VisualMemory {
+                    exclusive: before.selection_exclusive,
                     mode: before.mode,
                     anchor,
                     active: before.cursor,
@@ -2124,11 +2154,15 @@ impl CommandInterpreter {
         clipboard: Option<&ClipboardCommandContext>,
     ) -> bool {
         if self.substitute_confirmation.is_some() || self.mapping_applies(event) { return false; }
+        if self.is_text_selection() && self.mode == Mode::VisualBlock { return true; }
+        if matches!(self.pending, Pending::G { .. }) && matches!(event, InputEvent::Key(Key::Ctrl('h' | 'H'))) { return true; }
         let normalized = match event {
             InputEvent::Key(key) => Some(InputEvent::Key(self.normalized_input_key(*key))),
             InputEvent::Text(_) => None,
         };
         let event = normalized.as_ref().unwrap_or(event);
+        let navigation_event = match event { InputEvent::Key(Key::ModifiedNavigation { key, .. }) => Some(InputEvent::Key(key.key())), _ => None };
+        let event = navigation_event.as_ref().unwrap_or(event);
         if self.is_cancel_input(event) || self.is_register_cancel_input(event) { return false; }
         if self.insert_control_g_pending() { return false; }
         if self.handles_literal_input(event) { return false; }
@@ -2711,6 +2745,9 @@ impl CommandInterpreter {
                 Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock
             ) {
                 self.visual_anchor = Some(self.cursor);
+                self.selection_return_mode = self.mode;
+                self.set_selection_origin(SelectionOrigin::Mouse);
+                self.selection_exclusive = self.selection_behavior == SelectionBehavior::Native;
             }
             self.mode = Mode::VisualCharacter;
         } else {
@@ -2721,9 +2758,11 @@ impl CommandInterpreter {
                 self.mode = Mode::Normal;
             }
             self.visual_anchor = None;
+            self.selection_behavior = SelectionBehavior::Visual;
+            self.selection_exclusive = false;
         }
 
-        let (cursor, affinity) = if matches!(self.mode, Mode::Insert | Mode::Replace) {
+        let (cursor, affinity) = if matches!(self.mode, Mode::Insert | Mode::Replace) || self.is_text_selection() {
             (offset, affinity)
         } else {
             let cursor = normalize_normal_cursor_document(document, &lines, offset);
@@ -2767,6 +2806,8 @@ impl CommandInterpreter {
         self.cursor = end;
         self.boundary_affinity = BoundaryAffinity::Upstream;
         self.visual_to_line_end = false;
+        self.selection_exclusive = true;
+        self.set_selection_origin(SelectionOrigin::Key);
         Ok(())
     }
 
@@ -2888,11 +2929,16 @@ impl CommandInterpreter {
         let edit_line_edge = matches!(self.mode, Mode::Insert | Mode::Replace)
             && matches!(event, InputEvent::Key(Key::Home | Key::End));
         self.record_event(&event);
-        match self.dispatch_event(document, event) {
+        let result = match self.handle_selection_input(document, &event, None)? {
+            Some(output) => Ok(output),
+            None => self.dispatch_event(document, event),
+        };
+        match result {
             Ok(mut output) => {
                 if !edit_line_edge {
                     self.finish_non_layout_dispatch(&output);
                 }
+                self.finish_select_visual_once(&output);
                 self.finish_insert_normal_once(document, &mut output);
                 self.finish_explicit_register_prefix(&output);
                 self.position_revision = Some(document.revision());
@@ -3061,7 +3107,7 @@ impl CommandInterpreter {
             });
         }
 
-        if self.substitute_confirmation.is_some() || self.mapping_applies(&event) {
+        if self.substitute_confirmation.is_some() || self.mapping_applies(&event) || self.selection_input_requires_legacy(&event) {
             return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
         }
         let event = self.normalized_input_event(event);
@@ -3929,6 +3975,10 @@ impl CommandInterpreter {
         if self.substitute_confirmation.is_some() {
             return Ok(self.handle_substitute_confirmation(document, event));
         }
+        if let Some(output) = self.handle_selection_input(document, &event, Some(context))? {
+            self.finish_select_visual_once(&output);
+            return Ok(output);
+        }
         // The layout is authoritative for the current view's wrap setting.
         // Keeping this synchronized makes `:set wrap?` accurate even when the
         // host changed wrapping outside the Ex command line.
@@ -3954,6 +4004,7 @@ impl CommandInterpreter {
         }
         if let InputEvent::Key(key) = event {
             if let Some(mut output) = self.try_handle_layout_key(document, key, context)? {
+                self.finish_select_visual_once(&output);
                 self.finish_insert_normal_once(document, &mut output);
                 return Ok(output);
             }
@@ -5581,6 +5632,9 @@ impl CommandInterpreter {
             }
         };
         self.mode = Mode::VisualBlock;
+        self.set_selection_origin(SelectionOrigin::Command);
+        self.selection_exclusive = false;
+        self.selection_return_mode = Mode::Normal;
         self.visual_to_line_end = false;
         self.visual_anchor = None;
         self.visual_block = Some(selection);
@@ -7393,6 +7447,12 @@ impl CommandInterpreter {
             Operator::Yank => self.yank_register(register, selected),
             _ => {}
         }
+        if operator == Operator::Yank && self.select_visual_once {
+            // A native copy reads this exact rectangle. Keep both persistent
+            // endpoints and its current geometry for the return to Select.
+            self.remember_visual_block();
+            return Ok(CommandOutput { mode_changed: true, ..CommandOutput::complete() });
+        }
         self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
             target.min(document.projection().text_tree().byte_len()),
         );
@@ -7521,6 +7581,7 @@ impl CommandInterpreter {
     fn visual_block_memory(&self) -> Option<VisualMemory> {
         if let Some(selection) = self.visual_block.as_ref() {
             return Some(VisualMemory {
+                exclusive: false,
                 mode: Mode::VisualBlock,
                 anchor: selection.anchor.text_offset,
                 active: selection.active.text_offset,
@@ -7535,6 +7596,7 @@ impl CommandInterpreter {
         }
         let selection = self.active_visual_block?;
         Some(VisualMemory {
+            exclusive: false,
             mode: Mode::VisualBlock,
             anchor: selection.anchor.offset(),
             active: selection.active.offset(),
@@ -7586,6 +7648,8 @@ impl CommandInterpreter {
             active_position,
         );
         self.mode = mode;
+        self.set_selection_origin(SelectionOrigin::Command);
+        self.selection_exclusive = false;
         self.visual_to_line_end = false;
         self.visual_anchor = Some(anchor);
         self.cursor = active;
@@ -7611,6 +7675,7 @@ impl CommandInterpreter {
     ) -> CommandOutput {
         if memory.mode != Mode::VisualBlock {
             self.mode = memory.mode;
+            self.selection_exclusive = memory.exclusive;
             self.visual_to_line_end = memory.to_line_end;
             self.visual_anchor = Some(normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
                 memory.anchor.min(document.projection().text_tree().byte_len()),
@@ -7716,6 +7781,7 @@ impl CommandInterpreter {
             self.visual_block_memory()
         } else {
             self.visual_anchor.map(|anchor| VisualMemory {
+                exclusive: self.selection_exclusive,
                 mode: self.mode,
                 anchor,
                 active: self.cursor,
@@ -8243,6 +8309,7 @@ impl CommandInterpreter {
             return self.handle_insert_control_key(document, key);
         }
         if key == Key::SelectAll {
+            let return_mode = self.mode;
             let mut output = if self.visual_block_insert.is_some() {
                 self.finish_visual_block_insert(document)?
             } else if matches!(self.mode, Mode::Insert | Mode::Replace)
@@ -8256,6 +8323,7 @@ impl CommandInterpreter {
                 return Ok(output);
             }
             self.select_all(document)?;
+            self.selection_return_mode = if matches!(return_mode, Mode::Insert | Mode::Replace) { return_mode } else { Mode::Normal };
             output.mode_changed = true;
             output.cursor_moved = true;
             return Ok(output);
@@ -8511,6 +8579,11 @@ impl CommandInterpreter {
         register: Option<char>,
     ) -> Result<CommandOutput, DocumentError> {
         match key {
+            Key::Char('h' | 'H') => {
+                let output = self.enter_visual(document, if key == Key::Char('H') { Mode::VisualLine } else { Mode::VisualCharacter }, count, false);
+                self.selection_behavior = SelectionBehavior::Select;
+                Ok(output)
+            }
             Key::Char('j' | 'k' | '0' | '^' | '$') => Ok(layout_required("visual-row motion")),
             Key::Char('J') => self.join_lines(document, count, false),
             Key::Char('p') => {
@@ -9346,7 +9419,7 @@ impl CommandInterpreter {
             let start = anchor.min(self.cursor);
             let high = anchor.max(self.cursor);
             MotionExtent {
-                range: start..lines.next_grapheme_boundary(high).unwrap_or(high),
+                range: start..if self.selection_exclusive { high } else { lines.next_grapheme_boundary(high).unwrap_or(high) },
                 kind: MotionKind::Characterwise,
             }
         }
@@ -9402,6 +9475,11 @@ impl CommandInterpreter {
     }
 
     fn visual_repeat_shape(&self, document: &Document) -> VisualRepeatShape {
+        if self.selection_exclusive && self.mode == Mode::VisualCharacter {
+            let range = self.visual_extent(document).range;
+            let last = document.hard_line_snapshot().previous_grapheme_boundary(range.end).unwrap_or(range.start).max(range.start);
+            return Self::visual_repeat_shape_for(document, self.mode, range.start, last, self.visual_to_line_end);
+        }
         Self::visual_repeat_shape_for(
             document,
             self.mode,
@@ -9571,6 +9649,7 @@ impl CommandInterpreter {
             return Ok(output);
         }
         let remembered = self.visual_anchor.map(|anchor| VisualMemory {
+            exclusive: self.selection_exclusive,
             mode: self.mode,
             anchor,
             active: self.cursor,
@@ -9603,6 +9682,7 @@ impl CommandInterpreter {
             return Ok(output);
         }
         if operator == Operator::Yank {
+            self.select_visual_yanked = self.select_visual_once;
             self.cursor = visual_yank_target;
             output.cursor_moved = self.cursor != cursor_before;
         }
@@ -9721,6 +9801,7 @@ impl CommandInterpreter {
         count: usize,
     ) -> Result<CommandOutput, DocumentError> {
         let remembered = self.visual_anchor.map(|anchor| VisualMemory {
+            exclusive: self.selection_exclusive,
             mode: self.mode,
             anchor,
             active: self.cursor,
@@ -10240,7 +10321,7 @@ impl CommandInterpreter {
             | Key::PageUp
             | Key::PageDown
             | Key::Ctrl(_)
-            | Key::Function { .. } => Ok(CommandOutput::unsupported(
+            | Key::ModifiedNavigation { .. } | Key::Function { .. } => Ok(CommandOutput::unsupported(
                 "cursor motion is unavailable while a deferred Visual Block insertion is collected",
             )),
             Key::Escape => unreachable!("handled above"),
@@ -12057,6 +12138,9 @@ impl CommandInterpreter {
             _ => origin,
         };
         self.mode = mode;
+        self.set_selection_origin(SelectionOrigin::Command);
+        self.selection_exclusive = false;
+        self.selection_return_mode = Mode::Normal;
         self.visual_to_line_end = false;
         self.visual_anchor = Some(origin);
         self.cursor = active;
@@ -12156,6 +12240,7 @@ impl CommandInterpreter {
         };
 
         self.mode = memory.mode;
+            self.selection_exclusive = memory.exclusive;
         self.visual_to_line_end = memory.to_line_end;
         self.visual_anchor = Some(origin);
         self.cursor = active;
@@ -12174,6 +12259,8 @@ impl CommandInterpreter {
 
     fn leave_visual(&mut self) {
         self.remember_visual();
+        self.selection_behavior = SelectionBehavior::Visual;
+        self.selection_exclusive = false;
         self.mode = Mode::Normal;
         self.visual_to_line_end = false;
         self.visual_anchor = None;
@@ -12192,6 +12279,7 @@ impl CommandInterpreter {
             self.marks.insert('<', anchor.min(self.cursor));
             self.marks.insert('>', anchor.max(self.cursor));
             self.last_visual = Some(VisualMemory {
+                exclusive: self.selection_exclusive,
                 mode: self.mode,
                 anchor,
                 active: self.cursor,
@@ -12470,6 +12558,7 @@ impl CommandInterpreter {
             wrap: self.wrap,
             fileformats: self.fileformats.clone(),
             search_options: self.search_options,
+            selection_options: self.selection_options.clone(),
             text_width: self.text_width,
             indentation: self.indentation,
             last_search_pattern: address_search.as_ref().or(self.last_search.as_ref())
@@ -12872,6 +12961,9 @@ impl CommandInterpreter {
     fn apply_ex_option_effects(&mut self, effects: &[ExOptionEffect]) {
         for effect in effects {
             match (&effect.name, &effect.new_value) {
+                (ExOptionName::AutoSelect, ExOptionValue::Boolean(value)) => self.selection_options.autoselect = *value,
+                (ExOptionName::KeyModel, ExOptionValue::String(value)) => self.selection_options.keymodel = value.clone(),
+                (ExOptionName::SelectMode, ExOptionValue::String(value)) => self.selection_options.selectmode = value.clone(),
                 (_, ExOptionValue::Indentation(value)) => self.indentation = *value,
                 (_, ExOptionValue::VisibleWhitespace(value)) => self.visible_whitespace = value.clone(),
                 (ExOptionName::HlSearch, ExOptionValue::Boolean(value)) => {
@@ -13533,13 +13625,10 @@ impl CommandInterpreter {
             return layout_required("restoring Visual Block");
         }
         self.mode = memory.mode;
+            self.selection_exclusive = memory.exclusive;
         self.visual_to_line_end = memory.to_line_end;
-        self.visual_anchor = Some(normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
-            memory.anchor.min(document.projection().text_tree().byte_len()),
-        ));
-        self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
-            memory.active.min(document.projection().text_tree().byte_len()),
-        );
+        self.visual_anchor = Some(if memory.exclusive { memory.anchor } else { normalize_normal_cursor_document(document, &document.hard_line_snapshot(), memory.anchor.min(document.projection().text_tree().byte_len())) });
+        self.cursor = if memory.exclusive { memory.active } else { normalize_normal_cursor_document(document, &document.hard_line_snapshot(), memory.active.min(document.projection().text_tree().byte_len())) };
         CommandOutput {
             mode_changed: true,
             cursor_moved: true,
@@ -13561,6 +13650,7 @@ impl CommandInterpreter {
             return CommandOutput::unsupported("current Visual selection is missing");
         };
         let current = VisualMemory {
+            exclusive: self.selection_exclusive,
             mode: self.mode,
             anchor: current_anchor,
             active: self.cursor,
@@ -13570,6 +13660,7 @@ impl CommandInterpreter {
         let old_mode = self.mode;
         let lines = document.hard_line_snapshot();
         self.mode = previous.mode;
+        self.selection_exclusive = previous.exclusive;
         self.visual_to_line_end = previous.to_line_end;
         self.visual_anchor = Some(normalize_normal_cursor_document(document, &lines,
             previous.anchor.min(document.projection().text_tree().byte_len()),
@@ -16867,6 +16958,7 @@ mod tests {
             let mut document = Document::new("one\ntwo\nthree");
             let mut commands = CommandInterpreter::new();
             let previous = VisualMemory {
+                exclusive: false,
                 mode: Mode::VisualCharacter,
                 anchor: 4,
                 active: 6,
@@ -16932,6 +17024,7 @@ mod tests {
             let mut document = Document::new("ab\ncd");
             let mut commands = CommandInterpreter::new();
             let previous = VisualMemory {
+                exclusive: false,
                 mode: Mode::VisualLine,
                 anchor: 0,
                 active: 3,
@@ -17004,6 +17097,7 @@ mod tests {
             Document::from_bytes(b"abc".to_vec(), Encoding::Latin1, Format::PlainText).unwrap();
         let mut commands = CommandInterpreter::new();
         let previous_visual = VisualMemory {
+            exclusive: false,
             mode: Mode::VisualLine,
             anchor: 0,
             active: 2,
@@ -21442,6 +21536,7 @@ mod tests {
 
         keys(&mut commands, &mut document, "GVk");
         let current = VisualMemory {
+            exclusive: false,
             mode: commands.mode,
             anchor: commands.visual_anchor.unwrap(),
             active: commands.cursor,

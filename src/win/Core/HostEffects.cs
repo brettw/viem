@@ -6,7 +6,7 @@ namespace Viem.Windows.Core;
 
 internal sealed record ClipboardWrite(string Text, string Fragment);
 internal sealed record FrontendRequest(ViemExFrontendRequestV1 Value, string Text);
-internal sealed record HostEffects(ClipboardWrite[] Clipboard, FrontendRequest[] Requests, string[] Output)
+internal sealed record HostEffects(ClipboardWrite[] Clipboard, FrontendRequest[] Requests, string[] Output, IReadOnlyDictionary<uint, string> SelectionOptions)
 {
     public static unsafe HostEffects Read(ulong handle)
     {
@@ -33,7 +33,13 @@ internal sealed record HostEffects(ClipboardWrite[] Clipboard, FrontendRequest[]
             .Concat(registers.Select(r => $"\"{(char)r.name}  {Text(bytes, r.text)}"))
             .Concat(jumps.Select(j => $"{j.list_index + 1}  {j.hard_line_index + 1}:{j.grapheme_column + 1}  {Text(bytes, j.line_text)}"))
             .Concat(options.Select(o => $"{OptionName(o.name)}={((o.value_kind == VIEM_EX_OPTION_VALUE_STRING) ? Text(bytes, o.text) : o.scalar_value.ToString())}" )).ToArray();
-        return new(writes, requests.Select(r => new FrontendRequest(r, Text(bytes, r.text))).ToArray(), output);
+        var selectionOptions = new Dictionary<uint, string>();
+        foreach (var option in options)
+            if ((option.name is VIEM_EX_OPTION_KEYMODEL or VIEM_EX_OPTION_SELECTMODE) && option.value_kind == VIEM_EX_OPTION_VALUE_STRING)
+                selectionOptions[option.name] = Text(bytes, option.text);
+            else if (option.name == VIEM_EX_OPTION_AUTOSELECT && option.value_kind == VIEM_EX_OPTION_VALUE_BOOLEAN)
+                selectionOptions[option.name] = option.scalar_value == 0 ? "0" : "1";
+        return new(writes, requests.Select(r => new FrontendRequest(r, Text(bytes, r.text))).ToArray(), output, selectionOptions);
     }
-    private static string OptionName(uint name) => name switch { 1 => "wrap", 2 => "linebreak", 3 => "fileformat", 5 => "ignorecase", 6 => "smartcase", 7 => "wrapscan", 8 => "textwidth", 9 => "autoindent", 10 => "tabstop", 11 => "shiftwidth", 12 => "softtabstop", 13 => "expandtab", 14 => "smarttab", 17 => "list", 18 => "listchars", 19 => "hlsearch", 20 => "incsearch", _ => $"option {name}" };
+    private static string OptionName(uint name) => name switch { 1 => "wrap", 2 => "linebreak", 3 => "fileformat", 5 => "ignorecase", 6 => "smartcase", 7 => "wrapscan", 8 => "textwidth", 9 => "autoindent", 10 => "tabstop", 11 => "shiftwidth", 12 => "softtabstop", 13 => "expandtab", 14 => "smarttab", 17 => "list", 18 => "listchars", 19 => "hlsearch", 20 => "incsearch", VIEM_EX_OPTION_AUTOSELECT => "autoselect", VIEM_EX_OPTION_KEYMODEL => "keymodel", VIEM_EX_OPTION_SELECTMODE => "selectmode", _ => $"option {name}" };
 }

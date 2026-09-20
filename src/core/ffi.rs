@@ -415,6 +415,15 @@ pub const VIEM_MODE_VISUAL_CHARACTER: u32 = 4;
 pub const VIEM_MODE_VISUAL_LINE: u32 = 5;
 pub const VIEM_MODE_VISUAL_BLOCK: u32 = 6;
 pub const VIEM_MODE_COMMAND_LINE: u32 = 7;
+pub const VIEM_MODE_SELECTION_CHARACTER: u32 = 11;
+pub const VIEM_MODE_SELECTION_LINE: u32 = 12;
+pub const VIEM_MODE_SELECTION_BLOCK: u32 = 13;
+pub const VIEM_MODE_SELECT_CHARACTER: u32 = 8;
+pub const VIEM_MODE_SELECT_LINE: u32 = 9;
+pub const VIEM_MODE_SELECT_BLOCK: u32 = 10;
+pub const VIEM_SELECTION_ORIGIN_MOUSE: u32 = 1;
+pub const VIEM_SELECTION_ORIGIN_KEY: u32 = 2;
+pub const VIEM_SELECTION_ORIGIN_COMMAND: u32 = 3;
 
 pub const VIEM_CLIPBOARD_TARGET_CLIPBOARD: u32 = 1;
 pub const VIEM_CLIPBOARD_TARGET_PRIMARY: u32 = 2;
@@ -520,6 +529,9 @@ pub const VIEM_EX_OPTION_VALUE_NUMBER: u32 = 4;
 pub const VIEM_EX_OPTION_VALUE_STRING: u32 = 5;
 pub const VIEM_EX_OPTION_LIST: u32 = 17;
 pub const VIEM_EX_OPTION_LISTCHARS: u32 = 18;
+pub const VIEM_EX_OPTION_KEYMODEL: u32 = 21;
+pub const VIEM_EX_OPTION_SELECTMODE: u32 = 22;
+pub const VIEM_EX_OPTION_AUTOSELECT: u32 = 23;
 pub const VIEM_EX_OPTION_HLSEARCH: u32 = 19;
 pub const VIEM_EX_OPTION_INCSEARCH: u32 = 20;
 
@@ -3436,6 +3448,11 @@ impl OwnedEffectBatch {
         if command.ex_outcome.is_none() && command.clipboard_writes.is_empty() {
             return None;
         }
+        if let Some(ex) = command.ex_outcome.as_mut() {
+            let options = ex.option_effects.iter().filter(|effect| matches!(effect.name, ExOptionName::KeyModel | ExOptionName::SelectMode | ExOptionName::AutoSelect))
+                .map(|effect| crate::command::ex_execute::ExOptionDisplay { name: effect.name.clone(), value: effect.new_value.clone() }).collect::<Vec<_>>();
+            if !options.is_empty() { ex.frontend_requests.push(ExFrontendRequest::Info(ExInfoRequest::Options(options))); }
+        }
         let ex_info_payloads = command
             .ex_outcome
             .as_ref()
@@ -3509,6 +3526,9 @@ fn ex_option_name_to_ffi(name: &ExOptionName) -> u32 {
         ExOptionName::ContinueCommentsOnOpenLine => VIEM_EX_OPTION_CONTINUE_COMMENTS_ON_OPEN_LINE,
         ExOptionName::List => VIEM_EX_OPTION_LIST,
         ExOptionName::ListChars => VIEM_EX_OPTION_LISTCHARS,
+        ExOptionName::AutoSelect => VIEM_EX_OPTION_AUTOSELECT,
+        ExOptionName::KeyModel => VIEM_EX_OPTION_KEYMODEL,
+        ExOptionName::SelectMode => VIEM_EX_OPTION_SELECTMODE,
 
     }
 }
@@ -4281,14 +4301,16 @@ fn execution_context_permits(
 fn parse_key(input: ViemKeyInputV1) -> Result<Key, ViemStatus> {
     if input.struct_size < VIEM_KEY_INPUT_V1_SIZE
         || input.modifiers & !15 != 0
-        || (input.kind != VIEM_KEY_FUNCTION && input.modifiers != 0)
+        || (input.kind != VIEM_KEY_FUNCTION && input.modifiers != 0 && !matches!(input.kind, VIEM_KEY_LEFT | VIEM_KEY_RIGHT | VIEM_KEY_WORD_LEFT | VIEM_KEY_WORD_RIGHT | VIEM_KEY_UP | VIEM_KEY_DOWN | VIEM_KEY_HOME | VIEM_KEY_END | VIEM_KEY_DOCUMENT_START | VIEM_KEY_DOCUMENT_END | VIEM_KEY_PAGE_UP | VIEM_KEY_PAGE_DOWN))
     {
         return Err(ViemStatus::InvalidArgument);
     }
     let scalar = || char::from_u32(input.codepoint).ok_or(ViemStatus::InvalidKey);
     let special = |key| {
         if input.codepoint == 0 {
-            Ok(key)
+            if input.modifiers != 0 {
+                Ok(Key::ModifiedNavigation { key: crate::command::NavigationKey::from_key(key).ok_or(ViemStatus::InvalidKey)?, modifiers: input.modifiers as u8 })
+            } else { Ok(key) }
         } else {
             Err(ViemStatus::InvalidKey)
         }
@@ -4323,7 +4345,9 @@ fn parse_key(input: ViemKeyInputV1) -> Result<Key, ViemStatus> {
     }
 }
 
-fn mode_to_ffi(mode: Mode) -> u32 {
+fn mode_to_ffi(mode: Mode, select: bool, native: bool) -> u32 {
+    if native { return match mode { Mode::VisualCharacter => VIEM_MODE_SELECTION_CHARACTER, Mode::VisualLine => VIEM_MODE_SELECTION_LINE, Mode::VisualBlock => VIEM_MODE_SELECTION_BLOCK, _ => unreachable!() }; }
+    if select { return match mode { Mode::VisualCharacter => VIEM_MODE_SELECT_CHARACTER, Mode::VisualLine => VIEM_MODE_SELECT_LINE, Mode::VisualBlock => VIEM_MODE_SELECT_BLOCK, _ => unreachable!() }; }
     match mode {
         Mode::Normal => VIEM_MODE_NORMAL,
         Mode::Insert => VIEM_MODE_INSERT,
@@ -4558,7 +4582,7 @@ fn summarize_core_outcome(
     Ok(ViemCoreOutcomeV1 {
         struct_size: VIEM_CORE_OUTCOME_V1_SIZE,
         command_status,
-        mode: mode_to_ffi(command_state.mode()),
+        mode: mode_to_ffi(command_state.mode(), command_state.is_select_mode(), command_state.is_native_selection()),
         flags,
         document_revision: core.document().revision().0,
         view_id: view_id.0,
@@ -6523,7 +6547,7 @@ fn summarize_view_presentation(
     Ok(ViemViewPresentationV1 {
         struct_size: VIEM_VIEW_PRESENTATION_V1_SIZE,
         flags,
-        mode: mode_to_ffi(state.mode()),
+        mode: mode_to_ffi(state.mode(), state.is_select_mode(), state.is_native_selection()),
         cursor_affinity: affinity_to_ffi(cursor_affinity),
         visual_anchor_affinity,
         document_id: core.document().id().0,
@@ -8933,6 +8957,61 @@ pub unsafe extern "C" fn viem_core_view_select_all(
                     revision: Revision(revision),
                 },
             )
+        })?;
+        unsafe { out_outcome.write(outcome) };
+        Ok(())
+    })
+}
+
+/// Read one host-global selection option from this buffer.
+/// # Safety
+/// Output regions must be aligned, writable, and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_copy_selection_option(handle: ViemCoreHandle, option_kind: u32, output: *mut u8, capacity: u64, out_required: *mut u64) -> ViemStatus {
+    ffi_boundary(|| {
+        let keymodel = match option_kind { VIEM_EX_OPTION_KEYMODEL => true, VIEM_EX_OPTION_SELECTMODE | VIEM_EX_OPTION_AUTOSELECT => false, _ => return Err(ViemStatus::InvalidArgument) };
+        typed_pointer_region(out_required, 1)?;
+        let capacity = checked_length(capacity)?;
+        if capacity != 0 { validate_disjoint_regions(&[typed_pointer_region(out_required, 1)?, typed_pointer_region(output, capacity as u64)?])?; }
+        let value = with_core(handle, |core| Ok(if option_kind == VIEM_EX_OPTION_AUTOSELECT { if core.selection_options().autoselect { "1" } else { "0" }.to_owned() } else if keymodel { core.selection_options().keymodel.clone() } else { core.selection_options().selectmode.clone() }))?;
+        unsafe { out_required.write(value.len() as u64) };
+        if capacity < value.len() { return Err(ViemStatus::BufferTooSmall); }
+        if !value.is_empty() { unsafe { copy_output(value.as_bytes(), output) }; }
+        Ok(())
+    })
+}
+/// Update one option without issuing a modal input command.
+/// # Safety
+/// `value` must be readable for `length` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_set_selection_option(handle: ViemCoreHandle, option_kind: u32, value: *const u8, length: u64) -> ViemStatus {
+    ffi_boundary(|| {
+        let keymodel = match option_kind { VIEM_EX_OPTION_KEYMODEL => true, VIEM_EX_OPTION_SELECTMODE | VIEM_EX_OPTION_AUTOSELECT => false, _ => return Err(ViemStatus::InvalidArgument) };
+        let value = str::from_utf8(unsafe { input_bytes(value, length)? }).map_err(|_| ViemStatus::InvalidUtf8)?;
+        with_core_mut(handle, |core| {
+            if option_kind == VIEM_EX_OPTION_AUTOSELECT {
+                let enabled = match value { "1" => true, "0" => false, _ => return Err(ViemStatus::InvalidArgument) };
+                core.set_autoselect(enabled);
+                Ok(())
+            } else if core.set_selection_option(keymodel, value) { Ok(()) } else { Err(ViemStatus::InvalidArgument) }
+        })
+    })
+}
+
+/// Apply configured Select/Visual initiation policy without changing the range.
+/// # Safety
+/// `out_outcome` must be aligned and writable.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_set_selection_origin(handle: ViemCoreHandle, view: ViemViewId, origin: u32, return_mode: u32, out_outcome: *mut ViemCoreOutcomeV1) -> ViemStatus {
+    ffi_boundary(|| {
+        let origin = match origin { 1 => crate::command::SelectionOrigin::Mouse, 2 => crate::command::SelectionOrigin::Key, 3 => crate::command::SelectionOrigin::Command, _ => return Err(ViemStatus::InvalidArgument) };
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            let return_mode = match return_mode { VIEM_MODE_INSERT => Mode::Insert, VIEM_MODE_REPLACE => Mode::Replace, VIEM_MODE_NORMAL => Mode::Normal, _ => return Err(ViemStatus::InvalidArgument) };
+            core.set_selection_origin(ViewId(view), origin, return_mode).map_err(core_status)?;
+            let mut outcome = summarize_core_outcome(core, ViewId(view), None)?;
+            outcome.flags |= VIEM_OUTCOME_MODE_CHANGED;
+            Ok(outcome)
         })?;
         unsafe { out_outcome.write(outcome) };
         Ok(())

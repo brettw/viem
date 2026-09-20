@@ -1019,6 +1019,26 @@ impl CoreOutcomeAccumulator {
 }
 
 impl<P: TextMeasurementProvider> Core<P> {
+    pub fn selection_options(&self) -> &crate::command::SelectionOptions { &self.buffer_commands.selection_options }
+    pub fn set_selection_option(&mut self, keymodel: bool, value: &str) -> bool {
+        if !self.buffer_commands.selection_options.set(keymodel, value) { return false; }
+        for view in self.views.values_mut() { view.commands.install_buffer_state(&self.buffer_commands); }
+        true
+    }
+
+    pub fn set_autoselect(&mut self, enabled: bool) {
+        self.buffer_commands.selection_options.autoselect = enabled;
+        for view in self.views.values_mut() { view.commands.install_buffer_state(&self.buffer_commands); }
+    }
+
+    /// Apply the configured initiation policy to an existing exact selection.
+    pub fn set_selection_origin(&mut self, view_id: ViewId, origin: crate::command::SelectionOrigin, return_mode: Mode) -> Result<(), CoreError> {
+        let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+        if !matches!(view.commands.mode(), Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock) { return Err(CoreError::NoVisualSelection); }
+        view.commands.set_native_selection_origin(&self.document, origin, return_mode);
+        Ok(())
+    }
+
     pub fn new(document: Document) -> Self {
         let buffer_commands = CommandInterpreter::new().export_buffer_state();
         Self {
@@ -4316,6 +4336,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         request: ModelRequest,
     ) -> Result<CoreOutcome, CoreError> {
+        let pending_typing = self.select_typing_after_direct_request(view_id, &request);
         let quote_at_end = match &request {
             ModelRequest::AssignNamedStyle { range, namespace: StyleNamespace::Block, style, .. }
             | ModelRequest::SetParagraphStyle { range, style, .. }
@@ -4333,6 +4354,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .map_err(command_model_transaction_error)?,
         };
         if preflight.is_no_op() {
+            self.publish_select_typing(view_id, pending_typing);
             return Ok(CoreOutcome {
                 command: None,
                 document_changed: false,
@@ -4421,6 +4443,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 clipboard_writes: Vec::new(),
             })
         };
+        self.publish_select_typing(view_id, pending_typing);
         Ok(CoreOutcome {
             command,
             document_changed: changed,
@@ -5183,15 +5206,25 @@ impl<P: TextMeasurementProvider> Core<P> {
                     style_sheet_revision,
                 )?;
                 if namespace == StyleNamespace::Character
-                    && expected.kind() == LogicalSelectionKind::None
+                    && expected.range().is_empty()
                 {
+                    self.document.validate_typing_named_style(&style)?;
                     let commands =
                         &mut self.views.get_mut(&view_id).expect("view checked").commands;
                     let previous_cursor = commands.cursor();
-                    commands.set_typing_named_style(&self.document, style)?;
+                    // A collapsed native selection remains in its selection
+                    // mode, but chooses future typing just like an ordinary caret.
+                    if expected.kind() == LogicalSelectionKind::None {
+                        commands.set_typing_named_style(&self.document, style)?;
+                    } else {
+                        commands.install_typing_style(Some(style), Vec::new());
+                    }
                     return self.pending_typing_outcome(view_id, previous_cursor);
                 }
-                return self.apply_native_model_request(
+                let pending_choice = (namespace == StyleNamespace::Character
+                    && self.views.get(&view_id).expect("view checked").commands.is_text_selection())
+                    .then(|| style.clone());
+                let outcome = self.apply_native_model_request(
                     view_id,
                     ModelRequest::AssignNamedStyle {
                         document: expected.document(),
@@ -5200,7 +5233,15 @@ impl<P: TextMeasurementProvider> Core<P> {
                         namespace,
                         style,
                     },
-                );
+                )?;
+                if let Some(style) = pending_choice {
+                    // Select replacement deletes the selected source scopes
+                    // before inserting. Retain the explicit choice so the new
+                    // text cannot inherit the unselected adjacent character.
+                    self.views.get_mut(&view_id).expect("view checked").commands
+                        .install_typing_style(Some(style), Vec::new());
+                }
+                return Ok(outcome);
             }
             CoreEvent::EditNamedStyleDefinition {
                 document,
@@ -5223,7 +5264,21 @@ impl<P: TextMeasurementProvider> Core<P> {
                 style,
                 enabled,
             } => {
-                return self.set_selection_semantic_style(view_id, expected, style, enabled);
+                let value = match style {
+                    SemanticInlineStyle::Strong => Some((StyleProperty::CharacterBold,
+                        crate::document::StylePropertyValue::Boolean(enabled))),
+                    SemanticInlineStyle::Emphasis => Some((StyleProperty::CharacterSlant,
+                        crate::document::StylePropertyValue::FontSlant(if enabled {
+                            crate::document::FontSlant::Italic
+                        } else { crate::document::FontSlant::Upright }))),
+                    _ => None,
+                };
+                let pending_typing = value.and_then(|(property, value)| {
+                    self.select_typing_after_character_properties(view_id, &[(property, Some(value))])
+                });
+                let outcome = self.set_selection_semantic_style(view_id, expected, style, enabled)?;
+                self.publish_select_typing(view_id, pending_typing);
+                return Ok(outcome);
             }
             CoreEvent::EditGeneratedStyle {
                 document,
@@ -6330,6 +6385,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 match action {
                     ReplayAction::PopFrame => {
                         let popped = frames.pop();
+                        if matches!(&popped, Some(ReplayFrame::Mapping { plan, .. }) if plan.restore_select) {
+                            self.views.get_mut(&view_id).unwrap().commands.finish_select_mapping();
+                        }
                         if matches!(&popped, Some(ReplayFrame::ExNormal { plan, .. }) if plan.global) {
                             self.views.get_mut(&view_id).unwrap().commands.global_replay_depth -= 1;
                         }
@@ -6566,6 +6624,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         })();
 
         while let Some(frame) = frames.pop() {
+            if matches!(&frame, ReplayFrame::Mapping { plan, .. } if plan.restore_select) { self.views.get_mut(&view_id).unwrap().commands.finish_select_mapping(); }
             if matches!(&frame, ReplayFrame::ExNormal { plan, .. } if plan.global) {
                 self.views.get_mut(&view_id).unwrap().commands.global_replay_depth -= 1;
             }
@@ -6884,6 +6943,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .get(&view_id)
             .expect("composition view remains attached")
             .commands;
+        let select_commit = invoking_commands.select_composition_commit(&self.document);
         let typing_properties = invoking_commands.typing_properties().to_vec();
         let typing_named = invoking_commands.typing_named_style().cloned();
         let request = session.prepare_commit_with_input_policy(&self.document, invoking_commands)?;
@@ -6951,6 +7011,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 session.marked_text(),
             )
             .expect("composition preparation validated the committed caret boundary");
+        if let Some(select_commit) = select_commit {
+            target_commands.finish_select_composition_commit(&mut self.document, select_commit, caret_offset, &inserted_text);
+        }
         target_commands.restore_typing_style(typing_named, typing_properties);
         for (id, commands) in next_commands {
             self.views

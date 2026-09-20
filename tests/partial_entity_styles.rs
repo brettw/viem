@@ -169,7 +169,7 @@ fn named_character_assignment_and_direct_style_clear_share_materialization() {
         span.range == (1..2)
             && span.application == viem_core::document::StyleApplication::Named("Code".into())
     }));
-    assert!(
+    assert!(!
         DocumentLayoutStyles::character_at(document.projection(), 1, false)
             .unwrap()
             .bold

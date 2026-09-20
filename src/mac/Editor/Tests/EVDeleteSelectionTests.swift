@@ -25,7 +25,7 @@ import XCTest
     private func assertHistory(backend: EVCoreDocumentBackend, view: EVEditorSurfaceController,
                                source: String, type: String, expectedText: String) throws {
         XCTAssertEqual(try backend.formattedText(), expectedText)
-        XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
+        XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
         XCTAssertTrue(view.selectedUTF8Ranges().isEmpty)
         XCTAssertNotNil(view.formattedPointInfo(atUTF8Offset: Int(view.viewPresentation.cursor_utf8_offset)))
         XCTAssertNil(view.commandOutput)
@@ -60,7 +60,7 @@ import XCTest
         }
     }
 
-    func testPhysicalDeleteRemovesDoubleClickedWordAndReturnsToNormalMode() throws {
+    func testPhysicalDeleteRemovesDoubleClickedWordAndEntersInsertMode() throws {
         let source = "before chosen after"
         let type = EVDocument.plainTextType
         let (backend, view) = try surface(source, type: type)

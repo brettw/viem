@@ -30,7 +30,7 @@ final class EVPointerSelectionTests: XCTestCase {
       let initialTop = surface.viewportState.top
 
       func assertSelection(_ step: String) throws {
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
         XCTAssertEqual(surface.viewPresentation.visual_anchor_utf8_offset, anchor,
                        "\(label), step \(step): the drag must retain its original anchor")
         let selection = try XCTUnwrap(surface.visualSelection,
@@ -100,6 +100,34 @@ final class EVPointerSelectionTests: XCTestCase {
     XCTAssertEqual(physical.text_end, UInt64(line.utf8.count + 1))
     XCTAssertEqual(
       try backend.serializedSource(typeName: EVDocument.plainTextType), Data(source.utf8))
+  }
+
+  func testDoubleClickFromInsertOrReplaceSelectsTheHitWordBeforeTyping() throws {
+    let source = "before chosen after"
+    for (command, mode) in [("i", UInt32(VIEM_MODE_INSERT)), ("R", UInt32(VIEM_MODE_REPLACE))] {
+      let (backend, surface, window) = try makeSurface(source, width: 600)
+      defer { withExtendedLifetime(window) {} }
+      let session = try XCTUnwrap(surface.session)
+      surface.performInput { _ = try session.sendText(command) }
+      try click(surface, at: 7, count: 1)
+      XCTAssertEqual(surface.viewPresentation.mode, mode)
+      XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 7)
+
+      // The first glyph's leading edge hit-tests to the word's start. Leaving
+      // Insert after that hit would incorrectly move viw onto the prior space.
+      try click(surface, at: 7, count: 2)
+      XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
+      XCTAssertEqual(surface.editorView.selectedRange(), (source as NSString).range(of: "chosen"))
+      XCTAssertEqual(try backend.formattedText(), source)
+      surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_RIGHT)) }
+      XCTAssertEqual(surface.viewPresentation.mode, mode)
+      try click(surface, at: 7, count: 2)
+      surface.editorView.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
+      XCTAssertEqual(try backend.formattedText(), "before X after")
+      surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
+      surface.perform(menuCommand: .undo, sender: nil)
+      XCTAssertEqual(try backend.formattedText(), source)
+    }
   }
 
   private func makeSurface(_ source: String, width: CGFloat, format: String? = nil) throws -> (

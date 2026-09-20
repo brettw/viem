@@ -677,7 +677,7 @@ final class EVTextInputClientTests: XCTestCase {
         let initialTop = surface.viewportState.top
         XCTAssertTrue(view.performDragAutoscrollStep())
         XCTAssertGreaterThan(surface.viewportState.top, initialTop)
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
 
         view.mouseUp(with: mouseEvent(type: .leftMouseUp, location: NSPoint(x: 250, y: -30)))
         XCTAssertFalse(view.isDragAutoscrollActive)

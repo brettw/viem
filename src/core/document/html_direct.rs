@@ -200,6 +200,26 @@ pub(super) fn clear_character_patches(
     range: Range<usize>,
     clear: &BTreeSet<StyleProperty>,
 ) -> Result<Vec<(Range<usize>, String)>, DocumentError> {
+    clear_character_patches_impl(input, projection, range, clear, false)
+}
+
+/// A character-style choice keeps paragraph/root appearance as its foundation.
+pub(super) fn clear_inline_character_patches(
+    input: &NormalizedText,
+    projection: &FormattedDocument,
+    range: Range<usize>,
+    clear: &BTreeSet<StyleProperty>,
+) -> Result<Vec<(Range<usize>, String)>, DocumentError> {
+    clear_character_patches_impl(input, projection, range, clear, true)
+}
+
+fn clear_character_patches_impl(
+    input: &NormalizedText,
+    projection: &FormattedDocument,
+    range: Range<usize>,
+    clear: &BTreeSet<StyleProperty>,
+    preserve_paragraph_defaults: bool,
+) -> Result<Vec<(Range<usize>, String)>, DocumentError> {
     if range.is_empty() || clear.is_empty() {
         return Ok(Vec::new());
     }
@@ -267,6 +287,9 @@ pub(super) fn clear_character_patches(
         let TokenKind::Tag(tag) = &tokens[element.open].kind else {
             unreachable!()
         };
+        if preserve_paragraph_defaults && !inline(&tag.name) {
+            return false;
+        }
         let mut original = CharacterProperties::default();
         let mut block = BlockProperties::default();
         if matches!(tag.name.as_str(), "b" | "strong") {

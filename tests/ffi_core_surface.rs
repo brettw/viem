@@ -1567,7 +1567,7 @@ fn native_named_style_assignment_checks_selection_sheet_and_preserves_history() 
     };
     assert_eq!(
         unsafe {
-            test_send_key(core.handle, view, &key(VIEM_KEY_RIGHT, 0), &mut outcome)
+            test_send_key(core.handle, view, &key(VIEM_KEY_CHARACTER, 'l' as u32), &mut outcome)
         },
         ViemStatus::Ok
     );
@@ -4865,7 +4865,7 @@ fn native_direct_properties_and_decoration_queries_are_typed_exact_and_undoable(
         };
         assert_eq!(
             unsafe {
-                test_send_key(core.handle, view, &key(VIEM_KEY_RIGHT, 0), &mut outcome)
+                test_send_key(core.handle, view, &key(VIEM_KEY_CHARACTER, 'l' as u32), &mut outcome)
             },
             ViemStatus::Ok
         );
@@ -4928,7 +4928,7 @@ fn native_direct_properties_and_decoration_queries_are_typed_exact_and_undoable(
                     test_send_key(
                         core.handle,
                         view,
-                        &key(VIEM_KEY_RIGHT, 0),
+                        &key(VIEM_KEY_CHARACTER, 'l' as u32),
                         &mut outcome,
                     )
                 },
@@ -4947,7 +4947,7 @@ fn native_direct_properties_and_decoration_queries_are_typed_exact_and_undoable(
             );
             assert_eq!(
                 unsafe {
-                    test_send_key(core.handle, view, &key(VIEM_KEY_LEFT, 0), &mut outcome)
+                    test_send_key(core.handle, view, &key(VIEM_KEY_CHARACTER, 'h' as u32), &mut outcome)
                 },
                 ViemStatus::Ok
             );

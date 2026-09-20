@@ -49,7 +49,7 @@ fn delete_keys_remove_native_unicode_selection_and_round_trip_source() {
             for reverse in [false, true] {
                 let (mut core, view) = editor(source, format, 300.);
                 assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
-                let endpoints = if reverse { [16, 5] } else { [5, 16] };
+                let endpoints = if reverse { [18, 5] } else { [5, 18] };
                 for (index, text_offset) in endpoints.into_iter().enumerate() {
                     core.handle(
                         view,
@@ -65,7 +65,7 @@ fn delete_keys_remove_native_unicode_selection_and_round_trip_source() {
                 assert_eq!(core.list_selection_identity(view).unwrap().range(), 5..18);
                 key(&mut core, view, delete);
                 assert_eq!(core.document().text(), "left right");
-                assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
+                assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
                 assert_eq!(
                     core.command_state(view)
                         .unwrap()
@@ -77,6 +77,7 @@ fn delete_keys_remove_native_unicode_selection_and_round_trip_source() {
                 let saved = core.document().source_bytes();
                 let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, format).unwrap();
                 assert_eq!(reopened.text(), "left right");
+                key(&mut core, view, Key::Escape);
                 key(&mut core, view, Key::Char('u'));
                 assert_eq!(core.document().source_bytes(), source.as_bytes());
                 key(&mut core, view, Key::Ctrl('r'));

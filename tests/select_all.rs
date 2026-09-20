@@ -6,8 +6,11 @@ use viem_core::{Core, CoreEvent, Document, ViewId};
 
 type TestCore = Core<MockTextMeasurementProvider>;
 fn key(core: &mut TestCore, view: ViewId, value: char) {
+    special(core, view, Key::Char(value));
+}
+fn special(core: &mut TestCore, view: ViewId, value: Key) {
     let out = core
-        .handle_with_layout(view, CoreEvent::Input(InputEvent::key(value)))
+        .handle_with_layout(view, CoreEvent::Input(InputEvent::Key(value)))
         .unwrap();
     assert!(matches!(
         out.command.unwrap().status,
@@ -23,6 +26,7 @@ fn select(core: &mut TestCore, view: ViewId) {
     assert_eq!(out.command.unwrap().status, CommandStatus::Complete);
     let commands = core.command_state(view).unwrap();
     assert_eq!(commands.mode(), Mode::VisualCharacter);
+    assert!(commands.is_text_selection());
     assert_eq!(
         core.list_selection_identity(view).unwrap().range(),
         0..core.document().text().len()
@@ -77,6 +81,7 @@ fn select_all_reaches_final_wrapped_paragraph_in_every_format_and_line_policy() 
                 let before = core.document().source_bytes();
                 select(&mut core, view);
                 assert_eq!(core.document().source_bytes(), before);
+                special(&mut core, view, Key::Ctrl('o'));
                 for value in ['"', '+'] {
                     key(&mut core, view, value);
                 }
@@ -117,8 +122,10 @@ fn selecting_all_includes_trailing_hard_break_and_finishes_insert_undo_unit() {
             .unwrap();
         let inserted = core.document().source_bytes();
         select(&mut core, view);
-        key(&mut core, view, 'd');
+        special(&mut core, view, Key::Delete);
         assert_eq!(core.document().text(), "");
+        assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
+        special(&mut core, view, Key::Escape);
         key(&mut core, view, 'u');
         assert_eq!(core.document().source_bytes(), inserted);
         key(&mut core, view, 'u');
@@ -140,9 +147,10 @@ fn whole_selection_delete_clears_quote_list_and_character_context_with_exact_his
             let (mut core, view) = opened(source, format);
             core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
             select(&mut core, view);
-            key(&mut core, view, 'd');
+            special(&mut core, view, Key::Delete);
             assert_eq!(core.document().text(), "", "{format:?} {mode:?}");
-            assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
+            assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
+            special(&mut core, view, Key::Escape);
             let cleared = core.document().source_bytes();
             assert!(!core.document().projection().blocks().iter().any(|b| b.style.0 == "Block quote" || matches!(b.kind, BlockKind::ListItem { .. })));
             key(&mut core, view, 'i');
@@ -266,10 +274,11 @@ fn native_select_all_records_one_replayable_intention_and_honors_counted_insert(
         key(&mut core, view, value);
     }
     select(&mut core, view);
-    key(&mut core, view, 'd');
+    special(&mut core, view, Key::Delete);
+    special(&mut core, view, Key::Escape);
     key(&mut core, view, 'q');
     let recorded = core.command_state(view).unwrap().register('a').unwrap();
-    assert_eq!(recorded.text, "<SelectAll>d");
+    assert_eq!(recorded.text, "<SelectAll><Del><Esc>");
     key(&mut core, view, 'i');
     core.handle(
         view,
@@ -293,7 +302,8 @@ fn native_select_all_records_one_replayable_intention_and_honors_counted_insert(
         .unwrap();
     select(&mut core, view);
     assert_eq!(core.document().text(), "ééé");
-    key(&mut core, view, 'd');
+    special(&mut core, view, Key::Delete);
+    special(&mut core, view, Key::Escape);
     key(&mut core, view, 'u');
     assert_eq!(core.document().text(), "ééé");
     key(&mut core, view, 'u');

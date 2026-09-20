@@ -342,6 +342,13 @@ pub(super) fn literal_key_text(key: Key) -> Option<String> {
             name.push_str(&format!("F{number}>"));
             name
         }
+        Key::ModifiedNavigation { key, modifiers } => {
+            let base = literal_key_text(key.key())?;
+            let mut name = String::from("<");
+            for (bit, modifier) in [(2, "C-"), (1, "S-"), (4, "A-"), (8, "D-")] { if modifiers & bit != 0 { name.push_str(modifier); } }
+            name.push_str(&base[1..]);
+            name
+        }
         Key::SelectAll => return None,
     })
 }

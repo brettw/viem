@@ -2581,7 +2581,9 @@ Required stable modes are:
 - Normal mode (also called command mode in product language);
 - Insert mode;
 - Replace mode;
-- Visual Character, Visual Line, and Visual Block modes; and
+- Visual Character, Visual Line, and Visual Block modes;
+- Select Character, Select Line, and Select Block modes;
+- native Selection, distinct from Vim Select and Visual; and
 - Command-line mode for `:`, `/`, and `?` input.
 
 Operator-pending, prefix-pending, register-pending, and single-Normal-command
@@ -2592,7 +2594,7 @@ The frontend renders mode from core state:
 
 - Normal and Visual modes: a filled character block around the associated
   grapheme, shaping cluster, or atomic object under the cursor;
-- Insert mode: a thin vertical insertion caret at the caret stop;
+- Insert, Select, and native Selection: a thin vertical insertion caret at the caret stop;
 - Replace mode: an underline or low horizontal bar under the cluster that will
   be replaced; and
 - Command-line mode: a thin vertical insertion caret in the command line.
@@ -3601,9 +3603,49 @@ Vim terms while internal APIs use explicit half-open ranges.
 
 Backspace (the macOS Delete key) and Forward Delete delete the active selection
 using the same operator, register, repeat, and undo behavior as Visual `d`, then
-return to Normal mode. This includes mouse selections started from Normal mode
-and character, line, or block selections. With no selection, Normal-mode
+return to Normal mode. This includes character, line, or block Visual selections,
+and mouse selections when `noautoselect` is set and `selectmode` excludes `mouse`. With no selection, Normal-mode
 Backspace retains its leftward motion and Forward Delete retains `x` behavior.
+
+### Native Selection and Vim Select modes
+
+`autoselect` is an application-global Boolean option, enabled by default. It
+enters native **SELECTION** for mouse or Shift+navigation selection, independently
+of Vim's `keymodel` (`km`) and `selectmode` (`slm`). Those Vim options default to
+empty. `noautoselect` returns mouse and shifted-key entry to their Vim policy:
+`startsel` starts Visual or Select with shifted special navigation, `stopsel`
+ends it with unshifted navigation, and `selectmode` accepts `mouse`, `key`, `cmd`.
+The latter chooses Select instead of Visual for that entry origin. Shifted
+horizontal arrows without `startsel` use Vim word motions when `autoselect` is
+off. Vim `v`, `V`, Ctrl-V, and explicit Select entry are independent of the native
+option. Extending an active selection MUST retain its interaction policy.
+
+Hosts distribute these options to existing and future documents in the same
+profile without changing current selections, typing state, or pending commands.
+`autoselect` supports enable, disable, query, invert, and reset; the Vim string
+options support assignment, query, reset, append, prepend, and removal. Compound
+`:set`/`:setlocal` operations validate atomically; startup uses the same grammar.
+
+Selection shape (character, line, block) is separate from interaction policy.
+Native Selection uses exact half-open insertion boundaries; Vim selections use
+inclusive endpoints. Native unshifted Left/Right collapse to the corresponding
+edge without another step. Other unshifted navigation ends native selection;
+selections started in Insert/Replace resume that mode. Typing or Enter
+replaces and enters Insert, while native Backspace/Delete deletes and enters
+Insert; replacement and subsequent typing form one undo group. Vim Select
+Backspace/Delete returns to Normal. Vim `stopsel` ends selection and performs
+the requested movement, rather than native edge collapse. Registers, Unicode
+graphemes, counts, dot-repeat, and block extents remain portable policy.
+
+`gh`, `gH`, and `gCtrl-H` explicitly enter Vim Select Character, Line, and Block.
+`Ctrl-G` toggles Vim Select/Visual; in native Selection it switches explicitly
+to Visual. `Ctrl-O` runs one complete Visual command before returning to the
+originating policy when a selection remains; native Copy preserves that policy
+and exact extent. Native Selection does not execute Vim Visual/Select mappings.
+Character/line IME stays an overlay until commit; cancellation restores the
+selection. The frontend labels native Selection **SELECTION**, and preserves
+Vim's distinct SELECT/VISUAL labels. Current platform differences are recorded
+in `docs/native-selection.md`.
 
 ### Registers, repeat, undo, and macros
 
@@ -4660,6 +4702,14 @@ formatting items show a checkmark, mixed state, or no mark as appropriate.
 Character and Paragraph menus reserve the same mark column for every item,
 so labels align whether or not the item is checked. Active named styles remain
 checked when menu validation refreshes their command state.
+Choosing a character style clears direct character declarations and inline
+traits on the selected range before assigning the style, in one undoable source
+transaction. Rechoosing the same style also clears overrides. With only a caret,
+the choice replaces pending direct formatting for future typing without changing
+existing text. Default Paragraph clears the named assignment and direct traits.
+Unspecified properties continue to inherit paragraph and semantic Link defaults;
+explicit named declarations override them. Link targets and unselected source
+remain intact.
 In Code mode, check the named syntax style at the caret, or the single style
 shared by the selection, using the currently displayed syntax runs. Check the
 specific assigned style rather than its linked ancestors; unstyled text and
@@ -4998,10 +5048,11 @@ request new syntax work.
 
 ### User key mappings
 
-`map {lhs} {rhs}` defines recursive mappings for Normal, Visual, and
+`map {lhs} {rhs}` defines recursive mappings for Normal, Visual, Select, and
 operator-pending input; `noremap` defines the same modes without remapping the
-replacement keys. Full command names with `n`, `v`/`x`, `o`, `i`, or `c` prefixes
-select Normal, Visual, operator-pending, Insert/Replace, or command-line input.
+replacement keys. Full command names with `n`, `v`, `x`, `s`, `o`, `i`, or `c` prefixes
+select Normal, Visual plus Select, Visual only, Select only, operator-pending,
+Insert/Replace, or command-line input.
 `map!` and `noremap!` select Insert/Replace and command-line input. `unmap` and
 `mapclear`, including these mode prefixes and bang forms, remove mappings.
 Interactive definitions apply to the current buffer and its views; startup
@@ -5011,7 +5062,7 @@ unsupported and report diagnostics.
 
 Key notation accepts ordinary Unicode characters, `<Esc>`, `<CR>`, `<Tab>`,
 `<S-Tab>`, `<BS>`, `<Del>`, navigation keys, control characters, and `<F1>` through
-`<F35>`. Function keys accept combined `S-`, `C-`, `A-`/`M-`, and `D-` modifiers
+`<F35>`. Function and navigation keys accept combined `S-`, `C-`, `A-`/`M-`, and `D-` modifiers
 for Shift, Control, Alt/Option, and Command. `<Space>`, `<lt>`, `<Bar>`, and
 `<Bslash>` express literal separator characters; `<Nop>` is an empty replacement.
 Trailing replacement spaces are significant. Unsupported notation is diagnosed

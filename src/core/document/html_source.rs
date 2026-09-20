@@ -749,6 +749,21 @@ pub(super) fn translate_style(
     document: &Document,
     intent: &PersistedStyleIntent,
 ) -> Result<TranslatedStyle, ModelTransactionError> {
+    translate_style_impl(document, intent, false)
+}
+
+pub(super) fn translate_character_style_choice(
+    document: &Document,
+    intent: &PersistedStyleIntent,
+) -> Result<TranslatedStyle, ModelTransactionError> {
+    translate_style_impl(document, intent, true)
+}
+
+fn translate_style_impl(
+    document: &Document,
+    intent: &PersistedStyleIntent,
+    clean_character: bool,
+) -> Result<TranslatedStyle, ModelTransactionError> {
     let mut visible = Document::from_bytes_with_file_format(
         document.source_bytes(),
         document.encoding(),
@@ -821,12 +836,20 @@ pub(super) fn translate_style(
         },
         PersistedStyleIntent::EditStyleDefinition { .. } => intent.clone(),
     };
-    let request = StyleModelRequest::new(
-        visible.id(),
-        visible.revision(),
-        StyleModelIntent::Persisted(translated),
-    );
-    let committed = visible.apply_style_request(request)?;
+    let committed = if clean_character {
+        let PersistedStyleIntent::AssignCharacterStyle { range, style } = translated else {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        };
+        visible.apply_model_request(super::ModelRequest::AssignNamedStyle {
+            document: visible.id(), revision: visible.revision(),
+            range: range.start().offset()..range.end().offset(),
+            namespace: super::StyleNamespace::Character, style,
+        })?
+    } else {
+        visible.apply_style_request(StyleModelRequest::new(
+            visible.id(), visible.revision(), StyleModelIntent::Persisted(translated),
+        ))?
+    };
     Ok(TranslatedStyle {
         patches: committed.summary().source_patches().to_vec(),
         style_sheet: visible.projection().style_sheet().clone(),

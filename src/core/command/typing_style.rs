@@ -52,8 +52,9 @@ impl CommandInterpreter {
             return Err(DocumentError::UnsupportedFormatting);
         }
         document.validate_typing_named_style(&style)?;
-        if self.typing_style.named.as_ref() != Some(&style) {
+        if self.typing_style.named.as_ref() != Some(&style) || !self.typing_style.values.is_empty() {
             self.typing_style.named = Some(style);
+            self.typing_style.values.clear();
             if let Some(session) = self.insert_session.as_mut() {
                 if !session.replaying_program {
                     if let Some(program) = session.repeat_program.as_mut() {

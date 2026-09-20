@@ -134,6 +134,7 @@ internal sealed partial class EditorWindow : Window
             string defaults = Path.Combine(preferences.DirectoryPath, CoreDocument.FormatName(doc.State.format).Replace(" Source", "").ToLowerInvariant() + "_style.json");
             if (File.Exists(defaults) && doc.State.format != VIEM_FORMAT_CODE) doc.InitializeStyleDefaults(File.ReadAllBytes(defaults));
             if (preferences.StartupCommands.Length > 0) doc.InitializeStartup(preferences.StartupCommands);
+            GlobalSelectionOptions.Attach(doc, preferences.DirectoryPath);
             if (path != null) { savedSources[doc] = SHA256.HashData(source ?? []); if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReadOnly) != 0) doc.SetReadOnly(true); }
             if (path != null) recoveries[doc] = DocumentRecovery.Claim(doc, path, preferences.DirectoryPath, DispatcherQueue, e => ActivePane?.Report(e));
             doc.Disposed += () => recoveries.Remove(doc);
@@ -152,6 +153,7 @@ internal sealed partial class EditorWindow : Window
     internal EditorPane AddPane(CoreDocument doc, int? position = null)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
+        GlobalSelectionOptions.Attach(doc, preferences.DirectoryPath);
         var pane = new EditorPane(this, doc, preferences); pane.Focused += SetActive;
         pane.RememberedArgument = ActivePane?.RememberedArgument ?? ulong.MaxValue;
         Panes.Insert(position ?? Panes.Count, pane); RebuildPanes(); SetActive(pane); return pane;
@@ -350,6 +352,7 @@ internal sealed partial class EditorWindow : Window
     }
     internal Task ApplyEffects(EditorPane pane, HostEffects effects)
     {
+        GlobalSelectionOptions.Observe(pane.Document, effects.SelectionOptions);
         Task previous = effectQueue;
         async Task Next() { await previous; await ExecuteEffects(pane, effects, 0); }
         return effectQueue = Next();
@@ -399,7 +402,10 @@ internal sealed partial class EditorWindow : Window
                             foreach (string line in commands)
                             {
                                 var effectsFromLine = pane.View.SourceLine(line.TrimEnd('\r'), sourceDepth + 1);
-                                if (effectsFromLine != null) await ExecuteEffects(pane, effectsFromLine, sourceDepth + 1);
+                                if (effectsFromLine != null) {
+                                    GlobalSelectionOptions.Observe(pane.Document, effectsFromLine.SelectionOptions);
+                                    await ExecuteEffects(pane, effectsFromLine, sourceDepth + 1);
+                                }
                                 if (pane.View == null) break;
                             }
                             break;

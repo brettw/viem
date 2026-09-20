@@ -31,7 +31,8 @@ fn scrolled_source(mode: Mode) -> (TestCore, ViewId) {
     let document =
         Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::HtmlSource).unwrap();
     let mut core = Core::new(document);
-    let view = core.add_view(MockTextMeasurementProvider::new(), 180., 80.);
+    // Leave room for counted viewport motions with the default paragraph spacing.
+    let view = core.add_view(MockTextMeasurementProvider::new(), 180., 160.);
     match mode {
         Mode::Normal => {}
         Mode::VisualCharacter => input(&mut core, view, "v"),

@@ -158,6 +158,10 @@ _Static_assert(VIEM_EX_FRONTEND_EDIT == 1u, "Ex edit request");
 _Static_assert(VIEM_EX_FRONTEND_NORMAL == 15u, "Ex normal request");
 _Static_assert(VIEM_EX_FRONTEND_HAS_PATH == (1u << 1), "Ex path flag");
 _Static_assert(VIEM_EX_FRONTEND_HAS_RANGE == (1u << 2), "Ex range flag");
+_Static_assert(VIEM_MODE_SELECTION_CHARACTER == {selection_character}u, "native Selection character mode");
+_Static_assert(VIEM_MODE_SELECTION_LINE == {selection_line}u, "native Selection line mode");
+_Static_assert(VIEM_MODE_SELECTION_BLOCK == {selection_block}u, "native Selection block mode");
+_Static_assert(VIEM_EX_OPTION_AUTOSELECT == {autoselect}u, "autoselect option");
 _Static_assert(VIEM_EX_OPTION_WRAP == 1u, "Ex wrap option");
 _Static_assert(VIEM_EX_OPTION_FILE_FORMATS == 4u, "Ex fileformats option");
 _Static_assert(VIEM_EX_OPTION_VALUE_BOOLEAN == 1u, "Ex Boolean value");
@@ -625,6 +629,10 @@ static void typecheck(void) {{
 }}
 "#,
         abi = VIEM_CORE_ABI_VERSION,
+        selection_character = VIEM_MODE_SELECTION_CHARACTER,
+        selection_line = VIEM_MODE_SELECTION_LINE,
+        selection_block = VIEM_MODE_SELECTION_BLOCK,
+        autoselect = VIEM_EX_OPTION_AUTOSELECT,
         set_format_size = std::mem::size_of::<ViemSetFormatV1>(),
         set_format_operation = std::mem::offset_of!(ViemSetFormatV1, operation),
         set_format_document = std::mem::offset_of!(ViemSetFormatV1, document_id),

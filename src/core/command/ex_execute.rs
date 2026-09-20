@@ -61,6 +61,7 @@ pub struct ExExecutionContext {
     pub wrap: bool,
     pub fileformats: Vec<FileFormat>,
     pub search_options: super::search_regex::SearchOptions,
+    pub selection_options: super::SelectionOptions,
     /// Buffer-owned `textwidth` state.
     pub text_width: crate::document::TextWidthSetting,
     pub indentation: crate::document::IndentationSetting,
@@ -75,6 +76,7 @@ impl Default for ExExecutionContext {
             wrap: false,
             fileformats: vec![FileFormat::Unix, FileFormat::Dos],
             search_options: super::search_regex::SearchOptions::default(),
+            selection_options: Default::default(),
             text_width: crate::document::TextWidthSetting::default(),
             indentation: Default::default(),
             visible_whitespace: Default::default(),
@@ -274,7 +276,7 @@ pub enum ExOptionName {
     TextWidth,
     AutoIndent, TabStop, ShiftWidth, SoftTabStop, ExpandTab, SmartTab,
     ContinueCommentsOnEnter, ContinueCommentsOnOpenLine,
-    List, ListChars,
+    List, ListChars, KeyModel, SelectMode, AutoSelect,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2391,6 +2393,7 @@ fn prepare_set(
         file_format: document.file_format(),
         fileformats: context.fileformats.clone(),
         search_options: context.search_options,
+        selection_options: context.selection_options.clone(),
         text_width: context.text_width,
         indentation: context.indentation,
         visible_whitespace: context.visible_whitespace.clone(),
@@ -2398,6 +2401,10 @@ fn prepare_set(
     match operation {
         SetOperation::ShowChanged => {
             let mut shown = Vec::new();
+            let defaults = super::SelectionOptions::default();
+            if !values.selection_options.autoselect { shown.push(display(ExOptionName::AutoSelect, ExOptionValue::Boolean(false))); }
+            if values.selection_options.keymodel != defaults.keymodel { shown.push(display(ExOptionName::KeyModel, ExOptionValue::String(values.selection_options.keymodel.clone()))); }
+            if values.selection_options.selectmode != defaults.selectmode { shown.push(display(ExOptionName::SelectMode, ExOptionValue::String(values.selection_options.selectmode.clone()))); }
             if values.visible_whitespace.enabled.is_some() {
                 shown.push(display(ExOptionName::List, ExOptionValue::Boolean(values.visible_whitespace.enabled())));
             }
@@ -2493,6 +2500,7 @@ struct PendingOptions {
     file_format: FileFormat,
     fileformats: Vec<FileFormat>,
     search_options: super::search_regex::SearchOptions,
+    selection_options: super::SelectionOptions,
     text_width: crate::document::TextWidthSetting,
     indentation: crate::document::IndentationSetting,
     visible_whitespace: super::VisibleWhitespaceSetting,
@@ -2500,6 +2508,9 @@ struct PendingOptions {
 
 fn all_option_values(values: &PendingOptions) -> Vec<ExOptionDisplay> {
     let mut result = vec![
+        display(ExOptionName::AutoSelect, ExOptionValue::Boolean(values.selection_options.autoselect)),
+        display(ExOptionName::KeyModel, ExOptionValue::String(values.selection_options.keymodel.clone())),
+        display(ExOptionName::SelectMode, ExOptionValue::String(values.selection_options.selectmode.clone())),
         display(ExOptionName::HlSearch, ExOptionValue::Boolean(values.search_options.hlsearch)),
         display(ExOptionName::IncSearch, ExOptionValue::Boolean(values.search_options.incsearch)),
         display(ExOptionName::List, ExOptionValue::Boolean(values.visible_whitespace.enabled())),
@@ -2682,7 +2693,33 @@ fn apply_option_operation(
     let name = operation.name.to_ascii_lowercase();
     if apply_indentation_option(scope, operation, &mut values.indentation, plan)? { return Ok(()); }
     if apply_whitespace_option(scope, operation, &mut values.visible_whitespace, plan)? { return Ok(()); }
+    if matches!(name.as_str(), "keymodel" | "km" | "selectmode" | "slm") {
+        let keymodel = matches!(name.as_str(), "keymodel" | "km");
+        let key = if keymodel { ExOptionName::KeyModel } else { ExOptionName::SelectMode };
+        let current = if keymodel { &mut values.selection_options.keymodel } else { &mut values.selection_options.selectmode };
+        if matches!(operation.action, OptionAction::Query | OptionAction::Enable) { show_option(plan, key, ExOptionValue::String(current.clone())); return Ok(()); }
+        let defaults = super::SelectionOptions::default();
+        let allowed: &[&str] = if keymodel { &["startsel", "stopsel"] } else { &["mouse", "key", "cmd"] };
+        let old = current.clone();
+        let value = match &operation.action {
+            OptionAction::Assign(value) => value.clone(),
+            OptionAction::Reset => if keymodel { defaults.keymodel } else { defaults.selectmode },
+            OptionAction::Append(value) => [current.as_str(), value.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(","),
+            OptionAction::Prepend(value) => [value.as_str(), current.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(","),
+            OptionAction::Remove(value) => current.split(',').filter(|part| !value.split(',').any(|removed| removed == *part)).collect::<Vec<_>>().join(","),
+            _ => return Err(ExExecuteError::UnsupportedOptionOperation(name)),
+        };
+        let mut parts = Vec::new();
+        for part in value.split(',').filter(|_| !value.is_empty()) {
+            if !allowed.contains(&part) { return Err(ExExecuteError::InvalidOptionValue { option: name, value }); }
+            if !parts.contains(&part) { parts.push(part); }
+        }
+        *current = parts.join(",");
+        if old != *current { plan.outcome.option_effects.push(ExOptionEffect { scope, name: key, old_value: ExOptionValue::String(old), new_value: ExOptionValue::String(current.clone()) }); }
+        return Ok(());
+    }
     match name.as_str() {
+        "autoselect" => apply_boolean_option(scope, ExOptionName::AutoSelect, true, &operation.action, &mut values.selection_options.autoselect, plan),
         "hlsearch" | "hls" => apply_boolean_option(scope, ExOptionName::HlSearch, false, &operation.action, &mut values.search_options.hlsearch, plan),
         "incsearch" | "is" => apply_boolean_option(scope, ExOptionName::IncSearch, false, &operation.action, &mut values.search_options.incsearch, plan),
         "ignorecase" | "ic" => apply_boolean_option(
@@ -3882,7 +3919,9 @@ mod tests {
         ).unwrap();
         let ExFrontendRequest::Info(ExInfoRequest::Options(options)) =
             &plan.outcome.frontend_requests[0] else { panic!("expected options") };
-        assert_eq!(options.len(), 19);
+        assert_eq!(options.len(), 22);
+        assert!(options.iter().any(|option| option.name == ExOptionName::AutoSelect
+            && option.value == ExOptionValue::Boolean(true)));
         assert!(options.iter().any(|option| option.name == ExOptionName::TextWidth));
     }
 

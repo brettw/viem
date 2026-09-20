@@ -11,8 +11,16 @@ internal sealed unsafe partial class CoreView
     public void BeginComposition()
     {
         var p = Presentation;
+        ulong start = p.cursor_utf8_offset, end = start;
+        if (IsTextSelectionMode(p.mode))
+        {
+            var selection = LogicalSelection();
+            if (selection.kind == VIEM_LOGICAL_SELECTION_KIND_BLOCK)
+                throw new InvalidOperationException("IME composition requires a character or line selection.");
+            start = selection.text_start; end = selection.text_end;
+        }
         Composing = true;
-        try { Apply(o => { var r = New<ViemCompositionBeginV1>(); r.document_revision = p.document_revision; r.replacement_start = p.cursor_utf8_offset; r.replacement_end = p.cursor_utf8_offset;
+        try { Apply(o => { var r = New<ViemCompositionBeginV1>(); r.document_revision = p.document_revision; r.replacement_start = start; r.replacement_end = end;
             return viem_core_view_composition_begin(Document.Handle, Id, &r, o); }); }
         catch { Composing = false; throw; }
     }

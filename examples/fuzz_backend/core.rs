@@ -398,7 +398,7 @@ fn validate(core: &Core<MockTextMeasurementProvider>, views: &[ViewId]) -> Resul
             .filter(|s| s.document_revision == doc.revision())
         {
             let mut previous = -f32::MAX;
-            for row in &snapshot.rows {
+            for row in snapshot.rows.iter() {
                 if !row.y.is_finite()
                     || row.y < previous
                     || !row.height().is_finite()

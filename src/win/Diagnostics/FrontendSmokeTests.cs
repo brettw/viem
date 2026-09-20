@@ -76,6 +76,7 @@ internal static class FrontendSmokeTests
     {
         var checks = new List<string>(UiChecks);
         void Check(bool condition, string name) { if (!condition) throw new InvalidOperationException(name); checks.Add(name); }
+        GlobalSelectionOptionTests.Run(device, dispatcher, Check);
         void Scenario(string text, uint format, Action<CoreDocument, CoreView> run)
         { using var doc = new CoreDocument(Encoding.UTF8.GetBytes(text), format: format); using var view = new CoreView(doc, device, dispatcher, 700, 400); run(doc, view); }
         Scenario("alpha beta\nsecond line\n", 1, (doc, view) => {
@@ -107,6 +108,45 @@ internal static class FrontendSmokeTests
         Scenario("abc", 1, (doc, view) => {
             view.Command("i"); view.Key(VIEM_KEY_CONTROL_CHARACTER, 'q'); view.ClipboardText = "paste"; view.Paste(true);
             Check(doc.FormattedText() == "pasteabc", "Windows paste overrides literal-next input");
+        });
+        Scenario("alpha beta", VIEM_FORMAT_PLAIN_TEXT, (doc, view) => {
+            view.Ex("set keymodel=startsel,stopsel selectmode=mouse,key");
+            view.Key(VIEM_KEY_RIGHT, modifiers: VIEM_KEY_MODIFIER_SHIFT); view.Key(VIEM_KEY_RIGHT, modifiers: VIEM_KEY_MODIFIER_SHIFT);
+            byte[] before = doc.Source(doc.State.document_revision);
+            view.BeginComposition(); view.UpdateComposition("日本", 2, 0);
+            Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before), "Select IME marked text stays outside authoritative source");
+            view.CancelComposition();
+            Check(view.IsTextSelection && view.LogicalSelection().text_end == 2 && doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before),
+                "cancelling Select IME restores the exact selected text and Select mode");
+            view.BeginComposition(); view.UpdateComposition("日本", 2, 0); view.CommitComposition("日本");
+            Check(doc.FormattedText() == "日本pha beta", "Select IME commits over the selected range rather than at its active caret");
+            view.Undo(); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before), "one undo restores a Select IME replacement");
+        });
+        Scenario("<p>alpha beta</p>", VIEM_FORMAT_HTML, (doc, view) => {
+            view.Ex("set keymodel=startsel,stopsel selectmode=mouse,key,cmd");
+            byte[] before = doc.Source(doc.State.document_revision);
+            view.SelectFromCommand("viw");
+            Check(view.IsTextSelection && view.LogicalSelection().text_start == 0 && view.LogicalSelection().text_end == 5
+                && doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before),
+                "native text-object selection remains a command sequence when selectmode includes cmd");
+            Check(view.CanFormatCharacter, "rich character controls enable for Select mode");
+            view.ToggleScript(VIEM_SCRIPT_POSITION_SUPERSCRIPT);
+            Check(view.Typography().Info.script_position == VIEM_SCRIPT_POSITION_SUPERSCRIPT, "formatting applies to Select mode without replacing its text");
+            view.Undo(); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before), "Select formatting retains one-step undo");
+            view.Ex("set noautoselect selectmode=mouse"); view.SelectFromCommand("viw", VIEM_SELECTION_ORIGIN_MOUSE);
+            Check(view.IsTextSelection, "native double-click selection uses the mouse option");
+            view.SelectFromCommand("viw", VIEM_SELECTION_ORIGIN_KEY);
+            Check(view.IsVisual && !view.IsTextSelection, "native menu selection independently uses the key option");
+        });
+        Scenario("before chosen after", VIEM_FORMAT_PLAIN_TEXT, (doc, view) => {
+            view.Place(7, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, doc.State.document_revision);
+            view.Command("i"); view.SelectFromCommand("viw");
+            Check(view.Presentation.mode == VIEM_MODE_SELECTION_CHARACTER
+                && view.LogicalSelection().text_start == 7 && view.LogicalSelection().text_end == 13,
+                "native menu selection preserves the insertion boundary before entering its command sequence");
+            view.Key(VIEM_KEY_RIGHT);
+            Check(view.Presentation.mode == VIEM_MODE_INSERT && view.Presentation.cursor_utf8_offset == 13,
+                "collapsing native menu selection resumes its original Insert mode");
         });
         Scenario("alpha\nbeta", 1, (doc, view) => {
             view.Command(":"); view.Text("echo 日本語"); var prompt = view.Prompt();
@@ -256,6 +296,23 @@ internal static class FrontendSmokeTests
             && KeyPolicy.Route(VirtualKey.Z, true, true, true).Action == NativeAction.None, "AltGr+Z does not invoke history");
         Check(KeyPolicy.Route(VirtualKey.Z, true, true, false, true).Kind == VIEM_KEY_CONTROL_CHARACTER, "literal-next preserves Ctrl+Shift+Z as a control character");
         Check(KeyPolicy.Route(VirtualKey.F5, false, true, false).Modifiers == VIEM_KEY_MODIFIER_SHIFT, "function-key modifiers preserved");
+        foreach (var key in new[] { VirtualKey.Left, VirtualKey.Right, VirtualKey.Up, VirtualKey.Down, VirtualKey.Home, VirtualKey.End, VirtualKey.PageUp, VirtualKey.PageDown })
+        {
+            var route = KeyPolicy.Route(key, false, true, false);
+            Check(route.Kind != 0 && route.Modifiers == VIEM_KEY_MODIFIER_SHIFT, $"Shift+{key} reaches the core as selection navigation");
+        }
+        var wordLeft = KeyPolicy.Route(VirtualKey.Left, true, true, false);
+        var wordRight = KeyPolicy.Route(VirtualKey.Right, true, true, false);
+        Check(wordLeft.Kind == VIEM_KEY_WORD_LEFT && wordRight.Kind == VIEM_KEY_WORD_RIGHT
+            && wordLeft.Modifiers == (VIEM_KEY_MODIFIER_SHIFT | VIEM_KEY_MODIFIER_CONTROL) && wordRight.Modifiers == wordLeft.Modifiers,
+            "Ctrl+Shift word navigation preserves both movement and selection");
+        Check(KeyPolicy.Route(VirtualKey.Home, true, true, false).Kind == VIEM_KEY_DOCUMENT_START
+            && KeyPolicy.Route(VirtualKey.End, true, true, false).Kind == VIEM_KEY_DOCUMENT_END
+            && KeyPolicy.Route(VirtualKey.End, true, true, false).Modifiers == (VIEM_KEY_MODIFIER_SHIFT | VIEM_KEY_MODIFIER_CONTROL),
+            "Ctrl+Shift Home/End retain document-edge navigation and Shift");
+        Check(KeyPolicy.Route(VirtualKey.A, false, true, false).Kind == 0
+            && KeyPolicy.Route(VirtualKey.A, true, true, true).Action == NativeAction.None,
+            "shifted characters and AltGr text remain native text input");
         Check(KeyPolicy.Route(VirtualKey.Number6, true, false, false).Codepoint == '^', "preserve vi Ctrl+6/Ctrl+^");
         File.WriteAllText(ReportPath!, JsonSerializer.Serialize(new { passed = true, count = checks.Count, checks }, new JsonSerializerOptions { WriteIndented = true }));
     }

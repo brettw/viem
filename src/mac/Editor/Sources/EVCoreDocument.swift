@@ -515,6 +515,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             }
         } catch { configurationWarning = error.localizedDescription }
         let startupDiagnostics = EVCoreStartup.initialize(core: core, file: configuration.startupFile)
+        try EVSelectionPreferences.attach(self)
         if !startupDiagnostics.isEmpty {
             configurationWarning = ([configurationWarning].compactMap { $0 } + startupDiagnostics).joined(separator: "\n")
         }
@@ -1531,6 +1532,14 @@ final class EVCoreViewSession {
         return try performCoreOperation("Select all text") { outcome in
             viem_core_view_select_all(document.core, viewID, state.document_id,
                                       state.document_revision, outcome)
+        }
+    }
+
+    @discardableResult
+    func setSelectionOrigin(_ origin: UInt32, returningTo mode: UInt32 = UInt32(VIEM_MODE_NORMAL)) throws -> ViemCoreOutcomeV1 {
+        try performCoreOperation("Set selection origin") { outcome in
+            viem_core_view_set_selection_origin(document.core, viewID, origin,
+                [UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE)].contains(mode) ? mode : UInt32(VIEM_MODE_NORMAL), outcome)
         }
     }
 

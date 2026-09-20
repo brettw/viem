@@ -185,6 +185,7 @@ internal static class InputRoutingTests
         await Text(":%d"); await Key(VirtualKey.Enter);
         Check(pane.Document.FormattedText() == "" && pane.LastError == null, "native input test leaves an empty document without routing errors");
         pane.View.Wrap(true);
+        await SelectionInputTests.Run(pane);
     }
     public static async Task FocusPane(EditorPane pane, string text)
     {

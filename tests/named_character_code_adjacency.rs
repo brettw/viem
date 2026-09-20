@@ -12,8 +12,8 @@ fn assigning_code_joins_adjacent_spans_without_rewriting_their_bodies() {
         ("\\``b`", 0, 1, "`` `b ``"),
         ("` a `b", 1, 2, "`ab`"),
         ("` a` ", 2, 3, "`  a  `"),
-        ("`a`**b**", 1, 2, "`a`**`b`**"),
-        ("**a**`b`", 0, 1, "**`a`**`b`"),
+        ("`a`**b**", 1, 2, "`ab`"),
+        ("**a**`b`", 0, 1, "`ab`"),
         ("`é`👩‍💻x", 2, 13, "`é👩‍💻`x"),
     ] {
         for encoding in [Encoding::Utf8, Encoding::Utf16Le] {
@@ -31,6 +31,7 @@ fn assigning_code_joins_adjacent_spans_without_rewriting_their_bodies() {
                 .iter()
                 .filter(|span| {
                     span.application == StyleApplication::Semantic(SemanticInlineStyle::Strong)
+                        && (span.range.end <= start || span.range.start >= end)
                 })
                 .cloned()
                 .collect::<Vec<_>>();

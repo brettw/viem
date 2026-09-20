@@ -76,6 +76,13 @@ internal sealed unsafe class CoreDocument : IDisposable
         fixed (byte* p = source) Check(viem_core_initialize_startup(Handle, p, (ulong)source.Length, Marshal.GetFunctionPointerForDelegate(callback), null), "Load startup.viem");
         GC.KeepAlive(callback); StartupDiagnostics = string.Join("\n", diagnostics);
     }
+    public string SelectionOption(uint name) => Encoding.UTF8.GetString(Copy((p, n, required) =>
+        viem_core_copy_selection_option(Handle, name, p, n, required)));
+    public void SetSelectionOption(uint name, string value)
+    {
+        byte[] bytes = Encoding.UTF8.GetBytes(value);
+        fixed (byte* p = bytes) Check(viem_core_set_selection_option(Handle, name, p, (ulong)bytes.Length), "Set global selection option");
+    }
     public void ConfigureDefaults(byte[] indentation, byte[] whitespace, uint width, byte[] associations)
     {
         string key = Convert.ToBase64String(indentation) + Convert.ToBase64String(whitespace) + width + Convert.ToBase64String(associations);

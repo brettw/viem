@@ -536,6 +536,9 @@ fn document_edge_keys_ignore_line_policy_and_preserve_editing_modes() {
             (Some(Key::Ctrl('v')), Mode::VisualBlock),
         ] {
             let (mut core, view) = editor(Document::new(source), 85.);
+            // This fixture exercises Vim mode-preserving motions, without the
+            // native stopsel policy that intentionally leaves a selection.
+            assert!(core.set_selection_option(true, ""));
             core.handle(view, CoreEvent::SetLineMode(line_mode))
                 .unwrap();
             keys(&mut core, view, "l");

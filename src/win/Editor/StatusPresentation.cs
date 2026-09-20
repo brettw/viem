@@ -164,5 +164,6 @@ internal sealed partial class EditorPane
     internal ScrollViewer OutputScrollControl => outputScroll;
     internal Button OutputCloseControl => outputClose;
     internal TextBlock LocationControl => location;
+    internal TextBlock ModeControl => mode;
 #endif
 }

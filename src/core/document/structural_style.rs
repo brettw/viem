@@ -198,7 +198,7 @@ impl Document {
                         self.text_point(range.end)?,
                     )?),
                     style,
-                }),
+                }, false),
             Assignment::Paragraph(style) => {
                 if style == self.projection().style_sheet().base_paragraph {
                     if let Some(prepared) = self.prepare_markdown_code_as_prose(&range)? {

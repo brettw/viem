@@ -94,7 +94,7 @@ impl CommandInterpreter {
             None => (self.cursor(), self.boundary_affinity()),
         };
         let boundary = CaretTarget::Boundary { offset, affinity };
-        if !self.mode().addresses_characters() {
+        if self.is_text_selection() || !self.mode().addresses_characters() {
             return boundary;
         }
         let lines = document.hard_line_snapshot();

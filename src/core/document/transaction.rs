@@ -1185,7 +1185,10 @@ impl Document {
                         style,
                     },
                     super::StyleNamespace::Character => {
-                        PersistedStyleIntent::AssignCharacterStyle { range, style }
+                        return self.prepare_character_style_choice(
+                            range.start().offset()..range.end().offset(),
+                            style,
+                        );
                     }
                 };
                 self.prepare_persisted_style_intent(intent)
@@ -1683,31 +1686,7 @@ impl Document {
         }
         if self.format() == Format::HtmlSource {
             let translated = super::html_source::translate_style(self, &intent)?;
-            if translated.patches.is_empty() {
-                if translated.style_sheet == *self.projection().style_sheet() {
-                    return Ok(self.no_op_prepared());
-                }
-                return self.prepare_html_style_sheet(
-                    translated.style_sheet,
-                    self.include_style_definitions_in_file(),
-                );
-            }
-            let mut prepared = self.prepare_html_source_patches(translated.patches)?;
-            if let PreparedPublication::State(candidate) = &mut prepared.publication {
-                let mut actual = candidate.projection.style_sheet().clone();
-                actual.retain_configuration_deletions(&translated.style_sheet);
-                actual.set_configuration_revision(translated.style_sheet.revision);
-                if actual != translated.style_sheet {
-                    return Err(DocumentError::VerificationFailed.into());
-                }
-                let assignment = candidate.projection.document_style().clone();
-                candidate.projection.install_configuration_styles(
-                    candidate.revision,
-                    actual,
-                    assignment,
-                );
-            }
-            return Ok(prepared);
+            return self.prepare_html_source_style_translation(translated);
         }
         if self.format().is_markdown() {
             if let PersistedStyleIntent::AssignCharacterStyle { range, style } = &intent {
@@ -2050,12 +2029,13 @@ impl Document {
                 selected, structural_style::Assignment::Paragraph(style.clone()),
             )? { return Ok(prepared); }
         }
-        self.prepare_html_named_style_raw(intent)
+        self.prepare_html_named_style_raw(intent, false)
     }
 
     fn prepare_html_named_style_raw(
         &self,
         intent: PersistedStyleIntent,
+        clean_character: bool,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         let revision = Revision(self.next_revision);
         let decoded = self.state().encoding.decode(&self.source_bytes())?;
@@ -2149,7 +2129,16 @@ impl Document {
                 let (opening, closing) = if style.0.is_empty() {
                     ("<span data-viem-character=\"none\">".to_owned(), "</span>")
                 } else if style.0 == "Code" {
-                    ("<code>".to_owned(), "</code>")
+                    // A class distinguishes the chosen style from inherited
+                    // source declarations when the native element alone would
+                    // leave those declarations above the named style.
+                    let inherited = clean_character && self.projection()
+                        .style_spans_for_region(&range).iter()
+                        .any(|span| matches!(&span.application, StyleApplication::Direct(value)
+                            if *value != CharacterProperties::default()));
+                    (if inherited {
+                        format!("<code class=\"{}\">", super::html_styles::class_name(style, true))
+                    } else { "<code>".to_owned() }, "</code>")
                 } else {
                     (
                         format!(
@@ -2170,7 +2159,7 @@ impl Document {
                 let named_properties = super::html_styles::character_chain(&expected, style);
                 for source in sources {
                     let mut preserved = CharacterProperties::default();
-                    if style.0 != "Code" {
+                    if style.0 != "Code" && !clean_character {
                         let at = *mapped_text
                             .range(..=source.start)
                             .next_back()
@@ -2317,6 +2306,7 @@ impl Document {
                 &(range.start().offset()..range.end().offset()),
                 style,
                 false,
+                !clean_character,
             )?;
             for (offset, grapheme) in
                 self.text()[range.start().offset()..range.end().offset()].grapheme_indices(true)
@@ -3695,6 +3685,33 @@ impl Document {
             self.next_projected_block_id,
             PreparedPublication::State(candidate),
         ))
+    }
+
+    fn prepare_html_source_style_translation(
+        &self,
+        translated: super::html_source::TranslatedStyle,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if translated.patches.is_empty() {
+            if translated.style_sheet == *self.projection().style_sheet() {
+                return Ok(self.no_op_prepared());
+            }
+            return self.prepare_html_style_sheet(
+                translated.style_sheet,
+                self.include_style_definitions_in_file(),
+            );
+        }
+        let mut prepared = self.prepare_html_source_patches(translated.patches)?;
+        if let PreparedPublication::State(candidate) = &mut prepared.publication {
+            let mut actual = candidate.projection.style_sheet().clone();
+            actual.retain_configuration_deletions(&translated.style_sheet);
+            actual.set_configuration_revision(translated.style_sheet.revision);
+            if actual != translated.style_sheet {
+                return Err(DocumentError::VerificationFailed.into());
+            }
+            let assignment = candidate.projection.document_style().clone();
+            candidate.projection.install_configuration_styles(candidate.revision, actual, assignment);
+        }
+        Ok(prepared)
     }
 
     fn prepare_html_source_patches(

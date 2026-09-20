@@ -44,6 +44,12 @@ internal sealed unsafe partial class CoreView : IDisposable
     public ViemViewportStateV1 Viewport { get { var p = New<ViemViewportStateV1>(); Check(viem_core_view_viewport_state(Document.Handle, Id, &p), "Read viewport"); return p; } }
     public ViemViewLineLocationV1 Location { get { var p = New<ViemViewLineLocationV1>(); Check(viem_core_view_line_location(Document.Handle, Id, &p), "Read location"); return p; } }
     public bool IsVisual => Presentation.mode is VIEM_MODE_VISUAL_CHARACTER or VIEM_MODE_VISUAL_LINE or VIEM_MODE_VISUAL_BLOCK;
+    public static bool IsTextSelectionMode(uint mode) => mode is VIEM_MODE_SELECT_CHARACTER or VIEM_MODE_SELECT_LINE or VIEM_MODE_SELECT_BLOCK
+        or VIEM_MODE_SELECTION_CHARACTER or VIEM_MODE_SELECTION_LINE or VIEM_MODE_SELECTION_BLOCK;
+    public bool IsTextSelection => IsTextSelectionMode(Presentation.mode);
+    public bool HasSelection => Presentation.mode is VIEM_MODE_VISUAL_CHARACTER or VIEM_MODE_VISUAL_LINE or VIEM_MODE_VISUAL_BLOCK
+        or VIEM_MODE_SELECT_CHARACTER or VIEM_MODE_SELECT_LINE or VIEM_MODE_SELECT_BLOCK
+        or VIEM_MODE_SELECTION_CHARACTER or VIEM_MODE_SELECTION_LINE or VIEM_MODE_SELECTION_BLOCK;
     public bool HasPendingMapping { get { byte value = 0; Check(viem_core_view_has_pending_mapping(Document.Handle, Id, &value), "Read mapping"); return value != 0; } }
     private delegate uint Turn(ViemCommandTurnContextV2* context, ViemCoreOutcomeV1* outcome, ulong* effects);
     private HostEffects? Send(Turn turn, bool publish = true)
@@ -78,9 +84,34 @@ internal sealed unsafe partial class CoreView : IDisposable
     public void Ex(string command) { Key(VIEM_KEY_ESCAPE); Command(":"); Text(command); Key(VIEM_KEY_ENTER); }
     public void CopyOrCut(bool cut)
     {
-        if (!IsVisual) return;
-        Command(cut ? "\"+d" : "\"+y");
+        SelectionCommand(cut ? "\"+d" : "\"+y");
     }
+    public void SelectionCommand(string command)
+    {
+        if (!HasSelection) return;
+        // Native actions operate on the selection; their command spelling
+        // must not become replacement text in Select mode.
+        if (IsTextSelection) Key(VIEM_KEY_CONTROL_CHARACTER, 'o');
+        Command(command);
+    }
+    public void SelectFromCommand(string command, uint origin = VIEM_SELECTION_ORIGIN_KEY, uint? returnMode = null)
+    {
+        var before = Presentation;
+        returnMode ??= before.mode;
+        Key(VIEM_KEY_ESCAPE);
+        if ((before.mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE) && before.document_revision == Document.State.document_revision)
+            Place(before.cursor_utf8_offset, before.cursor_affinity, before.document_revision);
+        foreach (var rune in command.EnumerateRunes())
+        {
+            // selectmode=cmd may make the leading v enter Select mode. The
+            // remaining synthetic text-object keys are still commands.
+            if (IsTextSelection) Key(VIEM_KEY_CONTROL_CHARACTER, 'g');
+            Key(VIEM_KEY_CHARACTER, (uint)rune.Value);
+        }
+        if (HasSelection) SetSelectionOrigin(origin, returnMode.Value);
+    }
+    public void SetSelectionOrigin(uint origin, uint returnMode = VIEM_MODE_NORMAL) => Apply(o => viem_core_view_set_selection_origin(Document.Handle, Id, origin,
+        returnMode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE ? returnMode : VIEM_MODE_NORMAL, o));
     public void Paste(bool plain = false)
     {
         var presentation = Presentation;
@@ -100,6 +131,7 @@ internal sealed unsafe partial class CoreView : IDisposable
         try
         {
             if (Presentation.mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE or VIEM_MODE_COMMAND_LINE) { Key(VIEM_KEY_CONTROL_CHARACTER, 'r'); Command("+"); }
+            else if (HasSelection) SelectionCommand("\"+p");
             else Command("\"+p");
         }
         finally { ClipboardFragment = rich; }

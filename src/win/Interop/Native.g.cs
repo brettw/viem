@@ -1375,6 +1375,12 @@ internal static unsafe partial class Native
     public const uint VIEM_MODE_VISUAL_LINE = 5u;
     public const uint VIEM_MODE_VISUAL_BLOCK = 6u;
     public const uint VIEM_MODE_COMMAND_LINE = 7u;
+    public const uint VIEM_MODE_SELECTION_CHARACTER = 11u;
+    public const uint VIEM_MODE_SELECTION_LINE = 12u;
+    public const uint VIEM_MODE_SELECTION_BLOCK = 13u;
+    public const uint VIEM_MODE_SELECT_CHARACTER = 8u;
+    public const uint VIEM_MODE_SELECT_LINE = 9u;
+    public const uint VIEM_MODE_SELECT_BLOCK = 10u;
     public const uint VIEM_CLIPBOARD_TARGET_CLIPBOARD = 1u;
     public const uint VIEM_CLIPBOARD_TARGET_PRIMARY = 2u;
     public const uint VIEM_CLIPBOARD_TURN_HAS_READ = (1u << 0);
@@ -1480,6 +1486,9 @@ internal static unsafe partial class Native
     public const uint VIEM_EX_OPTION_VALUE_STRING = 5u;
     public const uint VIEM_EX_OPTION_LIST = 17u;
     public const uint VIEM_EX_OPTION_LISTCHARS = 18u;
+    public const uint VIEM_EX_OPTION_KEYMODEL = 21u;
+    public const uint VIEM_EX_OPTION_SELECTMODE = 22u;
+    public const uint VIEM_EX_OPTION_AUTOSELECT = 23u;
     public const uint VIEM_EX_OPTION_HLSEARCH = 19u;
     public const uint VIEM_EX_OPTION_INCSEARCH = 20u;
     public const uint VIEM_EX_JUMP_CURRENT = (1u << 0);
@@ -1731,6 +1740,9 @@ internal static unsafe partial class Native
     public static readonly uint VIEM_COMPOSITION_OVERLAY_INFO_V1_SIZE = ((uint)sizeof(ViemCompositionOverlayInfoV1));
     public static readonly uint VIEM_COMPOSITION_OVERLAY_UTF8_RANGE_V1_SIZE = ((uint)sizeof(ViemCompositionOverlayUtf8RangeV1));
     public static readonly uint VIEM_CORE_OUTCOME_V1_SIZE = ((uint)sizeof(ViemCoreOutcomeV1));
+    public const uint VIEM_SELECTION_ORIGIN_MOUSE = 1u;
+    public const uint VIEM_SELECTION_ORIGIN_KEY = 2u;
+    public const uint VIEM_SELECTION_ORIGIN_COMMAND = 3u;
     public const uint VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT = 1u;
     public const uint VIEM_LINE_LOCATION_FRAGMENT_EXACT = 2u;
     public static readonly uint VIEM_VIEW_LINE_LOCATION_V1_SIZE = ((uint)sizeof(ViemViewLineLocationV1));
@@ -1873,6 +1885,12 @@ internal static unsafe partial class Native
     public static extern uint viem_core_view_place_cursor(ulong @core, ulong @view, ViemPlaceCursorV1* @request, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_select_all(ulong @core, ulong @view, ulong @document_id, ulong @document_revision, ViemCoreOutcomeV1* @out_outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_copy_selection_option(ulong @core, uint @option_kind, byte* @output, ulong @output_capacity, ulong* @out_required);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_set_selection_option(ulong @core, uint @option_kind, byte* @value, ulong @value_length);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_set_selection_origin(ulong @core, ulong @view, uint @origin, uint @return_mode, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_go_to_line(ulong @core, ulong @view, ulong @document_id, ulong @document_revision, ulong @line, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

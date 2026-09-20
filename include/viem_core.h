@@ -261,6 +261,12 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_MODE_VISUAL_LINE 5u
 #define VIEM_MODE_VISUAL_BLOCK 6u
 #define VIEM_MODE_COMMAND_LINE 7u
+#define VIEM_MODE_SELECTION_CHARACTER 11u
+#define VIEM_MODE_SELECTION_LINE 12u
+#define VIEM_MODE_SELECTION_BLOCK 13u
+#define VIEM_MODE_SELECT_CHARACTER 8u
+#define VIEM_MODE_SELECT_LINE 9u
+#define VIEM_MODE_SELECT_BLOCK 10u
 
 #define VIEM_CLIPBOARD_TARGET_CLIPBOARD 1u
 #define VIEM_CLIPBOARD_TARGET_PRIMARY 2u
@@ -414,6 +420,9 @@ ViemStatus viem_external_file_review_finish(
 #define VIEM_EX_OPTION_VALUE_STRING 5u
 #define VIEM_EX_OPTION_LIST 17u
 #define VIEM_EX_OPTION_LISTCHARS 18u
+#define VIEM_EX_OPTION_KEYMODEL 21u
+#define VIEM_EX_OPTION_SELECTMODE 22u
+#define VIEM_EX_OPTION_AUTOSELECT 23u
 #define VIEM_EX_OPTION_HLSEARCH 19u
 #define VIEM_EX_OPTION_INCSEARCH 20u
 
@@ -1821,7 +1830,7 @@ typedef struct ViemKeyInputV1 {
   uint32_t kind;
   /* Unicode scalar, or function-key number 1..35 for VIEM_KEY_FUNCTION. */
   uint32_t codepoint;
-  /* VIEM_KEY_MODIFIER_* bits for function keys; zero for other kinds. */
+  /* VIEM_KEY_MODIFIER_* bits for function and navigation keys; zero otherwise. */
   uint32_t modifiers;
 } ViemKeyInputV1;
 
@@ -2266,6 +2275,25 @@ ViemStatus viem_core_view_place_cursor(
 ViemStatus viem_core_view_select_all(
     ViemCoreHandle core, ViemViewId view,
     uint64_t document_id, uint64_t document_revision,
+    ViemCoreOutcomeV1 *out_outcome);
+
+/* Selection optionKind is VIEM_EX_OPTION_KEYMODEL/SELECTMODE/AUTOSELECT.
+ * AUTOSELECT uses the UTF-8 boolean spelling "1" or "0".
+ * Copy reports required UTF8 bytes, with no terminator. Setter updates all
+ * views without dispatching input or disturbing their mode/pending command. */
+ViemStatus viem_core_copy_selection_option(ViemCoreHandle core, uint32_t option_kind,
+    uint8_t *output, uint64_t output_capacity, uint64_t *out_required);
+ViemStatus viem_core_set_selection_option(ViemCoreHandle core, uint32_t option_kind,
+    const uint8_t *value, uint64_t value_length);
+
+#define VIEM_SELECTION_ORIGIN_MOUSE 1u
+#define VIEM_SELECTION_ORIGIN_KEY 2u
+#define VIEM_SELECTION_ORIGIN_COMMAND 3u
+/* Choose native Selection or Vim Select/Visual using the configured options.
+ * return_mode is NORMAL, INSERT, or REPLACE: native navigation resumes this
+ * mode when it ends the selection. It does not alter the selected extent. */
+ViemStatus viem_core_view_set_selection_origin(
+    ViemCoreHandle core, ViemViewId view, uint32_t origin, uint32_t return_mode,
     ViemCoreOutcomeV1 *out_outcome);
 
 /* Enter Normal mode and reveal the first nonblank grapheme on a logical hard

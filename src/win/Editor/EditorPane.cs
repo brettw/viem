@@ -49,7 +49,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private (string Text, string Fragment)? clipboardOverride;
     private readonly DispatcherTimer blink = new();
     private readonly DispatcherTimer mapping = new() { Interval = TimeSpan.FromSeconds(1) };
-    private bool disposed, refreshing, scrollUpdating, inputUpdating, textCaptureQueued, composing, dragging, caretVisible = true;
+    private bool disposed, refreshing, scrollUpdating, inputUpdating, textCaptureQueued, composing, compositionRejected, dragging, caretVisible = true;
     private bool active;
     public bool IsActive { get => active; set { active = value; Canvas.Invalidate(); } }
     private LayoutSnapshot? snapshot;
@@ -99,7 +99,11 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Canvas.PointerMoved += (_, e) => { if (dragging && View != null) { var p = dragPoint = e.GetCurrentPoint(Canvas).Position; Run(() => View.Place((float)Math.Clamp(p.X, 0, Canvas.ActualWidth), (float)Math.Clamp(p.Y, 0, Canvas.ActualHeight), true)); } };
         Canvas.PointerReleased += (_, e) => { dragging = false; Canvas.ReleasePointerCapture(e.Pointer); };
         Canvas.PointerCaptureLost += (_, _) => dragging = false;
-        Canvas.DoubleTapped += (_, e) => Run(() => { var p = e.GetPosition(Canvas); View?.Key(VIEM_KEY_ESCAPE); View?.Place((float)p.X, (float)p.Y); View?.Command("viw"); e.Handled = true; });
+        Canvas.DoubleTapped += (_, e) => Run(() => {
+            uint returnMode = View?.Presentation.mode ?? VIEM_MODE_NORMAL;
+            var p = e.GetPosition(Canvas); View?.Key(VIEM_KEY_ESCAPE); View?.Place((float)p.X, (float)p.Y);
+            View?.SelectFromCommand("viw", VIEM_SELECTION_ORIGIN_MOUSE, returnMode); e.Handled = true;
+        });
         Canvas.PointerWheelChanged += (_, e) => {
             if (View == null) return; var p = e.GetCurrentPoint(Canvas); bool ctrl = Down(VirtualKey.Control);
             Run(() => { if (ctrl) View.StepZoom(p.Properties.MouseWheelDelta > 0); else { var v = View.Viewport; float delta = -p.Properties.MouseWheelDelta / 120f * 60; View.Scroll(v.left + ((p.Properties.IsHorizontalMouseWheel || Down(VirtualKey.Shift)) ? delta : 0), v.top + ((!p.Properties.IsHorizontalMouseWheel && !Down(VirtualKey.Shift)) ? delta : 0)); } }); e.Handled = true;
@@ -118,10 +122,16 @@ internal sealed partial class EditorPane : Grid, IDisposable
             textCaptureQueued = true;
             DispatcherQueue.TryEnqueue(CaptureCommittedText);
         };
-        input.TextCompositionStarted += (_, _) => { composing = true; if (View?.Presentation.mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE) Run(() => View.BeginComposition()); };
+        input.TextCompositionStarted += (_, _) => {
+            composing = true; compositionRejected = false;
+            if (View is { } view && (view.Presentation.mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE || view.IsTextSelection))
+                Run(() => { try { view.BeginComposition(); } catch { compositionRejected = true; throw; } });
+        };
         input.TextCompositionChanged += (_, _) => { if (View?.Composing == true) Run(() => View.UpdateComposition(input.Text, input.SelectionStart, input.SelectionLength)); };
         input.TextCompositionEnded += (_, _) => {
-            string text = input.Text; composing = false; ClearInput();
+            string text = input.Text; bool rejected = compositionRejected;
+            composing = false; compositionRejected = false; ClearInput();
+            if (rejected) return;
             Enqueue(() => { if (View?.Composing == true) View.CommitComposition(text); else DeliverText(text); return Task.CompletedTask; });
         };
         vertical.Scroll += (_, e) => ScrollVerticallyFromScrollbar(e.NewValue);
@@ -198,7 +208,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private void DeliverText(string text)
     {
         if (View == null) return;
-        if (View.Presentation.mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE or VIEM_MODE_COMMAND_LINE) View.Text(text);
+        uint mode = View.Presentation.mode;
+        if (mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE or VIEM_MODE_COMMAND_LINE || CoreView.IsTextSelectionMode(mode)) View.Text(text);
         else foreach (var rune in text.EnumerateRunes()) View.Key(VIEM_KEY_CHARACTER, (uint)rune.Value);
     }
     private void OnKey(object sender, KeyRoutedEventArgs e)
@@ -258,7 +269,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             var p = View.Prompt(); ulong start = Math.Min(p.Anchor, p.Active), end = Math.Max(p.Anchor, p.Active);
             if (start != end) { byte[] bytes = Encoding.UTF8.GetBytes(p.Text); ClipboardFormats.Write(Encoding.UTF8.GetString(bytes, (int)start, (int)(end - start)), ""); if (cut) View.EditPrompt(p, start, end, ""); }
         }
-        else if (View.IsVisual)
+        else if (View.HasSelection)
         {
             var selection = View.Selection();
             if (selection.Segments.Length == 1)
@@ -271,7 +282,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         }
         return Task.CompletedTask;
     }
-    public bool CanCopy => OutputIsActionTarget ? outputText.SelectedText.Length > 0 : View?.IsVisual == true || View?.Presentation.mode == VIEM_MODE_COMMAND_LINE && View.Prompt() is var p && p.Anchor != p.Active;
+    public bool CanCopy => OutputIsActionTarget ? outputText.SelectedText.Length > 0 : View?.HasSelection == true || View?.Presentation.mode == VIEM_MODE_COMMAND_LINE && View.Prompt() is var p && p.Anchor != p.Active;
     public bool CanCut => !OutputIsActionTarget && CanCopy;
     public void SelectAll()
     {
@@ -284,7 +295,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     {
         if (OutputIsActionTarget) return Copy(false);
         if (View?.Presentation.mode == VIEM_MODE_COMMAND_LINE) return Copy(false);
-        if (View?.IsVisual != true) return Task.CompletedTask;
+        if (View?.HasSelection != true) return Task.CompletedTask;
         var fragments = new List<string>(); var selection = View.Selection();
         foreach (var range in selection.Segments)
         {
@@ -341,7 +352,13 @@ internal sealed partial class EditorPane : Grid, IDisposable
             try { using var layoutMeasurement = Diagnostics.InputPerformance.Measure("layout.export"); snapshot = View.Layout(); }
             catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); snapshot = View.Layout(); }
             presentation = View.Presentation; viewport = View.Viewport;
-            mode.Text = presentation.mode switch { 2 => "INSERT", 3 => "REPLACE", 4 => "VISUAL", 5 => "V-LINE", 6 => "V-BLOCK", 7 => "COMMAND", _ => "NORMAL" };
+            mode.Text = presentation.mode switch {
+                VIEM_MODE_INSERT => "INSERT", VIEM_MODE_REPLACE => "REPLACE",
+                VIEM_MODE_VISUAL_CHARACTER => "VISUAL", VIEM_MODE_VISUAL_LINE => "V-LINE", VIEM_MODE_VISUAL_BLOCK => "V-BLOCK",
+                VIEM_MODE_SELECTION_CHARACTER or VIEM_MODE_SELECTION_LINE or VIEM_MODE_SELECTION_BLOCK => "SELECTION",
+                VIEM_MODE_SELECT_CHARACTER => "SELECT", VIEM_MODE_SELECT_LINE => "S-LINE", VIEM_MODE_SELECT_BLOCK => "S-BLOCK",
+                VIEM_MODE_COMMAND_LINE => "COMMAND", _ => "NORMAL"
+            };
             format.Content = CoreDocument.FormatName(Document.State.format);
             UpdateLocation();
             scrollUpdating = true;
@@ -386,7 +403,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
         try
         {
             var caret = View.CaretGeometry(); var rect = OffsetRect(caret.rect, viewport);
-            return new(rect.X, rect.Y, presentation.mode == VIEM_MODE_INSERT ? 1.5 : Math.Max(6, rect.Height * .45), Math.Max(1, rect.Height));
+            bool boundary = View.Composing || presentation.caret_shape == VIEM_CARET_SHAPE_BOUNDARY;
+            return new(rect.X, rect.Y, boundary ? 1.5 : Math.Max(6, rect.Height * .45), Math.Max(1, rect.Height));
         }
         catch (CoreException error) when (error.Status == VIEM_STATUS_OUTSIDE_LAYOUT_COVERAGE)
         { return new(); } // A manually scrolled viewport need not contain the caret.
@@ -409,9 +427,9 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (caretRect.Height > 0 && presentation.mode != VIEM_MODE_COMMAND_LINE && (!focused || caretVisible))
         {
             Rect caret = caretRect;
-            if (presentation.mode == VIEM_MODE_REPLACE) caret = new(caret.X, caret.Bottom - 2, Math.Max(6, caret.Width), 2);
+            if (presentation.mode == VIEM_MODE_REPLACE && !View.Composing) caret = new(caret.X, caret.Bottom - 2, Math.Max(6, caret.Width), 2);
             if (!focused) { var color = theme.Caret; color.A = 191; drawing.DrawRectangle(caret, color, 1); }
-            else if (presentation.mode == VIEM_MODE_INSERT || presentation.mode == VIEM_MODE_REPLACE) drawing.FillRectangle(caret, theme.Caret);
+            else if (View.Composing || presentation.caret_shape == VIEM_CARET_SHAPE_BOUNDARY || presentation.mode == VIEM_MODE_REPLACE) drawing.FillRectangle(caret, theme.Caret);
             else if (snapshot.Clusters.Any(c => c.text_start < presentation.caret_utf8_end && c.text_end > presentation.caret_utf8_start && View.Provider.IsColorGlyph(c.render_run)))
             {
                 var translucent = theme.Caret; translucent.A = 85; drawing.FillRectangle(caret, translucent); drawing.DrawRectangle(caret, theme.Caret, 1);

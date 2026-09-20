@@ -40,6 +40,7 @@ pub(super) fn verify_assignment(
     range: &Range<usize>,
     style: &StyleId,
     preserve_code_paragraphs: bool,
+    preserve_direct: bool,
 ) -> Result<(), DocumentError> {
     let mut boundaries = BTreeSet::from([0, range.start, range.end]);
     for span in before.style_spans().iter().chain(after.style_spans()) {
@@ -77,7 +78,7 @@ pub(super) fn verify_assignment(
             }
             properties
         };
-        if direct(before) != direct(after) {
+        if (preserve_direct || !range.contains(&at)) && direct(before) != direct(after) {
             return Err(DocumentError::VerificationFailed);
         }
     }
@@ -217,6 +218,143 @@ fn code_run_patches(
 }
 
 impl Document {
+    /// A user style choice replaces inline formatting as one source transaction.
+    /// The lower-level persisted assignment remains available to translators.
+    pub(super) fn prepare_character_style_choice(
+        &self,
+        mut range: Range<usize>,
+        style: StyleId,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.validate_range(&range)?;
+        self.validate_typing_named_style(&style)?;
+        if range.is_empty() {
+            return Ok(self.no_op_prepared());
+        }
+        if self.format().is_rich_text() {
+            if let Some(prepared) = self.prepare_with_materialized_style_boundaries(&range, |scratch| {
+                scratch.prepare_character_style_choice(range.clone(), style.clone())
+            })? {
+                return Ok(prepared);
+            }
+        }
+        if self.format() == Format::HtmlSource {
+            let translated = super::super::html_source::translate_character_style_choice(
+                self,
+                &PersistedStyleIntent::AssignCharacterStyle {
+                    range: TextRange::new(self.text_point(range.start)?, self.text_point(range.end)?)?,
+                    style,
+                },
+            )?;
+            return self.prepare_html_source_style_translation(translated);
+        }
+        let original_range = range.clone();
+        let mut scratch = self.scratch_document();
+        let mut sources = super::replacement::PatchComposition::new(self.source_byte_len());
+        let mut formatted = super::replacement::PatchComposition::new(self.projection().text_tree().byte_len());
+        let publish = |scratch: &mut Document, prepared: PreparedModelTransaction,
+                       range: &mut Range<usize>, sources: &mut super::replacement::PatchComposition,
+                       formatted: &mut super::replacement::PatchComposition|
+         -> Result<(), ModelTransactionError> {
+            let mapped = |at, association| -> Result<usize, ModelTransactionError> {
+                Ok(prepared.text_position_map().map_text_point(
+                    scratch.text_point(at)?, association, BoundaryAffinity::Downstream,
+                    DeletionRecovery::PreferFollowingThenPreceding,
+                )?.value().ok_or(DocumentError::AmbiguousProjection)?.offset())
+            };
+            *range = mapped(range.start, Association::AfterInsertion)?
+                ..mapped(range.end, Association::BeforeInsertion)?;
+            for patch in prepared.summary.source_patches.iter().rev() {
+                sources.splice(patch.range(), patch.replacement());
+            }
+            formatted.record_formatted(&prepared)?;
+            scratch.commit_model_transaction(prepared)?;
+            Ok(())
+        };
+        if self.format().is_markdown() {
+            let mut retained_traits = Vec::new();
+            for trait_style in [SemanticInlineStyle::Strong, SemanticInlineStyle::Emphasis] {
+                loop {
+                    let Some(span) = scratch.projection().style_spans_for_region(&range).into_iter()
+                        .find(|span| span.application == StyleApplication::Semantic(trait_style)
+                            && span.range.start < range.end && range.start < span.range.end) else { break; };
+                    let selected = range.start.max(span.range.start)..range.end.min(span.range.end);
+                    let clear = if self.format() == Format::Markdown { span.range.clone() } else { selected.clone() };
+                    let prepared = scratch.prepare_typing_markdown_style(clear, trait_style, false)?;
+                    if prepared.summary.source_patches.is_empty() {
+                        return Err(DocumentError::UnsupportedFormatting.into());
+                    }
+                    publish(&mut scratch, prepared, &mut range, &mut sources, &mut formatted)?;
+                    if self.format() == Format::Markdown {
+                        for retained in [span.range.start..selected.start, selected.end..span.range.end] {
+                            if retained.is_empty() { continue; }
+                            retained_traits.push((retained, trait_style));
+                        }
+                    }
+                }
+            }
+            // Restore retained flanks after removing every overlapping trait;
+            // intermediate mixed runs of '*' otherwise have ambiguous nesting.
+            for (retained, trait_style) in retained_traits {
+                let prepared = scratch.prepare_typing_markdown_style(retained, trait_style, true)?;
+                publish(&mut scratch, prepared, &mut range, &mut sources, &mut formatted)?;
+            }
+        } else {
+            let decoded = self.encoding().decode(&self.source_bytes())?;
+            let input = normalize(&decoded, self.file_format());
+            let clear = super::super::style::CHARACTER_STYLE_PROPERTIES.into_iter().collect();
+            let syntax = if self.format() == Format::Html {
+                super::super::html_direct::clear_inline_character_patches(
+                    &input, self.projection(), range.clone(), &clear,
+                )?
+            } else {
+                super::super::rtf_direct::clear_character_patches(
+                    &input, self.projection(), range.clone(), &clear,
+                )?
+            };
+            let patches = syntax.into_iter().map(|(range, text)| {
+                self.encoding().encode_fragment(&text).map(|bytes| SourcePatch::primary(range, bytes))
+            }).collect::<Result<Vec<_>, _>>()?;
+            let prepared = scratch.prepare_source_only_patches(patches)?;
+            publish(&mut scratch, prepared, &mut range, &mut sources, &mut formatted)?;
+        }
+        let target = TextRange::new(scratch.text_point(range.start)?, scratch.text_point(range.end)?)?;
+        let intent = PersistedStyleIntent::AssignCharacterStyle {
+            range: target, style: style.clone(),
+        };
+        let prepared = if self.format() == Format::Html {
+            scratch.prepare_html_named_style_raw(intent, true)?
+        } else { scratch.prepare_persisted_style_intent(intent)? };
+        publish(&mut scratch, prepared, &mut range, &mut sources, &mut formatted)?;
+        if self.format().is_wysiwyg() {
+            // Check the final combination, including paragraph inheritance and
+            // all unselected formatting, before publishing any source patches.
+            let mut boundaries = BTreeSet::from([0, original_range.start, original_range.end]);
+            for projection in [self.projection(), scratch.projection()] {
+                for span in projection.style_spans() { boundaries.extend([span.range.start, span.range.end]); }
+                for block in projection.blocks() { boundaries.extend([block.range.start, block.range.end]); }
+            }
+            for at in boundaries.into_iter().filter(|at| *at < self.text().len() && self.text().as_bytes()[*at] != b'\n') {
+                let code_paragraph = self.format().is_markdown()
+                    && self.projection().blocks_for_region(&(at..at + 1)).iter()
+                        .any(|block| block.style.0 == "Code Block" && block.range.contains(&at));
+                let expected = if original_range.contains(&at) && !code_paragraph {
+                    self.clean_named_character_at(at, &style, &CharacterProperties::default())?
+                } else {
+                    crate::layout::DocumentLayoutStyles::semantic_character_at(self.projection(), at, false)
+                        .map_err(|_| DocumentError::VerificationFailed)?
+                };
+                let actual = crate::layout::DocumentLayoutStyles::semantic_character_at(scratch.projection(), at, false)
+                    .map_err(|_| DocumentError::VerificationFailed)?;
+                if expected != actual {
+                    return Err(DocumentError::VerificationFailed.into());
+                }
+            }
+        }
+        let patches = sources.source_patches(&scratch.state().source)?;
+        let edits = formatted.formatted_edits(&scratch)?;
+        self.prepare_text_edits_with_patches(edits, Some(patches))
+    }
+
     pub(super) fn prepare_markdown_named_character(
         &self,
         range: Range<usize>,
@@ -316,7 +454,7 @@ impl Document {
             {
                 return Err(DocumentError::VerificationFailed.into());
             }
-            verify_assignment(self.projection(), &candidate.projection, &range, style, true)?;
+            verify_assignment(self.projection(), &candidate.projection, &range, style, true, true)?;
         }
         Ok(prepared)
     }

@@ -48,13 +48,18 @@ import XCTest
     }
 
     private func check(type: String, flow: Bool, width: CGFloat, height: CGFloat, entry: String) throws {
-        let backend = EVCoreDocumentBackend()
+        let configuration = EVConfigurationStore(directory: FileManager.default.temporaryDirectory
+            .appendingPathComponent("viem-page-\(UUID().uuidString)"), legacyDefaults: nil)
+        let backend = EVCoreDocumentBackend(configuration: configuration)
         try backend.read(source: Data(source.utf8), typeName: type)
         let view = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         view.loadViewIfNeeded()
         view.view.frame = NSRect(x: 0, y: 0, width: width, height: height)
         view.viewDidLayout()
         let session = try XCTUnwrap(view.session)
+        // Exercise continuing Visual navigation explicitly; the native default
+        // stopsel policy intentionally ends selection on an unshifted Page key.
+        if entry == "v" { _ = try session.sourceLine("set keymodel-=stopsel", depth: 1) }
         if type == EVDocument.markdownSourceType { try session.setParagraphFlow(flow) }
         if !entry.isEmpty { _ = try session.sendText(entry) }
         view.refreshPresentation()

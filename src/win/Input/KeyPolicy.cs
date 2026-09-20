@@ -31,9 +31,10 @@ internal static class KeyPolicy
             if (key == VirtualKey.Number6) return new(VIEM_KEY_CONTROL_CHARACTER, '^');
             if ((int)key == 189) return new(VIEM_KEY_CONTROL_CHARACTER, '_');
         }
+        uint modifiers = (shift ? VIEM_KEY_MODIFIER_SHIFT : 0) | (control ? VIEM_KEY_MODIFIER_CONTROL : 0) | (alt ? VIEM_KEY_MODIFIER_ALT : 0);
         if (key >= VirtualKey.F1 && key <= VirtualKey.F24)
-            return new(VIEM_KEY_FUNCTION, (uint)(key - VirtualKey.F1 + 1), (shift ? 1u : 0) | (control ? 2u : 0) | (alt ? 4u : 0));
-        return new(key switch
+            return new(VIEM_KEY_FUNCTION, (uint)(key - VirtualKey.F1 + 1), modifiers);
+        uint kind = key switch
         {
             VirtualKey.Escape => VIEM_KEY_ESCAPE,
             VirtualKey.Enter => shift ? VIEM_KEY_SHIFT_ENTER : VIEM_KEY_ENTER,
@@ -47,6 +48,10 @@ internal static class KeyPolicy
             VirtualKey.End => control ? VIEM_KEY_DOCUMENT_END : VIEM_KEY_END,
             VirtualKey.PageUp => VIEM_KEY_PAGE_UP, VirtualKey.PageDown => VIEM_KEY_PAGE_DOWN,
             _ => 0
-        });
+        };
+        bool movement = kind is VIEM_KEY_LEFT or VIEM_KEY_RIGHT or VIEM_KEY_UP or VIEM_KEY_DOWN
+            or VIEM_KEY_HOME or VIEM_KEY_END or VIEM_KEY_PAGE_UP or VIEM_KEY_PAGE_DOWN
+            or VIEM_KEY_WORD_LEFT or VIEM_KEY_WORD_RIGHT or VIEM_KEY_DOCUMENT_START or VIEM_KEY_DOCUMENT_END;
+        return new(kind, Modifiers: movement ? modifiers : 0);
     }
 }

@@ -7,6 +7,7 @@ const VISUAL: u8 = 2;
 const OPERATOR: u8 = 4;
 const INSERT: u8 = 8;
 const COMMAND_LINE: u8 = 16;
+const SELECT: u8 = 32;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct KeyMappings(Arc<Vec<Mapping>>);
@@ -16,10 +17,12 @@ struct Mapping {
     lhs: Vec<Key>,
     rhs: Vec<Key>,
     recursive: bool,
+    select_as_visual: bool,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MappingReplayPlan {
     pub events: Vec<(InputEvent, bool)>,
+    pub restore_select: bool,
 }
 
 impl KeyMappings {
@@ -35,7 +38,7 @@ impl KeyMappings {
         let name = &input[..split];
         let args = input[split..].trim_start();
         let (mode, operation) = match name {
-            "map" | "noremap" | "unmap" | "mapclear" => (NORMAL | VISUAL | OPERATOR, name),
+            "map" | "noremap" | "unmap" | "mapclear" => (NORMAL | VISUAL | SELECT | OPERATOR, name),
             "map!" => (INSERT | COMMAND_LINE, "map"),
             "noremap!" => (INSERT | COMMAND_LINE, "noremap"),
             "unmap!" => (INSERT | COMMAND_LINE, "unmap"),
@@ -44,7 +47,9 @@ impl KeyMappings {
                 let (prefix, suffix) = name.split_at_checked(1)?;
                 let mode = match prefix {
                     "n" => NORMAL,
-                    "v" | "x" => VISUAL,
+                    "v" => VISUAL | SELECT,
+                    "x" => VISUAL,
+                    "s" => SELECT,
                     "o" => OPERATOR,
                     "i" => INSERT,
                     "c" => COMMAND_LINE,
@@ -92,7 +97,7 @@ impl KeyMappings {
                 );
             }
             let rhs = parse_key_notation(rhs_text)?;
-            for selected in [NORMAL, VISUAL, OPERATOR, INSERT, COMMAND_LINE] {
+            for selected in [NORMAL, VISUAL, SELECT, OPERATOR, INSERT, COMMAND_LINE] {
                 if selected & mode == 0 {
                     continue;
                 }
@@ -103,6 +108,7 @@ impl KeyMappings {
                     lhs: lhs.clone(),
                     rhs: rhs.clone(),
                     recursive: operation == "map",
+                    select_as_visual: mode & SELECT != 0 && mode & VISUAL != 0,
                 });
             }
             Ok(())
@@ -174,6 +180,10 @@ pub fn parse_key_notation(input: &str) -> Result<Vec<Key>, String> {
             };
             tail = &tail[2..];
         }
+        if modifiers != 0 {
+            let nav = match tail { "left" => Some(if modifiers & 6 != 0 { NavigationKey::WordLeft } else { NavigationKey::Left }), "right" => Some(if modifiers & 6 != 0 { NavigationKey::WordRight } else { NavigationKey::Right }), "up" => Some(NavigationKey::Up), "down" => Some(NavigationKey::Down), "home" => Some(if modifiers & 2 != 0 { NavigationKey::DocumentStart } else { NavigationKey::Home }), "end" => Some(if modifiers & 2 != 0 { NavigationKey::DocumentEnd } else { NavigationKey::End }), "pageup" => Some(NavigationKey::PageUp), "pagedown" => Some(NavigationKey::PageDown), _ => None };
+            if let Some(key) = nav { result.push(canonical_mapping_key(Key::ModifiedNavigation { key, modifiers })); continue; }
+        }
         if let Some(number) = tail
             .strip_prefix('f')
             .and_then(|number| number.parse::<u8>().ok())
@@ -199,6 +209,7 @@ pub fn parse_key_notation(input: &str) -> Result<Vec<Key>, String> {
 
 fn canonical_mapping_key(key: Key) -> Key {
     match key {
+        Key::ModifiedNavigation { key: key @ (NavigationKey::WordLeft | NavigationKey::WordRight | NavigationKey::DocumentStart | NavigationKey::DocumentEnd), modifiers: 2 | 4 | 8 } => key.key(),
         Key::Ctrl('i' | 'I') => Key::Tab,
         Key::Ctrl('m' | 'M') => Key::Enter,
         Key::Ctrl('[') => Key::Escape,
@@ -221,6 +232,7 @@ impl CommandInterpreter {
             || self.mapping_suppressed
             || self.literal_input_pending()
             || self.register_pending
+            || self.select_register_pending
             || self.command_line_register_pending()
             || self.insert_control_g_pending()
             || matches!(
@@ -239,10 +251,11 @@ impl CommandInterpreter {
         {
             return None;
         }
+        if self.is_native_selection() { return None; }
         Some(match self.mode {
             Mode::Normal if matches!(self.pending, Pending::Operator(_)) => OPERATOR,
             Mode::Normal => NORMAL,
-            Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock => VISUAL,
+            Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock => if self.is_select_mode() { SELECT } else { VISUAL },
             Mode::Insert | Mode::Replace => INSERT,
             Mode::CommandLine => COMMAND_LINE,
         })
@@ -306,6 +319,7 @@ impl CommandInterpreter {
             .iter()
             .filter(|mapping| mapping.mode == mode && pending.starts_with(&mapping.lhs))
             .max_by_key(|mapping| mapping.lhs.len());
+        let restore_select = self.is_select_mode() && selected.is_some_and(|mapping| mapping.select_as_visual);
         let mut events = Vec::new();
         let consumed = if let Some(mapping) = selected {
             // Vim does not remap a RHS's initial complete copy of its own LHS.
@@ -327,7 +341,8 @@ impl CommandInterpreter {
                 .map(|key| (InputEvent::Key(*key), true)),
         );
         self.mapping_pending.clear();
-        Some(MappingReplayPlan { events })
+        if restore_select { self.selection_behavior = SelectionBehavior::Visual; }
+        Some(MappingReplayPlan { events, restore_select })
     }
 
     pub(super) fn handle_mapping(
@@ -379,6 +394,7 @@ impl CommandInterpreter {
         document.restore_edit_group_depth(old_depth + 1);
         document.end_edit_group();
         self.end_replay_frame();
+        if plan.restore_select { self.finish_select_mapping(); }
         result
     }
 }

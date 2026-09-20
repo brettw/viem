@@ -76,11 +76,16 @@ internal sealed partial class EditorWindow
             Item("Copy Source", () => ActivePane?.CopySource() ?? Task.CompletedTask, enabled: () => ActivePane?.CanCopy == true),
             Item("Paste", () => ActivePane?.Paste() ?? Task.CompletedTask, "Ctrl+V"),
             Item("Paste and Match Style", () => ActivePane?.Paste(true) ?? Task.CompletedTask, "Ctrl+Shift+V"),
-            ActionItem("Delete", () => { if (View?.IsVisual == true) View.Command("d"); }, enabled: () => View?.IsVisual == true && ActivePane?.CanCut == true), Separator(),
+            ActionItem("Delete", () =>
+            {
+                if (View is not { } view) return;
+                if (view.IsTextSelection) view.Key(VIEM_KEY_DELETE);
+                else view.SelectionCommand("d");
+            }, enabled: () => View?.HasSelection == true && ActivePane?.CanCut == true), Separator(),
             Item("Select All", () => { ActivePane?.SelectAll(); return Task.CompletedTask; }),
-            Sub("Select", ActionItem("Word", () => Select("viw")), ActionItem("Sentence", () => Select("vis")), ActionItem("Paragraph", () => Select("vip")), ActionItem("Hard Line", () => Select("V")), ActionItem("Visual Block", () => { View?.Key(VIEM_KEY_ESCAPE); View?.Key(VIEM_KEY_CONTROL_CHARACTER, 'q'); }, "Ctrl+Q")),
+            Sub("Select", ActionItem("Word", () => Select("viw")), ActionItem("Sentence", () => Select("vis")), ActionItem("Paragraph", () => Select("vip")), ActionItem("Hard Line", () => Select("V")), ActionItem("Visual Block", () => { uint returnMode = View?.Presentation.mode ?? VIEM_MODE_NORMAL; View?.Key(VIEM_KEY_ESCAPE); View?.Key(VIEM_KEY_CONTROL_CHARACTER, 'q'); View?.SetSelectionOrigin(VIEM_SELECTION_ORIGIN_KEY, returnMode); }, "Ctrl+Q")),
             Separator(), Sub("Find", ActionItem("Find…", () => Select("/")), ActionItem("Find and Replace…", () => { Select(":"); View?.Text("%s/"); }), ActionItem("Find Next", () => Select("n")), ActionItem("Find Previous", () => Select("N"))),
-            Sub("Transformations", ActionItem("Make Uppercase", () => View?.Command("U"), enabled: () => View?.IsVisual == true), ActionItem("Make Lowercase", () => View?.Command("u"), enabled: () => View?.IsVisual == true), ActionItem("Toggle Case", () => View?.Command("~"), enabled: () => View?.IsVisual == true)));
+            Sub("Transformations", ActionItem("Make Uppercase", () => View?.SelectionCommand("U"), enabled: () => View?.HasSelection == true), ActionItem("Make Lowercase", () => View?.SelectionCommand("u"), enabled: () => View?.HasSelection == true), ActionItem("Toggle Case", () => View?.SelectionCommand("~"), enabled: () => View?.HasSelection == true)));
         boldItem = Toggle("Bold", _ => View?.ToggleSemantic(VIEM_SEMANTIC_STYLE_STRONG));
         italicItem = Toggle("Italic", _ => View?.ToggleSemantic(VIEM_SEMANTIC_STYLE_EMPHASIS));
         validation.Add((boldItem, () => CanSemantic(VIEM_SEMANTIC_STYLE_STRONG))); validation.Add((italicItem, () => CanSemantic(VIEM_SEMANTIC_STYLE_EMPHASIS)));
@@ -110,7 +115,7 @@ internal sealed partial class EditorWindow
             Item("About Viem", () => Dialog("Viem", "Viem for Windows\nC# / WinUI 3 · DirectWrite · Rust core\n\nWindows frontend 0.1")));
         RefreshRecentMenu();
     }
-    private void Select(string command) { View?.Key(VIEM_KEY_ESCAPE); View?.Command(command); }
+    private void Select(string command) => View?.SelectFromCommand(command);
     private bool CanSemantic(uint style) { if (View == null) return false; var p = View.SemanticStyle(style); return (p.flags & (VIEM_SEMANTIC_STYLE_CAN_SET | VIEM_SEMANTIC_STYLE_CAN_CLEAR)) != 0; }
     private void ToggleDecoration(uint property) => View?.DirectStyle(property, CoreView.Enum(VIEM_STYLE_VALUE_BOOLEAN, View.DecorationState(property) == 1 ? 0u : 1u));
     private ToggleMenuFlyoutItem DecorationItem(string text, uint property)

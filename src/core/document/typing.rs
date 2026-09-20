@@ -39,6 +39,17 @@ impl Document {
             } else {
                 at
             };
+        self.clean_named_character_at(sample, style, &CharacterProperties::default())
+    }
+
+    /// Resolve a chosen character style solely on the containing paragraph.
+    /// Inline declarations and structural emphasis are intentionally excluded.
+    pub(super) fn clean_named_character_at(
+        &self,
+        sample: usize,
+        style: &StyleId,
+        direct: &CharacterProperties,
+    ) -> Result<super::super::ResolvedCharacterStyle, DocumentError> {
         let blocks = self.projection().blocks_for_region(&(sample..sample));
         let block = blocks
             .iter()
@@ -50,16 +61,8 @@ impl Document {
         let spans = self
             .projection()
             .style_spans_for_region(&(sample..(sample + 1).min(self.text().len())));
-        let mut direct = CharacterProperties::default();
         for span in &spans {
             match &span.application {
-                StyleApplication::Direct(value) => {
-                    super::super::rich_text::overlay(&mut direct, value)
-                }
-                StyleApplication::Semantic(SemanticInlineStyle::Strong) => direct.bold = Some(true),
-                StyleApplication::Semantic(SemanticInlineStyle::Emphasis) => {
-                    direct.slant = Some(FontSlant::Italic)
-                }
                 StyleApplication::SourceParagraph {
                     style,
                     defaults: value,
@@ -78,7 +81,7 @@ impl Document {
                 &block.direct_paragraph,
                 defaults,
                 (!style.0.is_empty()).then_some(style),
-                &direct,
+                direct,
             )
             .map(|resolved| resolved.character)
             .map_err(|_| DocumentError::UnsupportedFormatting)
@@ -498,6 +501,13 @@ impl Document {
                 .character
                 .as_ref()
                 == (!style.0.is_empty()).then_some(style)
+                && {
+                    let sample = if at > 0 && (at == self.text().len() || affinity == BoundaryAffinity::Upstream) { at - 1 } else { at };
+                    self.clean_named_character_at(sample, style, &properties).ok()
+                        == crate::layout::DocumentLayoutStyles::semantic_character_at(
+                            self.projection(), at, affinity == BoundaryAffinity::Upstream,
+                        ).ok()
+                }
         });
         let context_matches = named_matches
             && self.typing_context_matches(
@@ -691,16 +701,7 @@ impl Document {
             publish(scratch, prepared, sources, formatted)
         };
         if let Some(style) = named {
-            let range = TextRange::new(
-                scratch.text_point(selection.start)?,
-                scratch.text_point(selection.end)?,
-            )?;
-            let prepared = scratch.prepare_persisted_style_intent(
-                PersistedStyleIntent::AssignCharacterStyle {
-                    range,
-                    style: style.clone(),
-                },
-            )?;
+            let prepared = scratch.prepare_character_style_choice(selection.clone(), style.clone())?;
             apply(
                 &mut scratch,
                 prepared,
