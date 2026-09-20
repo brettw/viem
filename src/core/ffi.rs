@@ -1098,10 +1098,15 @@ pub const VIEM_VIEWPORT_STATE_MAXIMUM_LEFT_EXACT: u32 = 1 << 1;
 pub const VIEM_VIEWPORT_STATE_TOP_EXACT: u32 = 1 << 2;
 pub const VIEM_VIEWPORT_STATE_HAS_LAYOUT: u32 = 1 << 3;
 pub const VIEM_VIEWPORT_STATE_LINEBREAK: u32 = 1 << 4;
+pub const VIEM_VIEWPORT_STATE_MAXIMUM_TOP_EXACT: u32 = 1 << 5;
 
 /// Current presentation origin and the exact dependency identity observed in
 /// the same serial query. `maximum_left` describes visible rows only; without
 /// its exact flag it is a provisional lower bound, not an authoritative clamp.
+/// `maximum_top` includes document padding and final-row geometry. Its exact
+/// flag proves the document end in the current coordinate system; prefix
+/// heights may remain estimated. Without the flag it is a scrollbar estimate,
+/// not an authoritative clamp.
 /// `scale` is always the exact positive view-local magnification. A
 /// missing exact top flag means the installed snapshot uses an estimated
 /// prefix; the value remains the view's current coordinate but must not be
@@ -1114,6 +1119,7 @@ pub struct ViemViewportStateV1 {
     pub left: f32,
     pub top: f32,
     pub maximum_left: f32,
+    pub maximum_top: f32,
     pub scale: f32,
     pub document_id: u64,
     pub document_revision: u64,
@@ -1133,6 +1139,7 @@ impl Default for ViemViewportStateV1 {
             left: 0.0,
             top: 0.0,
             maximum_left: 0.0,
+            maximum_top: 0.0,
             scale: 1.0,
             document_id: 0,
             document_revision: 0,
@@ -4574,6 +4581,12 @@ fn summarize_viewport_state(
     } else {
         state.estimated_maximum_left()
     };
+    let maximum_top = if let Some(maximum_top) = state.maximum_top() {
+        flags |= VIEM_VIEWPORT_STATE_MAXIMUM_TOP_EXACT;
+        maximum_top
+    } else {
+        state.estimated_maximum_top()
+    };
     if state.top_is_exact() {
         flags |= VIEM_VIEWPORT_STATE_TOP_EXACT;
     }
@@ -4589,6 +4602,7 @@ fn summarize_viewport_state(
         left: state.left(),
         top: state.top(),
         maximum_left,
+        maximum_top,
         scale: state.scale(),
         document_id: state.document_id().0,
         document_revision: state.document_revision().0,

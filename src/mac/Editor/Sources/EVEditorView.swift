@@ -1365,7 +1365,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
         documentScrollbars.update(
             vertical: .init(position: CGFloat(viewport.top),
-                maximum: max(0, CGFloat(snapshot.info.total_height) - height),
+                maximum: CGFloat(viewport.maximum_top),
                 viewportLength: height, lineStep: step),
             horizontal: .init(position: CGFloat(viewport.left), maximum: horizontalMaximum,
                 viewportLength: width, lineStep: step),
@@ -1374,7 +1374,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private func scrollDocument(axis: EVDocumentScrollbars.Axis, fraction: Double) {
         guard let surface, surface.refreshGeometryBeforeInteraction(),
-              let snapshot = surface.layoutSnapshot, let session = surface.session else { return }
+              surface.layoutSnapshot != nil, let session = surface.session else { return }
         let value = min(max(fraction, 0), 1)
         beginTextInputGeometryUpdate()
         defer {
@@ -1384,7 +1384,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
         switch axis {
         case .vertical:
-            let maximum = max(0, CGFloat(snapshot.info.total_height - snapshot.info.viewport_height))
+            let maximum = CGFloat(surface.viewportState.maximum_top)
             // The total height may still be estimated. A thumb at its lower
             // endpoint requests the actual document end, allowing core to
             // refine the final rows and clamp against their exact geometry.

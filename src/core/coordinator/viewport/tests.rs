@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod scroll_endpoints;
+
 const LINE: &str = "let value = 42; // comment\n";
 
 struct DeferredProvider;

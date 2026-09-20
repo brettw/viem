@@ -437,6 +437,7 @@ internal unsafe struct ViemViewportStateV1
     public float @left;
     public float @top;
     public float @maximum_left;
+    public float @maximum_top;
     public float @scale;
     public ulong @document_id;
     public ulong @document_revision;
@@ -1514,6 +1515,7 @@ internal static unsafe partial class Native
     public const uint VIEM_VIEWPORT_STATE_TOP_EXACT = (1u << 2);
     public const uint VIEM_VIEWPORT_STATE_HAS_LAYOUT = (1u << 3);
     public const uint VIEM_VIEWPORT_STATE_LINEBREAK = (1u << 4);
+    public const uint VIEM_VIEWPORT_STATE_MAXIMUM_TOP_EXACT = (1u << 5);
     public static readonly uint VIEM_VIEWPORT_STATE_V1_SIZE = ((uint)sizeof(ViemViewportStateV1));
     public static readonly uint VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE = ((uint)sizeof(ViemLayoutSnapshotIdentityV1));
     public const uint VIEM_STYLE_NAMESPACE_BLOCK = 1u;

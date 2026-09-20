@@ -520,6 +520,8 @@ pub struct ViewportState {
     top: f32,
     maximum_left: Option<f32>,
     estimated_maximum_left: f32,
+    maximum_top: Option<f32>,
+    estimated_maximum_top: f32,
     scale: f32,
     wrap: bool,
     top_is_exact: bool,
@@ -564,6 +566,16 @@ impl ViewportState {
 
     pub fn estimated_maximum_left(self) -> f32 {
         self.estimated_maximum_left
+    }
+
+    /// Exact document-end clamp in the current layout coordinate system.
+    /// The prefix may remain estimated, as reported separately by `top_is_exact`.
+    pub fn maximum_top(self) -> Option<f32> {
+        self.maximum_top
+    }
+
+    pub fn estimated_maximum_top(self) -> f32 {
+        self.estimated_maximum_top
     }
 
     pub fn scale(self) -> f32 {
@@ -2044,6 +2056,16 @@ impl<P: TextMeasurementProvider> Core<P> {
             } else {
                 presentation_layout.viewport_left()
             },
+            maximum_top: if snapshot_is_current {
+                presentation_layout.maximum_viewport_top()
+            } else {
+                None
+            },
+            estimated_maximum_top: if snapshot_is_current {
+                presentation_layout.estimated_maximum_viewport_top()
+            } else {
+                presentation_layout.viewport_top()
+            },
             scale: presentation_layout.scale(),
             wrap: presentation_layout.wrap(),
             top_is_exact: layout_origin_has_exact_geometry(
@@ -2647,12 +2669,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                             ViewportAnchorReference::RowTop => row.y,
                         } + anchor.offset_from_reference)
                     } else { None }.unwrap_or_else(|| {
-                        let bounds = row.reveal_bounds();
-                        let visible = view.layout.reveal_vertical_range(bounds.end - bounds.start);
                         let prefix = view.layout.hard_line_prefix_height(focus_line)
                             .expect("validated focus line").height() as f32;
-                        (top - prefix).min(bounds.start - visible.start)
-                            .max(bounds.end - visible.end)
+                        view.layout.reveal_viewport_top(row, top - prefix)
                     });
                     if rows[0].y > desired_top {
                         candidate.prepend_long_line_slice(preceding);
@@ -2884,10 +2903,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             current_snapshot_for_layout(&self.document, &view.layout, requirements)
                 .is_some_and(|snapshot| {
                     !snapshot.has_horizontal_materialization()
-                        && snapshot.coverage.vertical_range().is_none_or(|coverage| {
-                            let top = requested_top.max(0.0);
-                            top >= coverage.start && top + view.layout.height() <= coverage.end
-                        })
+                        && snapshot.missing_viewport_edges(
+                            snapshot.clamp_viewport_top(requested_top, view.layout.height()),
+                            view.layout.height(),
+                        ) == (false, false)
                 })
         };
         if already_covered {
@@ -3154,7 +3173,6 @@ impl<P: TextMeasurementProvider> Core<P> {
             let cursor = view.commands.cursor();
             let visual_block_endpoints = view.commands.active_visual_block_endpoint_offsets();
             let top = view.layout.viewport_top();
-            let bottom = top + view.layout.height();
             metrics_changed
                 || view.layout.snapshot().map_or(true, |snapshot| {
                     snapshot.document_id != self.document.id()
@@ -3164,19 +3182,15 @@ impl<P: TextMeasurementProvider> Core<P> {
                         || snapshot.measurement_environment_id
                             != requirements.measurement_environment_id
                         || snapshot.metrics_generation != requirements.metrics_generation
-                        || !snapshot.coverage.contains_text_offset(cursor)
-                        || !snapshot.horizontal_text_is_materialized(cursor)
+                        || (intent != ImmediateLayoutIntent::PreserveViewport
+                            && (!snapshot.coverage.contains_text_offset(cursor)
+                                || !snapshot.horizontal_text_is_materialized(cursor)))
                         || (visual_block_endpoints.is_some() && snapshot.has_horizontal_materialization())
                         || visual_block_endpoints.is_some_and(|(anchor, active)| {
                             !snapshot.coverage.contains_text_offset(anchor)
                                 || !snapshot.coverage.contains_text_offset(active)
                         })
-                        || snapshot.coverage.vertical_range().is_some_and(|coverage| {
-                            let lines = snapshot.coverage.hard_lines();
-                            let count = snapshot.coverage.document_hard_line_count();
-                            (top < coverage.start && lines.start > 0)
-                                || (bottom > coverage.end && lines.end < count)
-                        })
+                        || snapshot.missing_viewport_edges(top, view.layout.height()) != (false, false)
                 })
         };
         if needs_layout {
@@ -4859,7 +4873,12 @@ impl<P: TextMeasurementProvider> Core<P> {
             view.layout
                 .set_viewport_left(saved.viewport_left)
                 .expect("captured finite viewport");
-            view.long_line_checkpoints = LongLineCheckpointCache::default();
+            // NeedsMoreLayout rolls back an uncommitted input while retaining
+            // its unchanged geometry. Keep validated wrap checkpoints so a
+            // retry can continue locally; failed-edit revisions or restored
+            // configuration changes still retire incompatible checkpoints.
+            let requirements = inspect_layout_provider(&view.engine);
+            view.long_line_checkpoints.discard_stale(&self.document, &view.layout, requirements);
         }
     }
 
@@ -5641,7 +5660,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                                 &mut target_view.commands,
                                 plan,
                             )?;
-                            (Ok((step, old_viewport_top)), map, Some(presentation))
+                            (Ok((step, old_viewport_top, false)), map, Some(presentation))
                         }
                         CommandResolution::Legacy(_) => {
                             let (result, map) = self.document.capture_position_maps(
@@ -5667,14 +5686,14 @@ impl<P: TextMeasurementProvider> Core<P> {
                                                 &mut context,
                                                 clipboard_context.as_ref(),
                                             )?;
-                                        Ok((step, context.viewport().top))
+                                        Ok((step, context.viewport().top, context.viewport_command()))
                                     } else {
                                         let step = target_view.commands.handle_for_core(
                                             document,
                                             input,
                                             clipboard_context.as_ref(),
                                         )?;
-                                        Ok((step, old_viewport_top))
+                                        Ok((step, old_viewport_top, false))
                                     }
                                 },
                             );
@@ -5686,7 +5705,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 // a compound command which deliberately retains earlier
                 // commits still leaves a complete exact map available to the
                 // coordinator once its error policy is published.
-                let (step, viewport_top) = command_result?;
+                let (step, viewport_top, viewport_command) = command_result?;
                 let CommandStep {
                     output: command,
                     replay,
@@ -5751,7 +5770,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     planned_presentation.as_ref().is_some_and(|requests| {
                         requests.contains(&CommandPresentationRequest::Relayout)
                     }) || (was_visual_block && target_view.commands.visual_block().is_none());
-                let command_requests_reveal = planned_presentation
+                let command_requests_reveal = (!viewport_command || changed) && planned_presentation
                     .as_ref()
                     .map_or(changed || cursor_moved, |requests| {
                         requests.contains(&CommandPresentationRequest::RevealCaret)
@@ -6622,7 +6641,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             };
             outcome.layout_changed = true;
             let requested = demand.requested_hard_lines();
-            let request_identity = (requested, demand.horizontal_focus(), demand.requires_complete_horizontal_geometry());
+            let request_identity = self.input_layout_request_identity(view_id, &demand, requested);
             if last_requested.as_ref() == Some(&request_identity) {
                 if let Some(command) = outcome.command.as_mut() {
                     command.status = CommandStatus::Error(
@@ -7379,25 +7398,8 @@ fn layout_origin_has_exact_geometry(
     };
     match &snapshot.coverage {
         LayoutCoverage::FullDocument { .. } => true,
-        LayoutCoverage::PartialHardLines {
-            hard_lines,
-            document_hard_line_count,
-            vertical_range,
-            prefix_is_exact,
-            ..
-        } => {
-            if !prefix_is_exact {
-                return false;
-            }
-            if snapshot.total_height_is_exact
-                && hard_lines.start == 0
-                && hard_lines.end == *document_hard_line_count
-            {
-                return true;
-            }
-            let maximum = (vertical_range.end - viewport_height).max(vertical_range.start);
-            vertical_range.start <= top && top <= maximum
-        }
+        LayoutCoverage::PartialHardLines { prefix_is_exact, .. } => *prefix_is_exact
+            && snapshot.missing_viewport_edges(top, viewport_height) == (false, false),
     }
 }
 
@@ -7434,19 +7436,7 @@ fn viewport_layout_extension_needed(layout: &ViewLayout) -> (bool, bool) {
     let Some(snapshot) = layout.snapshot() else {
         return (true, true);
     };
-    let Some(vertical) = snapshot.coverage.vertical_range() else {
-        return (false, false);
-    };
-    let hard_lines = snapshot.coverage.hard_lines();
-    let document_hard_line_count = snapshot.coverage.document_hard_line_count();
-    let top = layout.viewport_top();
-    let bottom = top + layout.height();
-    (
-        (top < vertical.start
-            || (bottom > vertical.end && hard_lines.end == document_hard_line_count))
-            && hard_lines.start > 0,
-        bottom > vertical.end && hard_lines.end < document_hard_line_count,
-    )
+    snapshot.missing_viewport_edges(layout.viewport_top(), layout.height())
 }
 
 fn update_viewport_anchor<P: TextMeasurementProvider>(document: &Document, view: &mut View<P>) {

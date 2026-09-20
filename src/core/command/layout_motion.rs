@@ -379,10 +379,12 @@ pub fn align_viewport(
     validate_viewport(viewport)?;
     let (row_index, _) = locate(snapshot, current)?;
     let row = &snapshot.rows[row_index];
+    let bounds = row.reveal_bounds();
+    let visible = snapshot.reveal_vertical_range(row, viewport.height);
     let requested = match alignment {
-        ViewportAlignment::Top => row.y,
-        ViewportAlignment::Middle => row.y - (viewport.height - row.height()) / 2.0,
-        ViewportAlignment::Bottom => row.y + row.height() - viewport.height,
+        ViewportAlignment::Top => bounds.start - visible.start,
+        ViewportAlignment::Middle => (bounds.start + bounds.end - visible.start - visible.end) / 2.0,
+        ViewportAlignment::Bottom => bounds.end - visible.end,
     };
     Ok(Viewport {
         top: clamped_viewport_top(snapshot, requested, viewport.height)?,
@@ -406,7 +408,11 @@ pub fn screen_motion(
 ) -> Result<ScreenMotionResult, LayoutMotionError> {
     validate_viewport(viewport)?;
     let visible = visible_rows(snapshot, viewport)?;
-    let (current_row, current_caret) = locate(snapshot, current)?;
+    let located = if snapshot.coverage.contains_text_offset(current.text_offset) {
+        Some(locate(snapshot, current)?)
+    } else {
+        None
+    };
     let visible_count = visible.len();
     let direction = match motion {
         ScreenMotion::PageDown | ScreenMotion::HalfPageDown | ScreenMotion::ScrollDown => 1,
@@ -430,28 +436,64 @@ pub fn screen_motion(
     let amount = isize::try_from(amount_rows).unwrap_or(isize::MAX);
     let row_delta = amount * direction;
     let new_first = shift_row_index(snapshot, visible[0], row_delta)?;
-    let viewport = Viewport {
-        top: clamped_viewport_top(snapshot, snapshot.rows[new_first].y, viewport.height)?,
+    // Padding and paragraph spacing belong to the document, not its first or
+    // last row. Saturate at the same endpoints as an absolute scrollbar move.
+    let requested = if direction < 0 && new_first == 0 && snapshot.contains_document_start() {
+        0.0
+    } else if direction > 0 && new_first == snapshot.rows.len() - 1 && snapshot.contains_document_end() {
+        snapshot.maximum_viewport_top(viewport.height).expect("materialized document end")
+    } else {
+        // Preserve the within-row offset from continuous scrolling or a prior
+        // margin reveal. Re-aligning to row.y can cancel a one-row step.
+        snapshot.rows[new_first].y + (viewport.top - snapshot.rows[visible[0]].y)
+    };
+    let mut viewport = Viewport {
+        top: clamped_viewport_top(snapshot, requested, viewport.height)?,
         height: viewport.height,
     };
     let new_visible = visible_rows(snapshot, viewport)?;
+    let inside: Vec<_> = new_visible.iter().copied().filter(|index| {
+        let row = &snapshot.rows[*index];
+        let bounds = row.reveal_bounds();
+        let visible = snapshot.reveal_vertical_range(row, viewport.height);
+        bounds.start >= viewport.top + visible.start
+            && bounds.end <= viewport.top + visible.end
+    }).collect();
+    let caret_rows = if inside.is_empty() { &new_visible } else { &inside };
     let x = match desired_x {
         Some(value) if value.is_finite() => value,
-        _ => current_caret.x,
+        _ => located.map_or(0.0, |(_, caret)| caret.x),
+    };
+
+    let nearest_visible = || {
+        if current.text_offset < snapshot.rows[caret_rows[0]].text_range.start {
+            caret_rows[0]
+        } else {
+            *caret_rows.last().expect("visible rows is non-empty")
+        }
     };
 
     let target_row = match motion {
         ScreenMotion::PageDown
         | ScreenMotion::PageUp
         | ScreenMotion::HalfPageDown
-        | ScreenMotion::HalfPageUp => shift_row_index(snapshot, current_row, row_delta)?,
-        ScreenMotion::ScrollDown | ScreenMotion::ScrollUp => {
-            if new_visible.contains(&current_row) {
-                current_row
-            } else if current_row < new_visible[0] {
-                new_visible[0]
+        | ScreenMotion::HalfPageUp => {
+            if let Some((current_row, _)) = located.filter(|(row, _)| visible.contains(row)) {
+                shift_row_index(snapshot, current_row, row_delta)?
             } else {
-                *new_visible.last().expect("visible rows is non-empty")
+                // A preceding wheel/scrollbar move can leave the caret off
+                // screen. Paging follows the displayed viewport, rather than
+                // revealing that old caret in the opposite scroll direction.
+                nearest_visible()
+            }
+        }
+        ScreenMotion::ScrollDown | ScreenMotion::ScrollUp => {
+            // Row scrolling owns the viewport. Move an obscured caret into
+            // its reserved area instead of moving the viewport back to it.
+            if let Some((current_row, _)) = located.filter(|(row, _)| caret_rows.contains(row)) {
+                current_row
+            } else {
+                nearest_visible()
             }
         }
     };
@@ -460,6 +502,16 @@ pub fn screen_motion(
     }
     let target =
         nearest_caret(&snapshot.rows[target_row], x).ok_or(LayoutMotionError::EmptyLayout)?;
+    // Away from an explicit document endpoint, include the active row's full
+    // ink and configured margins. Finalize this here even when its text point
+    // is unchanged; the coordinator must not apply a second scroll policy.
+    let at_start = viewport.top == 0.0 && snapshot.contains_document_start();
+    let at_end = snapshot.maximum_viewport_top(viewport.height) == Some(viewport.top);
+    if !at_start && !at_end && !matches!(motion, ScreenMotion::ScrollDown | ScreenMotion::ScrollUp) {
+        viewport.top = clamped_viewport_top(snapshot,
+            snapshot.reveal_viewport_top(&snapshot.rows[target_row], viewport.top, viewport.height),
+            viewport.height)?;
+    }
     Ok(ScreenMotionResult {
         motion: VisualMotionResult {
             position: position_of(target),
@@ -598,19 +650,15 @@ fn clamped_viewport_top(
     requested: f32,
     height: f32,
 ) -> Result<f32, LayoutMotionError> {
+    let top = snapshot.clamp_viewport_top(requested, height);
     ensure_viewport_covered(
         snapshot,
         Viewport {
-            top: requested,
+            top,
             height,
         },
     )?;
-    let first_y = snapshot.rows.first().map_or(0.0, |row| row.y);
-    let last_bottom = snapshot
-        .rows
-        .last()
-        .map_or(first_y, |row| row.y + row.height());
-    Ok(requested.clamp(first_y, (last_bottom - height).max(first_y)))
+    Ok(top)
 }
 
 fn shift_row_index(
@@ -622,11 +670,9 @@ fn shift_row_index(
     if length == 0 {
         return Err(LayoutMotionError::EmptyLayout);
     }
-    let coverage = snapshot.coverage.hard_lines();
-    let document_hard_line_count = snapshot.coverage.document_hard_line_count();
     if delta < 0 {
         let amount = delta.unsigned_abs();
-        if amount > index && coverage.start > 0 {
+        if amount > index && !snapshot.contains_document_start() {
             Err(outside_materialized_coverage(
                 snapshot,
                 LayoutDemandEdge::Before,
@@ -637,7 +683,7 @@ fn shift_row_index(
         }
     } else {
         let target = index.saturating_add(delta as usize);
-        if target >= length && coverage.end < document_hard_line_count {
+        if target >= length && !snapshot.contains_document_end() {
             Err(outside_materialized_coverage(
                 snapshot,
                 LayoutDemandEdge::After,
@@ -653,14 +699,7 @@ fn ensure_viewport_covered(
     snapshot: &LayoutSnapshot,
     viewport: Viewport,
 ) -> Result<(), LayoutMotionError> {
-    let Some(vertical) = snapshot.coverage.vertical_range() else {
-        return Ok(());
-    };
-    let hard_lines = snapshot.coverage.hard_lines();
-    let document_hard_line_count = snapshot.coverage.document_hard_line_count();
-    let bottom = viewport.top + viewport.height;
-    let before = viewport.top < vertical.start && hard_lines.start > 0;
-    let after = bottom > vertical.end && hard_lines.end < document_hard_line_count;
+    let (before, after) = snapshot.missing_viewport_edges(viewport.top, viewport.height);
     if before || after {
         Err(outside_materialized_coverage(
             snapshot,
@@ -1049,7 +1088,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(default_half.motion.position.text_offset, 4);
-        assert_eq!(default_half.viewport.top, snapshot.rows[2].y);
+        assert!((default_half.viewport.top - snapshot.rows[2].y).abs() < 0.001);
 
         let exact_one = screen_motion(
             &snapshot,
@@ -1061,7 +1100,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(exact_one.motion.position.text_offset, 2);
-        assert_eq!(exact_one.viewport.top, snapshot.rows[1].y);
+        assert!((exact_one.viewport.top - snapshot.rows[1].y).abs() < 0.001);
     }
 
     #[test]

@@ -862,12 +862,17 @@ typedef struct ViemViewportOriginV1 {
 #define VIEM_VIEWPORT_STATE_HAS_LAYOUT (1u << 3)
 /* Reserved compatibility flag, always set: wrapping uses word boundaries. */
 #define VIEM_VIEWPORT_STATE_LINEBREAK (1u << 4)
+#define VIEM_VIEWPORT_STATE_MAXIMUM_TOP_EXACT (1u << 5)
 
 /*
  * maximum_left describes rows intersecting the current vertical viewport.
  * It is authoritative only with MAXIMUM_LEFT_EXACT; otherwise it is a
  * provisional visible lower bound, not an upper clamp. scale is the
  * exact positive view-local magnification used by the current configuration.
+ * maximum_top includes document padding and final-row geometry. With
+ * MAXIMUM_TOP_EXACT it is the document-end clamp in the current coordinate
+ * system, even when prefix heights remain estimated. Otherwise it is a
+ * scrollbar estimate, not an authoritative clamp.
  * A missing TOP_EXACT flag means the current top depends on estimated prefix
  * heights; it remains presentation state but is not an exact absolute
  * document y. The dependency identity is captured atomically with these flags
@@ -879,6 +884,7 @@ typedef struct ViemViewportStateV1 {
   float left;
   float top;
   float maximum_left;
+  float maximum_top;
   float scale;
   uint64_t document_id;
   uint64_t document_revision;

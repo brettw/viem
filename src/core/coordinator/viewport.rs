@@ -164,22 +164,7 @@ pub(super) fn reveal_layout_row_at(
         })
     })?;
     let row = &snapshot.rows[geometry.row_index];
-    let bounds = row.reveal_bounds();
-    let (top, bottom) = (bounds.start, bounds.end);
-    let visible = layout.reveal_vertical_range(bottom - top);
-    let height = visible.end - visible.start;
-    let current = layout.viewport_top();
-    let requested = if bottom - top > height {
-        // No viewport can contain an oversized row. Keep its baseline visible
-        // without oscillating between mutually impossible top/bottom reveals.
-        current.clamp((row.baseline - visible.end).max(0.0), (row.baseline - visible.start).max(0.0))
-    } else if top < current + visible.start {
-        top - visible.start
-    } else if bottom > current + visible.end {
-        bottom - visible.end
-    } else {
-        current
-    };
+    let requested = layout.reveal_viewport_top(row, layout.viewport_top());
     layout.set_viewport_top(requested)
 }
 

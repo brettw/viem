@@ -37,6 +37,10 @@ mod code_wrap_tests;
 #[path = "adjacent_regions_tests.rs"]
 mod adjacent_regions_tests;
 
+#[cfg(test)]
+#[path = "scroll_extent_tests.rs"]
+mod scroll_extent_tests;
+
 pub(super) const MAX_SHAPE_FRAGMENT_BYTES: usize = 4096;
 pub(super) const SHAPING_CONTEXT_BYTES: usize = 32;
 const DEFAULT_CACHE_ENTRIES: usize = 2048;
@@ -480,6 +484,19 @@ impl VisualRow {
     }
 }
 
+/// Complete document end in the caller's coordinate system. All layout paths
+/// retain the final row's advance, natural height and ink before adding the
+/// paragraph's trailing space and combined source/application bottom padding.
+fn document_end_extent(
+    advance_end: f32,
+    final_row: Option<&VisualRow>,
+    spacing_after: f32,
+    padding_bottom: f32,
+) -> f32 {
+    final_row.map_or(advance_end, |row| advance_end.max(row.reveal_bounds().end))
+        + spacing_after + padding_bottom
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LayoutSnapshot {
     /// Unstyled default Paragraph whitespace unit in scaled layout points.
@@ -518,7 +535,7 @@ pub struct LayoutSnapshot {
     pub total_height: f32,
     pub total_height_is_exact: bool,
     pub diagnostics: Vec<ShapingDiagnostic>,
-    text_len: usize,
+    pub(super) text_len: usize,
     /// Sorted logical extended-grapheme boundaries covered by this snapshot.
     /// This remains distinct from provider caret stops because an indivisible
     /// shaping cluster may contain several legal logical edit boundaries.
@@ -853,6 +870,15 @@ impl RegionalLayoutSnapshot {
     /// slice owns the updated height/checkpoint, while both retain their exact
     /// row coordinates and paint coverage.
     pub(crate) fn prepend_long_line_slice(&mut self, preceding: &Self) {
+        // Editing near a chunk boundary needs one viewport on each side.
+        let boundary = self.lines[0].rows[0].y;
+        self.prepend_long_line_slice_in_range(preceding,
+            boundary - self.viewport_height..boundary + self.viewport_height);
+    }
+
+    /// Input preflight can require a different band from caret reveal: retain
+    /// its unchanged viewport and cursor together with the demanded new rows.
+    pub(crate) fn prepend_long_line_slice_in_range(&mut self, preceding: &Self, retained: Range<f32>) {
         debug_assert_eq!(self.lines.len(), 1);
         debug_assert_eq!(preceding.hard_lines.end, self.hard_lines.end);
         debug_assert_eq!(preceding.document_revision, self.document_revision);
@@ -863,15 +889,11 @@ impl RegionalLayoutSnapshot {
         let prior = preceding.lines.last().expect("a regional snapshot has rows");
         debug_assert_eq!(prior.hard_line_index, self.lines[0].hard_line_index);
         debug_assert_eq!(prior.text_coverage.end, owned.start);
-        // This join is requested only when the viewport crosses the slice
-        // boundary. Keep a viewport on each side, rather than retaining a
-        // whole extra 64 KiB slice merely to paint a handful of adjacent rows.
-        let boundary = self.lines[0].rows[0].y;
-        let retained_top = boundary - self.viewport_height;
-        let retained_bottom = boundary + self.viewport_height;
-        self.lines[0].rows.retain(|row| row.reveal_bounds().start <= retained_bottom);
+        self.lines[0].rows.retain(|row| row.reveal_bounds().start <= retained.end
+            && row.reveal_bounds().end >= retained.start);
         self.lines[0].rows.splice(0..0, prior.rows.iter()
-            .filter(|row| row.reveal_bounds().end >= retained_top).cloned());
+            .filter(|row| row.reveal_bounds().end >= retained.start
+                && row.reveal_bounds().start <= retained.end).cloned());
         self.lines[0].text_coverage = self.lines[0].rows[0].text_range.start
             ..self.lines[0].rows.last().expect("retained boundary rows").text_range.end;
         self.lines.splice(0..0, preceding.lines[..preceding.lines.len() - 1].iter().cloned());
@@ -1807,15 +1829,9 @@ impl ViewLayout {
         self.height
     }
 
-    /// Viewport-relative vertical interval available for an editing row.
-    /// Margins remain paintable space. If the row and both margins cannot
-    /// fit, proportionally reduce the reserved margins to leave room for the
-    /// row; an oversized row uses the caller's baseline-visibility fallback.
-    pub(crate) fn reveal_vertical_range(&self, row_height: f32) -> Range<f32> {
-        let margin_budget = (self.height - row_height.min(self.height)).max(0.0);
-        let margins = self.insets.top + self.insets.bottom;
-        let factor = if margins > margin_budget { margin_budget / margins } else { 1.0 };
-        self.insets.top * factor..self.height - self.insets.bottom * factor
+    /// Shared reveal policy also used when preparing a relative long-line slice.
+    pub(crate) fn reveal_viewport_top(&self, row: &VisualRow, current: f32) -> f32 {
+        super::scroll::reveal_viewport_top(row, current, self.height, self.insets)
     }
 
     /// Horizontal presentation offset in document layout coordinates.
@@ -1874,25 +1890,7 @@ impl ViewLayout {
             .iter()
             .copied()
             .fold(self.width, f32::max);
-        let exact = match &snapshot.coverage {
-            LayoutCoverage::FullDocument { .. } => true,
-            LayoutCoverage::PartialHardLines {
-                hard_lines,
-                document_hard_line_count,
-                text_ranges,
-                vertical_range,
-                ..
-            } => {
-                let reaches_document_end = hard_lines.end == *document_hard_line_count
-                    && snapshot.rows.last().is_some_and(|row| {
-                        text_ranges
-                            .last()
-                            .is_some_and(|range| range.end == row.hard_line_range.end)
-                    });
-                top >= vertical_range.start
-                    && (bottom <= vertical_range.end || reaches_document_end)
-            }
-        };
+        let exact = snapshot.missing_viewport_edges(top, self.height) == (false, false);
         Some((width, exact))
     }
 
@@ -1900,6 +1898,18 @@ impl ViewLayout {
     /// Scrolling does not change the immutable layout snapshot identity.
     pub fn viewport_top(&self) -> f32 {
         self.viewport_top
+    }
+
+    pub fn maximum_viewport_top(&self) -> Option<f32> {
+        self.snapshot.as_ref()
+            .filter(|snapshot| snapshot.configuration_generation == self.configuration_generation)
+            .and_then(|snapshot| snapshot.maximum_viewport_top(self.height))
+    }
+
+    pub fn estimated_maximum_viewport_top(&self) -> f32 {
+        self.snapshot.as_ref()
+            .filter(|snapshot| snapshot.configuration_generation == self.configuration_generation)
+            .map_or(self.viewport_top, |snapshot| snapshot.estimated_maximum_viewport_top(self.height))
     }
 
     pub fn set_viewport_top(&mut self, top: f32) -> Result<(), LayoutError> {
@@ -2365,29 +2375,9 @@ impl ViewLayout {
     }
 
     fn clamp_viewport_top(&self, requested: f32) -> f32 {
-        let requested = requested.max(0.0);
-        let Some(snapshot) = self.snapshot.as_ref() else {
-            return requested;
-        };
-        // Materialization boundaries are not document edges. Clamping to a
-        // short regional snapshot silently scrolls a visible editing row to
-        // its bottom and hides the missing coverage from the coordinator.
-        let document_bottom = if snapshot.total_height_is_exact {
-            Some(snapshot.total_height)
-        } else {
-            match &snapshot.coverage {
-                LayoutCoverage::FullDocument { .. } => Some(snapshot.total_height),
-                LayoutCoverage::PartialHardLines { hard_lines, document_hard_line_count,
-                    text_ranges, vertical_range, .. }
-                    if hard_lines.end == *document_hard_line_count
-                        && text_ranges.last().is_some_and(|range| range.end == snapshot.text_len) =>
-                {
-                    Some(vertical_range.end)
-                }
-                _ => None,
-            }
-        };
-        document_bottom.map_or(requested, |bottom| requested.min((bottom - self.height).max(0.0)))
+        self.snapshot.as_ref().map_or(requested.max(0.0), |snapshot| {
+            snapshot.clamp_viewport_top(requested, self.height)
+        })
     }
 
     fn clamp_viewport_left(&self, requested: f32) -> f32 {
@@ -3802,10 +3792,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         y += paragraph.style.spacing_after + next.style.spacing_before;
                     }
                 } else {
-                    if let Some(row) = rows.last() {
-                        y = y.max(row.reveal_bounds().end);
-                    }
-                    y += paragraph.style.spacing_after + content_insets.bottom;
+                    y = document_end_extent(
+                        y, rows.last(), paragraph.style.spacing_after, content_insets.bottom,
+                    );
                 }
             }
             let height = f64::from(y);
@@ -4331,13 +4320,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         if self.provider.metrics_generation() != metrics_generation {
             return Err(LayoutError::MetricsChangedDuringShape.into());
         }
-        if let Some(row) = rows.last() {
-            y = y.max(row.reveal_bounds().end);
-        }
-        if has_previous_paragraph {
-            y += previous_spacing_after;
-        }
-        y += content_insets.bottom;
+        y = document_end_extent(
+            y,
+            rows.last(),
+            if has_previous_paragraph { previous_spacing_after } else { 0.0 },
+            content_insets.bottom,
+        );
         let row_content_widths = rows
             .iter()
             .map(|row| content_width_from_row(row, view.width))

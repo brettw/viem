@@ -51,6 +51,7 @@ internal sealed partial class EditorWindow
                 try {
                     if (Environment.GetEnvironmentVariable("VIEM_TEST_STARTUP_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SYNTAX_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_SCROLL_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") is "1" or "all")
                     {
                         if (Environment.GetEnvironmentVariable("VIEM_TEST_STARTUP_ONLY") == "1")
@@ -69,6 +70,12 @@ internal sealed partial class EditorWindow
                         }
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "1")
                             await Diagnostics.StyleInspectorBehaviorTests.Run(pane, preferences);
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_SCROLL_ONLY") == "1")
+                        {
+                            var scrollPane = AddPane(NewDocument(Diagnostics.ScrollDrawingTests.Fixture, format: VIEM_FORMAT_MARKDOWN));
+                            await ClosePane(pane);
+                            await Diagnostics.ScrollDrawingTests.Run(scrollPane);
+                        }
                         else
                             await Diagnostics.VimRuntimeTests.Run(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
                         var checks = Diagnostics.FrontendSmokeTests.UiChecks;

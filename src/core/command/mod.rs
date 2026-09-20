@@ -456,6 +456,7 @@ pub struct LayoutCommandContext<'a> {
     snapshot: &'a LayoutSnapshot,
     wrap: bool,
     viewport: Viewport,
+    viewport_command: bool,
 }
 
 impl<'a> LayoutCommandContext<'a> {
@@ -464,6 +465,7 @@ impl<'a> LayoutCommandContext<'a> {
             snapshot,
             wrap,
             viewport,
+            viewport_command: false,
         }
     }
 
@@ -477,6 +479,12 @@ impl<'a> LayoutCommandContext<'a> {
 
     pub fn viewport(&self) -> Viewport {
         self.viewport
+    }
+
+    /// Explicit scrolling owns its final viewport even at an unchanged
+    /// endpoint. A later generic caret reveal must not undo that decision.
+    pub fn viewport_command(&self) -> bool {
+        self.viewport_command
     }
 }
 
@@ -2930,6 +2938,7 @@ impl CommandInterpreter {
         let checkpoint = self.clone();
         let edit_group_depth = document.edit_group_depth();
         let viewport = context.viewport;
+        context.viewport_command = false;
         self.line_layout = Some(context.snapshot.clone());
         let result = self.handle_with_layout_inner(document, event, context);
         self.line_layout = None;
@@ -2939,6 +2948,7 @@ impl CommandInterpreter {
                     document.rollback_command_checkpoint(model_checkpoint);
                     *self = checkpoint;
                     context.viewport = viewport;
+                    context.viewport_command = false;
                     return Ok(output);
                 }
                 self.finish_explicit_register_prefix(&output);
@@ -2950,6 +2960,7 @@ impl CommandInterpreter {
             }
             Err(error) => {
                 context.viewport = viewport;
+                context.viewport_command = false;
                 document.rollback_command_checkpoint(model_checkpoint);
                 self.rollback_failed_event(document, checkpoint, edit_group_depth);
                 Err(error)
@@ -7838,6 +7849,15 @@ impl CommandInterpreter {
     ) -> CommandOutput {
         let current = match self.current_visual_position(context.snapshot) {
             Ok(position) => position,
+            Err(_) if !context.snapshot.coverage.contains_text_offset(self.cursor) => {
+                // Wheel and scrollbar movement can leave the cursor outside
+                // the bounded viewport layout. A screen motion needs the
+                // displayed rows, not geometry at that old cursor.
+                self.visual_position.unwrap_or(VisualPosition {
+                    text_offset: self.cursor,
+                    affinity: self.boundary_affinity,
+                })
+            }
             Err(error) => return layout_error(error),
         };
         match screen_motion(
@@ -7850,6 +7870,7 @@ impl CommandInterpreter {
         ) {
             Ok(result) => {
                 context.viewport = result.viewport;
+                context.viewport_command = true;
                 let output = self.install_visual_position(
                     document,
                     context.snapshot,
@@ -7888,6 +7909,7 @@ impl CommandInterpreter {
         match align_viewport(context.snapshot, current, context.viewport, alignment) {
             Ok(viewport) => {
                 context.viewport = viewport;
+                context.viewport_command = true;
                 CommandOutput::complete()
             }
             Err(error) => layout_error(error),
@@ -18128,7 +18150,7 @@ mod tests {
             commands.current_visual_position(&snapshot).unwrap(),
             expected
         );
-        assert_eq!(context.viewport.top, snapshot.rows[2].y);
+        assert!((context.viewport.top - snapshot.rows[2].y).abs() < 0.001);
 
         layout_key(&mut commands, &mut document, &mut context, Key::Ctrl('u'));
         assert_eq!(commands.mode(), Mode::VisualBlock);

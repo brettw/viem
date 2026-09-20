@@ -12,6 +12,7 @@ mod unicode_break_data;
 mod measurement;
 mod mock;
 mod search_overlay;
+mod scroll;
 mod style;
 mod zoom;
 mod whitespace;

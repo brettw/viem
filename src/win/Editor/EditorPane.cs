@@ -124,7 +124,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             string text = input.Text; composing = false; ClearInput();
             Enqueue(() => { if (View?.Composing == true) View.CommitComposition(text); else DeliverText(text); return Task.CompletedTask; });
         };
-        vertical.Scroll += (_, _) => { if (!scrollUpdating && View != null) Run(() => View.Scroll(View.Viewport.left, (float)vertical.Value)); };
+        vertical.Scroll += (_, e) => ScrollVerticallyFromScrollbar(e.NewValue);
         horizontal.Scroll += (_, _) => { if (!scrollUpdating && View != null) Run(() => View.Scroll((float)horizontal.Value, View.Viewport.top)); };
         uint blinkMs = GetCaretBlinkTime();
         blink.Interval = TimeSpan.FromMilliseconds(blinkMs is 0 or uint.MaxValue ? 530 : Math.Max(100, blinkMs));
@@ -315,6 +315,17 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Run(() => View.Place((float)point.X, (float)point.Y, Down(VirtualKey.Shift)));
         dragPoint = point; dragging = true; Canvas.CapturePointer(e.Pointer); e.Handled = true; ResetBlink();
     }
+    internal ScrollBar VerticalScrollControl => vertical;
+
+    internal void ScrollVerticallyFromScrollbar(double value)
+    {
+        if (scrollUpdating || View == null) return;
+        // Estimated document heights cannot identify the actual last row.
+        // Let core materialize and clamp at the real end when the thumb reaches it.
+        float top = vertical.Maximum > 0 && value >= vertical.Maximum ? float.MaxValue : (float)value;
+        Run(() => View.Scroll(View.Viewport.left, top));
+    }
+
     public void Refresh()
     {
         using var measurement = Diagnostics.InputPerformance.Measure("refresh");
@@ -334,7 +345,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             format.Content = CoreDocument.FormatName(Document.State.format);
             UpdateLocation();
             scrollUpdating = true;
-            vertical.Maximum = Math.Max(0, snapshot.Info.total_height - Canvas.ActualHeight); vertical.ViewportSize = Math.Max(1, Canvas.ActualHeight); vertical.LargeChange = Math.Max(1, Canvas.ActualHeight * .9); vertical.Value = viewport.top;
+            vertical.Maximum = viewport.maximum_top; vertical.ViewportSize = Math.Max(1, snapshot.Info.viewport_height); vertical.LargeChange = Math.Max(1, snapshot.Info.viewport_height * .9); vertical.Value = viewport.top;
             horizontal.Maximum = viewport.maximum_left; horizontal.ViewportSize = Math.Max(1, Canvas.ActualWidth); horizontal.Value = viewport.left;
             horizontal.Visibility = (viewport.flags & VIEM_VIEWPORT_STATE_WRAP) == 0 && viewport.maximum_left > 0 ? Visibility.Visible : Visibility.Collapsed;
             scrollUpdating = false;

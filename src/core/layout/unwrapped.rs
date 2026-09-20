@@ -1227,8 +1227,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     height += paragraph.style.spacing_after + next.style.spacing_before;
                 }
             } else {
-                height = height.max(row.reveal_bounds().end);
-                height += paragraph.style.spacing_after + content_insets.bottom;
+                height = document_end_extent(
+                    height, Some(&row), paragraph.style.spacing_after, content_insets.bottom,
+                );
             }
             statistics.positioned_cluster_count += row.clusters.len();
             statistics.maximum_position_checkpoint_clusters = statistics

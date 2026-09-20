@@ -5724,6 +5724,17 @@ scroll.
 ### Scrolling and anchoring
 
 - Vertical scrolling is continuous in layout units, not integer terminal rows.
+- The portable layout layer owns vertical scroll bounds and row visibility.
+  Keyboard paging, wheel/drag scrolling, and native scrollbars use that same
+  margin-inclusive document extent. Scrollbars consume the core's exported
+  maximum and exactness; estimated heights never become authoritative clamps.
+  Repeated paging at either endpoint is stationary: the top is zero and the
+  bottom includes final-row ink, paragraph spacing, and bottom padding.
+  Explicit viewport commands finalize their own scroll position; a subsequent
+  generic caret reveal must not override it, even when the cursor moved.
+  If trailing spacing exceeds the viewport, explicit scrolling can place the
+  caret offscreen, just as scrollbar movement can. Caret movement and editing
+  continue to use the minimum-reveal and oversized-row policies below.
 - Cursor reveal scrolls the minimum needed subject to configured context.
 - Typing and asynchronous layout/syntax completion preserve the visible editing
   row's screen baseline; configured motion context does not force a new scroll

@@ -3699,6 +3699,8 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
     assert_ne!(state.flags & VIEM_VIEWPORT_STATE_HAS_LAYOUT, 0);
     assert_ne!(state.flags & VIEM_VIEWPORT_STATE_TOP_EXACT, 0);
     assert_eq!(state.document_revision, outcome.document_revision);
+    assert_eq!(state.flags & VIEM_VIEWPORT_STATE_MAXIMUM_TOP_EXACT, 0);
+    assert!(state.maximum_top > options.height);
     assert_eq!(state.layout_revision, outcome.layout_revision);
     assert_eq!(
         state.configuration_generation,
@@ -3795,6 +3797,8 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
     assert!(state.top > 10_000.0);
     assert_eq!(state.flags & VIEM_VIEWPORT_STATE_TOP_EXACT, 0);
     assert!(context.minimum_request_start > 1_000);
+    assert_eq!(state.flags & VIEM_VIEWPORT_STATE_MAXIMUM_TOP_EXACT, 0);
+    assert!(state.maximum_top > state.top);
     assert!(context.maximum_request_end < source.len() as u64);
     assert!(context.shaped_bytes - shaped_bytes < 10_000);
 
@@ -3867,6 +3871,8 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
         ViemStatus::Ok
     );
     assert_eq!(layout_info.coverage_hard_line_end, 2_000);
+    assert_ne!(state.flags & VIEM_VIEWPORT_STATE_MAXIMUM_TOP_EXACT, 0);
+    assert_eq!(state.maximum_top, state.top);
     assert_eq!(
         state.top,
         (layout_info.coverage_y_end - options.height).max(layout_info.coverage_y_start)
@@ -3925,6 +3931,8 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
     );
     assert_eq!(state.flags & VIEM_VIEWPORT_STATE_HAS_LAYOUT, 0);
     assert_eq!(state.flags & VIEM_VIEWPORT_STATE_TOP_EXACT, 0);
+    assert_eq!(state.flags & VIEM_VIEWPORT_STATE_MAXIMUM_TOP_EXACT, 0);
+    assert_eq!(state.maximum_top, state.top, "stale height is not a scrollbar extent");
     assert_eq!(
         state.flags & VIEM_VIEWPORT_STATE_MAXIMUM_LEFT_EXACT,
         0,

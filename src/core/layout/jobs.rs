@@ -1192,6 +1192,13 @@ impl LayoutJobCandidate {
         }
     }
 
+    pub(crate) fn prepend_long_line_slice_in_range(&mut self, preceding: &RegionalLayoutSnapshot, retained: Range<f32>) {
+        match &mut self.product {
+            LayoutJobProduct::RegionalHardLines(region)
+            | LayoutJobProduct::PartialViewport(region) => region.prepend_long_line_slice_in_range(preceding, retained),
+        }
+    }
+
     pub(crate) fn append_following_viewport_tail(
         &mut self,
         following: Option<&RegionalLayoutSnapshot>,
