@@ -1,0 +1,157 @@
+label,full_source_calls,full_source_bytes,range_source_bytes,decoded,tokenize,tree_tokenize,scope_visits,index_visits,index_copies,index_rebuild,scratch,commits,full_projection,regional_projection,projected_bytes,scope_copies,scope_syntax_bytes,index_newly_retained_bytes,full_parse_fallbacks,index_nonconvergence,recovery_context_fallbacks,memory_visits,memory_registered,memory_release_visits,memory_released,operation_pair_elapsed_ms
+open huge paragraph,0,0,0,2000023,2000023,2000023,0,0,0,7,0,0,0,0,0,2,6,2527,0,0,0,565698,564760,0,0,695
+replace huge paragraph ime=false,0,0,799,806,293,292,5,18,14,12,0,2,0,2,271,4,20,1255,0,0,0,358,174,185,67,461
+continued huge paragraph ime=false,0,0,400,405,149,148,0,6,7,7,0,1,0,1,136,1,3,1255,0,0,0,332,162,320,150,461
+replace huge paragraph ime=true,0,0,402,407,150,149,6,14,7,7,0,1,0,1,137,5,31,1255,0,0,0,324,88,242,39,673
+continued huge paragraph ime=true,0,0,401,406,150,149,2,8,7,7,0,1,0,1,137,1,3,1255,0,0,0,363,166,199,66,673
+open deep nesting,0,0,0,3339,3339,3339,0,0,0,515,0,0,0,0,0,257,1539,248179,0,0,0,4206,2150,0,0,1
+replace deep nesting ime=false,0,0,521,528,15,14,771,70,43,4,0,2,0,2,7,257,3335,11786,0,0,0,543,90,276,24,0
+continued deep nesting ime=false,0,0,262,267,11,10,0,23,21,3,0,1,0,1,5,0,0,11451,0,0,0,518,78,506,66,0
+replace deep nesting ime=true,0,0,263,268,11,10,1028,55,21,3,0,1,0,1,5,514,6670,11451,0,0,0,632,68,392,29,0
+continued deep nesting ime=true,0,0,263,268,12,11,257,31,21,3,0,1,0,1,6,0,0,11451,0,0,0,548,82,290,24,0
+open huge selected ancestor attribute,0,0,0,1000042,1000042,1000042,0,0,0,6,0,0,0,0,0,2,1000025,2002951,0,0,0,188,162,0,0,29
+replace huge selected ancestor attribute ime=false,0,0,539,546,33,32,6,20,14,8,0,2,0,2,17,2,1000033,1423,0,0,0,197,90,108,27,0
+continued huge selected ancestor attribute ime=false,0,0,271,276,20,19,0,6,7,5,0,1,0,1,10,0,0,1423,0,0,0,176,82,164,70,1
+replace huge selected ancestor attribute ime=true,0,0,272,277,20,19,8,18,7,5,0,1,0,1,10,4,2000066,1423,0,0,0,296,72,228,31,0
+continued huge selected ancestor attribute ime=true,0,0,272,277,21,20,2,8,7,5,0,1,0,1,11,0,0,1423,0,0,0,207,86,121,26,0
+open p=1000 rich=false enc=Utf8,0,0,0,14000,14000,14000,0,0,0,3000,0,0,0,0,0,1000,3000,1029667,0,0,0,16778,10744,0,0,5
+replace p=1000 rich=false enc=Utf8 at=start ime=false,0,0,35,42,21,20,3,108,53,4,0,2,0,2,13,1,7,10073,0,0,0,469,136,237,45,1
+continued p=1000 rich=false enc=Utf8 at=start ime=false,0,0,21,26,14,13,0,36,26,3,0,1,0,1,8,0,0,9738,0,0,0,452,134,428,110,1
+replace p=1000 rich=false enc=Utf8 at=start ime=true,0,0,20,25,14,13,4,84,26,3,0,1,0,1,8,2,14,9738,0,0,0,566,124,359,57,1
+continued p=1000 rich=false enc=Utf8 at=start ime=true,0,0,22,27,15,14,1,48,26,3,0,1,0,1,9,0,0,9738,0,0,0,484,136,258,51,1
+replace p=1000 rich=false enc=Utf8 at=middle ime=false,0,0,527,534,21,20,3,113,86,4,0,2,0,2,13,1,7,11413,0,0,0,655,180,379,70,1
+continued p=1000 rich=false enc=Utf8 at=middle ime=false,0,0,265,270,14,13,0,40,42,3,0,1,0,1,8,0,0,11078,0,0,0,542,178,518,154,1
+replace p=1000 rich=false enc=Utf8 at=middle ime=true,0,0,266,271,14,13,4,96,42,3,0,1,0,1,8,2,14,11078,0,0,0,612,146,382,68,2
+continued p=1000 rich=false enc=Utf8 at=middle ime=true,0,0,266,271,15,14,1,54,42,3,0,1,0,1,9,0,0,11078,0,0,0,554,170,293,68,2
+replace p=1000 rich=false enc=Utf8 at=end ime=false,0,0,527,534,21,20,3,107,62,4,0,2,0,2,13,1,7,9369,0,0,0,569,150,336,55,1
+continued p=1000 rich=false enc=Utf8 at=end ime=false,0,0,265,270,14,13,0,31,30,3,0,1,0,1,8,0,0,9034,0,0,0,444,136,432,124,1
+replace p=1000 rich=false enc=Utf8 at=end ime=true,0,0,266,271,14,13,4,79,30,3,0,1,0,1,8,2,14,9034,0,0,0,494,94,323,42,1
+continued p=1000 rich=false enc=Utf8 at=end ime=true,0,0,266,271,15,14,1,43,30,3,0,1,0,1,9,0,0,9034,0,0,0,470,138,245,46,1
+open p=1000 rich=true enc=Utf8,0,0,0,42000,42000,42000,0,0,0,10000,0,0,0,0,0,3000,19000,3734391,0,0,0,69632,29598,0,0,16
+replace p=1000 rich=true enc=Utf8 at=start ime=false,0,0,106,113,80,76,5,136,52,18,0,2,0,2,13,6,46,13390,0,0,0,611,156,308,55,1
+continued p=1000 rich=true enc=Utf8 at=start ime=false,0,0,55,60,42,41,0,52,28,10,0,1,0,1,8,2,16,13390,0,0,0,598,158,574,134,1
+replace p=1000 rich=true enc=Utf8 at=start ime=true,0,0,54,59,42,41,6,112,28,10,0,1,0,1,8,6,44,13390,0,0,0,722,156,441,73,1
+continued p=1000 rich=true enc=Utf8 at=start ime=true,0,0,56,61,43,42,2,64,28,10,0,1,0,1,9,2,16,13390,0,0,0,633,164,334,65,1
+replace p=1000 rich=true enc=Utf8 at=middle ime=false,0,0,586,593,80,76,5,142,91,18,0,2,0,2,13,6,46,16119,0,0,0,830,214,465,84,2
+continued p=1000 rich=true enc=Utf8 at=middle ime=false,0,0,293,298,42,41,0,48,45,10,0,1,0,1,8,2,16,15784,0,0,0,712,212,688,188,2
+replace p=1000 rich=true enc=Utf8 at=middle ime=true,0,0,294,299,42,41,6,124,45,10,0,1,0,1,8,6,44,15784,0,0,0,836,210,498,100,2
+continued p=1000 rich=true enc=Utf8 at=middle ime=true,0,0,294,299,43,42,2,70,45,10,0,1,0,1,9,2,16,15784,0,0,0,747,218,391,92,2
+replace p=1000 rich=true enc=Utf8 at=end ime=false,0,0,586,593,80,76,5,138,80,18,0,2,0,2,13,6,46,5583,0,0,0,510,168,308,64,1
+continued p=1000 rich=true enc=Utf8 at=end ime=false,0,0,293,298,42,41,0,41,40,10,0,1,0,1,8,2,16,5248,0,0,0,380,154,368,142,1
+replace p=1000 rich=true enc=Utf8 at=end ime=true,0,0,294,299,42,41,6,105,40,10,0,1,0,1,8,6,44,5248,0,0,0,436,112,298,51,1
+continued p=1000 rich=true enc=Utf8 at=end ime=true,0,0,294,299,43,42,2,57,40,10,0,1,0,1,9,2,16,5248,0,0,0,419,168,221,61,1
+open p=1000 rich=true enc=Utf16Le,0,0,0,84000,42000,42000,0,0,0,10000,0,0,0,0,0,3000,19000,3734391,0,0,0,69638,29604,0,0,16
+replace p=1000 rich=true enc=Utf16Le at=start ime=false,0,0,212,226,80,76,5,136,52,18,0,2,0,2,13,6,46,13390,0,0,0,615,158,310,56,1
+continued p=1000 rich=true enc=Utf16Le at=start ime=false,0,0,110,120,42,41,0,52,28,10,0,1,0,1,8,2,16,13390,0,0,0,598,158,574,134,1
+replace p=1000 rich=true enc=Utf16Le at=start ime=true,0,0,108,118,42,41,6,112,28,10,0,1,0,1,8,6,44,13390,0,0,0,726,158,443,74,1
+continued p=1000 rich=true enc=Utf16Le at=start ime=true,0,0,112,122,43,42,2,64,28,10,0,1,0,1,9,2,16,13390,0,0,0,633,164,334,65,1
+replace p=1000 rich=true enc=Utf16Le at=middle ime=false,0,0,660,674,80,76,5,142,91,18,0,2,0,2,13,6,46,16119,0,0,0,834,216,467,85,2
+continued p=1000 rich=true enc=Utf16Le at=middle ime=false,0,0,330,340,42,41,0,48,45,10,0,1,0,1,8,2,16,15784,0,0,0,712,212,688,188,2
+replace p=1000 rich=true enc=Utf16Le at=middle ime=true,0,0,332,342,42,41,6,124,45,10,0,1,0,1,8,6,44,15784,0,0,0,836,210,498,100,2
+continued p=1000 rich=true enc=Utf16Le at=middle ime=true,0,0,332,342,43,42,2,70,45,10,0,1,0,1,9,2,16,15784,0,0,0,747,218,391,92,2
+replace p=1000 rich=true enc=Utf16Le at=end ime=false,0,0,660,674,80,76,5,138,80,18,0,2,0,2,13,6,46,5583,0,0,0,510,168,308,64,1
+continued p=1000 rich=true enc=Utf16Le at=end ime=false,0,0,330,340,42,41,0,41,40,10,0,1,0,1,8,2,16,5248,0,0,0,376,152,364,140,1
+replace p=1000 rich=true enc=Utf16Le at=end ime=true,0,0,332,342,42,41,6,105,40,10,0,1,0,1,8,6,44,5248,0,0,0,432,110,296,50,1
+continued p=1000 rich=true enc=Utf16Le at=end ime=true,0,0,332,342,43,42,2,57,40,10,0,1,0,1,9,2,16,5248,0,0,0,419,168,221,61,1
+open p=10000 rich=false enc=Utf8,0,0,0,140000,140000,140000,0,0,0,30000,0,0,0,0,0,10000,30000,10296919,0,0,0,167654,107306,0,0,58
+replace p=10000 rich=false enc=Utf8 at=start ime=false,0,0,35,42,21,20,3,162,76,4,0,2,0,2,13,1,7,10743,0,0,0,549,176,277,66,2
+continued p=10000 rich=false enc=Utf8 at=start ime=false,0,0,21,26,14,13,0,54,38,3,0,1,0,1,8,0,0,10743,0,0,0,532,174,508,150,2
+replace p=10000 rich=false enc=Utf8 at=start ime=true,0,0,20,25,14,13,4,126,38,3,0,1,0,1,8,2,14,10743,0,0,0,650,166,401,78,1
+continued p=10000 rich=false enc=Utf8 at=start ime=true,0,0,22,27,15,14,1,72,38,3,0,1,0,1,9,0,0,10743,0,0,0,560,174,296,70,1
+replace p=10000 rich=false enc=Utf8 at=middle ime=false,0,0,527,534,21,20,3,167,132,4,0,2,0,2,13,1,7,13088,0,0,0,821,264,462,112,2
+continued p=10000 rich=false enc=Utf8 at=middle ime=false,0,0,265,270,14,13,0,58,66,3,0,1,0,1,8,0,0,13088,0,0,0,692,254,668,230,2
+replace p=10000 rich=false enc=Utf8 at=middle ime=true,0,0,266,271,14,13,4,138,66,3,0,1,0,1,8,2,14,13088,0,0,0,734,208,443,99,2
+continued p=10000 rich=false enc=Utf8 at=middle ime=true,0,0,266,271,15,14,1,78,66,3,0,1,0,1,9,0,0,13088,0,0,0,684,236,358,101,2
+replace p=10000 rich=false enc=Utf8 at=end ime=false,0,0,527,534,21,20,3,162,100,4,0,2,0,2,13,1,7,9670,0,0,0,625,192,364,76,2
+continued p=10000 rich=false enc=Utf8 at=end ime=false,0,0,265,270,14,13,0,51,50,3,0,1,0,1,8,0,0,9670,0,0,0,484,170,472,158,2
+replace p=10000 rich=false enc=Utf8 at=end ime=true,0,0,266,271,14,13,4,131,50,3,0,1,0,1,8,2,14,9670,0,0,0,514,118,333,54,2
+continued p=10000 rich=false enc=Utf8 at=end ime=true,0,0,266,271,15,14,1,71,50,3,0,1,0,1,9,0,0,9670,0,0,0,522,178,271,66,2
+open p=10000 rich=true enc=Utf8,0,0,0,420000,420000,420000,0,0,0,100000,0,0,0,0,0,30000,190000,37341899,0,0,0,696122,295774,0,0,166
+replace p=10000 rich=true enc=Utf8 at=start ime=false,0,0,106,113,80,76,5,187,71,18,0,2,0,2,13,6,46,14395,0,0,0,711,206,358,81,2
+continued p=10000 rich=true enc=Utf8 at=start ime=false,0,0,55,60,42,41,0,71,38,10,0,1,0,1,8,2,16,14395,0,0,0,694,206,670,182,2
+replace p=10000 rich=true enc=Utf8 at=start ime=true,0,0,54,59,42,41,6,167,38,10,0,1,0,1,8,6,44,14395,0,0,0,826,208,493,99,2
+continued p=10000 rich=true enc=Utf8 at=start ime=true,0,0,56,61,43,42,2,95,38,10,0,1,0,1,9,2,16,14395,0,0,0,729,212,382,89,2
+replace p=10000 rich=true enc=Utf8 at=middle ime=false,0,0,586,593,80,76,5,193,125,18,0,2,0,2,13,6,46,16258,0,0,0,1046,318,573,136,3
+continued p=10000 rich=true enc=Utf8 at=middle ime=false,0,0,293,298,42,41,0,66,63,10,0,1,0,1,8,2,16,16258,0,0,0,900,302,876,278,3
+replace p=10000 rich=true enc=Utf8 at=middle ime=true,0,0,294,299,42,41,6,166,63,10,0,1,0,1,8,6,44,16258,0,0,0,1032,304,596,147,2
+continued p=10000 rich=true enc=Utf8 at=middle ime=true,0,0,294,299,43,42,2,94,63,10,0,1,0,1,9,2,16,16258,0,0,0,931,306,483,136,2
+replace p=10000 rich=true enc=Utf8 at=end ime=false,0,0,586,593,80,76,5,193,118,18,0,2,0,2,13,6,46,9020,0,0,0,678,216,392,88,3
+continued p=10000 rich=true enc=Utf8 at=end ime=false,0,0,293,298,42,41,0,61,60,10,0,1,0,1,8,2,16,9020,0,0,0,532,194,520,182,3
+replace p=10000 rich=true enc=Utf8 at=end ime=true,0,0,294,299,42,41,6,157,60,10,0,1,0,1,8,6,44,9020,0,0,0,568,142,364,66,2
+continued p=10000 rich=true enc=Utf8 at=end ime=true,0,0,294,299,43,42,2,85,60,10,0,1,0,1,9,2,16,9020,0,0,0,575,210,299,82,2
+open p=10000 rich=true enc=Utf16Le,0,0,0,840000,420000,420000,0,0,0,100000,0,0,0,0,0,30000,190000,37341899,0,0,0,696158,295810,0,0,168
+replace p=10000 rich=true enc=Utf16Le at=start ime=false,0,0,212,226,80,76,5,187,71,18,0,2,0,2,13,6,46,14395,0,0,0,715,208,360,82,2
+continued p=10000 rich=true enc=Utf16Le at=start ime=false,0,0,110,120,42,41,0,71,38,10,0,1,0,1,8,2,16,14395,0,0,0,698,208,674,184,2
+replace p=10000 rich=true enc=Utf16Le at=start ime=true,0,0,108,118,42,41,6,167,38,10,0,1,0,1,8,6,44,14395,0,0,0,830,210,495,100,2
+continued p=10000 rich=true enc=Utf16Le at=start ime=true,0,0,112,122,43,42,2,95,38,10,0,1,0,1,9,2,16,14395,0,0,0,733,214,384,90,2
+replace p=10000 rich=true enc=Utf16Le at=middle ime=false,0,0,660,674,80,76,5,193,125,18,0,2,0,2,13,6,46,16258,0,0,0,1054,322,577,138,3
+continued p=10000 rich=true enc=Utf16Le at=middle ime=false,0,0,330,340,42,41,0,66,63,10,0,1,0,1,8,2,16,16258,0,0,0,904,304,880,280,3
+replace p=10000 rich=true enc=Utf16Le at=middle ime=true,0,0,332,342,42,41,6,166,63,10,0,1,0,1,8,6,44,16258,0,0,0,1036,306,598,148,2
+continued p=10000 rich=true enc=Utf16Le at=middle ime=true,0,0,332,342,43,42,2,94,63,10,0,1,0,1,9,2,16,16258,0,0,0,935,308,485,137,2
+replace p=10000 rich=true enc=Utf16Le at=end ime=false,0,0,660,674,80,76,5,193,118,18,0,2,0,2,13,6,46,9020,0,0,0,682,218,394,89,2
+continued p=10000 rich=true enc=Utf16Le at=end ime=false,0,0,330,340,42,41,0,61,60,10,0,1,0,1,8,2,16,9020,0,0,0,536,196,524,184,2
+replace p=10000 rich=true enc=Utf16Le at=end ime=true,0,0,332,342,42,41,6,157,60,10,0,1,0,1,8,6,44,9020,0,0,0,572,144,366,67,2
+continued p=10000 rich=true enc=Utf16Le at=end ime=true,0,0,332,342,43,42,2,85,60,10,0,1,0,1,9,2,16,9020,0,0,0,579,212,301,83,2
+open p=100000 rich=false enc=Utf8,0,0,0,1400000,1400000,1400000,0,0,0,300000,0,0,0,0,0,100000,300000,102965649,0,0,0,1676322,1072832,0,0,678
+replace p=100000 rich=false enc=Utf8 at=start ime=false,0,0,35,42,21,20,3,234,108,4,0,2,0,2,13,1,7,12083,0,0,0,637,220,321,88,10
+continued p=100000 rich=false enc=Utf8 at=start ime=false,0,0,21,26,14,13,0,78,54,3,0,1,0,1,8,0,0,12083,0,0,0,624,220,600,196,10
+replace p=100000 rich=false enc=Utf8 at=start ime=true,0,0,20,25,14,13,4,182,54,3,0,1,0,1,8,2,14,12083,0,0,0,742,212,447,101,7
+continued p=100000 rich=false enc=Utf8 at=start ime=true,0,0,22,27,15,14,1,104,54,3,0,1,0,1,9,0,0,12083,0,0,0,652,220,342,93,7
+replace p=100000 rich=false enc=Utf8 at=middle ime=false,0,0,527,534,21,20,3,241,188,4,0,2,0,2,13,1,7,15768,0,0,0,961,334,532,147,18
+continued p=100000 rich=false enc=Utf8 at=middle ime=false,0,0,265,270,14,13,0,77,93,3,0,1,0,1,8,0,0,15433,0,0,0,836,326,812,302,18
+replace p=100000 rich=false enc=Utf8 at=middle ime=true,0,0,266,271,14,13,4,181,93,3,0,1,0,1,8,2,14,15433,0,0,0,862,272,507,131,10
+continued p=100000 rich=false enc=Utf8 at=middle ime=true,0,0,266,271,15,14,1,103,93,3,0,1,0,1,9,0,0,15433,0,0,0,816,302,424,134,10
+replace p=100000 rich=false enc=Utf8 at=end ime=false,0,0,527,534,21,20,3,219,132,4,0,2,0,2,13,1,7,8578,0,0,0,653,232,378,96,14
+continued p=100000 rich=false enc=Utf8 at=end ime=false,0,0,265,270,14,13,0,66,65,3,0,1,0,1,8,0,0,8243,0,0,0,528,218,516,206,14
+replace p=100000 rich=false enc=Utf8 at=end ime=true,0,0,266,271,14,13,4,170,65,3,0,1,0,1,8,2,14,8243,0,0,0,522,148,337,69,9
+continued p=100000 rich=false enc=Utf8 at=end ime=true,0,0,266,271,15,14,1,92,65,3,0,1,0,1,9,0,0,8243,0,0,0,558,222,289,88,9
+open p=100000 rich=true enc=Utf8,0,0,0,4200000,4200000,4200000,0,0,0,1000000,0,0,0,0,0,300000,1900000,373418415,0,0,0,6960954,2957464,0,0,1887
+replace p=100000 rich=true enc=Utf8 at=start ime=false,0,0,106,113,80,76,5,238,89,18,0,2,0,2,13,6,46,15400,0,0,0,811,256,408,106,9
+continued p=100000 rich=true enc=Utf8 at=start ime=false,0,0,55,60,42,41,0,89,47,10,0,1,0,1,8,2,16,15400,0,0,0,794,256,770,232,9
+replace p=100000 rich=true enc=Utf8 at=start ime=true,0,0,54,59,42,41,6,209,47,10,0,1,0,1,8,6,44,15400,0,0,0,926,258,543,124,10
+continued p=100000 rich=true enc=Utf8 at=start ime=true,0,0,56,61,43,42,2,119,47,10,0,1,0,1,9,2,16,15400,0,0,0,833,264,434,115,10
+replace p=100000 rich=true enc=Utf8 at=middle ime=false,0,0,586,593,80,76,5,244,161,18,0,2,0,2,13,6,46,19292,0,0,0,1188,396,644,175,14
+continued p=100000 rich=true enc=Utf8 at=middle ime=false,0,0,293,298,42,41,0,84,81,10,0,1,0,1,8,2,16,19292,0,0,0,1058,388,1034,364,14
+replace p=100000 rich=true enc=Utf8 at=middle ime=true,0,0,294,299,42,41,6,208,81,10,0,1,0,1,8,6,44,19292,0,0,0,1198,394,679,192,11
+continued p=100000 rich=true enc=Utf8 at=middle ime=true,0,0,294,299,43,42,2,118,81,10,0,1,0,1,9,2,16,19292,0,0,0,1089,392,562,179,11
+replace p=100000 rich=true enc=Utf8 at=end ime=false,0,0,586,593,80,76,5,241,134,18,0,2,0,2,13,6,46,16119,0,0,0,950,272,525,113,15
+continued p=100000 rich=true enc=Utf8 at=end ime=false,0,0,293,298,42,41,0,77,62,10,0,1,0,1,8,2,16,16119,0,0,0,820,258,808,246,15
+replace p=100000 rich=true enc=Utf8 at=end ime=true,0,0,294,299,42,41,6,209,62,10,0,1,0,1,8,6,44,16119,0,0,0,824,190,492,90,10
+continued p=100000 rich=true enc=Utf8 at=end ime=true,0,0,294,299,43,42,2,113,62,10,0,1,0,1,9,2,16,16119,0,0,0,863,274,443,114,10
+open p=100000 rich=true enc=Utf16Le,0,0,0,8400000,4200000,4200000,0,0,0,1000000,0,0,0,0,0,300000,1900000,373418415,0,0,0,6961338,2957848,0,0,1963
+replace p=100000 rich=true enc=Utf16Le at=start ime=false,0,0,212,226,80,76,5,238,89,18,0,2,0,2,13,6,46,15400,0,0,0,815,258,410,107,9
+continued p=100000 rich=true enc=Utf16Le at=start ime=false,0,0,110,120,42,41,0,89,47,10,0,1,0,1,8,2,16,15400,0,0,0,798,258,774,234,9
+replace p=100000 rich=true enc=Utf16Le at=start ime=true,0,0,108,118,42,41,6,209,47,10,0,1,0,1,8,6,44,15400,0,0,0,930,260,545,125,8
+continued p=100000 rich=true enc=Utf16Le at=start ime=true,0,0,112,122,43,42,2,119,47,10,0,1,0,1,9,2,16,15400,0,0,0,837,266,436,116,8
+replace p=100000 rich=true enc=Utf16Le at=middle ime=false,0,0,660,674,80,76,5,244,161,18,0,2,0,2,13,6,46,19292,0,0,0,1196,400,648,177,17
+continued p=100000 rich=true enc=Utf16Le at=middle ime=false,0,0,330,340,42,41,0,84,81,10,0,1,0,1,8,2,16,19292,0,0,0,1062,390,1038,366,17
+replace p=100000 rich=true enc=Utf16Le at=middle ime=true,0,0,332,342,42,41,6,208,81,10,0,1,0,1,8,6,44,19292,0,0,0,1206,398,683,194,11
+continued p=100000 rich=true enc=Utf16Le at=middle ime=true,0,0,332,342,43,42,2,118,81,10,0,1,0,1,9,2,16,19292,0,0,0,1093,394,564,180,11
+replace p=100000 rich=true enc=Utf16Le at=end ime=false,0,0,660,674,80,76,5,241,134,18,0,2,0,2,13,6,46,16119,0,0,0,954,274,527,114,15
+continued p=100000 rich=true enc=Utf16Le at=end ime=false,0,0,330,340,42,41,0,77,62,10,0,1,0,1,8,2,16,16119,0,0,0,824,260,812,248,15
+replace p=100000 rich=true enc=Utf16Le at=end ime=true,0,0,332,342,42,41,6,209,62,10,0,1,0,1,8,6,44,16119,0,0,0,828,192,494,91,10
+continued p=100000 rich=true enc=Utf16Le at=end ime=true,0,0,332,342,43,42,2,113,62,10,0,1,0,1,9,2,16,16119,0,0,0,867,276,445,115,10
+replace whole bold with spaces p=1000 paragraph=0 ime=false,0,0,295,343,266,189,19,314,90,47,1,3,0,3,39,14,50,10202,0,0,0,552,178,274,61,2
+continued whole bold with spaces p=1000 paragraph=0 ime=false,0,0,48,53,27,26,0,42,30,7,0,1,0,1,14,1,3,10073,0,0,0,522,160,504,144,2
+replace whole bold with spaces p=1000 paragraph=0 ime=true,0,0,86,96,52,50,6,140,60,14,1,2,0,2,26,6,34,10073,0,0,0,544,166,282,64,2
+continued whole bold with spaces p=1000 paragraph=0 ime=true,0,0,48,53,27,26,2,56,30,7,0,1,0,1,14,1,3,10073,0,0,0,545,158,290,62,2
+replace whole bold with spaces p=1000 paragraph=500 ime=false,0,0,759,807,266,189,19,337,150,47,1,3,0,3,39,14,50,11877,0,0,0,656,230,326,87,2
+continued whole bold with spaces p=1000 paragraph=500 ime=false,0,0,278,283,27,26,0,46,50,7,0,1,0,1,14,1,3,11748,0,0,0,618,208,600,192,2
+replace whole bold with spaces p=1000 paragraph=500 ime=true,0,0,434,444,52,50,6,138,100,14,1,2,0,2,26,6,34,11748,0,0,0,648,218,334,90,3
+continued whole bold with spaces p=1000 paragraph=500 ime=true,0,0,278,283,27,26,2,62,50,7,0,1,0,1,14,1,3,11748,0,0,0,641,206,338,86,3
+replace whole bold with spaces p=1000 paragraph=999 ime=false,0,0,759,807,266,189,19,337,120,47,1,3,0,3,39,14,50,10537,0,0,0,570,190,283,67,2
+continued whole bold with spaces p=1000 paragraph=999 ime=false,0,0,278,283,27,26,0,41,40,7,0,1,0,1,14,1,3,10408,0,0,0,532,168,514,152,2
+replace whole bold with spaces p=1000 paragraph=999 ime=true,0,0,434,444,52,50,6,146,80,14,1,2,0,2,26,6,34,10408,0,0,0,562,178,291,70,2
+continued whole bold with spaces p=1000 paragraph=999 ime=true,0,0,278,283,27,26,2,57,40,7,0,1,0,1,14,1,3,10408,0,0,0,553,162,294,64,2
+replace whole bold with spaces p=10000 paragraph=0 ime=false,0,0,295,343,266,189,19,490,138,47,1,3,0,3,39,14,50,11542,0,0,0,668,236,332,91,6
+continued whole bold with spaces p=10000 paragraph=0 ime=false,0,0,48,53,27,26,0,66,46,7,0,1,0,1,14,1,3,11413,0,0,0,626,212,608,196,6
+replace whole bold with spaces p=10000 paragraph=0 ime=true,0,0,86,96,52,50,6,220,92,14,1,2,0,2,26,6,34,11413,0,0,0,660,224,340,94,3
+continued whole bold with spaces p=10000 paragraph=0 ime=true,0,0,48,53,27,26,2,88,46,7,0,1,0,1,14,1,3,11413,0,0,0,649,210,342,88,3
+replace whole bold with spaces p=10000 paragraph=5000 ime=false,0,0,759,807,266,189,19,513,248,47,1,3,0,3,39,14,50,14892,0,0,0,888,346,442,146,5
+continued whole bold with spaces p=10000 paragraph=5000 ime=false,0,0,278,283,27,26,0,70,82,7,0,1,0,1,14,1,3,14428,0,0,0,818,308,800,292,5
+replace whole bold with spaces p=10000 paragraph=5000 ime=true,0,0,434,444,52,50,6,218,168,14,1,2,0,2,26,6,34,14763,0,0,0,880,334,450,149,5
+continued whole bold with spaces p=10000 paragraph=5000 ime=true,0,0,278,283,27,26,2,94,82,7,0,1,0,1,14,1,3,14428,0,0,0,841,306,438,136,5
+replace whole bold with spaces p=10000 paragraph=9999 ime=false,0,0,759,807,266,189,19,475,167,47,1,3,0,3,39,14,50,11877,0,0,0,696,250,346,98,5
+continued whole bold with spaces p=10000 paragraph=9999 ime=false,0,0,278,283,27,26,0,56,55,7,0,1,0,1,14,1,3,11413,0,0,0,634,216,616,200,5
+replace whole bold with spaces p=10000 paragraph=9999 ime=true,0,0,434,444,52,50,6,218,114,14,1,2,0,2,26,6,34,11748,0,0,0,688,238,354,101,4
+continued whole bold with spaces p=10000 paragraph=9999 ime=true,0,0,278,283,27,26,2,78,55,7,0,1,0,1,14,1,3,11413,0,0,0,653,212,344,89,4

@@ -103,6 +103,7 @@ impl Encoding {
         if let Some(encoding) = detected_bom(bytes) {
             return encoding.decode(bytes);
         }
+        record_decode(bytes.len());
         match std::str::from_utf8(bytes) {
             Ok(valid) => Ok(decode_known_valid_utf8(valid)),
             Err(_) => Ok(decode_latin1(bytes)),
@@ -110,6 +111,7 @@ impl Encoding {
     }
 
     pub(crate) fn decode(self, bytes: &[u8]) -> Result<DecodedText, DocumentError> {
+        record_decode(bytes.len());
         match self {
             Self::Utf8 => decode_utf8(bytes, true),
             Self::Latin1 => Ok(decode_latin1(bytes)),
@@ -127,6 +129,7 @@ impl Encoding {
         bytes: &[u8],
         source_origin: usize,
     ) -> Result<DecodedText, DocumentError> {
+        record_decode(bytes.len());
         let mut decoded = match self {
             Self::Utf8 => decode_utf8(bytes, false)?,
             Self::Latin1 => decode_latin1(bytes),
@@ -181,6 +184,13 @@ impl Encoding {
             Self::Utf16Be => &[0xfe, 0xff],
         }
     }
+}
+
+fn record_decode(bytes: usize) {
+    super::work_statistics::record(|stats| {
+        stats.source_decode_calls += 1;
+        stats.source_decoded_bytes += bytes;
+    });
 }
 
 fn detected_bom(bytes: &[u8]) -> Option<Encoding> {

@@ -33,8 +33,10 @@ pub(super) fn structural(name: &str) -> bool {
         )
 }
 pub(super) fn stack_at(tokens: &[Token], at: usize) -> Vec<&Token> {
+    super::work_statistics::record(|stats| stats.html_scope_queries += 1);
     let mut open: Vec<&Token> = Vec::new();
     for token in tokens.iter().take_while(|token| token.range.end <= at) {
+        super::work_statistics::record(|stats| stats.html_scope_entries_visited += 1);
         let TokenKind::Tag(tag) = &token.kind else {
             continue;
         };

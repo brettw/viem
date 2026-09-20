@@ -454,6 +454,10 @@ fn flatten(root: &Handle, output: &mut Vec<Token>) {
 }
 
 pub(super) fn tokens(input: &str) -> Vec<Token> {
+    super::work_statistics::record(|stats| {
+        stats.html_tree_tokenization_calls += 1;
+        stats.html_tree_tokenized_bytes += input.len();
+    });
     let context = Rc::new(RefCell::new(Context::default()));
     let document = Node::new(Data::Document, None);
     let sink = Sink {

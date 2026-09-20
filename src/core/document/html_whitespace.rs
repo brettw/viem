@@ -690,6 +690,7 @@ impl Document {
                     {
                         edit.range.start = start;
                         text.push(' ');
+                        edit.html_preserved_prefix_len = text.len();
                         previous_is_content = false;
                     }
                 }

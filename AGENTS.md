@@ -6298,6 +6298,22 @@ bytes projected, bytes segmented and shaped, hard lines wrapped, cache hits,
 height-tree operations, and discarded stale tasks. Assert bounded work
 structurally; avoid brittle wall-clock-only tests.
 
+HTML replacement context uses a persistent, revision-bound source scope index.
+Lexical inline scopes and anchor destinations remain distinct from recovered
+semantic character and paragraph context. Ordinary replacement and continued
+typing MUST NOT scan unrelated source or the untouched prefix of a long
+paragraph to recover these contexts. Local index updates share untouched
+branches and validate their exit context before reusing a suffix; grammar
+changes without a verified regional boundary retain full projection validation.
+The index participates in snapshot history and retained-memory accounting.
+
+Replacement work measurements MUST include context capture before preparation,
+scratch transactions, IME preparation, commit, and continued typing. Track actual
+source materialization, decoding, tokenization, index traversal and maintenance,
+and broader-parse causes separately from final candidate projection counters.
+The implementation and measured limits are recorded in
+[`docs/html-replacement-work-results.md`](docs/html-replacement-work-results.md).
+
 ### TODO: Compact document projections and measure large-file memory
 
 **Open follow-up; the compact Text/Code implementation is measured below.**

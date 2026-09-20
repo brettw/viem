@@ -10629,7 +10629,7 @@ impl CommandInterpreter {
             document.commit_model_transaction(prepared).map_err(command_document_error)?;
             self.cursor += input.len();
         } else if !self.typing_style.is_empty() {
-            let (prepared, cursor) = document
+            let (prepared, cursor, authored_start) = document
                 .prepare_insertion_with_typing_context(
                     edit,
                     self.typing_style.named.as_ref(),
@@ -10637,7 +10637,29 @@ impl CommandInterpreter {
                     self.typing_style.inherited.as_ref(),
                 )
                 .map_err(command_document_error)?;
+            // A replacement can create this Insert session earlier in the
+            // same event. Supporting whitespace edits may then move its floor
+            // (for example NBSP -> space), before coordinator anchors exist.
+            let unit_floor = self
+                .insert_session
+                .as_ref()
+                .map(|session| {
+                    if session.unit_floor == self.cursor {
+                        Ok(authored_start)
+                    } else {
+                        prepared_cursor(
+                            document,
+                            &prepared,
+                            session.unit_floor,
+                            Association::BeforeInsertion,
+                        )
+                    }
+                })
+                .transpose()?;
             document.commit_model_transaction(prepared).map_err(command_document_error)?;
+            if let (Some(session), Some(floor)) = (self.insert_session.as_mut(), unit_floor) {
+                session.unit_floor = floor;
+            }
             self.cursor = cursor;
         } else {
             self.cursor = commit_typing_payload(document, edit)?;

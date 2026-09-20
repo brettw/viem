@@ -129,12 +129,16 @@ pub(super) fn atomic(name: &str) -> bool {
 /// Atomic projection nodes own their complete original syntax. DOM tree
 /// construction can synthesize end tags or omit a pop callback, so a DOM
 /// closing token alone is not a reliable source boundary for these objects.
-fn atomic_source_extents(input: &str) -> BTreeMap<usize, Range<usize>> {
+fn atomic_source_extents(input: &str, tokens: &[Token]) -> BTreeMap<usize, Range<usize>> {
     let mut extents = BTreeMap::new();
     let mut open = Vec::<(String, usize)>::new();
-    for token in tokenize(input) {
-        let TokenKind::Tag(tag) = token.kind else { continue };
-        if !atomic(&tag.name) { continue; }
+    for token in tokens {
+        let TokenKind::Tag(tag) = &token.kind else {
+            continue;
+        };
+        if !atomic(&tag.name) {
+            continue;
+        }
         if tag.end {
             if let Some(index) = open.iter().rposition(|(name, _)| *name == tag.name) {
                 for (_, start) in open.drain(index..) {
@@ -145,9 +149,9 @@ fn atomic_source_extents(input: &str) -> BTreeMap<usize, Range<usize>> {
             || matches!(tag.name.as_str(), "svg" | "math")
                 && input[token.range.clone()].trim_end().ends_with("/>")
         {
-            extents.insert(token.range.start, token.range);
+            extents.insert(token.range.start, token.range.clone());
         } else {
-            open.push((tag.name, token.range.start));
+            open.push((tag.name.clone(), token.range.start));
         }
     }
     for (_, start) in open {
@@ -157,6 +161,10 @@ fn atomic_source_extents(input: &str) -> BTreeMap<usize, Range<usize>> {
 }
 
 pub(super) fn tokenize(input: &str) -> Vec<Token> {
+    super::work_statistics::record(|stats| {
+        stats.html_tokenization_calls += 1;
+        stats.html_tokenized_bytes += input.len();
+    });
     let bytes = input.as_bytes();
     let mut tokens = Vec::new();
     let mut at = 0;
@@ -458,6 +466,27 @@ pub(super) fn project_with_configuration(
     )
 }
 
+/// Parse a proven local fragment with the original immutable style sheet as
+/// semantic authority. Its source does not contain the distant definitions;
+/// ordinary full projections must still read those definitions from source.
+pub(super) fn project_with_inherited_sheet(
+    input: &NormalizedText,
+    revision: Revision,
+    start: usize,
+    end: usize,
+    sheet: &StyleSheet,
+) -> FormattedDocument {
+    project_tokens_with_style_context(
+        input,
+        revision,
+        start,
+        end,
+        super::html5_tree::tokens(&input.text),
+        None,
+        Some(sheet),
+    )
+}
+
 pub(super) fn project_tokens(
     input: &NormalizedText,
     revision: Revision,
@@ -476,8 +505,25 @@ pub(super) fn project_tokens_with_configuration(
     tokens: Vec<Token>,
     configuration: Option<&StyleSheet>,
 ) -> FormattedDocument {
+    project_tokens_with_style_context(input, revision, start, end, tokens, configuration, None)
+}
+
+fn project_tokens_with_style_context(
+    input: &NormalizedText,
+    revision: Revision,
+    start: usize,
+    end: usize,
+    tokens: Vec<Token>,
+    configuration: Option<&StyleSheet>,
+    inherited_sheet: Option<&StyleSheet>,
+) -> FormattedDocument {
+    let lexical_tokens = tokenize(&input.text);
+    let scope_index =
+        super::html_scope_index::HtmlScopeIndex::from_tokens(input, revision, &lexical_tokens);
     let mut builder = Builder::new(input, revision);
-    builder.style_sheet = super::html_styles::read_with_semantics(&input.text, &tokens).sheet;
+    builder.style_sheet = inherited_sheet.cloned().unwrap_or_else(|| {
+        super::html_styles::read_with_tokens(&input.text, &tokens, &lexical_tokens).sheet
+    });
     if let Some(configuration) = configuration {
         builder
             .style_sheet
@@ -491,11 +537,14 @@ pub(super) fn project_tokens_with_configuration(
     let mut pending_space_is_segment_break = false;
     let mut paragraph_seen = false;
     let container_items = list_container_items(&tokens);
-    let atomic_extents = if tokens.iter().any(|token| {
-        matches!(&token.kind, TokenKind::Tag(tag) if !tag.end && atomic(&tag.name))
-    }) {
-        atomic_source_extents(&input.text)
-    } else { BTreeMap::new() };
+    let atomic_extents = if tokens
+        .iter()
+        .any(|token| matches!(&token.kind, TokenKind::Tag(tag) if !tag.end && atomic(&tag.name)))
+    {
+        atomic_source_extents(&input.text, &lexical_tokens)
+    } else {
+        BTreeMap::new()
+    };
     for token in tokens {
         match token.kind {
             TokenKind::Opaque => {}
@@ -988,7 +1037,8 @@ pub(super) fn project_tokens_with_configuration(
         }
     }
     let mut result = builder.finish(start, end);
-    super::links::style_html_links(&mut result, input);
+    result.install_html_scope_index(scope_index);
+    super::links::style_html_links(&mut result, input, &lexical_tokens);
     result
 }
 

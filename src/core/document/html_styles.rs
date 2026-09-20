@@ -621,9 +621,18 @@ fn active_source_elements(tokens: &[html::Token]) -> Vec<&html::Token> {
 }
 
 pub(super) fn read_with_semantics(text: &str, semantic_tokens: &[html::Token]) -> OwnedSheet {
+    read_with_tokens(text, semantic_tokens, &html::tokenize(text))
+}
+
+/// Full projection already retains the exact lexical stream for scope queries
+/// and links. Reuse it while identifying source-backed style declarations.
+pub(super) fn read_with_tokens(
+    text: &str,
+    semantic_tokens: &[html::Token],
+    tokens: &[html::Token],
+) -> OwnedSheet {
     let mut sheet = StyleSheet::for_format(super::Format::Html);
     sheet.mark_html_base_styles_source_backed();
-    let tokens = html::tokenize(text);
     let eligible = active_source_elements(semantic_tokens)
         .into_iter()
         .filter_map(|token| {

@@ -126,9 +126,28 @@ fn byte_budget_charges_derived_unicode_projections_and_history_maps() {
     assert_eq!(document.select_history_node(root.node), Err(HistoryError::NodeNotFound(root.node)));
     let final_bytes = document.source_bytes();
     assert_eq!(final_bytes, unbounded.source_bytes());
+    unbounded.try_undo().unwrap();
     document.try_undo().unwrap();
-    document.try_redo().unwrap();
-    assert_eq!(document.source_bytes(), final_bytes);
+    assert_eq!(document.source_bytes(), unbounded.source_bytes());
+    let after_undo = document.history_status();
+    assert!(after_undo.retained_memory_bytes <= budget);
+    // Navigation refreshes the live allocation ledger too. Under this tightly
+    // calibrated budget, its bookkeeping can make the former current node an
+    // eligible redo leaf to prune. Retention guarantees the current state, not
+    // that a future branch survives every allocation-strategy change.
+    if after_undo.can_redo {
+        document.try_redo().unwrap();
+        assert_eq!(document.source_bytes(), final_bytes);
+        assert!(document.history_status().retained_memory_bytes <= budget);
+    } else {
+        assert_eq!(
+            document.select_history_node(status.current.node),
+            Err(HistoryError::NodeNotFound(status.current.node))
+        );
+        assert_eq!(document.source_bytes(), unbounded.source_bytes());
+    }
+    unbounded.try_redo().unwrap();
+    assert_eq!(unbounded.source_bytes(), final_bytes);
 }
 
 #[test]

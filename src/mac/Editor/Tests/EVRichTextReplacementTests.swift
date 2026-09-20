@@ -121,4 +121,73 @@ import XCTest
             XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
         }
     }
+
+    func testWhitespaceReplacementPreservesStyleAndUndoWithNativeAndIMEInput() throws {
+        let source = "<p>A <b>B</b> C</p>\r\n<p>D</p>"
+        for composition in [false, true] {
+            let (backend, surface, session, window) = try fixture(source)
+            defer { window.close() }
+            surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 2, length: 3))
+            if composition {
+                surface.editorView.setMarkedText(" ", selectedRange: NSRange(location: 1, length: 0),
+                                                 replacementRange: noRange)
+            }
+            surface.editorView.insertText(" ", replacementRange: noRange)
+            XCTAssertEqual(try backend.formattedText().replacingOccurrences(of: "\u{a0}", with: " "),
+                           "A  \nD")
+            XCTAssertNil(surface.commandOutput)
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+            surface.refreshPresentation()
+            surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 1, length: 1))
+            XCTAssertEqual(try session.selectedFormatting()[.characterBold], .boolean(false))
+            surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 2, length: 1))
+            XCTAssertEqual(try session.selectedFormatting()[.characterBold], .boolean(true))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+            _ = try session.undo()
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+        }
+    }
+
+    func testReplacementLatencyAcrossLargeHTMLDocuments() throws {
+        // Work-count gates live in the portable suite. These timings include
+        // AppKit selection, native/IME input, and presentation refresh, and are
+        // supplementary diagnostics rather than machine-dependent thresholds.
+        let paragraph = "<p>alpha <b>bold</b> omega</p>\n"
+        let visible = "alpha bold omega"
+        for count in [1_000, 10_000] {
+            for composition in [false, true] {
+                let (backend, surface, session, window) = try fixture(String(repeating: paragraph, count: count))
+                defer { window.close() }
+                for line in [0, count / 2, count - 1] {
+                    let range = NSRange(location: line * (visible.utf8.count + 1) + 6, length: 4)
+                    // Accessibility selection requires visible layout coverage.
+                    // Navigation is setup, outside the measured replacement.
+                    _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+                    _ = try session.sendText("\(line + 1)G")
+                    surface.refreshPresentation()
+                    let start = ProcessInfo.processInfo.systemUptime
+                    surface.editorView.setAccessibilitySelectedTextRange(range)
+                    XCTAssertEqual(surface.selectedUTF8Range(), range.location..<NSMaxRange(range))
+                    if composition {
+                        surface.editorView.setMarkedText("X", selectedRange: NSRange(location: 1, length: 0),
+                                                         replacementRange: noRange)
+                    }
+                    surface.editorView.insertText("X", replacementRange: noRange)
+                    surface.editorView.insertText("Y", replacementRange: noRange)
+                    let milliseconds = (ProcessInfo.processInfo.systemUptime - start) * 1_000
+                    print("HTML replacement native paragraphs=\(count) line=\(line) ime=\(composition) milliseconds=\(milliseconds)")
+                    let result = try backend.formattedText() as NSString
+                    XCTAssertEqual(result.substring(with: NSRange(location: range.location, length: 2)), "XY")
+                    XCTAssertEqual(try session.selectedFormatting()[.characterBold], .boolean(true))
+                    XCTAssertNil(surface.commandOutput)
+                    _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+                    _ = try session.undo()
+                    if composition { _ = try session.undo() }
+                    surface.refreshPresentation()
+                }
+                XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType),
+                               Data(String(repeating: paragraph, count: count).utf8))
+            }
+        }
+    }
 }

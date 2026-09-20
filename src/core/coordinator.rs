@@ -3666,20 +3666,32 @@ impl<P: TextMeasurementProvider> Core<P> {
             let work_start = checkpoint
                 .as_ref()
                 .map_or(full_range.start, LongLineLayoutCheckpoint::next_text_offset);
-            let (work_end, capture) =
-                crate::layout::capture_composition_range(&tree, work_start, full_range.clone())?;
-            let mut text = tree
-                .slice(capture.clone())
-                .map_err(DocumentError::FormattedTextStorage)?;
-            if flow {
-                text = text.replace('\n', " ");
-            }
+            let (work_end, capture) = crate::layout::capture_composition_range(
+                &tree,
+                work_start,
+                full_range.clone(),
+                flow,
+                &cancellation,
+            )?;
+            let stream_overflow = !flow && work_end - work_start > MAX_LONG_LINE_LAYOUT_SLICE_BYTES;
+            let text = if stream_overflow {
+                None
+            } else {
+                let text = tree
+                    .slice(capture.clone())
+                    .map_err(DocumentError::FormattedTextStorage)?;
+                Some(if flow { text.replace('\n', " ") } else { text })
+            };
             let indentation_tree = (checkpoint.is_none()
                 && self.document.format().is_code()
                 && composed_layout.wrap()
                 && work_end < full_range.end)
                 .then(|| tree.clone());
-            let mut style_capture = capture.clone();
+            let mut style_capture = if stream_overflow {
+                capture.start..full_range.end
+            } else {
+                capture.clone()
+            };
             if let Some(tree) = &indentation_tree {
                 let indentation_end = crate::layout::ascii_indentation_end(
                     tree,
@@ -3688,8 +3700,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 )?;
                 style_capture.end = style_capture.end.max(indentation_end);
             }
-            let following_base =
-                (work_end == full_range.end && line_index + 1 < line_count).then(|| {
+            let following_base = ((work_end == full_range.end || stream_overflow)
+                && line_index + 1 < line_count)
+                .then(|| {
                     self.document
                         .projection()
                         .presentation_line_range(line_index + 1, flow)
@@ -3734,7 +3747,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                 ranges.extend(following.clone());
                 crate::layout::flow_paragraph_styles(&mut styles, &ranges);
             }
-            let captured_view = composed_layout.capture_for_regional_layout_job(style_capture);
+            let mut captured_view = composed_layout.capture_for_regional_layout_job(style_capture);
+            if stream_overflow {
+                captured_view.set_horizontal_focus(focus);
+            }
             let job_id = self.allocate_layout_job_id()?;
             if !composed_layout.begin_layout_job(job_id) {
                 return Err(CoreError::IdentifierExhausted(
@@ -3745,21 +3761,33 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .views
                 .get_mut(&view_id)
                 .ok_or(CoreError::UnknownView(view_id))?;
-            let region = view
-                .engine
-                .layout_hard_line_slices_cancellable(
+            let slice = crate::layout::HardLineLayoutSlice {
+                indentation_tree,
+                full_range: full_range.clone(),
+                work_range: work_start..work_end,
+                shaping_context_range: capture.clone(),
+                hard_line_index: line_index,
+                checkpoint,
+            };
+            let region = if stream_overflow {
+                view.engine.layout_overflow_slice_cancellable(
                     self.document.id(),
                     self.document.revision(),
-                    &text,
+                    &tree,
+                    &slice,
+                    line_count,
+                    following,
+                    &styles,
+                    &captured_view,
+                    &cancellation,
+                )
+            } else {
+                view.engine.layout_hard_line_slices_cancellable(
+                    self.document.id(),
+                    self.document.revision(),
+                    text.as_ref().expect("ordinary slices retain bounded text"),
                     capture.start,
-                    &[crate::layout::HardLineLayoutSlice {
-                        indentation_tree,
-                        full_range: full_range.clone(),
-                        work_range: work_start..work_end,
-                        shaping_context_range: capture,
-                        hard_line_index: line_index,
-                        checkpoint,
-                    }],
+                    &[slice],
                     line_count,
                     overlay.utf8_len(),
                     following,
@@ -3767,12 +3795,13 @@ impl<P: TextMeasurementProvider> Core<P> {
                     &captured_view,
                     &cancellation,
                 )
-                .map_err(|error| match error {
-                    LayoutComputationError::Layout(error) => CoreError::Layout(error),
-                    LayoutComputationError::Cancelled => {
-                        CoreError::LayoutJob(LayoutJobError::Cancelled)
-                    }
-                })?;
+            }
+            .map_err(|error| match error {
+                LayoutComputationError::Layout(error) => CoreError::Layout(error),
+                LayoutComputationError::Cancelled => {
+                    CoreError::LayoutJob(LayoutJobError::Cancelled)
+                }
+            })?;
             let coverage = region.lines()[0].text_coverage();
             if coverage.start <= focus && focus <= coverage.end {
                 let top = composed_layout.viewport_top();
@@ -7813,6 +7842,7 @@ mod tests {
         generation: Arc<AtomicU64>,
         threading: ProviderThreading,
         metric_scale: f32,
+        maximum_request_bytes: usize,
     }
 
     impl InstrumentedCoordinatorProvider {
@@ -7830,6 +7860,7 @@ mod tests {
                     generation: Arc::clone(&generation),
                     threading,
                     metric_scale: 1.0,
+                    maximum_request_bytes: 0,
                 },
                 shaped_bytes,
                 shape_calls,
@@ -7864,6 +7895,17 @@ mod tests {
             &mut self,
             requests: &[ShapeRequest<'_>],
         ) -> Result<Vec<ShapedFragment>, MeasurementError> {
+            self.maximum_request_bytes = self.maximum_request_bytes.max(
+                requests
+                    .iter()
+                    .map(|request| {
+                        request.text.len()
+                            + request.context_before.len()
+                            + request.context_after.len()
+                    })
+                    .max()
+                    .unwrap_or(0),
+            );
             self.shape_calls.fetch_add(1, Ordering::AcqRel);
             self.shaped_bytes.fetch_add(
                 requests
@@ -10396,6 +10438,106 @@ mod tests {
                 assert!(!core.document.undo());
             }
         }
+    }
+
+    #[test]
+    fn giant_word_composition_streams_geometry_and_invalidates_overlay_caches() {
+        let word_bytes = 2_000_000;
+        let source = format!(
+            "<p>{}<b>bold</b> tail</p><p>following</p>",
+            "a".repeat(word_bytes)
+        );
+        let document = Document::from_bytes(
+            source.as_bytes().to_vec(),
+            crate::document::Encoding::Utf8,
+            crate::document::Format::Html,
+        )
+        .unwrap();
+        let mut core = Core::new(document);
+        let (provider, _, _, generation) =
+            InstrumentedCoordinatorProvider::new(ProviderThreading::AnyWorker);
+        let view = core.add_view(provider, 400.0, 160.0);
+        let at = word_bytes + 1;
+        core.handle(view, begin_composition(&core, at..at + 1))
+            .unwrap();
+        for value in ["é", "かな", "Z"] {
+            core.handle(
+                view,
+                CoreEvent::Composition(CompositionEvent::Update(CompositionUpdate::new(
+                    value,
+                    value.len()..value.len(),
+                ))),
+            )
+            .unwrap();
+            let snapshot = core.presentation_layout(view).unwrap().snapshot().unwrap();
+            snapshot
+                .logical_endpoint_geometry(at + value.len(), BoundaryAffinity::Downstream)
+                .unwrap();
+            assert!(
+                snapshot
+                    .rows
+                    .iter()
+                    .map(|row| row.clusters.len())
+                    .sum::<usize>()
+                    < 10_000,
+                "the overflow word must retain sparse viewport/caret geometry"
+            );
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            assert!(
+                core.views[&view].engine.provider().maximum_request_bytes
+                    < MAX_LONG_LINE_LAYOUT_SLICE_BYTES
+            );
+        }
+        let old_layout = core
+            .presentation_layout(view)
+            .unwrap()
+            .snapshot()
+            .unwrap()
+            .revision;
+        generation.fetch_add(1, Ordering::AcqRel);
+        core.handle(
+            view,
+            CoreEvent::Resize {
+                width: 220.0,
+                height: 120.0,
+            },
+        )
+        .unwrap();
+        let snapshot = core.presentation_layout(view).unwrap().snapshot().unwrap();
+        assert_ne!(snapshot.revision, old_layout);
+        assert_eq!(
+            snapshot.metrics_generation,
+            MetricsGeneration(generation.load(Ordering::Acquire))
+        );
+        snapshot
+            .logical_endpoint_geometry(at + 1, BoundaryAffinity::Downstream)
+            .unwrap();
+        core.handle(view, CoreEvent::Composition(CompositionEvent::Cancel))
+            .unwrap();
+        assert!(core.composition_overlay(view).unwrap().is_none());
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        assert!(!core.document.undo());
+
+        core.handle(view, begin_composition(&core, at..at + 1))
+            .unwrap();
+        core.handle(
+            view,
+            CoreEvent::Composition(CompositionEvent::Update(CompositionUpdate::new("X", 1..1))),
+        )
+        .unwrap();
+        core.handle(view, CoreEvent::Composition(CompositionEvent::Commit))
+            .unwrap();
+        assert!(core.composition_overlay(view).unwrap().is_none());
+        assert_eq!(
+            core.document()
+                .projection()
+                .text_tree()
+                .slice(word_bytes..word_bytes + 9)
+                .unwrap(),
+            "bXld tail"
+        );
+        assert!(core.document.undo());
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
     }
 
     #[test]

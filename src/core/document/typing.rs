@@ -33,12 +33,14 @@ impl Document {
     ) -> Result<super::super::ResolvedCharacterStyle, DocumentError> {
         self.text_point(at)?;
         self.validate_typing_named_style(style)?;
-        let sample =
-            if at > 0 && (at == self.text().len() || affinity == BoundaryAffinity::Upstream) {
-                at - 1
-            } else {
-                at
-            };
+        let sample = if at > 0
+            && (at == self.projection().text_tree().byte_len()
+                || affinity == BoundaryAffinity::Upstream)
+        {
+            at - 1
+        } else {
+            at
+        };
         self.clean_named_character_at(sample, style, &CharacterProperties::default())
     }
 
@@ -58,9 +60,9 @@ impl Document {
             .ok_or(DocumentError::AmbiguousProjection)?;
         let mut paragraph_style = &block.style;
         let mut defaults = &block.direct_default_character;
-        let spans = self
-            .projection()
-            .style_spans_for_region(&(sample..(sample + 1).min(self.text().len())));
+        let spans = self.projection().style_spans_for_region(
+            &(sample..(sample + 1).min(self.projection().text_tree().byte_len())),
+        );
         for span in &spans {
             match &span.application {
                 StyleApplication::SourceParagraph {
@@ -499,15 +501,18 @@ impl Document {
         values: &[(StyleProperty, StylePropertyValue)],
     ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
         self.prepare_insertion_with_typing_context(edit, named, values, None)
+            .map(|(prepared, caret, _)| (prepared, caret))
     }
 
+    /// Returns the transaction, final caret, and authored range start.
+    /// Supporting whitespace is excluded from that range's typing style.
     pub(crate) fn prepare_insertion_with_typing_context(
         &self,
         edit: FormattedPayloadEdit,
         named: Option<&StyleId>,
         values: &[(StyleProperty, StylePropertyValue)],
         inherited: Option<&super::super::ReplacementTypingContext>,
-    ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+    ) -> Result<(PreparedModelTransaction, usize, usize), ModelTransactionError> {
         // The captured first character supplies inheritance, while deliberate
         // pending menu choices still win. Only differing properties are later
         // written, so paragraph defaults remain sparse whenever they survive.
@@ -557,7 +562,52 @@ impl Document {
         if let Some(style) = named {
             self.validate_typing_named_style(style)?;
         }
-        let edit = self.normalize_typing_payload(edit)?;
+        let mut edit = self.normalize_typing_payload(edit)?;
+        // Normalization can replace a preceding generated NBSP with a normal
+        // space. Keep that existing character outside the authored styling
+        // range, including inherited HTML links and explicit style choices.
+        let preserved_prefix = if edit.html_preserved_prefix_len != 0 {
+            let length = edit.html_preserved_prefix_len;
+            if length != 1
+                || !edit.payload.text().starts_with(' ')
+                || self
+                    .projection()
+                    .text_tree()
+                    .slice(edit.range.clone())
+                    .map_err(DocumentError::FormattedTextStorage)?
+                    != "\u{a0}"
+            {
+                return Err(DocumentError::VerificationFailed.into());
+            }
+            let payload = FormattedTextPayload::new(&self.hard_line_snapshot(), " ", vec![])
+                .expect("the preserved prefix is one complete space");
+            let mut prefix = FormattedPayloadEdit::new(edit.range.clone(), payload);
+            prefix.typing_normalized = true;
+            let breaks = edit
+                .payload
+                .break_offsets()
+                .iter()
+                .map(|at| at.checked_sub(length))
+                .collect::<Option<Vec<_>>>()
+                .ok_or(DocumentError::VerificationFailed)?;
+            edit.payload = FormattedTextPayload::new(
+                &self.hard_line_snapshot(),
+                &edit.payload.text()[length..],
+                breaks,
+            )
+            .expect("removing a whole space preserves payload boundaries");
+            edit.range.start = edit.range.end;
+            edit.html_protective_spaces = edit
+                .html_protective_spaces
+                .iter()
+                .map(|at| at.checked_sub(length))
+                .collect::<Option<Vec<_>>>()
+                .ok_or(DocumentError::VerificationFailed)?;
+            edit.html_preserved_prefix_len = 0;
+            Some(prefix)
+        } else {
+            None
+        };
         let properties = self.validate_typing_properties(values)?;
         let mut at = edit.range.start;
         if named.is_none()
@@ -566,7 +616,7 @@ impl Document {
             && edit.payload.text().trim().is_empty()
         {
             let caret = at + edit.payload.text().len();
-            return Ok((self.prepare_formatted_payload_edits(vec![edit])?, caret));
+            return Ok((self.prepare_formatted_payload_edits(vec![edit])?, caret, at));
         }
         let single_replacement = !edit.range.is_empty()
             && self.hard_line_snapshot().next_grapheme_boundary(at) == Some(edit.range.end);
@@ -583,8 +633,16 @@ impl Document {
                 .as_ref()
                 == (!style.0.is_empty()).then_some(style)
                 && {
-                    let sample = if at > 0 && (at == self.text().len() || affinity == BoundaryAffinity::Upstream) { at - 1 } else { at };
-                    self.clean_named_character_at(sample, style, &properties).ok()
+                    let sample = if at > 0
+                        && (at == self.projection().text_tree().byte_len()
+                            || affinity == BoundaryAffinity::Upstream)
+                    {
+                        at - 1
+                    } else {
+                        at
+                    };
+                    self.clean_named_character_at(sample, style, &properties)
+                        .ok()
                         == crate::layout::DocumentLayoutStyles::semantic_character_at(
                             self.projection(), at, affinity == BoundaryAffinity::Upstream,
                         ).ok()
@@ -634,7 +692,7 @@ impl Document {
         } else {
             None
         };
-        if structural.is_none() && (edit.range.is_empty() || single_replacement) && context_matches
+        if preserved_prefix.is_none() && structural.is_none() && (edit.range.is_empty() || single_replacement) && context_matches
             && (inherited.is_none() || self.format() == Format::Html)
             && inherited.is_none_or(|context| context.paragraph.matches(self, at))
         {
@@ -677,11 +735,13 @@ impl Document {
                     .ok_or(DocumentError::AmbiguousProjection)?
                     .offset()
             };
-            return Ok((prepared, caret));
+            return Ok((prepared, caret, at));
         }
         let mut caret = at + edit.payload.text().len();
+        let authored_length = edit.payload.text().len();
+        let has_preserved_prefix = preserved_prefix.is_some();
         if edit.payload.text().is_empty() {
-            return Ok((self.no_op_prepared(), at));
+            return Ok((self.no_op_prepared(), at, at));
         }
         let mut scratch = self.scratch_document();
         let mut sources = PatchComposition::new(self.source_byte_len());
@@ -735,14 +795,37 @@ impl Document {
                 scratch.prepare_html_source_patches(patches)?
             } else {
                 let mut edits = vec![edit.text_edit()];
+                if let Some(prefix) = preserved_prefix {
+                    let prefix = prefix.text_edit();
+                    patches.extend(
+                        scratch.translate_source_edits(std::iter::once((&prefix, None)))?,
+                    );
+                    edits.push(prefix);
+                }
                 let support = scratch.html_boundary_space_edits(&mut edits)?;
                 patches.extend(scratch.translate_source_edits(support.iter().map(|edit| (edit, None)))?);
                 edits.extend(support);
                 scratch.prepare_text_edits_with_patches(edits, Some(patches))?
             }
         } else {
-            scratch.prepare_formatted_payload_edits(vec![edit])?
+            let mut edits = vec![edit];
+            edits.extend(preserved_prefix);
+            scratch.prepare_formatted_payload_edits(edits)?
         };
+        if has_preserved_prefix {
+            at = first
+                .text_position_map()
+                .map_text_point(
+                    self.text_point(at)?,
+                    Association::BeforeInsertion,
+                    BoundaryAffinity::Downstream,
+                    DeletionRecovery::PreferFollowingThenPreceding,
+                )?
+                .value()
+                .ok_or(DocumentError::AmbiguousProjection)?
+                .offset();
+            caret = at + authored_length;
+        }
         publish(&mut scratch, first, &mut sources, &mut formatted)?;
         let projection = scratch.projection();
         let start = if projection
@@ -907,6 +990,6 @@ impl Document {
         let patches = sources.source_patches(&scratch.state().source)?;
         let edits = formatted.formatted_edits(&scratch)?;
         let prepared = self.prepare_text_edits_with_patches(edits, Some(patches))?;
-        Ok((prepared, caret))
+        Ok((prepared, caret, selection.start))
     }
 }

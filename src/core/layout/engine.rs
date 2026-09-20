@@ -1592,6 +1592,10 @@ pub(crate) struct LayoutJobViewConfiguration {
 }
 
 impl LayoutJobViewConfiguration {
+    pub(crate) fn set_horizontal_focus(&mut self, offset: usize) {
+        self.horizontal_focus_offset = Some(offset);
+    }
+
     pub(super) fn retained_override_style_run_count(&self) -> usize {
         if self.style_runs_are_override {
             self.style_runs.len()

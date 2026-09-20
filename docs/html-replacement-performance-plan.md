@@ -1,6 +1,9 @@
 # Plan: local HTML replacement context
 
-Status: proposed followup; this document does not implement the index.
+Status: implemented with measured acceptance tests. See
+[the results and remaining limits](html-replacement-work-results.md) for
+end-to-end work counts, native validation, and reproducible profiling commands.
+The original implementation plan follows.
 
 ## Problem and measurable goal
 

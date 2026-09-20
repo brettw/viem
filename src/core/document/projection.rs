@@ -1366,6 +1366,7 @@ impl From<FormattedTextError> for SourceToTextError {
 #[derive(Clone, Debug)]
 pub struct FormattedDocument {
     revision: Revision,
+    html_scope_index: Option<super::html_scope_index::HtmlScopeIndex>,
     /// Canonical persistent formatted-text representation.
     text: FormattedTextTree,
     /// Lazily materialized compatibility view. Regional candidates can remain
@@ -1443,7 +1444,24 @@ impl LogicalGraphemeSnapshot for FormattedDocument {
 }
 
 impl FormattedDocument {
-    pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+    pub(super) fn html_scope_index(&self) -> Option<&super::html_scope_index::HtmlScopeIndex> {
+        self.html_scope_index
+            .as_ref()
+            .filter(|index| index.revision() == self.revision)
+    }
+
+    pub(super) fn install_html_scope_index(
+        &mut self,
+        index: super::html_scope_index::HtmlScopeIndex,
+    ) {
+        debug_assert_eq!(index.revision(), self.revision);
+        self.html_scope_index = Some(index);
+    }
+
+    pub(super) fn visit_retained_memory(
+        &self,
+        visitor: &mut super::history_memory::MemoryVisitor<'_>,
+    ) {
         let trace = std::env::var_os("VIEM_HISTORY_MEMORY_BREAKDOWN").is_some();
         let mut before = visitor.retained_bytes();
         self.text.visit_retained_memory(visitor);
@@ -1464,6 +1482,9 @@ impl FormattedDocument {
         self.source_boundaries.visit_retained_memory(visitor);
         if trace { eprintln!("  boundaries {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
         self.decoding_diagnostics.visit_retained_memory(visitor);
+        if let Some(index) = &self.html_scope_index {
+            index.visit_retained_memory(visitor);
+        }
         visitor.arc(&self.style_sheet, |visitor| {
             visitor.owned(
                 Arc::as_ptr(&self.style_sheet) as usize,
@@ -1517,6 +1538,7 @@ impl FormattedDocument {
             IntervalRangeStore::new(source_text_boundaries(provenance.iter().cloned()));
         Self {
             revision,
+            html_scope_index: None,
             text,
             flat_text: compatibility_text,
             blocks: OrderedRangeStore::new(blocks),
@@ -3952,6 +3974,7 @@ pub(crate) fn splice_line_local_projection(
     new_source_content_end: usize,
     source_paragraphs: bool,
     literal_topology: bool,
+    preserve_containing_paragraph: bool,
     edits: &[TextEdit],
     next_projected_block_id: &mut u64,
 ) -> Result<(FormattedDocument, ProjectionSpliceStatistics), BlockIdentityError> {
@@ -3987,10 +4010,11 @@ pub(crate) fn splice_line_local_projection(
     // A regional text edit must extend that same paragraph rather than demand
     // that the captured physical line cover its entire source extent.
     let partial_preserved_block = previous_region_blocks.len() == 1
-        && matches!(
-            previous_region_blocks[0].style.0.as_str(),
-            "Code Block" | "Block quote"
-        )
+        && (preserve_containing_paragraph
+            || matches!(
+                previous_region_blocks[0].style.0.as_str(),
+                "Code Block" | "Block quote"
+            ))
         && previous_region_blocks[0].range.start <= old_formatted.start
         && old_formatted.end <= previous_region_blocks[0].range.end
         && regional.blocks.len() == 1
@@ -4172,24 +4196,38 @@ pub(crate) fn splice_line_local_projection(
         return Err(BlockIdentityError::InvalidProjection);
     }
     let regional_hard_lines = if literal_topology {
-        regional_lines.iter().enumerate().map(|(index, line)| {
-            Ok(HardLine {
-                id: regional_blocks[index].id,
-                range: regional_blocks[index].range.clone(),
-                separator_length: if index + 1 == regional_lines.len() { old_lines.last().unwrap().separator_length } else { line.separator_length },
+        regional_lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| {
+                Ok(HardLine {
+                    id: regional_blocks[index].id,
+                    range: regional_blocks[index].range.clone(),
+                    separator_length: if index + 1 == regional_lines.len() {
+                        old_lines.last().unwrap().separator_length
+                    } else {
+                        line.separator_length
+                    },
+                })
             })
-        }).collect::<Result<Vec<_>, BlockIdentityError>>()?
-    } else { regional_lines
-        .iter()
-        .zip(&old_lines)
-        .map(|(line, old)| {
-            Ok(HardLine {
-                id: old.id,
-                range: shift_region_range(&line.range, old_formatted.start)?,
-                separator_length: old.separator_length,
+            .collect::<Result<Vec<_>, BlockIdentityError>>()?
+    } else {
+        regional_lines
+            .iter()
+            .zip(&old_lines)
+            .map(|(line, old)| {
+                Ok(HardLine {
+                    id: old.id,
+                    range: if preserve_containing_paragraph {
+                        old.range.start..old.range.end - old_formatted.len() + regional.text().len()
+                    } else {
+                        shift_region_range(&line.range, old_formatted.start)?
+                    },
+                    separator_length: old.separator_length,
+                })
             })
-        })
-        .collect::<Result<Vec<_>, BlockIdentityError>>()? };
+            .collect::<Result<Vec<_>, BlockIdentityError>>()?
+    };
     let hard_lines = previous
         .hard_lines
         .splice(
@@ -4329,12 +4367,24 @@ pub(crate) fn splice_line_local_projection(
         None
     };
 
-    let literal_mapping = previous.literal_encoding.is_some() && regional.literal_encoding == previous.literal_encoding;
-    let style_indices = if literal_mapping {
-        let first = previous.styles.query_overlapping(&old_formatted).iter()
-            .map(|span| span.range.start).min().unwrap_or(old_formatted.start);
-        previous.styles.partition_point_start(first)..previous.styles.partition_point_start(old_formatted.end)
-    } else { contained_interval_indices(&previous.styles, &old_formatted)? };
+    let literal_mapping = previous.literal_encoding.is_some()
+        && regional.literal_encoding == previous.literal_encoding;
+    let style_indices = if preserve_containing_paragraph {
+        previous.styles.partition_point_start(old_formatted.start)
+            ..previous.styles.partition_point_start(old_formatted.end)
+    } else if literal_mapping {
+        let first = previous
+            .styles
+            .query_overlapping(&old_formatted)
+            .iter()
+            .map(|span| span.range.start)
+            .min()
+            .unwrap_or(old_formatted.start);
+        previous.styles.partition_point_start(first)
+            ..previous.styles.partition_point_start(old_formatted.end)
+    } else {
+        contained_interval_indices(&previous.styles, &old_formatted)?
+    };
     let mut regional_styles = regional
         .styles
         .as_slice()
@@ -4364,8 +4414,18 @@ pub(crate) fn splice_line_local_projection(
             }
         }
     }
-    let styles = previous
-        .styles
+    let previous_styles = if preserve_containing_paragraph {
+        retain_crossing_styles(
+            &previous.styles,
+            &old_formatted,
+            new_formatted_end,
+            &mut regional_styles,
+            &mut range_stats,
+        )?
+    } else {
+        previous.styles.clone()
+    };
+    let styles = previous_styles
         .splice(
             style_indices,
             regional_styles,
@@ -4579,6 +4639,7 @@ pub(crate) fn splice_line_local_projection(
 
     let candidate = FormattedDocument {
         revision,
+        html_scope_index: previous.html_scope_index.clone(),
         text: target_text,
         flat_text: Arc::new(OnceLock::new()),
         blocks,
@@ -4627,6 +4688,86 @@ pub(crate) fn splice_line_local_projection(
     ))
 }
 
+/// A small verified text window may cut through long style runs. Rewrite only
+/// the crossing runs at their original ordinal positions; starting at their
+/// earliest source start would otherwise copy every intervening style record.
+/// Rejoin matching regional edges so repeated typing does not fragment a long
+/// inherited run into one style record per keystroke.
+fn retain_crossing_styles(
+    previous: &IntervalRangeStore<StyleSpan>,
+    old: &Range<usize>,
+    new_end: usize,
+    regional: &mut Vec<StyleSpan>,
+    stats: &mut RangeSpliceStats,
+) -> Result<IntervalRangeStore<StyleSpan>, BlockIdentityError> {
+    let overlapping = previous.query_overlapping(old);
+    let delta = new_end as i128 - old.end as i128;
+    let shifted_end = |end: usize| -> Result<usize, BlockIdentityError> {
+        (end as i128 + delta)
+            .try_into()
+            .map_err(|_| BlockIdentityError::InvalidProjection)
+    };
+    let mut result = previous.clone();
+    let mut starts = overlapping
+        .iter()
+        .filter(|span| span.range.start < old.start)
+        .map(|span| span.range.start)
+        .collect::<Vec<_>>();
+    starts.dedup();
+    for start in starts {
+        let indices =
+            previous.partition_point_start(start)..previous.partition_point_start(start + 1);
+        let mut group = previous
+            .get_range(&indices)
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        for span in &mut group {
+            if span.range.end <= old.start {
+                continue;
+            }
+            let old_end = span.range.end;
+            span.range.end = old.start;
+            if let Some(index) = regional.iter().position(|candidate| {
+                candidate.range.start == old.start && candidate.application == span.application
+            }) {
+                span.range.end = regional.remove(index).range.end;
+            }
+            if old_end > old.end {
+                if span.range.end == new_end {
+                    span.range.end = shifted_end(old_end)?;
+                } else if let Some(candidate) = regional.iter_mut().find(|candidate| {
+                    candidate.range.end == new_end && candidate.application == span.application
+                }) {
+                    candidate.range.end = shifted_end(old_end)?;
+                } else {
+                    regional.push(StyleSpan {
+                        range: new_end..shifted_end(old_end)?,
+                        application: span.application.clone(),
+                    });
+                }
+            }
+        }
+        result = result
+            .splice(indices, group, old.end, old.end, stats)
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+    }
+    for span in overlapping
+        .iter()
+        .filter(|span| span.range.start >= old.start && span.range.end > old.end)
+    {
+        if let Some(candidate) = regional.iter_mut().find(|candidate| {
+            candidate.range.end == new_end && candidate.application == span.application
+        }) {
+            candidate.range.end = shifted_end(span.range.end)?;
+        } else {
+            regional.push(StyleSpan {
+                range: new_end..shifted_end(span.range.end)?,
+                application: span.application.clone(),
+            });
+        }
+    }
+    Ok(result)
+}
+
 fn contained_interval_indices<T>(
     store: &IntervalRangeStore<T>,
     region: &Range<usize>,
@@ -4641,8 +4782,18 @@ where
     {
         return Err(BlockIdentityError::InvalidProjection);
     }
-    let indices =
-        store.partition_point_start(region.start)..store.partition_point_start(region.end);
+    let start = store.partition_point_start(region.start);
+    let mut end = store.partition_point_start(region.end);
+    if region.is_empty() {
+        // An empty paragraph has real point annotations even though its
+        // character extent is empty. Replacing that body consumes its caret
+        // seed; retaining it would shift it past generated closing tags and
+        // send continued typing outside the original inline formatting.
+        while store.get(end).is_some_and(|item| item.range() == region) {
+            end += 1;
+        }
+    }
+    let indices = start..end;
     if store
         .get_range(&indices)
         .ok_or(BlockIdentityError::InvalidProjection)?

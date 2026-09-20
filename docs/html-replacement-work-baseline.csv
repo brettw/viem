@@ -1,0 +1,131 @@
+label,full_source_calls,full_source_bytes,range_source_bytes,decoded,tokenize,tree_tokenize,scope_visits,index_visits,index_copies,index_rebuild,scratch,commits,full_projection,regional_projection,projected_bytes,operation_pair_elapsed_ms
+open p=1000 rich=false enc=Utf8,0,0,0,14000,28000,14000,0,0,0,0,0,0,0,0,0,16
+replace p=1000 rich=false enc=Utf8 at=start ime=false,2,27999,34,28040,28039,20,3,0,0,0,0,2,0,2,13,4
+continued p=1000 rich=false enc=Utf8 at=start ime=false,0,0,20,25,26,13,0,0,0,0,0,1,0,1,8,4
+replace p=1000 rich=false enc=Utf8 at=start ime=true,2,28002,19,28026,28028,13,4,0,0,0,0,1,0,1,8,4
+continued p=1000 rich=false enc=Utf8 at=start ime=true,1,14001,21,14027,14029,14,1,0,0,0,0,1,0,1,9,4
+replace p=1000 rich=false enc=Utf8 at=middle ime=false,2,28003,526,28536,28043,20,4503,0,0,0,0,2,0,2,13,3
+continued p=1000 rich=false enc=Utf8 at=middle ime=false,0,0,264,269,26,13,0,0,0,0,0,1,0,1,8,3
+replace p=1000 rich=false enc=Utf8 at=middle ime=true,2,28006,265,28276,28032,13,6004,0,0,0,0,1,0,1,8,3
+continued p=1000 rich=false enc=Utf8 at=middle ime=true,1,14003,265,14273,14031,14,1501,0,0,0,0,1,0,1,9,3
+replace p=1000 rich=false enc=Utf8 at=end ime=false,2,28007,526,28540,28047,20,8994,0,0,0,0,2,0,2,13,2
+continued p=1000 rich=false enc=Utf8 at=end ime=false,0,0,264,269,26,13,0,0,0,0,0,1,0,1,8,2
+replace p=1000 rich=false enc=Utf8 at=end ime=true,2,28010,265,28280,28036,13,11992,0,0,0,0,1,0,1,8,3
+continued p=1000 rich=false enc=Utf8 at=end ime=true,1,14005,265,14275,14033,14,2998,0,0,0,0,1,0,1,9,3
+open p=1000 rich=true enc=Utf8,0,0,0,42000,84000,42000,0,0,0,0,0,0,0,0,0,13
+replace p=1000 rich=true enc=Utf8 at=start ime=false,2,83999,105,84111,84154,76,7,0,0,0,0,2,0,2,13,3
+continued p=1000 rich=true enc=Utf8 at=start ime=false,0,0,54,59,82,41,0,0,0,0,0,1,0,1,8,3
+replace p=1000 rich=true enc=Utf8 at=start ime=true,2,84002,53,84060,84084,41,8,0,0,0,0,1,0,1,8,5
+continued p=1000 rich=true enc=Utf8 at=start ime=true,1,42001,55,42061,42085,42,3,0,0,0,0,1,0,1,9,5
+replace p=1000 rich=true enc=Utf8 at=middle ime=false,2,84003,585,84595,84158,76,15007,0,0,0,0,2,0,2,13,4
+continued p=1000 rich=true enc=Utf8 at=middle ime=false,0,0,292,297,82,41,0,0,0,0,0,1,0,1,8,4
+replace p=1000 rich=true enc=Utf8 at=middle ime=true,2,84006,293,84304,84088,41,20008,0,0,0,0,1,0,1,8,5
+continued p=1000 rich=true enc=Utf8 at=middle ime=true,1,42003,293,42301,42087,42,5003,0,0,0,0,1,0,1,9,5
+replace p=1000 rich=true enc=Utf8 at=end ime=false,2,84007,585,84599,84162,76,29977,0,0,0,0,2,0,2,13,3
+continued p=1000 rich=true enc=Utf8 at=end ime=false,0,0,292,297,82,41,0,0,0,0,0,1,0,1,8,3
+replace p=1000 rich=true enc=Utf8 at=end ime=true,2,84010,293,84308,84092,41,39968,0,0,0,0,1,0,1,8,4
+continued p=1000 rich=true enc=Utf8 at=end ime=true,1,42005,293,42303,42089,42,9993,0,0,0,0,1,0,1,9,4
+open p=1000 rich=true enc=Utf16Le,0,0,0,84000,84000,42000,0,0,0,0,0,0,0,0,0,13
+replace p=1000 rich=true enc=Utf16Le at=start ime=false,2,167998,210,168222,84154,76,7,0,0,0,0,2,0,2,13,3
+continued p=1000 rich=true enc=Utf16Le at=start ime=false,0,0,108,118,82,41,0,0,0,0,0,1,0,1,8,3
+replace p=1000 rich=true enc=Utf16Le at=start ime=true,2,168004,106,168120,84084,41,8,0,0,0,0,1,0,1,8,4
+continued p=1000 rich=true enc=Utf16Le at=start ime=true,1,84002,110,84122,42085,42,3,0,0,0,0,1,0,1,9,4
+replace p=1000 rich=true enc=Utf16Le at=middle ime=false,2,168006,658,168678,84158,76,15007,0,0,0,0,2,0,2,13,4
+continued p=1000 rich=true enc=Utf16Le at=middle ime=false,0,0,328,338,82,41,0,0,0,0,0,1,0,1,8,4
+replace p=1000 rich=true enc=Utf16Le at=middle ime=true,2,168012,330,168352,84088,41,20008,0,0,0,0,1,0,1,8,5
+continued p=1000 rich=true enc=Utf16Le at=middle ime=true,1,84006,330,84346,42087,42,5003,0,0,0,0,1,0,1,9,5
+replace p=1000 rich=true enc=Utf16Le at=end ime=false,2,168014,658,168686,84162,76,29977,0,0,0,0,2,0,2,13,3
+continued p=1000 rich=true enc=Utf16Le at=end ime=false,0,0,328,338,82,41,0,0,0,0,0,1,0,1,8,3
+replace p=1000 rich=true enc=Utf16Le at=end ime=true,2,168020,330,168360,84092,41,39968,0,0,0,0,1,0,1,8,4
+continued p=1000 rich=true enc=Utf16Le at=end ime=true,1,84010,330,84350,42089,42,9993,0,0,0,0,1,0,1,9,4
+open p=10000 rich=false enc=Utf8,0,0,0,140000,280000,140000,0,0,0,0,0,0,0,0,0,42
+replace p=10000 rich=false enc=Utf8 at=start ime=false,2,279999,34,280040,280039,20,3,0,0,0,0,2,0,2,13,7
+continued p=10000 rich=false enc=Utf8 at=start ime=false,0,0,20,25,26,13,0,0,0,0,0,1,0,1,8,7
+replace p=10000 rich=false enc=Utf8 at=start ime=true,2,280002,19,280026,280028,13,4,0,0,0,0,1,0,1,8,10
+continued p=10000 rich=false enc=Utf8 at=start ime=true,1,140001,21,140027,140029,14,1,0,0,0,0,1,0,1,9,10
+replace p=10000 rich=false enc=Utf8 at=middle ime=false,2,280003,526,280536,280043,20,45003,0,0,0,0,2,0,2,13,8
+continued p=10000 rich=false enc=Utf8 at=middle ime=false,0,0,264,269,26,13,0,0,0,0,0,1,0,1,8,8
+replace p=10000 rich=false enc=Utf8 at=middle ime=true,2,280006,265,280276,280032,13,60004,0,0,0,0,1,0,1,8,10
+continued p=10000 rich=false enc=Utf8 at=middle ime=true,1,140003,265,140273,140031,14,15001,0,0,0,0,1,0,1,9,10
+replace p=10000 rich=false enc=Utf8 at=end ime=false,2,280007,526,280540,280047,20,89994,0,0,0,0,2,0,2,13,8
+continued p=10000 rich=false enc=Utf8 at=end ime=false,0,0,264,269,26,13,0,0,0,0,0,1,0,1,8,8
+replace p=10000 rich=false enc=Utf8 at=end ime=true,2,280010,265,280280,280036,13,119992,0,0,0,0,1,0,1,8,10
+continued p=10000 rich=false enc=Utf8 at=end ime=true,1,140005,265,140275,140033,14,29998,0,0,0,0,1,0,1,9,10
+open p=10000 rich=true enc=Utf8,0,0,0,420000,840000,420000,0,0,0,0,0,0,0,0,0,103
+replace p=10000 rich=true enc=Utf8 at=start ime=false,2,839999,105,840111,840154,76,7,0,0,0,0,2,0,2,13,22
+continued p=10000 rich=true enc=Utf8 at=start ime=false,0,0,54,59,82,41,0,0,0,0,0,1,0,1,8,22
+replace p=10000 rich=true enc=Utf8 at=start ime=true,2,840002,53,840060,840084,41,8,0,0,0,0,1,0,1,8,33
+continued p=10000 rich=true enc=Utf8 at=start ime=true,1,420001,55,420061,420085,42,3,0,0,0,0,1,0,1,9,33
+replace p=10000 rich=true enc=Utf8 at=middle ime=false,2,840003,585,840595,840158,76,150007,0,0,0,0,2,0,2,13,24
+continued p=10000 rich=true enc=Utf8 at=middle ime=false,0,0,292,297,82,41,0,0,0,0,0,1,0,1,8,24
+replace p=10000 rich=true enc=Utf8 at=middle ime=true,2,840006,293,840304,840088,41,200008,0,0,0,0,1,0,1,8,33
+continued p=10000 rich=true enc=Utf8 at=middle ime=true,1,420003,293,420301,420087,42,50003,0,0,0,0,1,0,1,9,33
+replace p=10000 rich=true enc=Utf8 at=end ime=false,2,840007,585,840599,840162,76,299977,0,0,0,0,2,0,2,13,23
+continued p=10000 rich=true enc=Utf8 at=end ime=false,0,0,292,297,82,41,0,0,0,0,0,1,0,1,8,23
+replace p=10000 rich=true enc=Utf8 at=end ime=true,2,840010,293,840308,840092,41,399968,0,0,0,0,1,0,1,8,34
+continued p=10000 rich=true enc=Utf8 at=end ime=true,1,420005,293,420303,420089,42,99993,0,0,0,0,1,0,1,9,34
+open p=10000 rich=true enc=Utf16Le,0,0,0,840000,840000,420000,0,0,0,0,0,0,0,0,0,140
+replace p=10000 rich=true enc=Utf16Le at=start ime=false,2,1679998,210,1680222,840154,76,7,0,0,0,0,2,0,2,13,25
+continued p=10000 rich=true enc=Utf16Le at=start ime=false,0,0,108,118,82,41,0,0,0,0,0,1,0,1,8,25
+replace p=10000 rich=true enc=Utf16Le at=start ime=true,2,1680004,106,1680120,840084,41,8,0,0,0,0,1,0,1,8,37
+continued p=10000 rich=true enc=Utf16Le at=start ime=true,1,840002,110,840122,420085,42,3,0,0,0,0,1,0,1,9,37
+replace p=10000 rich=true enc=Utf16Le at=middle ime=false,2,1680006,658,1680678,840158,76,150007,0,0,0,0,2,0,2,13,27
+continued p=10000 rich=true enc=Utf16Le at=middle ime=false,0,0,328,338,82,41,0,0,0,0,0,1,0,1,8,27
+replace p=10000 rich=true enc=Utf16Le at=middle ime=true,2,1680012,330,1680352,840088,41,200008,0,0,0,0,1,0,1,8,37
+continued p=10000 rich=true enc=Utf16Le at=middle ime=true,1,840006,330,840346,420087,42,50003,0,0,0,0,1,0,1,9,37
+replace p=10000 rich=true enc=Utf16Le at=end ime=false,2,1680014,658,1680686,840162,76,299977,0,0,0,0,2,0,2,13,27
+continued p=10000 rich=true enc=Utf16Le at=end ime=false,0,0,328,338,82,41,0,0,0,0,0,1,0,1,8,27
+replace p=10000 rich=true enc=Utf16Le at=end ime=true,2,1680020,330,1680360,840092,41,399968,0,0,0,0,1,0,1,8,39
+continued p=10000 rich=true enc=Utf16Le at=end ime=true,1,840010,330,840350,420089,42,99993,0,0,0,0,1,0,1,9,39
+open p=100000 rich=false enc=Utf8,0,0,0,1400000,2800000,1400000,0,0,0,0,0,0,0,0,0,489
+replace p=100000 rich=false enc=Utf8 at=start ime=false,2,2799999,34,2800040,2800039,20,3,0,0,0,0,2,0,2,13,72
+continued p=100000 rich=false enc=Utf8 at=start ime=false,0,0,20,25,26,13,0,0,0,0,0,1,0,1,8,72
+replace p=100000 rich=false enc=Utf8 at=start ime=true,2,2800002,19,2800026,2800028,13,4,0,0,0,0,1,0,1,8,94
+continued p=100000 rich=false enc=Utf8 at=start ime=true,1,1400001,21,1400027,1400029,14,1,0,0,0,0,1,0,1,9,94
+replace p=100000 rich=false enc=Utf8 at=middle ime=false,2,2800003,526,2800536,2800043,20,450003,0,0,0,0,2,0,2,13,66
+continued p=100000 rich=false enc=Utf8 at=middle ime=false,0,0,264,269,26,13,0,0,0,0,0,1,0,1,8,66
+replace p=100000 rich=false enc=Utf8 at=middle ime=true,2,2800006,265,2800276,2800032,13,600004,0,0,0,0,1,0,1,8,93
+continued p=100000 rich=false enc=Utf8 at=middle ime=true,1,1400003,265,1400273,1400031,14,150001,0,0,0,0,1,0,1,9,93
+replace p=100000 rich=false enc=Utf8 at=end ime=false,2,2800007,526,2800540,2800047,20,899994,0,0,0,0,2,0,2,13,71
+continued p=100000 rich=false enc=Utf8 at=end ime=false,0,0,264,269,26,13,0,0,0,0,0,1,0,1,8,71
+replace p=100000 rich=false enc=Utf8 at=end ime=true,2,2800010,265,2800280,2800036,13,1199992,0,0,0,0,1,0,1,8,101
+continued p=100000 rich=false enc=Utf8 at=end ime=true,1,1400005,265,1400275,1400033,14,299998,0,0,0,0,1,0,1,9,101
+open p=100000 rich=true enc=Utf8,0,0,0,4200000,8400000,4200000,0,0,0,0,0,0,0,0,0,1194
+replace p=100000 rich=true enc=Utf8 at=start ime=false,2,8399999,105,8400111,8400154,76,7,0,0,0,0,2,0,2,13,215
+continued p=100000 rich=true enc=Utf8 at=start ime=false,0,0,54,59,82,41,0,0,0,0,0,1,0,1,8,215
+replace p=100000 rich=true enc=Utf8 at=start ime=true,2,8400002,53,8400060,8400084,41,8,0,0,0,0,1,0,1,8,301
+continued p=100000 rich=true enc=Utf8 at=start ime=true,1,4200001,55,4200061,4200085,42,3,0,0,0,0,1,0,1,9,301
+replace p=100000 rich=true enc=Utf8 at=middle ime=false,2,8400003,585,8400595,8400158,76,1500007,0,0,0,0,2,0,2,13,226
+continued p=100000 rich=true enc=Utf8 at=middle ime=false,0,0,292,297,82,41,0,0,0,0,0,1,0,1,8,226
+replace p=100000 rich=true enc=Utf8 at=middle ime=true,2,8400006,293,8400304,8400088,41,2000008,0,0,0,0,1,0,1,8,306
+continued p=100000 rich=true enc=Utf8 at=middle ime=true,1,4200003,293,4200301,4200087,42,500003,0,0,0,0,1,0,1,9,306
+replace p=100000 rich=true enc=Utf8 at=end ime=false,2,8400007,585,8400599,8400162,76,2999977,0,0,0,0,2,0,2,13,218
+continued p=100000 rich=true enc=Utf8 at=end ime=false,0,0,292,297,82,41,0,0,0,0,0,1,0,1,8,218
+replace p=100000 rich=true enc=Utf8 at=end ime=true,2,8400010,293,8400308,8400092,41,3999968,0,0,0,0,1,0,1,8,320
+continued p=100000 rich=true enc=Utf8 at=end ime=true,1,4200005,293,4200303,4200089,42,999993,0,0,0,0,1,0,1,9,320
+open p=100000 rich=true enc=Utf16Le,0,0,0,8400000,8400000,4200000,0,0,0,0,0,0,0,0,0,1538
+replace p=100000 rich=true enc=Utf16Le at=start ime=false,2,16799998,210,16800222,8400154,76,7,0,0,0,0,2,0,2,13,248
+continued p=100000 rich=true enc=Utf16Le at=start ime=false,0,0,108,118,82,41,0,0,0,0,0,1,0,1,8,248
+replace p=100000 rich=true enc=Utf16Le at=start ime=true,2,16800004,106,16800120,8400084,41,8,0,0,0,0,1,0,1,8,352
+continued p=100000 rich=true enc=Utf16Le at=start ime=true,1,8400002,110,8400122,4200085,42,3,0,0,0,0,1,0,1,9,352
+replace p=100000 rich=true enc=Utf16Le at=middle ime=false,2,16800006,658,16800678,8400158,76,1500007,0,0,0,0,2,0,2,13,248
+continued p=100000 rich=true enc=Utf16Le at=middle ime=false,0,0,328,338,82,41,0,0,0,0,0,1,0,1,8,248
+replace p=100000 rich=true enc=Utf16Le at=middle ime=true,2,16800012,330,16800352,8400088,41,2000008,0,0,0,0,1,0,1,8,357
+continued p=100000 rich=true enc=Utf16Le at=middle ime=true,1,8400006,330,8400346,4200087,42,500003,0,0,0,0,1,0,1,9,357
+replace p=100000 rich=true enc=Utf16Le at=end ime=false,2,16800014,658,16800686,8400162,76,2999977,0,0,0,0,2,0,2,13,245
+continued p=100000 rich=true enc=Utf16Le at=end ime=false,0,0,328,338,82,41,0,0,0,0,0,1,0,1,8,245
+replace p=100000 rich=true enc=Utf16Le at=end ime=true,2,16800020,330,16800360,8400092,41,3999968,0,0,0,0,1,0,1,8,379
+continued p=100000 rich=true enc=Utf16Le at=end ime=true,1,8400010,330,8400350,4200089,42,999993,0,0,0,0,1,0,1,9,379
+open huge paragraph,0,0,0,2000023,4000046,2000023,0,0,0,0,0,0,0,0,0,671
+replace huge paragraph ime=false,2,4000045,798,4000850,4000629,292,7,0,0,0,0,2,0,2,271,713
+continued huge paragraph ime=false,0,0,399,404,296,148,0,0,0,0,0,1,0,1,136,713
+open deep nesting,0,0,0,3339,6678,3339,0,0,0,0,0,0,0,0,0,0
+replace deep nesting ime=false,2,6677,520,7204,6705,14,771,0,0,0,0,2,0,2,7,0
+continued deep nesting ime=false,0,0,261,266,20,10,0,0,0,0,0,1,0,1,5,1
+replace deep nesting ime=true,2,6680,262,6947,6700,10,1028,0,0,0,0,1,0,1,5,0
+continued deep nesting ime=true,1,3340,262,3607,3362,11,257,0,0,0,0,1,0,1,6,0
+open huge selected ancestor attribute,0,0,0,1000042,2000084,1000042,0,0,0,0,0,0,0,0,0,37
+replace huge selected ancestor attribute ime=false,3,3000125,538,3000670,3000189,32,6,0,0,0,0,2,0,2,17,64
+continued huge selected ancestor attribute ime=false,0,0,270,275,38,19,0,0,0,0,0,1,0,1,10,64
+replace huge selected ancestor attribute ime=true,4,4000172,271,4000448,4000210,19,8,0,0,0,0,1,0,1,10,112
+continued huge selected ancestor attribute ime=true,1,1000043,271,1000319,1000083,20,2,0,0,0,0,1,0,1,11,112

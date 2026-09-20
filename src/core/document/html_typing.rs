@@ -1,13 +1,15 @@
 //! Structural exits from inline formatting retain original source tokens. A
 //! caret can cross closing syntax without changing the document; a mid-run
 //! insertion locally splits the enclosing scopes in one source transaction.
-use super::ScriptPosition;
 use super::html::{self, Token, TokenKind};
+use super::html_scope_index::{HtmlScope, HtmlScopeIndex};
+use super::ScriptPosition;
 use super::{
     BoundaryAffinity, CharacterProperties, Document, DocumentError, FontSlant, Format,
     StyleProperty, StylePropertyValue,
 };
 use std::ops::Range;
+use std::sync::Arc;
 
 /// The first replaced paragraph and character contexts, captured before their
 /// source is deleted. These are source syntax values, not stale source offsets.
@@ -39,12 +41,14 @@ impl ReplacementParagraphStyle {
     }
 }
 
-fn inline_scopes<'a>(tokens: &'a [Token], at: usize) -> Vec<&'a Token> {
-    let stack = super::html_paragraph::stack_at(tokens, at);
-    let first = stack.iter().rposition(|token| matches!(&token.kind,
-        TokenKind::Tag(tag) if super::html_paragraph::structural(&tag.name)))
+fn inline_scopes(index: &HtmlScopeIndex, at: usize) -> Vec<Arc<HtmlScope>> {
+    let mut stack = index.scopes_at(at);
+    let first = stack
+        .iter()
+        .rposition(|scope| super::html_paragraph::structural(&scope.tag.name))
         .map_or(0, |index| index + 1);
-    stack[first..].to_vec()
+    stack.drain(..first);
+    stack
 }
 
 impl Document {
@@ -92,30 +96,60 @@ impl Document {
             )?;
             super::rich_text::text_source_runs(self, &contributor.range)?[0].start
         };
-        let decoded = self.encoding().decode(&self.source_bytes())?;
-        let input = super::line_endings::normalize(&decoded, self.file_format());
-        let position = input.units.get(input.units.partition_point(|unit| unit.source.end <= source))
-            .map_or(input.text.len(), |unit| unit.normalized.start);
-        let tokens = html::tokenize(&input.text);
-        let paragraph_position = input.units.get(input.units.partition_point(|unit| unit.source.end <= paragraph_source))
-            .map_or(input.text.len(), |unit| unit.normalized.start);
+        let index = self
+            .projection()
+            .html_scope_index()
+            .ok_or(DocumentError::AmbiguousProjection)?;
         // A cleared document loses enclosing paragraph context as well as its
         // immediate tag: quote/container defaults and nested list ancestry
         // belong to that first paragraph. The document envelope survives the
         // clear itself, and opaque tables are never reconstructed as text.
-        let owners = super::html_paragraph::stack_at(&tokens, paragraph_position).into_iter()
-            .filter(|token| matches!(&token.kind, TokenKind::Tag(tag)
-                if super::html_paragraph::structural(&tag.name)
-                    && !matches!(tag.name.as_str(), "html" | "body" | "head" | "table")))
+        let owners = index
+            .scopes_at(paragraph_source)
+            .into_iter()
+            .filter(|scope| {
+                super::html_paragraph::structural(&scope.tag.name)
+                    && !matches!(scope.tag.name.as_str(), "html" | "body" | "head" | "table")
+            })
             .collect::<Vec<_>>();
-        let paragraph_scope = (!owners.is_empty()).then(|| (
-            owners.iter().map(|token| &input.text[token.range.clone()]).collect(),
-            owners.iter().rev().map(|token| closing(token)).collect(),
-        ));
-        let scopes = if separators_only { Vec::new() } else { inline_scopes(&tokens, position).into_iter()
-            .map(|token| (input.text[token.range.clone()].to_owned(), closing(token)))
-            .collect() };
-        Ok(Some(ReplacementTypingContext { scopes, character, named, link, paragraph, paragraph_scope }))
+        let paragraph_scope = (!owners.is_empty()).then(|| {
+            (
+                owners.iter().map(|scope| scope.opening.as_ref()).collect(),
+                owners
+                    .iter()
+                    .rev()
+                    .map(|scope| format!("</{}>", scope.tag.name))
+                    .collect(),
+            )
+        });
+        let scopes = if separators_only {
+            Vec::new()
+        } else {
+            inline_scopes(index, source)
+                .into_iter()
+                .map(|scope| (scope.opening.to_string(), format!("</{}>", scope.tag.name)))
+                .collect::<Vec<_>>()
+        };
+        super::work_statistics::record(|work| {
+            work.html_scope_entries_copied += scopes.len() + owners.len();
+            work.html_scope_syntax_bytes_copied += scopes
+                .iter()
+                .map(|(open, close)| open.len() + close.len())
+                .sum::<usize>()
+                + paragraph_scope
+                    .as_ref()
+                    .map_or(0, |(open, close): &(String, String)| {
+                        open.len() + close.len()
+                    });
+        });
+        Ok(Some(ReplacementTypingContext {
+            scopes,
+            character,
+            named,
+            link,
+            paragraph,
+            paragraph_scope,
+        }))
     }
 }
 
@@ -136,16 +170,16 @@ pub(super) fn replacement_insertion(
         super::source_edit::insertion_point(document.projection(), at, Some(affinity))
             .ok_or(DocumentError::AmbiguousProjection)?
     };
-    let decoded = document.encoding().decode(&document.source_bytes())?;
-    let input = super::line_endings::normalize(&decoded, document.file_format());
-    let position = input.units.get(input.units.partition_point(|unit| unit.source.end <= source))
-        .map_or(input.text.len(), |unit| unit.normalized.start);
-    let tokens = html::tokenize(&input.text);
+    let index = document
+        .projection()
+        .html_scope_index()
+        .ok_or(DocumentError::AmbiguousProjection)?;
     if document.projection().text_tree().byte_len() == 0
         && !inherited.paragraph.matches(document, at)
-        && !super::html_paragraph::stack_at(&tokens, position).iter().any(|token|
-            matches!(&token.kind, TokenKind::Tag(tag) if super::html_paragraph::structural(&tag.name)
-                && !matches!(tag.name.as_str(), "html" | "body" | "head" | "table")))
+        && !index.scopes_at(source).iter().any(|scope| {
+            super::html_paragraph::structural(&scope.tag.name)
+                && !matches!(scope.tag.name.as_str(), "html" | "body" | "head" | "table")
+        })
     {
         if let Some((opening, closing)) = &inherited.paragraph_scope {
             let prefix = inherited.scopes.iter().map(|(open, _)| open.as_str()).collect::<String>();
@@ -155,14 +189,16 @@ pub(super) fn replacement_insertion(
             let escaped = super::rich_text::escape_html_text_edit(document, source, &edit)?;
             return Ok(Some(Insertion {
                 source: source..source,
-                source_caret: position + opening.len() + prefix.len() + escaped.len(),
+                source_caret: 0, // Used only by source-view insertion.
                 syntax: format!("{opening}{prefix}{escaped}{suffix}{closing}"),
             }));
         }
     }
-    let current = inline_scopes(&tokens, position);
-    let common = current.iter().zip(&inherited.scopes)
-        .take_while(|(token, (open, _))| input.text[token.range.clone()] == *open)
+    let current = inline_scopes(index, source);
+    let common = current
+        .iter()
+        .zip(&inherited.scopes)
+        .take_while(|(scope, (open, _))| scope.opening.as_ref() == open)
         .count();
     if common == current.len() && common == inherited.scopes.len() {
         return Ok(None);
@@ -170,40 +206,62 @@ pub(super) fn replacement_insertion(
     // Consume no syntax when exiting a fully removed inline run. Inserting
     // after its existing closing tags avoids creating a second empty scope
     // after the new text, which would capture the next typing event again.
-    let mut exit = position;
+    let mut exit = source;
     let mut remaining = current.len();
-    for token in tokens.iter().filter(|token| token.range.start >= position) {
-        if remaining == common || token.range.start != exit { break; }
-        let TokenKind::Tag(tag) = &token.kind else { break };
-        let TokenKind::Tag(expected) = &current[remaining - 1].kind else { unreachable!() };
-        if !tag.end || tag.name != expected.name { break; }
+    while remaining > common {
+        let Some((name, end)) = index.adjacent_closing_at(exit) else {
+            break;
+        };
+        if name != current[remaining - 1].tag.name {
+            break;
+        }
         remaining -= 1;
-        exit = token.range.end;
+        exit = end;
     }
-    if remaining == common && exit != position {
-        let prefix = inherited.scopes[common..].iter().map(|(open, _)| open.as_str()).collect::<String>();
-        let suffix = inherited.scopes[common..].iter().rev().map(|(_, close)| close.as_str()).collect::<String>();
-        let mapper = super::rich_text::Builder::new(&input, document.revision());
-        let source = mapper.source_range(exit..exit).start;
+    if remaining == common && exit != source {
+        let prefix = inherited.scopes[common..]
+            .iter()
+            .map(|(open, _)| open.as_str())
+            .collect::<String>();
+        let suffix = inherited.scopes[common..]
+            .iter()
+            .rev()
+            .map(|(_, close)| close.as_str())
+            .collect::<String>();
+        let source = exit;
         let mut edit = super::TextEdit::new(at..at, text);
         edit.html_protective_spaces = protective_spaces.to_vec();
         let escaped = super::rich_text::escape_html_text_edit(document, source, &edit)?;
         return Ok(Some(Insertion {
             source: source..source,
-            source_caret: exit + prefix.len() + escaped.len(),
+            source_caret: 0,
             syntax: format!("{prefix}{escaped}{suffix}"),
         }));
     }
-    let prefix = current[common..].iter().rev().map(|token| closing(token)).collect::<String>()
-        + &inherited.scopes[common..].iter().map(|(open, _)| open.as_str()).collect::<String>();
-    let suffix = inherited.scopes[common..].iter().rev().map(|(_, close)| close.as_str()).collect::<String>()
-        + &current[common..].iter().map(|token| &input.text[token.range.clone()]).collect::<String>();
+    let prefix = current[common..]
+        .iter()
+        .rev()
+        .map(|scope| format!("</{}>", scope.tag.name))
+        .collect::<String>()
+        + &inherited.scopes[common..]
+            .iter()
+            .map(|(open, _)| open.as_str())
+            .collect::<String>();
+    let suffix = inherited.scopes[common..]
+        .iter()
+        .rev()
+        .map(|(_, close)| close.as_str())
+        .collect::<String>()
+        + &current[common..]
+            .iter()
+            .map(|scope| scope.opening.as_ref())
+            .collect::<String>();
     let mut edit = super::TextEdit::new(at..at, text);
     edit.html_protective_spaces = protective_spaces.to_vec();
     let escaped = super::rich_text::escape_html_text_edit(document, source, &edit)?;
     Ok(Some(Insertion {
         source: source..source,
-        source_caret: position + prefix.len() + escaped.len(),
+        source_caret: 0,
         syntax: format!("{prefix}{escaped}{suffix}"),
     }))
 }
@@ -297,11 +355,8 @@ pub(super) fn opaque_closing_syntax(
     Ok(open.into_iter().rev().map(|name| format!("</{name}>")).collect())
 }
 
-fn declarations(token: &Token) -> CharacterProperties {
+fn declarations(tag: &html::Tag) -> CharacterProperties {
     let mut result = CharacterProperties::default();
-    let TokenKind::Tag(tag) = &token.kind else {
-        return result;
-    };
     match tag.name.as_str() {
         "b" | "strong" => result.bold = Some(true),
         "i" | "em" => result.slant = Some(FontSlant::Italic),
@@ -325,8 +380,8 @@ fn declarations(token: &Token) -> CharacterProperties {
     };
     result
 }
-fn disabled(token: &Token, desired: &CharacterProperties) -> bool {
-    let own = declarations(token);
+fn disabled(tag: &html::Tag, desired: &CharacterProperties) -> bool {
+    let own = declarations(tag);
     desired.bold == Some(false) && own.bold == Some(true)
         || desired.slant == Some(FontSlant::Upright)
             && own.slant.is_some_and(|value| value != FontSlant::Upright)
@@ -357,7 +412,9 @@ fn context<'a>(
 ) -> Option<Context<'a>> {
     let open = super::html_paragraph::stack_at(tokens, at);
     let structural = open.iter().rposition(|token| matches!(&token.kind, TokenKind::Tag(tag) if super::html_paragraph::structural(&tag.name))).map_or(0, |index| index + 1);
-    let first = (structural..open.len()).find(|&index| disabled(open[index], desired))?;
+    let first = (structural..open.len()).find(
+        |&index| matches!(&open[index].kind, TokenKind::Tag(tag) if disabled(tag, desired)),
+    )?;
     // Only cross exact immediately adjacent closing syntax. Visible prose,
     // comments, unknown nodes, and malformed nesting never get skipped.
     let mut remaining = open.len();
@@ -386,9 +443,24 @@ fn context<'a>(
     Some(Context { open, first, exit })
 }
 fn preserve(context: &Context<'_>, desired: &CharacterProperties) -> CharacterProperties {
+    preserve_declarations(
+        context.open[context.first..]
+            .iter()
+            .filter_map(|token| match &token.kind {
+                TokenKind::Tag(tag) => Some(tag),
+                _ => None,
+            }),
+        desired,
+    )
+}
+
+fn preserve_declarations<'a>(
+    tags: impl Iterator<Item = &'a html::Tag>,
+    desired: &CharacterProperties,
+) -> CharacterProperties {
     let mut result = CharacterProperties::default();
-    for token in &context.open[context.first..] {
-        let mut own = declarations(token);
+    for tag in tags {
+        let mut own = declarations(tag);
         if desired.bold == Some(false) {
             own.bold = None;
         }
@@ -404,6 +476,74 @@ fn preserve(context: &Context<'_>, desired: &CharacterProperties) -> CharacterPr
         super::rich_text::overlay(&mut result, &own);
     }
     result
+}
+
+/// WYSIWYG insertion uses physical source boundaries directly. Source view
+/// still needs its separate decoded text coordinates for cursor placement.
+fn indexed_insertion(
+    document: &Document,
+    at: usize,
+    source: usize,
+    text: &str,
+    protective_spaces: &[usize],
+    desired: &CharacterProperties,
+) -> Result<Option<Insertion>, DocumentError> {
+    let index = document
+        .projection()
+        .html_scope_index()
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let open = inline_scopes(index, source);
+    let Some(first) = open.iter().position(|scope| disabled(&scope.tag, desired)) else {
+        return Ok(None);
+    };
+    let preserved = preserve_declarations(open[first..].iter().map(|scope| &scope.tag), desired);
+    let (opening, closing_preserved) = if preserved == CharacterProperties::default() {
+        (String::new(), String::new())
+    } else {
+        html::character_wrapper(&preserved)
+    };
+    let mut remaining = open.len();
+    let mut exit = source;
+    while remaining > first {
+        let Some((name, end)) = index.adjacent_closing_at(exit) else {
+            break;
+        };
+        if name != open[remaining - 1].tag.name {
+            break;
+        }
+        remaining -= 1;
+        exit = end;
+    }
+    let (source, prefix, suffix) = if remaining == first {
+        (exit, opening, closing_preserved)
+    } else {
+        let close = open[first..]
+            .iter()
+            .rev()
+            .map(|scope| format!("</{}>", scope.tag.name))
+            .collect::<String>();
+        let reopen = if source == document.state().source.len() {
+            String::new()
+        } else {
+            open[first..]
+                .iter()
+                .map(|scope| scope.opening.as_ref())
+                .collect::<String>()
+        };
+        (
+            source,
+            format!("{close}{opening}"),
+            format!("{closing_preserved}{reopen}"),
+        )
+    };
+    let mut edit = super::TextEdit::new(at..at, text);
+    edit.html_protective_spaces = protective_spaces.to_vec();
+    let escaped = super::rich_text::escape_html_text_edit(document, source, &edit)?;
+    Ok(Some(Insertion {
+        source: source..source,
+        syntax: format!("{prefix}{escaped}{suffix}"),
+        source_caret: 0,
+    }))
 }
 fn values(properties: CharacterProperties) -> Vec<(StyleProperty, StylePropertyValue)> {
     use StyleProperty as P;
@@ -492,6 +632,9 @@ pub(super) fn insertion(
         }
         return Err(DocumentError::AmbiguousProjection);
     };
+    if document.format() == Format::Html {
+        return indexed_insertion(document, at, source, text, protective_spaces, desired);
+    }
     let decoded = document.encoding().decode(&document.source_bytes())?;
     let input = super::line_endings::normalize(&decoded, document.file_format());
     let position = input
@@ -554,4 +697,53 @@ pub(super) fn insertion(
         syntax: format!("{prefix}{escaped}{suffix}"),
         source_caret,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{measure_document_work, Encoding};
+
+    #[test]
+    fn indexed_replacement_queries_do_not_read_unrelated_source_or_paragraph_prefixes() {
+        let cases = [
+            format!("{}<p data-owner='exact'>", "<p>padding</p>".repeat(1_000)),
+            format!("{}<p data-owner='exact'>", "<p>padding</p>".repeat(10_000)),
+            format!("<p data-owner='exact'>{}", "x".repeat(2 * 1024 * 1024)),
+        ];
+        for prefix in cases {
+            let source = format!("{prefix}<a HREF='https://example.test/?a=1&amp;b=2'><B title='preserve'>word</B></a> tail</p>");
+            let mut document =
+                Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Html).unwrap();
+            let at = document.projection().text_tree().byte_len() - "word tail".len();
+            let (inherited, capture) = measure_document_work(|| {
+                document
+                    .replacement_typing_context(at..at + 1)
+                    .unwrap()
+                    .unwrap()
+            });
+            assert_eq!(capture.source_full_materialized_bytes, 0, "{capture:?}");
+            assert_eq!(capture.source_decoded_bytes, 0, "{capture:?}");
+            assert_eq!(capture.html_tokenized_bytes, 0, "{capture:?}");
+            assert!(capture.html_scope_entries_visited <= 6, "{capture:?}");
+            assert_eq!(inherited.scopes[1].0, "<B title='preserve'>");
+            document.delete(at..at + 1).unwrap();
+            let (insertion, restore) = measure_document_work(|| {
+                replacement_insertion(
+                    &document,
+                    at,
+                    BoundaryAffinity::Downstream,
+                    "X",
+                    &[],
+                    &inherited,
+                )
+                .unwrap()
+            });
+            assert!(insertion.is_none());
+            assert_eq!(restore.source_full_materialized_bytes, 0, "{restore:?}");
+            assert_eq!(restore.source_decoded_bytes, 0, "{restore:?}");
+            assert_eq!(restore.html_tokenized_bytes, 0, "{restore:?}");
+            assert!(restore.html_scope_entries_visited <= 3, "{restore:?}");
+        }
+    }
 }

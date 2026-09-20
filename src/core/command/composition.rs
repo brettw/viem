@@ -356,7 +356,7 @@ impl CompositionSession {
             value.hard_break_offsets().to_vec(),
         )
         .expect("composition literal text has validated semantic break offsets");
-        let (prepared, caret_offset) = document
+        let (prepared, caret_offset, _) = document
             .prepare_insertion_with_typing_context(
                 FormattedPayloadEdit::new(edit.range.clone(), payload)
                     .with_boundary_affinity(affinity),

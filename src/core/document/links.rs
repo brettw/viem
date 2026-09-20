@@ -231,10 +231,14 @@ pub(super) fn markdown_inline_at(text: &str, start: usize, end: usize) -> Option
 }
 
 pub(super) fn html_links(text: &str) -> Vec<InlineLink> {
+    html_links_from_tokens(text.len(), &super::html::tokenize(text))
+}
+
+fn html_links_from_tokens(text_len: usize, tokens: &[super::html::Token]) -> Vec<InlineLink> {
     let mut result = Vec::new();
     let mut open: Option<(usize, String)> = None;
-    for token in super::html::tokenize(text) {
-        if let TokenKind::Tag(tag) = token.kind {
+    for token in tokens {
+        if let TokenKind::Tag(tag) = &token.kind {
             if tag.name != "a" {
                 continue;
             }
@@ -257,10 +261,10 @@ pub(super) fn html_links(text: &str) -> Vec<InlineLink> {
         }
     }
     if let Some((start, destination)) = open {
-        if start < text.len() {
+        if start < text_len {
             result.push(InlineLink {
-                range: start..text.len(),
-                label: start..text.len(),
+                range: start..text_len,
+                label: start..text_len,
                 destination,
             });
         }
@@ -268,8 +272,12 @@ pub(super) fn html_links(text: &str) -> Vec<InlineLink> {
     result
 }
 
-pub(super) fn style_html_links(document: &mut FormattedDocument, input: &NormalizedText) {
-    let ranges = html_links(&input.text)
+pub(super) fn style_html_links(
+    document: &mut FormattedDocument,
+    input: &NormalizedText,
+    tokens: &[super::html::Token],
+) {
+    let ranges = html_links_from_tokens(input.text.len(), tokens)
         .into_iter()
         .filter_map(|link| {
             let begin = input
@@ -359,6 +367,30 @@ impl Document {
             .collect();
         if link_styles.is_empty() {
             return Ok(None);
+        }
+        if self.format() == Format::Html {
+            // A link query names the visible glyph, not an insertion context.
+            // Recovered empty inline bodies can share its formatted boundary
+            // while belonging to a different source anchor.
+            let Some(raw) = self
+                .projection()
+                .provenance_for_region(&(point.offset()..point.offset().saturating_add(1)))
+                .into_iter()
+                .find(|span| {
+                    span.formatted.contains(&point.offset()) && !span.source.is_empty()
+                })
+                .map(|span| span.source.start)
+            else {
+                return Ok(None);
+            };
+            // The source index retains anchor ownership independently of the
+            // lexical formatting stack (nested/unclosed anchors have their
+            // own recovery rules). The projected Link span remains the gate.
+            let index = self
+                .projection()
+                .html_scope_index()
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            return Ok(index.link_at_source(raw));
         }
         let Some(raw) = self
             .projection()

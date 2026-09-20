@@ -345,7 +345,7 @@ impl Document {
             Some(self.projection().style_sheet()),
         )?;
         let mut preview = self.scratch_document();
-        preview.history = super::super::new_document_history(candidate);
+        preview.history = super::super::history::History::transient(candidate);
         let formatted = |source| {
             preview
                 .projection()

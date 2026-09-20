@@ -108,6 +108,10 @@ impl SourceSnapshot {
     }
 
     pub(crate) fn bytes(&self) -> Vec<u8> {
+        super::work_statistics::record(|stats| {
+            stats.source_full_materializations += 1;
+            stats.source_full_materialized_bytes += self.len();
+        });
         let mut result = Vec::with_capacity(self.len());
         if let Some(root) = &self.root {
             root.append_to(&mut result);
@@ -225,6 +229,10 @@ impl SourceSnapshot {
         if range.start > range.end || range.end > self.len() {
             return None;
         }
+        super::work_statistics::record(|stats| {
+            stats.source_range_materializations += 1;
+            stats.source_range_materialized_bytes += range.len();
+        });
         let (_, suffix) = split(self.root.clone(), range.start);
         let (selected, _) = split(suffix, range.end - range.start);
         let mut result = Vec::with_capacity(range.end - range.start);

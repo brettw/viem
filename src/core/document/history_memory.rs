@@ -2,7 +2,7 @@
 //!
 //! The ledger counts each shared allocation once. Registering an already known
 //! tree node adds a reference without walking its children; releasing its last
-//! reference recursively releases its edges. Local persistent edits therefore
+//! reference iteratively releases its edges. Local persistent edits therefore
 //! account only their newly retained paths, rather than scanning every snapshot.
 
 use std::collections::HashMap;
@@ -74,24 +74,37 @@ impl RetainedMemory {
     }
 
     pub(super) fn release(&mut self, roots: Vec<AllocationId>) {
-        for id in roots {
+        // Preserve depth-first edge order and postorder capacity maintenance
+        // without putting arbitrarily deep ownership chains on the call stack.
+        let mut frames = vec![roots.into_iter()];
+        while let Some(frame) = frames.last_mut() {
+            let Some(id) = frame.next() else {
+                frames.pop();
+                if self.allocations.is_empty() {
+                    self.allocations.shrink_to_fit();
+                } else if self.allocations.capacity()
+                    > self.allocations.len().saturating_mul(4).max(64)
+                {
+                    self.allocations
+                        .shrink_to(self.allocations.len().saturating_mul(2));
+                }
+                continue;
+            };
+            super::work_statistics::record(|stats| stats.retained_memory_release_visits += 1);
             let allocation = self
                 .allocations
                 .get_mut(&id)
                 .expect("retained allocation exists");
             allocation.references -= 1;
             if allocation.references == 0 {
+                super::work_statistics::record(|stats| {
+                    stats.retained_memory_allocations_released += 1
+                });
                 let allocation = self.allocations.remove(&id).unwrap();
                 self.bytes = self.bytes.saturating_sub(allocation.bytes);
                 self.bookkeeping_child_bytes -= allocation.children.capacity() * size_of::<AllocationId>();
-                self.release(allocation.children);
+                frames.push(allocation.children.into_iter());
             }
-        }
-        if self.allocations.is_empty() {
-            self.allocations.shrink_to_fit();
-        } else if self.allocations.capacity() > self.allocations.len().saturating_mul(4).max(64) {
-            self.allocations
-                .shrink_to(self.allocations.len().saturating_mul(2));
         }
     }
 
@@ -128,6 +141,7 @@ impl MemoryVisitor<'_> {
         bytes: usize,
         visit_children: impl FnOnce(&mut MemoryVisitor<'_>),
     ) {
+        super::work_statistics::record(|stats| stats.retained_memory_allocation_visits += 1);
         self.roots.push(id);
         if let Some(allocation) = self.ledger.allocations.get_mut(&id) {
             debug_assert_eq!(
@@ -138,6 +152,7 @@ impl MemoryVisitor<'_> {
             allocation.references += 1;
             return;
         }
+        super::work_statistics::record(|stats| stats.retained_memory_allocations_registered += 1);
         #[cfg(test)]
         {
             self.ledger.visited += 1;
@@ -260,6 +275,33 @@ mod tests {
         memory.release(roots_a);
         assert_eq!(memory.bytes(), first_bytes);
         memory.release(roots_b);
+        assert_eq!(memory.bytes(), 0);
+    }
+
+    #[test]
+    fn releasing_wide_shared_graph_preserves_remaining_root_accounting() {
+        let leaves: Vec<_> = (0..50_000).map(|_| Arc::new([0_u8; 8])).collect();
+        let first = Arc::new(leaves.clone());
+        let second = Arc::new(leaves);
+        let capture = |memory: &mut RetainedMemory, root: &Arc<Vec<Arc<[u8; 8]>>>| {
+            memory.capture(|visitor| {
+                visitor.arc(root, |visitor| {
+                    visitor.vector(root, 0);
+                    for leaf in root.iter() {
+                        visitor.arc(leaf, |_| {});
+                    }
+                });
+            })
+        };
+        let mut memory = RetainedMemory::default();
+        let first_roots = capture(&mut memory, &first);
+        let second_roots = capture(&mut memory, &second);
+        memory.release(first_roots);
+        let mut expected = RetainedMemory::default();
+        let _ = capture(&mut expected, &second);
+        memory.assert_same_allocations(&expected);
+        memory.release(second_roots);
+        assert_eq!(memory.allocation_count(), 0);
         assert_eq!(memory.bytes(), 0);
     }
 

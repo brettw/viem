@@ -28,6 +28,7 @@ mod html_direct;
 mod html_paragraph;
 mod html_merge;
 mod html_quotes;
+mod html_scope_index;
 mod html_source;
 mod html_styles;
 mod html_typing;
@@ -55,6 +56,8 @@ mod projection;
 mod range_index;
 mod selected_styles;
 mod source;
+pub(crate) mod work_statistics;
+pub use work_statistics::{measure_document_work, DocumentWorkFallback, DocumentWorkStatistics};
 mod source_edit;
 mod source_line_index;
 mod source_lines;
@@ -321,6 +324,9 @@ pub struct FormattedPayloadEdit {
     boundary_affinity: Option<BoundaryAffinity>,
     html_protective_spaces: Vec<usize>,
     typing_normalized: bool,
+    /// Bytes at the payload's start which only normalize existing HTML
+    /// whitespace; typing style applies to the authored suffix separately.
+    html_preserved_prefix_len: usize,
 }
 
 impl FormattedPayloadEdit {
@@ -331,6 +337,7 @@ impl FormattedPayloadEdit {
             boundary_affinity: None,
             html_protective_spaces: Vec::new(),
             typing_normalized: false,
+            html_preserved_prefix_len: 0,
         }
     }
 

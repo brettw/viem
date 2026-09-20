@@ -78,6 +78,26 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
         self.inner.get(index)
     }
 
+    pub(super) fn get_with_stats(&self, index: usize) -> (Option<T>, QueryStats) {
+        let mut stats = QueryStats::default();
+        let result = self
+            .inner
+            .root
+            .as_ref()
+            .filter(|_| index < self.inner.item_count)
+            .map(|root| {
+                get_item(
+                    root,
+                    self.inner.root_origin,
+                    self.inner.root_auxiliary_shift,
+                    self.inner.root_revision,
+                    index,
+                    Some(&mut stats),
+                )
+            });
+        (result, stats)
+    }
+
     /// Materializes one half-open ordinal item range with one tree descent and
     /// a sequential walk of the covered leaves.
     pub(super) fn get_range(&self, indices: &Range<usize>) -> Option<Vec<T>> {
@@ -117,8 +137,18 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
     /// whose end is at or after it. This gives deterministic downstream
     /// behavior for adjacent zero-width boundaries in `O(log n)` time.
     pub(super) fn index_touching_point(&self, offset: usize) -> Option<usize> {
-        let root = self.inner.root.as_ref()?;
-        find_touching_index(root, self.inner.root_origin, offset, 0)
+        self.index_touching_point_with_stats(offset).0
+    }
+
+    pub(super) fn index_touching_point_with_stats(
+        &self,
+        offset: usize,
+    ) -> (Option<usize>, QueryStats) {
+        let mut stats = QueryStats::default();
+        let result = self.inner.root.as_ref().and_then(|root| {
+            find_touching_index(root, self.inner.root_origin, offset, 0, &mut stats)
+        });
+        (result, stats)
     }
 
     /// Reports blocks whose closed boundary extents touch `query`. Including a
@@ -462,6 +492,7 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
                 self.root_auxiliary_shift,
                 self.root_revision,
                 index,
+                None,
             )
         })
     }
@@ -1277,9 +1308,16 @@ fn get_item<T: Clone + RangedItem>(
     auxiliary_shift: i128,
     revision: Option<u64>,
     index: usize,
+    mut stats: Option<&mut QueryStats>,
 ) -> T {
+    if let Some(stats) = stats.as_deref_mut() {
+        stats.nodes_visited += 1;
+    }
     match &node.kind {
         RangeNodeKind::Leaf(items) => {
+            if let Some(stats) = stats.as_deref_mut() {
+                stats.items_examined += 1;
+            }
             let item = &items[index];
             let relative = item.range();
             item.with_transform(
@@ -1315,6 +1353,7 @@ fn get_item<T: Clone + RangedItem>(
                         .expect("range-index auxiliary shift is representable"),
                     revision.or(*left_revision),
                     index,
+                    stats,
                 )
             } else {
                 get_item(
@@ -1327,6 +1366,7 @@ fn get_item<T: Clone + RangedItem>(
                         .expect("range-index auxiliary shift is representable"),
                     revision.or(*right_revision),
                     index - left.item_count,
+                    stats,
                 )
             }
         }
@@ -1426,7 +1466,9 @@ fn find_touching_index<T: RangedItem>(
     origin: usize,
     offset: usize,
     base_index: usize,
+    stats: &mut QueryStats,
 ) -> Option<usize> {
+    stats.nodes_visited += 1;
     let maximum_end = origin.checked_add(node.max_end)?;
     if origin > offset || maximum_end < offset {
         return None;
@@ -1456,12 +1498,25 @@ fn find_touching_index<T: RangedItem>(
                     right_origin,
                     offset,
                     base_index.checked_add(left.item_count)?,
+                    stats,
                 )
                 .or_else(|| {
-                    find_touching_index(left, origin.checked_add(*left_offset)?, offset, base_index)
+                    find_touching_index(
+                        left,
+                        origin.checked_add(*left_offset)?,
+                        offset,
+                        base_index,
+                        stats,
+                    )
                 })
             } else {
-                find_touching_index(left, origin.checked_add(*left_offset)?, offset, base_index)
+                find_touching_index(
+                    left,
+                    origin.checked_add(*left_offset)?,
+                    offset,
+                    base_index,
+                    stats,
+                )
             }
         }
     }

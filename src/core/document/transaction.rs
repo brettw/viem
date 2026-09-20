@@ -530,6 +530,15 @@ impl ProjectionWorkStatistics {
         ranges: super::projection::ProjectionSpliceStatistics,
         source_lines: SourceHardLineSpliceStats,
     ) -> Self {
+        super::work_statistics::record(|stats| {
+            stats.regional_projection_candidates += 1;
+            stats.projected_formatted_bytes += projected_formatted_bytes;
+            stats.projection_persistent_nodes_visited += text.nodes_visited
+                + ranges.range_index_nodes_visited()
+                + source_lines.nodes_visited;
+            stats.projection_persistent_nodes_copied +=
+                text.nodes_copied + ranges.range_index_nodes_copied() + source_lines.nodes_copied;
+        });
         Self {
             scope: ProjectionWorkScope::RegionalHardLines,
             source_decode_passes: 1,
@@ -553,6 +562,14 @@ impl ProjectionWorkStatistics {
     }
 
     fn full(candidate: &DocumentState) -> Self {
+        super::work_statistics::record(|stats| {
+            stats.full_projection_candidates += 1;
+            if candidate.format == Format::Html {
+                stats.note_fallback(super::DocumentWorkFallback::FullHtmlGrammarProjection);
+            }
+            stats.projected_formatted_bytes += candidate.projection.text_tree().byte_len();
+            stats.formatted_full_materialized_bytes += candidate.projection.text_tree().byte_len();
+        });
         Self {
             scope: ProjectionWorkScope::FullDocument,
             source_decode_passes: 1,
@@ -997,9 +1014,10 @@ impl Document {
     /// Isolated candidate editing state: share the immutable document snapshot,
     /// but do not inherit UI history groups, position captures or file writes.
     fn scratch_document(&self) -> Self {
+        super::work_statistics::record(|stats| stats.scratch_documents += 1);
         Document {
             id: self.id,
-            history: super::new_document_history(self.state().clone()),
+            history: super::history::History::transient(self.state().clone()),
             open_work: self.open_work,
             next_revision: self.next_revision,
             next_projected_block_id: self.next_projected_block_id,
@@ -1070,6 +1088,7 @@ impl Document {
         &self,
         request: ModelRequest,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        super::work_statistics::record(|stats| stats.model_requests += 1);
         self.validate_request_target(&request)?;
         match request {
             ModelRequest::ApplyFragmentEdits { edits, .. } => self.prepare_fragment_edits(edits),
@@ -1403,6 +1422,7 @@ impl Document {
         self.advance_code_presentation(&prepared.text_position_map);
 
         debug_assert_eq!(self.revision(), prepared.after_revision);
+        super::work_statistics::record(|stats| stats.transaction_commits += 1);
         Ok(CommittedModelTransaction {
             before_revision: prepared.before_revision,
             after_revision: prepared.after_revision,
@@ -1596,6 +1616,43 @@ impl Document {
     ) -> PreparedModelTransaction {
         if let PreparedPublication::State(candidate) = &mut publication {
             candidate.include_style_definitions_in_file = self.include_style_definitions_in_file();
+            if candidate.format == Format::Html && candidate.projection.html_scope_index().is_none()
+            {
+                let index = self
+                    .projection()
+                    .html_scope_index()
+                    .and_then(|previous| {
+                        previous.updated(
+                            &candidate.source,
+                            candidate.revision,
+                            candidate.encoding,
+                            candidate.file_format,
+                            &summary.source_patches,
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        super::work_statistics::record(|stats| {
+                            stats.note_fallback(
+                                super::DocumentWorkFallback::IndexRegionNonConvergence,
+                            )
+                        });
+                        // The semantic candidate has already been verified. A lexical
+                        // region whose scopes do not converge requires rebuilding
+                        // its source index, never a guessed suffix context.
+                        let decoded = candidate
+                            .encoding
+                            .decode(&candidate.source.bytes())
+                            .expect("a verified HTML candidate has a valid encoding configuration");
+                        let input = super::line_endings::normalize(&decoded, candidate.file_format);
+                        let tokens = super::html::tokenize(&input.text);
+                        super::html_scope_index::HtmlScopeIndex::from_tokens(
+                            &input,
+                            candidate.revision,
+                            &tokens,
+                        )
+                    });
+                candidate.projection.install_html_scope_index(index);
+            }
         }
         PreparedModelTransaction {
             document: self.id,
@@ -6337,6 +6394,7 @@ impl Document {
                 source.len(),
                 self.format() == Format::MarkdownSource,
                 self.format().is_literal(),
+                false,
                 edits,
                 &mut next_projected_block_id,
             )
@@ -6447,11 +6505,11 @@ impl Document {
         })
     }
 
-    /// Ordinary rich text splices cannot change parsing state: the reverse
-    /// adapter has accepted a contiguous visible source extent and emitted
-    /// escaped HTML text or a balanced Unicode-scoped RTF group. Reparse the
-    /// affected HTML hard line (or the self-contained inserted RTF syntax),
-    /// verify the exact text, and splice only that line's persistent indexes.
+    /// Verify an ordinary rich edit in its affected line or bounded HTML
+    /// paragraph window. Canonical visible text retains existing semantic
+    /// style; inline wrappers and nearby supporting patches additionally prove
+    /// their surrounding style and lexical context before regional splicing.
+    /// RTF validates the self-contained inserted syntax.
     fn build_rich_local_text_edit_candidate(
         &self,
         source: &super::source::SourceSnapshot,
@@ -6461,14 +6519,48 @@ impl Document {
         edits: &[TextEdit],
         patches: &[SourcePatch],
     ) -> Result<Option<TextEditCandidate>, ModelTransactionError> {
-        if !self.format().is_wysiwyg()
-            || edits.len() != 1
-            || patches.len() != 1
-        {
+        if !self.format().is_wysiwyg() || edits.is_empty() || patches.is_empty() {
             return Ok(None);
         }
-        let edit = &edits[0];
-        let patch = &patches[0];
+        let combined = edits.len() != 1 || patches.len() != 1;
+        let combined_edit;
+        let combined_patch;
+        let (edit, patch) = if combined {
+            if self.format() != Format::Html
+                || edits
+                    .windows(2)
+                    .any(|pair| pair[1].range.start.saturating_sub(pair[0].range.end) > 1024)
+                || patches
+                    .windows(2)
+                    .any(|pair| pair[1].range.start.saturating_sub(pair[0].range.end) > 4096)
+            {
+                return Ok(None);
+            }
+            let old_range = edits.first().unwrap().range.start..edits.last().unwrap().range.end;
+            let new_end = edits.iter().fold(old_range.end, |end, edit| {
+                end - edit.range.len() + edit.replacement.len()
+            });
+            let replacement = target_text
+                .slice(old_range.start..new_end)
+                .map_err(DocumentError::FormattedTextStorage)?;
+            combined_edit = TextEdit::new(old_range, replacement);
+            let source_range =
+                patches.first().unwrap().range.start..patches.last().unwrap().range.end;
+            let source_end =
+                rebase_source_boundary(source_range.end, patches, Association::AfterInsertion)?;
+            combined_patch = SourcePatch::primary(
+                source_range.clone(),
+                source
+                    .bytes_in(source_range.start..source_end)
+                    .ok_or(DocumentError::VerificationFailed)?,
+            );
+            // This hull is a parser window only. The transaction retains its
+            // separate minimal source patches and logical edit maps, including
+            // supporting whitespace changes outside the user's selection.
+            (&combined_edit, &combined_patch)
+        } else {
+            (&edits[0], &patches[0])
+        };
         let compacted_html_space =
             if self.format() == Format::Html && edit.range.is_empty() && !patch.range.is_empty() {
                 let closing_length = self.encoding().encode_fragment("</span>")?.len();
@@ -6531,7 +6623,31 @@ impl Document {
         // prove that the removed bytes preserve parser state. Require one
         // uninterrupted visible source run covering exactly the replaced
         // formatted extent before inheriting any old character context.
-        if edit.range.is_empty() {
+        if combined {
+            let original = self
+                .state()
+                .source
+                .bytes_in(patch.range.clone())
+                .ok_or(DocumentError::VerificationFailed)?;
+            let decoded = self
+                .encoding()
+                .decode_region(&original, patch.range.start)?;
+            if decoded.text.contains(['\r', '\n'])
+                || super::html::tokenize(&decoded.text)
+                    .iter()
+                    .any(|token| match &token.kind {
+                        super::html::TokenKind::Text => false,
+                        super::html::TokenKind::Tag(tag) => {
+                            super::html_paragraph::structural(&tag.name)
+                                || super::html::atomic(&tag.name)
+                                || super::html::hidden(&tag.name)
+                        }
+                        _ => true,
+                    })
+            {
+                return Ok(None);
+            }
+        } else if edit.range.is_empty() {
             // A generated one-space wrapper can become ordinary word spacing
             // when typing continues. The adapter proves that exact supporting
             // patch without permitting arbitrary formatting removal here.
@@ -6577,7 +6693,27 @@ impl Document {
             return Ok(None);
         };
         if patch.replacement != canonical_bytes {
-            return Ok(None);
+            if self.format() != Format::Html {
+                return Ok(None);
+            }
+            let decoded = self
+                .encoding()
+                .decode_region(&patch.replacement, patch.range.start)?;
+            if decoded.text.contains(['\r', '\n'])
+                || super::html::tokenize(&decoded.text)
+                    .iter()
+                    .any(|token| match &token.kind {
+                        super::html::TokenKind::Text => false,
+                        super::html::TokenKind::Tag(tag) => {
+                            super::html_paragraph::structural(&tag.name)
+                                || super::html::atomic(&tag.name)
+                                || super::html::hidden(&tag.name)
+                        }
+                        _ => true,
+                    })
+            {
+                return Ok(None);
+            }
         }
         let inherited_html_whitespace = if self.format() == Format::Html {
             Some(super::rich_text::html_preserves_whitespace_at_source(
@@ -6601,11 +6737,60 @@ impl Document {
             return Ok(None);
         };
         let html_code = self.format() == Format::Html && block.style.0 == "Code Block";
-        let old_line = if markdown_code && !markdown_list || html_code {
+        if html_code && (combined || patch.replacement != canonical_bytes) {
+            return Ok(None);
+        }
+        let mut old_line = if markdown_code && !markdown_list || html_code {
             edited_line.clone()
         } else {
             block.range.clone()
         };
+        // Escaped visible-text patches cannot change enclosing scopes. For a
+        // long HTML paragraph, verify a bounded window of complete source
+        // contributors rather than reparsing its untouched prefix and suffix.
+        // Include neighbors so whitespace/reference edge checks still see the
+        // source context affected by the edit.
+        let mut partial_paragraph = false;
+        if self.format() == Format::Html
+            && old_line.len() > 1024
+            && edit.range.end <= edited_line.end
+            && !edit.replacement.contains(['\r', '\n'])
+        {
+            let probe = edit.range.start.saturating_sub(128).max(edited_line.start)
+                ..edit.range.end.saturating_add(128).min(edited_line.end);
+            let mut nearby = self.projection().provenance_for_region(&probe);
+            let collapsible = |span: &super::ProvenanceSpan| {
+                self.projection()
+                    .text_tree()
+                    .slice(span.formatted.clone())
+                    .is_ok_and(|text| {
+                        !text.is_empty() && text.chars().all(super::html_whitespace::collapsible)
+                    })
+            };
+            while nearby
+                .first()
+                .is_some_and(|span| span.formatted.end <= edit.range.start && collapsible(span))
+            {
+                nearby.remove(0);
+            }
+            while nearby
+                .last()
+                .is_some_and(|span| span.formatted.start >= edit.range.end && collapsible(span))
+            {
+                nearby.pop();
+            }
+            if let (Some(first), Some(last)) = (nearby.first(), nearby.last()) {
+                let window = first.formatted.start..last.formatted.end;
+                if edited_line.start <= window.start
+                    && window.end <= edited_line.end
+                    && window.start <= edit.range.start
+                    && edit.range.end <= window.end
+                {
+                    partial_paragraph = window != old_line;
+                    old_line = window;
+                }
+            }
+        }
         let first_line = self
             .projection()
             .hard_line_at_offset(old_line.start)
@@ -6622,14 +6807,22 @@ impl Document {
         {
             return Ok(None);
         }
-        let old_provenance = self.projection().provenance_for_region(&old_line);
+        let old_provenance = self.projection().provenance_touching(&old_line)
+            .into_iter().filter(|span| old_line.start <= span.formatted.start
+                && span.formatted.end <= old_line.end).collect::<Vec<_>>();
+        let insertion_has_character_sample = old_provenance.iter().any(|span| {
+            !span.formatted.is_empty()
+                && (span.source.start == patch.range.start || span.source.end == patch.range.start)
+        });
+        let contextual_html = self.format() == Format::Html
+            && !html_code
+            && (combined
+                || patch.replacement != canonical_bytes
+                || edit.range.is_empty() && !insertion_has_character_sample);
         if edit.range.is_empty()
+            && !contextual_html
             && compacted_html_space.is_none()
-            && !old_provenance.iter().any(|span| {
-                !span.formatted.is_empty()
-                    && (span.source.start == patch.range.start
-                        || span.source.end == patch.range.start)
-            })
+            && !insertion_has_character_sample
         {
             // Empty formatting elements expose a valid typing anchor but no
             // character sample. Parse their active source context explicitly.
@@ -6638,11 +6831,61 @@ impl Document {
         let (Some(first), Some(last)) = (old_provenance.first(), old_provenance.last()) else {
             return Ok(None);
         };
-        let old_source = first.source.start..if compacted_html_space.is_some() {
-            last.source.end.max(patch.range.end)
+        let mut old_source = if contextual_html {
+            first.source.start.min(patch.range.start)..last.source.end.max(patch.range.end)
         } else {
-            last.source.end
+            first.source.start..if compacted_html_space.is_some() {
+                last.source.end.max(patch.range.end)
+            } else {
+                last.source.end
+            }
         };
+        if contextual_html && old_line.is_empty() {
+            // Filling one empty owner can reveal a different empty sibling as
+            // the next typing anchor. A single-body fragment cannot prove that
+            // transition. Admit only a bounded chain of real closing tags up
+            // to the paragraph boundary (or EOF); let broader parsing handle
+            // sibling openings, hidden trivia, and incomplete boundaries.
+            let end = old_source.start.saturating_add(1024).min(self.source_byte_len());
+            let tail = self.state().source.bytes_in(old_source.start..end)
+                .ok_or(DocumentError::VerificationFailed)?;
+            let decoded = self.encoding().decode_region(&tail, old_source.start)?;
+            let mut complete = end == self.source_byte_len();
+            for token in super::html::tokenize(&decoded.text) {
+                match token.kind {
+                    super::html::TokenKind::Tag(tag) if tag.end => {
+                        if super::html_paragraph::structural(&tag.name) {
+                            complete = true;
+                            break;
+                        }
+                    }
+                    _ => { complete = false; break; }
+                }
+            }
+            if !complete { return Ok(None); }
+        }
+        if contextual_html {
+            // The left sentinel must not turn a newly emptied inline owner
+            // into a nonempty one. Include adjacent real opening tags in the
+            // fragment so its parser retains their exact empty caret seeds.
+            // These bytes are only read; the published patch set is unchanged.
+            let Some(index) = self.projection().html_scope_index() else { return Ok(None); };
+            for scope in index.scopes_at(old_source.start).iter().rev() {
+                if super::html_paragraph::structural(&scope.tag.name) { break; }
+                let opening = self.encoding().encode_fragment(&scope.opening)?;
+                let Some(start) = old_source.start.checked_sub(opening.len()) else { break; };
+                if self.state().source.bytes_in(start..old_source.start).as_deref() != Some(opening.as_slice()) {
+                    // A first visible run can have hidden trivia before it.
+                    // Its exact empty-owner source anchor requires the broader
+                    // grammar context when that prefix is not in this window.
+                    if edit.range.start == old_line.start && !edit.range.is_empty() {
+                        return Ok(None);
+                    }
+                    break;
+                }
+                old_source.start = start;
+            }
+        }
         if patch.range.start < old_source.start || patch.range.end > old_source.end {
             return Ok(None);
         }
@@ -6683,17 +6926,25 @@ impl Document {
             .slice(old_line.start..new_line_end)
             .map_err(DocumentError::FormattedTextStorage)?;
         let prefix_length = first.formatted.start - old_line.start;
-        let old_styles = self.projection().style_spans_for_region(&old_line);
-        if old_styles
-            .iter()
-            .any(|span| span.range.start < old_line.start || span.range.end > old_line.end)
+        let mut old_styles = self.projection().style_spans_for_region(&old_line);
+        if !partial_paragraph
+            && old_styles
+                .iter()
+                .any(|span| span.range.start < old_line.start || span.range.end > old_line.end)
         {
             return Ok(None);
+        }
+        if partial_paragraph {
+            for span in &mut old_styles {
+                span.range.start = span.range.start.max(old_line.start);
+                span.range.end = span.range.end.min(old_line.end);
+            }
         }
         block.range = 0..new_text.len();
         let mut provenance;
         let mut decoded_bytes;
         let mut inserted_whitespace_context = Vec::new();
+        let mut inserted_html_character_context = None;
         let collect_whitespace_context = |parsed: &FormattedDocument, parsed_start: usize| {
             let range = parsed_start..parsed_start + edit.replacement.len();
             parsed
@@ -6725,23 +6976,180 @@ impl Document {
                 .bytes_in(new_source.clone())
                 .ok_or(DocumentError::VerificationFailed)?;
             let sentinel = self.state().encoding.encode_fragment("X")?;
-            let mut bytes = sentinel.clone();
+            let (prefix, suffix, final_scopes) = if contextual_html {
+                let Some(index) = self.projection().html_scope_index() else {
+                    return Ok(None);
+                };
+                let initial_scopes = index.scopes_at(old_source.start);
+                let final_scopes = index.scopes_at(old_source.end);
+                let opening = initial_scopes
+                    .iter()
+                    .map(|scope| scope.opening.as_ref())
+                    .collect::<String>();
+                let closing = final_scopes
+                    .iter()
+                    .rev()
+                    .map(|scope| format!("</{}>", scope.tag.name))
+                    .collect::<String>();
+                (
+                    self.encoding().encode_fragment(&format!("{opening}X"))?,
+                    self.encoding().encode_fragment(&format!("X{closing}"))?,
+                    final_scopes,
+                )
+            } else {
+                // Ordinary canonical edits retain the already-projected
+                // semantic style. Replaying raw ancestors here would decode
+                // arbitrarily large unchanged attributes and could disagree
+                // with HTML5's recovered formatting ancestry.
+                (sentinel.clone(), sentinel.clone(), Vec::new())
+            };
+            let mut bytes = prefix.clone();
             bytes.extend(&fragment);
-            bytes.extend(&sentinel);
+            bytes.extend(&suffix);
             let decoded = self.state().encoding.decode_region(&bytes, 0)?;
             let normalized = normalize(&decoded, self.state().file_format);
-            let parsed = super::html::project_with_configuration(
-                &normalized,
-                revision,
-                0,
-                bytes.len(),
-                Some(self.projection().style_sheet()),
-            );
+            let parsed = if contextual_html {
+                super::html::project_with_inherited_sheet(
+                    &normalized,
+                    revision,
+                    0,
+                    bytes.len(),
+                    self.projection().style_sheet(),
+                )
+            } else {
+                super::html::project_with_configuration(
+                    &normalized,
+                    revision,
+                    0,
+                    bytes.len(),
+                    Some(self.projection().style_sheet()),
+                )
+            };
             if parsed.text() != format!("X{content}X") {
                 return Ok(None);
             }
+            let mut context_proof_bytes = 0;
+            if contextual_html {
+                // The lexical scope index does not describe HTML5 adoption
+                // recovery. Even with the original style sheet, replaying
+                // these scopes must reproduce the existing local semantic
+                // context before it can supply inserted character styles.
+                let old_fragment = self
+                    .state()
+                    .source
+                    .bytes_in(old_source.clone())
+                    .ok_or(DocumentError::VerificationFailed)?;
+                let mut old_bytes = prefix.clone();
+                old_bytes.extend_from_slice(&old_fragment);
+                old_bytes.extend_from_slice(&suffix);
+                context_proof_bytes = old_bytes.len();
+                let old_decoded = self.encoding().decode_region(&old_bytes, 0)?;
+                let old_normalized = normalize(&old_decoded, self.file_format());
+                let old_parsed = super::html::project_with_inherited_sheet(
+                    &old_normalized,
+                    self.revision(),
+                    0,
+                    old_bytes.len(),
+                    self.projection().style_sheet(),
+                );
+                let old_content = self
+                    .projection()
+                    .text_tree()
+                    .slice(first.formatted.start..old_line.end)
+                    .map_err(DocumentError::FormattedTextStorage)?;
+                let equivalent_context = old_parsed.text() == format!("X{old_content}X")
+                    && old_content.char_indices().all(|(offset, character)| {
+                        let original_at = first.formatted.start + offset;
+                        let parsed_at = 1 + offset;
+                        let original_named = self.projection().selected_named_styles(
+                            original_at..original_at + character.len_utf8(),
+                            BoundaryAffinity::Downstream,
+                        );
+                        let parsed_named = old_parsed.selected_named_styles(
+                            parsed_at..parsed_at + character.len_utf8(),
+                            BoundaryAffinity::Downstream,
+                        );
+                        let contextual_markers = |document: &FormattedDocument, at| {
+                            document
+                                .style_spans_for_region(&(at..at + character.len_utf8()))
+                                .into_iter()
+                                .filter(|span| {
+                                    matches!(
+                                        span.application,
+                                        StyleApplication::Automatic(_)
+                                            | StyleApplication::SourcePreservedWhitespace
+                                    )
+                                })
+                                .map(|span| span.application)
+                                .collect::<Vec<_>>()
+                        };
+                        original_named.character == parsed_named.character
+                            && original_named.character_mixed == parsed_named.character_mixed
+                            && contextual_markers(self.projection(), original_at)
+                                == contextual_markers(&old_parsed, parsed_at)
+                            && super::rich_text::resolved_character_at(
+                                self.projection(),
+                                original_at,
+                            ) == super::rich_text::resolved_character_at(&old_parsed, parsed_at)
+                    });
+                if !equivalent_context {
+                    super::work_statistics::record(|stats| {
+                        stats.note_fallback(
+                            super::work_statistics::DocumentWorkFallback::HtmlRecoveryContext,
+                        )
+                    });
+                    return Ok(None);
+                }
+                // A close/reopen wrapper is local only if its retained suffix
+                // keeps the same source scopes and paragraph ownership.
+                let Some(parsed_index) = parsed.html_scope_index() else {
+                    return Ok(None);
+                };
+                let exit = parsed_index.scopes_at(prefix.len() + fragment.len());
+                if exit.len() != final_scopes.len()
+                    || exit
+                        .iter()
+                        .zip(&final_scopes)
+                        .any(|(new, old)| new.opening != old.opening)
+                {
+                    return Ok(None);
+                }
+                let parsed_blocks = parsed.blocks_for_region(&(1..1 + content.len()));
+                if parsed_blocks.len() != 1
+                    || parsed_blocks[0].style != block.style
+                    || parsed_blocks[0].direct_paragraph != block.direct_paragraph
+                    || parsed_blocks[0].direct_default_character != block.direct_default_character
+                {
+                    return Ok(None);
+                }
+                let insertion_start = 1 + edit.range.start - old_line.start - prefix_length;
+                let insertion_end = insertion_start + edit.replacement.len();
+                inserted_html_character_context = Some(
+                    parsed
+                        .style_spans_for_region(&(insertion_start..insertion_end))
+                        .into_iter()
+                        .filter(|span| {
+                            span.application != StyleApplication::SourcePreservedWhitespace
+                        })
+                        .map(|span| StyleSpan {
+                            range: span.range.start.max(insertion_start) - insertion_start
+                                + edit.range.start
+                                - old_line.start
+                                ..span.range.end.min(insertion_end) - insertion_start
+                                    + edit.range.start
+                                    - old_line.start,
+                            application: span.application,
+                        })
+                        .collect::<Vec<_>>(),
+                );
+            }
             if !edit.replacement.is_empty() {
-                if inherited_html_whitespace == Some(true) {
+                if contextual_html {
+                    inserted_whitespace_context = collect_whitespace_context(
+                        &parsed,
+                        1 + edit.range.start - old_line.start - prefix_length,
+                    );
+                } else if inherited_html_whitespace == Some(true) {
                     inserted_whitespace_context.push(StyleSpan {
                         range: edit.range.start - old_line.start
                             ..edit.range.start - old_line.start + edit.replacement.len(),
@@ -6782,20 +7190,25 @@ impl Document {
                         collect_whitespace_context(&isolated, 1 + restored_space.len());
                 }
             }
-            provenance = parsed.provenance_for_region(&(1..1 + content.len()));
+            provenance = parsed.provenance_touching(&(1..1 + content.len()))
+                .into_iter().filter(|span| 1 <= span.formatted.start
+                    && span.formatted.end <= 1 + content.len()
+                    && (!span.formatted.is_empty() || prefix.len() <= span.source.start
+                        && span.source.end <= prefix.len() + fragment.len()))
+                .collect::<Vec<super::ProvenanceSpan>>();
             for span in &mut provenance {
                 if span.formatted.start < 1
                     || span.formatted.end > 1 + content.len()
-                    || span.source.start < sentinel.len()
+                    || span.source.start < prefix.len()
                 {
                     return Ok(None);
                 }
                 span.formatted = span.formatted.start - 1 + prefix_length
                     ..span.formatted.end - 1 + prefix_length;
-                span.source = span.source.start - sentinel.len() + new_source.start
-                    ..span.source.end - sentinel.len() + new_source.start;
+                span.source = span.source.start - prefix.len() + new_source.start
+                    ..span.source.end - prefix.len() + new_source.start;
             }
-            decoded_bytes = bytes.len() + old_patch_bytes.len();
+            decoded_bytes = bytes.len() + old_patch_bytes.len() + context_proof_bytes;
         } else {
             let (parsed_provenance, parsed_bytes) = if html_code {
                 // The existing pre paragraph owns whitespace interpretation.
@@ -6911,7 +7324,10 @@ impl Document {
             edit.range.start - 1
         } else if edit.range.is_empty() {
             self.projection()
-                .provenance_for_region(&edited_line)
+                .provenance_for_region(
+                    &(edit.range.start.saturating_sub(4)
+                        ..edit.range.start.saturating_add(4).min(edited_line.end)),
+                )
                 .iter()
                 .find(|span| span.source.end == patch.range.start && !span.formatted.is_empty())
                 .map(|span| span.formatted.end - 1)
@@ -6921,7 +7337,10 @@ impl Document {
         } else {
             edit.range.start
         };
-        if self.format() == Format::Html && !edited_line.contains(&sampled_at) {
+        if self.format() == Format::Html
+            && inserted_html_character_context.is_none()
+            && !edited_line.contains(&sampled_at)
+        {
             // A <br> has source provenance but no character-style span. In
             // particular, an empty hard line inside <i> or <b> cannot inherit
             // its active element context from the preceding break. A nearby
@@ -7006,7 +7425,9 @@ impl Document {
                 });
             }
         }
-        if !edit.replacement.is_empty() {
+        if let Some(context) = inserted_html_character_context {
+            styles.extend(context);
+        } else if !edit.replacement.is_empty() {
             for application in insertion_styles {
                 styles.push(StyleSpan {
                     range: edit.range.start - old_line.start
@@ -7038,25 +7459,29 @@ impl Document {
             new_source.start,
             new_source.end,
         );
-        let hard_line_ranges = (first_line..=last_line)
-            .map(|index| {
-                let range = self
-                    .projection()
-                    .hard_line_range(index)
-                    .ok_or(DocumentError::VerificationFailed)?;
-                let start = if index > line {
-                    range.start - edit.range.len() + edit.replacement.len()
-                } else {
-                    range.start
-                };
-                let end = if index >= line {
-                    range.end - edit.range.len() + edit.replacement.len()
-                } else {
-                    range.end
-                };
-                Ok(start - old_line.start..end - old_line.start)
-            })
-            .collect::<Result<Vec<_>, DocumentError>>()?;
+        let hard_line_ranges = if partial_paragraph {
+            vec![0..regional.text_tree().byte_len()]
+        } else {
+            (first_line..=last_line)
+                .map(|index| {
+                    let range = self
+                        .projection()
+                        .hard_line_range(index)
+                        .ok_or(DocumentError::VerificationFailed)?;
+                    let start = if index > line {
+                        range.start - edit.range.len() + edit.replacement.len()
+                    } else {
+                        range.start
+                    };
+                    let end = if index >= line {
+                        range.end - edit.range.len() + edit.replacement.len()
+                    } else {
+                        range.end
+                    };
+                    Ok(start - old_line.start..end - old_line.start)
+                })
+                .collect::<Result<Vec<_>, DocumentError>>()?
+        };
         regional.install_hard_line_partition(hard_line_ranges);
         let projected_bytes = regional.text().len();
         let relocated_boundary = if compacted_html_space.is_some() {
@@ -7090,6 +7515,7 @@ impl Document {
             source.len(),
             false,
             false,
+            partial_paragraph,
             edits,
             &mut next_projected_block_id,
         ) {
@@ -8467,6 +8893,39 @@ fn compat_document_error(error: ModelTransactionError) -> DocumentError {
         | ModelTransactionError::Style(_)
         | ModelTransactionError::StaleDocumentState
         | ModelTransactionError::RevisionExhausted => DocumentError::VerificationFailed,
+    }
+}
+
+#[cfg(test)]
+mod scratch_history_tests {
+    use super::*;
+
+    #[test]
+    fn scratch_planning_shares_live_trees_without_reaccounting_the_document() {
+        let source = "<p>plain <b>bold</b> tail</p>".repeat(10_000);
+        let document = Document::from_bytes(
+            source.as_bytes().to_vec(),
+            super::super::Encoding::Utf8,
+            Format::Html,
+        )
+        .unwrap();
+        let original_history = document.history_status();
+        let (mut scratch, work) =
+            super::super::measure_document_work(|| document.scratch_document());
+        assert_eq!(work.source_full_materialized_bytes, 0, "{work:?}");
+        assert_eq!(work.source_decoded_bytes, 0, "{work:?}");
+        assert_eq!(work.html_index_newly_retained_bytes, 0, "{work:?}");
+        assert_eq!(scratch.history_status().retained_memory_bytes, 0);
+        for _ in 0..8 {
+            scratch.insert(1, "X").unwrap();
+            assert_eq!(scratch.history_status().node_count, 1);
+        }
+        assert_eq!(
+            scratch.projection().text_tree().slice(0..13).unwrap(),
+            "pXXXXXXXXlain"
+        );
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        assert_eq!(document.history_status(), original_history);
     }
 }
 

@@ -558,6 +558,14 @@ struct HistoryAccounting<T> {
 }
 
 impl<T, M> History<T, M> {
+    /// Private transaction planning only: keep the current candidate, without
+    /// rescanning the shared live document into a second allocation ledger.
+    /// Published documents always use accounted history. Scratch planning does
+    /// not expose undo, saving, or retention diagnostics to the user.
+    pub(crate) fn transient(initial: T) -> Self {
+        Self::new_internal(initial, HistoryRetentionPolicy::new(1, usize::MAX), None)
+    }
+
     #[cfg(test)]
     pub(crate) fn new(initial: T) -> Self {
         Self::new_internal(initial, HistoryRetentionPolicy::default(), None)
