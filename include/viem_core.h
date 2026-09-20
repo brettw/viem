@@ -239,6 +239,7 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_KEY_WORD_LEFT 20u
 #define VIEM_KEY_WORD_RIGHT 21u
 #define VIEM_KEY_FUNCTION 22u
+#define VIEM_KEY_COPY_SELECTION 23u
 #define VIEM_KEY_MODIFIER_SHIFT 1u
 #define VIEM_KEY_MODIFIER_CONTROL 2u
 #define VIEM_KEY_MODIFIER_ALT 4u

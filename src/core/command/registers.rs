@@ -685,7 +685,7 @@ fn macro_events_as_put_value(events: &[InputEvent]) -> Option<RegisterValue> {
                 | Key::End
                 | Key::DocumentStart
                 | Key::DocumentEnd
-                | Key::SelectAll
+                | Key::SelectAll | Key::CopySelection
                 | Key::PageUp
                 | Key::PageDown,
             ) => return None,
@@ -732,6 +732,7 @@ fn macro_events_as_register_value(events: &[InputEvent]) -> RegisterValue {
             InputEvent::Key(Key::DocumentStart) => text.push_str("<C-Home>"),
             InputEvent::Key(Key::DocumentEnd) => text.push_str("<C-End>"),
             InputEvent::Key(Key::SelectAll) => text.push_str("<SelectAll>"),
+            InputEvent::Key(Key::CopySelection) => text.push_str("<CopySelection>"),
             InputEvent::Key(Key::PageUp) => text.push_str("<PageUp>"),
             InputEvent::Key(Key::PageDown) => text.push_str("<PageDown>"),
             InputEvent::Key(key @ (Key::Function { .. } | Key::ModifiedNavigation { .. })) => text.push_str(&super::literal_input::literal_key_text(*key).unwrap()),

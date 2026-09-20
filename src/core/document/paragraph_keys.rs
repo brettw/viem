@@ -117,6 +117,13 @@ impl Document {
         } else if at != block.range.start {
             return Ok(None);
         }
+        if !empty_quote_only
+            && matches!(block.kind, super::super::BlockKind::ListItem { item_start: false, .. })
+        {
+            // A continuation paragraph has no label to remove. Backspace
+            // joins its body to the preceding paragraph of the same item.
+            return Ok(None);
+        }
         if empty_quote_only || super::super::edit_boundary::is_code_paragraph(self, &block)?
             || matches!(block.kind, super::super::BlockKind::ListItem { .. })
         {

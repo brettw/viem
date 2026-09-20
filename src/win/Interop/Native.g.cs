@@ -1355,6 +1355,7 @@ internal static unsafe partial class Native
     public const uint VIEM_KEY_WORD_LEFT = 20u;
     public const uint VIEM_KEY_WORD_RIGHT = 21u;
     public const uint VIEM_KEY_FUNCTION = 22u;
+    public const uint VIEM_KEY_COPY_SELECTION = 23u;
     public const uint VIEM_KEY_MODIFIER_SHIFT = 1u;
     public const uint VIEM_KEY_MODIFIER_CONTROL = 2u;
     public const uint VIEM_KEY_MODIFIER_ALT = 4u;

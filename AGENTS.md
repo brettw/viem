@@ -519,6 +519,19 @@ and preserving retained folded spaces when deleting text changes how the source
 is parsed. Those repairs remain minimal explicit patches in the same verified,
 undoable transaction; candidate verification is never bypassed.
 
+Ordinary valid WYSIWYG deletions MUST also succeed through native selections,
+Visual Line, and caret Delete/Backspace at structural and document boundaries.
+Selection normalization must retain enough pre-edit identity to rebase remembered
+selections, marks, and history endpoints; a former EOF offset cannot be reused in
+the shortened document. An emptied implicit paragraph needs explicit supporting
+syntax when its unselected paragraph boundaries would otherwise disappear on
+reopening. Fully selected structural owners may be removed, but an unselected
+empty paragraph at a half-open range edge remains outside the edit. Deleting an
+atomic object owns its fallback body and embedded opaque syntax, while unrelated
+document metadata and hidden content remain intact. Tests MUST exercise command
+entry paths, saved/reopened projections, and exact undo/redo, not only prepared
+document text edits.
+
 ### Complexity and API requirements
 
 Resolving or comparing points and finding a hard-line boundary in one snapshot
@@ -3726,6 +3739,13 @@ in `docs/native-selection.md`.
 - Explicit `"*c` copies using the `*` clipboard register: in Visual mode it
   yanks the selection, and in Normal mode it accepts the same motion/count
   grammar as `"*y`. Other uses of `c` retain their change semantics.
+- Native Copy (`Command-C` on macOS, `Control-C` on Windows, menus, and platform
+  Copy selectors) preserves the directed selection, active endpoint, selection
+  mode, and caret. It exports the selected visible text and rich clipboard
+  representation through a dedicated portable Copy intention. It does not
+  synthesize a Vim yank or temporary mode transition, execute a pending mapping,
+  or consume a pending register/count or temporary Visual command. Vim `y`, including explicit
+  clipboard-register yanks, retains its normal selection-ending behavior.
 - Normal-mode `U` is intentionally unsupported. There is no separate saved-line
   undo state; use `u` and `Ctrl-R` for undo and redo. Visual-mode `U` and the
   `gU` operator retain their uppercase-conversion behavior.
@@ -7079,6 +7099,11 @@ literal marker beginning and the boundary after its marker. Backspace at the
 visible WYSIWYG beginning removes list treatment regardless of whether the caret
 arrived by typing, navigation, or pointer placement; hidden tags and insertion
 history do not redefine the beginning.
+The beginning of a continuation paragraph within the same item is not a new
+item-label boundary: Backspace joins it to the preceding visible paragraph using
+the ordinary first-paragraph style rule, including when a nested child intervenes.
+Removing a Markdown item label also removes the item's hidden continuation
+indentation without consuming its visible paragraph boundaries or following items.
 Numbered continuation and repeat calculate the next ordinal from current
 structure. One list action and its supporting source patches form one undo unit.
 New plain-text lists and Markdown source use `- ` or decimal `1. ` markers, with

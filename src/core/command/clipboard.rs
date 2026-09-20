@@ -11,6 +11,54 @@ use std::fmt;
 
 use super::RegisterValue;
 
+impl super::CommandInterpreter {
+    /// Platform Copy leaves every selection endpoint and presentation mode in
+    /// place. Vim's yank operator retains its separate cursor/mode semantics.
+    pub(super) fn copy_platform_selection(
+        &mut self,
+        document: &crate::document::Document,
+        layout: Option<&super::LayoutCommandContext<'_>>,
+    ) -> Result<super::CommandOutput, crate::document::DocumentError> {
+        use super::*;
+        if layout.is_some_and(|context| context.snapshot.document_id != document.id()
+            || context.snapshot.document_revision != document.revision())
+        {
+            return Ok(CommandOutput {
+                status: CommandStatus::Error("stale layout context".to_owned()),
+                ..CommandOutput::complete()
+            });
+        }
+        if !matches!(self.mode, Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock) {
+            return Ok(CommandOutput::complete());
+        }
+        if let Err(output) = self.require_register_write(Some('+')) { return Ok(output); }
+        let value = if self.mode == Mode::VisualBlock {
+            let Some(layout) = layout else { return Ok(layout_required("copy block selection")) };
+            let resolved = match self.resolved_visual_block(document, layout) {
+                Ok(resolved) => resolved,
+                Err(error) => return Ok(visual_block_error(error)),
+            };
+            block_register_value(document, &resolved, Some('+'))
+        } else {
+            let range = if self.mode == Mode::VisualLine {
+                self.line_selection_range(document, layout.map(|context| context.snapshot))
+                    .unwrap_or_else(|| self.visual_extent(document).range)
+            } else { self.visual_extent(document).range };
+            if range.is_empty() { return Ok(CommandOutput::complete()); }
+            RegisterValue::from_clipboard_fragment(document.clipboard_fragment(range)?.as_seen())
+                .map_err(|_| crate::document::DocumentError::UnsupportedFormatting)?
+        };
+        // Copy is an out-of-band platform action. In particular, do not
+        // consume a partially typed register prefix or pending key mapping.
+        let effect = self.registers.yank(Some('+'), value);
+        let mut output = CommandOutput::complete();
+        if let Some(request) = effect.clipboard() {
+            output.clipboard_writes.push(request);
+        }
+        Ok(output)
+    }
+}
+
 /// Vim clipboard-register identity.  Frontends may map both targets to one
 /// native pasteboard, but core never aliases their state implicitly.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -809,4 +857,189 @@ mod rich_tests {
                 .is_none());
         }
     }
+    #[test]
+    fn platform_copy_preserves_directed_selection_and_vim_yank_still_exits() {
+        use crate::command::{Mode, SelectionOrigin};
+        use crate::layout::MockTextMeasurementProvider;
+        use crate::{Core, CoreEvent};
+        for source in ["<p><b>one two</b> three</p><p>four five</p>", "<p>abcdef ghijkl mnopqr stuvwx yz</p>"] {
+            for sequence in ["vll", "vllo", "V", "Vjo", "\u{16}lj", "\u{16}ljo"] {
+                for native in [false, true] {
+                    let mut core = Core::new(open(source.as_bytes(), Format::Html));
+                    let view = core.add_view(MockTextMeasurementProvider::new(), 85., 200.);
+                    for ch in sequence.chars() {
+                        let key = if ch == '\u{16}' { Key::Ctrl('v') } else { Key::Char(ch) };
+                        core.handle(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+                    }
+                    if native { core.set_selection_origin(view, SelectionOrigin::Mouse, Mode::Insert).unwrap(); }
+                    let before = core.command_state(view).unwrap().clone();
+                    let revision = core.document().revision();
+                    let history = core.document().history_status();
+                    let context = ClipboardCommandContext::new().with_write(ClipboardTarget::Clipboard);
+                    let mut previous = None;
+                    for _ in 0..2 {
+                        let output = core.handle(view, CoreEvent::InputWithClipboard {
+                            input: InputEvent::Key(Key::CopySelection), clipboard: context.clone(),
+                        }).unwrap().command.unwrap();
+                        assert_eq!(output.status, CommandStatus::Complete, "{sequence}");
+                        assert!(!output.document_changed && !output.cursor_moved && !output.mode_changed);
+                        assert_eq!(output.clipboard_writes.len(), 1);
+                        let copy = output.clipboard_writes[0].content();
+                        assert_eq!(output.clipboard_writes[0].target(), ClipboardTarget::Clipboard);
+                        assert!(!copy.plain_text().is_empty());
+                        assert!(copy.portable_register().unwrap().clipboard_fragment().is_some());
+                        if let Some(previous) = &previous { assert_eq!(copy, previous); }
+                        previous = Some(copy.clone());
+                        let after = core.command_state(view).unwrap();
+                        assert_eq!(after.mode, before.mode);
+                        assert_eq!(after.cursor, before.cursor);
+                        assert_eq!(after.visual_anchor, before.visual_anchor);
+                        assert_eq!(after.boundary_affinity, before.boundary_affinity);
+                        assert_eq!(after.selection_behavior, before.selection_behavior);
+                        assert_eq!(after.selection_exclusive, before.selection_exclusive);
+                        assert_eq!(after.selection_return_mode, before.selection_return_mode);
+                        assert_eq!(after.visual_to_line_end, before.visual_to_line_end);
+                        assert_eq!(after.visual_block, before.visual_block);
+                        assert_eq!(after.visual_position, before.visual_position);
+                        assert_eq!(after.desired_x, before.desired_x);
+                        assert_eq!(core.document().revision(), revision);
+                        assert_eq!(core.document().history_status(), history);
+                        assert_eq!(core.document().source_bytes(), source.as_bytes());
+                    }
+                    if !native {
+                        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('y')))).unwrap();
+                        assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn platform_copy_keeps_exact_final_newline_and_rich_or_source_content() {
+        use crate::layout::MockTextMeasurementProvider;
+        use crate::{Core, CoreEvent};
+        for (source, format, plain) in [
+            ("<p><b>one</b> two</p>", Format::Html, "one two"),
+            ("__one__ two", Format::Markdown, "one two"),
+            ("one two", Format::PlainText, "one two"),
+            ("one two\n", Format::PlainText, "one two\n"),
+            ("<p><b>one</b> two</p>", Format::HtmlSource, "<p><b>one</b> two</p>"),
+            ("__one__ two", Format::MarkdownSource, "__one__ two"),
+        ] {
+            let mut core = Core::new(open(source.as_bytes(), format));
+            let view = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::SelectAll))).unwrap();
+            let before = core.list_selection_identity(view).unwrap();
+            let output = core.handle(view, CoreEvent::InputWithClipboard {
+                input: InputEvent::Key(Key::CopySelection),
+                clipboard: ClipboardCommandContext::new().with_write(ClipboardTarget::Clipboard),
+            }).unwrap().command.unwrap();
+            assert_eq!(output.status, CommandStatus::Complete);
+            assert_eq!(core.list_selection_identity(view).unwrap(), before);
+            let content = output.clipboard_writes[0].content();
+            assert_eq!(content.plain_text(), plain);
+            if format.is_source_view() { assert!(content.portable_register().is_none()); }
+            else if format.is_wysiwyg() {
+                let fragment = content.portable_register().unwrap().clipboard_fragment().unwrap();
+                let json: serde_json::Value = serde_json::from_str(fragment.json()).unwrap();
+                assert_eq!(json["character_runs"][0]["bold"], true);
+            }
+        }
+    }
+
+    fn assert_pending_copy_state(before: &CommandInterpreter, after: &CommandInterpreter) {
+        assert_eq!(after.mode, before.mode);
+        assert_eq!(after.cursor, before.cursor);
+        assert_eq!(after.visual_anchor, before.visual_anchor);
+        assert_eq!(after.boundary_affinity, before.boundary_affinity);
+        assert_eq!(after.visual_block, before.visual_block);
+        assert_eq!(after.visual_position, before.visual_position);
+        assert_eq!(after.selection_behavior, before.selection_behavior);
+        assert_eq!(after.selection_exclusive, before.selection_exclusive);
+        assert_eq!(after.pending, before.pending);
+        assert_eq!(after.count, before.count);
+        assert_eq!(after.mapping_pending, before.mapping_pending);
+        assert_eq!(after.requested_register, before.requested_register);
+        assert_eq!(after.register_pending, before.register_pending);
+        assert_eq!(after.clipboard_copy_as_seen, before.clipboard_copy_as_seen);
+        assert_eq!(after.select_visual_once, before.select_visual_once);
+        assert_eq!(after.select_visual_just_started, before.select_visual_just_started);
+        assert_eq!(after.select_visual_return, before.select_visual_return);
+        assert_eq!(after.insert_normal_once, before.insert_normal_once);
+        assert_eq!(after.ctrl_o_just_started, before.ctrl_o_just_started);
+        assert_eq!(after.recording, before.recording);
+        assert_eq!(after.insert_controls.join_next_horizontal, before.insert_controls.join_next_horizontal);
+    }
+
+    #[test]
+    fn platform_copy_preserves_pending_headless_commands_and_macro_recording() {
+        let context = ClipboardCommandContext::new().with_write(ClipboardTarget::Clipboard);
+        for (prefix, continuation) in [("vld", 'd'), ("vl\"a", 'y'), ("vlr", 'X'), ("vl3", 'l'), ("qavl", 'y')] {
+            let mut document = Document::new("abcdef");
+            let mut commands = CommandInterpreter::new();
+            commands.mappings.execute("vmap dd y").unwrap().unwrap();
+            for character in prefix.chars() { key(&mut commands, &mut document, &context, character); }
+            let before = commands.clone();
+            let revision = document.revision();
+            let output = commands.handle_with_clipboard_context(&mut document,
+                InputEvent::Key(Key::CopySelection), &context).unwrap();
+            assert_eq!(output.clipboard_writes.len(), 1, "{prefix}");
+            assert_eq!(output.clipboard_writes[0].content().plain_text(), "ab");
+            assert_eq!(document.revision(), revision);
+            assert_eq!(document.text(), "abcdef");
+            assert_pending_copy_state(&before, &commands);
+            key(&mut commands, &mut document, &context, continuation);
+            match prefix {
+                "vld" => { assert_eq!(commands.mode(), Mode::Normal); assert_eq!(document.text(), "abcdef"); }
+                "vl\"a" => assert_eq!(commands.register('a').unwrap().text, "ab"),
+                "vlr" => assert_eq!(document.text(), "XXcdef"),
+                "vl3" => assert_eq!(commands.cursor(), 4),
+                _ => assert_eq!(document.text(), "abcdef"),
+            }
+        }
+    }
+
+    #[test]
+    fn platform_copy_bypasses_core_mapping_replay_and_preserves_temporary_visual_mode() {
+        use crate::layout::MockTextMeasurementProvider;
+        use crate::{Core, CoreEvent};
+        for prefix in ["vld", "Vd", "\u{16}ld"] {
+            let mut core = Core::new(Document::new("abcdef\nghijkl"));
+            assert!(core.initialize_startup("vmap dd y").is_empty());
+            let view = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+            for character in prefix.chars() {
+                let key = if character == '\u{16}' { Key::Ctrl('v') } else { Key::Char(character) };
+                core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+            }
+            let before = core.command_state(view).unwrap().clone();
+            let revision = core.document().revision();
+            let output = core.handle_with_layout(view, CoreEvent::InputWithClipboard {
+                input: InputEvent::Key(Key::CopySelection),
+                clipboard: ClipboardCommandContext::new().with_write(ClipboardTarget::Clipboard),
+            }).unwrap().command.unwrap();
+            assert_eq!(output.clipboard_writes.len(), 1, "{prefix}");
+            assert_eq!(core.document().revision(), revision);
+            assert_pending_copy_state(&before, core.command_state(view).unwrap());
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('d'))).unwrap();
+            assert_eq!(core.document().text(), "abcdef\nghijkl");
+            assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
+        }
+        let mut core = Core::new(Document::new("abcdef"));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+        for key in [Key::SelectAll, Key::Ctrl('o')] {
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+        }
+        let before = core.command_state(view).unwrap().clone();
+        let output = core.handle_with_layout(view, CoreEvent::InputWithClipboard {
+            input: InputEvent::Key(Key::CopySelection),
+            clipboard: ClipboardCommandContext::new().with_write(ClipboardTarget::Clipboard),
+        }).unwrap().command.unwrap();
+        assert_eq!(output.clipboard_writes[0].content().plain_text(), "abcdef");
+        assert_pending_copy_state(&before, core.command_state(view).unwrap());
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('y'))).unwrap();
+        assert_eq!(core.document().text(), "abcdef");
+        assert_eq!(core.command_state(view).unwrap().register('0').unwrap().text, "abcdef");
+    }
+
 }

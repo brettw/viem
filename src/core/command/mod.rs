@@ -192,6 +192,8 @@ pub enum Key {
     DocumentEnd,
     /// Portable replayable native whole-document selection intention.
     SelectAll,
+    /// Platform Copy reads the selection without running a Vim operator.
+    CopySelection,
     PageUp,
     PageDown,
     Ctrl(char),
@@ -2153,6 +2155,10 @@ impl CommandInterpreter {
         event: &InputEvent,
         clipboard: Option<&ClipboardCommandContext>,
     ) -> bool {
+        if matches!(event, InputEvent::Key(Key::CopySelection)) {
+            return self.mode == Mode::VisualBlock
+                || self.mode == Mode::VisualLine && self.line_mode == LineMode::Visual;
+        }
         if self.substitute_confirmation.is_some() || self.mapping_applies(event) { return false; }
         if self.is_text_selection() && self.mode == Mode::VisualBlock { return true; }
         if matches!(self.pending, Pending::G { .. }) && matches!(event, InputEvent::Key(Key::Ctrl('h' | 'H'))) { return true; }
@@ -2903,6 +2909,9 @@ impl CommandInterpreter {
         document: &mut Document,
         event: InputEvent,
     ) -> Result<CommandOutput, DocumentError> {
+        if matches!(event, InputEvent::Key(Key::CopySelection)) {
+            return self.copy_platform_selection(document, None);
+        }
         if let Some(output) = self.handle_mapping(document, &event)? { return Ok(output); }
         let event = self.normalized_input_event(event);
         let model_checkpoint = document.begin_command_checkpoint();
@@ -2982,6 +2991,9 @@ impl CommandInterpreter {
         event: InputEvent,
         context: &mut LayoutCommandContext<'_>,
     ) -> Result<CommandOutput, DocumentError> {
+        if matches!(event, InputEvent::Key(Key::CopySelection)) {
+            return self.copy_platform_selection(document, Some(context));
+        }
         let model_checkpoint = document.begin_command_checkpoint();
         let checkpoint = self.clone();
         let edit_group_depth = document.edit_group_depth();
@@ -10345,7 +10357,7 @@ impl CommandInterpreter {
                 "cursor motion is unavailable while a deferred Visual Block insertion is collected",
             )),
             Key::Escape => unreachable!("handled above"),
-            Key::SelectAll => self.handle_key(document, key),
+            Key::SelectAll | Key::CopySelection => self.handle_key(document, key),
         }
     }
 

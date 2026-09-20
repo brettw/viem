@@ -15,19 +15,59 @@ impl Document {
             Format::Html => {
                 use super::super::html::{self, TokenKind};
                 let tokens = html::tokenize(&input.text);
-                let mut hidden: Option<(&str, usize)> = None;
+                let mut hidden: Option<(&str, usize, usize)> = None;
+                let mut removed_owners: Vec<&str> = Vec::new();
                 for token in &tokens {
-                    if let Some((name, start)) = hidden {
-                        if matches!(&token.kind, TokenKind::Tag(tag) if tag.end && tag.name == name)
-                        {
-                            keep.push(converter.source_range(start..token.range.end));
-                            hidden = None;
+                    if let Some((name, start, depth)) = hidden {
+                        if let TokenKind::Tag(tag) = &token.kind {
+                            if tag.name == name {
+                                if tag.end && depth == 1 {
+                                    keep.push(converter.source_range(start..token.range.end));
+                                    hidden = None;
+                                } else {
+                                    hidden = Some((
+                                        name,
+                                        start,
+                                        if tag.end { depth - 1 } else { depth + 1 },
+                                    ));
+                                }
+                            }
                         }
+                        continue;
+                    }
+                    // Raw-text bodies and comments inside a selected atomic
+                    // object belong to that object. Keeping their opaque
+                    // tokens after deleting its tags would expose text (for
+                    // example an iframe's fallback) in the cleared document.
+                    if let TokenKind::Tag(tag) = &token.kind {
+                        if tag.end {
+                            if let Some(index) = removed_owners
+                                .iter()
+                                .rposition(|name| *name == tag.name)
+                            {
+                                removed_owners.truncate(index);
+                                continue;
+                            }
+                        } else if html::atomic(&tag.name)
+                            || matches!(tag.name.as_str(), "xmp" | "noembed" | "noframes")
+                        {
+                            if !html::void(&tag.name)
+                                && !(matches!(tag.name.as_str(), "svg" | "math")
+                                    && input.text[token.range.clone()]
+                                        .trim_end()
+                                        .ends_with("/>"))
+                            {
+                                removed_owners.push(&tag.name);
+                            }
+                            continue;
+                        }
+                    }
+                    if !removed_owners.is_empty() {
                         continue;
                     }
                     match &token.kind {
                         TokenKind::Tag(tag) if !tag.end && html::hidden(&tag.name) => {
-                            hidden = Some((&tag.name, token.range.start));
+                            hidden = Some((&tag.name, token.range.start, 1));
                         }
                         TokenKind::Tag(tag)
                             if matches!(
@@ -41,7 +81,7 @@ impl Document {
                         _ => {}
                     }
                 }
-                if let Some((_, start)) = hidden {
+                if let Some((_, start, _)) = hidden {
                     keep.push(converter.source_range(start..input.text.len()));
                 }
             }

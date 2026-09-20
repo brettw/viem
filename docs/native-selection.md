@@ -29,7 +29,10 @@ collapse without an extra step. Vim Select Delete returns to Normal. Without
 `startsel`, shifted horizontal arrows follow Vim word motions when `autoselect`
 is off. Native Selection bypasses Vim Visual/Select mappings; insertion mappings
 still apply to replacement typing. Ctrl-G explicitly switches to Visual, and
-Ctrl-O temporarily runs a Visual command; Copy restores the originating policy.
+Ctrl-O temporarily runs a Visual command. Native Copy (Command-C, Control-C on
+Windows, the Copy menu, or an OS Copy selector) preserves the selection, its
+direction, caret, and current mode through a dedicated core intention. Vim `y`
+and explicit clipboard-register yanks retain their usual selection-ending rules.
 
 Tests cover both policies, every keymodel/selectmode entry combination, option
 propagation, mappings, counts, registers, Unicode boundaries, reversed ranges,

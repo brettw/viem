@@ -393,6 +393,7 @@ pub const VIEM_KEY_SHIFT_ENTER: u32 = 19;
 pub const VIEM_KEY_WORD_LEFT: u32 = 20;
 pub const VIEM_KEY_WORD_RIGHT: u32 = 21;
 pub const VIEM_KEY_FUNCTION: u32 = 22;
+pub const VIEM_KEY_COPY_SELECTION: u32 = 23;
 pub const VIEM_KEY_MODIFIER_SHIFT: u32 = 1;
 pub const VIEM_KEY_MODIFIER_CONTROL: u32 = 2;
 pub const VIEM_KEY_MODIFIER_ALT: u32 = 4;
@@ -4318,6 +4319,7 @@ fn parse_key(input: ViemKeyInputV1) -> Result<Key, ViemStatus> {
     match input.kind {
         VIEM_KEY_CHARACTER => Ok(Key::Char(scalar()?)),
         VIEM_KEY_ESCAPE => special(Key::Escape),
+        VIEM_KEY_COPY_SELECTION => special(Key::CopySelection),
         VIEM_KEY_ENTER => special(Key::Enter),
         VIEM_KEY_SHIFT_ENTER => special(Key::ShiftEnter),
         VIEM_KEY_TAB => special(Key::Tab),

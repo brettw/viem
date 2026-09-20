@@ -354,9 +354,9 @@ pub(super) fn preserve_deleted_content_boundaries(
             }
             let leading_break = end < block.range.end
                 && document.projection().text_tree().slice(end..end + 1).as_deref() == Ok("\n");
-            let empty_item = end == block.range.end
-                && matches!(block.kind, super::BlockKind::ListItem { .. });
-            if leading_break || empty_item { candidates.push((block, end, leading_break)); }
+            let empty_paragraph = end == block.range.end
+                && (block.range.start > 0 || block.range.end < document.projection().text_tree().byte_len());
+            if leading_break || empty_paragraph { candidates.push((block, end, leading_break)); }
         }
     }
     if candidates.is_empty() { return Ok(()); }
@@ -391,6 +391,27 @@ pub(super) fn preserve_deleted_content_boundaries(
             let source = super::rich_text::block_source_point(document.projection(), &block)?;
             let at = normalized_at(source);
             let stack = stack_at(&tokens, at);
+            if !stack.iter().any(|token| matches!(&token.kind, TokenKind::Tag(tag)
+                if html::owns_paragraph(tag, document.projection().style_sheet()) || tag.name == "blockquote"))
+            {
+                // Bare text in a container (or an atomic block with no text
+                // owner) does not keep its paragraph after its last character
+                // disappears. Preserve the unselected surrounding boundaries
+                // with a local empty owner; retain all original wrapper bytes.
+                let inline = stack.iter().rposition(|token| matches!(&token.kind,
+                    TokenKind::Tag(tag) if structural(&tag.name))).map_or(0, |index| index + 1);
+                let boundary = stack.get(inline).map_or(at, |token| token.range.start);
+                let source = mapper.source_range(boundary..boundary).start;
+                let seed = document.encoding().encode_fragment("<p></p>")?;
+                if let Some(patch) = patches.iter_mut().find(|patch| patch.range().start == source) {
+                    let mut replacement = seed;
+                    replacement.extend_from_slice(patch.replacement());
+                    *patch = super::SourcePatch::primary(patch.range(), replacement);
+                } else {
+                    support.push(super::SourcePatch::primary(source..source, seed));
+                }
+                continue;
+            }
             let Some(owner) = stack.iter().rposition(|token|
                 matches!(&token.kind, TokenKind::Tag(tag) if tag.name == "li")) else { continue; };
             if stack[owner + 1..].iter().any(|token|
@@ -399,7 +420,8 @@ pub(super) fn preserve_deleted_content_boundaries(
             let Some(child) = tokens.iter().filter(|token| token.range.start >= at)
                 .take_while(|token| !matches!(&token.kind, TokenKind::Tag(tag) if tag.name == "li"))
                 .find(|token| {
-                matches!(&token.kind, TokenKind::Tag(tag) if !tag.end && matches!(tag.name.as_str(), "ul" | "ol"))
+                matches!(&token.kind, TokenKind::Tag(tag) if !tag.end
+                    && (matches!(tag.name.as_str(), "ul" | "ol") || html::owns_paragraph(tag, document.projection().style_sheet())))
                     && stack_at(&tokens, token.range.start).iter().rev().find(|token|
                         matches!(&token.kind, TokenKind::Tag(tag) if tag.name == "li"))
                         .is_some_and(|owner| owner.range.start == opening.range.start)
@@ -414,12 +436,17 @@ pub(super) fn preserve_deleted_content_boundaries(
                 TokenKind::Opaque => decoded.text[token.range].starts_with("<!--"),
                 _ => false,
             });
-            if empty_body {
-                // A li containing only a nested list is an ancestry container.
-                // This edit retained its body paragraph, so give that now-empty
-                // paragraph an explicit owner before the unchanged child list.
+            let next_is_paragraph = matches!(&child.kind, TokenKind::Tag(tag)
+                if html::owns_paragraph(tag, document.projection().style_sheet()));
+            if empty_body || next_is_paragraph {
+                // A nested list alone supplies ancestry, and the first child
+                // paragraph otherwise absorbs an empty implicit item body.
+                // Give the retained body its own owner before that child.
+                let TokenKind::Tag(owner) = &opening.kind else { unreachable!() };
+                let seed = owner.attribute("class").map_or_else(|| "<p></p>".to_owned(),
+                    |classes| format!("<p class=\"{}\"></p>", escape(classes)));
                 support.push(super::SourcePatch::primary(child_source.start..child_source.start,
-                    document.encoding().encode_fragment("<p></p>")?));
+                    document.encoding().encode_fragment(&seed)?));
             }
         }
     }
@@ -480,7 +507,16 @@ pub(super) fn deletion_patches(
         .projection()
         .blocks_for_region(range)
         .into_iter()
-        .filter(|block| range.start <= block.range.start && block.range.end <= range.end)
+        .filter(|block| {
+            if block.range.start < range.start || block.range.end > range.end { return false; }
+            if !block.range.is_empty() { return true; }
+            let document_end = document.projection().text_tree().byte_len();
+            // An empty paragraph at the exclusive upper edge is unselected.
+            // EOF line deletion instead owns the final empty paragraph and
+            // consumes the preceding separator, whose paragraph must survive.
+            if block.range.start == range.end && range.end < document_end { return false; }
+            !(range.start > 0 && range.end == document_end && block.range.start == range.start)
+        })
         .collect::<Vec<_>>();
     let Some(first) = paragraphs.first() else {
         return Ok(None);
@@ -568,6 +604,13 @@ pub(super) fn deletion_patches(
             .ok_or(DocumentError::AmbiguousProjection)?;
         Ok(stack_at(&tokens, at))
     };
+    let preserved_owners = if range.start == 0
+        && range.end == document.projection().text_tree().byte_len()
+        && !has_list
+    {
+        source_stack(first)?.into_iter().map(|token| token.range.start)
+            .collect::<std::collections::BTreeSet<_>>()
+    } else { std::collections::BTreeSet::new() };
     let mut patches = Vec::new();
     for span in document.projection().provenance_for_region(range) {
         if span.formatted.is_empty() {
@@ -603,28 +646,35 @@ pub(super) fn deletion_patches(
     let mut owner_tokens = std::collections::BTreeSet::new();
     for block in &paragraphs {
         let open = source_stack(block)?;
-        let preserve_empty = range.start == 0
-            && range.end == document.projection().text_tree().byte_len()
-            && block.id == first.id
-            && !has_list;
-        for name in ["paragraph", "li"] {
-            if (name == "paragraph" && preserve_empty)
-                || (name == "li" && !owners.contains(&block.id))
-            {
+        for name in ["paragraph", "li", "pre", "blockquote"] {
+            if name == "li" && !owners.contains(&block.id) {
                 continue;
             }
-            if let Some(opening)=open.iter().rev().find(|token|matches!(&token.kind,TokenKind::Tag(tag) if if name=="li"{tag.name=="li"}else{html::heading_or_paragraph(&tag.name)})) {
+            for opening in open.iter().rev().filter(|token|matches!(&token.kind,TokenKind::Tag(tag) if if name=="paragraph"{html::heading_or_paragraph(&tag.name)}else{tag.name==name}))
+                .take(if name == "blockquote" { usize::MAX } else { 1 }) {
+                if preserved_owners.contains(&opening.range.start) { continue; }
                 if !owner_tokens.insert(opening.range.start){continue;}
                 let TokenKind::Tag(original)=&opening.kind else {unreachable!()};
-                patches.push(converter.source_range(opening.range.clone()));
                 let mut depth=0usize;
+                let mut closing=None;
                 for token in tokens.iter().filter(|token|token.range.start>=opening.range.end) {
                     let TokenKind::Tag(tag)=&token.kind else {continue};
                     if tag.name==original.name {
-                        if tag.end {if depth==0{patches.push(converter.source_range(token.range.clone()));break;}depth-=1;}else{depth+=1;}
+                        if tag.end {if depth==0{closing=Some(token);break;}depth-=1;}else{depth+=1;}
                     }
                     if name=="paragraph"&&structural(&tag.name) {break;}
                 }
+                if matches!(name, "pre" | "blockquote") {
+                    let Some(closing) = closing else { continue; };
+                    let content = converter.source_range(opening.range.end..closing.range.start);
+                    let retains_paragraph = document.projection().blocks().iter()
+                        .filter(|other| !selected.contains(&other.id))
+                        .any(|other| super::rich_text::block_source_point(document.projection(), other)
+                            .is_ok_and(|source| content.start <= source && source <= content.end));
+                    if retains_paragraph { continue; }
+                }
+                patches.push(converter.source_range(opening.range.clone()));
+                if let Some(closing) = closing { patches.push(converter.source_range(closing.range.clone())); }
             }
         }
     }

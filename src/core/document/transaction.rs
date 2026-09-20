@@ -4154,6 +4154,11 @@ impl Document {
                 range = first.range.start..last.range.end;
             }
         }
+        if style == self.projection().style_sheet().base_paragraph {
+            if let Some(prepared) = self.prepare_markdown_list_as_prose(&range)? {
+                return Ok(prepared);
+            }
+        }
         if style.0 == "Block quote"
             || style.0 == "Paragraph" && self.projection().blocks_for_region(&range)
                 .iter().any(|block| block.style.0 == "Block quote")
@@ -4253,6 +4258,11 @@ impl Document {
         style: Option<super::ListStyle>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&range)?;
+        if style.is_none() {
+            if let Some(prepared) = self.prepare_markdown_list_as_prose(&range)? {
+                return Ok(prepared);
+            }
+        }
         if self.format() == Format::HtmlSource {
             let patches = super::html_source::translate_list(self, range, style)?;
             return self.prepare_html_source_patches(patches);

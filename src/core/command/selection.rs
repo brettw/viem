@@ -172,7 +172,7 @@ impl CommandInterpreter {
             || self.select_visual_once
             || matches!(
                 event,
-                InputEvent::Key(Key::ModifiedNavigation { .. } | Key::Ctrl('g' | 'G'))
+                InputEvent::Key(Key::CopySelection | Key::ModifiedNavigation { .. } | Key::Ctrl('g' | 'G'))
             )
             || (matches!(self.pending, Pending::G { .. })
                 && matches!(
@@ -502,6 +502,18 @@ impl CommandInterpreter {
         };
         let delete = matches!(event, InputEvent::Key(Key::Backspace | Key::Delete));
         if replacement.is_some() || delete {
+            // Native line selection uses an exclusive character extent for
+            // replacement, but its remembered selection still belongs to the
+            // original line anchors. Retain that identity so publication can
+            // rebase it through the edit instead of retaining an old EOF.
+            let line_memory = (self.mode == Mode::VisualLine).then(|| VisualMemory {
+                exclusive: self.selection_exclusive,
+                mode: self.mode,
+                anchor: self.visual_anchor.unwrap_or(self.cursor),
+                active: self.cursor,
+                to_line_end: self.visual_to_line_end,
+                block: None,
+            });
             if self.mode == Mode::VisualLine {
                 let range = self
                     .line_selection_range(
@@ -550,6 +562,10 @@ impl CommandInterpreter {
                 self.apply_visual_operator(document, operator, 1)?
             };
             if output.status == CommandStatus::Complete {
+                if let Some(memory) = line_memory {
+                    self.last_visual = Some(memory);
+                    self.update_visual_marks();
+                }
                 self.selection_behavior = SelectionBehavior::Visual;
                 self.selection_exclusive = false;
                 if let Some(event) = replacement {

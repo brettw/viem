@@ -301,9 +301,11 @@ pub(super) fn remove_empty_continuation_prefixes(
                 .bytes_in(line.clone())
                 .ok_or(DocumentError::AmbiguousProjection)?;
             let decoded = document.encoding().decode_region(&bytes, line.start)?;
-            let prefix = decoded.text.len() - decoded.text.trim_start_matches([' ', '\t']).len();
-            if prefix == 0
-                || super::super::markdown_blocks::marker_prefix_length(&decoded.text).is_some()
+            let quote_prefix = super::super::markdown_quotes::prefix(&decoded.text);
+            let body = &decoded.text[quote_prefix..];
+            let prefix = quote_prefix + body.len() - body.trim_start_matches([' ', '\t']).len();
+            if prefix == quote_prefix
+                || super::super::markdown_blocks::marker_prefix_length(body).is_some()
             {
                 continue;
             }
@@ -340,7 +342,7 @@ pub(super) fn remove_empty_continuation_prefixes(
                 })
             {
                 super::super::source_edit::append_uncovered_deletions(
-                    &(line.start..body_start),
+                    &(line.start + document.encoding().encode_fragment(&decoded.text[..quote_prefix])?.len()..body_start),
                     patches,
                     &mut support,
                 );
@@ -348,6 +350,69 @@ pub(super) fn remove_empty_continuation_prefixes(
         }
     }
     patches.extend(support);
+    Ok(())
+}
+
+/// An emptied continuation paragraph joins its two physical separators into
+/// one run. Preserve both retained logical boundaries: Markdown represents two
+/// paragraph boundaries with four physical endings, not three.
+pub(super) fn preserve_empty_continuation_paragraphs(
+    document: &Document,
+    edits: &[TextEdit],
+    patches: &mut Vec<SourcePatch>,
+) -> Result<(), DocumentError> {
+    let projection = document.projection();
+    let mut seen = BTreeSet::new();
+    let mut deletions = edits.iter().filter(|edit| !edit.range.is_empty() && edit.replacement.is_empty())
+        .collect::<Vec<_>>();
+    deletions.sort_by_key(|edit| (edit.range.start, edit.range.end));
+    for edit in &deletions {
+        for block in projection.blocks_for_region(&edit.range) {
+            if block.range.is_empty() || block.style.0 == "Code Block"
+                || !matches!(block.kind, BlockKind::ListItem { item_start: false, .. })
+                || block.range.start != edit.range.start || block.range.start == 0
+                || block.range.end >= projection.text_tree().byte_len()
+                || !seen.insert(block.id)
+            { continue; }
+            let mut deleted_end = block.range.start;
+            for deletion in &deletions {
+                if deletion.range.start == deleted_end { deleted_end = deletion.range.end; }
+            }
+            if deleted_end != block.range.end { continue; }
+            let boundaries = [block.range.start - 1..block.range.start, block.range.end..block.range.end + 1];
+            if edits.iter().any(|other| boundaries.iter().any(|boundary|
+                other.range.start < boundary.end && boundary.start < other.range.end))
+            { continue; }
+            let mut count = 0;
+            for boundary in boundaries {
+                let Some(source) = hard_boundary_contributor(document, boundary) else { count = 4; break; };
+                let bytes = document.state().source.bytes_in(source.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+                let decoded = document.encoding().decode_region(&bytes, source.start)?;
+                let normalized = line_endings::normalize(&decoded, document.file_format());
+                if !normalized.text.split('\n').all(|line|
+                    line[super::super::markdown_quotes::prefix(line)..].chars().all(char::is_whitespace))
+                { count = 4; break; }
+                count += normalized.endings.len();
+            }
+            if count >= 4 { continue; }
+            let at = projection.source_insertion_point(block.range.end, false)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let source_line = document.state().source_hard_lines.line_at_offset(at)
+                .and_then(|index| document.state().source_hard_lines.get(index))
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let bytes = document.state().source.bytes_in(source_line.start..at)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let decoded = document.encoding().decode_region(&bytes, source_line.start)?;
+            let prefix = &decoded.text[..super::super::markdown_quotes::prefix(&decoded.text)];
+            let separator = format!("{}{prefix}", document.file_format().spelling());
+            let added = document.encoding().encode_fragment(&separator.repeat(4 - count))?;
+            if let Some(patch) = patches.iter_mut().find(|patch| patch.range.end == at) {
+                patch.replacement.extend(added);
+            } else {
+                patches.push(SourcePatch::primary(at..at, added));
+            }
+        }
+    }
     Ok(())
 }
 

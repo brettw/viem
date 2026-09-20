@@ -100,6 +100,25 @@ pub(super) fn deletion_patches(
     let (Some(first), Some(last)) = (paragraphs.first(), paragraphs.last()) else {
         return Ok(None);
     };
+    if whole_line && range.end > last.range.end {
+        let next = projection.blocks_for_region(&(range.end..range.end))
+            .into_iter().find(|block| block.range.start == range.end);
+        if next.is_some_and(|block| matches!(block.kind,
+            super::super::BlockKind::ListItem { item_start: false, .. }))
+        {
+            // The selected paragraph is only the beginning of an item. Keep
+            // its marker and promote the surviving continuation body into it.
+            // Removing the physical marker line would expose that body's
+            // indentation as literal text and abandon its list ownership.
+            if let Some(mut patches) = joining_patches(document, range, "")? {
+                super::markdown_split::remove_empty_emphasis(
+                    document, &[TextEdit::new(range.clone(), "")], &mut patches,
+                ).map_err(super::compat_document_error)?;
+                return Ok(Some(patches));
+            }
+            return Ok(None);
+        }
+    }
     // A hard break inside one item is still item content. Deleting that
     // content must retain the label; only a paragraph boundary or an explicit
     // whole-line operation owns the enclosing list structure.

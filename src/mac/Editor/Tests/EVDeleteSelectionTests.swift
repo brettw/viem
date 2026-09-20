@@ -85,4 +85,59 @@ import XCTest
         view.editorView.keyDown(with: try deleteEvent(keyCode: 51, windowNumber: window.windowNumber))
         try assertHistory(backend: backend, view: view, source: source, type: type, expectedText: "before  after")
     }
+
+    func testTripleClickDeleteAtEveryStructuralLineIncludingLastListItem() throws {
+        for source in [
+            "<ul><li>Now ist the time </li><li>For all good men</li></ul>",
+            "<ol start='4'><li>First</li><li>Middle</li><li>Last</li></ol><!--keep-->",
+            "<ul><li>Parent<ul><li>Child</li><li>Last</li></ul></li></ul>",
+            "<ul><li><p>First</p><p>Last</p></li></ul>",
+            "<blockquote><p>First</p><p>Last</p></blockquote>",
+        ] {
+            let initial = EVCoreDocumentBackend()
+            try initial.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
+            let original = try initial.formattedText()
+            let lines = original.components(separatedBy: "\n")
+            for line in lines.indices {
+                for keyCode: UInt16 in [51, 117] {
+                    for insertMode in [false, true] {
+                        let (backend, view) = try surface(source, type: EVDocument.htmlType)
+                        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 240),
+                            styleMask: [.titled], backing: .buffered, defer: false)
+                        window.isReleasedWhenClosed = false
+                        window.contentViewController = view
+                        defer { window.close() }
+                        view.viewDidLayout()
+                        let session = try XCTUnwrap(view.session)
+                        if insertMode { _ = try session.sendText("i") }
+                        view.refreshPresentation()
+                        let start = lines.prefix(line).reduce(0) { $0 + $1.utf8.count + 1 }
+                        let snapshot = try XCTUnwrap(view.layoutSnapshot)
+                        let geometry = try session.caretGeometry(offset: UInt64(start),
+                            affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM), in: snapshot.info)
+                        let local = view.editorView.viewPoint(fromLayoutPoint: CGPoint(
+                            x: CGFloat(geometry.rect.x + 1), y: CGFloat(geometry.rect.y + geometry.rect.height * 0.5)))
+                        let point = view.editorView.convert(local, to: nil)
+                        let click = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point,
+                            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                            eventNumber: 1, clickCount: 3, pressure: 1))
+                        view.editorView.mouseDown(with: click)
+                        XCTAssertEqual(view.editorView.accessibilitySelectedText()?.trimmingCharacters(in: .newlines),
+                                       lines[line], "\(source), line=\(line), insert=\(insertMode)")
+                        let selected = try XCTUnwrap(view.selectedUTF8Range())
+                        var retained = Array(original.utf8)
+                        retained.removeSubrange(selected)
+                        let expected = String(decoding: retained, as: UTF8.self)
+                        view.editorView.keyDown(with: try deleteEvent(keyCode: keyCode, windowNumber: window.windowNumber))
+                        try assertHistory(backend: backend, view: view, source: source,
+                                          type: EVDocument.htmlType, expectedText: expected)
+                        let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
+                        let reopened = EVCoreDocumentBackend()
+                        try reopened.read(source: saved, typeName: EVDocument.htmlType)
+                        XCTAssertEqual(try reopened.formattedText(), expected)
+                    }
+                }
+            }
+        }
+    }
 }

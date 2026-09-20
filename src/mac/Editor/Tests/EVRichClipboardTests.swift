@@ -101,8 +101,71 @@ import XCTest
             try assertFontTrait(.italic, in: attributed, at: "café")
             XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
             XCTAssertFalse(backend.persistenceState.isDirty)
-            XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
+            XCTAssertEqual(view.viewPresentation.mode, UInt32(command == nil ? VIEM_MODE_VISUAL_CHARACTER : VIEM_MODE_NORMAL))
             XCTAssertNil(view.commandOutput)
+        }
+    }
+
+    func testPlatformCopyRetainsVimCharacterLineAndBlockSelectionsInBothDirections() throws {
+        let source = "<p><b>one two</b> three</p><p>four five</p>"
+        for sequence in ["vll", "vllo", "Vj", "Vjo", "\u{16}lj", "\u{16}ljo"] {
+            for useSelector in [false, true] {
+                let pasteboard = NSPasteboard.withUniqueName()
+                defer { pasteboard.releaseGlobally() }
+                let (backend, view, session) = try surface(source, type: EVDocument.htmlType, pasteboard: pasteboard)
+                for scalar in sequence.unicodeScalars {
+                    _ = try session.sendKey(kind: UInt32(scalar.value == 22 ? VIEM_KEY_CONTROL_CHARACTER : VIEM_KEY_CHARACTER), codepoint: scalar.value == 22 ? 118 : scalar.value)
+                }
+                view.refreshPresentation()
+                let before = view.viewPresentation
+                let ranges = view.selectedUTF8Ranges()
+                let selected = view.selectionText()
+                XCTAssertFalse(ranges.isEmpty)
+                if useSelector { view.editorView.copyDocumentSelection(nil) }
+                else { view.perform(menuCommand: .copy, sender: nil) }
+                XCTAssertEqual(view.viewPresentation.mode, before.mode, sequence)
+                XCTAssertEqual(view.viewPresentation.cursor_utf8_offset, before.cursor_utf8_offset, sequence)
+                XCTAssertEqual(view.viewPresentation.cursor_affinity, before.cursor_affinity, sequence)
+                XCTAssertEqual(view.selectedUTF8Ranges(), ranges, sequence)
+                XCTAssertEqual(pasteboard.string(forType: .string), selected, sequence)
+                XCTAssertNotNil(pasteboard.data(forType: fragmentType))
+                XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+                XCTAssertNil(view.commandOutput)
+                _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 121)
+                view.refreshPresentation()
+                XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
+            }
+        }
+    }
+
+    func testPlatformCopyLeavesPendingMappingAndTemporaryVisualCommandUntouched() throws {
+        let source = "<p><b>abcdef</b></p>"
+        for temporaryVisual in [false, true] {
+            let pasteboard = NSPasteboard.withUniqueName()
+            defer { pasteboard.releaseGlobally() }
+            let (backend, view, session) = try surface(source, type: EVDocument.htmlType, pasteboard: pasteboard)
+            if temporaryVisual {
+                _ = try session.selectAll()
+                _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: 111)
+            } else {
+                try keys(":vmap dd y", session: session, surface: view)
+                _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
+                try keys("vld", session: session, surface: view)
+            }
+            view.refreshPresentation()
+            let before = view.viewPresentation
+            let ranges = view.selectedUTF8Ranges()
+            if temporaryVisual { view.editorView.copyDocumentSelection(nil) }
+            else { view.perform(menuCommand: .copy, sender: nil) }
+            XCTAssertEqual(view.viewPresentation.mode, before.mode)
+            XCTAssertEqual(view.viewPresentation.cursor_utf8_offset, before.cursor_utf8_offset)
+            XCTAssertEqual(view.selectedUTF8Ranges(), ranges)
+            _ = try richText(pasteboard, expected: temporaryVisual ? "abcdef" : "ab")
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+            try keys(temporaryVisual ? "y" : "d", session: session, surface: view)
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+            XCTAssertNil(view.commandOutput)
+            if !temporaryVisual { XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL)) }
         }
     }
 
@@ -150,7 +213,11 @@ import XCTest
         ] {
             let (_, sourceView, sourceSession) = try surface(source, type: sourceType, pasteboard: pasteboard)
             try selectAll(session: sourceSession, surface: sourceView)
+            let beforeSourceCopy = sourceView.selectedUTF8Ranges()
+            let beforeSourceMode = sourceView.viewPresentation.mode
             sourceView.editorView.copyDocumentSelection(nil)
+            XCTAssertEqual(sourceView.selectedUTF8Ranges(), beforeSourceCopy)
+            XCTAssertEqual(sourceView.viewPresentation.mode, beforeSourceMode)
             XCTAssertEqual(pasteboard.string(forType: .string), source)
             XCTAssertNil(pasteboard.data(forType: .rtf))
             XCTAssertNil(pasteboard.data(forType: fragmentType))
@@ -158,8 +225,12 @@ import XCTest
                 let (_, view, session) = try surface(source, type: type, pasteboard: pasteboard)
                 for useSelector in [false, true] {
                     try selectAll(session: session, surface: view)
+                    let beforeRanges = view.selectedUTF8Ranges()
+                    let beforeMode = view.viewPresentation.mode
                     if useSelector { view.editorView.copyDocumentSource(nil) }
                     else { view.perform(menuCommand: .copySource, sender: nil) }
+                    XCTAssertEqual(view.selectedUTF8Ranges(), beforeRanges)
+                    XCTAssertEqual(view.viewPresentation.mode, beforeMode)
                     XCTAssertEqual(pasteboard.string(forType: .string), source)
                     XCTAssertNil(pasteboard.data(forType: .rtf))
                     XCTAssertNil(pasteboard.data(forType: fragmentType))

@@ -5,6 +5,161 @@ use super::*;
 use crate::document::{edit_boundary, BlockKind};
 
 impl Document {
+    /// Removing an item's label releases its continuation paragraphs too.
+    /// Their source indentation belongs to the item, not to the visible body.
+    pub(super) fn prepare_markdown_list_as_prose(
+        &self,
+        range: &std::ops::Range<usize>,
+    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
+        if self.format() != Format::Markdown {
+            return Ok(None);
+        }
+        let structure = self.projection().list_structure();
+        let blocks = self.projection().blocks();
+        let block_indices = blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| (block.id, index))
+            .collect::<std::collections::HashMap<_, _>>();
+        let list_indices = structure
+            .lists
+            .iter()
+            .enumerate()
+            .map(|(index, list)| (list.id, index))
+            .collect::<std::collections::HashMap<_, _>>();
+        let selected = structure
+            .lists
+            .iter()
+            .flat_map(|list| &list.items)
+            .filter(|item| {
+                block_indices.get(&item.paragraph_id).is_some_and(|index| {
+                    let first = &blocks[*index];
+                    if range.is_empty() {
+                        first.range.start <= range.start && range.start <= first.range.end
+                    } else {
+                        first.range.start < range.end && range.start < first.range.end
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        if !selected
+            .iter()
+            .any(|item| item.paragraph_ids.len() > 1 || !item.child_lists.is_empty())
+        {
+            return Ok(None);
+        }
+        let mut patches = Vec::new();
+        for item in selected {
+            let first = &blocks[block_indices[&item.paragraph_id]];
+            let mut ids = item.paragraph_ids.clone();
+            let mut children = item.child_lists.clone();
+            while let Some(id) = children.pop() {
+                if let Some(index) = list_indices.get(&id) {
+                    let list = &structure.lists[*index];
+                    for child in &list.items {
+                        ids.extend_from_slice(&child.paragraph_ids);
+                        children.extend_from_slice(&child.child_lists);
+                    }
+                }
+            }
+            let last_index = ids
+                .iter()
+                .filter_map(|id| block_indices.get(id))
+                .max()
+                .unwrap();
+            let last = &blocks[*last_index];
+            let source_at = self
+                .projection()
+                .source_insertion_point(first.range.start, true)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let source_end = if last.range.is_empty() {
+                self.projection()
+                    .source_insertion_point(last.range.start, true)
+            } else {
+                self.projection()
+                    .source_range(last.range.clone())
+                    .map(|source| source.end.saturating_sub(1))
+            }
+            .ok_or(DocumentError::AmbiguousProjection)?;
+            let lines = &self.state().source_hard_lines;
+            let begin = lines
+                .line_at_offset(source_at)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let end = lines
+                .line_at_offset(source_end)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let mut item_indent = 0;
+            for index in begin..=end {
+                let line = lines.get(index).ok_or(DocumentError::AmbiguousProjection)?;
+                let bytes = self
+                    .state()
+                    .source
+                    .bytes_in(line.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let decoded = self.encoding().decode_region(&bytes, line.start)?;
+                let quote = super::super::markdown_quotes::prefix(&decoded.text);
+                let body = &decoded.text[quote..];
+                let remove = if index == begin {
+                    let prefix = super::super::markdown_blocks::marker_prefix_length(body)
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    item_indent = body[..prefix].bytes().fold(0, |column, byte| {
+                        column + if byte == b'\t' { 4 - column % 4 } else { 1 }
+                    });
+                    prefix
+                } else {
+                    let mut column = 0;
+                    body.bytes()
+                        .take_while(|byte| {
+                            if column >= item_indent || !matches!(byte, b' ' | b'\t') {
+                                return false;
+                            }
+                            column += if *byte == b'\t' { 4 - column % 4 } else { 1 };
+                            true
+                        })
+                        .count()
+                };
+                if remove > 0 {
+                    let start = line.start
+                        + self
+                            .encoding()
+                            .encode_fragment(&decoded.text[..quote])?
+                            .len();
+                    let count = self.encoding().encode_fragment(&body[..remove])?.len();
+                    patches.push(SourcePatch::primary(start..start + count, Vec::new()));
+                }
+            }
+            patches.extend(super::markdown_block_styles::support_patches(
+                self,
+                &(first.range.start..last.range.end),
+                false,
+                true,
+            )?);
+        }
+        if patches.is_empty() {
+            return Ok(None);
+        }
+        patches.sort_by_key(|patch| (patch.range.start, patch.range.end));
+        patches.dedup();
+        let mut combined: Vec<SourcePatch> = Vec::new();
+        for patch in patches {
+            if let Some(previous) = combined.last_mut().filter(|previous| {
+                previous.replacement.is_empty()
+                    && patch.replacement.is_empty()
+                    && patch.range.start <= previous.range.end
+            }) {
+                // A selected parent removes child indentation; a selected
+                // child additionally removes its own label at the same source.
+                previous.range.end = previous.range.end.max(patch.range.end);
+            } else {
+                combined.push(patch);
+            }
+        }
+        Ok(Some(self.prepare_text_edits_with_patches(
+            Vec::new(),
+            Some(combined),
+        )?))
+    }
+
     pub(crate) fn markdown_source_empty_enter_edit(
         &self,
         at: usize,

@@ -85,6 +85,50 @@ entities; recovered HTML; and opaque object, field, and comment boundaries.
 Native tests cover macOS text input, IME replacement, and deletion of the final
 wrapped row through Visual Line mode.
 
+The initial audit did not sufficiently exercise native line-selection command
+state. The last list item in `<ul><li>Now ist the time </li><li>For all good
+men</li></ul>` exposed this gap: converting a native line selection to its
+replacement extent left a remembered selection endpoint at the former EOF.
+History preparation then rejected that stale offset after the document became
+shorter. The fix retains the original selection identity so the existing change
+map rebases it before history publication. Hidden closing tags were not part of
+the visible selection.
+
+The expanded command audit compares 2,898 contiguous line-selection deletions
+against equivalent plain-text commands, across both directions, Visual and native
+selection policies, and Normal/Insert return modes. It includes empty neighbors,
+first/middle/last list items, nested lists, continuation paragraphs, preformatted
+blocks, block quotes, and atomic objects. Separate tests enumerate legal native
+character selections and caret Delete/Backspace positions, and exercise disjoint
+Visual Block ranges. Every successful edit is reopened independently and checked
+through exact source undo/redo. Native mouse-event tests triple-click every line
+in the reported example and related containers with both physical Delete keys.
+
+Additional repairs found by this pass:
+
+- Half-open line selections exclude unselected empty paragraphs at their edges.
+  Preformatted and quote owners are removed only when their contained paragraphs
+  are selected; retained paragraphs keep their enclosing style context.
+- Empty anonymous HTML paragraphs receive a local explicit paragraph owner when
+  their surrounding boundaries must survive. This includes div, definition-list,
+  and implicit list-prefix bodies. Original container attributes remain intact.
+- Whole-document clearing removes an atomic object's fallback text and nested
+  opaque content with the object. Outside comments and hidden document metadata,
+  including nested templates, remain preserved.
+- Markdown deletion preserves both boundaries around an emptied continuation
+  paragraph, including quoted lists, encodings, and adjacent batch deletions.
+  Deleting an item's first paragraph promotes its surviving continuation body
+  while retaining the item marker. Backspace at a continuation paragraph joins
+  it to the preceding visible paragraph; removing an actual item label also
+  removes that item's hidden continuation indentation.
+
+Native Copy now uses a dedicated portable intention. Keyboard, menu, and Copy
+selectors retain selection direction, active endpoint, mode, and geometry while
+exporting plain and rich clipboard data. Pending Vim commands and mappings are
+left untouched. Ordinary Vim yanks retain their existing
+selection-ending behavior. Tests cover character, line, and block selections,
+repeated Copy, source views, and both native frontends' shared command path.
+
 The cross-format matrix verifies 5,512 deletion/replacement cases by committing,
 reopening, comparing the requested visible text, and undoing to the exact source
 bytes. Another 148 Markdown replacements across inline hard breaks check retained

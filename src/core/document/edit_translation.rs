@@ -177,6 +177,7 @@ impl Document {
             super::super::markdown_code::preserve_edited_inline_delimiters(self, edits, patches)?;
             markdown_split::remove_empty_emphasis(self, edits, patches)?;
             markdown_block_styles::remove_empty_continuation_prefixes(self, edits, patches)?;
+            markdown_block_styles::preserve_empty_continuation_paragraphs(self, edits, patches)?;
             markdown_block_styles::preserve_deleted_boundary_spaces(self, edits, patches)?;
             markdown_block_styles::preserve_deleted_source_prefixes(self, edits, patches)?;
             markdown_block_styles::preserve_join_boundaries(self, edits, patches)?;

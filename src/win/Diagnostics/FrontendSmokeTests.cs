@@ -88,7 +88,10 @@ internal static class FrontendSmokeTests
             view.Key(VIEM_KEY_ESCAPE); view.Command("ggi"); view.Text("Hello "); view.Key(VIEM_KEY_ESCAPE);
             Check(doc.FormattedText().StartsWith("Hello alpha"), "committed text through core");
             view.SelectAll(); string copied = ""; view.Effects += e => { if (e.Clipboard.Length > 0) copied = e.Clipboard[0].Text; };
+            var beforeCopy = view.Presentation; var beforeSegments = view.Selection().Segments.Select(segment => (segment.text_start, segment.text_end)).ToArray();
             view.CopyOrCut(false); Check(copied.Contains("Hello alpha"), "clipboard write effect and ownership");
+            Check(view.Presentation.mode == beforeCopy.mode && view.Presentation.cursor_utf8_offset == beforeCopy.cursor_utf8_offset
+                && view.Selection().Segments.Select(segment => (segment.text_start, segment.text_end)).SequenceEqual(beforeSegments), "native Copy preserves selection and caret");
             view.Key(VIEM_KEY_ESCAPE); view.Command("G"); view.ClipboardText = " pasted "; view.Paste(true);
             Check(doc.FormattedText().Contains(" pasted "), "clipboard host-context paste");
             view.Key(VIEM_KEY_ESCAPE); view.Ex("set nowrap"); Check((view.Viewport.flags & VIEM_VIEWPORT_STATE_WRAP) == 0, "Ex options affect view");

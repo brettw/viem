@@ -84,7 +84,8 @@ internal sealed unsafe partial class CoreView : IDisposable
     public void Ex(string command) { Key(VIEM_KEY_ESCAPE); Command(":"); Text(command); Key(VIEM_KEY_ENTER); }
     public void CopyOrCut(bool cut)
     {
-        SelectionCommand(cut ? "\"+d" : "\"+y");
+        if (cut) SelectionCommand("\"+d");
+        else if (HasSelection) Key(VIEM_KEY_COPY_SELECTION);
     }
     public void SelectionCommand(string command)
     {

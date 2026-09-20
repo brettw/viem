@@ -1143,9 +1143,16 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 nativeCopyRepresentations = try EVClipboardFragment.decode(json).representations(json: json)
             }
             defer { nativeCopyRepresentations = nil }
-            _ = try self.sendCommandCharacter("\"", session: session)
-            _ = try self.sendCommandCharacter("+", session: session)
-            let outcome = try self.sendCommandCharacter(cut ? "d" : "y", session: session)
+            let outcome: ViemCoreOutcomeV1
+            if cut {
+                _ = try self.sendCommandCharacter("\"", session: session)
+                _ = try self.sendCommandCharacter("+", session: session)
+                outcome = try self.sendCommandCharacter("d", session: session)
+            } else {
+                // Copy is a platform intention, so no temporary Visual mode
+                // or Vim yank should move the caret or collapse selection.
+                outcome = try session.sendKey(kind: UInt32(VIEM_KEY_COPY_SELECTION))
+            }
             guard outcome.command_status == UInt32(VIEM_COMMAND_STATUS_COMPLETE) else {
                 throw EVCoreFrontendError.command(
                     operation: cut ? "Cut" : "Copy",
