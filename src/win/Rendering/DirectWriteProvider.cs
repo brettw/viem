@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Collections.Concurrent;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -26,7 +27,10 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate nint RetainCallback(nint context, ViemRenderRunHandleV1* handles, ulong count);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void ReleaseCallback(nint lease);
     private static long nextOwner;
-    private readonly ulong owner = (ulong)Interlocked.Increment(ref nextOwner);
+    private readonly SharedResources shared;
+    private ulong owner => shared.Owner;
+    private readonly ulong? frozenGeneration;
+    private bool IsWorker => frozenGeneration.HasValue;
     private CanvasDevice device;
     private CanvasRenderTarget measurement;
     private readonly DispatcherQueue dispatcher;
@@ -35,22 +39,29 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     private readonly RetainCallback retainCallback;
     // A lease may be released after its provider has been detached.
     private static readonly ReleaseCallback releaseCallback = Release;
-    private readonly Dictionary<ulong, Resource> resources = [];
+    private ConcurrentDictionary<ulong, Resource> resources => shared.Resources;
     private readonly List<ulong> responseResources = [];
     private NativeArena arena = new();
-    private ulong nextResource;
-    public ulong Generation { get; private set; } = 1;
+    public ulong Generation => frozenGeneration ?? (ulong)Volatile.Read(ref shared.Generation);
     public long ShapedCharacters { get; private set; }
+    public long BackgroundShapedCharacters => Interlocked.Read(ref shared.BackgroundCharacters);
+    public int BackgroundShapingThread => Volatile.Read(ref shared.BackgroundThread);
     public long FontMetadataReads { get; private set; }
+    public long GlyphBoundsQueries { get; private set; }
+    public long GlyphBoundsHits { get; private set; }
     public string? LastError { get; private set; }
     public int LiveResourceCount => resources.Count;
 #if DEBUG
+    private static readonly bool verifyGlyphOrigins = Diagnostics.FrontendSmokeTests.ReportPath != null
+        && Environment.GetEnvironmentVariable("VIEM_PERF_DOCUMENT") == null;
     internal string[] RenderedFontNames(ulong handle) => resources.TryGetValue(handle, out var resource)
         ? resource.Parts.SelectMany(p => p.Font.GetInformationalStrings(CanvasFontInformation.PostscriptName).Values).Distinct().ToArray() : [];
 #endif
 
-    public DirectWriteProvider(CanvasDevice device, DispatcherQueue dispatcher)
+    public DirectWriteProvider(CanvasDevice device, DispatcherQueue dispatcher) : this(device, dispatcher, new(), null) { }
+    private DirectWriteProvider(CanvasDevice device, DispatcherQueue dispatcher, SharedResources shared, ulong? generation)
     {
+        this.shared = shared; frozenGeneration = generation;
         this.device = device;
         measurement = new CanvasRenderTarget(device, 1, 1, 96);
         this.dispatcher = dispatcher;
@@ -58,19 +69,28 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         shapeCallback = ShapeBatch;
         retainCallback = Retain;
     }
+    // Capture on the UI thread, construct on the worker. Each shaper owns its
+    // response arena and measuring surface; only leased immutable glyph data
+    // is shared. Win2D objects are agile and synchronize their native access.
+    public Func<DirectWriteProvider> CaptureWorkerFactory()
+    {
+        var capturedDevice = device;
+        ulong generation = Generation;
+        return () => new(capturedDevice, dispatcher, shared, generation);
+    }
     public ViemTextMeasurementProviderV1 Table => new()
     {
         struct_size = (uint)sizeof(ViemTextMeasurementProviderV1), abi_version = 3,
-        measurement_environment_id = owner, threading = VIEM_PROVIDER_THREADING_FRONTEND_MAIN,
+        measurement_environment_id = owner, threading = VIEM_PROVIDER_THREADING_ANY_WORKER,
         has_render_run_policy = 1, render_run_owner = owner,
-        render_run_threading = VIEM_RENDER_THREADING_FRONTEND_MAIN,
+        render_run_threading = VIEM_RENDER_THREADING_ANY,
         metrics_generation = Marshal.GetFunctionPointerForDelegate(generationCallback),
         shape_batch = Marshal.GetFunctionPointerForDelegate(shapeCallback),
         retain_render_runs = Marshal.GetFunctionPointerForDelegate(retainCallback),
         release_render_runs = Marshal.GetFunctionPointerForDelegate(releaseCallback)
     };
 
-    public void InvalidateMetrics() => Generation++;
+    public void InvalidateMetrics() => Interlocked.Increment(ref shared.Generation);
     public void ResetDevice(CanvasDevice replacement)
     { measurement.Dispose(); device = replacement; measurement = new CanvasRenderTarget(device, 1, 1, 96); InvalidateMetrics(); }
     public bool IsColorGlyph(ViemRenderRunHandleV1 handle) => resources.TryGetValue(handle.identifier, out var resource) && resource.ColorGlyph;
@@ -80,20 +100,60 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         batch.Draw(handle, baseline, color);
     }
 
-    public GlyphDrawingBatch BeginDrawing(CanvasDrawingSession drawing) => new(this, drawing);
+    public GlyphDrawingBatch BeginDrawing(CanvasDrawingSession drawing, bool combine = true) => new(this, drawing, combine);
 
     // Reflow changes glyph positions, so text commands must be recorded again.
     // Share immutable brushes across that recording instead of creating and
     // releasing a native COM brush for every individual shaped cluster.
-    public sealed class GlyphDrawingBatch(DirectWriteProvider provider, CanvasDrawingSession drawing) : IDisposable
+    public sealed class GlyphDrawingBatch(DirectWriteProvider provider, CanvasDrawingSession drawing, bool combine) : IDisposable
     {
         private readonly Dictionary<Color, CanvasSolidColorBrush> brushes = [];
+        private readonly List<CanvasGlyph> glyphs = [];
+        private GlyphFontMetadata? font;
+        private float size, advance;
+        private Vector2 origin;
+        private CanvasSolidColorBrush? runBrush;
+        public int DrawCalls { get; private set; }
         public void Draw(ViemRenderRunHandleV1 handle, Vector2 baseline, Color color)
         {
             if (!brushes.TryGetValue(color, out var brush)) brushes[color] = brush = new(drawing, color);
-            provider.Draw(drawing, handle, baseline, color, brush);
+            if (handle.owner != provider.owner || handle.metrics_generation != provider.Generation
+                || !provider.resources.TryGetValue(handle.identifier, out var resource)) return;
+            if (!combine || resource.ColorGlyph)
+            {
+                Flush(); provider.Draw(drawing, handle, baseline, color, brush); DrawCalls++;
+                return;
+            }
+            foreach (var part in resource.Parts)
+            {
+                Vector2 position = baseline + part.Offset;
+                // Keep RTL and exceptional positioning on the original path.
+                // Ordinary adjacent LTR clusters share one native glyph call.
+                if (part.BidiLevel != 0)
+                {
+                    Flush(); drawing.DrawGlyphRun(position, part.Font, part.Size, part.Glyphs, false, part.BidiLevel, brush); DrawCalls++;
+                    continue;
+                }
+                if (font != part.Metadata || size != part.Size || runBrush != brush
+                    || position.Y != origin.Y || Math.Abs(position.X - (origin.X + advance)) > .01f || glyphs.Count >= 1024)
+                    Flush();
+                if (glyphs.Count == 0) { font = part.Metadata; size = part.Size; origin = position; runBrush = brush; }
+                float correction = position.X - (origin.X + advance);
+                foreach (var source in part.Glyphs)
+                {
+                    var glyph = source;
+                    glyph.AdvanceOffset += correction;
+                    glyphs.Add(glyph); advance += glyph.Advance;
+                }
+            }
         }
-        public void Dispose() { foreach (var brush in brushes.Values) brush.Dispose(); }
+        public void Flush()
+        {
+            if (glyphs.Count == 0) return;
+            drawing.DrawGlyphRun(origin, font!.Font, size, glyphs.ToArray(), false, 0, runBrush); DrawCalls++;
+            glyphs.Clear(); advance = 0; font = null;
+        }
+        public void Dispose() { Flush(); foreach (var brush in brushes.Values) brush.Dispose(); }
     }
 
     private void Draw(CanvasDrawingSession drawing, ViemRenderRunHandleV1 handle, Vector2 baseline, Color color, CanvasSolidColorBrush brush)
@@ -114,7 +174,8 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
 
     private uint ShapeBatch(nint context, ViemShapeRequestV1* requests, ulong count, ViemShapeResponseV1* responses, ulong capacity)
     {
-        using var timing = Diagnostics.InputPerformance.Measure("shape.batch");
+        using var startup = Diagnostics.StartupPerformance.Measure(IsWorker ? "shape.worker" : "shape.foreground");
+        using var timing = IsWorker ? default(Diagnostics.InputPerformance.Measurement) : Diagnostics.InputPerformance.Measure("shape.batch");
         try
         {
             if (capacity < count) return VIEM_STATUS_BUFFER_TOO_SMALL;
@@ -139,6 +200,8 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         string text = before + interior + after;
         var map = new Utf8IndexMap(text);
         long contextStart = checked((long)request.text_start - (long)request.context_before.length);
+        var fontTiming = Diagnostics.StartupPerformance.Measure("shape.fontSetup");
+        var fontCpu = IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.fontSetup");
         var defaultFont = ResolveFont(request.default_style);
         using var format = new CanvasTextFormat
         {
@@ -163,17 +226,28 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             if (last > first) ApplyStyle(layout, first, last - first, run.style, request.scale);
         }
         var capture = new GlyphCapture();
-        layout.DrawToTextRenderer(capture, Vector2.Zero);
+        fontTiming.Dispose();
+        fontCpu.Dispose();
+        using (Diagnostics.StartupPerformance.Measure("shape.nativeCapture"))
+        using (IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.nativeCapture")) layout.DrawToTextRenderer(capture, Vector2.Zero);
+        using var clusterTiming = Diagnostics.StartupPerformance.Measure("shape.clusters");
+        using var clusterCpu = IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.clusters");
         FontMetadataReads += capture.RunCount;
         var fragment = new Fragment(layout);
         var line = layout.LineMetrics[0];
         var defaultMetrics = new ViemTextMetricsV1 { ascent = line.Baseline, descent = Math.Max(0, line.Height - line.Baseline), leading = 0 };
         var clusters = new List<ViemShapedClusterV1>();
+        // Repeated letters in one shaping fragment have identical native ink
+        // queries. Keep exact arguments (including offsets), not rounded font
+        // approximations; this cache dies with the request and is size bounded.
+        var inkBounds = new Dictionary<GlyphInkKey, global::Windows.Foundation.Rect>();
+        var fontNames = new Dictionary<string, ViemUtf8Slice>(StringComparer.Ordinal);
         var markerFonts = new Dictionary<int, MarkerFont>();
         var positions = new List<float>();
         int start = 0;
         var boundaries = new HashSet<int>(StringInfo.ParseCombiningCharacters(text)) { text.Length };
         var nativeClusters = layout.ClusterMetrics;
+        var caretStops = new ViemClusterCaretStopV1[nativeClusters.Length * 2];
         for (int index = 0; index < nativeClusters.Length && start < text.Length; index++)
         {
             int end = start + nativeClusters[index].CharacterCount;
@@ -183,8 +257,23 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             int byteStart = map.Utf8(start), byteEnd = map.Utf8(end);
             long globalStart = contextStart + byteStart;
             if (globalStart < (long)request.text_start || globalStart >= (long)request.text_end) { start = end; continue; }
-            var regions = layout.GetCharacterRegions(start, end - start);
-            float left = regions.Length == 0 ? layout.GetCaretPosition(start, false).X : (float)regions.Min(r => r.LayoutBounds.X);
+            // The captured native run already contains exact cluster advances.
+            // Avoid a COM hit-test/array allocation per ordinary LTR cluster.
+            // Split runs and bidi retain DirectWrite's region query.
+            bool capturedLeft = capture.TryGetClusterLeft(start, end, out float left);
+            if (!capturedLeft)
+            {
+                var regions = layout.GetCharacterRegions(start, end - start);
+                left = regions.Length == 0 ? layout.GetCaretPosition(start, false).X : (float)regions.Min(r => r.LayoutBounds.X);
+            }
+#if DEBUG
+            if (capturedLeft && verifyGlyphOrigins)
+            {
+                var regions = layout.GetCharacterRegions(start, end - start);
+                float expected = regions.Length == 0 ? layout.GetCaretPosition(start, false).X : (float)regions.Min(r => r.LayoutBounds.X);
+                if (Math.Abs(expected - left) > .005f) throw new InvalidOperationException($"Captured glyph origin differs from DirectWrite: {left} != {expected} at {start}.");
+            }
+#endif
             var parts = capture.Extract(start, end, left, line.Baseline);
             uint bidi = parts.Count == 0 ? 0 : parts[0].BidiLevel;
             var style = request.default_style;
@@ -205,28 +294,37 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             cluster.ink_bounds = cluster.typographic_bounds;
             foreach (var part in parts)
             {
-                var ink = part.Font.GetGlyphRunBounds(measuring, part.Offset, part.Size, part.Glyphs, false, part.BidiLevel);
+                GlyphInkKey? key = part.Glyphs.Length == 1 ? new(part.Metadata, part.Size, part.Glyphs[0].Index,
+                    part.Glyphs[0].Advance, part.Glyphs[0].AdvanceOffset, part.Glyphs[0].AscenderOffset, part.BidiLevel, part.Offset) : null;
+                global::Windows.Foundation.Rect ink;
+                if (key is { } existing && inkBounds.TryGetValue(existing, out ink)) GlyphBoundsHits++;
+                else
+                {
+                    ink = part.Font.GetGlyphRunBounds(measuring, part.Offset, part.Size, part.Glyphs, false, part.BidiLevel);
+                    GlyphBoundsQueries++;
+                    if (key is { } fresh && inkBounds.Count < 1024) inkBounds[fresh] = ink;
+                }
                 var previous = cluster.ink_bounds;
                 float x = Math.Min(previous.x, (float)ink.X), y = Math.Min(previous.y, (float)ink.Y);
                 cluster.ink_bounds = new() { x = x, y = y, width = Math.Max(previous.x + previous.width, (float)ink.Right) - x, height = Math.Max(previous.y + previous.height, (float)ink.Bottom) - y };
             }
             cluster.bidi_level = bidi;
-            cluster.fallback_font = arena.Utf8(parts.FirstOrDefault()?.Metadata.Family ?? ResolveFont(style).Family);
-            ViemClusterCaretStopV1[] stops = [
-                new() { text_offset = cluster.text_start, inline_offset = (bidi & 1) == 0 ? 0 : cluster.advance, affinity = VIEM_BOUNDARY_AFFINITY_DOWNSTREAM },
-                new() { text_offset = cluster.text_end, inline_offset = (bidi & 1) == 0 ? cluster.advance : 0, affinity = VIEM_BOUNDARY_AFFINITY_UPSTREAM }
-            ];
-            cluster.caret_stops = arena.Copy<ViemClusterCaretStopV1>(stops);
+            string family = (parts.Count == 0 ? null : parts[0].Metadata.Family) ?? ResolveFont(style).Family;
+            if (!fontNames.TryGetValue(family, out var nativeName)) fontNames[family] = nativeName = arena.Utf8(family);
+            cluster.fallback_font = nativeName;
+            caretStops[clusters.Count * 2] = new() { text_offset = cluster.text_start, inline_offset = (bidi & 1) == 0 ? 0 : cluster.advance, affinity = VIEM_BOUNDARY_AFFINITY_DOWNSTREAM };
+            caretStops[clusters.Count * 2 + 1] = new() { text_offset = cluster.text_end, inline_offset = (bidi & 1) == 0 ? cluster.advance : 0, affinity = VIEM_BOUNDARY_AFFINITY_UPSTREAM };
             cluster.caret_stop_count = 2;
             if (request.purpose == VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA)
             {
-                ulong id = ++nextResource;
-                fragment.References++;
+                ulong id = (ulong)Interlocked.Increment(ref shared.NextResource);
+                Interlocked.Increment(ref fragment.References);
                 if (!markerFonts.TryGetValue(styleIndex, out var markerFont)) markerFonts[styleIndex] = markerFont = MarkerFont.From(style, request.scale);
-                resources.Add(id, new Resource(fragment, parts, left, line.Baseline + shift, cluster.ink_bounds, markerFont));
+                if (!resources.TryAdd(id, new Resource(fragment, parts, left, line.Baseline + shift, cluster.ink_bounds, markerFont)))
+                    throw new InvalidOperationException("Duplicate glyph resource identity.");
                 responseResources.Add(id);
                 cluster.has_render_run = 1;
-                cluster.render_run = new() { owner = owner, identifier = id, metrics_generation = Generation, threading = VIEM_RENDER_THREADING_FRONTEND_MAIN };
+                cluster.render_run = new() { owner = owner, identifier = id, metrics_generation = Generation, threading = VIEM_RENDER_THREADING_ANY };
             }
             clusters.Add(cluster);
             positions.Add(left);
@@ -234,16 +332,28 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         }
         if (fragment.References == 0) layout.Dispose();
         ShapedCharacters += interior.Length;
+        if (IsWorker)
+        {
+            Interlocked.Add(ref shared.BackgroundCharacters, interior.Length);
+            Volatile.Write(ref shared.BackgroundThread, Environment.CurrentManagedThreadId);
+        }
         ulong[] order = Enumerable.Range(0, clusters.Count).OrderBy(i => positions[i]).Select(i => (ulong)i).ToArray();
+        // One ABI caret allocation for the fragment, not one per character.
+        var nativeStops = arena.Copy<ViemClusterCaretStopV1>(caretStops.AsSpan(0, clusters.Count * 2));
+        var nativeGeometry = arena.Copy<ViemShapedClusterV1>(CollectionsMarshal.AsSpan(clusters));
+        for (int i = 0; i < clusters.Count; i++) nativeGeometry[i].caret_stops = nativeStops + i * 2;
         return new()
         {
             struct_size = (uint)sizeof(ViemShapeResponseV1), document_id = request.document_id, document_revision = request.document_revision,
             measurement_environment_id = request.measurement_environment_id, metrics_generation = request.metrics_generation,
             text_start = request.text_start, text_end = request.text_end, default_metrics = defaultMetrics,
-            clusters = arena.Copy<ViemShapedClusterV1>(clusters.ToArray()), cluster_count = (ulong)clusters.Count,
+            clusters = nativeGeometry, cluster_count = (ulong)clusters.Count,
             visual_order = arena.Copy<ulong>(order), visual_order_count = (ulong)order.Length
         };
     }
+
+    private readonly record struct GlyphInkKey(GlyphFontMetadata Font, float Size, int Index,
+        float Advance, float AdvanceOffset, float AscenderOffset, uint Bidi, Vector2 Offset);
 
     private static (string Family, FontStretch Stretch) ResolveFont(ViemResolvedTextStyleV1 style)
     {
@@ -287,7 +397,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
                 if (handles[i].owner != owner || !resources.ContainsKey(handles[i].identifier)) return 0;
                 ids[i] = handles[i].identifier;
             }
-            foreach (ulong id in ids) resources[id].References++;
+            foreach (ulong id in ids) Interlocked.Increment(ref resources[id].References);
             return GCHandle.ToIntPtr(GCHandle.Alloc(new Lease(this, ids)));
         }
         catch { return 0; }
@@ -298,15 +408,13 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         var handle = GCHandle.FromIntPtr(pointer);
         var lease = (Lease)handle.Target!;
         handle.Free();
-        void Finish() { foreach (ulong id in lease.Ids) lease.Provider.ReleaseResource(id); }
-        if (lease.Provider.dispatcher.HasThreadAccess) Finish();
-        else lease.Provider.dispatcher.TryEnqueue(Finish);
+        foreach (ulong id in lease.Ids) lease.Provider.ReleaseResource(id);
     }
     private void ReleaseResource(ulong id)
     {
-        if (!resources.TryGetValue(id, out var resource) || --resource.References != 0) return;
-        resources.Remove(id);
-        if (--resource.Fragment.References == 0) resource.Fragment.Layout.Dispose();
+        if (!resources.TryGetValue(id, out var resource) || Interlocked.Decrement(ref resource.References) != 0) return;
+        resources.TryRemove(id, out _);
+        if (Interlocked.Decrement(ref resource.Fragment.References) == 0) resource.Fragment.Layout.Dispose();
     }
     public void Dispose()
     {
@@ -317,6 +425,13 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         GC.KeepAlive(generationCallback); GC.KeepAlive(shapeCallback); GC.KeepAlive(retainCallback);
     }
     private sealed record Lease(DirectWriteProvider Provider, ulong[] Ids);
+    private sealed class SharedResources
+    {
+        public readonly ulong Owner = (ulong)Interlocked.Increment(ref nextOwner);
+        public long Generation = 1, NextResource, BackgroundCharacters;
+        public int BackgroundThread;
+        public readonly ConcurrentDictionary<ulong, Resource> Resources = new();
+    }
     private sealed class Fragment(CanvasTextLayout layout) { public CanvasTextLayout Layout = layout; public int References; }
     private sealed class Resource(Fragment fragment, List<GlyphPart> parts, float left, float baseline, ViemShapedBoundsV1 bounds, MarkerFont markerFont)
     {
@@ -347,7 +462,7 @@ internal sealed class GlyphFontMetadata
         Ascent = font.Ascent; Descent = font.Descent; LineGap = font.LineGap;
     }
 }
-internal sealed record GlyphPart(GlyphFontMetadata Metadata, float Size, CanvasGlyph[] Glyphs, uint BidiLevel, Vector2 Offset)
+internal readonly record struct GlyphPart(GlyphFontMetadata Metadata, float Size, CanvasGlyph[] Glyphs, uint BidiLevel, Vector2 Offset)
 {
     public CanvasFontFace Font => Metadata.Font;
 }
@@ -368,17 +483,36 @@ internal sealed class GlyphCapture : ICanvasTextRenderer
     }
     public List<GlyphPart> Extract(int start, int end, float left, float baseline)
     {
-        var result = new List<GlyphPart>();
+        var result = new List<GlyphPart>(1);
         foreach (var run in runs)
         {
             int first = Math.Max(start, run.Start) - run.Start, last = Math.Min(end, run.Start + run.Map.Length) - run.Start;
             if (last <= first) continue;
-            int glyphStart = run.Map[first..last].Min(), finalStart = run.Map[first..last].Max();
+            int glyphStart = run.Map[first], finalStart = glyphStart;
+            for (int i = first + 1; i < last; i++) { glyphStart = Math.Min(glyphStart, run.Map[i]); finalStart = Math.Max(finalStart, run.Map[i]); }
             int glyphEnd = run.Ends[finalStart];
             float offset = run.Advances[glyphStart] * ((run.Bidi & 1) == 0 ? 1 : -1);
             result.Add(new(run.Font, run.Size, run.Glyphs[glyphStart..glyphEnd], run.Bidi, run.Point + new Vector2(offset - left, -baseline)));
         }
         return result;
+    }
+    public bool TryGetClusterLeft(int start, int end, out float left)
+    {
+        foreach (var run in runs)
+        {
+            if (run.Bidi != 0 || start < run.Start || end > run.Start + run.Map.Length) continue;
+            int first = start - run.Start, last = end - run.Start;
+            int glyph = run.Map[first];
+            // Only whole, single native clusters have this simple origin.
+            if ((first > 0 && run.Map[first - 1] == glyph) || (last < run.Map.Length && run.Map[last] == glyph)) break;
+            bool oneCluster = true;
+            for (int i = first + 1; i < last; i++) oneCluster &= run.Map[i] == glyph;
+            if (!oneCluster) break;
+            left = run.Point.X + run.Advances[glyph];
+            return true;
+        }
+        left = 0;
+        return false;
     }
     public void DrawStrikethrough(Vector2 point, float width, float thickness, float offset, CanvasTextDirection direction, object brush, CanvasTextMeasuringMode mode, string locale, CanvasGlyphOrientation orientation) { }
     public void DrawUnderline(Vector2 point, float width, float thickness, float offset, float height, CanvasTextDirection direction, object brush, CanvasTextMeasuringMode mode, string locale, CanvasGlyphOrientation orientation) { }

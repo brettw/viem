@@ -2,6 +2,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
+using Viem.Windows.Interop;
 using Windows.UI;
 using static Viem.Windows.Interop.Native;
 
@@ -9,13 +10,35 @@ namespace Viem.Windows.Shell;
 
 internal sealed partial class StyleWindow
 {
-    private readonly List<Action> dismissColorPickers = [];
+    private readonly List<Action<bool>> dismissColorPickers = [];
     private readonly List<Action> refreshColors = [];
-    private readonly Dictionary<uint, Color> colorDrafts = [];
     private readonly HashSet<uint> openColorPickers = [];
+    private readonly HashSet<uint> visibleColorPickers = [];
     private bool refreshAfterColorPopup;
+    private bool closeAfterColorPopup;
 
-    private Color PreviewColor(uint property) => colorDrafts.TryGetValue(property, out var color) ? color : StyleColor(selected, property);
+    public new void Close()
+    {
+        if (visibleColorPickers.Count > 0)
+        {
+            // A windowed WinUI flyout must finish closing before its owner HWND
+            // is destroyed. Hiding it from Window.Closed is already too late.
+            closeAfterColorPopup = true;
+            DismissColorPickers();
+            return;
+        }
+        base.Close();
+    }
+
+    private Color PreviewColor(uint property) => StyleColor(selected, property);
+
+    private void RefreshCommittedColors()
+    {
+        sheet = view.Styles();
+        selected = sheet.Styles.Single(s => s.Key == selected.Key);
+        foreach (var refresh in refreshColors) refresh();
+        preview.Invalidate();
+    }
 
     private Color StyleColor(StyleDefinition style, uint property)
     {
@@ -30,7 +53,7 @@ internal sealed partial class StyleWindow
         if (property == VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND && selected.UsesThemeForeground) SetColor(property, preferences.Theme.Foreground);
         else view.DeclareEffectiveStyle(selected, property, sheet);
     }
-    private void DismissColorPickers() { foreach (var dismiss in dismissColorPickers) dismiss(); refreshAfterColorPopup = false; }
+    private void DismissColorPickers(bool commit = true) { foreach (var dismiss in dismissColorPickers) dismiss(commit); refreshAfterColorPopup = false; }
     private void ThemeChanged()
     {
         if (closed) return;
@@ -61,49 +84,92 @@ internal sealed partial class StyleWindow
         flyout.FlyoutPresenterStyle = presenter;
         button.Flyout = flyout;
         Property(row, label, property, button);
-        bool open = false;
-        Color original = default;
+        bool open = false, assigning = false, didChange = false;
+        Color committed = default;
+        Color? pending = null;
         CoreView? owner = null;
         StyleDefinition? target = null;
+        ViemStyleEditGroupV1? group = null;
+        // A fixed cadence, not an inactivity debounce: sustained drags must
+        // repaint the document too. Idle pickers never schedule work.
+        var timer = DispatcherQueue.CreateTimer();
+        timer.Interval = TimeSpan.FromMilliseconds(33);
+        timer.IsRepeating = false;
+        void EndGroup() { owner?.EndStyleEditGroup(group); group = null; }
+        bool IsCurrent() => open && !closed && owner?.Id != 0 && owner == view && target?.Key == selected.Key;
+        void Flush()
+        {
+            timer.Stop();
+            var color = pending; pending = null;
+            if (!IsCurrent() || color == null || color.Value == committed) return;
+            bool success = Try(() => {
+                group ??= view.BeginStyleEditGroup();
+                SetColor(property, color.Value, group);
+            }, reload: false);
+            didChange |= success;
+            committed = StyleColor(selected, property);
+            well.Background = new SolidColorBrush(committed);
+            if (!success)
+            {
+                EndGroup();
+                // Only a rejected edit writes back to the active picker. Never
+                // round-trip successful RGB changes through its HSV controls.
+                assigning = true;
+                try { picker.Color = committed; } finally { assigning = false; }
+            }
+        }
+        timer.Tick += (_, _) => Flush();
+        void Finish(bool commit)
+        {
+            if (!open) return;
+            if (commit) Flush();
+            timer.Stop(); pending = null;
+            EndGroup();
+            open = false;
+            openColorPickers.Remove(property);
+        }
         void Refresh()
         {
-            // Presentation and theme refreshes must not overwrite a popup draft.
+            // Do not feed rounded RGB values back into an active HSV gesture.
             if (open) return;
             picker.Color = StyleColor(selected, property);
             well.Background = new SolidColorBrush(picker.Color);
         }
         refreshFields.Add(Refresh); refreshColors.Add(Refresh);
         picker.ColorChanged += (_, args) => {
-            if (!open || closed || owner != view || target?.Key != selected.Key) return;
-            colorDrafts[property] = args.NewColor;
-            well.Background = new SolidColorBrush(args.NewColor);
-            // CanvasControl coalesces invalidations into its next draw. This
-            // changes only the preview; source and undo are committed on close.
-            preview.Invalidate();
+            if (assigning || !IsCurrent()) return;
+            pending = args.NewColor;
+            if (pending == committed) { pending = null; timer.Stop(); }
+            else if (!timer.IsRunning) timer.Start();
         };
         flyout.Opening += (_, _) => {
             // Picking a property is an explicit edit of this style. A queued
             // caret follow must not retarget or rebuild the inspector mid-drag.
             refreshAfterColorPopup |= refreshAfterFollowing;
             CancelCaretFollow();
-            Refresh(); original = picker.Color; owner = view; target = selected; open = true;
+            Refresh(); committed = picker.Color; owner = view; target = selected; didChange = false; open = true;
             openColorPickers.Add(property);
+            visibleColorPickers.Add(property);
         };
         flyout.Closed += (_, _) => {
-            bool commit = open && !closed && !loading && owner == view && target?.Id == selected.Id
-                && target.Namespace == selected.Namespace && ShowsValue(property) && selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS);
-            open = false;
-            openColorPickers.Remove(property);
-            colorDrafts.Remove(property);
+            visibleColorPickers.Remove(property);
+            if (closeAfterColorPopup && visibleColorPickers.Count == 0)
+                DispatcherQueue.TryEnqueue(Close);
+            if (!open) return;
+            Finish(commit: true);
             bool refresh = refreshAfterColorPopup && openColorPickers.Count == 0;
             if (refresh) refreshAfterColorPopup = false;
-            if (commit && picker.Color != original) Try(() => SetColor(property, picker.Color));
-            else if (refresh && !closed && !loading) Load(selected.Key);
+            if ((didChange || refresh) && !closed && !loading) Load(selected.Key);
             if (!closed) { Refresh(); preview.Invalidate(); }
         };
-        dismissColorPickers.Add(() => { open = false; openColorPickers.Remove(property); colorDrafts.Remove(property); flyout.Hide(); });
+        dismissColorPickers.Add(commit => { if (!open) return; Finish(commit); flyout.Hide(); });
+#if DEBUG
+        colorUpdateScheduled.Add(() => timer.IsRunning);
+#endif
     }
 #if DEBUG
+    private readonly List<Func<bool>> colorUpdateScheduled = [];
+    internal bool ColorUpdateScheduled => colorUpdateScheduled.Any(scheduled => scheduled());
     internal Color PreviewForeground => PreviewColor(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND);
     internal Color PreviewBackground => PreviewColor(VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND);
 #endif

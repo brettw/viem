@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define VIEM_CORE_ABI_VERSION 5u
+#define VIEM_CORE_ABI_VERSION 6u
 #define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3 3u
 #define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION \
   VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3
@@ -823,6 +823,11 @@ typedef struct ViemViewOptionsV1 {
   uint32_t execution_context;
   float width;
   float height;
+  /* Application canvas padding, applied before the first layout. */
+  float padding_top;
+  float padding_left;
+  float padding_bottom;
+  float padding_right;
 } ViemViewOptionsV1;
 
 #define VIEM_VIEW_OPTIONS_V1_SIZE ((uint32_t)sizeof(ViemViewOptionsV1))
@@ -1996,6 +2001,23 @@ ViemStatus viem_core_view_add(
     const ViemTextMeasurementProviderV1 *provider, ViemViewId *out_view,
     ViemCoreOutcomeV1 *out_outcome);
 ViemStatus viem_core_view_remove(ViemCoreHandle core, ViemViewId view);
+/* Bounded speculative layout. Prepare/install are serial coordinator calls.
+ * Compute accesses only immutable captured inputs, on a worker with its own
+ * compatible AnyWorker provider; callback state must survive computation.
+ * Direction is -1 or +1. Prepare returns zero when the nearby band is cached;
+ * compute returns zero if cancelled. Each request may be computed once.
+ * Install consumes a valid result (including stale rejection); out_installed
+ * distinguishes cache installation from discard. It never changes the viewport.
+ * Cancel/release may run on any thread. Release requests and uninstalled results
+ * exactly once; releasing a request cancels it without waiting for a worker. */
+ViemStatus viem_core_view_prepare_prelayout(ViemCoreHandle core, ViemViewId view,
+    int32_t direction, uint64_t *out_request);
+ViemStatus viem_layout_work_compute(uint64_t request,
+    const ViemTextMeasurementProviderV1 *provider, uint64_t *out_result);
+ViemStatus viem_core_view_install_prelayout(ViemCoreHandle core, ViemViewId view,
+    int32_t direction, uint64_t result, uint8_t *out_installed);
+ViemStatus viem_layout_work_cancel(uint64_t request);
+ViemStatus viem_layout_work_release(uint64_t work);
 ViemStatus viem_core_view_state(ViemCoreHandle core, ViemViewId view,
                                 ViemCoreOutcomeV1 *out_outcome);
 ViemStatus viem_core_view_viewport_state(ViemCoreHandle core, ViemViewId view,

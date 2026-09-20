@@ -34,7 +34,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private readonly TextBox input = new() { Width = 2, Height = 24, MinWidth = 0, MinHeight = 0, Opacity = 0.01, AcceptsReturn = true, IsSpellCheckEnabled = false, IsTextPredictionEnabled = false, Padding = new(0), BorderThickness = new(0) };
     private readonly Canvas inputLayer = new() { IsHitTestVisible = false };
     private readonly ScrollBar vertical = new() { Orientation = Orientation.Vertical, Width = 14, SmallChange = 30 };
-    private readonly ScrollBar horizontal = new() { Orientation = Orientation.Horizontal, Height = 14, SmallChange = 30 };
+    private readonly ScrollBar horizontal = new() { Orientation = Orientation.Horizontal, Height = 14, SmallChange = 30, Visibility = Visibility.Collapsed };
     private readonly Grid status = new() { Height = 28, ColumnSpacing = 5 };
     private readonly TextBlock mode = new() { VerticalAlignment = VerticalAlignment.Center, FontSize = 12 };
     private readonly DropDownButton format = new() { MinWidth = 0, MinHeight = 0, Padding = new(4, 0, 4, 0), BorderThickness = new(0), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), FontSize = 12 };
@@ -81,8 +81,17 @@ internal sealed partial class EditorPane : Grid, IDisposable
         AutomationProperties.SetName(format, "Document format"); AutomationProperties.SetName(vertical, "Vertical document scroll"); AutomationProperties.SetName(horizontal, "Horizontal document scroll");
         inputLayer.IsHitTestVisible = true; input.IsHitTestVisible = false;
         Canvas.CreateResources += (_, _) => { try { Attach(); } catch (Exception error) { ready.TrySetException(error); Report(error); } };
-        Canvas.Draw += (_, args) => Run(() => { Draw(args.DrawingSession); if (snapshot != null) Diagnostics.StartupPerformance.FirstDraw(DispatcherQueue); });
-        Canvas.SizeChanged += (_, _) => { if (View != null) Run(() => View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight)); };
+        Canvas.Draw += (_, args) => Run(() => {
+            Draw(args.DrawingSession);
+            if (snapshot != null && Diagnostics.StartupPerformance.Enabled)
+                Diagnostics.StartupPerformance.FirstDraw(DispatcherQueue, Document.FilePath, new {
+                    width = Canvas.ActualWidth, height = Canvas.ActualHeight, top = viewport.top,
+                    firstBaseline = snapshot.Rows.FirstOrDefault().baseline - viewport.top,
+                    canvasY = Canvas.TransformToVisual(null).TransformPoint(new Point()).Y,
+                    revision = viewport.layout_revision, configuration = viewport.configuration_generation,
+                    shaped = View!.Provider.ShapedCharacters });
+        });
+        Canvas.SizeChanged += (_, _) => { if (View != null) Run(() => { using var timing = Diagnostics.StartupPerformance.Measure("editor.resize"); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); }); };
         Canvas.PointerPressed += OnPointerPressed;
         Canvas.PointerMoved += (_, e) => { if (dragging && View != null) { var p = dragPoint = e.GetCurrentPoint(Canvas).Position; Run(() => View.Place((float)Math.Clamp(p.X, 0, Canvas.ActualWidth), (float)Math.Clamp(p.Y, 0, Canvas.ActualHeight), true)); } };
         Canvas.PointerReleased += (_, e) => { dragging = false; Canvas.ReleasePointerCapture(e.Pointer); };
@@ -132,7 +141,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
         using var startup = Diagnostics.StartupPerformance.Measure("editor.attach");
         InvalidateDrawingCache();
         if (View != null) { View.Provider.ResetDevice(Canvas.Device); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); return; }
-        using (Diagnostics.StartupPerformance.Measure("editor.createView")) View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight);
+        var padding = new ViemLayoutInsetsV1 { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
+        using (Diagnostics.StartupPerformance.Measure("editor.createView")) View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding);
         View.Changed += Refresh; View.Effects += ApplyEffects;
         ApplyPreferences(); Refresh(); if (IsActive) FocusEditor();
         ready.TrySetResult(View);
@@ -377,9 +387,10 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (snapshot == null || View == null) return;
         EnsureDrawingCache();
         // Source highlights, selection, then text: preserve the original layering.
-        drawing.DrawImage(cachedBackground);
+        var scrollOffset = new System.Numerics.Vector2(drawnViewport.left - viewport.left, drawnViewport.top - viewport.top);
+        drawing.DrawImage(cachedBackground, scrollOffset);
         foreach (var rectangle in snapshot.Selection) drawing.FillRectangle(OffsetRect(rectangle.rect, viewport), theme.Selection);
-        drawing.DrawImage(cachedText);
+        drawing.DrawImage(cachedText, scrollOffset);
         bool focused = active && window.IsWindowActive && input.FocusState != FocusState.Unfocused;
         if (caretRect.Height > 0 && presentation.mode != VIEM_MODE_COMMAND_LINE && (!focused || caretVisible))
         {

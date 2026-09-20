@@ -144,9 +144,12 @@ internal static class FrontendSmokeTests
             long beforeReturn = view.Provider.ShapedCharacters;
             for (int page = 0; page < 5; page++) view.Key(VIEM_KEY_PAGE_UP);
             Check(view.Provider.ShapedCharacters == beforeReturn, "nearby Markdown pages reuse retained paragraph geometry");
+            Check(view.Provider.GlyphBoundsHits > 0, "large Markdown reuses exact repeated glyph-ink queries within shaping requests");
+            long beforeBounds = view.Provider.GlyphBoundsQueries;
             view.Provider.InvalidateMetrics();
             view.Key(VIEM_KEY_PAGE_DOWN);
             Check(view.Provider.ShapedCharacters > beforeReturn, "paging refreshes cached geometry after font metrics change");
+            Check(view.Provider.GlyphBoundsQueries > beforeBounds, "glyph-ink queries are recomputed after font metrics change");
             Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "Markdown paging preserves source bytes");
         });
         Scenario("<p>Text</p>", 3, (doc, view) => {

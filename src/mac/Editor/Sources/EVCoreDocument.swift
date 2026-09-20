@@ -800,6 +800,10 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
 @MainActor
 final class EVCoreViewSession {
+    // TODO(macOS): Connect bounded background pre-layout to this session's
+    // lifecycle and viewport changes. The C ABI is ready; Core Text needs
+    // independent worker response storage with compatible shared glyph leases.
+    // See docs/windows-background-layout.md, "TODO(macOS): Connect the native scheduler".
     private(set) unowned var document: EVCoreDocumentBackend
     let provider: CoreTextMeasurementProvider
     private nonisolated let coreHandle: ViemCoreHandle

@@ -24,6 +24,8 @@ mod substitute_confirmation;
 pub use substitute_confirmation::*;
 mod search;
 pub use search::*;
+mod prelayout;
+pub use prelayout::*;
 mod whitespace;
 pub use whitespace::*;
 mod startup;
@@ -81,7 +83,7 @@ use std::str;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Version of the C ABI implemented by this library.
-pub const VIEM_CORE_ABI_VERSION: u32 = 5;
+pub const VIEM_CORE_ABI_VERSION: u32 = 6;
 
 /// Adds paragraph base direction in the request's fixed-layout extension slot
 /// and the context-owned cluster contract, plus explicit fragment resource
@@ -1027,6 +1029,10 @@ pub struct ViemViewOptionsV1 {
     pub execution_context: u32,
     pub width: f32,
     pub height: f32,
+    pub padding_top: f32,
+    pub padding_left: f32,
+    pub padding_bottom: f32,
+    pub padding_right: f32,
 }
 
 pub const VIEM_VIEW_OPTIONS_V1_SIZE: u32 = size_of::<ViemViewOptionsV1>() as u32;
@@ -1038,6 +1044,10 @@ impl Default for ViemViewOptionsV1 {
             execution_context: VIEM_LAYOUT_EXECUTION_WORKER_POOL,
             width: 800.0,
             height: 600.0,
+            padding_top: 0.0,
+            padding_left: 0.0,
+            padding_bottom: 0.0,
+            padding_right: 0.0,
         }
     }
 }
@@ -7705,6 +7715,8 @@ pub unsafe extern "C" fn viem_core_view_add(
             || options.width < 0.0
             || !options.height.is_finite()
             || options.height < 0.0
+            || [options.padding_top, options.padding_left, options.padding_bottom, options.padding_right]
+                .iter().any(|value| !value.is_finite() || *value < 0.0)
         {
             return Err(ViemStatus::InvalidArgument);
         }
@@ -7716,11 +7728,15 @@ pub unsafe extern "C" fn viem_core_view_add(
             return Err(ViemStatus::InvalidProvider);
         }
         let (view, outcome) = with_core_mut(handle, move |core| {
+            let mut layout = crate::layout::ViewLayout::new(options.width, options.height);
+            layout.set_insets(crate::layout::EdgeInsets {
+                top: options.padding_top, left: options.padding_left,
+                bottom: options.padding_bottom, right: options.padding_right,
+            });
             let view = core
-                .try_add_view_with_layout_execution_context(
+                .try_add_view_with_initial_layout(
                     provider,
-                    options.width,
-                    options.height,
+                    layout,
                     execution_context,
                 )
                 .map_err(core_status)?;
@@ -10392,6 +10408,7 @@ pub unsafe extern "C" fn viem_core_copy_formatted_utf8(
 
 #[cfg(test)]
 mod tests {
+    mod prelayout_tests;
     use super::{
         checkout_core, viem_core_copy_formatted_utf8_range,
         viem_core_copy_style_sheet, viem_core_destroy, viem_core_formatted_point_info,

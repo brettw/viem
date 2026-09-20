@@ -9,6 +9,36 @@ namespace Viem.Windows.Shell;
 internal sealed partial class EditorWindow
 {
     private bool startupHandled;
+    private static bool HasLaunchFiles()
+    {
+#if DEBUG
+        if (Diagnostics.FrontendSmokeTests.ReportPath != null) return false;
+#endif
+        var arguments = ParseArguments(Environment.GetCommandLineArgs().Skip(1).ToArray());
+        return arguments.Error == null && arguments.Filenames.Length > 0;
+    }
+    private void BeginFileLaunch()
+    {
+        if (startupHandled) return;
+        startupHandled = true;
+        invocationQueue = InitializeInvocation();
+    }
+    private async Task InitializeInvocation()
+    {
+        try
+        {
+            LoadCodeStyles();
+            await OpenArguments(new(Environment.GetCommandLineArgs().Skip(1).ToArray(), Environment.CurrentDirectory));
+            if (Panes.Count == 0 && !closed) AddPane(NewDocument());
+            if (preferences.Error != null) ActivePane?.SetMessage(preferences.Error);
+        }
+        catch (Exception error)
+        {
+            if (closed) return;
+            if (Panes.Count == 0) AddPane(NewDocument());
+            ActivePane?.Report(error);
+        }
+    }
     partial void OnPaneReady(EditorPane pane)
     {
         if (startupHandled) return; startupHandled = true;
@@ -20,9 +50,11 @@ internal sealed partial class EditorWindow
             DispatcherQueue.TryEnqueue(async () => {
                 try {
                     if (Environment.GetEnvironmentVariable("VIEM_TEST_SYNTAX_ONLY") == "1"
-                        || Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "1")
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") is "1" or "all")
                     {
-                        if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "1")
+                        if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "all")
+                            await Diagnostics.StyleAndSettingsTests.Run(pane, this, preferences);
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "1")
                             await Diagnostics.StyleInspectorBehaviorTests.Run(pane, preferences);
                         else
                             await Diagnostics.VimRuntimeTests.Run(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
@@ -42,8 +74,9 @@ internal sealed partial class EditorWindow
                     Diagnostics.StyleAndSettingsTests.StartupFontChecks();
                     await Diagnostics.InputRoutingTests.Run(pane);
                     await Diagnostics.CommandStatusTests.Run(pane, this, preferences);
-                    var scrolled = AddPane(NewDocument(Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("A paragraph in a large document.\n", 5000)))));
+                    var scrolled = AddPane(NewDocument(Diagnostics.ScrollDrawingTests.Fixture, format: VIEM_FORMAT_MARKDOWN));
                     await Diagnostics.CommandStatusTests.RunScrolled(scrolled);
+                    await Diagnostics.ScrollDrawingTests.Run(scrolled);
                     await ClosePane(scrolled);
                     pane.View!.Command("i"); pane.View.Text("# Viem for Windows\n\nA modal editor for writing.\n\nThe same Rust core, with native Windows controls.\n\nUnicode: café · 日本語 · مرحبا · 👩‍💻\n"); pane.View.Key(VIEM_KEY_ESCAPE);
                     pane.View.Format(VIEM_FORMAT_MARKDOWN);
@@ -70,6 +103,7 @@ internal sealed partial class EditorWindow
                     await Diagnostics.WindowPlacementTests.Run(this, preferences.DirectoryPath);
                     await Diagnostics.FrontendSmokeTests.FileChecks(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
                     await Diagnostics.VimRuntimeTests.Run(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
+                    await Diagnostics.BackgroundLayoutTests.Run(pane.Canvas.Device, DispatcherQueue);
                     string saved = Path.Combine(preferences.DirectoryPath, "saved.md");
                     await Save(pane, explicitPath: saved);
                     pane.View.Command("ggi"); pane.View.Text("Saved "); pane.View.Key(VIEM_KEY_ESCAPE); await Save(pane);
@@ -106,9 +140,7 @@ internal sealed partial class EditorWindow
 #endif
         if (App.Instance.Windows.Count <= 1)
         {
-            async Task Initialize()
-            { try { LoadCodeStyles(); await OpenArguments(new(Environment.GetCommandLineArgs().Skip(1).ToArray(), Environment.CurrentDirectory)); if (preferences.Error != null) ActivePane?.SetMessage(preferences.Error); } catch (Exception error) { ActivePane?.Report(error); } }
-            invocationQueue = Initialize();
+            invocationQueue = InitializeInvocation();
         }
     }
     private Task invocationQueue = Task.CompletedTask;
@@ -124,7 +156,7 @@ internal sealed partial class EditorWindow
         if (request.Arguments.Length == 0) return;
         string[] paths = args.Filenames.Select(p => Path.GetFullPath(p, request.Directory)).ToArray();
         bool represented = paths.Length > 0 && App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document.FilePath is string file && FileIdentity.Same(file, paths[0]));
-        bool blank = Panes.Count == 1 && ActivePane is { Document: var current } && current.FilePath == null && current.State.source_byte_count == 0 && !current.IsDirty && (current.State.flags & (VIEM_DOCUMENT_STATE_CAN_UNDO | VIEM_DOCUMENT_STATE_CAN_REDO)) == 0;
+        bool blank = Panes.Count == 0 || (Panes.Count == 1 && ActivePane is { Document: var current } && current.FilePath == null && current.State.source_byte_count == 0 && !current.IsDirty && (current.State.flags & (VIEM_DOCUMENT_STATE_CAN_UNDO | VIEM_DOCUMENT_STATE_CAN_REDO)) == 0);
         if (paths.Length > 0 && !represented && !blank)
         {
             if (File.Exists(paths[0])) _ = await File.ReadAllBytesAsync(paths[0]);
@@ -137,6 +169,7 @@ internal sealed partial class EditorWindow
         foreach (string path in paths.Take(split))
         {
             await OpenPath(path, first != null);
+            if (closed) return;
             first ??= App.Instance.Windows.SelectMany(w => w.Panes).FirstOrDefault(p => p.Document.FilePath is string file && FileIdentity.Same(file, path));
         }
         while (Panes.Count < split) { var added = AddPane(NewDocument()); first ??= added; }

@@ -1015,6 +1015,32 @@ fn ex_info_effects_capture_marks_registers_jumps_and_printed_text() {
 }
 
 #[test]
+fn view_creation_applies_initial_padding_and_rejects_invalid_values() {
+    let mut core = create_core(b"first\nsecond", ViemDocumentOptions::default());
+    let mut context = Box::new(FakeProviderContext::new(core.handle));
+    let provider = provider((&mut *context as *mut FakeProviderContext).cast(), fake_shape_batch);
+    let mut options = ViemViewOptionsV1 { padding_top: 10.0, padding_left: 17.0, padding_bottom: 12.0, padding_right: 23.0, ..Default::default() };
+    let mut view = 0;
+    let mut outcome = ViemCoreOutcomeV1::default();
+    assert_eq!(unsafe { viem_core_view_add(core.handle, &options, &provider, &mut view, &mut outcome) }, ViemStatus::Ok);
+    let mut info = ViemLayoutSnapshotInfoV1::default();
+    assert_eq!(unsafe { viem_core_view_layout_snapshot_info(core.handle, view, &mut info) }, ViemStatus::Ok);
+    assert_eq!(info.content_insets, ViemLayoutInsetsV1 { top: 10.0, left: 17.0, bottom: 12.0, right: 23.0 });
+    let initial = info.identity;
+    assert_eq!(viem_core_view_set_padding(core.handle, view, 10.0, 17.0, 12.0, 23.0), ViemStatus::Ok);
+    assert_eq!(unsafe { viem_core_view_layout_snapshot_info(core.handle, view, &mut info) }, ViemStatus::Ok);
+    assert_eq!(info.identity, initial);
+    assert_eq!(viem_core_view_remove(core.handle, view), ViemStatus::Ok);
+    for value in [f32::NAN, f32::INFINITY, -1.0] {
+        options.padding_left = value;
+        assert_eq!(unsafe { viem_core_view_add(core.handle, &options, &provider, &mut view, &mut outcome) }, ViemStatus::InvalidArgument);
+        assert_eq!(view, 0);
+    }
+    assert_eq!(viem_core_destroy(core.handle), ViemStatus::Ok);
+    core.handle = 0;
+}
+
+#[test]
 fn completion_anchor_exports_exact_layout_and_rejects_geometry_from_before_resize() {
     let mut core = create_core(b"alphabet almanac\nal", ViemDocumentOptions::default());
     let mut context = Box::new(FakeProviderContext::new(core.handle));

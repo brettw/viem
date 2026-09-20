@@ -1,0 +1,88 @@
+#if DEBUG
+using System.Diagnostics;
+using System.Numerics;
+using System.Text;
+using Microsoft.Graphics.Canvas;
+using Microsoft.UI.Dispatching;
+using Viem.Windows.Core;
+using static Viem.Windows.Interop.Native;
+
+namespace Viem.Windows.Diagnostics;
+
+internal static class BackgroundLayoutTests
+{
+    internal static async Task Idle(CoreView view)
+    {
+        var start = Stopwatch.StartNew();
+        while (!view.BackgroundLayout.IsIdle && start.Elapsed < TimeSpan.FromSeconds(15)) await Task.Delay(10);
+        if (view.BackgroundLayout.LastError != null) throw new InvalidOperationException(view.BackgroundLayout.LastError);
+        if (!view.BackgroundLayout.IsIdle) throw new InvalidOperationException("Background layout did not become idle.");
+    }
+
+    internal static async Task Run(CanvasDevice device, DispatcherQueue dispatcher)
+    {
+        void Check(bool value, string message) { if (!value) throw new InvalidOperationException(message); FrontendSmokeTests.UiChecks.Add(message); }
+        int uiThread = Environment.CurrentManagedThreadId;
+        byte[] source = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Range(0, 10_000).Select(i =>
+            $"Paragraph {i}: **office** and *words* مرحبا 👩‍💻 that wrap into multiple visual rows.\n\n")));
+        using var doc = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN);
+        using var view = new CoreView(doc, device, dispatcher, 600, 400);
+        var original = view.Viewport;
+        ulong caret = view.Presentation.cursor_utf8_offset;
+        await Idle(view);
+        Check(view.Provider.BackgroundShapedCharacters > 0 && view.Provider.BackgroundShapingThread != uiThread,
+            "large Markdown pre-layout shapes on an independent worker");
+        Check(view.Provider.BackgroundShapedCharacters < 30_000 && view.BackgroundLayout.Started <= 32,
+            "background work stops after a bounded band, not the whole file");
+        Check(view.Viewport.top == original.top && view.Viewport.layout_revision == original.layout_revision && view.Presentation.cursor_utf8_offset == caret,
+            "background cache installation preserves viewport, caret and visible layout");
+        int started = view.BackgroundLayout.Started;
+        view.Command("l"); await Task.Delay(100);
+        Check(view.BackgroundLayout.Started == started, "caret-only movement does not schedule idle pre-layout");
+        long before = view.Provider.ShapedCharacters;
+        for (int page = 0; page < 3; page++) view.Key(VIEM_KEY_PAGE_DOWN);
+        Check(view.Provider.ShapedCharacters == before, "three prepared Markdown pages need no foreground shaping");
+        int drawCalls = 0;
+        byte[] Pixels(CoreView rendered, bool combine = true)
+        {
+            using var target = new CanvasRenderTarget(device, 600, 400, 96);
+            var snapshot = rendered.Layout();
+            float top = rendered.Viewport.top;
+            using (var drawing = target.CreateDrawingSession())
+            {
+                drawing.Clear(Microsoft.UI.Colors.White);
+                using var batch = rendered.Provider.BeginDrawing(drawing, combine);
+                foreach (var row in snapshot.Rows)
+                foreach (var cluster in snapshot.Clusters.Where(c => c.row_index == row.row_index))
+                    batch.Draw(cluster.render_run, new Vector2(cluster.x, row.baseline - top), Microsoft.UI.Colors.Black);
+                batch.Flush(); drawCalls = batch.DrawCalls;
+            }
+            return target.GetPixelBytes();
+        }
+        byte[] batched = Pixels(view); int combinedCalls = drawCalls;
+        Check(batched.AsSpan().SequenceEqual(Pixels(view, false)), "combined glyph runs match individual styled, bidi and emoji drawing pixel for pixel");
+        Check(combinedCalls * 2 < drawCalls, "glyph batching removes most per-cluster native drawing calls");
+        using (var cold = new CoreView(doc, device, dispatcher, 600, 400))
+        {
+            cold.BackgroundLayout.Enabled = false;
+            cold.Command("l");
+            for (int page = 0; page < 3; page++) cold.Key(VIEM_KEY_PAGE_DOWN);
+            Check(Pixels(view).AsSpan().SequenceEqual(Pixels(cold)), "worker-prepared styled, bidi and emoji glyphs match foreground pixels");
+        }
+        // Changes race deliberately with queued or running chunks. Installation
+        // must validate the new width, font generation and source revision.
+        view.Resize(300, 240); view.Command("ggi"); view.Text("Changed "); view.Key(VIEM_KEY_ESCAPE);
+        view.Provider.InvalidateMetrics(); view.Refresh();
+        await Idle(view);
+        view.Key(VIEM_KEY_PAGE_DOWN);
+        Check(view.Layout().Info.viewport_width == 300 && doc.FormattedText().StartsWith("Changed "),
+            "pre-layout rejects obsolete width, metrics and document revisions");
+        Check(!doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "only the explicit edit changes source");
+        view.Resize(310, 250);
+        await Task.Delay(1);
+        view.Dispose();
+        await Idle(view);
+        Check(view.Provider.LiveResourceCount == 0, "closing with queued or active pre-layout releases all native resources");
+    }
+}
+#endif

@@ -211,7 +211,7 @@ fn trailing_multispace_falls_back_without_using_leading_patterns_on_blank_lines(
             .filter(|marker| marker.row_index == row && marker.kind == WhitespaceMarkerKind::Space)
             .map(|marker| marker.text.as_str()).collect()).collect();
         assert_eq!(actual_rows, expected_rows, "{listchars}");
-        for (row, original) in view.snapshot().unwrap().rows.iter().zip(&original_rows) {
+        for (row, original) in view.snapshot().unwrap().rows.iter().zip(original_rows.iter()) {
             assert_eq!((row.y, row.baseline, row.width, row.line_advance),
                 (original.y, original.baseline, original.width, original.line_advance));
             assert_eq!(row.clusters, original.clusters);

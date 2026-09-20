@@ -40,7 +40,10 @@ internal sealed partial class StyleWindow
         var next = view.Presentation;
         bool changed = SelectionChanged(followedPresentation, next);
         followedPresentation = next;
-        if (!changed) return;
+        if (!changed || updating) return;
+        // A command that moves the caret also ends its core style edit group.
+        // Drop queued colors before following the new editing context.
+        DismissColorPickers(commit: false);
         caretFollowTimer ??= MakeCaretFollowTimer();
         caretFollowTimer.Stop();
         caretFollowTimer.Start();
@@ -77,6 +80,8 @@ internal sealed partial class StyleWindow
     private void DocumentChanged()
     {
         if (updating || closed) return;
+        if (openColorPickers.Count > 0 && !view.Styles().Identity.Equals(sheet.Identity))
+            DismissColorPickers(commit: false);
         ViewChanged();
         if (caretFollowTimer?.IsRunning == true) { refreshAfterFollowing = true; return; }
         // Rebuilding focused controls can light-dismiss a native flyout. Keep

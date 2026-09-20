@@ -118,7 +118,7 @@ fn source_quote_style_includes_visible_tags_and_border_has_no_text_positions() {
         assert_eq!(selected.paragraph.unwrap().0, "Block quote");
         let snapshot = core.layout(view).unwrap().snapshot().unwrap();
         assert!(snapshot.rows.len() > 1 || format == Format::Html);
-        for row in &snapshot.rows {
+        for row in snapshot.rows.iter() {
             let border = row
                 .decorations
                 .iter()

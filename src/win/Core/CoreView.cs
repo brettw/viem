@@ -13,6 +13,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     public CoreDocument Document { get; }
     public ulong Id { get; private set; }
     public DirectWriteProvider Provider { get; }
+    public BackgroundLayout BackgroundLayout { get; }
     public ViemCoreOutcomeV1 Outcome { get; private set; }
     public event Action<HostEffects>? Effects;
     public event Action? Changed;
@@ -20,16 +21,20 @@ internal sealed unsafe partial class CoreView : IDisposable
     public string ClipboardText { get; set; } = "";
     public string ClipboardFragment { get; set; } = "";
     public ulong ClipboardGeneration { get; set; } = 1;
-    public CoreView(CoreDocument document, CanvasDevice device, DispatcherQueue dispatcher, float width, float height)
+    public CoreView(CoreDocument document, CanvasDevice device, DispatcherQueue dispatcher, float width, float height, ViemLayoutInsetsV1 padding = default)
     {
         Document = document;
         Provider = new(device, dispatcher);
         var table = Provider.Table;
         var options = New<ViemViewOptionsV1>(); options.execution_context = VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN; options.width = Math.Max(1, width); options.height = Math.Max(1, height);
+        options.padding_top = padding.top; options.padding_left = padding.left;
+        options.padding_bottom = padding.bottom; options.padding_right = padding.right;
         var outcome = New<ViemCoreOutcomeV1>(); ulong id = 0;
         uint status = viem_core_view_add(document.Handle, &options, &table, &id, &outcome);
         if (status != 0) { string detail = Provider.LastError ?? ""; Provider.Dispose(); throw new InvalidOperationException($"Create editor view failed ({status}). {detail}"); }
         Id = id; Outcome = outcome;
+        BackgroundLayout = new(this, dispatcher);
+        BackgroundLayout.Update();
     }
     public ViemViewPresentationV1 Presentation { get { var p = New<ViemViewPresentationV1>(); Check(viem_core_view_presentation(Document.Handle, Id, &p), "Read presentation"); return p; } }
     public ViemViewportStateV1 Viewport { get { var p = New<ViemViewportStateV1>(); Check(viem_core_view_viewport_state(Document.Handle, Id, &p), "Read viewport"); return p; } }
@@ -103,6 +108,7 @@ internal sealed unsafe partial class CoreView : IDisposable
         Check(status, Provider.LastError ?? "Editor operation"); Outcome = outcome;
         if ((outcome.flags & VIEM_OUTCOME_DOCUMENT_CHANGED) != 0) Document.NotifyChanged();
         else Changed?.Invoke();
+        BackgroundLayout.Update();
         if (outcome.command_status == VIEM_COMMAND_STATUS_READ_ONLY) throw new InvalidOperationException("E45: readonly option is set (use ! to override)");
         if (outcome.command_status == VIEM_COMMAND_STATUS_ERROR) throw new InvalidOperationException("The command could not be completed.");
     }
@@ -167,6 +173,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     public void Dispose()
     {
         if (Id == 0) return;
+        BackgroundLayout.Dispose();
         Check(viem_core_view_remove(Document.Handle, Id), "Close pane"); Id = 0; Provider.Dispose();
         Disposed?.Invoke();
     }

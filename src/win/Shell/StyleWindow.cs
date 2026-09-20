@@ -91,7 +91,11 @@ internal sealed partial class StyleWindow : Window
         delete.Click += (_, _) => Try(() => { view.DeleteStyle(selected); Load(); });
         AttachView(followCaret);
         preferences.Changed += ThemeChanged;
-        Closed += (_, _) => { closed = true; DetachView(); DismissColorPickers(); preferences.Changed -= ThemeChanged; preview.RemoveFromVisualTree(); };
+        AppWindow.Closing += (_, args) => {
+            if (visibleColorPickers.Count == 0) return;
+            args.Cancel = true; Close();
+        };
+        Closed += (_, _) => { DetachView(); DismissColorPickers(); closed = true; preferences.Changed -= ThemeChanged; preview.RemoveFromVisualTree(); };
         Load(followCaret: followCaret);
     }
     private readonly TextBlock availability = new() { FontSize = 12, Opacity = .65, TextWrapping = TextWrapping.Wrap };
@@ -105,8 +109,9 @@ internal sealed partial class StyleWindow : Window
     }
     internal void Retarget(CoreView nextView)
     {
+        DismissColorPickers();
         if (!CommitPendingName()) return;
-        DetachView(); DismissColorPickers();
+        DetachView();
         view = nextView; AttachView(true);
         Load(followCaret: true);
     }
@@ -122,6 +127,7 @@ internal sealed partial class StyleWindow : Window
     private void Navigate(StyleKey key)
     {
         if (key.Id.Length == 0) return;
+        DismissColorPickers();
         if (!CommitPendingName()) return;
         CancelCaretFollow();
         if (key != selected.Key) Load(key);
@@ -199,9 +205,10 @@ internal sealed partial class StyleWindow : Window
     {
         foreach (var child in panel.Children) { if (child is Control control) control.IsEnabled = enabled; if (child is Panel nested) EnableChildren(nested, enabled); }
     }
-    private void Try(Action action)
+    private bool Try(Action action, bool reload = true)
     {
-        if (loading || closed) return;
+        if (loading || closed) return false;
+        if (reload) DismissColorPickers();
         updating = true;
         byte[]? before = null;
         try
@@ -209,11 +216,14 @@ internal sealed partial class StyleWindow : Window
             if (view.UsesGlobalStyles) before = view.ExportStyleDefaults();
             error.Text = ""; error.Visibility = Visibility.Collapsed; action(); var key = selected.Key;
             if (view.UsesGlobalStyles) { Preferences.AtomicWrite(Path.Combine(preferences.DirectoryPath, "code_style.json"), view.ExportStyleDefaults()); foreach (var doc in App.Instance.Windows.SelectMany(w => w.Panes).Select(p => p.Document).Distinct()) doc.NotifyChanged(); }
-            Load(key);
+            if (reload) Load(key); else RefreshCommittedColors();
+            return true;
         }
         catch (Exception e) {
             if (before != null) view.ReplaceCodeStyles(before);
-            error.Text = e.Message; error.Visibility = Visibility.Visible; Load(selected.Key);
+            error.Text = e.Message; error.Visibility = Visibility.Visible;
+            if (reload) Load(selected.Key); else RefreshCommittedColors();
+            return false;
         }
         finally { updating = false; }
     }

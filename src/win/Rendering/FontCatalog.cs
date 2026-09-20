@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Collections.Concurrent;
 using Microsoft.Graphics.Canvas.Text;
 using Windows.UI.Text;
 
@@ -9,16 +10,23 @@ internal sealed record FontFace(string Name, string Family, string StyleName, us
     public override string ToString() => StyleName;
 }
 
-/// <summary>UI-thread font discovery. Only names and normalized traits cross into document state.</summary>
+/// <summary>Immutable font descriptions shared by independent UI/worker shapers.</summary>
 internal static class FontCatalog
 {
+    // The agile, read-only font index is shared for the same process lifetime
+    // as the name caches. Build it while the shell loads; never enumerate its
+    // Fonts collection to resolve a family or populate the font picker.
+    private static readonly Lazy<Task<CanvasFontSet>> systemFonts = new(() => Task.Run(CanvasFontSet.GetSystemFontSet));
+    internal static void PrepareSystemFonts() { _ = systemFonts.Value; }
+    private static CanvasFontSet SystemFonts => systemFonts.Value.GetAwaiter().GetResult();
     private static readonly Lazy<string[]> families = new(DiscoverFamilies);
-    private static readonly Dictionary<string, bool> installedFamilies = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly Dictionary<string, FontFace?> names = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly Dictionary<string, FontFace[]> familyFaces = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, bool> installedFamilies = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, FontFace?> names = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, FontFace[]> familyFaces = new(StringComparer.OrdinalIgnoreCase);
     internal static string[] Families => families.Value;
     internal static bool FamilyListLoaded => families.IsValueCreated;
-    internal static int FaceDescriptionsRead { get; private set; }
+    private static int faceDescriptionsRead;
+    internal static int FaceDescriptionsRead => Volatile.Read(ref faceDescriptionsRead);
     private static string[] DiscoverFamilies()
     {
         using var startup = Diagnostics.StartupPerformance.Measure("fonts.families");
@@ -31,13 +39,13 @@ internal static class FontCatalog
     private static bool IsFamily(string name)
     {
         if (installedFamilies.TryGetValue(name, out bool known)) return known;
-        using var set = CanvasFontSet.GetSystemFontSet();
+        var set = SystemFonts;
         return installedFamilies[name] = set.CountFontsMatchingProperty(Property(CanvasFontPropertyIdentifier.FamilyName, name)) > 0;
     }
     private static FontFace[] Discover(CanvasFontPropertyIdentifier property, string value)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("fonts.matchingFaces");
-        using var set = CanvasFontSet.GetSystemFontSet();
+        var set = SystemFonts;
         using var matching = set.GetMatchingFonts([Property(property, value)]);
         var result = new List<FontFace>();
         // Never materialize every system face to resolve a document font.
@@ -46,7 +54,7 @@ internal static class FontCatalog
         {
             using (font)
             {
-                FaceDescriptionsRead++;
+                Interlocked.Increment(ref faceDescriptionsRead);
                 if (font.Simulations != CanvasFontSimulations.None) continue;
                 string family = Localized(font.FamilyNames), style = Localized(font.FaceNames);
                 string name = Localized(font.GetInformationalStrings(CanvasFontInformation.PostscriptName));

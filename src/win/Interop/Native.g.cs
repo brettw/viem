@@ -408,6 +408,10 @@ internal unsafe struct ViemViewOptionsV1
     public uint @execution_context;
     public float @width;
     public float @height;
+    public float @padding_top;
+    public float @padding_left;
+    public float @padding_bottom;
+    public float @padding_right;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -1223,7 +1227,7 @@ internal unsafe struct ViemCommandLineSelectionV1
 
 internal static unsafe partial class Native
 {
-    public const uint VIEM_CORE_ABI_VERSION = 5u;
+    public const uint VIEM_CORE_ABI_VERSION = 6u;
     public const uint VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3 = 3u;
     public const uint VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION = VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3;
     public const uint VIEM_STATUS_OK = 0u;
@@ -1779,6 +1783,16 @@ internal static unsafe partial class Native
     public static extern uint viem_core_view_add(ulong @core, ViemViewOptionsV1* @options, ViemTextMeasurementProviderV1* @provider, ulong* @out_view, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_remove(ulong @core, ulong @view);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_prepare_prelayout(ulong @core, ulong @view, int @direction, ulong* @out_request);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_layout_work_compute(ulong @request, ViemTextMeasurementProviderV1* @provider, ulong* @out_result);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_install_prelayout(ulong @core, ulong @view, int @direction, ulong @result, byte* @out_installed);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_layout_work_cancel(ulong @request);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_layout_work_release(ulong @work);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_state(ulong @core, ulong @view, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

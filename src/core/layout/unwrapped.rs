@@ -1528,7 +1528,7 @@ mod tests {
             assert_eq!(actual.rows.len(), expected.rows.len());
             assert!(actual.rows.len() >= 3);
             assert!(actual.rows[1].paragraph_content_x > actual.rows[0].paragraph_content_x);
-            for (actual, expected) in actual.rows.iter().zip(&expected.rows) {
+            for (actual, expected) in actual.rows.iter().zip(expected.rows.iter()) {
                 assert_eq!(actual.text_range, expected.text_range);
                 assert_eq!(actual.paragraph_content_x, expected.paragraph_content_x);
                 assert_eq!(

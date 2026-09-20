@@ -1,5 +1,8 @@
 # Windows Markdown paging performance
 
+Later startup and repeated Page Down/Up measurements are recorded in
+[windows-startup-paging-performance.md](windows-startup-paging-performance.md).
+
 Validated on Windows x64 on 2026-09-19. The fixture is `AGENTS.md` from
 `37d6d993c1bc3b7a731fc94e754c5ef7234522d9`, opened in Markdown WYSIWYG mode.
 Its SHA-256 is `47c78f4d44750f7b48657bfe2d97f79110cf3e171cade5caf248c21ab54e669f`.
@@ -24,9 +27,11 @@ The existing geometry limits remain 2,048 hard lines, 8,192 visual rows, and
 32 MiB of estimated geometry, whichever limit is reached first. Shaping has a
 separate 32 MiB payload budget and 1 MiB decoration budget. These estimates are
 not total process RSS: native resources, the installed viewport and other
-document state have separate lifetimes. This change adds no background queue,
+document state have separate lifetimes. The initial optimization added no background queue,
 whole-document pre-layout, or increased cache budget. Previously unseen text
-still uses bounded synchronous layout on Windows' UI-confined provider.
+still used bounded synchronous layout on Windows' UI-confined provider. The
+subsequent [background pre-layout change](windows-background-layout.md) moves
+nearby speculative shaping to an independent worker without increasing these budgets.
 
 ## Optimized comparison
 

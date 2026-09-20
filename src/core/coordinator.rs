@@ -42,6 +42,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 mod input_layout;
+mod prelayout;
 mod startup;
 mod ex_files;
 mod completion;
@@ -788,6 +789,8 @@ struct View<P: TextMeasurementProvider> {
     immediate_layout_context: LayoutExecutionContext,
     observed_metrics_generation: MetricsGeneration,
     active_layout_work: Option<ActiveLayoutWork>,
+    /// One cache-only worker, independent of synchronous viewport publication.
+    active_prelayout_work: Option<ActiveLayoutWork>,
     /// Exact wrap checkpoints, keyed by their snapshot-local text boundary.
     /// Each value carries every dependency identity; obsolete values are
     /// discarded before lookup and this cache has a fixed entry limit.
@@ -1808,12 +1811,20 @@ impl<P: TextMeasurementProvider> Core<P> {
         height: f32,
         immediate_layout_context: LayoutExecutionContext,
     ) -> Result<ViewId, CoreError> {
+        self.try_add_view_with_initial_layout(provider, ViewLayout::new(width, height), immediate_layout_context)
+    }
+
+    pub(crate) fn try_add_view_with_initial_layout(
+        &mut self,
+        provider: P,
+        mut layout: ViewLayout,
+        immediate_layout_context: LayoutExecutionContext,
+    ) -> Result<ViewId, CoreError> {
         let id = self.allocate_view_id()?;
         let mut commands = CommandInterpreter::new();
         commands.install_buffer_state(&self.buffer_commands);
         commands.set_reflow_language(self.reflow_language());
         commands.note_document_revision(self.document.revision());
-        let mut layout = ViewLayout::new(width, height);
         commands.set_layout_options(layout.wrap());
         if let Some(options) = &self.startup_view_options {
             commands.install_startup_view_options(options);
@@ -1835,6 +1846,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 immediate_layout_context,
                 observed_metrics_generation,
                 active_layout_work: None,
+                active_prelayout_work: None,
                 long_line_checkpoints: LongLineCheckpointCache::default(),
             },
         );
@@ -1979,6 +1991,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         view.layout.set_insets(insets);
         if before != view.layout.configuration_generation() {
             cancel_active_layout_work(view);
+        } else if current_snapshot_for_layout(&self.document, &view.layout, inspect_layout_provider(&view.engine)).is_some() {
+            return Ok(());
         }
         self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::PreserveViewport)?;
         if pinned_to_top {
@@ -2115,7 +2129,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         if let Some(active) = self
             .views
             .values()
-            .filter_map(|view| view.active_layout_work.as_ref())
+            .flat_map(|view| [view.active_layout_work.as_ref(), view.active_prelayout_work.as_ref()].into_iter().flatten())
             .find(|active| active.cancellation.shares_state_with(&cancellation))
         {
             // One token represents exactly one request. Sharing it across
@@ -2427,6 +2441,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 (ImmediateLayoutIntent::PreserveViewport | ImmediateLayoutIntent::PreserveViewportAndRevealCaret, _) => viewport_top,
             }
         };
+        let initial_layout = self.views[&view_id].layout.snapshot().is_none() && preserved_anchor.is_none();
         let (visible_start, visible_end) = {
             let view = self.views.get(&view_id).expect("view was validated above");
             // A width change resets offscreen heights to estimates. In prose,
@@ -2450,7 +2465,13 @@ impl<P: TextMeasurementProvider> Core<P> {
                 let last = rows.last().unwrap_or(first);
                 Some((first.hard_line_index, last.hard_line_index + 1))
             });
-            let (start, end) = if let Some(previous) = previous_visible {
+            let (start, end) = if initial_layout {
+                // Unmeasured prose heights describe hard lines, not wrapped
+                // screens. Start small and let the exact coverage loop extend
+                // only as far as the first viewport needs. Speculation can fill
+                // the neighboring pages after the first correct presentation.
+                (focus_line, focus_line.saturating_add(4).min(hard_line_count))
+            } else if let Some(previous) = previous_visible {
                 previous
             } else {
                 let start = view.layout.hard_line_at_y(f64::from(requested_top))
@@ -2464,7 +2485,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             };
             (start.min(focus_line), end.max(focus_line + 1))
         };
-        let overscan = (visible_end - visible_start).max(MIN_OVERSCAN_LINES);
+        let overscan = if initial_layout { 0 } else { (visible_end - visible_start).max(MIN_OVERSCAN_LINES) };
         let mut start = visible_start.saturating_sub(overscan);
         let mut end = visible_end.saturating_add(overscan).min(hard_line_count);
         if let Some((anchor, active)) = visual_block_endpoints {
@@ -2854,6 +2875,28 @@ impl<P: TextMeasurementProvider> Core<P> {
         left: f32,
         requested_top: f32,
     ) -> Result<(), CoreError> {
+        // A wheel tick usually stays inside the already materialized overscan.
+        // Reuse that exact document-coordinate geometry without cloning caches,
+        // publishing another layout revision or cancelling its background job.
+        let already_covered = {
+            let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+            let requirements = inspect_layout_provider(&view.engine);
+            current_snapshot_for_layout(&self.document, &view.layout, requirements)
+                .is_some_and(|snapshot| {
+                    !snapshot.has_horizontal_materialization()
+                        && snapshot.coverage.vertical_range().is_none_or(|coverage| {
+                            let top = requested_top.max(0.0);
+                            top >= coverage.start && top + view.layout.height() <= coverage.end
+                        })
+                })
+        };
+        if already_covered {
+            let view = self.views.get_mut(&view_id).expect("view was validated");
+            view.layout.set_viewport_top(requested_top.max(0.0))?;
+            view.layout.set_viewport_left(left)?;
+            update_viewport_anchor(&self.document, view);
+            return Ok(());
+        }
         // Keep the content location resolved from the caller's geometry even
         // if a retry retires exact heights and replaces them with estimates.
         // None is the explicit end-of-document refinement intent.
@@ -3082,8 +3125,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             .views
             .get_mut(&view_id)
             .expect("view remains attached for atomic layout publication");
-        cancel_active_layout_work(view);
+        if let Some(active) = view.active_layout_work.take() { active.cancellation.cancel(); }
         view.layout = staged_layout;
+        cancel_obsolete_layout_work(view, document_revision, requirements);
         for checkpoint in new_checkpoints {
             view.long_line_checkpoints
                 .insert(&self.document, checkpoint);
@@ -7276,11 +7320,11 @@ fn replay_error_outcome(message: String) -> CoreOutcome {
 }
 
 fn cancel_active_layout_work<P: TextMeasurementProvider>(view: &mut View<P>) -> bool {
-    let Some(active) = view.active_layout_work.take() else {
-        return false;
-    };
-    active.cancellation.cancel();
-    true
+    let mut cancelled = false;
+    for slot in [&mut view.active_layout_work, &mut view.active_prelayout_work] {
+        if let Some(active) = slot.take() { active.cancellation.cancel(); cancelled = true; }
+    }
+    cancelled
 }
 
 fn cancel_obsolete_layout_work<P: TextMeasurementProvider>(
@@ -7288,15 +7332,16 @@ fn cancel_obsolete_layout_work<P: TextMeasurementProvider>(
     document_revision: Revision,
     requirements: LayoutProviderRequirements,
 ) -> bool {
-    let obsolete = view.active_layout_work.as_ref().is_some_and(|active| {
-        active.is_obsolete(
-            document_revision,
-            view.layout.configuration_generation(),
-            requirements.measurement_environment_id,
-            requirements.metrics_generation,
-        )
-    });
-    obsolete && cancel_active_layout_work(view)
+    let configuration = view.layout.configuration_generation();
+    let mut cancelled = false;
+    for slot in [&mut view.active_layout_work, &mut view.active_prelayout_work] {
+        if slot.as_ref().is_some_and(|active| active.is_obsolete(document_revision, configuration,
+            requirements.measurement_environment_id, requirements.metrics_generation)) {
+            slot.take().expect("obsolete job exists").cancellation.cancel();
+            cancelled = true;
+        }
+    }
+    cancelled
 }
 
 fn refresh_observed_metrics<P: TextMeasurementProvider>(view: &mut View<P>) -> bool {
@@ -9136,7 +9181,12 @@ mod tests {
                 .hard_line(),
             0
         );
-        // Cached shapes can be evicted while the view's exact height remains.
+        // Move the installed viewport away first: scrolling inside its exact
+        // coverage now correctly bypasses shaping altogether. Evict disposable
+        // geometry and shapes while retaining this paragraph's exact height.
+        core.handle(view, CoreEvent::SetViewportOrigin { left: 0.0, top: Some(100_000.0) }).unwrap();
+        core.views.get_mut(&view).unwrap().layout.set_regional_cache_limits(
+            crate::layout::RegionalLayoutCacheLimits { max_hard_lines: 0, ..Default::default() });
         core.views.get_mut(&view).unwrap().engine.clear_caches();
         changes.store(1, Ordering::Release);
 

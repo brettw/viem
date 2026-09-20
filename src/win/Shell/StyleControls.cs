@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
+using Viem.Windows.Interop;
 using Windows.UI.Text;
 using static Viem.Windows.Interop.Native;
 
@@ -85,10 +86,10 @@ internal sealed partial class StyleWindow
         button.Click += (_, _) => Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property,
             CoreView.Enum(property == VIEM_STYLE_PROPERTY_CHARACTER_SLANT ? VIEM_STYLE_VALUE_FONT_SLANT : VIEM_STYLE_VALUE_BOOLEAN, button.IsChecked == true ? 1u : 0u)));
     }
-    private void SetColor(uint property, global::Windows.UI.Color color)
+    private void SetColor(uint property, global::Windows.UI.Color color, ViemStyleEditGroupV1? group = null)
     {
         var value = CoreView.Enum(VIEM_STYLE_VALUE_COLOR, 0); value.color = new() { red = color.R / 255f, green = color.G / 255f, blue = color.B / 255f, alpha = color.A / 255f };
-        view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property, value);
+        view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property, value, group);
     }
     private void BuildCharacter()
     {

@@ -135,6 +135,20 @@ internal sealed unsafe partial class CoreView
         if (UsesGlobalStyles) { var info = New<ViemStyleSheetInfoV1>(); Check(viem_code_edit_style(&request, &info), "Edit Code style"); Document.NotifyChanged(); Refresh(); }
         else { var copy = request; Apply(o => { var r = copy; if (group is { } token) return viem_core_view_edit_style_in_group(Document.Handle, Id, &token, &r, o); return viem_core_view_edit_style(Document.Handle, Id, &r, o); }); }
     }
+    public ViemStyleEditGroupV1? BeginStyleEditGroup()
+    {
+        if (UsesGlobalStyles) return null;
+        var identity = Styles().Identity; var token = New<ViemStyleEditGroupV1>();
+        Check(viem_core_view_begin_style_edit_group(Document.Handle, Id, &identity, &token), "Begin style change");
+        return token;
+    }
+    public void EndStyleEditGroup(ViemStyleEditGroupV1? group)
+    {
+        if (Id == 0 || group is not { } token) return;
+        uint status = viem_core_view_end_style_edit_group(Document.Handle, Id, &token);
+        // Ordinary editor commands (including undo) already finalize the group.
+        if (status != VIEM_STATUS_INVALID_STYLE_EDIT_GROUP) Check(status, "End style change");
+    }
     public void EditStyleFont(StyleDefinition style, string[] families, FontFace? face)
     {
         using var arena = new NativeArena();

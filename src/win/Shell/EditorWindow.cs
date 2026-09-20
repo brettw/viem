@@ -35,7 +35,7 @@ internal sealed partial class EditorWindow : Window
     private int pollTicks;
     internal nint Hwnd => WinRT.Interop.WindowNative.GetWindowHandle(this);
 
-    public EditorWindow(Preferences preferences, CoreDocument? document = null, DocumentWindowPlacement? placement = null)
+    public EditorWindow(Preferences preferences, CoreDocument? document = null, DocumentWindowPlacement? placement = null, bool openLaunchFiles = false)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("window.initialize");
         this.preferences = preferences;
@@ -70,7 +70,13 @@ internal sealed partial class EditorWindow : Window
         preferences.Changed += ApplyPreferences;
         using (Diagnostics.StartupPerformance.Measure("window.menus")) BuildMenus();
         ApplyPreferences();
-        using (Diagnostics.StartupPerformance.Measure("window.initialPane")) AddPane(document ?? NewDocument());
+        if (openLaunchFiles && HasLaunchFiles())
+        {
+            // The real document can be opened as soon as the shell is arranged.
+            // Do not create and shape an empty editor merely to trigger startup.
+            root.Loaded += (_, _) => BeginFileLaunch();
+        }
+        else using (Diagnostics.StartupPerformance.Measure("window.initialPane")) AddPane(document ?? NewDocument());
         poll.Tick += (_, _) => {
             foreach (var doc in Panes.Select(p => p.Document).Distinct().ToArray()) ActivePane?.Run(() => doc.PollSyntax());
             foreach (var pane in Panes.ToArray()) pane.Poll();
@@ -111,6 +117,10 @@ internal sealed partial class EditorWindow : Window
     private CoreDocument NewDocument(byte[]? source = null, string? path = null, uint? format = null, uint encoding = 0, uint fileFormat = 0)
     {
         var doc = new CoreDocument(source ?? [], path, format, encoding, fileFormat);
+        return ConfigureNewDocument(doc, source ?? [], path);
+    }
+    private CoreDocument ConfigureNewDocument(CoreDocument doc, byte[] source, string? path)
+    {
         try
         {
             doc.ConfigureDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
@@ -216,11 +226,21 @@ internal sealed partial class EditorWindow : Window
                 readOnly = choices.SelectedIndex == 0; if (choices.SelectedIndex == 2) recovered = snapshot;
             }
         }
-        var doc = existing.Pane?.Document ?? NewDocument(recovered?.source ?? bytes, path, recovered?.Format, recovered?.encoding ?? 0, recovered?.fileFormat ?? 0);
+        CoreDocument doc;
+        if (existing.Pane != null) doc = existing.Pane.Document;
+        else
+        {
+            byte[] source = recovered?.source ?? bytes;
+            // Parsing a newly opened source needs no view or native shaper.
+            // Keep the shell responsive while constructing that private core.
+            doc = await Task.Run(() => new CoreDocument(source, path, recovered?.Format, recovered?.encoding ?? 0, recovered?.fileFormat ?? 0));
+            if (closed) { doc.Dispose(); return; }
+            doc = ConfigureNewDocument(doc, source, path);
+        }
         if (recovered != null) { savedSources[doc] = SHA256.HashData(bytes); doc.MarkRecovered(); recoveries[doc].Write(RecoverySnapshot.Capture(doc)); }
         if (readOnly) doc.SetReadOnly(true);
         int index = old == null ? Panes.Count : Panes.IndexOf(old) + (split ? 1 : 0);
-        if (!split && old != null) RemovePane(old, false);
+        if (!split && old != null && Panes.Contains(old)) RemovePane(old, false);
         AddPane(doc, Math.Min(index, Panes.Count)); preferences.Remember(path);
     }
     internal async Task<bool> Save(EditorPane pane, bool saveAs = false, string? explicitPath = null, bool force = false, bool adoptPath = true, bool native = true)

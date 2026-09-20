@@ -5387,14 +5387,69 @@ coalesced. There is at most one current background layout generation per view;
 new demand may extend or replace its bounded region rather than enqueueing an
 unbounded backlog.
 
+Windows pre-layout extends beyond the installed viewport's overscan in the
+direction of scrolling, initially forward. Its target is three times the
+observed number of hard lines on screen, capped at 128 lines and half the
+regional cache's line budget. The coordinator captures at most 32 hard lines
+and 16 KiB of text per job; individual paragraphs beyond that byte limit retain
+their existing on-demand bounded layout path. A single application-wide worker
+uses an independent DirectWrite/Win2D shaper, sharing only immutable leased glyph
+resources with the UI provider. Low-priority UI callbacks capture and install
+chunks; they do not shape text. No cache budgets are increased. Cache-only
+installation MUST NOT change the visible snapshot, caret or viewport origin.
+Edits, configuration/metrics changes, direction reversal, distant jumps and
+view closure cancel obsolete work. Current dependency identities and the scroll
+band are checked again before installation. Once the band is ready, no timer or
+polling task remains; caret-only motion does not schedule it again. A viewport
+generation admits at most 32 chunks, also bounding retries under cache pressure.
+
+Scrolling inside an already materialized viewport/overscan region MUST retain
+its exact layout snapshot and pending background work when their dependencies
+are unchanged. It updates the presentation origin without rebuilding geometry;
+sparse horizontal coverage and newly exposed regions still require exact demand
+layout. Windows caches native drawing commands for the visible area plus one
+screen in the scroll direction and translates their replay on covered vertical
+scrolls. Viewport-specific whitespace markers retain their separate invalidation
+requirement. Snapshot, size/DPI, paint/theme and relevant option changes still
+invalidate drawing commands.
+
+Initial layout MUST use the application's final canvas padding. View creation
+accepts that padding before measuring text; reapplying unchanged padding to a
+current snapshot is a no-op. An unmeasured document starts with a small paragraph
+band and extends until the first viewport has exact coverage, rather than using
+one-row height estimates to shape several prose screens upfront. Windows opens
+command-line files without first attaching an empty editor, parses a newly opened
+document on a worker before attaching its native view, and starts with the
+horizontal scrollbar collapsed so wrapped documents keep their first-frame size.
+Adjacent compatible LTR glyph clusters share native drawing calls; direction,
+font, paint, baseline, color-font and decoration boundaries preserve rendering
+order and positioning. Temporary drawing batches remain bounded.
+Page-refill estimates convert missing visual rows to hard lines using observed
+wrapping density, then retry against exact coverage if needed. Missing visual
+rows MUST NOT each schedule an entire wrapped paragraph. Immutable snapshot
+copies used by commands share glyph/caret geometry; revision rebinding or
+geometry changes detach shared storage without changing older snapshots.
+
+**TODO(macOS): Hook up bounded background pre-layout.** The shared Rust planner,
+cache-only installer and C ABI are implemented, but `EVCoreViewSession` does not
+schedule them. Connect the Mac view lifecycle and viewport updates to a bounded
+worker scheduler, with independent Core Text response storage and compatible
+shared render-resource ownership. See the implementation checklist in
+[the background layout notes](docs/windows-background-layout.md#todo-macos-connect-the-native-scheduler)
+and the Windows reference in `src/win/Core/BackgroundLayout.cs`. This remains
+unfinished until native Mac cancellation, rendering, memory and paging tests pass.
+
 Cancellation is checked at bounded parse checkpoints, projected leaves,
 shaping fragments, and hard-line/wrap units. Obsolete jobs must release retained
 snapshots promptly enough that continuous typing cannot keep an unbounded chain
 of old source revisions alive. Cancellation does not make a partially produced
 result observable.
 
-The coordinator retains the cooperative cancellation token for the one current
-layout job of each attached view. A replacement becomes current, and only then
+The coordinator retains separate cooperative cancellation tokens for one current
+visible-layout job and one cache-only pre-layout job per attached view. Ordinary
+foreground layout publication MUST NOT cancel pre-layout with unchanged
+dependencies, and cache-only completion MUST NOT supersede a visible-layout job.
+A replacement of either kind becomes current, and only then
 cancels its predecessor, after the replacement has passed preparation and
 registration; a cancelled or invalid replacement request therefore does not
 orphan valid work. Resize or view-configuration invalidation, a metrics-
@@ -5423,9 +5478,10 @@ same still-uncommitted input before returning its result. This applies to Page
 Up/Down and other layout-dependent commands in every editing mode; a request for
 more layout must never silently consume the keystroke. Retries preserve pending
 counts, registers, selection, and undo grouping, and publish command effects
-only once. Paging replaces the cached region with a bounded band around the
-viewport and required command endpoints, rather than retaining every earlier
-page. The low-level command API continues to expose typed demands to callers
+only once. Paging replaces the visible snapshot with a bounded band around the
+viewport and required command endpoints. Reusable paragraph geometry remains
+in the separately bounded regional cache, subject to its eviction limits.
+The low-level command API continues to expose typed demands to callers
 that schedule layout themselves.
 
 Regional layout requests reuse exact cached hard-line geometry when document,
@@ -5880,11 +5936,14 @@ Code settings has no caret-following context. Windows color wells and their
 popups resolve an undeclared emergency foreground through the active editor
 theme, while retaining explicit and inherited authored colors and alpha.
 Enabling such a foreground override copies the theme color. Opening or closing
-an unchanged picker creates no edit; a changed choice commits once on popup
-close. Refreshing the inspector does not overwrite an open popup draft, and
-retargeting or closing disconnects it. Color changes update the swatch and
-inspector preview live, with drawing coalesced to the next frame. Previewing
-does not edit document source, add undo entries, or persist global Code styles.
+an unchanged picker creates no edit. Color changes update the document, swatch,
+and committed inspector preview live. Rapid changes coalesce at a 33 ms cadence;
+idle pickers schedule no work. One popup session forms one document undo unit.
+Global Code color changes update all Code views and persist live. Successful
+changes do not rebuild the inspector, resize its popup, or write rounded RGB
+values back into the active picker. Closing or retargeting flushes the latest
+color to the original target and disconnects pending work. External document
+edits or caret commands dismiss the gesture without replaying queued colors.
 Opening a color picker cancels pending caret following so it cannot retarget
 or rebuild the edited style during a color gesture.
 The picker uses the horizontal layout, compact input controls, and a 256-pixel
@@ -5916,6 +5975,9 @@ families only when a picker needs them. The portable `SF Pro` system-font alias
 maps to Segoe UI on Windows. Missing/custom document fonts must not trigger a
 whole-system face scan. Native tests cover this startup constraint and preserve
 variant selection, fallback, and layout invalidation coverage.
+The read-only system font index is shared across family lookups and independent
+shapers, and may be prepared on a worker while the shell and document load.
+Creating a new index for each font family is unnecessary startup work.
 `scripts/test-win-startup.ps1` measures Release launches with isolated empty
 profiles and records activation-to-first-draw elapsed timings and font discovery
 counts; it does not measure compositor presentation or cold-boot disk latency.
@@ -5975,6 +6037,10 @@ layout identity. Selection and caret drawing remain independent; viewport,
 device/DPI, theme and whitespace changes invalidate affected drawing commands.
 Rebuilding text drawing commands shares native brushes by color within the
 drawing pass instead of allocating a brush for every glyph cluster.
+Adjacent compatible LTR glyphs share native drawing calls. Ordinary whole LTR
+clusters use the captured native run's advances for their origin; split-run and
+bidi clusters retain DirectWrite's region query. Native checks compare captured
+origins with DirectWrite and compare batched drawing with individual glyphs.
 Menu validation runs when menus are opened, not on each editor input event.
 Regression checks MUST cover cache invalidation, large-document selection and
 pixel equivalence between cached and freshly rebuilt selection frames.

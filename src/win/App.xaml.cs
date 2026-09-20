@@ -23,6 +23,7 @@ public partial class App : Application
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
         Diagnostics.StartupPerformance.Mark("app.launched");
+        Rendering.FontCatalog.PrepareSystemFonts();
         broker = new InstanceBroker(Preferences.DirectoryPath);
         if (!broker.IsPrimary)
         {
@@ -30,7 +31,7 @@ public partial class App : Application
             catch (Exception error) { _ = MessageBox(0, error.Message, "Viem could not open the file", 0x10); }
             broker.Dispose(); Exit(); return;
         }
-        var window = new EditorWindow(Preferences);
+        var window = new EditorWindow(Preferences, openLaunchFiles: true);
         Diagnostics.StartupPerformance.Mark("window.constructed");
         Windows.Add(window);
         window.Closed += (_, _) => Windows.Remove(window);

@@ -1,0 +1,353 @@
+{
+  "date": "2026-09-19",
+  "fixture": "AGENTS.md",
+  "fixtureSha256": "2533783bf6c9567b0dc1e0b4054ee1f38f9becbd3f7ed583757fd40cdd4994e3",
+  "rustDllSha256": "ba9e13995e43f6afda2cf13d65cc19df415e481ef0cc8f67d012f6dad9f92a16",
+  "runs": {
+    "baseline100": {
+      "passed": true,
+      "scenario": "page",
+      "count": 100,
+      "shapedCharacters": 108333,
+      "fontMetadataReads": 1153,
+      "drawingCacheBuilds": 100,
+      "width": 704.6667,
+      "height": 422.66666,
+      "dpi": 144,
+      "peakRenderResources": 117316,
+      "interval": 100,
+      "backgroundLayout": false,
+      "backgroundShapedCharacters": 0,
+      "backgroundJobs": {
+        "Started": 0,
+        "Installed": 0,
+        "Discarded": 0
+      },
+      "rows": 82,
+      "clusters": 6097,
+      "hardLines": 46,
+      "milliseconds": {
+        "core.turn": {
+          "count": 100,
+          "mean": 30.640583999999993,
+          "p50": 12.1949,
+          "p95": 98.5172,
+          "max": 134.6952
+        },
+        "layout.export": {
+          "count": 100,
+          "mean": 1.068208,
+          "p50": 0.6832,
+          "p95": 4.1726,
+          "max": 8.6912
+        },
+        "whitespace.export": {
+          "count": 100,
+          "mean": 0.09339599999999998,
+          "p50": 0.0897,
+          "p95": 0.1751,
+          "max": 0.2193
+        },
+        "refresh": {
+          "count": 100,
+          "mean": 3.698703,
+          "p50": 1.2932,
+          "p95": 24.4322,
+          "max": 58.7502
+        },
+        "page.turn": {
+          "count": 100,
+          "mean": 34.371379,
+          "p50": 16.2284,
+          "p95": 102.7154,
+          "max": 158.3558
+        },
+        "draw": {
+          "count": 100,
+          "mean": 8.969999,
+          "p50": 7.9746,
+          "p95": 21.4391,
+          "max": 64.6146
+        },
+        "page.frame.cpu": {
+          "count": 100,
+          "mean": 45.754898000000004,
+          "p50": 29.8419,
+          "p95": 112.2952,
+          "max": 164.4878
+        },
+        "shape.batch": {
+          "count": 53,
+          "mean": 43.11852452830188,
+          "p50": 41.7429,
+          "p95": 81.2749,
+          "max": 109.1213
+        }
+      }
+    },
+    "background100": {
+      "passed": true,
+      "scenario": "page",
+      "count": 100,
+      "shapedCharacters": 0,
+      "fontMetadataReads": 0,
+      "drawingCacheBuilds": 100,
+      "width": 704.6667,
+      "height": 422.66666,
+      "dpi": 144,
+      "peakRenderResources": 133549,
+      "interval": 100,
+      "backgroundLayout": true,
+      "backgroundShapedCharacters": 146498,
+      "backgroundJobs": {
+        "Started": 91,
+        "Installed": 79,
+        "Discarded": 12
+      },
+      "rows": 82,
+      "clusters": 6097,
+      "hardLines": 46,
+      "milliseconds": {
+        "core.turn": {
+          "count": 100,
+          "mean": 6.570250000000001,
+          "p50": 5.9082,
+          "p95": 14.4424,
+          "max": 17.5934
+        },
+        "layout.export": {
+          "count": 100,
+          "mean": 1.117073,
+          "p50": 0.781,
+          "p95": 3.5568,
+          "max": 7.8932
+        },
+        "whitespace.export": {
+          "count": 100,
+          "mean": 0.09886500000000002,
+          "p50": 0.0896,
+          "p95": 0.1581,
+          "max": 0.3673
+        },
+        "refresh": {
+          "count": 100,
+          "mean": 2.369163,
+          "p50": 1.5678,
+          "p95": 4.5644,
+          "max": 26.6187
+        },
+        "page.turn": {
+          "count": 100,
+          "mean": 9.050274,
+          "p50": 8.119,
+          "p95": 19.4107,
+          "max": 32.1946
+        },
+        "draw": {
+          "count": 100,
+          "mean": 11.131002,
+          "p50": 9.8786,
+          "p95": 23.237,
+          "max": 69.2572
+        },
+        "page.frame.cpu": {
+          "count": 100,
+          "mean": 23.001655,
+          "p50": 20.2715,
+          "p95": 35.7012,
+          "max": 103.2313
+        },
+        "prelayout.capture": {
+          "count": 173,
+          "mean": 0.0925543352601156,
+          "p50": 0.0243,
+          "p95": 0.2901,
+          "max": 0.4433
+        },
+        "prelayout.install": {
+          "count": 78,
+          "mean": 0.3769358974358974,
+          "p50": 0.3096,
+          "p95": 0.9671,
+          "max": 1.1822
+        }
+      }
+    },
+    "baseline16": {
+      "passed": true,
+      "scenario": "page",
+      "count": 100,
+      "shapedCharacters": 108333,
+      "fontMetadataReads": 1153,
+      "drawingCacheBuilds": 100,
+      "width": 704.6667,
+      "height": 422.66666,
+      "dpi": 144,
+      "peakRenderResources": 117316,
+      "interval": 16,
+      "backgroundLayout": false,
+      "backgroundShapedCharacters": 0,
+      "backgroundJobs": {
+        "Started": 0,
+        "Installed": 0,
+        "Discarded": 0
+      },
+      "rows": 82,
+      "clusters": 6097,
+      "hardLines": 46,
+      "milliseconds": {
+        "core.turn": {
+          "count": 100,
+          "mean": 26.334289999999996,
+          "p50": 10.3327,
+          "p95": 91.2835,
+          "max": 111.0107
+        },
+        "layout.export": {
+          "count": 100,
+          "mean": 0.8077120000000001,
+          "p50": 0.5364,
+          "p95": 2.8074,
+          "max": 6.5507
+        },
+        "whitespace.export": {
+          "count": 100,
+          "mean": 0.082674,
+          "p50": 0.0742,
+          "p95": 0.1378,
+          "max": 0.2306
+        },
+        "refresh": {
+          "count": 100,
+          "mean": 2.5232200000000002,
+          "p50": 1.1562,
+          "p95": 11.6423,
+          "max": 29.0753
+        },
+        "page.turn": {
+          "count": 100,
+          "mean": 28.885104,
+          "p50": 12.0274,
+          "p95": 92.8579,
+          "max": 119.3509
+        },
+        "draw": {
+          "count": 100,
+          "mean": 8.726393999999997,
+          "p50": 7.0059,
+          "p95": 17.7006,
+          "max": 39.4086
+        },
+        "page.frame.cpu": {
+          "count": 100,
+          "mean": 39.659618,
+          "p50": 24.6711,
+          "p95": 108.6697,
+          "max": 134.5314
+        },
+        "shape.batch": {
+          "count": 53,
+          "mean": 37.026966037735846,
+          "p50": 31.9081,
+          "p95": 80.1505,
+          "max": 95.8005
+        }
+      }
+    },
+    "background16": {
+      "passed": true,
+      "scenario": "page",
+      "count": 100,
+      "shapedCharacters": 91394,
+      "fontMetadataReads": 976,
+      "drawingCacheBuilds": 100,
+      "width": 704.6667,
+      "height": 422.66666,
+      "dpi": 144,
+      "peakRenderResources": 127229,
+      "interval": 16,
+      "backgroundLayout": true,
+      "backgroundShapedCharacters": 113627,
+      "backgroundJobs": {
+        "Started": 62,
+        "Installed": 18,
+        "Discarded": 44
+      },
+      "rows": 82,
+      "clusters": 6097,
+      "hardLines": 46,
+      "milliseconds": {
+        "core.turn": {
+          "count": 100,
+          "mean": 17.981072999999995,
+          "p50": 5.605,
+          "p95": 63.9434,
+          "max": 86.1351
+        },
+        "layout.export": {
+          "count": 100,
+          "mean": 0.646949,
+          "p50": 0.3841,
+          "p95": 2.4924,
+          "max": 6.9098
+        },
+        "whitespace.export": {
+          "count": 100,
+          "mean": 0.070625,
+          "p50": 0.0614,
+          "p95": 0.121,
+          "max": 0.145
+        },
+        "refresh": {
+          "count": 100,
+          "mean": 2.267405,
+          "p50": 0.8893,
+          "p95": 6.5265,
+          "max": 49.9725
+        },
+        "page.turn": {
+          "count": 100,
+          "mean": 20.29458000000001,
+          "p50": 7.3167,
+          "p95": 66.5886,
+          "max": 93.0276
+        },
+        "draw": {
+          "count": 100,
+          "mean": 8.249181,
+          "p50": 5.8154,
+          "p95": 19.3202,
+          "max": 31.9966
+        },
+        "page.frame.cpu": {
+          "count": 100,
+          "mean": 30.282402000000005,
+          "p50": 19.5572,
+          "p95": 75.6202,
+          "max": 105.6813
+        },
+        "prelayout.capture": {
+          "count": 83,
+          "mean": 0.07979759036144578,
+          "p50": 0.0862,
+          "p95": 0.1836,
+          "max": 0.2416
+        },
+        "shape.batch": {
+          "count": 48,
+          "mean": 26.965702083333337,
+          "p50": 26.8451,
+          "p95": 57.3825,
+          "max": 75.95
+        },
+        "prelayout.install": {
+          "count": 16,
+          "mean": 0.28493124999999997,
+          "p50": 0.2164,
+          "p95": 1.3711,
+          "max": 1.3711
+        }
+      }
+    }
+  }
+}

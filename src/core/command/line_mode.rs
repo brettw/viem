@@ -1278,7 +1278,7 @@ impl CommandInterpreter {
             .filter(|size| *size <= 1_000_000)
             .ok_or(DocumentError::UnsupportedFormatting)?;
         let mut edits = Vec::new();
-        for row in &snapshot.rows {
+        for row in snapshot.rows.iter() {
             if row.text_range.start >= range.end || row.text_range.end < range.start {
                 continue;
             }

@@ -260,7 +260,7 @@ fn wrapped_indent_does_not_change_other_formats_or_unwrapped_code_geometry() {
         engine.relayout(&document, &mut view).unwrap();
         let after = &view.snapshot().unwrap().rows;
         assert_eq!(after.len(), before.len());
-        for (after, before) in after.iter().zip(before) {
+        for (after, before) in after.iter().zip(before.iter()) {
             assert_eq!(after.text_range, before.text_range);
             assert_eq!(after.paragraph_content_x, before.paragraph_content_x);
             assert_eq!(
@@ -381,7 +381,7 @@ fn resumed_long_code_line_preserves_original_indent_and_matches_complete_geometr
     let complete = complete_view.snapshot().unwrap();
     assert_continuation_margin(complete, 56.0);
     assert_eq!(rows.len(), complete.rows.len());
-    for (resumed, full) in rows.iter().zip(&complete.rows) {
+    for (resumed, full) in rows.iter().zip(complete.rows.iter()) {
         assert_eq!(resumed.text_range, full.text_range);
         assert_eq!(resumed.fragment_index, full.fragment_index);
         assert_eq!(resumed.y, full.y);

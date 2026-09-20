@@ -79,11 +79,17 @@ impl<P: TextMeasurementProvider> Core<P> {
         };
         let cursor = line_at(view.commands.cursor())?;
         let mut needed = cursor..cursor + 1;
+        let mut visible_rows = 0usize;
+        let mut visible_lines: Option<Range<usize>> = None;
         for row in snapshot
             .rows
             .iter()
             .filter(|row| row.y < bottom && row.y + row.height() > top)
         {
+            visible_rows += 1;
+            let lines = visible_lines.get_or_insert(row.hard_line_index..row.hard_line_index + 1);
+            lines.start = lines.start.min(row.hard_line_index);
+            lines.end = lines.end.max(row.hard_line_index + 1);
             needed.start = needed.start.min(row.hard_line_index);
             needed.end = needed.end.max(row.hard_line_index + 1);
         }
@@ -97,9 +103,16 @@ impl<P: TextMeasurementProvider> Core<P> {
         // Keep only geometry needed by the uncommitted command and nearby
         // overscan. Extending the entire old interval on every page would
         // eventually materialize the whole document during ordinary scrolling.
+        // A missing visual row is not a missing paragraph. Estimate the next
+        // band using the observed wrapping density, then let exact demands
+        // retry if it falls short. Treating rows as hard lines shaped several
+        // unnecessary screens and could outrun the entire pre-layout band.
+        let additional_lines = demand.minimum_additional_visual_rows()
+            .saturating_mul(visible_lines.as_ref().map_or(1, Range::len))
+            .div_ceil(visible_rows.max(1));
         let extension = needed
             .len()
-            .max(demand.minimum_additional_visual_rows())
+            .max(additional_lines)
             .clamp(MIN_OVERSCAN_LINES, MAX_EXTENSION_LINES);
         let materialized = demand.materialized_hard_lines();
         let count = snapshot.coverage.document_hard_line_count();
@@ -336,6 +349,40 @@ mod tests {
         assert_eq!(core.document().source_bytes(), source);
         assert_eq!(core.document().revision(), revision);
         assert!(!core.document().history_status().can_undo);
+    }
+
+    #[test]
+    fn wrapped_page_refill_estimates_hard_lines_from_visual_row_density() {
+        let paragraph = "Words in a paragraph that occupies several wrapped visual rows. ".repeat(12);
+        let document = Document::from_bytes_detect_encoding(format!("{paragraph}\n\n").repeat(10_000).into_bytes(), Format::Markdown).unwrap();
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 1_000.0);
+        let mut checked = false;
+        for _ in 0..8 {
+            let outcome = core.handle(view, key(Key::PageDown)).unwrap();
+            if let Some(CommandStatus::NeedsMoreLayout(LayoutMotionError::OutsideMaterializedCoverage(demand))) = outcome.command.as_ref().map(|command| &command.status) {
+                let requested = core.input_layout_region(view, demand).unwrap().unwrap();
+                assert!(requested.end - demand.materialized_hard_lines().end <= 8,
+                    "wrapped missing rows must not be treated as whole missing paragraphs");
+                checked = true;
+                break;
+            }
+        }
+        assert!(checked);
+        for _ in 0..10 { core.handle_with_layout(view, key(Key::PageDown)).unwrap(); }
+        let calls = core.views[&view].engine.provider().request_calls();
+        for _ in 0..5 { core.handle_with_layout(view, key(Key::PageUp)).unwrap(); }
+        assert_eq!(core.views[&view].engine.provider().request_calls(), calls);
+        let configuration = core.layout(view).unwrap().snapshot().unwrap().configuration_generation;
+        core.handle(view, CoreEvent::Resize { width: 600.0, height: 1_000.0 }).unwrap();
+        core.handle_with_layout(view, key(Key::PageDown)).unwrap();
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+        assert_eq!(snapshot.viewport_width, 600.0);
+        assert_ne!(snapshot.configuration_generation, configuration);
+        core.views.get_mut(&view).unwrap().engine.provider_mut().set_metrics_generation(MetricsGeneration(2));
+        core.handle_with_layout(view, key(Key::PageDown)).unwrap();
+        assert_eq!(core.layout(view).unwrap().snapshot().unwrap().metrics_generation, MetricsGeneration(2));
+        assert!(core.views[&view].engine.provider().request_calls() > calls);
     }
 
     #[test]

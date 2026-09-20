@@ -34,7 +34,7 @@ fn labels_are_furniture_outside_body_selection_and_empty_item_carets() {
         .filter(|label| !label.is_empty())
         .collect();
     assert_eq!(labels, ["9.", "10.", "11."]);
-    for row in &snapshot.rows {
+    for row in snapshot.rows.iter() {
         for marker in &row.decorations {
             assert!(marker.x + marker.advance < row.paragraph_content_x);
         }
@@ -196,7 +196,7 @@ fn large_list_regional_marker_layout_is_bounded_and_rebased_with_height_changes(
                 < 100
         );
         assert!(snapshot.rows.iter().any(|row| !row.decorations.is_empty()));
-        for row in &snapshot.rows {
+        for row in snapshot.rows.iter() {
             for item in &row.decorations {
                 assert!(item.typographic_bounds.y >= row.y - 1.);
                 assert!(item.typographic_bounds.y <= row.baseline);

@@ -751,9 +751,25 @@ pub fn prepare_layout_job(
         priority,
         region,
         cancellation,
+        true,
         || {},
         || {},
     )
+}
+
+/// Capture a cache fill without superseding the visible viewport's job. Its
+/// coordinator separately owns the one current speculative token for the view.
+pub(crate) fn prepare_cache_layout_job(
+    document: &Document,
+    view: &mut ViewLayout,
+    requirements: LayoutProviderRequirements,
+    job_id: LayoutJobId,
+    region: HardLineLayoutRegion,
+    cancellation: LayoutCancellationToken,
+) -> Result<LayoutJobRequest, LayoutJobError> {
+    prepare_layout_job_with_registration_hooks(document, view, requirements, job_id,
+        LayoutJobPriority::Background, LayoutJobRegion::HardLines(region), cancellation,
+        false, || {}, || {})
 }
 
 /// The callbacks are deterministic test seams around registration. Production
@@ -767,6 +783,7 @@ fn prepare_layout_job_with_registration_hooks<F, G>(
     priority: LayoutJobPriority,
     region: LayoutJobRegion,
     cancellation: LayoutCancellationToken,
+    register_viewport_job: bool,
     before_registration: F,
     after_registration: G,
 ) -> Result<LayoutJobRequest, LayoutJobError>
@@ -1034,7 +1051,7 @@ where
             LayoutJobError::CancellationTokenAlreadyRegistered
         }
     })?;
-    let registered = view.begin_layout_job(job_id);
+    let registered = !register_viewport_job || view.begin_layout_job(job_id);
     debug_assert!(
         registered,
         "the serial view job precondition was validated before capture"
@@ -1405,6 +1422,23 @@ pub fn install_layout_job(
     target: LayoutInstallTarget,
     candidate: LayoutJobCandidate,
 ) -> Result<InstalledLayoutJob, LayoutJobInstallRejection> {
+    install_layout_job_impl(view, target, candidate, false)
+}
+
+pub(crate) fn install_layout_job_cache(
+    view: &mut ViewLayout,
+    target: LayoutInstallTarget,
+    candidate: LayoutJobCandidate,
+) -> Result<InstalledLayoutJob, LayoutJobInstallRejection> {
+    install_layout_job_impl(view, target, candidate, true)
+}
+
+fn install_layout_job_impl(
+    view: &mut ViewLayout,
+    target: LayoutInstallTarget,
+    candidate: LayoutJobCandidate,
+    cache_only: bool,
+) -> Result<InstalledLayoutJob, LayoutJobInstallRejection> {
     if candidate.cancellation.is_cancelled() {
         return Err(LayoutJobInstallRejection::Cancelled);
     }
@@ -1439,7 +1473,7 @@ pub fn install_layout_job(
             actual: candidate.metrics_generation,
         });
     }
-    if let Some(installed) = view.last_installed_layout_job() {
+    if let Some(installed) = view.last_installed_layout_job().filter(|_| !cache_only) {
         if candidate.job_id <= installed {
             return Err(LayoutJobInstallRejection::Superseded {
                 installed,
@@ -1447,7 +1481,7 @@ pub fn install_layout_job(
             });
         }
     }
-    if view.active_layout_job() != Some(candidate.job_id) {
+    if !cache_only && view.active_layout_job() != Some(candidate.job_id) {
         return Err(LayoutJobInstallRejection::NotCurrentJob {
             expected: view.active_layout_job(),
             actual: candidate.job_id,
@@ -1466,6 +1500,9 @@ pub fn install_layout_job(
         LayoutJobRegion::HardLines(_) => None,
     };
     let layout_revision = match candidate.product {
+        LayoutJobProduct::RegionalHardLines(region) if cache_only => view
+            .cache_layout_job_region(region)
+            .map_err(LayoutJobInstallRejection::HeightIndex)?,
         LayoutJobProduct::RegionalHardLines(region) => view
             .publish_layout_job_region(job_id, region)
             .map_err(LayoutJobInstallRejection::HeightIndex)?,
@@ -1827,6 +1864,7 @@ mod tests {
             LayoutJobPriority::ChangedVisibleRows,
             viewport(1..2, 16.0, 100.0),
             replacement_token,
+            true,
             move || token_to_cancel.cancel(),
             || {},
         );
@@ -1848,6 +1886,7 @@ mod tests {
             LayoutJobPriority::ChangedVisibleRows,
             viewport(1..2, 16.0, 100.0),
             accepted_token,
+            true,
             || {},
             move || token_to_cancel.cancel(),
         )
@@ -2962,7 +3001,7 @@ mod tests {
         full_engine.relayout(&document, &mut full_view).unwrap();
         let complete = &full_view.snapshot().unwrap().rows;
         assert_eq!(rows.len(), complete.len());
-        for (row, expected) in rows.iter().zip(complete) {
+        for (row, expected) in rows.iter().zip(complete.iter()) {
             assert_eq!(row.text_range, expected.text_range);
             assert_eq!(row.hard_line_range, expected.hard_line_range);
             assert_eq!(row.fragment_index, expected.fragment_index);
@@ -3032,7 +3071,7 @@ mod tests {
         full_engine.relayout(&document, &mut full_view).unwrap();
         let full_rows = &full_view.snapshot().unwrap().rows;
         assert_eq!(rows.len(), full_rows.len());
-        for (resumed, full) in rows.iter().zip(full_rows) {
+        for (resumed, full) in rows.iter().zip(full_rows.iter()) {
             assert_eq!(resumed.text_range, full.text_range);
             assert_eq!(resumed.wrapped_from_previous, full.wrapped_from_previous);
             assert_eq!(resumed.wraps_to_next, full.wraps_to_next);

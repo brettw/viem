@@ -1,4 +1,5 @@
 #if DEBUG
+using Microsoft.Graphics.Canvas;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -16,7 +17,11 @@ namespace Viem.Windows.Diagnostics;
 internal static class StyleInspectorBehaviorTests
 {
     private static void Check(bool condition, string message)
-    { if (!condition) throw new InvalidOperationException(message); FrontendSmokeTests.UiChecks.Add(message); }
+    {
+        if (!condition) throw new InvalidOperationException(message);
+        FrontendSmokeTests.UiChecks.Add(message);
+        File.AppendAllText(FrontendSmokeTests.ReportPath + ".styles.log", message + Environment.NewLine);
+    }
     private static StyleDefinition Selected(StyleWindow inspector) => (StyleDefinition)inspector.StylePicker.SelectedItem;
     private static void Move(CoreView view, ulong offset, bool extend = false)
         => view.Place(offset, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, view.Document.State.document_revision, extend);
@@ -58,6 +63,7 @@ internal static class StyleInspectorBehaviorTests
     {
         await Following(pane, preferences);
         await Colors(pane, preferences);
+        await CodeColors(preferences);
     }
     private static async Task Following(EditorPane pane, Preferences preferences)
     {
@@ -156,12 +162,69 @@ internal static class StyleInspectorBehaviorTests
         Check(layoutPositions.All(r => r == layoutPositions[0]) && inspector.StyleLoads == loads,
             "live color dragging keeps the popup geometry and inspector controls stable");
     }
+    private static bool HasColor(CoreView target, Color color)
+    {
+        var layout = target.Layout();
+        bool Matches(ViemRgbaV1 c) => Math.Abs(c.red - color.R / 255f) < .001 && Math.Abs(c.green - color.G / 255f) < .001
+            && Math.Abs(c.blue - color.B / 255f) < .001 && Math.Abs(c.alpha - color.A / 255f) < .001;
+        return Matches(layout.Paint.default_paint.foreground) || layout.PaintRuns.Any(r => Matches(r.paint.foreground));
+    }
+    private static async Task CodeColors(Preferences preferences)
+    {
+        using var document = new CoreDocument("First Code sample."u8.ToArray(), format: VIEM_FORMAT_CODE);
+        using var second = new CoreDocument("Second Code sample."u8.ToArray(), format: VIEM_FORMAT_CODE);
+        var editor = new EditorWindow(preferences, document);
+        App.Instance.Windows.Add(editor); editor.Activate();
+        var view = await editor.ActivePane!.Ready;
+        var other = await editor.AddPane(second).Ready;
+        byte[] original = view.ExportStyleDefaults();
+        string file = Path.Combine(preferences.DirectoryPath, "code_style.json");
+        byte[]? saved = File.Exists(file) ? File.ReadAllBytes(file) : null;
+        var inspector = new StyleWindow(view, preferences, followCaret: false); inspector.Activate(); await Task.Delay(200);
+        try
+        {
+            var button = Children<Button>(inspector.RootControl).Single(b => AutomationProperties.GetName(b) == "Text Color");
+            var flyout = (Flyout)button.Flyout; var picker = (ColorPicker)flyout.Content;
+            await Open(flyout, button);
+            picker.Color = Microsoft.UI.Colors.Red; await Task.Delay(150);
+            bool firstColor = HasColor(view, Microsoft.UI.Colors.Red), otherColor = HasColor(other, Microsoft.UI.Colors.Red);
+            bool persisted = File.Exists(file) && File.ReadAllBytes(file).AsSpan().SequenceEqual(view.ExportStyleDefaults());
+            Check(inspector.Error.Length == 0 && firstColor && otherColor && persisted && !document.IsDirty && !second.IsDirty,
+                $"live Code color changes repaint separate documents and persist shared styles without dirtying source (first={firstColor}, other={otherColor}, saved={persisted}, dirty={document.IsDirty}/{second.IsDirty}, error={inspector.Error})");
+            byte[] red = view.ExportStyleDefaults();
+            using (var locked = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                picker.Color = Microsoft.UI.Colors.Green; await Task.Delay(150);
+                Check(inspector.Error.Length > 0 && red.AsSpan().SequenceEqual(view.ExportStyleDefaults()) && picker.Color == Microsoft.UI.Colors.Red
+                    && inspector.PreviewForeground == Microsoft.UI.Colors.Red && !inspector.ColorUpdateScheduled,
+                    "a rejected live Code color restores committed style, picker and preview without rescheduling");
+            }
+            await Close(flyout);
+        }
+        finally
+        {
+            inspector.Close(); view.ReplaceCodeStyles(original);
+            if (saved != null) Preferences.AtomicWrite(file, saved); else File.Delete(file);
+            editor.Close(); App.Instance.Windows.Remove(editor);
+        }
+    }
     private static async Task Colors(EditorPane pane, Preferences preferences)
     {
         using var document = new CoreDocument("<p>Color sample.</p>"u8.ToArray(), format: VIEM_FORMAT_HTML);
-        using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+        var editor = new EditorWindow(preferences, document);
+        App.Instance.Windows.Add(editor); editor.Activate();
+        var renderedPane = editor.ActivePane!;
+        var view = await renderedPane.Ready;
+        var mirrorPane = editor.AddPane(document);
+        var mirror = await mirrorPane.Ready;
         IncludeStyles(view);
         var inspector = new StyleWindow(view, preferences); inspector.Activate(); await Task.Delay(200);
+        byte[] Pixels(EditorPane target)
+        {
+            using var surface = new CanvasRenderTarget(target.Canvas.Device, (float)target.Canvas.ActualWidth, (float)target.Canvas.ActualHeight, target.Canvas.Dpi);
+            using (var drawing = surface.CreateDrawingSession()) target.Draw(drawing);
+            return surface.GetPixelBytes();
+        }
         try
         {
             inspector.StylePicker.SelectedItem = ((StyleDefinition[])inspector.StylePicker.ItemsSource).Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
@@ -191,39 +254,53 @@ internal static class StyleInspectorBehaviorTests
             await Close(flyout);
             Check(inspector.StyleLoads == initialLoads + 1, "color picking preserves a deferred document refresh until popup closure");
             Check(original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)) && !document.IsDirty, "opening and dismissing an unchanged picker adds no edit");
+            Check(!inspector.ColorUpdateScheduled, "an unchanged color popup schedules no work");
             flyout.Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Top;
             Move(view, 2);
             Check(inspector.CaretFollowScheduled, "caret motion schedules following before a color edit");
             await Open(flyout, button);
             Check(!inspector.CaretFollowScheduled, "opening a color picker cancels pending caret following");
             int loads = inspector.StyleLoads;
+            byte[] firstPixels = Pixels(renderedPane), mirrorPixels = Pixels(mirrorPane);
+            int firstBuilds = renderedPane.DrawingCacheBuilds, mirrorBuilds = mirrorPane.DrawingCacheBuilds;
             if (Environment.GetEnvironmentVariable("VIEM_TEST_POINTER_INPUT") == "1")
                 await ColorDragging(inspector, picker);
+            ulong revision = document.State.document_revision;
             for (int i = 0; i < 100; i++) picker.Color = Color.FromArgb(255, (byte)i, 64, 128);
             var custom = Color.FromArgb(102, 31, 64, 128); picker.Color = custom;
+            Check(inspector.ColorUpdateScheduled && document.State.document_revision == revision, "rapid color input queues one coalesced edit");
+            await Task.Delay(150);
             Check(inspector.PreviewForeground == custom && ((SolidColorBrush)((Border)button.Content).Background).Color == custom
-                && inspector.StyleLoads == loads && !document.IsDirty && original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
-                "rapid picker changes preview the final color and swatch without document edits or dialog reloads");
+                && inspector.StyleLoads == loads && document.IsDirty && !original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
+                $"picker changes update the committed document, preview and swatch without dialog reloads (error={inspector.Error})");
+            Check(document.State.document_revision == revision + 1 && !inspector.ColorUpdateScheduled, "one color burst commits once and leaves no idle timer");
+            Check(HasColor(view, custom) && HasColor(mirror, custom)
+                && !firstPixels.AsSpan().SequenceEqual(Pixels(renderedPane)) && !mirrorPixels.AsSpan().SequenceEqual(Pixels(mirrorPane))
+                && renderedPane.DrawingCacheBuilds > firstBuilds && mirrorPane.DrawingCacheBuilds > mirrorBuilds,
+                "both visible document views invalidate cached drawing and render the live color before popup dismissal");
             document.NotifyChanged();
-            Check(picker.Color == custom && original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
-                "dialog refresh preserves an open color draft without applying it live");
-            await Task.Delay(100);
+            Check(picker.Color == custom && inspector.StyleLoads == loads, "a no-op document notification leaves the active picker stable");
+            picker.Color = Microsoft.UI.Colors.Blue; await Task.Delay(100);
+            Check(inspector.PreviewForeground == Microsoft.UI.Colors.Blue && document.State.document_revision > revision + 1,
+                "a sustained popup gesture commits subsequent colors before dismissal");
+            picker.Color = custom; await Task.Delay(100);
             await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".color-preview.png");
             await Close(flyout);
             Check(inspector.Error.Length == 0 && document.IsDirty && picker.Color == custom,
-                $"closing the color picker commits the selected custom RGBA value (style={Selected(inspector).Id}, enabled={button.IsEnabled}, dirty={document.IsDirty}, color={picker.Color}, error={inspector.Error})");
+                $"closing the live color picker retains custom RGBA (style={Selected(inspector).Id}, enabled={button.IsEnabled}, dirty={document.IsDirty}, color={picker.Color}, error={inspector.Error})");
             byte[] colored = document.Source(document.State.document_revision);
             await Open(flyout, button); await Close(flyout);
             Check(colored.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "reopening a custom color has no round-trip edit");
             view.Undo();
-            Check(original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)) && !document.IsDirty, "one undo restores a color selection");
+            Check(original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)) && !document.IsDirty, "one undo restores every live color change in the popup session");
             var backgroundButton = Children<Button>(inspector.RootControl).Single(b => AutomationProperties.GetName(b) == "Background Color");
             var backgroundFlyout = (Flyout)backgroundButton.Flyout;
             var backgroundPicker = (ColorPicker)backgroundFlyout.Content;
             await Open(backgroundFlyout, backgroundButton);
             Check(backgroundPicker.Color.A == 0, "an absent text background opens as transparent");
             var background = Color.FromArgb(128, 192, 64, 32); backgroundPicker.Color = background;
-            Check(inspector.PreviewBackground == background && !document.IsDirty, "background color previews transparency before committing");
+            await Task.Delay(100);
+            Check(inspector.PreviewBackground == background && document.IsDirty, "background color and alpha update the document and preview live");
             await Close(backgroundFlyout);
             Check(inspector.Error.Length == 0 && backgroundPicker.Color == background, "background picker commits and retains transparency");
             view.Undo();
@@ -238,11 +315,24 @@ internal static class StyleInspectorBehaviorTests
             colored = second.Source(second.State.document_revision);
             await Open(flyout, button); picker.Color = Microsoft.UI.Colors.Green;
             await Close(flyout, () => inspector.Retarget(view));
-            Check(colored.AsSpan().SequenceEqual(second.Source(second.State.document_revision)) && !document.IsDirty,
-                "retargeting dismisses pending color drafts without changing either target");
-            Check(inspector.PreviewForeground == preferences.Theme.Foreground, "retargeting clears the previous color preview draft");
+            Check(!colored.AsSpan().SequenceEqual(second.Source(second.State.document_revision)) && !document.IsDirty && !inspector.ColorUpdateScheduled,
+                "retargeting flushes pending color to its original target and cancels the timer");
+            other.Undo();
+            Check(colored.AsSpan().SequenceEqual(second.Source(second.State.document_revision)), "retargeting closes the original target's undo group");
+            Check(inspector.PreviewForeground == preferences.Theme.Foreground, "retargeting shows the new document's committed color");
+            await Open(flyout, button); picker.Color = Microsoft.UI.Colors.Red; await Task.Delay(100);
+            picker.Color = Microsoft.UI.Colors.Green;
+            await Close(flyout, view.Undo);
+            await Task.Delay(100);
+            Check(!inspector.ColorUpdateScheduled && !document.IsDirty && original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
+                "undo during an open picker cancels queued colors without replaying them");
+            await Open(flyout, button); picker.Color = custom;
+            await Close(flyout, inspector.Close);
+            Check(document.IsDirty && !inspector.ColorUpdateScheduled, "closing the inspector flushes the final color and cancels pending work");
+            view.Undo();
+            Check(!document.IsDirty && original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "closing the inspector ends its live undo group");
         }
-        finally { inspector.Close(); }
+        finally { inspector.Close(); document.MarkSaved(document.State); editor.Close(); App.Instance.Windows.Remove(editor); }
     }
 }
 #endif

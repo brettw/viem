@@ -1,4 +1,4 @@
-param([switch]$NoBuild, [switch]$PointerInput, [switch]$Optimized, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page')][string]$ProfileScenario = 'drag')
+param([switch]$NoBuild, [switch]$PointerInput, [switch]$Optimized, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page', 'scroll', 'roundtrip')][string]$ProfileScenario = 'drag', [switch]$DisablePrelayout, [ValidateRange(1, 1000)][int]$ProfileIntervalMs = 16, [string]$ConfigFile)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $projectRoot
@@ -22,10 +22,15 @@ try {
     $oldPerformanceDocument = $env:VIEM_PERF_DOCUMENT
     $oldPerformanceScenario = $env:VIEM_PERF_SCENARIO
     $oldPointerInput = $env:VIEM_TEST_POINTER_INPUT
+    $oldPrelayout = $env:VIEM_TEST_DISABLE_PRELAYOUT
+    $oldInterval = $env:VIEM_PERF_INTERVAL_MS
+    $env:VIEM_TEST_DISABLE_PRELAYOUT = if ($DisablePrelayout) { '1' } else { $null }
+    $env:VIEM_PERF_INTERVAL_MS = "$ProfileIntervalMs"
     $env:VIEM_TEST_POINTER_INPUT = if ($PointerInput) { '1' } else { $null }
     $env:VIEM_PERF_SCENARIO = $ProfileScenario
     if ($ProfileDocument) { $env:VIEM_PERF_DOCUMENT = (Resolve-Path -LiteralPath $ProfileDocument).Path }
     $env:VIEM_CONFIG_DIR = $reportPath + '.profile'
+    if ($ConfigFile) { New-Item -ItemType Directory -Path $env:VIEM_CONFIG_DIR -Force | Out-Null; Copy-Item -LiteralPath $ConfigFile -Destination (Join-Path $env:VIEM_CONFIG_DIR 'config.json') }
     try {
         $executable = Join-Path $projectRoot 'target/windows/Viem.Windows/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/Viem.exe'
         if ($Optimized) { $executable = Join-Path $projectRoot 'target/windows-profile/Viem.exe' }
@@ -37,6 +42,6 @@ try {
         if ($ProfileDocument) { Write-Output "$ProfileScenario CPU benchmark completed. Report: $reportPath" }
         else { Write-Output "$($report.count) Windows integration checks passed. Report: $reportPath" }
     }
-    finally { $env:VIEM_CONFIG_DIR = $oldProfile; $env:VIEM_PERF_DOCUMENT = $oldPerformanceDocument; $env:VIEM_PERF_SCENARIO = $oldPerformanceScenario; $env:VIEM_TEST_POINTER_INPUT = $oldPointerInput }
+    finally { $env:VIEM_CONFIG_DIR = $oldProfile; $env:VIEM_PERF_DOCUMENT = $oldPerformanceDocument; $env:VIEM_PERF_SCENARIO = $oldPerformanceScenario; $env:VIEM_TEST_POINTER_INPUT = $oldPointerInput; $env:VIEM_TEST_DISABLE_PRELAYOUT = $oldPrelayout; $env:VIEM_PERF_INTERVAL_MS = $oldInterval }
 }
 finally { Pop-Location }

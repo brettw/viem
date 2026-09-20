@@ -502,7 +502,9 @@ pub struct LayoutSnapshot {
     pub default_paint: ResolvedTextPaint,
     pub paint_runs: Vec<PaintStyleRun>,
     pub coverage: LayoutCoverage,
-    pub rows: Vec<VisualRow>,
+    /// Published geometry is immutable. Command checkpoints share it instead
+    /// of cloning every glyph and caret on each key or layout-demand retry.
+    pub rows: Arc<Vec<VisualRow>>,
     /// Horizontal extent of the materialized canvas in document layout
     /// coordinates. This is the exact full-document extent when
     /// `content_width_is_exact` is true and otherwise only a lower bound from
@@ -1207,7 +1209,7 @@ impl LayoutSnapshot {
 
     pub fn caret_geometry(&self, point: CaretPoint) -> Result<CaretGeometry, LayoutError> {
         self.validate_caret_point(point)?;
-        for row in &self.rows {
+        for row in self.rows.iter() {
             if let Some(caret) = row.carets.iter().find(|caret| caret.point == point) {
                 return Ok(CaretGeometry {
                     point,
@@ -2167,6 +2169,19 @@ impl ViewLayout {
         self.last_installed_layout_job
     }
 
+    /// Speculation populates the bounded geometry cache without rebinding the
+    /// visible snapshot or refining heights above its scroll anchor. Demand
+    /// layout incorporates the cached exact heights when assembling a viewport.
+    pub(crate) fn cache_layout_job_region(
+        &mut self,
+        region: RegionalLayoutSnapshot,
+    ) -> Result<LayoutRevision, ViewHeightIndexError> {
+        let prepared = self.prepare_layout_job_region(region)?;
+        self.regional_cache = prepared.cache;
+        // Foreground job ordering is independent of speculative completion.
+        Ok(prepared.installed_revision)
+    }
+
     pub(crate) fn publish_layout_job_region(
         &mut self,
         job_id: LayoutJobId,
@@ -2385,7 +2400,7 @@ impl ViewLayout {
 impl LayoutSnapshot {
     fn rebind_revision(&mut self, revision: LayoutRevision) {
         self.revision = revision;
-        for row in &mut self.rows {
+        for row in Arc::make_mut(&mut self.rows) {
             for caret in &mut row.carets {
                 caret.point.layout_revision = revision;
             }
@@ -2495,7 +2510,7 @@ fn partial_snapshot_from_region(
             vertical_range,
             prefix_is_exact: prefix.is_exact(),
         },
-        rows,
+        rows: Arc::new(rows),
         content_width,
         content_width_is_exact,
         row_content_widths,
@@ -2564,7 +2579,7 @@ fn refresh_partial_snapshot_after_height_change(
     let new_end = checked_layout_sum(old_range.end, delta)?;
 
     let mut refreshed = snapshot.clone();
-    for row in &mut refreshed.rows {
+    for row in Arc::make_mut(&mut refreshed.rows) {
         translate_row_vertically(row, delta)?;
     }
     let LayoutCoverage::PartialHardLines {
@@ -2699,7 +2714,7 @@ fn snapshot_hard_line_heights(snapshot: &LayoutSnapshot) -> Result<Vec<f64>, Vie
 
     let mut starts = Vec::new();
     let mut current_hard_line = None;
-    for row in &snapshot.rows {
+    for row in snapshot.rows.iter() {
         if !row.y.is_finite() || row.y < 0.0 || !row.height().is_finite() || row.height() <= 0.0 {
             return Err(ViewHeightIndexError::InconsistentLayoutSnapshot(
                 "visual-row geometry must be finite, non-negative, and advancing",
@@ -4358,7 +4373,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             coverage: LayoutCoverage::FullDocument {
                 hard_line_count: hard_lines.len(),
             },
-            rows,
+            rows: Arc::new(rows),
             content_width,
             content_width_is_exact: true,
             row_content_widths,
@@ -6132,7 +6147,7 @@ mod tests {
         .unwrap()
         .unwrap();
 
-        for (new_row, old_row) in refreshed.rows.iter().zip(&old_snapshot.rows) {
+        for (new_row, old_row) in refreshed.rows.iter().zip(old_snapshot.rows.iter()) {
             assert!((new_row.y - (old_row.y + delta)).abs() < 1.0e-5);
             assert!((new_row.baseline - (old_row.baseline + delta)).abs() < 1.0e-5);
             for (new_cluster, old_cluster) in new_row.clusters.iter().zip(&old_row.clusters) {
@@ -7147,7 +7162,7 @@ mod tests {
         assert!(snapshot.rows.iter().all(|row| row.height() > 0.0));
         assert!(snapshot.rows.iter().all(|row| row.carets.len() == 2));
         assert!(snapshot.total_height > 0.0);
-        for row in &snapshot.rows {
+        for row in snapshot.rows.iter() {
             let caret = row.carets[0].point;
             let geometry = snapshot.caret_geometry(caret).unwrap();
             let hit = snapshot
@@ -7596,6 +7611,20 @@ mod tests {
         assert_eq!(engine.shaping_cache_statistics().estimated_bytes, 0);
         assert_eq!(engine.shaping_cache_statistics().fragment_count, 0);
         assert_eq!(view.snapshot().unwrap().rows, rows, "eviction changed the installed geometry");
+    }
+
+    #[test]
+    fn command_snapshot_clones_share_large_geometry_and_revision_changes_detach_it() {
+        let (_, _, view) = lay_out(&"office and proportional text ".repeat(10_000), 600.0);
+        let original = view.snapshot().unwrap();
+        let mut copy = original.clone();
+        assert!(Arc::ptr_eq(&copy.rows, &original.rows));
+        let old_revision = original.revision;
+        let revision = LayoutRevision(old_revision.0 + 1);
+        copy.rebind_revision(revision);
+        assert!(!Arc::ptr_eq(&copy.rows, &original.rows));
+        assert!(original.rows.iter().flat_map(|row| &row.carets).all(|caret| caret.point.layout_revision == old_revision));
+        assert!(copy.rows.iter().flat_map(|row| &row.carets).all(|caret| caret.point.layout_revision == revision));
     }
 
     #[test]
