@@ -111,7 +111,10 @@ impl Drop for ReadySyntaxGate {
     }
 }
 
-fn exercise_syntax_finishing_during_layout(explicit_publication: bool) {
+fn exercise_syntax_finishing_during_layout(
+    explicit_publication: bool,
+    before_install: impl FnOnce(&mut Core<MockTextMeasurementProvider>, ViewId),
+) {
     let _registry = crate::document::syntax::treesitter::package_registry_test_guard();
     struct ContinuingProvider {
         gate: Arc<(Mutex<usize>, Condvar)>,
@@ -188,6 +191,7 @@ fn exercise_syntax_finishing_during_layout(explicit_publication: bool) {
     gate.wait_for(2);
     assert_eq!(core.syntax_statistics().publications, 0);
     assert!(core.syntax_style_names().is_empty(), "unpublished names stay private");
+    before_install(&mut core, view);
 
     if explicit_publication {
         assert!(core.poll_syntax());
@@ -223,12 +227,26 @@ fn exercise_syntax_finishing_during_layout(explicit_publication: bool) {
 
 #[test]
 fn completed_syntax_does_not_invalidate_its_own_layout_installation() {
-    exercise_syntax_finishing_during_layout(false);
+    exercise_syntax_finishing_during_layout(false, |_, _| {});
 }
 
 #[test]
 fn explicit_syntax_publication_still_rejects_prepared_layout() {
-    exercise_syntax_finishing_during_layout(true);
+    exercise_syntax_finishing_during_layout(true, |_, _| {});
+}
+
+#[test]
+fn speculative_prelayout_does_not_publish_completed_syntax() {
+    exercise_syntax_finishing_during_layout(false, |core, view| {
+        let before = core.layout(view).unwrap().clone();
+        let publications = core.syntax_statistics().publications;
+
+        let _ = core.prepare_view_prelayout(view, true).unwrap();
+
+        assert_eq!(core.syntax_statistics().publications, publications);
+        assert_eq!(core.layout(view).unwrap(), &before);
+        assert!(core.layout(view).unwrap().snapshot().is_some());
+    });
 }
 
 fn event(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, key: Key) {

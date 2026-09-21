@@ -48,7 +48,9 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// direction of travel. Call again after installation until None. No text
     /// shaping occurs here, and giant individual lines are left to demand layout.
     pub fn prepare_view_prelayout(&mut self, view_id: ViewId, forward: bool) -> Result<Option<LayoutJobRequest>, CoreError> {
-        self.poll_syntax();
+        // This cache-only path has no presentation-change result for its host.
+        // Syntax publication can invalidate the visible layout, so leave it to
+        // the explicit poll API that notifies frontends before they scroll.
         let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
         refresh_observed_metrics(view);
         let requirements = inspect_layout_provider(&view.engine);
