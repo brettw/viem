@@ -183,8 +183,19 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private void BuildFormatMenu()
     {
         var flyout = new MenuFlyout();
+        bool restoreEditorFocus = false;
+        flyout.Closed += (_, _) => {
+            if (!restoreEditorFocus) return;
+            restoreEditorFocus = false;
+            // Let the flyout finish restoring focus to its button first.
+            DispatcherQueue.TryEnqueue(() => FocusEditor());
+        };
         foreach (uint f in new uint[] { 1, 7, 2, 5, 3, 6, 4 })
-        { var item = new MenuFlyoutItem { Text = CoreDocument.FormatName(f) }; item.Click += (_, _) => Run(() => View?.Format(f)); flyout.Items.Add(item); }
+        {
+            var item = new MenuFlyoutItem { Text = CoreDocument.FormatName(f) };
+            item.Click += (_, _) => { restoreEditorFocus = true; Run(() => View?.Format(f)); };
+            flyout.Items.Add(item);
+        }
         format.Flyout = flyout;
     }
     public void FocusEditor() { if (!disposed) input.Focus(FocusState.Programmatic); }

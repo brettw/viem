@@ -6878,7 +6878,8 @@ decision in this file or an architecture decision record first:
 The status bar exposes a native popup for source format, with a small vertical
 triangle and hover highlight. Encoding and line endings appear only in their
 File submenus, not in the status bar. A choice is a checked core transaction
-shared by the buffer's views and reversible with undo. Format
+shared by the buffer's views and reversible with undo. Completing a format
+selection returns keyboard focus to the document as soon as the popup closes. Format
 selection within a format family or to Text/Code changes interpretation while
 preserving source bytes. An explicit HTML-to-Markdown or Markdown-to-HTML
 conversion instead translates the formatted text and representable styling to
