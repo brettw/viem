@@ -508,7 +508,7 @@ fn revisiting_a_new_empty_list_item_keeps_backspace_semantic() {
 }
 
 #[test]
-fn tab_and_backtab_at_list_start_change_structure_and_stay_in_the_insert_undo_unit() {
+fn tab_and_backtab_inside_a_list_item_change_structure_and_stay_in_the_insert_undo_unit() {
     use viem_core::document::BlockKind;
     for (format, source) in [
         (
@@ -527,7 +527,7 @@ fn tab_and_backtab_at_list_start_change_structure_and_stay_in_the_insert_undo_un
         ),
     ] {
         let (mut core, view) = open(source, format);
-        let at = core.document().text().find("body").unwrap();
+        let at = core.document().text().find("body").unwrap() + 2;
         insert_at(&mut core, view, at);
         input(&mut core, view, InputEvent::Key(Key::Tab));
         let block = &core.document().projection().blocks()[1];
@@ -550,7 +550,7 @@ fn tab_and_backtab_at_list_start_change_structure_and_stay_in_the_insert_undo_un
         ));
         input(&mut core, view, InputEvent::text("new "));
         input(&mut core, view, InputEvent::Key(Key::Escape));
-        assert_eq!(core.document().text(), "parent\nnew body\ntail");
+        assert_eq!(core.document().text(), "parent\nbonew dy\ntail");
         reopen_and_history(&mut core, view, source.as_bytes());
     }
 }
@@ -562,17 +562,100 @@ fn unavailable_list_indentation_is_a_noop_and_tab_elsewhere_inserts_text() {
         (Format::Markdown, "- body"),
     ] {
         let (mut core, view) = open(source, format);
-        insert_at(&mut core, view, 0);
+        insert_at(&mut core, view, 2);
         let revision = core.document().revision();
         input(&mut core, view, InputEvent::Key(Key::Tab));
         input(&mut core, view, InputEvent::Key(Key::BackTab));
         assert_eq!(core.document().revision(), revision);
         assert_eq!(core.document().source_bytes(), source.as_bytes());
-        input(&mut core, view, InputEvent::Key(Key::Right));
-        input(&mut core, view, InputEvent::Key(Key::Tab));
-        assert!(core.document().text().starts_with('b'));
-        assert!(core.document().text().ends_with("ody"));
-        assert_ne!(core.document().source_bytes(), source.as_bytes());
+    }
+
+    let (mut core, view) = open("ordinary", Format::Html);
+    insert_at(&mut core, view, 2);
+    input(&mut core, view, InputEvent::Key(Key::Tab));
+    assert_ne!(core.document().text(), "ordinary");
+}
+
+#[test]
+fn tab_in_a_continuation_paragraph_moves_the_complete_item() {
+    use viem_core::document::BlockKind;
+    let source =
+        "<ul><li>parent</li><li><p>body</p><p>continuation text</p></li><li>tail</li></ul>";
+    let (mut core, view) = open(source, Format::Html);
+    let at = core.document().text().find("continuation").unwrap() + 5;
+    insert_at(&mut core, view, at);
+    input(&mut core, view, InputEvent::Key(Key::Tab));
+    assert_eq!(
+        core.document().text(),
+        "parent\nbody\ncontinuation text\ntail"
+    );
+    assert!(matches!(
+        core.document().projection().blocks()[1].kind,
+        BlockKind::ListItem { level: 1, .. }
+    ));
+    assert!(matches!(
+        core.document().projection().blocks()[2].kind,
+        BlockKind::ListItem {
+            level: 1,
+            item_start: false,
+            ..
+        }
+    ));
+    assert_eq!(core.command_state(view).unwrap().cursor(), at);
+    input(&mut core, view, InputEvent::Key(Key::BackTab));
+    assert!(matches!(
+        core.document().projection().blocks()[1].kind,
+        BlockKind::ListItem { level: 0, .. }
+    ));
+    input(&mut core, view, InputEvent::Key(Key::Escape));
+    reopen_and_history(&mut core, view, source.as_bytes());
+}
+
+#[test]
+fn backspace_unindents_nested_items_before_removing_the_top_level_marker() {
+    use viem_core::document::BlockKind;
+    for (format, source) in [
+        (
+            Format::Html,
+            "<ol><li>top<ol><li>middle<ol><li>body</li></ol></li></ol></li></ol>",
+        ),
+        (Format::Markdown, "1. top\n   1. middle\n      1. body"),
+    ] {
+        let (mut core, view) = open(source, format);
+        let at = core.document().text().find("body").unwrap();
+        insert_at(&mut core, view, at);
+        for expected_level in [1, 0] {
+            input(&mut core, view, InputEvent::Key(Key::Backspace));
+            assert_eq!(core.document().text(), "top\nmiddle\nbody", "{format:?}");
+            assert_eq!(core.command_state(view).unwrap().cursor(), at, "{format:?}");
+            let block = core
+                .document()
+                .projection()
+                .blocks()
+                .iter()
+                .find(|block| block.range.start == at)
+                .unwrap();
+            assert!(
+                matches!(block.kind, BlockKind::ListItem { level, .. } if level == expected_level),
+                "{format:?}: {block:?}"
+            );
+        }
+        input(&mut core, view, InputEvent::Key(Key::Backspace));
+        assert_eq!(core.document().text(), "top\nmiddle\nbody", "{format:?}");
+        let block = core
+            .document()
+            .projection()
+            .blocks()
+            .iter()
+            .find(|block| block.range.start == at)
+            .unwrap();
+        assert!(
+            matches!(block.kind, BlockKind::Paragraph),
+            "{format:?}: {block:?}"
+        );
+        assert_eq!(block.style.0, "Paragraph", "{format:?}");
+        input(&mut core, view, InputEvent::Key(Key::Escape));
+        reopen_and_history(&mut core, view, source.as_bytes());
     }
 }
 
@@ -617,7 +700,7 @@ fn list_indentation_is_replayed_as_structure_by_dot_and_macros() {
 }
 
 #[test]
-fn source_list_body_start_uses_structural_tab_and_preserves_literal_backspace() {
+fn source_list_body_uses_structural_tab_anywhere_and_preserves_literal_backspace() {
     use viem_core::document::BlockKind;
     for (format, source) in [
         (
@@ -631,7 +714,7 @@ fn source_list_body_start_uses_structural_tab_and_preserves_literal_backspace() 
         (Format::MarkdownSource, "- parent\n- **body**\n- tail"),
     ] {
         let (mut core, view) = open(source, format);
-        let at = core.document().text().find("body").unwrap();
+        let at = core.document().text().find("body").unwrap() + 2;
         insert_at(&mut core, view, at);
         for key in [Key::Tab, Key::BackTab] {
             input(&mut core, view, InputEvent::Key(key));
@@ -653,7 +736,7 @@ fn source_list_body_start_uses_structural_tab_and_preserves_literal_backspace() 
             );
             assert_eq!(
                 core.command_state(view).unwrap().cursor(),
-                core.document().text().find("body").unwrap()
+                core.document().text().find("body").unwrap() + 2
             );
         }
         input(&mut core, view, InputEvent::text("new "));
@@ -661,7 +744,7 @@ fn source_list_body_start_uses_structural_tab_and_preserves_literal_backspace() 
         reopen_and_history(&mut core, view, source.as_bytes());
 
         let (mut core, view) = open(source, format);
-        let at = core.document().text().find("body").unwrap();
+        let at = core.document().text().find("body").unwrap() + 2;
         insert_at(&mut core, view, at);
         input(&mut core, view, InputEvent::Key(Key::Backspace));
         let mut expected = source.to_owned();

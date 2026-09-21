@@ -15,6 +15,73 @@ use crate::document::{
 use std::collections::BTreeSet;
 use std::ops::Range;
 
+fn lower_alpha(mut ordinal: u64) -> Option<String> {
+    if ordinal == 0 {
+        return None;
+    }
+    let mut reversed = Vec::new();
+    while ordinal > 0 {
+        ordinal -= 1;
+        reversed.push((b'a' + (ordinal % 26) as u8) as char);
+        ordinal /= 26;
+    }
+    reversed.reverse();
+    Some(reversed.into_iter().collect())
+}
+
+fn lower_roman(ordinal: u64) -> Option<String> {
+    if !(1..=3_999).contains(&ordinal) {
+        return None;
+    }
+    const DIGITS: &[(u64, &str)] = &[
+        (1_000, "m"),
+        (900, "cm"),
+        (500, "d"),
+        (400, "cd"),
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    ];
+    let mut remaining = ordinal;
+    let mut result = String::new();
+    for &(value, spelling) in DIGITS {
+        while remaining >= value {
+            result.push_str(spelling);
+            remaining -= value;
+        }
+    }
+    Some(result)
+}
+
+/// Generated list furniture follows the four shipped structural style levels.
+/// Deeper authored lists reuse the fourth style rather than cycling again.
+fn list_marker_decoration(ordered: bool, ordinal: u64, level: u8) -> String {
+    let level = level.min(3);
+    if !ordered {
+        return match level {
+            0 | 3 => "•",
+            1 => "◦",
+            2 => "▪",
+            _ => unreachable!(),
+        }
+        .into();
+    }
+    let number = match level {
+        1 => lower_alpha(ordinal),
+        2 => lower_roman(ordinal),
+        0 | 3 => None,
+        _ => unreachable!(),
+    }
+    .unwrap_or_else(|| ordinal.to_string());
+    format!("{number}.")
+}
+
 /// Paint-only character values deliberately kept out of shaping cache keys.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedTextPaint {
@@ -482,14 +549,11 @@ impl DocumentLayoutStyles {
                     crate::document::BlockKind::ListItem {
                         ordered,
                         ordinal,
+                        level,
                         item_start: true,
                         marker_is_decoration: true,
                         ..
-                    } => Some(if ordered {
-                        format!("{ordinal}.")
-                    } else {
-                        "•".into()
-                    }),
+                    } => Some(list_marker_decoration(ordered, ordinal, level)),
                     _ => None,
                 },
                 marker_paint: paint_style(&paragraph.character),

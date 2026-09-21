@@ -3644,12 +3644,15 @@ impl CommandInterpreter {
         key: Key,
         request: ModelRequest,
     ) -> Result<Option<PreparedModelTransaction>, DocumentError> {
+        let list_indent = matches!(&request, ModelRequest::IndentList { .. });
+        let unsupported_is_no_op =
+            list_indent && matches!(key, Key::Tab | Key::BackTab | Key::Backspace);
         match document.prepare_model_request(request) {
             Ok(prepared) => Ok(Some(prepared)),
             // Reaching the list nesting limit, or an item with no suitable
             // parent/sibling, makes the structural key a harmless no-op.
             Err(ModelTransactionError::Document(DocumentError::UnsupportedFormatting))
-                if matches!(key, Key::Tab | Key::BackTab) => Ok(None),
+                if unsupported_is_no_op => Ok(None),
             Err(error) => Err(command_document_error(error)),
         }
     }

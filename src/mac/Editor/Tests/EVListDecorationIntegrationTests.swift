@@ -17,6 +17,10 @@ final class EVListDecorationIntegrationTests: XCTestCase {
         return (backend, surface)
     }
 
+    private func markerLabels(_ session: EVCoreViewSession) throws -> String {
+        String(decoding: try session.layoutExport().decorationLabels, as: UTF8.self)
+    }
+
     func testMarkersExportAsNonTextFurnitureIncludingEmptyItemsAndSourceToggle() throws {
         let source = "<ol start='9'><li>Alpha</li><li></li><li>Third</li></ol>"
         let (backend, surface) = try makeSurface(source)
@@ -45,30 +49,82 @@ final class EVListDecorationIntegrationTests: XCTestCase {
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
     }
 
-    func testNativeTabAndShiftTabIndentAtTheVisibleItemStart() throws {
-        let (_, surface) = try makeSurface("<ul><li>Parent</li><li><b>Body</b></li></ul>")
+    func testNativeTabAndShiftTabIndentInsideTheVisibleItem() throws {
+        let (backend, surface) = try makeSurface("<ol><li>Parent</li><li><b>Body</b></li></ol>")
         let session = try XCTUnwrap(surface.session)
-        surface.performInput { _ = try session.sendText("ji") }
+        surface.performInput { _ = try session.sendText("jlli") }
         let original = try session.layoutExport()
         let originalX = try XCTUnwrap(original.decorations.last).x
         let cursor = surface.viewPresentation.cursor_utf8_offset
+        XCTAssertEqual(try markerLabels(session), "1.2.")
         let tab = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
             modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
             characters: "\t", charactersIgnoringModifiers: "\t", isARepeat: false, keyCode: 48))
         surface.editorView.keyDown(with: tab)
         XCTAssertGreaterThan(try XCTUnwrap(try session.layoutExport().decorations.last).x, originalX)
+        XCTAssertEqual(try markerLabels(session), "1.a.")
         XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, cursor)
         let backtab = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
             modifierFlags: .shift, timestamp: 0, windowNumber: 0, context: nil,
             characters: "\t", charactersIgnoringModifiers: "\t", isARepeat: false, keyCode: 48))
         surface.editorView.keyDown(with: backtab)
         XCTAssertEqual(try XCTUnwrap(try session.layoutExport().decorations.last).x, originalX, accuracy: 0.001)
+        XCTAssertEqual(try markerLabels(session), "1.2.")
         surface.editorView.doCommand(by: #selector(NSResponder.insertTab(_:)))
         XCTAssertGreaterThan(try XCTUnwrap(try session.layoutExport().decorations.last).x, originalX)
+        XCTAssertEqual(try markerLabels(session), "1.a.")
         surface.editorView.doCommand(by: #selector(NSResponder.insertBacktab(_:)))
         XCTAssertEqual(try XCTUnwrap(try session.layoutExport().decorations.last).x, originalX, accuracy: 0.001)
+        XCTAssertEqual(try markerLabels(session), "1.2.")
         XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, cursor)
+        XCTAssertEqual(try backend.formattedText(), "Parent\nBody")
+        XCTAssertFalse(String(decoding: try backend.serializedSource(typeName: EVDocument.htmlType), as: UTF8.self).contains("\t"))
         XCTAssertNil(surface.commandOutput)
+    }
+
+    func testBackspaceAtNestedItemStartUnindentsThenRemovesTheTopLevelMarker() throws {
+        let source = "<ol data-keep='yes'><li>Parent<ol><li>Child<ol><li><b>Deep</b></li></ol></li></ol></li></ol><!--keep-->"
+        let (backend, surface) = try makeSurface(source)
+        let session = try XCTUnwrap(surface.session)
+        let text = "Parent\nChild\nDeep"
+        let deepStart = "Parent\nChild\n".utf8.count
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: deepStart, length: 0))
+        surface.performInput { _ = try session.sendText("i") }
+        let cursor = surface.viewPresentation.cursor_utf8_offset
+
+        XCTAssertEqual(try backend.formattedText(), text)
+        XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "NumberedList3")
+        XCTAssertEqual(try markerLabels(session), "1.a.i.")
+
+        surface.editorView.doCommand(by: #selector(NSResponder.deleteBackward(_:)))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, cursor)
+        XCTAssertEqual(try backend.formattedText(), text)
+        XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "NumberedList2")
+        XCTAssertEqual(try markerLabels(session), "1.a.b.")
+
+        surface.editorView.doCommand(by: #selector(NSResponder.deleteBackward(_:)))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, cursor)
+        XCTAssertEqual(try backend.formattedText(), text)
+        XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "NumberedList1")
+        XCTAssertEqual(try markerLabels(session), "1.a.2.")
+
+        surface.editorView.doCommand(by: #selector(NSResponder.deleteBackward(_:)))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, cursor)
+        XCTAssertEqual(try backend.formattedText(), text)
+        XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "Paragraph")
+        XCTAssertEqual(try markerLabels(session), "1.a.")
+        XCTAssertNil(surface.commandOutput)
+
+        let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
+        XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("data-keep='yes'"))
+        XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("<!--keep-->"))
+        let (reopened, reopenedSurface) = try makeSurface(String(decoding: saved, as: UTF8.self))
+        reopenedSurface.editorView.setAccessibilitySelectedTextRange(NSRange(location: deepStart, length: 0))
+        XCTAssertEqual(try reopened.formattedText(), text)
+        XCTAssertEqual(try XCTUnwrap(reopenedSurface.session).selectedNamedStyles().paragraph?.rawValue, "Paragraph")
     }
 
     func testEscapeKeepsTheNativeCaretOnTheTerminalEmptyParagraph() throws {

@@ -40,6 +40,7 @@ internal static class StyleAndSettingsTests
     internal static async Task Run(EditorPane pane, EditorWindow window, Preferences preferences)
     {
         window.Activate(); pane.FocusEditor(); await Task.Delay(100);
+        byte[] sourceBeforeInspector = pane.Document.Source(pane.Document.State.document_revision);
         await InputRoutingTests.Key(VirtualKey.F8); await Task.Delay(350);
         var styles = window.StyleInspector ?? throw new InvalidOperationException("F8 did not open the style inspector.");
         // These chrome/control checks inspect Base Paragraph explicitly. F8 now
@@ -67,6 +68,7 @@ internal static class StyleAndSettingsTests
         styles.ParagraphTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await Task.Delay(200);
         Check(styles.ParagraphPanel.Visibility == Visibility.Visible && styles.CharacterPanel.Visibility == Visibility.Collapsed, "native Paragraph tab displays paragraph controls");
         Check(styles.AppWindow.ClientSize == characterSize, "character and paragraph tabs occupy the same fixed window size");
+        await LineSpacingChecks(pane, styles, sourceBeforeInspector);
         Check(styles.RestoreDefaults.Visibility == Visibility.Collapsed, "document styles do not offer a global reset");
         Check(!styles.VisitParent.IsEnabled && !styles.VisitNext.IsEnabled, "base paragraph has no relationship navigation targets");
         await WindowCapture.Save(hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".styles-paragraph.png");
@@ -82,10 +84,90 @@ internal static class StyleAndSettingsTests
             && KeyPolicy.Route(VirtualKey.F8, false, false, false, true).Kind == VIEM_KEY_FUNCTION, "modified and literal-next F8 remain core function keys");
         await FontChecks(pane, preferences);
         await FormatMenuTests.Run(preferences);
+        await ListInteractionTests.Run(preferences);
         await CodeStyleChecks(pane, preferences);
         await StyleInspectorBehaviorTests.Run(pane, preferences);
 
         await RunSettings(pane, window, preferences);
+    }
+
+    internal static async Task RunLineSpacing(EditorPane pane, Preferences preferences)
+    {
+        byte[] sourceBeforeInspector = pane.Document.Source(pane.Document.State.document_revision);
+        var styles = new StyleWindow(pane.View!, preferences, followCaret: false);
+        try {
+            styles.Activate(); await Task.Delay(200);
+            styles.StylePicker.SelectedItem = ((StyleDefinition[])styles.StylePicker.ItemsSource)
+                .Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
+            styles.ParagraphTab.IsChecked = true; await Task.Delay(100);
+            Check(styles.ParagraphPanel.Visibility == Visibility.Visible, "focused line-spacing diagnostics display paragraph controls");
+            await LineSpacingChecks(pane, styles, sourceBeforeInspector);
+        }
+        finally { styles.Close(); }
+    }
+
+    private static async Task LineSpacingChecks(EditorPane pane, StyleWindow styles, byte[] sourceBeforeInspector)
+    {
+        var lineSpacing = Children<ComboBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Line spacing");
+        var lineSpacingAmount = Children<NumberBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Line spacing amount");
+        var lineSpacingUnits = Children<TextBlock>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Line spacing units");
+        var spaceBefore = Children<NumberBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Space before");
+        var spaceAfter = Children<NumberBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Space after");
+        var startIndent = Children<NumberBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Start indent");
+        Check(spaceBefore.Width < startIndent.Width && spaceAfter.Width < startIndent.Width,
+            "paragraph spacing fields are narrower to preserve the fixed inspector width");
+        Check(sourceBeforeInspector.AsSpan().SequenceEqual(pane.Document.Source(pane.Document.State.document_revision)),
+            "opening and displaying style controls does not rewrite document source");
+        Check(lineSpacing.SelectedIndex == 0 && lineSpacingAmount.IsEnabled && Math.Abs(lineSpacingAmount.Minimum - .1) < .0001
+            && Math.Abs(lineSpacingAmount.Value - 1) < .0001
+            && lineSpacingAmount.Text == "1" && Math.Abs(lineSpacingAmount.SmallChange - .1) < .0001 && lineSpacingUnits.Text == "\u00D7",
+            "Normal line spacing is an enabled compact 1 multiplier with tenth steps");
+        lineSpacingAmount.Value += lineSpacingAmount.SmallChange; await Task.Delay(100);
+        Check(lineSpacing.SelectedIndex == 1 && Math.Abs(lineSpacingAmount.Value - 1.1) < .0001,
+            "stepping Normal away from 1 changes it to a Multiple value by 0.1");
+        lineSpacingAmount.Value = .7999999523162842; await Task.Delay(100);
+        Check(lineSpacing.SelectedIndex == 1 && Math.Abs(lineSpacingAmount.Value - .8) < .0001
+            && lineSpacingAmount.Text.Length <= 3 && lineSpacingAmount.Text.StartsWith("0") && lineSpacingAmount.Text.EndsWith("8"),
+            "Multiple line spacing rounds float noise to one compact decimal place");
+        lineSpacingAmount.Value = 1; await Task.Delay(100);
+        Check(lineSpacing.SelectedIndex == 0 && lineSpacingAmount.IsEnabled && lineSpacingAmount.Text == "1",
+            "a Multiple value of exactly 1 changes back to Normal without disabling its amount");
+        lineSpacing.SelectedIndex = 1; await Task.Delay(100);
+        Check(lineSpacing.SelectedIndex == 1 && Math.Abs(lineSpacingAmount.Value - 1.1) < .0001,
+            "choosing Multiple from Normal starts at 1.1");
+        lineSpacingAmount.Value -= lineSpacingAmount.SmallChange; await Task.Delay(100);
+        Check(lineSpacing.SelectedIndex == 0 && Math.Abs(lineSpacingAmount.Value - 1) < .0001,
+            "stepping a Multiple value down to 1 changes it to Normal");
+        var nearNormal = CoreView.Enum(VIEM_STYLE_VALUE_LINE_SPACING, VIEM_STYLE_LINE_SPACING_MULTIPLIER);
+        nearNormal.number = .99999994f;
+        var revisionBeforeNearNormal = pane.Document.State.document_revision;
+        pane.View!.EditStyle((StyleDefinition)styles.StylePicker.SelectedItem, VIEM_STYLE_EDIT_SET_DECLARATION,
+            VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING, nearNormal);
+        await Task.Delay(100);
+        Check(pane.Document.State.document_revision == revisionBeforeNearNormal + 1 && lineSpacing.SelectedIndex == 0
+            && Math.Abs(lineSpacingAmount.Value - 1) < .0001 && lineSpacingAmount.Text == "1",
+            "an existing multiplier that rounds to 1 displays as Normal without a presentation-time rewrite");
+        lineSpacing.SelectedIndex = 1; await Task.Delay(100);
+        Check(lineSpacing.SelectedIndex == 1 && Math.Abs(lineSpacingAmount.Value - 1.1) < .0001,
+            "choosing Multiple from a normalized legacy 1 multiplier starts at 1.1");
+        lineSpacing.SelectedIndex = 3; await Task.Delay(100);
+        Check(lineSpacingAmount.Minimum == 0 && Math.Abs(lineSpacingAmount.SmallChange - 1) < .0001 && lineSpacingUnits.Text == "pt",
+            "point-based line spacing permits zero, uses point units, and keeps whole-point steps");
+        lineSpacingAmount.Value = 0; await Task.Delay(100);
+        Check(lineSpacing.SelectedIndex == 3 && lineSpacingAmount.Value == 0 && lineSpacingAmount.Text == "0",
+            "Exact line spacing accepts and compactly displays zero points");
+        lineSpacingAmount.Value = 19.299999237060547; await Task.Delay(100);
+        Check(Math.Abs(lineSpacingAmount.Value - 19.3) < .0001 && lineSpacingAmount.Text.Length <= 4
+            && lineSpacingAmount.Text.StartsWith("19") && lineSpacingAmount.Text.EndsWith("3"),
+            "point-based line spacing also rounds float noise to one compact decimal place");
+        lineSpacingAmount.Value = 19; await Task.Delay(100);
+        Check(lineSpacingAmount.Text == "19", "whole point line spacing omits an unnecessary fractional part");
+        lineSpacing.SelectedIndex = 2; await Task.Delay(100);
+        lineSpacingAmount.Value = 0; await Task.Delay(100);
+        Check(lineSpacing.SelectedIndex == 2 && lineSpacingAmount.Minimum == 0 && lineSpacingAmount.Value == 0
+            && lineSpacingAmount.Text == "0" && lineSpacingUnits.Text == "pt",
+            "At least line spacing also accepts and compactly displays zero points");
+        lineSpacing.SelectedIndex = 0; await Task.Delay(100);
     }
 
     internal static async Task RunSettings(EditorPane pane, EditorWindow window, Preferences preferences)

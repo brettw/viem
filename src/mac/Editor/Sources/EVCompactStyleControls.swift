@@ -119,6 +119,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private let alignment = NSSegmentedControl()
     private let lineKind = NSPopUpButton()
     private let lineValue = NSTextField()
+    private let lineUnit = EVStyleControlLabel(labelWithString: "")
     private var fontFaces: [EVFontFace] = []
     private var isBaseParagraph: Bool { definition?.flags.contains(.baseParagraph) == true }
     private let sectionSpacing = NSFont.systemFontSize
@@ -205,10 +206,27 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         lineValue.tag = Int(EVStyleProperty.paragraphLineSpacing.rawValue)
         lineValue.setAccessibilityLabel("Line spacing value")
         lineValue.widthAnchor.constraint(equalToConstant: 48).isActive = true
-        let line = labeled("Line spacing", control: overrideGroup(.paragraphLineSpacing, control: row([icon(.lineSpacing), lineKind, lineValue, stepper(.paragraphLineSpacing, title: "Line spacing value")], spacing: 3)), property: .paragraphLineSpacing)
+        lineUnit.onClick = { [weak self] in
+            guard let self else { return }
+            self.activateFromLabel(.paragraphLineSpacing, label: self.lineUnit)
+        }
+        lineUnit.textColor = .secondaryLabelColor
+        lineUnit.font = .systemFont(ofSize: 11)
+        lineUnit.setAccessibilityLabel("Line spacing unit")
+        lineUnit.setContentCompressionResistancePriority(.required, for: .horizontal)
+        lineUnit.widthAnchor.constraint(equalToConstant: 14).isActive = true
+        let lineControls = row([
+            icon(.lineSpacing), lineKind, lineValue,
+            stepper(.paragraphLineSpacing, title: "Line spacing value"), lineUnit,
+        ], spacing: 3)
+        let line = labeled(
+            "Line spacing",
+            control: overrideGroup(.paragraphLineSpacing, control: lineControls),
+            property: .paragraphLineSpacing
+        )
         let spacing = row([
-            numeric(.paragraphSpacingBefore, title: "Space before", icon: .before),
-            numeric(.paragraphSpacingAfter, title: "Space after", icon: .after), line,
+            numeric(.paragraphSpacingBefore, title: "Space before", icon: .before, width: 56),
+            numeric(.paragraphSpacingAfter, title: "Space after", icon: .after, width: 56), line,
         ])
         configure(paragraphView, rows: [paraToolbar, separator(), indents, spacing])
     }
@@ -216,6 +234,8 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     func configure(_ definition: EVStyleDefinition?, theme: EVTheme = .paper, sourceFormat: EVSourceFormat = .plainText, documentID: UInt64? = nil) {
         fallbackPopover?.close()
         fallbackPopover = nil
+        let activeLineEditor = lineValue.currentEditor() as? NSTextView
+        let activeLineDraft = activeLineEditor.map { ($0.string, $0.selectedRange()) }
         self.theme = theme
         self.sourceFormat = sourceFormat
         let wasUpdating = updating
@@ -259,13 +279,27 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         alignment.isEnabled = isOverridden(.paragraphAlignment)
         lineKind.isEnabled = isOverridden(.paragraphLineSpacing)
         if case let .lineSpacing(value)? = definition?.properties[.paragraphLineSpacing]?.effective {
-            lineKind.selectItem(withTag: Int(value.kind))
-            if value.kind != UInt32(VIEM_STYLE_LINE_SPACING_NORMAL) { lastLineValues[value.kind] = value.value }
-            lineValue.stringValue = value.kind == UInt32(VIEM_STYLE_LINE_SPACING_NORMAL) ? "" : Self.numberText(value.value)
-        } else { lineKind.selectItem(at: 0); lineValue.stringValue = "" }
+            let displayKind = Self.displayLineSpacingKind(value)
+            let displayValue = displayKind == UInt32(VIEM_STYLE_LINE_SPACING_NORMAL)
+                ? Float(1) : Self.roundedLineSpacingValue(value.value)
+            lineKind.selectItem(withTag: Int(displayKind))
+            if value.kind != UInt32(VIEM_STYLE_LINE_SPACING_NORMAL) {
+                lastLineValues[value.kind] = Self.roundedLineSpacingValue(value.value)
+            }
+            lineValue.stringValue = Self.lineSpacingNumberText(displayValue)
+        } else { lineKind.selectItem(at: 0); lineValue.stringValue = "1" }
         if !isOverridden(.paragraphLineSpacing) { lineKind.select(nil); lineValue.stringValue = "" }
-        lineValue.isEnabled = isOverridden(.paragraphLineSpacing) && lineKind.indexOfSelectedItem > 0
+        lineValue.isEnabled = isOverridden(.paragraphLineSpacing) && lineKind.indexOfSelectedItem >= 0
+        updateLineSpacingUnit(lineKind.selectedItem.map { UInt32($0.tag) })
         synchronizeStepper(.paragraphLineSpacing, value: Double(Float(lineValue.stringValue) ?? 0), enabled: lineValue.isEnabled)
+        if let activeLineEditor, let (draft, selection) = activeLineDraft {
+            activeLineEditor.string = draft
+            let start = min(selection.location, draft.utf16.count)
+            activeLineEditor.setSelectedRange(NSRange(
+                location: start,
+                length: min(selection.length, draft.utf16.count - start)
+            ))
+        }
     }
 
     private func refreshFontControls() {
@@ -412,9 +446,11 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
 
     private func synchronizeStepper(_ property: EVStyleProperty, value: Double, enabled: Bool) {
         guard let control = steppers[property] else { return }
-        let multiplier = property == .paragraphLineSpacing && lineKind.selectedItem?.tag == Int(VIEM_STYLE_LINE_SPACING_MULTIPLIER)
-        let positive = property == .characterSize || multiplier
-        control.increment = multiplier || property == .characterLetterSpacing ? 0.1 : 1
+        let relativeLineSpacing = property == .paragraphLineSpacing
+            && (lineKind.selectedItem?.tag == Int(VIEM_STYLE_LINE_SPACING_NORMAL)
+                || lineKind.selectedItem?.tag == Int(VIEM_STYLE_LINE_SPACING_MULTIPLIER))
+        let positive = property == .characterSize || relativeLineSpacing
+        control.increment = relativeLineSpacing || property == .characterLetterSpacing ? 0.1 : 1
         control.minValue = positive ? min(max(value, Double(Float.leastNormalMagnitude)), sourceFormat == .rtf && property == .characterSize ? 0.5 : 0.1)
             : property == .paragraphLineSpacing ? 0 : -Double(Float.greatestFiniteMagnitude)
         control.maxValue = Double(Float.greatestFiniteMagnitude)
@@ -423,11 +459,27 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         setHelp(control, property)
     }
 
+    private func updateLineSpacingUnit(_ kind: UInt32?) {
+        if kind == UInt32(VIEM_STYLE_LINE_SPACING_NORMAL)
+            || kind == UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER) {
+            lineUnit.stringValue = "×"
+            return
+        }
+        if kind == UInt32(VIEM_STYLE_LINE_SPACING_AT_LEAST) || kind == UInt32(VIEM_STYLE_LINE_SPACING_EXACT) {
+            lineUnit.stringValue = "pt"
+            return
+        }
+        lineUnit.stringValue = ""
+    }
+
     @objc private func stepperChanged(_ sender: EVStyleStepper) {
         guard !updating, editable, let property = EVStyleProperty(rawValue: UInt32(sender.tag)) else { return }
         let field = property == .paragraphLineSpacing ? lineValue : fields[property]
         guard let field else { return }
-        field.stringValue = Self.numberText(Float(sender.doubleValue))
+        field.stringValue = property == .paragraphLineSpacing
+            ? Self.lineSpacingNumberText(Float(sender.doubleValue))
+            : Self.numberText(Float(sender.doubleValue))
+        if property == .paragraphLineSpacing { lineSpacingChanged(sender); return }
         controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: field))
     }
 
@@ -573,6 +625,22 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private func string(_ property: EVStyleProperty) -> String { if case let .string(value)? = definition?.properties[property]?.effective { return value }; return "" }
     private func stringList(_ property: EVStyleProperty) -> [String] { if case let .stringList(value)? = definition?.properties[property]?.effective { return value }; return [] }
     private static func numberText(_ value: Float) -> String { String(format: "%g", value) }
+    private static func roundedLineSpacingValue(_ value: Float) -> Float {
+        guard value.isFinite else { return value }
+        return Float((Double(value) * 10).rounded() / 10)
+    }
+    private static func lineSpacingNumberText(_ value: Float) -> String {
+        let rounded = roundedLineSpacingValue(value)
+        guard rounded.isFinite else { return numberText(rounded) }
+        if rounded.rounded() == rounded { return numberText(rounded) }
+        return String(format: "%.1f", rounded)
+    }
+    private static func displayLineSpacingKind(_ value: EVLineSpacing) -> UInt32 {
+        let normal = UInt32(VIEM_STYLE_LINE_SPACING_NORMAL)
+        let multiplier = UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER)
+        guard value.kind == multiplier else { return value.kind }
+        return roundedLineSpacingValue(value.value) == 1 ? normal : multiplier
+    }
     private func send(_ mutations: [EVStyleMutation]) { guard !updating, editable else { return }; onMutations?(mutations) }
 
     @objc private func familyChanged(_ sender: Any?) {
@@ -661,24 +729,51 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     }
     @objc private func lineSpacingChanged(_ sender: Any?) {
         guard let item = lineKind.selectedItem else { return }
-        let kind = UInt32(item.tag)
-        let normal = kind == UInt32(VIEM_STYLE_LINE_SPACING_NORMAL)
+        let selectedKind = UInt32(item.tag)
+        let normalKind = UInt32(VIEM_STYLE_LINE_SPACING_NORMAL)
+        let multiplierKind = UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER)
+        let relative = selectedKind == normalKind || selectedKind == multiplierKind
+        let previousDisplayKind: UInt32? = {
+            guard case let .lineSpacing(value)? = definition?.properties[.paragraphLineSpacing]?.effective else { return nil }
+            return Self.displayLineSpacingKind(value)
+        }()
         var value = Float(lineValue.stringValue)
-        if sender is NSPopUpButton, !normal {
-            value = lastLineValues[kind] ?? (kind == UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER) ? 1 : number(.characterSize, fallback: 14) * 1.2)
-            lineValue.stringValue = Self.numberText(value!)
+        if sender is NSPopUpButton {
+            if selectedKind == normalKind {
+                value = 1
+            } else if selectedKind == multiplierKind {
+                let prior = lastLineValues[multiplierKind] ?? 1.1
+                value = previousDisplayKind == normalKind || Self.roundedLineSpacingValue(prior) == 1 ? 1.1 : prior
+            } else {
+                value = lastLineValues[selectedKind] ?? number(.characterSize, fallback: 14) * 1.2
+            }
         }
-        let valid = value.map { $0.isFinite && (kind == UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER) ? $0 > 0 : $0 >= 0) } == true
-        guard normal || valid else {
+        let rawValid = value.map { $0.isFinite && (relative ? $0 > 0 : $0 >= 0) } == true
+        guard rawValid, let rawValue = value else {
             lineValue.textColor = .systemRed
             steppers[.paragraphLineSpacing]?.isEnabled = false
             hasInvalidDraft = true
             return
         }
-        if !normal, let value { lastLineValues[kind] = value }
+        let value = Self.roundedLineSpacingValue(rawValue)
+        guard !relative || value > 0 else {
+            lineValue.textColor = .systemRed
+            steppers[.paragraphLineSpacing]?.isEnabled = false
+            hasInvalidDraft = true
+            return
+        }
+        let kind = relative && value == 1 ? normalKind : (relative ? multiplierKind : selectedKind)
+        lineKind.selectItem(withTag: Int(kind))
+        let isActiveTextDraft = sender as? NSTextField === lineValue && lineValue.currentEditor() != nil
+        if !isActiveTextDraft { lineValue.stringValue = Self.lineSpacingNumberText(value) }
+        updateLineSpacingUnit(kind)
+        if kind != normalKind { lastLineValues[kind] = value }
         hasInvalidDraft = false
         lineValue.textColor = .labelColor
-        send([.setDeclaration(.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: kind, value: normal ? 0 : value!)))])
+        let valueEnabled = isOverridden(.paragraphLineSpacing)
+        lineValue.isEnabled = valueEnabled
+        synchronizeStepper(.paragraphLineSpacing, value: Double(value), enabled: valueEnabled)
+        send([.setDeclaration(.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: kind, value: kind == normalKind ? 0 : value)))])
     }
 
     func controlTextDidBeginEditing(_ notification: Notification) {
@@ -691,6 +786,16 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             return
         }
         if !updating, notification.object as? NSComboBox === family { familyChanged(family) }
+        if !updating, notification.object as? NSTextField === lineValue, !hasInvalidDraft,
+           case let .lineSpacing(value)? = definition?.properties[.paragraphLineSpacing]?.effective {
+            let displayKind = Self.displayLineSpacingKind(value)
+            let displayValue = displayKind == UInt32(VIEM_STYLE_LINE_SPACING_NORMAL)
+                ? Float(1) : Self.roundedLineSpacingValue(value.value)
+            lineKind.selectItem(withTag: Int(displayKind))
+            lineValue.stringValue = Self.lineSpacingNumberText(displayValue)
+            updateLineSpacingUnit(displayKind)
+            synchronizeStepper(.paragraphLineSpacing, value: Double(displayValue), enabled: lineValue.isEnabled)
+        }
         // AppKit may end a temporary field editor while forwarding the first
         // native click. The wrapper owns that transition's gesture lifetime.
         if !inheritedGestureActive { onEditEnded?() }

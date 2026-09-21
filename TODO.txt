@@ -1,8 +1,11 @@
-The line spacing in the style editor should accept floating point numbers like “1.1”
-
 The “indent” and “unindent” menu items seem to never be enabled. These should increase or decrease the bullet/numbering indentation. So if I have two list items 1. and 2., and I’m on line 2 and I press “indent”, it should make the 2nd item a nested item under number 2, and start numbering at “a” (use HTML rules for the styles for various bullet and number indentation levels).
 
 If I type “tab” or “shift-tab” inside a bulleted or numbered list paragraph, it should increase (tab) or decrease (shift-tab) the indent level. If I backspace at the beginning of a bulleted or numbered list, it should unindent until it gets to the top level, and then at the top level it should remove the bullet/number (as today).
 
-When I paste in WYSIWYG mode, it seems to require that the format matches. It should never require this and pasting of text should always be possible. TODO FIGURE OUT PASTE RULES it should paste using the source
-u can format (if it was copied from Viem so the format is readable).
+When I paste in WYSIWYG mode (including RTF), it seems to require that the format matches. It should never require this and pasting of text should always be possible. In non-WYSIWYG modes, always just paste plain text and this should be easy. In WYSIWYG modes,: when "paste and match style" is selected, just paste as plain text in all cases. This should always be possible. When pasting plain text in WYSIWYG modes (either because the source is plain text or because I picked "match style"), treat formatting from a paste as you would type, so if you paste into a heading (following paragraph style = normal) and there is a newline in the text, that newlilne should change the style to a normal paragraph.
+
+Our cut/copy paste commands should copy formatted text when in WYSIWYG modes. In plain text/code modes we should never include formatting. On Mac it should include an AttributedString version so other apps will get our formatting. We can also include some custom clipboard data for Viem to interchange with itself so it knows style information.
+
+When pasting in WYSIWYG modes, it should apply the paragraph and character styles of the original but keep the style definitions of the pasted-into doc. So if I paste a heading and a code block from doc A to doc B, it should have the same heading style applied, but that style will be doc B's definition which may have a different font,e tc. EXplicit font and size information should be copied as well.
+
+Full paragraph copies should include the paragraph style with the same rules as the character style pasting. Partial paragraphs should keep the character style of the existing paragraph until a newline. If I pase something that's a partial paragraph into the middle of an existing paragraph, the existing paragraph should keep its style, but then the new pasted paragraph should get the source document's style. If the pasted text includes a style type that doesn't exist in the new document, define it in the new document with the same format as the source document.

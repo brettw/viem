@@ -53,6 +53,8 @@ internal sealed partial class EditorWindow
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SYNTAX_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SCROLL_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SETTINGS_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_LINE_SPACING_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_LISTS_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") is "1" or "all")
                     {
                         if (Environment.GetEnvironmentVariable("VIEM_TEST_STARTUP_ONLY") == "1")
@@ -71,6 +73,10 @@ internal sealed partial class EditorWindow
                         }
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "1")
                             await Diagnostics.StyleInspectorBehaviorTests.Run(pane, preferences);
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_LINE_SPACING_ONLY") == "1")
+                            await Diagnostics.StyleAndSettingsTests.RunLineSpacing(pane, preferences);
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_LISTS_ONLY") == "1")
+                            await Diagnostics.ListInteractionTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_SETTINGS_ONLY") == "1")
                             await Diagnostics.StyleAndSettingsTests.RunSettings(pane, this, preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_SCROLL_ONLY") == "1")

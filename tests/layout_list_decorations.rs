@@ -14,6 +14,18 @@ fn label(row: &viem_core::layout::VisualRow) -> String {
         .map(|item| item.text.as_str())
         .collect()
 }
+fn laid_out_labels(document: &Document) -> Vec<String> {
+    let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+    let mut view = ViewLayout::new(800., 500.);
+    engine.relayout(document, &mut view).unwrap();
+    view.snapshot()
+        .unwrap()
+        .rows
+        .iter()
+        .map(label)
+        .filter(|label| !label.is_empty())
+        .collect()
+}
 
 #[test]
 fn labels_are_furniture_outside_body_selection_and_empty_item_carets() {
@@ -74,6 +86,32 @@ fn labels_are_furniture_outside_body_selection_and_empty_item_carets() {
         .iter()
         .all(|rect| rect.rect.x >= snapshot.rows[0].paragraph_content_x));
     assert_eq!(document.source_bytes(), source.as_bytes());
+}
+
+#[test]
+fn nested_list_markers_follow_the_four_structural_depth_styles() {
+    let ordered = html(
+        "<ol><li>one<ol><li>two<ol><li>three<ol><li>four<ol><li>five</li></ol></li></ol></li></ol></li></ol></li></ol>",
+    );
+    assert_eq!(laid_out_labels(&ordered), ["1.", "a.", "i.", "1.", "1."]);
+
+    let bullets = html(
+        "<ul><li>one<ul><li>two<ul><li>three<ul><li>four<ul><li>five</li></ul></li></ul></li></ul></li></ul></li></ul>",
+    );
+    assert_eq!(laid_out_labels(&bullets), ["•", "◦", "▪", "•", "•"]);
+}
+
+#[test]
+fn alphabetic_and_roman_markers_format_ordinals_and_fall_back_safely() {
+    let document = html(
+        "<ol><li>root<ol start='26'><li>z</li><li>aa<ol start='4'><li>iv</li></ol></li></ol></li></ol>",
+    );
+    assert_eq!(laid_out_labels(&document), ["1.", "z.", "aa.", "iv."]);
+
+    let roman_overflow = html(
+        "<ol><li>root<ol><li>alpha<ol start='4000'><li>fallback</li></ol></li></ol></li></ol>",
+    );
+    assert_eq!(laid_out_labels(&roman_overflow), ["1.", "a.", "4000."]);
 }
 
 #[test]
