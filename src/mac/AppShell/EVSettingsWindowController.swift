@@ -21,13 +21,10 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private let viewPreferences: EVViewPreferences
   private var viewObserver: NSObjectProtocol?
   private let editingPreferences: EVEditingPreferences
-  private let codePreferences: EVCodePreferences
   private let sidebar = NSTableView()
   private let content = NSView()
   private var observer: NSObjectProtocol?
   private var editingObserver: NSObjectProtocol?
-  private var codeObserver: NSObjectProtocol?
-  private let codeDiagnostic = NSTextField(wrappingLabelWithString: "")
   private weak var smartQuotesCheckbox: NSButton?
   private let textWidthField = NSTextField(string: "")
   private var indentationCheckboxes: [String: NSButton] = [:]
@@ -47,12 +44,10 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
 
   convenience init(store: EVThemeStore) { self.init(store: store, editingPreferences: .shared) }
 
-  init(store: EVThemeStore, editingPreferences: EVEditingPreferences, codePreferences: EVCodePreferences? = nil, viewPreferences: EVViewPreferences? = nil) {
+  init(store: EVThemeStore, editingPreferences: EVEditingPreferences, viewPreferences: EVViewPreferences? = nil) {
     self.viewPreferences = viewPreferences ?? .shared
     self.store = store
     self.editingPreferences = editingPreferences
-    let codePreferences = codePreferences ?? .shared
-    self.codePreferences = codePreferences
     let window = EVSettingsWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 690),
       styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
@@ -80,11 +75,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
         self.refreshEditingPreferences()
       }
     }
-    codeObserver = NotificationCenter.default.addObserver(
-      forName: .viemCodeDiagnosticsDidChange, object: codePreferences, queue: .main
-    ) { [weak self] _ in
-      MainActor.assumeIsolated { self?.refreshCodePreferences() }
-    }
     window.setContentSize(NSSize(width: 800, height: 690))
     if window.screen != nil { window.center() }
   }
@@ -103,7 +93,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     if let observer { NotificationCenter.default.removeObserver(observer) }
     if let viewObserver { NotificationCenter.default.removeObserver(viewObserver) }
     if let editingObserver { NotificationCenter.default.removeObserver(editingObserver) }
-    if let codeObserver { NotificationCenter.default.removeObserver(codeObserver) }
   }
   @available(*, unavailable) required init?(coder: NSCoder) {
     fatalError("init(coder:) is unavailable")
@@ -166,15 +155,15 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     showCategory()
   }
 
-  func numberOfRows(in tableView: NSTableView) -> Int { 4 }
+  func numberOfRows(in tableView: NSTableView) -> Int { 3 }
   func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView?
   {
     let image = NSImageView(
       image: NSImage(
-        systemSymbolName: ["rectangle.inset.filled", "paintpalette", "text.cursor", "chevron.left.forwardslash.chevron.right"][row], accessibilityDescription: nil)
+        systemSymbolName: ["rectangle.inset.filled", "paintpalette", "text.cursor"][row], accessibilityDescription: nil)
         ?? NSImage())
     image.contentTintColor = .secondaryLabelColor
-    let label = NSTextField(labelWithString: ["View", "Theme", "Editing", "Code"][row])
+    let label = NSTextField(labelWithString: ["View", "Theme", "Editing"][row])
     label.font = .systemFont(ofSize: 13, weight: .medium)
     let row = NSStackView(views: [image, label])
     row.spacing = 9
@@ -218,7 +207,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     stack.translatesAutoresizingMaskIntoConstraints = false
     scroll.documentView = stack
     stack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
-    let title = NSTextField(labelWithString: ["View", "Theme", "Editing", "Code"][selectedCategory])
+    let title = NSTextField(labelWithString: ["View", "Theme", "Editing"][selectedCategory])
     title.font = .systemFont(ofSize: 25, weight: .bold)
     stack.addArrangedSubview(title)
     let subtitle = NSTextField(
@@ -226,7 +215,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
         "Set the space around text in every editor view.",
         "Make a comfortable space for writing. Changes apply to every window.",
         "Choose how Viem helps while you type. These preferences apply to every document.",
-        "Customize the shared styles used by every Code document.",
       ][selectedCategory])
     subtitle.textColor = .secondaryLabelColor
     stack.addArrangedSubview(subtitle)
@@ -235,19 +223,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     persistenceDiagnostic.stringValue = store.lastError ?? editingPreferences.lastError ?? ""
     persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
     stack.addArrangedSubview(persistenceDiagnostic)
-    if selectedCategory == 3 {
-      codeDiagnostic.font = .systemFont(ofSize: 12)
-      codeDiagnostic.textColor = .secondaryLabelColor
-      let styles = section("Code styles", views: [
-        label("Code styles apply live to all open Code documents and are saved in code_style.json."),
-        button("Edit Code Styles…", action: #selector(editCodeStyles)),
-        codeDiagnostic,
-      ])
-      stack.addArrangedSubview(styles)
-      styles.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
-      refreshCodePreferences()
-      return
-    }
     if selectedCategory == 0 {
       let margins = NSStackView()
       margins.spacing = 14
@@ -372,16 +347,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       view.nextKeyView = keyViews[(index + 1) % keyViews.count]
     }
     window?.initialFirstResponder = sidebar
-  }
-
-  private func refreshCodePreferences() {
-    codeDiagnostic.stringValue = ([codePreferences.bundledSyntaxDiagnostic].compactMap { $0 }
-      + codePreferences.loadDiagnostics).joined(separator: "\n")
-    codeDiagnostic.isHidden = codeDiagnostic.stringValue.isEmpty
-    if selectedCategory == 3 {
-      persistenceDiagnostic.stringValue = codePreferences.lastError ?? ""
-      persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
-    }
   }
 
   private func buildIndentationSettings(in stack: NSStackView) {
@@ -590,20 +555,11 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
   }
 
-  @objc private func editCodeStyles() { codePreferences.openStyles() }
-
   func showViewCategoryForTesting() {
     sidebar.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
     selectedCategory = 0
     showCategory()
   }
-  func showCodeCategoryForTesting() {
-    sidebar.selectRowIndexes(IndexSet(integer: 3), byExtendingSelection: false)
-    selectedCategory = 3
-    showCategory()
-  }
-  var codeDiagnosticsForTesting: String { codeDiagnostic.stringValue }
-
   private func label(_ text: String) -> NSTextField { NSTextField(labelWithString: text) }
   private func section(_ title: String, views: [NSView]) -> NSView {
     let box = EVThemeSettingsSection()

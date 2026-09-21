@@ -1895,13 +1895,21 @@ Each adapter has corpus, property, and targeted golden tests. At minimum:
   corresponding to the selection, including markup in WYSIWYG views. Paste
   and Match Style ignores the private fragment and uses plain text. Malformed
   external private data cannot prevent ordinary commands or plain-text paste.
+  On Windows, Vim's `+` and `*` register names both read and write the one
+  system clipboard. Transient clipboard-owner contention is retried, and an
+  unavailable optional rich representation falls back to available plain text.
 - External plain-text paste normalizes CRLF and standalone CR to semantic hard
-  breaks. Private payloads retain their declared break semantics. When pasting
-  into HTML WYSIWYG, NUL becomes the visible U+2400 SYMBOL FOR NULL (`␀`), because
-  HTML cannot retain the exact character. These transformations never ask modal
-  questions or rewrite the clipboard. Exact internal registers, command-prompt
-  input, literal-input commands, and representable NUL characters retain their
-  existing semantics.
+  breaks. A valid private register payload determines characterwise, linewise,
+  or blockwise shape. Without one, Vim's clipboard fallback applies: text ending
+  in CR or LF is linewise, while all other text is characterwise; internal line
+  breaks alone do not make a payload linewise. A linewise system-clipboard write
+  therefore ends its plain-text representation in a line break, including when
+  the source's final physical line has none. Private payloads retain their
+  declared break semantics. When pasting into HTML WYSIWYG, NUL becomes the
+  visible U+2400 SYMBOL FOR NULL (`␀`), because HTML cannot retain the exact
+  character. These transformations never ask modal questions or rewrite the
+  clipboard. Exact internal registers, command-prompt input, literal-input
+  commands, and representable NUL characters retain their existing semantics.
 
 ### Format interpretation and conversion
 
@@ -1953,7 +1961,9 @@ The theme is an application preference, shared across views and independent of
 source-backed named styles. It defines text foreground and canvas background,
 caret and selection colors, status foreground/background and font family/size,
 with color values in portable sRGB. The macOS Settings window has View, Theme,
-Editing, and Code categories; there is no Documents category. Theme contains
+and Editing categories; there are no Code or Documents categories. Code styles
+remain editable through the ordinary modeless Styles inspector opened from a
+Code view by F8 or the menu. Theme contains
 its live preview, color controls, status typography, presets, and restore action.
 View contains independent top/left/bottom/right text margins in pixels, with
 defaults of 10 pixels on every side. Tab and Shift-Tab move forward and backward
@@ -2184,7 +2194,7 @@ fallback lookup for missing names. Existing default resolved colors are retained
 Code stylesheet storage version 2 records linked defaults and sparse overrides.
 Only version 2 is accepted; no migration from copied version-1 declarations is
 provided. Reloads preserve explicit overrides even when equal to default values.
-Loading does not rewrite the settings file or add undo history.
+Loading does not rewrite the stylesheet file or add undo history.
 
 In Code, the Character menu MUST expose the global Code character definitions
 and syntax names referenced by accepted, retained highlighting results for the
@@ -2204,10 +2214,9 @@ Use the corresponding base style when the selection has no single current style.
 Format > Document Style > Edit Styles… opens the global base document definition.
 When opened from a Code view, the Styles editor follows subsequent caret and
 selection movement in that view using the policy below while retaining global
-sheet ownership. A direct settings launch has no document-following context.
-These are settings edits shared live by Code buffers, with the style editor's
-own undo history. Selection formatting and manually assigning named styles to
-Code text remain unavailable.
+sheet ownership. These are global style edits shared live by Code buffers, with
+the style editor's own undo history. Selection formatting and manually assigning
+named styles to Code text remain unavailable.
 
 Syntax name references are disposable, unlike authored stable-ID assignments.
 Adding, renaming, or removing a definition invalidates their resolution; names
@@ -2216,7 +2225,7 @@ the normal acyclic inheritance and deletion/reparenting rules. Syntax output
 does not prevent deleting an otherwise removable definition.
 Persist suppression of deleted or renamed built-in definitions in the saved
 sheet, so defaults do not silently reappear on reload; restoring defaults is an
-explicit settings action. User edits and missing-name resolution survive restart.
+explicit style-editor action. User edits and missing-name resolution survive restart.
 
 Named syntax styles support the normalized character properties, including
 font, size, weight, and slant. Paint-only differences repaint without parsing,
@@ -2277,11 +2286,11 @@ Syntax styles cannot conceal text or change the logical editing boundary space.
 Provider regex/node boundaries remain internal until mapped to legal display
 ranges; they do not create new grapheme or shaping caret stops.
 
-#### Language detection and Code settings
+#### Language detection and Code configuration
 
 Vim syntax uses the shared pinned snapshot in `assets/vim/runtime/syntax`.
 There is no user-configurable syntax directory or associated path/chooser/
-restore control in Code settings. Native frontends
+restore control. Native frontends
 resolve its installed resource path and pass it to the core; the Rust core has
 no platform-specific default directory. macOS packages it at
 `Contents/Resources/vim/runtime/syntax`. Windows build and publish outputs place
@@ -2296,12 +2305,16 @@ next settings write, preserving unrelated fields. Application resource paths
 are never persisted. Includes stay within the bundled syntax root.
 An absent or unreadable bundled directory makes that
 Vim source unavailable, but never prevents opening, editing, or using bundled
-Tree-sitter. The Code Settings page reports load diagnostics and provides
-**Edit Code Styles…**, opening the global stylesheet in the existing modeless
-Styles editor. That editor has an explicit global target, distinct from a
-document target; valid edits persist and apply live. Its undo grouping belongs
-to the settings/style-editing session, not to any document. Document-specific
+Tree-sitter. The main Settings window has no Code category. Syntax load and
+compiler diagnostics remain available through the existing document/core
+diagnostic mechanisms. The global Code stylesheet is edited through the
+ordinary modeless Styles inspector opened from a Code view by F8 or the menu.
+That editor has an explicit global target, distinct from a document target;
+valid edits persist and apply live. Its undo grouping belongs to the global
+style-editing session, not to any document. Document-specific
 style/default-saving and content-formatting actions are disabled in Code.
+Ordered filename associations remain supported in `config.json` even though
+Settings does not provide an editor for them.
 
 Language detection is portable declarative policy inspired by Vim filename and
 file-content detection, not execution of filetype autocommands. In Automatic
@@ -2628,11 +2641,12 @@ source, syntax, unrelated style assignments, or width-independent shaping.
 
 ### Meaning of "line" and per-view line mode
 
-Each view has a portable line-mode policy, initially **Visual**. Clicking the
-status-bar location toggles Visual (an eye icon) and Physical Source (a file
-icon). These are original vector icons. The mode is independent of `wrap` and
-is not persisted in source. RTF does not expose Physical Source mode; changing
-a buffer to RTF returns any physical-mode views to Visual.
+Each view has a portable line-mode policy, initially **Physical Source** for
+Code and **Visual** for every other format. Clicking the status-bar location
+toggles Visual (an eye icon) and Physical Source (a file icon). These are
+original vector icons. The mode is independent of `wrap` and is not persisted
+in source. RTF does not expose Physical Source mode; changing a buffer to RTF
+returns any physical-mode views to Visual.
 
 - Visual mode counts the exact displayed rows, including soft wraps. Without
   wrapping, these are formatted hard lines. Physical Source mode counts the
@@ -3360,8 +3374,8 @@ cache invalidation, multiple views, and bounded large-document layout.
 
 #### Visible whitespace
 
-Settings > Editing > **Visible whitespace** follows the Code styles section's
-presentation. It contains an enable checkbox, an **Edit Style…** button and a
+Settings > Editing > **Visible whitespace** contains an enable checkbox, an
+**Edit Style…** button and a
 character entry for every Vim 9.2 `listchars` category: `eol`, `tab`, `space`,
 `multispace`, `lead`, `leadmultispace`, `leadtab`, `trail`, `extends`, `precedes`,
 `conceal`, and `nbsp`. It defaults to enabled with
@@ -4900,9 +4914,8 @@ their ownership or move their edits into document history.
   document, or infer named assignments from displayed font attributes. Following
   a style changes presentation only and uses the same pending-edit validation
   as explicit style navigation.
-- A direct global Code editor launch from Settings clears any document-following
-  context. An explicit edit action from a Code view may establish that context
-  again without changing global stylesheet ownership.
+- The global Code editor is opened through an explicit edit action from a Code
+  view. It follows that view without changing global stylesheet ownership.
 - The window has a **Close** button at the bottom trailing edge. It has no
   **Apply**, **Cancel**, or **OK** button because valid changes are already
   applied. The standard window close command and `Command-W` have the same
@@ -5076,7 +5089,7 @@ their supported signed ranges. Held autorepeat is one continuous undo gesture.
   projection commits through the normal verified source transaction path and
   updates every view of the document without waiting for the window to close.
   For the global Code target, the intention instead updates the application
-  stylesheet authority and all Code views through a checked settings operation.
+  stylesheet authority and all Code views through a checked global-style operation.
 - The preview is not a private draft. It renders the currently committed style
   after cascade resolution. A Character style preview shows the style in
   representative surrounding text. A Paragraph style preview shows preceding,
@@ -5142,9 +5155,9 @@ to Base Paragraph, stale callback rejection, and target-document closure. Also
 cover role-specific initial selection, following a non-default character style
 and falling back to paragraph styles, mixed selections, explicit picker and
 hierarchy choices surviving unrelated refreshes, no following of unrelated
-documents, and Code-view versus direct Settings launches retaining global
-ownership. Large-document following queries must remain bounded and must not
-request new syntax work.
+documents, and Code-view launches retaining global ownership and the correct
+following context. Large-document following queries must remain bounded and
+must not request new syntax work.
 
 ### User key mappings
 
@@ -6097,7 +6110,7 @@ do not replace normal geometry. Coalesce persistence until move/resize becomes
 idle, flush the final normal frame on close, and avoid preference-change
 notifications that would invalidate editor layout while saving placement.
 
-Settings is a modeless window with View, Theme, Editing and Code categories in
+Settings is a modeless window with View, Theme and Editing categories in
 a fixed left sidebar. Theme follows `docs/mac_references/settings_theme.png`:
 Paper/Midnight presets, a live writing preview with caret and selection,
 grouped Editor and Status bar colors, status font/size, and Restore Defaults.
@@ -6114,8 +6127,9 @@ fitting its native window. Opening must not expose intermediate sizes, retain
 an initial template measurement's excess height, or repeatedly resize in
 response to layout events.
 Opening, reopening and idle caret following use the macOS current-style rules
-above, including mixed selections and displayed Code syntax styles. Standalone
-Code settings has no caret-following context. Windows color wells and their
+above, including mixed selections and displayed Code syntax styles. When opened
+from a Code view, the inspector targets the global Code stylesheet while
+following that view's caret context. Windows color wells and their
 popups resolve an undeclared emergency foreground through the active editor
 theme, while retaining explicit and inherited authored colors and alpha.
 Enabling such a foreground override copies the theme color. Opening or closing
@@ -6932,9 +6946,9 @@ The two Markdown views share one physical Markdown serialization:
   an empty list item removes its marker and inserts the source separator needed
   for subsequent typing to remain a separate, unnumbered ordinary paragraph.
 
-Opening a Markdown file retains the existing WYSIWYG default. The status popup
-can select the source-visible Markdown view. New bold uses `**`, italic uses
-`*`, and headings use one through six `#` characters followed by one space.
+Opening a Markdown file defaults to the source-visible Markdown view. The
+status popup can select the WYSIWYG view. New bold uses `**`, italic uses `*`,
+and headings use one through six `#` characters followed by one space.
 Untouched alternative delimiters and physical line endings remain exact.
 
 Switching Markdown Source and WYSIWYG must preserve source bytes and anchors
@@ -6998,7 +7012,8 @@ first body grapheme is the first editable character. At a wrapped list row end,
 `$` and `A` target the final body grapheme and its following boundary before
 wrap-separator whitespace. Source-visible views retain literal list syntax.
 
-The two HTML views similarly share one physical HTML serialization:
+The two HTML views similarly share one physical HTML serialization. Opening an
+HTML file defaults to HTML Source; the status popup can select HTML WYSIWYG:
 
 - **HTML WYSIWYG** displays the interpreted document. Typed `<`, `&`, quotes,
   and other syntax-sensitive characters are encoded as appropriate HTML text

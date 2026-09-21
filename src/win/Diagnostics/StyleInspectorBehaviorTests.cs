@@ -142,7 +142,7 @@ internal static class StyleInspectorBehaviorTests
         }
         finally { codeInspector.Close(); }
         var standalone = new StyleWindow(codeView, preferences, followCaret: false);
-        try { Move(codeView, 0); Check(!standalone.CaretFollowScheduled && standalone.CaretStyleQueries == 0, "standalone global Code settings never follow a document caret"); }
+        try { Move(codeView, 0); Check(!standalone.CaretFollowScheduled && standalone.CaretStyleQueries == 0, "standalone global Code inspectors never follow a document caret"); }
         finally { standalone.Close(); }
     }
     private static async Task ColorDragging(StyleWindow inspector, ColorPicker picker)

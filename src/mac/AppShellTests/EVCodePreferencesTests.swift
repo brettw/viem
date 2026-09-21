@@ -140,15 +140,4 @@ final class EVCodePreferencesTests: XCTestCase {
     }
   }
 
-  func testCodeSettingsPageReportsBundledResourceAndProviderDiagnostics() throws {
-    let configuration = fixture()
-    let preferences = EVCodePreferences(configuration: configuration)
-    let window = EVSettingsWindowController(store: EVThemeStore(configuration: configuration),
-      editingPreferences: EVEditingPreferences(configuration: configuration), codePreferences: preferences)
-    window.showCodeCategoryForTesting()
-    XCTAssertTrue(window.codeDiagnosticsForTesting.contains("unavailable"))
-    preferences.reportLoadDiagnostics(["Unsupported syntax instruction in sample.vim:12"])
-    XCTAssertTrue(window.codeDiagnosticsForTesting.contains("sample.vim:12"))
-    window.close()
-  }
 }

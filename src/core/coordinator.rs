@@ -1871,6 +1871,12 @@ impl<P: TextMeasurementProvider> Core<P> {
         commands.install_buffer_state(&self.buffer_commands);
         commands.set_reflow_language(self.reflow_language());
         commands.note_document_revision(self.document.revision());
+        if self.document.format().is_code() {
+            commands.set_line_mode(
+                &self.document,
+                crate::command::LineMode::PhysicalSource,
+            )?;
+        }
         commands.set_layout_options(layout.wrap());
         if let Some(options) = &self.startup_view_options {
             commands.install_startup_view_options(options);

@@ -30,4 +30,6 @@ These modes are more experimental.
 
 The “source” modes show the literal source of the file while styling the formatting, at least to some extent.
 
+Markdown and HTML files open in their source modes by default; the status control can switch to the corresponding WYSIWYG presentation.
+
 The “WYSIWYG” modes attempt to display a version of the final rendering. HTML is treated very simply, showing basic headings, paragraphs, and things like bold, but it is not a full HTML renderer.

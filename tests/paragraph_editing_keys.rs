@@ -63,6 +63,42 @@ fn insert_at(core: &mut Editor, view: ViewId, at: usize) {
     .unwrap();
 }
 
+#[test]
+fn enter_uses_following_style_only_at_the_end_of_a_paragraph() {
+    for (format, source, current) in [
+        (Format::Html, "<h1>Title</h1>", "Heading1"),
+        (Format::Markdown, "# Title", "Heading1"),
+        (
+            Format::Rtf,
+            r"{\rtf1{\stylesheet{\s0 Normal;}{\s5\sbasedon0\snext0 Heading 1;}}\s5 Title}",
+            "RtfP5",
+        ),
+    ] {
+        for (at, expected_text, expected_styles) in [
+            (0, "\nTitle", vec![current, current]),
+            (2, "Ti\ntle", vec![current, current]),
+            (5, "Title\n", vec![current, "Paragraph"]),
+        ] {
+            let (mut core, view) = open(source, format);
+            insert_at(&mut core, view, at);
+            input(&mut core, view, InputEvent::Key(Key::Enter));
+            assert_eq!(core.document().text(), expected_text, "{format:?} at {at}");
+            assert_eq!(
+                core.document()
+                    .projection()
+                    .blocks()
+                    .iter()
+                    .map(|block| block.style.0.as_str())
+                    .collect::<Vec<_>>(),
+                expected_styles,
+                "{format:?} at {at}"
+            );
+            assert_eq!(core.command_state(view).unwrap().cursor(), at + 1);
+            reopen_and_history(&mut core, view, source.as_bytes());
+        }
+    }
+}
+
 fn reopen_and_history(core: &mut Editor, view: ViewId, original: &[u8]) {
     let final_bytes = core.document().source_bytes();
     let reopened = Document::from_bytes(

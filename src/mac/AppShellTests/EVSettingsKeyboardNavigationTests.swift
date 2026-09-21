@@ -13,7 +13,6 @@ final class EVSettingsKeyboardNavigationTests: XCTestCase {
   private func settings(_ configuration: EVConfigurationStore) -> EVSettingsWindowController {
     EVSettingsWindowController(store: EVThemeStore(configuration: configuration),
       editingPreferences: EVEditingPreferences(configuration: configuration),
-      codePreferences: EVCodePreferences(configuration: configuration),
       viewPreferences: EVViewPreferences(configuration: configuration))
   }
 
@@ -81,6 +80,7 @@ final class EVSettingsKeyboardNavigationTests: XCTestCase {
     editor.selectAll(nil)
     editor.insertText("37", replacementRange: editor.selectedRange())
     let sidebar = try XCTUnwrap(descendants(window.contentView).compactMap { $0 as? NSTableView }.first)
+    XCTAssertEqual(sidebar.numberOfRows, 3)
     sidebar.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
     XCTAssertEqual(configuration.viewMargins.top, 37)
     let width = try field("Text width (columns)", in: window)
@@ -95,12 +95,6 @@ final class EVSettingsKeyboardNavigationTests: XCTestCase {
     widthEditor.insertTab(nil)
     XCTAssertTrue(tabstop.currentEditor() === window.firstResponder)
     XCTAssertEqual(configuration.textWidth, 96)
-    settings.showCodeCategoryForTesting()
-    let styles = try XCTUnwrap(descendants(window.contentView).compactMap { $0 as? NSButton }
-      .first { $0.title == "Edit Code Styles…" })
-    XCTAssertTrue(sidebar.nextKeyView === styles)
-    XCTAssertTrue(styles.nextKeyView === sidebar)
-    XCTAssertFalse(descendants(window.contentView).compactMap { $0 as? NSTextField }.contains { $0.isEditable })
     settings.showViewCategoryForTesting()
     let newTop = try field("View top margin", in: window)
     XCTAssertFalse(newTop === top)

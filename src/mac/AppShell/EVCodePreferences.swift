@@ -8,7 +8,6 @@ extension Notification.Name {
 @MainActor
 public final class EVCodePreferences {
   public static let shared = EVCodePreferences()
-  public static var editStyles: (@MainActor (EVConfigurationStore) -> Void)?
   public let configuration: EVConfigurationStore
   public private(set) var loadDiagnostics: [String] = []
   private var diagnosticsBySource: [String: [String]] = [:]
@@ -19,7 +18,6 @@ public final class EVCodePreferences {
     self.configuration = configuration ?? .shared
     self.center = center
   }
-  public func openStyles() { Self.editStyles?(configuration) }
   public func reportLoadDiagnostics(_ diagnostics: [String], source: String = "application") {
     if diagnostics.isEmpty { diagnosticsBySource.removeValue(forKey: source) }
     else { diagnosticsBySource[source] = diagnostics }

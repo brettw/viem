@@ -51,7 +51,7 @@ final class EVViewPreferencesTests: XCTestCase {
       descendants(settings.tableView(sidebar, viewFor: sidebar.tableColumns.first, row: row))
         .compactMap { ($0 as? NSTextField)?.stringValue }
     }
-    XCTAssertEqual(titles, ["View", "Theme", "Editing", "Code"])
+    XCTAssertEqual(titles, ["View", "Theme", "Editing"])
     let fields = views.compactMap { $0 as? NSTextField }
     for (side, value) in [("top", 15.0), ("left", 25), ("bottom", 35), ("right", 45)] {
       let field = try XCTUnwrap(fields.first { $0.accessibilityLabel() == "View \(side) margin" })

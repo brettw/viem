@@ -1,16 +1,8 @@
 The line spacing in the style editor should accept floating point numbers like “1.1”
 
-Delete the “Code” section from the main settings dialog box. We don’t need that entrypoint to edit the code styles.
-
 The “indent” and “unindent” menu items seem to never be enabled. These should increase or decrease the bullet/numbering indentation. So if I have two list items 1. and 2., and I’m on line 2 and I press “indent”, it should make the 2nd item a nested item under number 2, and start numbering at “a” (use HTML rules for the styles for various bullet and number indentation levels).
 
 If I type “tab” or “shift-tab” inside a bulleted or numbered list paragraph, it should increase (tab) or decrease (shift-tab) the indent level. If I backspace at the beginning of a bulleted or numbered list, it should unindent until it gets to the top level, and then at the top level it should remove the bullet/number (as today).
 
-Make the default presentation of HTML and markdown files be the corresponding “source” mode, not WYSIWYG as today.
-
-In code mode, default to physical line mode.
-
-Currently the “following” paragraph style is applied whenever <Enter> is pressed, even if it’s at the beginning or in the moddle of a paragraph. When this happens, we should not change the style of the existing text that has now been moved to a new paragraph: in these cases both of the now-split paragraphs should have the same style as the original. We should only apply the automatic “next paragraph style” when enter is pressed at the end of a paragraph.
-
-When I paste in WYSIWYG mode, it seems to require that the format matches. It should never require this and pasting of text should always be possible. TODO FIGURE OUT PASTE RULES it should paste using the source 
-u can format (if it was copied from Viem so the format is readable). 
+When I paste in WYSIWYG mode, it seems to require that the format matches. It should never require this and pasting of text should always be possible. TODO FIGURE OUT PASTE RULES it should paste using the source
+u can format (if it was copied from Viem so the format is readable).

@@ -4,7 +4,8 @@ Windows now shares macOS's caret-style selection policy: use a single named
 character style, otherwise a uniform paragraph style, otherwise Base Paragraph.
 The core query supplies validated named assignments and retained Code syntax
 runs; font appearance is not used to guess the style. Opening and reopening
-select immediately. A standalone Code settings inspector has no followed view.
+select immediately. An inspector opened from a Code view edits the global Code
+stylesheet and follows that view's caret context.
 
 Both frontends wait for 0.5 seconds of logical selection inactivity before
 querying the style or updating the dialog. There is one pending one-shot timer,
@@ -35,9 +36,9 @@ Dialog refreshes preserve popup drafts, and retargeting disconnects them.
 `ColorChanged` now updates the inspector preview and swatch immediately.
 `CanvasControl.Invalidate` coalesces preview draws into the next frame. Changes
 remain a popup draft until dismissal, when the selected color commits once.
-Previewing does not edit source, add undo entries, reload the inspector or write
-global Code settings. Programmatic initialization is guarded, and retargeting
-or closing clears the draft. Document notifications defer control reloads until
+Previewing does not edit source, add undo entries, reload the inspector or
+persist the global Code stylesheet. Programmatic initialization is guarded, and
+retargeting or closing clears the draft. Document notifications defer control reloads until
 popup closure so rebuilding focusable controls cannot dismiss the native flyout.
 Opening a picker also cancels already queued caret following: the property edit
 keeps its selected style instead of allowing an earlier caret movement to
@@ -98,7 +99,8 @@ not a separate stock palette mode of `ColorPicker`.
 ## Validation
 
 Windows coverage lives in `StyleInspectorBehaviorTests`: prepared opening size
-and initial rendered content fit for document and Code inspectors,
+and initial rendered content fit for document inspectors and inspectors opened
+from Code views,
 immediate selection, rapid drag suppression, the real half-second timer,
 unchanged state, manual choices, mixed selections, view isolation, Code styles,
 compact picker dimensions, native popup hosting, live preview, persistence, undo
