@@ -49,56 +49,29 @@ impl Document {
             let Some(block) = semantic.keyboard_paragraph(visible_at)? else {
                 return Ok(None);
             };
-            if visible_at != block.range.start
-                || !matches!(
-                    block.kind,
-                    super::super::BlockKind::ListItem {
-                        item_start: true,
-                        ..
-                    }
-                )
-            {
+            if !matches!(block.kind, super::super::BlockKind::ListItem { .. }) {
                 return Ok(None);
             }
-            // In source mode, the actual body start remains a structural
-            // boundary even when opening inline syntax precedes it. Markdown
-            // additionally exposes its literal marker and marker/body boundary.
-            let at_body_start = semantic
-                .projection()
-                .source_insertion_point(visible_at, true)
-                == Some(source_at);
-            let at_marker = self.format() == Format::MarkdownSource
-                && source_blocks.iter().any(|block| {
-                    self.projection()
-                        .list_marker_range_for_block(block)
-                        .is_some_and(|marker| at == marker.start || at == marker.end)
-                });
-            return Ok(
-                (at_body_start || at_marker).then(|| ModelRequest::IndentList {
-                    document: self.id(),
-                    revision: self.revision(),
-                    range: at..at,
-                    unindent,
-                }),
-            );
+            return Ok(Some(ModelRequest::IndentList {
+                document: self.id(),
+                revision: self.revision(),
+                range: at..at,
+                unindent,
+            }));
         }
         let Some(block) = self.keyboard_paragraph(at)? else {
             return Ok(None);
         };
-        Ok((at == block.range.start
-            && matches!(
-                block.kind,
-                super::super::BlockKind::ListItem {
-                    item_start: true,
-                    ..
+        Ok(
+            matches!(block.kind, super::super::BlockKind::ListItem { .. }).then(|| {
+                ModelRequest::IndentList {
+                    document: self.id(),
+                    revision: self.revision(),
+                    range: block.range,
+                    unindent,
                 }
-            ))
-        .then(|| ModelRequest::IndentList {
-            document: self.id(),
-            revision: self.revision(),
-            range: block.range,
-            unindent,
-        }))
+            }),
+        )
     }
 
     pub(crate) fn paragraph_boundary_reset_request(
@@ -118,13 +91,40 @@ impl Document {
             return Ok(None);
         }
         if !empty_quote_only
-            && matches!(block.kind, super::super::BlockKind::ListItem { item_start: false, .. })
+            && matches!(
+                block.kind,
+                super::super::BlockKind::ListItem {
+                    item_start: false,
+                    ..
+                }
+            )
         {
             // A continuation paragraph has no label to remove. Backspace
             // joins its body to the preceding paragraph of the same item.
             return Ok(None);
         }
-        if empty_quote_only || super::super::edit_boundary::is_code_paragraph(self, &block)?
+        if !empty_quote_only
+            && matches!(
+                block.kind,
+                super::super::BlockKind::ListItem {
+                    level: 1..,
+                    item_start: true,
+                    ..
+                }
+            )
+        {
+            // A nested item first moves out by one structural level. Only a
+            // top-level item loses its list treatment at the body boundary.
+            let range = block.range.clone();
+            return Ok(Some(ModelRequest::IndentList {
+                document: self.id(),
+                revision: self.revision(),
+                range,
+                unindent: true,
+            }));
+        }
+        if empty_quote_only
+            || super::super::edit_boundary::is_code_paragraph(self, &block)?
             || matches!(block.kind, super::super::BlockKind::ListItem { .. })
         {
             return Ok(Some(ModelRequest::SetParagraphStyle {

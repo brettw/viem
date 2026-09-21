@@ -37,6 +37,56 @@ final class EVStyleMenuBridgeTests: XCTestCase {
   }
 
   @MainActor
+  func testListIndentMenuValidatesAndDispatchesFromTheMiddleOfAnItem() throws {
+    let source = "<ol data-keep='yes'><li>One</li><li><b>Second</b></li></ol><!--keep-->"
+    let backend = EVCoreDocumentBackend()
+    try backend.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
+    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+    surface.loadViewIfNeeded()
+    let session = try XCTUnwrap(surface.session)
+    let content = EVDocumentContentViewController(editorSurface: surface)
+    surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 6, length: 0))
+
+    func item(_ command: EVMenuCommand) -> NSMenuItem {
+      let item = NSMenuItem(
+        title: command == .increaseIndent ? "Indent" : "Unindent",
+        action: #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)),
+        keyEquivalent: "")
+      item.tag = command.rawValue
+      return item
+    }
+
+    let indent = item(.increaseIndent)
+    let unindent = item(.decreaseIndent)
+    XCTAssertTrue(content.validateMenuItem(indent))
+    XCTAssertFalse(content.validateMenuItem(unindent))
+    content.performEditorMenuCommand(indent)
+    XCTAssertNil(surface.commandOutput)
+    XCTAssertEqual(try backend.formattedText(), "One\nSecond")
+    XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "NumberedList2")
+
+    XCTAssertFalse(content.validateMenuItem(indent))
+    XCTAssertTrue(content.validateMenuItem(unindent))
+    let indented = try backend.serializedSource(typeName: EVDocument.htmlType)
+    XCTAssertNotEqual(indented, Data(source.utf8))
+    XCTAssertTrue(String(decoding: indented, as: UTF8.self).contains("data-keep='yes'"))
+    XCTAssertTrue(String(decoding: indented, as: UTF8.self).contains("<!--keep-->"))
+
+    content.performEditorMenuCommand(unindent)
+    XCTAssertNil(surface.commandOutput)
+    XCTAssertEqual(try backend.formattedText(), "One\nSecond")
+    XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "NumberedList1")
+    XCTAssertTrue(content.validateMenuItem(indent))
+    XCTAssertFalse(content.validateMenuItem(unindent))
+    let unindented = try backend.serializedSource(typeName: EVDocument.htmlType)
+
+    surface.perform(menuCommand: .undo, sender: nil)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), indented)
+    surface.perform(menuCommand: .redo, sender: nil)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), unindented)
+  }
+
+  @MainActor
   func testBlankHTMLParagraphListStyleMenuAllowsTypingWithNativeMarkup() throws {
     for (command, styleID, tag) in [
       (EVMenuCommand.bulletedList, "BulletedList1", "ul"),

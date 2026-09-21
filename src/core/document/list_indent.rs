@@ -335,8 +335,48 @@ fn markdown_patches(
     }
     .filter(|delta| *delta > 0)
     .ok_or(DocumentError::UnsupportedFormatting)?;
+    // A moved ordered run becomes a new list container when indented, so its
+    // first root starts at one.  When it is moved back beside an ordered
+    // parent, continue after that parent's ordinal.  Normalize every moved
+    // root marker in the run: these lines already belong to the structural
+    // edit, while unrelated source marker spelling remains untouched.
+    let mut ordered_next = if unindent {
+        match blocks[target.parent.unwrap()].kind {
+            BlockKind::ListItem {
+                ordered: true,
+                ordinal,
+                ..
+            } => Some(ordinal.saturating_add(1)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let mut canonical_ordinals = BTreeMap::new();
+    for (root_number, index) in target.roots.iter().copied().enumerate() {
+        let BlockKind::ListItem {
+            ordered,
+            container_start,
+            ..
+        } = blocks[index].kind
+        else {
+            continue;
+        };
+        if !ordered {
+            ordered_next = None;
+            continue;
+        }
+        if root_number == 0 {
+            ordered_next = Some(ordered_next.unwrap_or(1));
+        } else if container_start || ordered_next.is_none() {
+            ordered_next = Some(1);
+        }
+        let ordinal = ordered_next.unwrap();
+        canonical_ordinals.insert(line_for(&blocks[index])?, ordinal);
+        ordered_next = Some(ordinal.saturating_add(1));
+    }
     let mut patches = Vec::new();
-    for line in &lines[start..end] {
+    for (line_index, line) in lines.iter().enumerate().take(end).skip(start) {
         let text = &input.text[line.clone()];
         if text.trim().is_empty() {
             continue;
@@ -352,6 +392,26 @@ fn markdown_patches(
             converter.source_range(line.start..line.start + prefix),
             document.encoding().encode_fragment(&" ".repeat(next))?,
         ));
+        if let Some(ordinal) = canonical_ordinals.get(&line_index) {
+            let context = contexts[line_index]
+                .as_ref()
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let marker = context
+                .marker
+                .clone()
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let digits = input.text[marker.clone()]
+                .bytes()
+                .take_while(u8::is_ascii_digit)
+                .count();
+            if digits == 0 {
+                return Err(DocumentError::AmbiguousProjection);
+            }
+            patches.push(SourcePatch::primary(
+                converter.source_range(marker.start..marker.start + digits),
+                document.encoding().encode_fragment(&ordinal.to_string())?,
+            ));
+        }
     }
     Ok(patches)
 }
@@ -362,7 +422,52 @@ struct Element {
     open: Range<usize>,
     close: Range<usize>,
     parent: Option<usize>,
+    start_attributes: usize,
 }
+
+fn generated_list_open(name: &str, level: u8) -> Result<String, DocumentError> {
+    let list_type = match (name, level.min(3)) {
+        ("ol", 1) => "a",
+        ("ol", 2) => "i",
+        ("ol", _) => "1",
+        ("ul", 1) => "circle",
+        ("ul", 2) => "square",
+        ("ul", _) => "disc",
+        _ => return Err(DocumentError::UnsupportedFormatting),
+    };
+    Ok(format!("<{name} type=\"{list_type}\">"))
+}
+
+fn reparented_list_open(
+    input: &str,
+    container: &Element,
+    level: u8,
+) -> Result<String, DocumentError> {
+    let mut open = input[container.open.clone()].to_owned();
+    if container.name == "ol" {
+        for _ in 0..container.start_attributes {
+            let length = open.len();
+            let (range, replacement) =
+                super::super::html_styles::attribute_patch(&open, 0..length, "start", "");
+            open.replace_range(range, &replacement);
+        }
+    }
+    let list_type = match (container.name.as_str(), level.min(3)) {
+        ("ol", 1) => "a",
+        ("ol", 2) => "i",
+        ("ol", _) => "1",
+        ("ul", 1) => "circle",
+        ("ul", 2) => "square",
+        ("ul", _) => "disc",
+        _ => return Err(DocumentError::UnsupportedFormatting),
+    };
+    let length = open.len();
+    let (range, replacement) =
+        super::super::html_styles::attribute_patch(&open, 0..length, "type", list_type);
+    open.replace_range(range, &replacement);
+    Ok(open)
+}
+
 fn html_patches(
     document: &Document,
     input: &super::super::line_endings::NormalizedText,
@@ -395,6 +500,11 @@ fn html_patches(
                 open: token.range.clone(),
                 close: 0..0,
                 parent: stack.last().copied(),
+                start_attributes: tag
+                    .attributes
+                    .iter()
+                    .filter(|(name, _)| name.eq_ignore_ascii_case("start"))
+                    .count(),
             });
             stack.push(index);
         }
@@ -450,14 +560,14 @@ fn html_patches(
         {
             return Err(DocumentError::UnsupportedFormatting);
         }
-        let open = if container.name == "ol" {
-            let BlockKind::ListItem { ordinal, .. } = blocks[target.first].kind else {
-                unreachable!()
-            };
-            format!("<ol start=\"{ordinal}\">")
-        } else {
-            "<ul>".into()
-        };
+        // Indenting starts a new child container, whose counter begins at one.
+        // Spell the generated level style in HTML as well as presenting it in
+        // Viem, so another HTML renderer sees the same marker family.
+        let nested_level = level(&blocks[target.first])
+            .unwrap()
+            .saturating_add(1)
+            .min(3);
+        let open = generated_list_open(&container.name, nested_level)?;
         if same_container {
             raw.push((previous.close.clone(), open));
             raw.push((
@@ -469,6 +579,10 @@ fn html_patches(
                 ),
             ));
         } else {
+            raw.push((
+                container.open.clone(),
+                reparented_list_open(&input.text, container, nested_level)?,
+            ));
             raw.push((previous.close.clone(), String::new()));
             raw.push((previous_container.close.clone(), String::new()));
             let following = elements.iter().any(|element| {
@@ -516,11 +630,21 @@ fn html_patches(
                 && element.parent == Some(container_index)
                 && element.open.start >= last.close.end
         });
-        let mut close_parent = format!(
-            "{}{}",
-            &input.text[container.close.clone()],
-            &input.text[parent.close.clone()]
-        );
+        let preceding = elements.iter().any(|element| {
+            element.name == "li"
+                && element.parent == Some(container_index)
+                && element.close.end <= first.open.start
+        });
+        let remove_original_container = !mixed && !preceding;
+        let mut close_parent = if remove_original_container {
+            input.text[parent.close.clone()].to_owned()
+        } else {
+            format!(
+                "{}{}",
+                &input.text[container.close.clone()],
+                &input.text[parent.close.clone()]
+            )
+        };
         if mixed {
             if parent_container.close.is_empty() {
                 return Err(DocumentError::UnsupportedFormatting);
@@ -543,8 +667,17 @@ fn html_patches(
                 input.text[container.open.clone()].to_owned(),
             ));
         } else {
+            // With no preceding child, this same-family container no longer
+            // belongs under the old parent. A following run is reopened under
+            // the last moved item above; otherwise the container disappears.
+            if remove_original_container {
+                raw.push((container.open.clone(), String::new()));
+            }
             raw.push((container.close.clone(), String::new()));
             raw.push((parent.close.clone(), String::new()));
+        }
+        if following && remove_original_container {
+            raw.push((container.open.clone(), String::new()));
         }
     }
     raw.into_iter()

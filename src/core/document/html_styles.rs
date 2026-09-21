@@ -2397,7 +2397,12 @@ pub(super) fn class_patch(text: &str, tag_range: Range<usize>, value: &str) -> (
     attribute_patch(text, tag_range, "class", value)
 }
 
-fn attribute_patch(text: &str, tag_range: Range<usize>, name: &str, value: &str) -> (Range<usize>, String) {
+pub(super) fn attribute_patch(
+    text: &str,
+    tag_range: Range<usize>,
+    name: &str,
+    value: &str,
+) -> (Range<usize>, String) {
     let tag = &text[tag_range.clone()];
     let bytes = tag.as_bytes();
     let mut at = 1;

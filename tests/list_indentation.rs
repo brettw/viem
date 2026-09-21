@@ -25,6 +25,21 @@ fn levels(document: &Document) -> Vec<(bool, u8)> {
         })
         .collect()
 }
+fn ordinals(document: &Document) -> Vec<u64> {
+    document
+        .projection()
+        .blocks()
+        .iter()
+        .filter_map(|block| match block.kind {
+            BlockKind::ListItem {
+                ordinal,
+                item_start: true,
+                ..
+            } => Some(ordinal),
+            _ => None,
+        })
+        .collect()
+}
 #[test]
 fn generated_families_are_four_levels_and_deeper_source_is_preserved() {
     for (source, format) in [
@@ -83,6 +98,74 @@ fn indent_requires_a_previous_sibling_and_unindent_restores_source_exactly() {
         assert_eq!(document.source_bytes(), final_source);
     }
 }
+
+#[test]
+fn ordered_indent_starts_a_canonical_child_run_and_unindent_removes_its_container() {
+    for (source, nested, format) in [
+        (
+            "1. One\n2. Two\n3. Three\n4. Four",
+            "1. One\n   1. Two\n   2. Three\n4. Four",
+            Format::Markdown,
+        ),
+        (
+            "<ol><li>One</li><li>Two</li><li>Three</li><li>Four</li></ol>",
+            "<ol><li>One<ol type=\"a\"><li>Two</li><li>Three</li></ol></li><li>Four</li></ol>",
+            Format::Html,
+        ),
+    ] {
+        let mut document = open(source, format);
+        let start = document.text().find("Two").unwrap();
+        let end = document.text().find("Three").unwrap() + "Three".len();
+        apply(&mut document, start..end, false).unwrap();
+        assert_eq!(document.source_bytes(), nested.as_bytes(), "{format:?}");
+        assert_eq!(
+            levels(&document),
+            [(true, 0), (true, 1), (true, 1), (true, 0)]
+        );
+        assert_eq!(ordinals(&document), [1, 1, 2, 2]);
+
+        let start = document.text().find("Two").unwrap();
+        let end = document.text().find("Three").unwrap() + "Three".len();
+        apply(&mut document, start..end, true).unwrap();
+        assert_eq!(document.source_bytes(), source.as_bytes(), "{format:?}");
+        assert_eq!(
+            levels(&document),
+            [(true, 0), (true, 0), (true, 0), (true, 0)]
+        );
+        assert_eq!(ordinals(&document), [1, 2, 3, 4]);
+    }
+}
+
+#[test]
+fn html_cross_container_indent_restarts_numbering_and_preserves_other_attributes() {
+    let source = "<ol><li>One</li></ol><ol data-keep='yes' start='5' class=x><li>Two</li></ol>";
+    let mut document = open(source, Format::Html);
+    let at = document.text().find("Two").unwrap();
+    apply(&mut document, at..at, false).unwrap();
+    assert_eq!(
+        document.source_bytes(),
+        b"<ol><li>One<ol data-keep='yes' class=x type=\"a\"><li>Two</li></ol></li></ol>"
+    );
+    assert_eq!(levels(&document), [(true, 0), (true, 1)]);
+    assert_eq!(ordinals(&document), [1, 1]);
+}
+
+#[test]
+fn html_unindenting_first_child_reparents_following_siblings_without_an_empty_list() {
+    let source = "<ol><li>Parent<ol><li>First</li><li>Following</li></ol></li></ol>";
+    let mut document = open(source, Format::Html);
+    let at = document.text().find("First").unwrap();
+    apply(&mut document, at..at, true).unwrap();
+    assert_eq!(
+        document.source_bytes(),
+        b"<ol><li>Parent</li><li>First<ol><li>Following</li></ol></li></ol>"
+    );
+    assert_eq!(document.text(), "Parent\nFirst\nFollowing");
+    assert_eq!(levels(&document), [(true, 0), (true, 0), (true, 1)]);
+    assert_eq!(ordinals(&document), [1, 2, 1]);
+    assert!(!String::from_utf8_lossy(&document.source_bytes()).contains("<ol></ol>"));
+}
+
 #[test]
 fn markdown_mixed_family_indent_moves_subtree_and_stops_at_fourth_level() {
     let mut document = open(

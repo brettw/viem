@@ -57,14 +57,15 @@ internal sealed partial class StyleWindow
     }
     private static TextBlock Unit(string text) => new() { Text = text, FontSize = 11, Opacity = .65, VerticalAlignment = VerticalAlignment.Center };
     private static FontIcon Icon(string glyph) => new() { Glyph = glyph, FontSize = 16, Opacity = .7, VerticalAlignment = VerticalAlignment.Center, Width = 18 };
-    private void Number(Panel row, string label, uint property, float min = -1000, float max = 1000, bool caption = true, string? icon = null)
+    private void Number(Panel row, string label, uint property, float min = -1000, float max = 1000, bool caption = true,
+        string? icon = null, double? width = null, double? groupWidth = null)
     {
-        var value = new NumberBox { Width = caption ? 104 : 82, Minimum = min, Maximum = max, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        var value = new NumberBox { Width = width ?? (caption ? 104 : 82), Minimum = min, Maximum = max, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
         AutomationProperties.SetName(value, label);
         var body = Inline(value, Unit("pt"));
         if (icon != null) body.Children.Insert(0, Icon(icon));
         var group = Property(row, label, property, body, caption);
-        if (caption) group.Width = 188;
+        if (caption) group.Width = groupWidth ?? 188;
         refreshFields.Add(() => value.Value = ShowsValue(property) ? selected.Value(property).number : double.NaN);
         value.ValueChanged += (_, _) => { if (!loading && double.IsFinite(value.Value)) Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property, CoreView.Number((float)value.Value))); };
     }
@@ -134,28 +135,55 @@ internal sealed partial class StyleWindow
         var row = Row(paragraph);
         Number(row, "Start indent", VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT, icon: "\uE8A0"); Number(row, "End indent", VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT, icon: "\uE89F"); Number(row, "First line", VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT, icon: "\uE8A0");
         row = Row(paragraph);
-        Number(row, "Space before", VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_BEFORE, min: 0, icon: "\uE74A"); Number(row, "Space after", VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_AFTER, min: 0, icon: "\uE74B");
+        Number(row, "Space before", VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_BEFORE, min: 0, icon: "\uE74A", width: 84, groupWidth: 168);
+        Number(row, "Space after", VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_AFTER, min: 0, icon: "\uE74B", width: 84, groupWidth: 168);
         var spacing = new ComboBox { ItemsSource = new[] { "Normal", "Multiple", "At least", "Exact" }, Width = 112, MinWidth = 0 };
         var amount = new NumberBox { Minimum = .01, Maximum = 1000, Width = 60, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        var amountUnit = Unit("");
         AutomationProperties.SetName(spacing, "Line spacing"); AutomationProperties.SetName(amount, "Line spacing amount");
-        Property(row, "Line spacing", VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING, Inline(spacing, amount));
+        AutomationProperties.SetName(amountUnit, "Line spacing units");
+        Property(row, "Line spacing", VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING, Inline(spacing, amount, amountUnit));
         refreshFields.Add(() => {
             var v = selected.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING);
-            spacing.SelectedIndex = ShowsValue(VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING) ? (int)v.enum_value - 1 : -1;
-            amount.IsEnabled = ShowsValue(VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING) && spacing.SelectedIndex > 0;
-            amount.Value = amount.IsEnabled ? v.number : double.NaN;
+            int spacingIndex = ShowsValue(VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING) ? (int)v.enum_value - 1 : -1;
+            if (spacingIndex == 1 && RoundLineSpacing(v.number) == 1) spacingIndex = 0;
+            spacing.SelectedIndex = spacingIndex;
+            amount.IsEnabled = ShowsValue(VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING) && spacing.SelectedIndex >= 0;
+            amount.Minimum = spacing.SelectedIndex is 0 or 1 ? .1 : 0;
+            amount.SmallChange = spacing.SelectedIndex is 0 or 1 ? .1 : 1;
+            amount.Value = amount.IsEnabled ? spacing.SelectedIndex == 0 ? 1 : RoundLineSpacing(v.number) : double.NaN;
+            amountUnit.Text = spacing.SelectedIndex switch { 0 or 1 => "\u00D7", 2 or 3 => "pt", _ => "" };
         });
         spacing.SelectionChanged += (_, _) => {
             if (loading || spacing.SelectedIndex < 0) return;
             var current = selected.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING);
-            float number = spacing.SelectedIndex == 0 ? 0 : current.enum_value == (uint)spacing.SelectedIndex + 1 && current.number > 0 ? current.number
-                : spacing.SelectedIndex == 1 ? 1 : selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number;
+            bool currentDisplaysAsNormal = current.enum_value == VIEM_STYLE_LINE_SPACING_NORMAL
+                || current.enum_value == VIEM_STYLE_LINE_SPACING_MULTIPLIER && RoundLineSpacing(current.number) == 1;
+            float number = spacing.SelectedIndex == 0 ? 0 : spacing.SelectedIndex == 1 && currentDisplaysAsNormal ? 1.1f
+                : current.enum_value == (uint)spacing.SelectedIndex + 1 && current.number > 0 ? current.number
+                : spacing.SelectedIndex == 1 ? 1.1f : selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number;
             Try(() => SetLineSpacing((uint)spacing.SelectedIndex + 1, number));
         };
-        amount.ValueChanged += (_, _) => { if (!loading && double.IsFinite(amount.Value) && spacing.SelectedIndex > 0) Try(() => SetLineSpacing((uint)spacing.SelectedIndex + 1, (float)amount.Value)); };
+        amount.ValueChanged += (_, _) => {
+            if (loading || !double.IsFinite(amount.Value) || spacing.SelectedIndex < 0) return;
+            double number = RoundLineSpacing(amount.Value);
+            uint kind = (uint)spacing.SelectedIndex + 1;
+            if (spacing.SelectedIndex is 0 or 1) {
+                number = Math.Max(.1, number);
+                kind = number == 1 ? VIEM_STYLE_LINE_SPACING_NORMAL : VIEM_STYLE_LINE_SPACING_MULTIPLIER;
+            }
+            Try(() => SetLineSpacing(kind, (float)number));
+        };
     }
+    private static double RoundLineSpacing(double number) => Math.Round(number, 1, MidpointRounding.AwayFromZero);
     private void SetLineSpacing(uint kind, float number)
     {
+        if (kind == VIEM_STYLE_LINE_SPACING_MULTIPLIER) {
+            number = (float)Math.Max(.1, RoundLineSpacing(number));
+            if (number == 1) kind = VIEM_STYLE_LINE_SPACING_NORMAL;
+        } else if (kind is VIEM_STYLE_LINE_SPACING_AT_LEAST or VIEM_STYLE_LINE_SPACING_EXACT) {
+            number = (float)RoundLineSpacing(number);
+        }
         var value = CoreView.Enum(VIEM_STYLE_VALUE_LINE_SPACING, kind); value.number = number;
         view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING, value);
     }

@@ -1073,10 +1073,13 @@ the original source bytes.
 
 #### Rich-text deletion boundaries
 
-Backspace at the visible beginning of a list item or code paragraph removes
-that structural treatment and assigns the normal paragraph style without
-deleting text. The reset removes every enclosing structural layer that would
-otherwise keep that paragraph in a list, quote, or code treatment. At the beginning of every other paragraph it removes the previous
+Backspace at the visible beginning of a nested list item reduces its list
+indentation by one level without deleting text. Repeated Backspace reaches the
+top list level one step at a time; at the top level it removes the list
+treatment and assigns the normal paragraph style. Backspace at the visible
+beginning of a code paragraph likewise removes that structural treatment. A
+top-level reset removes every enclosing structural layer that would otherwise
+keep that paragraph in a list, quote, or code treatment. At the beginning of every other paragraph it removes the previous
 paragraph boundary and joins into the preceding paragraph. With no preceding
 content or resettable treatment it is a no-op. Within a paragraph it deletes the
 preceding grapheme, including when the caret begins an inline character-style
@@ -5074,7 +5077,18 @@ Expose controls for all initial Paragraph Layout properties:
 
 Controls that are meaningless for the chosen line-spacing kind are disabled
 without erasing their last valid draft value. Only the active kind and its
-applicable value form the committed declaration.
+applicable value form the committed declaration. In the editor, `normal` is the
+canonical presentation of a 1× multiplier: its numeric field remains enabled,
+shows `1`, has the trailing `×` unit, and steps by 0.1. A relative value other
+than 1 is presented as `multiplier`; changing the field or stepper away from 1
+selects `multiplier`, and returning it to exactly 1 selects `normal`. Explicitly
+choosing `multiplier` while `normal` is selected starts at 1.1. Merely displaying
+an existing source declaration does not rewrite it. Every line-spacing value is
+rounded to the nearest 0.1 at the control boundary and displayed without a
+fractional part when that fraction is zero. `at-least` and `exact` show `pt` and
+their native up/down click changes the value by 1 pt. These controls fit the
+existing fixed inspector width; make the adjacent space-before and space-after
+fields narrower instead of widening the window.
 
 Numeric style fields have native up/down steppers on their right edge. A
 step uses the displayed resolved value and creates an explicit declaration;
@@ -7157,14 +7171,16 @@ table has a compatible target level; legacy flat RTF lists and unavailable
 target levels leave Indent and Unindent disabled.
 Remove List remains available among the Format paragraph controls. Enter
 continues an item; Enter on an empty item exits the list.
-At the visible beginning of a list item in Insert mode, Tab and Shift-Tab invoke
-the same verified Indent and Unindent actions when the format can express them.
-An unavailable nesting change leaves the item unchanged. Source views also
-recognize the semantic body beginning; Markdown Source recognizes both the
-literal marker beginning and the boundary after its marker. Backspace at the
-visible WYSIWYG beginning removes list treatment regardless of whether the caret
-arrived by typing, navigation, or pointer placement; hidden tags and insertion
-history do not redefine the beginning.
+At any caret position inside a list-item paragraph in Insert mode, Tab and
+Shift-Tab invoke the same verified Indent and Unindent actions for the complete
+item when the format can express them. This includes a continuation paragraph
+inside the item. An unavailable nesting change leaves the item unchanged.
+Source views recognize every caret position associated with the semantic list
+paragraph; Markdown Source also recognizes its literal marker boundaries.
+Backspace at the visible WYSIWYG beginning first unindents a nested item by one
+level. At the top level it removes list treatment, regardless of whether the
+caret arrived by typing, navigation, or pointer placement; hidden tags and
+insertion history do not redefine the beginning.
 The beginning of a continuation paragraph within the same item is not a new
 item-label boundary: Backspace joins it to the preceding visible paragraph using
 the ordinary first-paragraph style rule, including when a nested child intervenes.
@@ -7172,6 +7188,19 @@ Removing a Markdown item label also removes the item's hidden continuation
 indentation without consuming its visible paragraph boundaries or following items.
 Numbered continuation and repeat calculate the next ordinal from current
 structure. One list action and its supporting source patches form one undo unit.
+Indenting an ordered item creates a nested numbering run beginning at one, so
+its first generated label is `a.`. Generated ordered marker styles by zero-based
+depth are decimal, lower-alpha, lower-roman, and decimal; generated bullet
+styles are disc, circle, square, and disc. Deeper imported levels use the fourth
+style, matching the fourth generated list paragraph style and its additional
+structural inset. Alphabetic numbering continues bijectively after `z` (`aa`,
+`ab`, and so on), and Roman numbering falls back to decimal outside its
+supported positive range. Marker spelling in source-visible modes remains
+literal and editable rather than being replaced by this generated furniture.
+For a structural indent, Markdown canonicalizes only the moved ordered root
+markers to `1.`, `2.`, and so on; untouched marker bytes remain unchanged.
+HTML gives a newly created nested container the matching `type` value and no
+inherited `start`, so saved HTML has the same marker family and restart.
 New plain-text lists and Markdown source use `- ` or decimal `1. ` markers, with
 sequential numbers across the selected items. Source-visible Markdown displays
 and edits those markers; Markdown WYSIWYG renders canonical bullets and ordered

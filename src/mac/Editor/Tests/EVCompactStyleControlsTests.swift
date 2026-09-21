@@ -335,9 +335,15 @@ final class EVCompactStyleControlsTests: XCTestCase {
         let alignment = try control(NSSegmentedControl.self, label: "Paragraph alignment", in: editor.view)
         let lineKind = try control(NSPopUpButton.self, label: "Line spacing kind", in: editor.view)
         let lineValue = try control(NSTextField.self, label: "Line spacing value", in: editor.view)
+        let lineStepper = try control(EVStyleStepper.self, label: "Adjust line spacing value", in: editor.view)
+        let lineUnit = try control(NSTextField.self, label: "Line spacing unit", in: editor.view)
         XCTAssertEqual(alignment.selectedSegment, 0, "Start is core enum1 and UI segment0")
         XCTAssertEqual(lineKind.titleOfSelectedItem, "Normal")
-        XCTAssertFalse(lineValue.isEnabled)
+        XCTAssertEqual(lineValue.stringValue, "1")
+        XCTAssertTrue(lineValue.isEnabled)
+        XCTAssertTrue(lineStepper.isEnabled)
+        XCTAssertEqual(lineStepper.increment, 0.1)
+        XCTAssertEqual(lineUnit.stringValue, "×")
         for (segment, expected) in [(1, VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER), (2, VIEM_STYLE_PARAGRAPH_ALIGNMENT_END), (0, VIEM_STYLE_PARAGRAPH_ALIGNMENT_START)] {
             alignment.selectedSegment = segment
             XCTAssertTrue(alignment.sendAction(try XCTUnwrap(alignment.action), to: alignment.target))
@@ -352,8 +358,14 @@ final class EVCompactStyleControlsTests: XCTestCase {
             let value = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.paragraphLineSpacing]?.declared
             guard case let .lineSpacing(spacing)? = value else { return XCTFail("Native line spacing choice did not write a declaration") }
             XCTAssertEqual(spacing.kind, UInt32(kind))
-            if title == "Normal" { XCTAssertFalse(lineValue.isEnabled) }
-            else { XCTAssertGreaterThan(spacing.value, 0); XCTAssertTrue(lineValue.isEnabled) }
+            if title == "Normal" {
+                XCTAssertEqual(lineValue.stringValue, "1")
+                XCTAssertEqual(lineUnit.stringValue, "×")
+            } else {
+                XCTAssertGreaterThan(spacing.value, 0)
+                XCTAssertEqual(lineUnit.stringValue, title == "Multiple" ? "×" : "pt")
+            }
+            XCTAssertTrue(lineValue.isEnabled)
             XCTAssertEqual(lineKind.titleOfSelectedItem, title)
             XCTAssertEqual(editor.inspection.diagnostic, "")
         }
@@ -690,7 +702,36 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertEqual(editor.inspection.diagnostic, "")
     }
 
-    func testNumericFieldDraftDisablesStepperUntilValidAndLineKindRetainsValues() throws {
+    func testLineSpacingDraftPreservesIntermediateDecimalTextAndCaretUntilEditingEnds() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 770),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = editor
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        editor.selectTab(.paragraph)
+        let kind = try control(NSPopUpButton.self, label: "Line spacing kind", in: editor.view)
+        let lineValue = try control(NSTextField.self, label: "Line spacing value", in: editor.view)
+        XCTAssertTrue(window.makeFirstResponder(lineValue))
+        let fieldEditor = try XCTUnwrap(lineValue.currentEditor() as? NSTextView)
+
+        fieldEditor.insertText("1.", replacementRange: NSRange(location: 0, length: fieldEditor.string.utf16.count))
+        XCTAssertEqual(fieldEditor.string, "1.")
+        XCTAssertEqual(fieldEditor.selectedRange(), NSRange(location: 2, length: 0))
+        fieldEditor.insertText("2", replacementRange: fieldEditor.selectedRange())
+        fieldEditor.insertText("0", replacementRange: fieldEditor.selectedRange())
+        XCTAssertEqual(fieldEditor.string, "1.20", "Live rounding must not rewrite an in-progress native field-editor draft")
+        XCTAssertEqual(fieldEditor.selectedRange(), NSRange(location: 4, length: 0), "Live commits must preserve the insertion caret")
+        XCTAssertEqual(kind.titleOfSelectedItem, "Multiple")
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.paragraphLineSpacing]?.declared,
+                       .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER), value: 1.2)))
+
+        XCTAssertTrue(window.makeFirstResponder(nil))
+        XCTAssertEqual(lineValue.stringValue, "1.2", "Ending the edit canonicalizes the displayed value")
+    }
+
+    func testNumericFieldDraftAndLineSpacingPrecisionAndKindTransitions() throws {
         let (backend, surface, editor, _) = try makeEditor(html: true)
         defer { withExtendedLifetime(surface) {} }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 770), styleMask: [.titled], backing: .buffered, defer: false)
@@ -713,20 +754,82 @@ final class EVCompactStyleControlsTests: XCTestCase {
         window.makeFirstResponder(nil)
         editor.selectTab(.paragraph)
         let kind = try control(NSPopUpButton.self, label: "Line spacing kind", in: editor.view)
+        let lineValue = try control(NSTextField.self, label: "Line spacing value", in: editor.view)
         let line = try control(EVStyleStepper.self, label: "Adjust line spacing value", in: editor.view)
-        XCTAssertFalse(line.isEnabled)
-        kind.selectItem(withTitle: "Multiple")
-        XCTAssertTrue(kind.sendAction(try XCTUnwrap(kind.action), to: kind.target))
-        XCTAssertEqual(line.increment, 0.1)
-        line.doubleValue = 1.3
-        XCTAssertTrue(line.sendAction(try XCTUnwrap(line.action), to: line.target))
-        kind.selectItem(withTitle: "Normal")
-        XCTAssertTrue(kind.sendAction(try XCTUnwrap(kind.action), to: kind.target))
-        XCTAssertFalse(line.isEnabled)
-        kind.selectItem(withTitle: "Multiple")
-        XCTAssertTrue(kind.sendAction(try XCTUnwrap(kind.action), to: kind.target))
-        XCTAssertEqual(line.doubleValue, 1.3, accuracy: 0.0001)
+        let unit = try control(NSTextField.self, label: "Line spacing unit", in: editor.view)
+        let spaceBefore = try control(NSTextField.self, label: "Space before", in: editor.view)
+        let spaceAfter = try control(NSTextField.self, label: "Space after", in: editor.view)
+        XCTAssertEqual(spaceBefore.constraints.first { $0.firstAttribute == .width }?.constant, 56)
+        XCTAssertEqual(spaceAfter.constraints.first { $0.firstAttribute == .width }?.constant, 56)
+        XCTAssertEqual(kind.titleOfSelectedItem, "Normal")
+        XCTAssertEqual(lineValue.stringValue, "1")
         XCTAssertTrue(line.isEnabled)
+        XCTAssertEqual(line.increment, 0.1)
+        XCTAssertEqual(unit.stringValue, "×")
+
+        line.doubleValue -= line.increment
+        XCTAssertTrue(line.sendAction(try XCTUnwrap(line.action), to: line.target))
+        XCTAssertEqual(kind.titleOfSelectedItem, "Multiple")
+        XCTAssertEqual(lineValue.stringValue, "0.9")
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.paragraphLineSpacing]?.declared,
+                       .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER), value: 0.9)))
+        line.doubleValue += line.increment
+        XCTAssertTrue(line.sendAction(try XCTUnwrap(line.action), to: line.target))
+        XCTAssertEqual(kind.titleOfSelectedItem, "Normal")
+        XCTAssertEqual(lineValue.stringValue, "1")
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.paragraphLineSpacing]?.declared,
+                       .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_NORMAL), value: 0)))
+
+        kind.selectItem(withTitle: "Multiple")
+        XCTAssertTrue(kind.sendAction(try XCTUnwrap(kind.action), to: kind.target))
+        XCTAssertEqual(lineValue.stringValue, "1.1", "Explicitly choosing Multiple from Normal must not immediately normalize back to Normal")
+        XCTAssertEqual(line.increment, 0.1)
+        XCTAssertEqual(unit.stringValue, "×")
+
+        let noisy: Float = 0.7999999523
+        XCTAssertTrue(editor.setPropertyForTesting(.paragraphLineSpacing,
+            value: .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER), value: noisy))))
+        let sourceWithNoisyValue = try backend.serializedSource(typeName: EVDocument.htmlType)
+        XCTAssertEqual(lineValue.stringValue, "0.8")
+        XCTAssertEqual(line.doubleValue, 0.8, accuracy: 0.0001)
+        guard case let .lineSpacing(noisyDeclaration)? = try backend.styleSheetSnapshot()
+            .definition(for: .baseParagraph)?.properties[.paragraphLineSpacing]?.declared else {
+            return XCTFail("Missing noisy multiplier declaration")
+        }
+        XCTAssertEqual(noisyDeclaration.value, noisy, "Rendering rounds only the display and must not rewrite source")
+        editor.selectStyle(.baseParagraph)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), sourceWithNoisyValue)
+
+        let noisyPoints: Float = 12.299999237
+        XCTAssertTrue(editor.setPropertyForTesting(.paragraphLineSpacing,
+            value: .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_EXACT), value: noisyPoints))))
+        XCTAssertEqual(kind.titleOfSelectedItem, "Exactly")
+        XCTAssertEqual(lineValue.stringValue, "12.3")
+        XCTAssertEqual(unit.stringValue, "pt")
+        guard case let .lineSpacing(noisyPointDeclaration)? = try backend.styleSheetSnapshot()
+            .definition(for: .baseParagraph)?.properties[.paragraphLineSpacing]?.declared else {
+            return XCTFail("Missing noisy point-valued declaration")
+        }
+        XCTAssertEqual(noisyPointDeclaration.value, noisyPoints,
+            "Point-valued line spacing also rounds only its presentation")
+
+        kind.selectItem(withTitle: "At least")
+        XCTAssertTrue(kind.sendAction(try XCTUnwrap(kind.action), to: kind.target))
+        XCTAssertEqual(line.increment, 1)
+        XCTAssertEqual(unit.stringValue, "pt")
+        line.doubleValue = 12.0000001
+        XCTAssertTrue(line.sendAction(try XCTUnwrap(line.action), to: line.target))
+        XCTAssertEqual(lineValue.stringValue, "12")
+        line.doubleValue = 12.299999523
+        XCTAssertTrue(line.sendAction(try XCTUnwrap(line.action), to: line.target))
+        XCTAssertEqual(lineValue.stringValue, "12.3")
+        line.doubleValue += line.increment
+        XCTAssertTrue(line.sendAction(try XCTUnwrap(line.action), to: line.target))
+        XCTAssertEqual(lineValue.stringValue, "13.3")
+        kind.selectItem(withTitle: "Exactly")
+        XCTAssertTrue(kind.sendAction(try XCTUnwrap(kind.action), to: kind.target))
+        XCTAssertEqual(line.increment, 1)
+        XCTAssertEqual(unit.stringValue, "pt")
         kind.selectItem(withTitle: "At least")
         XCTAssertTrue(kind.sendAction(try XCTUnwrap(kind.action), to: kind.target))
         line.doubleValue = 0
