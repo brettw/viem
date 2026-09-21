@@ -66,7 +66,6 @@ internal sealed partial class EditorWindow : Window
         Closed += (_, _) => {
             closed = true; poll.Stop(); preferences.Changed -= ApplyPreferences; preferences.RecentChanged -= RefreshRecentMenu;
             settingsWindow?.Close();
-            codeStyleInspector?.Close();
             fontPanel?.Close(); foreach (var panel in colorPanels.Values.ToArray()) panel.Close();
             var documents = Panes.Select(p => p.Document).Distinct().ToArray();
             foreach (var pane in Panes) pane.Dispose(); Panes.Clear();
@@ -86,8 +85,6 @@ internal sealed partial class EditorWindow : Window
         poll.Tick += (_, _) => {
             foreach (var doc in Panes.Select(p => p.Document).Distinct().ToArray()) ActivePane?.Run(() => doc.PollSyntax());
             foreach (var pane in Panes.ToArray()) pane.Poll();
-            if (settingsWindow != null && pollTicks % 10 == 0) ActivePane?.Run(() => settingsWindow.ShowSyntaxDiagnostics(
-                App.Instance.Windows.SelectMany(w => w.Panes).Select(p => p.Document).Distinct().Select(d => d.SyntaxDiagnostics)));
             if (++pollTicks % 50 == 0) Safe(CheckExternalChanges);
         };
         poll.Start();

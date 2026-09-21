@@ -1131,7 +1131,10 @@ extension EVDocumentWindowController {
       do {
         let document = EVDocument()
         let type = documentType(for: url, fallback: fallback)
-        try document.read(from: Data(), ofType: type)
+        try document.read(
+          from: Data(),
+          ofType: EVDocument.defaultOpeningType(for: url, nativeType: type)
+        )
         document.fileURL = EVDocumentIdentity.canonicalURL(url)
         document.fileType = type
         document.configureRecovery(for: EVDocumentIdentity.canonicalURL(url))

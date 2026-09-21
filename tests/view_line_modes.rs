@@ -108,6 +108,25 @@ fn mode_is_view_local_and_rtf_rejects_physical() {
 }
 
 #[test]
+fn code_views_default_to_physical_source_lines() {
+    for (format, expected) in [
+        (Format::Code, LineMode::PhysicalSource),
+        (Format::PlainText, LineMode::Visual),
+        (Format::MarkdownSource, LineMode::Visual),
+        (Format::HtmlSource, LineMode::Visual),
+    ] {
+        let document =
+            Document::from_bytes(b"first\nsecond".to_vec(), Encoding::Utf8, format).unwrap();
+        let (core, view) = editor(document, 200.0);
+        assert_eq!(
+            core.command_state(view).unwrap().line_mode(),
+            expected,
+            "{format:?}"
+        );
+    }
+}
+
+#[test]
 fn row_change_and_physical_change_have_one_undo_unit() {
     for mode in [LineMode::Visual, LineMode::PhysicalSource] {
         let original = "abc def ghi jkl mno\nsecond";

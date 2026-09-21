@@ -134,10 +134,19 @@ impl ClipboardContent {
     /// Constructs clipboard contents authored by the core, retaining the
     /// exact register shape and hard-break markers as the portable payload.
     pub fn from_register(value: RegisterValue) -> Self {
-        if let Some(source) = value
+        if let Some(mut source) = value
             .clipboard_fragment()
             .and_then(|fragment| fragment.source_mode_text())
         {
+            // Source views publish their literal source as interoperable plain
+            // text rather than a Viem-private payload. Preserve Vim's only
+            // portable linewise marker when the final physical source line did
+            // not already have one.
+            if value.kind == super::RegisterKind::Linewise
+                && !has_linewise_clipboard_terminator(&source)
+            {
+                source.push('\n');
+            }
             return Self::from_plain_text(source);
         }
         Self {
@@ -173,12 +182,17 @@ impl ClipboardContent {
     }
 
     /// Resolves the content to an editor register.  Portable shape wins when
-    /// available; mandatory plain-text fallback is characterwise and treats
-    /// each U+000A as a semantic hard break.
+    /// available. Like Vim, mandatory plain-text fallback is linewise when it
+    /// ends in CR or LF and characterwise otherwise; each U+000A is a semantic
+    /// hard break.
     pub fn to_register(&self) -> RegisterValue {
-        self.portable_register
-            .clone()
-            .unwrap_or_else(|| RegisterValue::characterwise(self.plain_text.clone()))
+        self.portable_register.clone().unwrap_or_else(|| {
+            if has_linewise_clipboard_terminator(&self.plain_text) {
+                RegisterValue::linewise(self.plain_text.clone())
+            } else {
+                RegisterValue::characterwise(self.plain_text.clone())
+            }
+        })
     }
 
     /// Interpret external plain text as prose input, without modifying the
@@ -216,6 +230,10 @@ impl ClipboardContent {
         RegisterValue::try_new(text, value.kind, breaks)
             .expect("clipboard normalization preserves valid semantic break positions")
     }
+}
+
+fn has_linewise_clipboard_terminator(text: &str) -> bool {
+    text.ends_with('\n') || text.ends_with('\r')
 }
 
 /// Immutable provider read captured outside an editor coordinator turn.
@@ -459,6 +477,24 @@ mod tests {
     }
 
     #[test]
+    fn plain_clipboard_trailing_line_break_is_linewise_like_vim() {
+        for text in ["one\n", "one\r", "one\r\n"] {
+            assert_eq!(
+                ClipboardContent::from_plain_text(text).to_register().kind,
+                RegisterKind::Linewise,
+                "{text:?}"
+            );
+        }
+        for text in ["one", "one\ntwo"] {
+            assert_eq!(
+                ClipboardContent::from_plain_text(text).to_register().kind,
+                RegisterKind::Characterwise,
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
     fn mismatched_plain_and_portable_forms_are_rejected() {
         assert_eq!(
             ClipboardContent::try_new("plain", Some(RegisterValue::characterwise("different"))),
@@ -563,7 +599,7 @@ mod tests {
 #[cfg(test)]
 mod rich_tests {
     use super::*;
-    use crate::command::{CommandInterpreter, CommandStatus, InputEvent, Key, Mode};
+    use crate::command::{CommandInterpreter, CommandStatus, InputEvent, Key, Mode, RegisterKind};
     use crate::document::{Document, Encoding, FileFormat, Format};
 
     fn open(source: &[u8], format: Format) -> Document {
@@ -619,6 +655,49 @@ mod rich_tests {
         }
         assert_eq!(commands.mode(), Mode::Insert);
         assert_eq!(document.text(), " two");
+    }
+
+    #[test]
+    fn star_line_yank_keeps_the_unnamed_register_linewise_for_bare_put() {
+        let context = ClipboardCommandContext::new().with_write(ClipboardTarget::Primary);
+        let mut document = open(b"one\ntwo", Format::PlainText);
+        let mut commands = CommandInterpreter::new();
+        for character in "\"*yy".chars() {
+            key(&mut commands, &mut document, &context, character);
+        }
+        assert_eq!(commands.register('"').unwrap().kind, RegisterKind::Linewise);
+
+        key(&mut commands, &mut document, &context, 'p');
+        assert_eq!(document.text(), "one\none\ntwo");
+    }
+
+    #[test]
+    fn source_mode_line_yank_round_trips_through_plain_system_clipboard() {
+        let write_context = ClipboardCommandContext::new().with_write(ClipboardTarget::Primary);
+        let mut source = open(b"one", Format::Code);
+        let mut commands = CommandInterpreter::new();
+        let mut writes = Vec::new();
+        for character in "\"*yy".chars() {
+            writes.extend(
+                key(&mut commands, &mut source, &write_context, character).clipboard_writes,
+            );
+        }
+        assert_eq!(writes.len(), 1);
+        let content = writes.pop().unwrap().content().clone();
+        assert_eq!(content.plain_text(), "one\n");
+        assert!(content.portable_register().is_none());
+
+        let read_context = ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(
+            ClipboardTarget::Primary,
+            ClipboardGeneration(1),
+            content,
+        ));
+        let mut target = open(b"tail", Format::Code);
+        let mut commands = CommandInterpreter::new();
+        for character in "\"*p".chars() {
+            key(&mut commands, &mut target, &read_context, character);
+        }
+        assert_eq!(target.text(), "tail\none");
     }
 
     #[test]

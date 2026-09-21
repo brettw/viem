@@ -296,7 +296,10 @@ final class EVApplicationDelegate: NSObject,
         if FileManager.default.fileExists(atPath: url.path) {
             try document.read(from: url, ofType: type)
         } else {
-            try document.read(from: Data(), ofType: type)
+            try document.read(
+                from: Data(),
+                ofType: EVDocument.defaultOpeningType(for: url, nativeType: type)
+            )
             document.configureRecovery(for: url)
         }
         document.fileURL = url

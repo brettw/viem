@@ -1598,7 +1598,7 @@ impl Document {
                 return Ok(None);
             }
             let BlockKind::ListItem { item_start, .. } = block.kind else {
-                if self.format() == Format::Html
+                if matches!(self.format(), Format::Html | Format::Markdown)
                     || (self.format() == Format::Rtf
                         && at == block.range.end
                         && self

@@ -27,18 +27,19 @@ removal. No build reads an installed Vim or downloads a runtime.
 core remains platform-neutral. Preference updates do not reconfigure syntax.
 Relocation and the caller's working directory do not change resource selection.
 
-## Settings and fallback
+## Configuration and fallback
 
-Code settings contains Edit Code Styles, filename associations, and syntax load
-diagnostics. The global style inspector owns a separate Code view, so selecting
-a different document cannot retarget it. The directory field and preference
+The main Settings window has no Code category. The shared Code stylesheet remains
+editable through the ordinary modeless style inspector opened from a Code view
+by F8 or the menu. Filename associations remain supported in
+`code.filenameAssociations` in `config.json`. The directory field and preference
 override have been removed. Legacy `code.vimSyntaxDirectory` values of any JSON
 type are ignored on read and removed on the next successful write, preserving
 unknown fields and associations. Resolved application paths are never saved.
 
-An unavailable resource tree produces a settings diagnostic; individual syntax
-load/compiler diagnostics are reported from the existing core API. Editing and
-bundled Tree-sitter remain available. Includes remain confined by the portable
+An unavailable resource tree and individual syntax load/compiler failures are
+reported through the existing diagnostic API. Editing and bundled Tree-sitter
+remain available. Includes remain confined by the portable
 loader. Shipping a syntax file does not expand the native compiler's supported
 Vim subset or suppress its diagnostics.
 
@@ -64,9 +65,9 @@ Code mode alone does not satisfy them. They cover clean state/revision/source
 preservation, editing and undo, retired settings with an external no-highlight
 fixture, migration without losing unrelated JSON, and missing Vim resources
 with Rust highlighting still available. The standard Windows harness also
-checks removal of the directory UI and opening global Code Styles from a prose
-document. Reports and isolated profiles are retained in
-`target/windows-validation`.
+checks that Settings has no Code category and directly validates the global
+Styles inspector against a Code view. Reports and isolated profiles are
+retained in `target/windows-validation`.
 
 Validated on Windows on 2026-09-19: Debug and Release builds completed with no
 warnings or errors; all 8 Python packaging tests passed; build, publish and

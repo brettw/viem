@@ -414,7 +414,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
 
         XCTAssertEqual(backend.readCalls.count, 1)
         XCTAssertEqual(backend.readCalls[0].0, input)
-        XCTAssertEqual(backend.readCalls[0].1, EVDocument.markdownType)
+        XCTAssertEqual(backend.readCalls[0].1, EVDocument.markdownSourceType)
         XCTAssertEqual(backend.serializationTypes, [EVDocument.markdownType])
         XCTAssertEqual(try Data(contentsOf: outputURL), backend.serializedData)
         XCTAssertEqual(recent, [EVDocumentIdentity.canonicalURL(inputURL)],

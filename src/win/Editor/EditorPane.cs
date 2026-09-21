@@ -111,7 +111,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Canvas.AllowDrop = true;
         Canvas.DragOver += (_, e) => { if (e.DataView.Contains(StandardDataFormats.StorageItems)) e.AcceptedOperation = DataPackageOperation.Copy; };
         Canvas.Drop += async (_, e) => { try { if (e.DataView.Contains(StandardDataFormats.StorageItems)) { var items = await e.DataView.GetStorageItemsAsync(); foreach (var item in items) if (File.Exists(item.Path)) await window.OpenNative(item.Path); } } catch (Exception error) { Report(error); } };
-        input.GotFocus += (_, _) => { outputHadFocus = false; Focused?.Invoke(this); ResetBlink(); _ = RefreshClipboard(); };
+        input.GotFocus += (_, _) => { outputHadFocus = false; Focused?.Invoke(this); ResetBlink(); _ = RefreshClipboard(false); };
         input.LostFocus += (_, _) => { caretVisible = true; Canvas.Invalidate(); };
         input.PreviewKeyDown += OnKey;
         // TextChanging reliably signals input even for this nearly invisible
@@ -262,14 +262,15 @@ internal sealed partial class EditorPane : Grid, IDisposable
         }
         inputQueue = Next(inputQueue);
     }
-    private async void ClipboardChanged(object? sender, object e) { await RefreshClipboard(); }
-    private async Task RefreshClipboard()
+    private async void ClipboardChanged(object? sender, object e) { await RefreshClipboard(false); }
+    private async Task<bool> RefreshClipboard(bool reportFailure = true)
     {
-        if (View == null) return;
+        if (View == null) return false;
         try {
             var data = await ClipboardFormats.Read();
-            if (View == null) return; View.ClipboardText = data.Text; View.ClipboardFragment = data.Fragment; View.ClipboardGeneration++;
-        } catch (Exception e) { SetMessage("Clipboard unavailable: " + e.Message); }
+            if (View == null) return false; View.ClipboardText = data.Text; View.ClipboardFragment = data.Fragment; View.ClipboardGeneration++;
+            return true;
+        } catch (Exception e) { if (reportFailure) SetMessage("Clipboard unavailable: " + e.Message); return false; }
     }
     public Task Copy(bool cut)
     {
@@ -318,7 +319,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         ClipboardFormats.Write(string.Join(selection.Info.identity.kind == VIEM_VISUAL_SELECTION_KIND_BLOCK ? "\n" : "", fragments), "");
         return Task.CompletedTask;
     }
-    public async Task Paste(bool plain = false) { await RefreshClipboard(); View?.Paste(plain); }
+    public async Task Paste(bool plain = false) { if (await RefreshClipboard()) View?.Paste(plain); }
     private void ApplyEffects(HostEffects effects)
     {
         foreach (var write in effects.Clipboard)

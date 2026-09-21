@@ -73,7 +73,8 @@ The title-bar menu button sits immediately left of the window controls.
 It toggles the top menu bar and remembers its state. The editor, vertically
 stacked panes, status bars and command prompt follow `docs/mac_references`.
 Application windows, menus and dialogs use WinUI compact sizing for keyboard
-and mouse use. Settings uses sidebar categories with a live Theme preview.
+and mouse use. Settings has View, Theme and Editing sidebar categories, with a
+live Theme preview.
 Document windows remember their last normal size and position, restore onto an
 available monitor, and cascade additional windows. Maximized, minimized and
 fullscreen bounds do not replace the saved normal frame.
@@ -102,10 +103,14 @@ use the same JSON schema as macOS; unknown nested keys survive updates and
 invalid settings are not overwritten. Recovery uses separate owned swap files,
 never autosaves over the original source, and retains crash leftovers for review.
 
-Code settings provides Edit Code Styles, filename associations, and syntax load
-diagnostics. Vim syntax always uses application resources. Retired
-`code.vimSyntaxDirectory` values are ignored and removed on the next successful
-settings write; unrelated fields survive and resource paths are never saved.
+The main Settings window has no Code category. From a Code view, F8 or Format >
+Style > Edit Styles… opens the shared Code stylesheet in the ordinary modeless
+style inspector. Filename associations remain supported through
+`code.filenameAssociations` in `config.json`, and syntax load/compiler messages
+remain available through the existing diagnostics mechanisms. Vim syntax always
+uses application resources. Retired `code.vimSyntaxDirectory` values are
+ignored and removed on the next successful settings write; unrelated fields
+survive and resource paths are never saved.
 
 The normative list of known Mac differences is in the **Windows frontend
 requirements** section of [`AGENTS.md`](../../AGENTS.md). In particular,

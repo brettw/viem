@@ -1,9 +1,11 @@
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Viem.Windows.Core;
 using Viem.Windows.Interop;
 using Windows.ApplicationModel.DataTransfer;
+using Windows.Storage.Streams;
 using static Viem.Windows.Interop.Native;
 using static Viem.Windows.Interop.Abi;
 
@@ -14,16 +16,72 @@ internal static class ClipboardFormats
     public const string PrivateFormat = "com.viem.clipboard.fragment.v1";
     public static async Task<(string Text, string Fragment)> Read()
     {
+        Exception? failure = null;
+        for (int attempt = 0; attempt < 5; attempt++)
+        {
+            try { return await ReadOnce(); }
+            catch (Exception error) when (Transient(error) && attempt < 4)
+            {
+                failure = error;
+                await Task.Delay(10 * (attempt + 1));
+            }
+        }
+        throw failure!;
+    }
+    private static async Task<(string Text, string Fragment)> ReadOnce()
+    {
         var data = Clipboard.GetContent();
         string text = data.Contains(StandardDataFormats.Text) ? await data.GetTextAsync() : "";
-        if (data.Contains(PrivateFormat)) return (text, (await data.GetDataAsync(PrivateFormat)) as string ?? "");
+        // Rich representations are optional enhancements. A malformed or
+        // unavailable private/HTML/RTF representation must not make ordinary
+        // system clipboard text unusable.
+        if (data.Contains(PrivateFormat))
+            try
+            {
+                string fragment = await PrivateFragment(data);
+                if (fragment.Length > 0)
+                    return (text, fragment);
+            }
+            catch (Exception error) when (!Transient(error)) { }
         if (data.Contains(StandardDataFormats.Html))
-        {
-            string html = HtmlFormatHelper.GetStaticFragment(await data.GetHtmlFormatAsync());
-            return Import(html, VIEM_FORMAT_HTML, text);
-        }
-        if (data.Contains(StandardDataFormats.Rtf)) return Import(await data.GetRtfAsync(), VIEM_FORMAT_RTF, text);
+            try
+            {
+                string html = HtmlFormatHelper.GetStaticFragment(await data.GetHtmlFormatAsync());
+                return Import(html, VIEM_FORMAT_HTML, text);
+            }
+            catch (Exception error) when (!Transient(error)) { }
+        if (data.Contains(StandardDataFormats.Rtf))
+            try { return Import(await data.GetRtfAsync(), VIEM_FORMAT_RTF, text); }
+            catch (Exception error) when (!Transient(error)) { }
         return (text, "");
+    }
+    private static async Task<string> PrivateFragment(DataPackageView data)
+    {
+        object value = await data.GetDataAsync(PrivateFormat);
+        if (value is string text) return text;
+        if (value is IRandomAccessStreamReference reference)
+        {
+            using var opened = await reference.OpenReadAsync();
+            return await StreamText(opened);
+        }
+        if (value is IRandomAccessStream stream) return await StreamText(stream);
+        if (value is Stream managed)
+        {
+            using var copy = new MemoryStream();
+            await managed.CopyToAsync(copy);
+            return Encoding.UTF8.GetString(copy.ToArray());
+        }
+        return "";
+    }
+    private static async Task<string> StreamText(IRandomAccessStream stream)
+    {
+        if (stream.Size > int.MaxValue) return "";
+        stream.Seek(0);
+        using var reader = new DataReader(stream.GetInputStreamAt(0));
+        uint length = checked((uint)stream.Size);
+        uint loaded = await reader.LoadAsync(length);
+        var bytes = new byte[loaded]; reader.ReadBytes(bytes);
+        return Encoding.UTF8.GetString(bytes);
     }
     private static unsafe (string, string) Import(string source, uint format, string plain)
     {
@@ -41,8 +99,15 @@ internal static class ClipboardFormats
             data.SetData(PrivateFormat, fragment);
             data.SetHtmlFormat(HtmlFormatHelper.CreateHtmlFormat(Html(fragment)));
         }
-        Clipboard.SetContent(data); Clipboard.Flush();
+        for (int attempt = 0; ; attempt++)
+            try { Clipboard.SetContent(data); Clipboard.Flush(); return; }
+            catch (Exception error) when (Transient(error) && attempt < 4)
+            { Thread.Sleep(10 * (attempt + 1)); }
     }
+    private static bool Transient(Exception error) => error is COMException && error.HResult is
+        unchecked((int)0x800401D0) // CLIPBRD_E_CANT_OPEN
+        or unchecked((int)0x80010001) // RPC_E_CALL_REJECTED
+        or unchecked((int)0x80070005); // E_ACCESSDENIED while another owner renders
     internal static string Html(string fragment)
     {
         using var document = JsonDocument.Parse(fragment); var root = document.RootElement;

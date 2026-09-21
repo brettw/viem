@@ -85,12 +85,17 @@ internal static class StyleAndSettingsTests
         await CodeStyleChecks(pane, preferences);
         await StyleInspectorBehaviorTests.Run(pane, preferences);
 
+        await RunSettings(pane, window, preferences);
+    }
+
+    internal static async Task RunSettings(EditorPane pane, EditorWindow window, Preferences preferences)
+    {
         window.Activate(); await window.ShowSettings(); await Task.Delay(350);
         var settings = window.SettingsInspector!;
         var theme = preferences.Theme; string font = preferences.Get("theme", "statusFontFamily", "System"); double size = preferences.StatusFontSize;
         byte[] source = pane.Document.Source(pane.Document.State.document_revision);
         try {
-            Check(settings.Categories.Items.Count == 4 && settings.Categories.SelectedIndex == 1 && settings.CurrentPage.Visibility == Visibility.Visible, "settings opens Theme beside a four-category sidebar");
+            Check(settings.Categories.Items.Count == 3 && settings.Categories.SelectedIndex == 1 && settings.CurrentPage.Visibility == Visibility.Visible, "settings opens Theme beside a three-category sidebar without Code");
             await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(settings), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".settings.png");
             Check(settings.StatusFont.ActualHeight is > 0 and <= 28 && settings.PaperPreset.ActualHeight <= 32, $"separate settings window inherits compact control density ({settings.StatusFont.ActualHeight}, {settings.PaperPreset.ActualHeight})");
             Check(Children<TextBox>(settings.StatusFont).Any(t => t.Text == settings.StatusFont.Text && t.Text.Length > 0), "status font appears in the editable picker on first opening");
@@ -101,22 +106,13 @@ internal static class StyleAndSettingsTests
                 && settings.PreviewStatus.FontFamily.Source == "Consolas" && settings.PreviewStatus.FontSize == 14, "status font changes update preferences and the theme preview");
             new ButtonAutomationPeer(settings.RestoreDefaults).Invoke(); await Task.Delay(100);
             Check(preferences.Theme == Theme.Midnight && preferences.StatusFontSize == 11 && settings.StatusFont.Text == "System", "Restore Defaults resets colors and status typography");
-            for (int index = 0; index < 4; index++) {
+            for (int index = 0; index < 3; index++) {
                 settings.Categories.SelectedIndex = index; await Task.Delay(100);
                 Check(settings.CurrentPage.Visibility == Visibility.Visible && settings.CurrentPage.ActualHeight > 0, $"settings sidebar displays category {index + 1}");
             }
-            var associations = Children<TextBox>(settings.CurrentPage).Single(t => t.Header as string == "Filename associations (JSON)");
-            Check(Children<TextBox>(settings.CurrentPage).All(t => !(t.Header as string ?? "").Contains("syntax directory", StringComparison.OrdinalIgnoreCase)), "Code settings has no external syntax directory field");
-            var editCodeStyles = Children<Button>(settings.CurrentPage).Single(b => b.Content as string == "Edit Code Styles…");
-            new ButtonAutomationPeer(editCodeStyles).Invoke(); await Task.Delay(150);
-            Check(window.CodeStyleInspector?.Title == "Code Styles", "Code settings opens an explicitly global style inspector from a prose document");
-            window.CodeStyleInspector!.Close(); settings.Activate();
-            string original = associations.Text;
-            associations.Focus(FocusState.Programmatic); associations.Text = "invalid JSON";
-            settings.Categories.Focus(FocusState.Programmatic); await Task.Delay(100);
-            Check(settings.Error.Length > 0 && System.Text.Encoding.UTF8.GetString(preferences.Associations) == original, "invalid settings edits report an error and preserve saved values");
-            associations.Focus(FocusState.Programmatic); associations.Text = original; settings.Categories.Focus(FocusState.Programmatic); await Task.Delay(100);
-            Check(settings.Error.Length == 0, "correcting an invalid settings edit clears the error");
+            Check(!Children<TextBlock>(settings.RootControl).Any(t => t.Text == "Code")
+                && !Children<Button>(settings.RootControl).Any(b => b.Content as string == "Edit Code Styles…"),
+                "settings has no Code section or Code Styles entrypoint");
             Check(source.AsSpan().SequenceEqual(pane.Document.Source(pane.Document.State.document_revision)), "settings edits do not modify document source");
         }
         finally {

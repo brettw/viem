@@ -45,7 +45,7 @@ legacy/Vim9 `vim.vim` samples have byte-by-byte differential tests against nativ
 Vim. The [installed runtime audit](vim-syntax-audit.md) records the complete
 774-file inventory, fixes, reproduction command, and remaining diagnostics.
 
-## Settings and persistence
+## Configuration and persistence
 
 The macOS format menu and status controls expose Code. Automatic detection can
 select it where opening would otherwise select Text; existing rich-format
@@ -55,8 +55,11 @@ specification's precedence. The [detection profile](../src/core/document/syntax/
 exposes validated declarative registration for additional signatures and
 extension disambiguators. Ordinary editing does not redetect the language.
 
-Settings → Code provides diagnostics and **Edit Code Styles…**. macOS resolves its
-directory from the bundled `Contents/Resources/vim/runtime/syntax` snapshot.
+The main Settings window has no Code category. The shared Code stylesheet remains
+editable through the ordinary modeless Styles inspector opened from a Code view
+by F8 or the menu. Syntax load and compiler diagnostics remain available through
+the existing document/core diagnostic mechanisms. macOS resolves its directory
+from the bundled `Contents/Resources/vim/runtime/syntax` snapshot.
 `assets/vim` contains an unchanged copy of the previously configured MacVim
 9.1.1887 syntax tree and license, with a SHA-256 inventory. Packaging verifies
 the source and destination and replaces the previous resource subtree before

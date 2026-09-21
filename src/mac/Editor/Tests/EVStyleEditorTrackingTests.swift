@@ -219,7 +219,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         coordinator.showCode(configuration: configuration, preferredStyle: .baseParagraph, sender: nil)
         moveCaret(2, in: surface)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph,
-                       "Standalone Code settings have no source caret to follow")
+                       "A standalone global Code inspector has no source caret to follow")
         XCTAssertTrue(coordinator.inspection?.mutationsEnabled == true)
         XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, 0)
 
@@ -231,7 +231,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, captureKey)
         XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, 0)
         XCTAssertTrue(coordinator.inspection?.mutationsEnabled == true,
-                      "Closing the followed view must retain the global settings editor")
+                      "Closing the followed view must retain the global style editor")
         moveCaret(2, in: surface)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, captureKey,
                        "A closed source view must no longer drive global style selection")

@@ -55,10 +55,17 @@ internal sealed unsafe partial class CoreView : IDisposable
     private HostEffects? Send(Turn turn, bool publish = true)
     {
         using var arena = new NativeArena();
-        var entry = New<ViemClipboardTurnEntryV2>(); entry.target = VIEM_CLIPBOARD_TARGET_CLIPBOARD;
+        var entry = New<ViemClipboardTurnEntryV2>();
         entry.flags = VIEM_CLIPBOARD_TURN_WRITABLE | VIEM_CLIPBOARD_TURN_HAS_READ; entry.generation = ClipboardGeneration;
         entry.plain_text = arena.Utf8(ClipboardText); entry.fragment_json = arena.Utf8(ClipboardFragment);
-        var context = New<ViemCommandTurnContextV2>(); context.clipboards = &entry; context.clipboard_count = 1;
+        // Windows has one system clipboard rather than a separate X11-style
+        // primary selection. Expose that same snapshot under both Vim names so
+        // both the + and * registers remain usable without conflating their
+        // identities inside the core.
+        ViemClipboardTurnEntryV2* entries = stackalloc ViemClipboardTurnEntryV2[2];
+        entries[0] = entry; entries[0].target = VIEM_CLIPBOARD_TARGET_CLIPBOARD;
+        entries[1] = entry; entries[1].target = VIEM_CLIPBOARD_TARGET_PRIMARY;
+        var context = New<ViemCommandTurnContextV2>(); context.clipboards = entries; context.clipboard_count = 2;
         var outcome = New<ViemCoreOutcomeV1>(); ulong batch = 0;
         uint status;
         using (Diagnostics.InputPerformance.Measure("core.turn")) status = turn(&context, &outcome, &batch);

@@ -229,7 +229,7 @@ public final class EVDocument: NSDocument {
                 try self.editorBackend.restoreRecovery(snapshot)
                 recovered = true
             case .readOnly, .editAnyway:
-                let openingType = Self.readableType(for: typeName)
+                let openingType = Self.defaultOpeningType(for: target, nativeType: typeName)
                 try self.editorBackend.read(source: original.get(), typeName: openingType,
                     filename: target.path, allowAutomaticCode: Self.sourceFormat(forTypeName: openingType) == .plainText)
                 recovered = false
@@ -784,6 +784,23 @@ public final class EVDocument: NSDocument {
     /// requires an explicitly supported serialization type.
     private static func readableType(for typeName: String) -> String {
         sourceFormat(forTypeName: typeName) == nil ? plainTextType : typeName
+    }
+
+    /// Native types identify the bytes on disk. For formats with two Viem
+    /// presentations, a file open starts in the source-visible variant.
+    static func defaultOpeningType(for url: URL, nativeType typeName: String) -> String {
+        switch url.pathExtension.lowercased() {
+        case "md", "markdown", "mdown", "mkd":
+            markdownSourceType
+        case "html", "htm":
+            htmlSourceType
+        default:
+            switch sourceFormat(forTypeName: typeName) {
+            case .some(.markdown): markdownSourceType
+            case .some(.html): htmlSourceType
+            default: readableType(for: typeName)
+            }
+        }
     }
 
     public static func sourceFormat(forTypeName typeName: String) -> EVSourceFormat? {

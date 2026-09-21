@@ -86,6 +86,44 @@ final class EVCodeOpeningTests: XCTestCase {
         XCTAssertNil(document.recoveryFailure)
     }
 
+    func testMarkdownAndHTMLDocumentURLsDefaultToSourcePresentation() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("viem-source-default-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        XCTAssertEqual(
+            EVDocument.defaultOpeningType(
+                for: directory.appendingPathComponent("typed-markdown"),
+                nativeType: EVDocument.markdownType),
+            EVDocument.markdownSourceType)
+        XCTAssertEqual(
+            EVDocument.defaultOpeningType(
+                for: directory.appendingPathComponent("typed-html"),
+                nativeType: EVDocument.htmlType),
+            EVDocument.htmlSourceType)
+
+        for (filename, nativeType, expected, source) in [
+            ("notes.md", EVDocument.markdownType, EVSourceFormat.markdownSource,
+             Data("# Heading\n\n**body**\n".utf8)),
+            ("page.html", EVDocument.htmlType, EVSourceFormat.htmlSource,
+             Data("<h1>Heading</h1>\n<p>body</p>\n".utf8)),
+        ] {
+            let backend = backend()
+            let url = directory.appendingPathComponent(filename)
+            try source.write(to: url)
+            let document = EVDocument(editorBackend: backend)
+            document.recordRecentDocument = { _ in }
+            defer { document.close() }
+
+            try document.read(from: url, ofType: nativeType)
+
+            XCTAssertEqual(backend.sourceFormat, expected, filename)
+            XCTAssertEqual(try document.data(ofType: nativeType), source, filename)
+            XCTAssertFalse(backend.persistenceState.isDirty, filename)
+        }
+    }
+
     func testUnknownDocumentURLTypesOpenAsTextWithoutChangingSourceBytes() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("viem-unknown-document-\(UUID().uuidString)")

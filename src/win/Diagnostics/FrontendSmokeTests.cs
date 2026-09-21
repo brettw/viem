@@ -76,6 +76,11 @@ internal static class FrontendSmokeTests
     {
         var checks = new List<string>(UiChecks);
         void Check(bool condition, string name) { if (!condition) throw new InvalidOperationException(name); checks.Add(name); }
+        Check(CoreDocument.FormatForPath("document.md") == VIEM_FORMAT_MARKDOWN_SOURCE
+            && CoreDocument.FormatForPath("document.markdown") == VIEM_FORMAT_MARKDOWN_SOURCE
+            && CoreDocument.FormatForPath("document.html") == VIEM_FORMAT_HTML_SOURCE
+            && CoreDocument.FormatForPath("document.htm") == VIEM_FORMAT_HTML_SOURCE,
+            "Markdown and HTML paths default to source presentation");
         GlobalSelectionOptionTests.Run(device, dispatcher, Check);
         void Scenario(string text, uint format, Action<CoreDocument, CoreView> run)
         { using var doc = new CoreDocument(Encoding.UTF8.GetBytes(text), format: format); using var view = new CoreView(doc, device, dispatcher, 700, 400); run(doc, view); }
@@ -92,6 +97,8 @@ internal static class FrontendSmokeTests
             view.CopyOrCut(false); Check(copied.Contains("Hello alpha"), "clipboard write effect and ownership");
             Check(view.Presentation.mode == beforeCopy.mode && view.Presentation.cursor_utf8_offset == beforeCopy.cursor_utf8_offset
                 && view.Selection().Segments.Select(segment => (segment.text_start, segment.text_end)).SequenceEqual(beforeSegments), "native Copy preserves selection and caret");
+            copied = ""; view.Key(VIEM_KEY_ESCAPE); view.Command("gg\"*yy");
+            Check(copied == "Hello alpha beta\n", "Windows maps Vim's * register to the system clipboard");
             view.Key(VIEM_KEY_ESCAPE); view.Command("G"); view.ClipboardText = " pasted "; view.Paste(true);
             Check(doc.FormattedText().Contains(" pasted "), "clipboard host-context paste");
             view.Key(VIEM_KEY_ESCAPE); view.Ex("set nowrap"); Check((view.Viewport.flags & VIEM_VIEWPORT_STATE_WRAP) == 0, "Ex options affect view");

@@ -287,7 +287,22 @@ impl Document {
         &self,
         at: usize,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        self.prepare_markdown_list_split(at, false)
+        let block = edit_boundary::paragraph_at(self, at)?
+            .ok_or(DocumentError::VerificationFailed)?;
+        if matches!(block.kind, BlockKind::ListItem { .. }) {
+            self.prepare_markdown_list_split(at, false)
+        } else {
+            self.prepare_markdown_paragraph_enter(at, &block)
+        }
+    }
+
+    fn prepare_markdown_paragraph_enter(
+        &self,
+        at: usize,
+        block: &crate::document::Block,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        let following_override = (at < block.range.end).then(|| block.style.clone());
+        self.prepare_open_paragraph_with_following(at, at, true, following_override)
     }
 
     pub(super) fn prepare_open_line(
@@ -364,14 +379,25 @@ impl Document {
         origin: usize,
         after: bool,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.prepare_open_paragraph_with_following(at, origin, after, None)
+    }
+
+    fn prepare_open_paragraph_with_following(
+        &self,
+        at: usize,
+        origin: usize,
+        after: bool,
+        following_override: Option<StyleId>,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         let origin = edit_boundary::paragraph_at(self, origin)?.ok_or(DocumentError::VerificationFailed)?;
         let block = edit_boundary::paragraph_at(self, at)?.ok_or(DocumentError::VerificationFailed)?;
-        let next = self
-            .projection()
-            .style_sheet()
-            .block_style(&origin.style)
-            .and_then(|style| style.next_paragraph_style.clone())
-            .unwrap_or_else(|| origin.style.clone());
+        let next = following_override.unwrap_or_else(|| {
+            self.projection()
+                .style_sheet()
+                .block_style(&origin.style)
+                .and_then(|style| style.next_paragraph_style.clone())
+                .unwrap_or_else(|| origin.style.clone())
+        });
         let mut scratch = self.scratch_document();
         let mut sources = PatchComposition::new(self.source_byte_len());
         let split = if matches!(block.kind, BlockKind::ListItem { .. }) {

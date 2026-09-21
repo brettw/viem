@@ -76,9 +76,22 @@ internal static class SelectionInputTests
             Check(pane.Document.FormattedText() == original, "typing after a collapsed Insert selection retains normal undo grouping");
 
             await SelectTwo(); await InputRoutingTests.Key(VirtualKey.C, control: true);
-            Check((await ClipboardFormats.Read()).Text == "al" && pane.Document.FormattedText() == original
+            var nativeCopy = await ClipboardFormats.Read();
+            Check(nativeCopy.Text == "al" && nativeCopy.Fragment.Length > 0 && pane.Document.FormattedText() == original
                 && view.IsTextSelection && view.LogicalSelection().text_start == 0 && view.LogicalSelection().text_end == 2,
-                "native Copy retains the exact Select range for subsequent replacement typing");
+                "native Copy writes plain and private system clipboard formats while retaining the exact Select range");
+            await Start(); view.Command("\"*yy");
+            var linewiseCopy = await ClipboardFormats.Read();
+            Check(linewiseCopy.Text == "alpha beta\n", "linewise Vim yank exposes its terminating newline on the Windows clipboard");
+            view.Command("p");
+            Check(pane.Document.FormattedText() == "alpha beta\nalpha beta\nsecond line\nthird",
+                "bare put after a Windows clipboard yank retains the unnamed linewise register");
+            view.Undo(); await Start();
+            view.ClipboardText = linewiseCopy.Text; view.ClipboardFragment = linewiseCopy.Fragment; view.ClipboardGeneration++;
+            view.Command("j\"*p");
+            Check(pane.Document.FormattedText() == "alpha beta\nsecond line\nalpha beta\nthird",
+                "Windows clipboard round trip retains linewise Vim put semantics");
+            view.Undo();
             await SelectTwo(); await InputRoutingTests.Key(VirtualKey.X, control: true);
             Check(pane.Document.FormattedText() == "pha beta\nsecond line\nthird", "native Cut deletes a Select selection");
             view.Undo(); await SelectTwo(); ClipboardFormats.Write("PASTE", "");

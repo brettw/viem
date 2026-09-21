@@ -44,8 +44,8 @@ internal sealed unsafe class CoreDocument : IDisposable
     }
     public static uint FormatForPath(string? path) => Path.GetExtension(path ?? "").ToLowerInvariant() switch
     {
-        ".md" or ".markdown" => VIEM_FORMAT_MARKDOWN,
-        ".html" or ".htm" => VIEM_FORMAT_HTML,
+        ".md" or ".markdown" or ".mdown" or ".mkd" => VIEM_FORMAT_MARKDOWN_SOURCE,
+        ".html" or ".htm" => VIEM_FORMAT_HTML_SOURCE,
         ".rtf" => VIEM_FORMAT_RTF,
         _ => VIEM_FORMAT_PLAIN_TEXT
     };
