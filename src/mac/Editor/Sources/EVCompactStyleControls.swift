@@ -737,19 +737,19 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             guard case let .lineSpacing(value)? = definition?.properties[.paragraphLineSpacing]?.effective else { return nil }
             return Self.displayLineSpacingKind(value)
         }()
-        var value = Float(lineValue.stringValue)
+        var draftValue = Float(lineValue.stringValue)
         if sender is NSPopUpButton {
             if selectedKind == normalKind {
-                value = 1
+                draftValue = 1
             } else if selectedKind == multiplierKind {
                 let prior = lastLineValues[multiplierKind] ?? 1.1
-                value = previousDisplayKind == normalKind || Self.roundedLineSpacingValue(prior) == 1 ? 1.1 : prior
+                draftValue = previousDisplayKind == normalKind || Self.roundedLineSpacingValue(prior) == 1 ? 1.1 : prior
             } else {
-                value = lastLineValues[selectedKind] ?? number(.characterSize, fallback: 14) * 1.2
+                draftValue = lastLineValues[selectedKind] ?? number(.characterSize, fallback: 14) * 1.2
             }
         }
-        let rawValid = value.map { $0.isFinite && (relative ? $0 > 0 : $0 >= 0) } == true
-        guard rawValid, let rawValue = value else {
+        let rawValid = draftValue.map { $0.isFinite && (relative ? $0 > 0 : $0 >= 0) } == true
+        guard rawValid, let rawValue = draftValue else {
             lineValue.textColor = .systemRed
             steppers[.paragraphLineSpacing]?.isEnabled = false
             hasInvalidDraft = true
