@@ -1127,7 +1127,7 @@ impl Document {
                         &value,
                     )?;
                 }
-                super::style::validate_character_properties(&StyleId::from("Direct"), &properties)?;
+                super::style::validate_direct_character_properties(&StyleId::from("Direct"), &properties)?;
                 self.prepare_persisted_style_intent(
                     PersistedStyleIntent::SetDirectCharacterProperties { range, properties },
                 )
@@ -1150,7 +1150,7 @@ impl Document {
                             property,
                             &value,
                         )?;
-                        super::style::validate_character_properties(
+                        super::style::validate_direct_character_properties(
                             &StyleId::from("Direct"),
                             &properties,
                         )?;
@@ -1755,6 +1755,10 @@ impl Document {
         &self,
         intent: PersistedStyleIntent,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if let PersistedStyleIntent::SetDirectCharacterProperties { properties, .. } = &intent {
+            super::style::validate_direct_character_properties(&StyleId::from("Direct"), properties)?;
+        }
+
         if matches!(&intent, PersistedStyleIntent::AssignCharacterStyle { style, .. } if style.is_internal()) {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
@@ -1765,7 +1769,7 @@ impl Document {
         }
         if self.format() == Format::HtmlSource {
             let translated = super::html_source::translate_style(self, &intent)?;
-            return self.prepare_html_source_style_translation(translated);
+            return self.prepare_html_source_style_translation(translated, matches!(intent, PersistedStyleIntent::EditStyleDefinition { .. }));
         }
         if self.format().is_markdown() {
             if let PersistedStyleIntent::AssignCharacterStyle { range, style } = &intent {
@@ -2087,6 +2091,7 @@ impl Document {
             if actual != expected {
                 return Err(DocumentError::VerificationFailed.into());
             }
+            validate_percentage_font_contexts(&candidate.projection, &actual, candidate.projection.document_style(), None)?;
             let assignment = candidate.projection.document_style().clone();
             candidate
                 .projection
@@ -2378,6 +2383,7 @@ impl Document {
         if actual != expected {
             return Err(DocumentError::VerificationFailed.into());
         }
+        validate_percentage_font_contexts(&candidate.projection, &actual, candidate.projection.document_style(), percentage_style_edit_range(&intent))?;
         if let PersistedStyleIntent::AssignCharacterStyle { range, style } = &intent {
             named_character::verify_assignment(
                 self.projection(),
@@ -2658,6 +2664,7 @@ impl Document {
         if actual != expected {
             return Err(DocumentError::VerificationFailed.into());
         }
+        validate_percentage_font_contexts(&candidate.projection, &actual, candidate.projection.document_style(), percentage_style_edit_range(&intent))?;
         if let PersistedStyleIntent::AssignBlockStyle {
             target: StyleBlockTarget::Paragraphs(range), style,
         } = &intent {
@@ -3815,6 +3822,7 @@ impl Document {
     fn prepare_html_source_style_translation(
         &self,
         translated: super::html_source::TranslatedStyle,
+        validate_definition_contexts: bool,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         if translated.patches.is_empty() {
             if translated.style_sheet == *self.projection().style_sheet() {
@@ -3832,6 +3840,9 @@ impl Document {
             actual.set_configuration_revision(translated.style_sheet.revision);
             if actual != translated.style_sheet {
                 return Err(DocumentError::VerificationFailed.into());
+            }
+            if validate_definition_contexts {
+                validate_percentage_font_contexts(&candidate.projection, &actual, candidate.projection.document_style(), None)?;
             }
             let assignment = candidate.projection.document_style().clone();
             candidate.projection.install_configuration_styles(candidate.revision, actual, assignment);
@@ -8069,6 +8080,81 @@ fn validate_projection_style_configuration(
             style_sheet
                 .character_style(style)
                 .ok_or_else(|| StyleError::UnknownStyle(style.clone()))?;
+        }
+    }
+    validate_percentage_font_contexts(projection, style_sheet, document_style, None)
+}
+
+fn percentage_style_edit_range(intent: &PersistedStyleIntent) -> Option<Range<usize>> {
+    match intent {
+        PersistedStyleIntent::AssignCharacterStyle { range, .. }
+        | PersistedStyleIntent::AssignBlockStyle { target: StyleBlockTarget::Paragraphs(range), .. } =>
+            Some(range.start().offset()..range.end().offset()),
+        _ => None,
+    }
+}
+
+/// Only extreme point sizes can overflow or underflow an allowed percentage.
+/// Inspect declarations/identities first; ordinary edits do not resolve every
+/// character interval merely because the sheet contains a relative size.
+fn validate_percentage_font_contexts(
+    projection: &FormattedDocument,
+    sheet: &StyleSheet,
+    document_style: &DocumentStyleAssignment,
+    affected: Option<Range<usize>>,
+) -> Result<(), StyleError> {
+    use super::FontSize;
+    if !sheet.character_styles().any(|style| matches!(style.properties.size, Some(FontSize::Percentage(_)))) {
+        return Ok(());
+    }
+    let extreme = |size: f32| size > f32::MAX / 10.0 || size < f32::from_bits(10);
+    let mut extreme_styles = BTreeSet::new();
+    for style in sheet.block_styles().filter(|style| style.role == super::BlockRole::Paragraph) {
+        let resolved = sheet.resolve_assigned_paragraph_style(document_style, &style.id,
+            &BlockProperties::default(), &CharacterProperties::default(), None, &CharacterProperties::default())?;
+        if extreme(resolved.character.size) { extreme_styles.insert(style.id.clone()); }
+    }
+    let could_be_extreme = |style: &StyleId, properties: &CharacterProperties| {
+        match properties.size {
+            Some(FontSize::Points(size)) => extreme(size),
+            Some(FontSize::Percentage(_)) => true,
+            None => extreme_styles.contains(style),
+        }
+    };
+    let mut ranges = BTreeSet::new();
+    let blocks = affected.as_ref().map(|range| projection.blocks_for_region(range));
+    for block in blocks.as_deref().unwrap_or_else(|| projection.blocks()) {
+        if !block.range.is_empty() && could_be_extreme(&block.style, &block.direct_default_character) {
+            ranges.insert((block.range.start, block.range.end));
+        }
+    }
+    let spans = affected.as_ref().map(|range| projection.style_spans_for_region(range));
+    for span in spans.as_deref().unwrap_or_else(|| projection.style_spans()) {
+        if let StyleApplication::SourceParagraph { style, defaults } = &span.application {
+            if !span.range.is_empty() && could_be_extreme(style, defaults) {
+                ranges.insert((span.range.start, span.range.end));
+            }
+        }
+    }
+    for (start, end) in ranges {
+        let range = start..end;
+        let mut boundaries = BTreeSet::from([start, end]);
+        for span in projection.style_spans_for_region(&range) {
+            boundaries.extend([span.range.start.max(start), span.range.end.min(end)]);
+        }
+        for block in projection.blocks_for_region(&range) {
+            boundaries.extend([block.range.start.max(start), block.range.end.min(end)]);
+        }
+        for at in boundaries.into_iter().filter(|at| *at < end) {
+            // A hard-line boundary has no font-bearing text of its own.
+            if !projection.blocks_for_region(&(at..at)).iter().any(|block| block.range.contains(&at)) {
+                continue;
+            }
+            if super::rich_text::resolved_character_at_with_style_context(projection, at, sheet, document_style).is_none() {
+                return Err(StyleError::InvalidStylePropertyValue {
+                    style: sheet.base_paragraph.clone(), property: StyleProperty::CharacterSize,
+                });
+            }
         }
     }
     Ok(())

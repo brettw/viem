@@ -102,7 +102,7 @@ fn customized_search_style_never_enters_exported_html_definitions() {
                 blue: 0.7,
                 alpha: 0.9,
             }),
-            size: Some(19.0),
+            size: Some((19.0).into()),
             ..Default::default()
         },
     );
@@ -152,7 +152,7 @@ fn explicit_overlay_properties_win_over_direct_named_and_paragraph_styles() {
         alpha: 1.0,
     };
     let properties = CharacterProperties {
-        size: Some(18.0),
+        size: Some((18.0).into()),
         weight: Some(300),
         foreground: Some(color),
         underline: Some(false),
@@ -170,7 +170,7 @@ fn explicit_overlay_properties_win_over_direct_named_and_paragraph_styles() {
             Some(&StyleId::from("Code")),
             &BlockProperties::default(),
             &CharacterProperties {
-                size: Some(31.0),
+                size: Some((31.0).into()),
                 underline: Some(true),
                 bold: Some(true),
                 ..Default::default()
@@ -197,7 +197,7 @@ fn user_defaults_round_trip_and_configuration_edits_never_author_source() {
             alpha: 0.7,
         }),
         strikethrough: Some(true),
-        size: Some(19.0),
+        size: Some((19.0).into()),
         ..Default::default()
     };
     for mut document in documents()

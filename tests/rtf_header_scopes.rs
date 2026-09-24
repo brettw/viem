@@ -194,8 +194,8 @@ fn source_normal_style_is_authoritative_over_saved_paragraph_defaults() {
         assert_eq!(customized.size, if stylesheet.is_empty() { 31.0 }
             else if stylesheet.contains(r"\fs40") { 20.0 } else { 12.0 });
         assert_eq!(document.projection().style_sheet().block_style(&"Paragraph".into()).unwrap().character.size,
-            if stylesheet.is_empty() { Some(31.0) }
-            else if stylesheet.contains(r"\fs40") { Some(20.0) } else { None });
+            if stylesheet.is_empty() { Some(31.0.into()) }
+            else if stylesheet.contains(r"\fs40") { Some(20.0.into()) } else { None });
         document.insert(0, "X").unwrap();
         assert_eq!(DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap(), customized);
         let mut reopened = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Rtf).unwrap();

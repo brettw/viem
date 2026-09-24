@@ -5986,7 +5986,7 @@ mod tests {
         assert!(Arc::ptr_eq(&original.attributes, &styled.attributes));
         styled.style = "Heading1".into();
         styled.kind = BlockKind::Heading(1);
-        styled.direct_default_character.size = Some(24.0);
+        styled.direct_default_character.size = Some(24.0.into());
         styled.direct_paragraph.spacing_before = Some(2.0);
         assert!(original.direct_formatting.is_none());
         assert_eq!(original.style.0, "Paragraph");
@@ -5995,9 +5995,9 @@ mod tests {
         assert_eq!(original.direct_default_character.size, None);
         let mut changed = styled.clone();
         assert!(Arc::ptr_eq(styled.direct_formatting.as_ref().unwrap(), changed.direct_formatting.as_ref().unwrap()));
-        changed.direct_default_character.size = Some(30.0);
-        assert_eq!(styled.direct_default_character.size, Some(24.0));
-        assert_eq!(changed.direct_default_character.size, Some(30.0));
+        changed.direct_default_character.size = Some(30.0.into());
+        assert_eq!(styled.direct_default_character.size, Some(24.0.into()));
+        assert_eq!(changed.direct_default_character.size, Some(30.0.into()));
         assert_eq!(changed.direct_paragraph.spacing_before, Some(2.0));
         let mut explicit_empty = original.clone();
         explicit_empty.direct_default_character.size = None;
@@ -6121,7 +6121,7 @@ mod tests {
 
     fn add_direct_assignments(document: &mut FormattedDocument) {
         document.document_style.direct_canvas.padding_left = Some(17.0);
-        document.document_style.direct_default_character.size = Some(16.0);
+        document.document_style.direct_default_character.size = Some(16.0.into());
         let mut blocks = document.blocks.to_vec();
         blocks[0].direct_paragraph.spacing_after = Some(9.0);
         blocks[0].direct_default_character.font_families = Some(vec!["Assigned Serif".to_owned()]);

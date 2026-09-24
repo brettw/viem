@@ -258,7 +258,7 @@ fn context_replay_keeps_persisted_character_definitions_and_source_line_boundari
                         id: id.clone(),
                         based_on: None,
                         properties: CharacterProperties {
-                            size: Some(27.),
+                            size: Some((27.).into()),
                             ..Default::default()
                         },
                     },

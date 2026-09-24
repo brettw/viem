@@ -129,7 +129,7 @@ fn imports_native_style_handles_links_and_body_assignments() {
     let heading = sheet.block_style(&"RtfP5".into()).unwrap();
     assert_eq!(heading.based_on, Some("Paragraph".into()));
     assert_eq!(heading.next_paragraph_style, Some("Paragraph".into()));
-    assert_eq!(heading.character.size, Some(16.0));
+    assert_eq!(heading.character.size, Some((16.0).into()));
     assert_eq!(
         document.projection().blocks()[0].style,
         StyleId::from("RtfP5")
@@ -164,7 +164,7 @@ fn editing_and_renaming_one_rtf_style_preserves_siblings_and_handle_identity() {
         .block_style(&"RtfP5".into())
         .unwrap()
         .clone();
-    heading.character.size = Some(18.0);
+    heading.character.size = Some((18.0).into());
     edit(&mut document, StyleDefinitionEdit::UpdateBlock(heading));
     let changed = String::from_utf8(document.source_bytes()).unwrap();
     assert!(changed.contains(r"{\*\cs2\i Accent;}"));
@@ -393,7 +393,7 @@ fn plain_resets_named_character_overrides_default_font_and_script_position() {
         .unwrap();
     assert_eq!(span.font_families, Some(vec!["Georgia".into()]));
     assert_eq!(span.weight, Some(400));
-    assert_eq!(span.size, Some(12.0));
+    assert_eq!(span.size, Some((12.0).into()));
     assert_eq!(span.slant, Some(FontSlant::Upright));
     assert_eq!(span.script_position, Some(ScriptPosition::Normal));
     assert_eq!(span.foreground, None);
@@ -605,7 +605,7 @@ fn default_paragraph_character_assignment_handles_a_real_cs0_and_keeps_source_sc
         let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Rtf).unwrap();
         assert_eq!(DocumentLayoutStyles::character_at(reopened.projection(), 7, false).unwrap(), cleared);
         let mut heading = document.projection().style_sheet().block_style(&"RtfP5".into()).unwrap().clone();
-        heading.character.size = Some(22.0);
+        heading.character.size = Some((22.0).into());
         edit(&mut document, StyleDefinitionEdit::UpdateBlock(heading));
         assert_eq!(DocumentLayoutStyles::character_at(document.projection(), 7, false).unwrap().size, 22.0,
             "Clearing must retain paragraph inheritance rather than freeze its appearance as direct formatting");

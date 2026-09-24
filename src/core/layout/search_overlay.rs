@@ -292,7 +292,7 @@ mod tests {
             &[1..2],
             0..3,
             &CharacterProperties {
-                size: Some(20.0),
+                size: Some(20.0.into()),
                 ..Default::default()
             }
         )

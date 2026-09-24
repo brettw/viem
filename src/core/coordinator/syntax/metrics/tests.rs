@@ -55,7 +55,7 @@ fn effective_metric_coverage_ignores_paint_and_equivalent_capture_boundaries() {
         "Large",
         None,
         CharacterProperties {
-            size: Some(32.),
+            size: Some((32.).into()),
             ..Default::default()
         },
     );
@@ -78,7 +78,7 @@ fn effective_metric_coverage_ignores_paint_and_equivalent_capture_boundaries() {
         "SameAsDefault",
         None,
         CharacterProperties {
-            size: Some(14.),
+            size: Some((14.).into()),
             ..Default::default()
         },
     );
@@ -122,7 +122,7 @@ fn inherited_font_style_edits_and_missing_definitions_have_correct_metric_effect
         "Parent",
         None,
         CharacterProperties {
-            size: Some(32.),
+            size: Some((32.).into()),
             ..Default::default()
         },
     );
@@ -158,7 +158,7 @@ fn inherited_font_style_edits_and_missing_definitions_have_correct_metric_effect
         "Parent",
         None,
         CharacterProperties {
-            size: Some(40.),
+            size: Some((40.).into()),
             slant: Some(FontSlant::Italic),
             ..Default::default()
         },
@@ -212,7 +212,7 @@ fn large_code_metric_publication_refreshes_two_views_with_bounded_layout_and_reu
         "Large",
         None,
         CharacterProperties {
-            size: Some(32.),
+            size: Some((32.).into()),
             slant: Some(FontSlant::Italic),
             ..Default::default()
         },

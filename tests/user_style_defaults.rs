@@ -62,7 +62,7 @@ fn defaults_are_visible_declarations_and_source_declarations_override_them() {
                 .unwrap()
                 .character
                 .size,
-            Some(31.)
+            Some((31.).into())
         );
         let original = doc.source_bytes();
         doc.insert(offset, "X").unwrap();
@@ -180,7 +180,7 @@ fn assigning_saved_named_defaults_persists_their_own_declarations() {
                         id: id.clone(),
                         based_on: None,
                         properties: CharacterProperties {
-                            size: Some(25.),
+                            size: Some((25.).into()),
                             ..Default::default()
                         },
                     },
@@ -194,7 +194,7 @@ fn assigning_saved_named_defaults_persists_their_own_declarations() {
                         next_paragraph_style: None,
                         role: BlockRole::Paragraph,
                         character: CharacterProperties {
-                            size: Some(25.),
+                            size: Some((25.).into()),
                             ..Default::default()
                         },
                         block: BlockProperties::default(),

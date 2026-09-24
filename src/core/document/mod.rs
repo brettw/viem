@@ -66,6 +66,8 @@ mod source_lines;
 pub use selected_styles::SelectedNamedStyles;
 pub use source_lines::PhysicalSourceLine;
 mod style;
+#[cfg(test)]
+mod percentage_styles_tests;
 pub(crate) use style::is_character_property;
 mod reflow;
 mod indentation;
@@ -128,7 +130,7 @@ pub use source::SourceArtifactDigest;
 pub use style::code as code_style;
 pub use style::{
     BlockProperties, BlockRole, BlockStyle, CharacterProperties, CharacterStyle, Color,
-    ConfigurationStyleIntent, DocumentStyleAssignment, FontSlant, LineSpacing, ParagraphAlignment,
+    ConfigurationStyleIntent, DocumentStyleAssignment, FontSize, FontSlant, LineSpacing, ParagraphAlignment,
     ResolvedCharacterStyle, ResolvedDocumentStyle, ResolvedParagraphStyle, ResolvedStyle,
     ScriptPosition, SemanticInlineStyle, StyleApplication, StyleContribution, StyleContributionOrigin,
     StyleDefaultsError, StyleDefinitionEdit, StyleDefinitionFieldEdit, StyleDefinitionMetadata,

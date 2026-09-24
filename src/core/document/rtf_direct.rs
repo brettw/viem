@@ -18,6 +18,7 @@ pub(super) fn character_property(name: &str, number: Option<i32>) -> Option<Styl
         "i" => CharacterSlant,
         "f" => CharacterFontFamilies,
         "fs" => CharacterSize,
+        "viemsizepercent" if number.is_some_and(|value| (10..=1000).contains(&value)) => CharacterSize,
         "cf" => CharacterForeground,
         "highlight" | "cb" | "chcbpat" => CharacterBackground,
         "ul" | "uld" | "uldash" | "uldb" | "ulw" | "ulnone" => CharacterUnderline,

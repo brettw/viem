@@ -294,7 +294,10 @@ fn properties(
         character.font_families,
         |v: &Vec<String>| strings(v)
     );
-    item!("character-size", character.size, |v: &f32| v.to_string());
+    item!("character-size", character.size, |v: &FontSize| match v {
+        FontSize::Points(value) => value.to_string(),
+        FontSize::Percentage(value) => format!("{value}%"),
+    });
     item!("character-bold", character.bold, |v: &bool| v.to_string());
     item!("character-weight", character.weight, |v: &u16| v
         .to_string());
@@ -419,7 +422,9 @@ fn parse_property(
     let float = || value.parse::<f32>().ok().filter(|v| v.is_finite());
     match key {
         "character-font-families" => c.font_families = Some(parse_strings(value)?),
-        "character-size" => c.size = Some(float()?),
+        "character-size" => c.size = Some(if let Some(value) = value.strip_suffix('%') {
+            FontSize::Percentage(value.parse().ok().filter(|v| (10..=1000).contains(v))?)
+        } else { FontSize::Points(float()?) }),
         "character-weight" => c.weight = Some(value.parse().ok()?),
         "character-bold" => c.bold = Some(value.parse().ok()?),
         "character-slant" => {
@@ -997,6 +1002,16 @@ fn canonical_v1_spelling(sheet: &StyleSheet, id: &StyleId, character: bool) -> O
 /// graph-dependent inheritance and distinctions such as minimum line height.
 fn v2_css_properties(css: &str, character: &mut CharacterProperties, block: &mut BlockProperties) {
     html::apply_css(css, character, block);
+    // Owned named declarations retain percentages as style-system values.
+    // Raw inline CSS has separate DOM inheritance rules and is not imported here.
+    for (key, value) in html::cascade_declarations(css) {
+        if key == "font-size" {
+            if let Some(percent) = value.strip_suffix('%').and_then(|s| s.trim().parse::<u16>().ok())
+                .filter(|value| (10..=1000).contains(value)) {
+                character.size = Some(FontSize::Percentage(percent));
+            }
+        }
+    }
     for (key, value) in html::declarations(css) {
         let Some(number) = value.strip_suffix("pt").and_then(|v| v.parse::<f32>().ok()) else {
             continue;
@@ -1155,8 +1170,11 @@ fn block_chain(sheet: &StyleSheet, id: &StyleId) -> Option<(CharacterProperties,
     }
     let mut c = CharacterProperties::default();
     let mut b = BlockProperties::default();
+    let mut size = super::style::DEFAULT_FONT_SIZE;
     for style in chain.into_iter().rev() {
+        if let Some(declared) = style.character.size { size = declared.resolve(size); }
         overlay_character(&mut c, &style.character);
+        if c.size.is_some() { c.size = Some(FontSize::Points(size)); }
         overlay_block(&mut b, &style.block);
     }
     Some((c, b))
@@ -1227,7 +1245,7 @@ fn minimal_style_css(
             // Browser heading sizes are intrinsic, not inherited from body.
             inherited.size = inherited
                 .size
-                .map(|size| size * [2.0, 1.5, 1.17, 1.0, 0.83, 0.67][usize::from(level - 1)]);
+                .map(|size| FontSize::Points(size.resolve(14.0) * [2.0, 1.5, 1.17, 1.0, 0.83, 0.67][usize::from(level - 1)]));
         }
     }
     if native_selector && (id.0 == "Code" || id.0 == "Code Block") {
@@ -1756,7 +1774,7 @@ mod tests {
             next_paragraph_style: Some("Paragraph".into()),
             role: BlockRole::Paragraph,
             character: CharacterProperties {
-                size: Some(18.0),
+                size: Some(18.0.into()),
                 ..Default::default()
             },
             block: Default::default(),
@@ -1805,7 +1823,7 @@ mod tests {
                     next_paragraph_style: Some("Paragraph".into()),
                     role: BlockRole::Paragraph,
                     character: CharacterProperties {
-                        size: Some(18.0),
+                        size: Some(18.0.into()),
                         ..Default::default()
                     },
                     block: Default::default(),
@@ -1905,7 +1923,7 @@ mod tests {
                 .block_style(&"Code Block".into())
                 .unwrap()
                 .clone();
-            style.character.size = Some(size);
+            style.character.size = Some(size.into());
             document
                 .apply_style_request(StyleModelRequest::new(
                     document.id(),
@@ -1955,7 +1973,7 @@ mod tests {
                     .unwrap()
                     .character
                     .size,
-                Some(size)
+                Some(size.into())
             );
         }
         let range = TextRange::new(
@@ -1993,7 +2011,7 @@ mod tests {
         let mut body = sheet.block_style(&sheet.base_paragraph).unwrap().clone();
         body.character.letter_spacing = Some(2.0);
         let mut paragraph = sheet.block_style(&sheet.base_paragraph).unwrap().clone();
-        paragraph.character.size = Some(20.0);
+        paragraph.character.size = Some(20.0.into());
         paragraph.character.letter_spacing = Some(0.0);
         paragraph.block.spacing_before = Some(12.0);
         paragraph.block.spacing_after = Some(8.0);
@@ -2052,7 +2070,7 @@ mod tests {
                 assert_eq!(unchanged.summary().kind(), ModelChangeKind::NoOp);
                 assert_eq!(document.source_bytes(), source.as_bytes());
                 let mut changed = paragraph.clone();
-                changed.character.size = Some(22.0);
+                changed.character.size = Some(22.0.into());
                 for (size, edit) in [
                     (
                         20.0,
@@ -2105,7 +2123,7 @@ mod tests {
                             .unwrap()
                             .character
                             .size,
-                        Some(size)
+                        Some(size.into())
                     );
                 }
                 assert!(document.undo());
@@ -2240,7 +2258,7 @@ mod tests {
         let mut style = sheet.block_style(&"List1".into()).unwrap().clone();
         style.block.leading_indent = Some(48.0);
         style.character.letter_spacing = Some(1.25);
-        style.character.size = Some(18.0);
+        style.character.size = Some(18.0.into());
         sheet
             .install_source_definitions(&[StyleDefinitionEdit::InsertBlock {
                 style: style.clone(),
@@ -2291,7 +2309,7 @@ mod tests {
         let mut sheet = StyleSheet::for_format(Format::Html);
         sheet.ensure_list_level(3);
         let mut first = sheet.block_style(&"List1".into()).unwrap().clone();
-        first.character.size = Some(18.0);
+        first.character.size = Some(18.0.into());
         first.block.leading_indent = Some(48.0);
         first.block.first_line_indent = Some(3.0);
         sheet
@@ -2343,7 +2361,7 @@ mod tests {
                     next_paragraph_style: None,
                     role: BlockRole::Paragraph,
                     character: CharacterProperties {
-                        size: Some(18.0),
+                        size: Some(18.0.into()),
                         ..Default::default()
                     },
                     block: Default::default(),

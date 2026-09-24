@@ -134,7 +134,7 @@ fn custom_styles_and_direct_formatting_persist_without_exporting_native_ancestor
                     id: "Accent".into(),
                     based_on: None,
                     properties: CharacterProperties {
-                        size: Some(19.0),
+                        size: Some((19.0).into()),
                         ..Default::default()
                     },
                 },
@@ -201,7 +201,7 @@ fn toggling_export_and_deleting_custom_style_preserve_unrecognized_owned_css() {
                     id: "Custom".into(),
                     based_on: None,
                     properties: CharacterProperties {
-                        size: Some(23.0),
+                        size: Some((23.0).into()),
                         ..Default::default()
                     },
                 },

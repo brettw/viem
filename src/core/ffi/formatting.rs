@@ -37,7 +37,7 @@ pub unsafe extern "C" fn viem_core_view_edit_direct_properties(
             }
             let value = match request.operation {
                 VIEM_STYLE_EDIT_SET_DECLARATION => Some(unsafe {
-                    parse_style_property_value(property, &request.value, out_outcome)?
+                    parse_direct_style_property_value(property, &request.value, out_outcome)?
                 }),
                 VIEM_STYLE_EDIT_CLEAR_DECLARATION
                     if request.value.struct_size >= VIEM_STYLE_EDIT_VALUE_V1_SIZE

@@ -597,7 +597,7 @@ fn values(properties: CharacterProperties) -> Vec<(StyleProperty, StylePropertyV
         };
     }
     add!(font_families, CharacterFontFamilies, FontFamilies);
-    add!(size, CharacterSize, Float);
+    if let Some(size) = properties.size { result.push((P::CharacterSize, size.into())); }
     add!(weight, CharacterWeight, FontWeight);
     add!(bold, CharacterBold, Boolean);
     add!(slant, CharacterSlant, FontSlant);

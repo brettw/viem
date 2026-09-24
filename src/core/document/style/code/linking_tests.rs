@@ -92,7 +92,7 @@ fn parent_changes_cascade_until_an_individual_property_is_overridden() {
         .get_mut(&id("Comment"))
         .unwrap()
         .properties;
-    parent.size = Some(23.);
+    parent.size = Some(23.0.into());
     parent.bold = Some(true);
     parent.foreground = Some(Color {
         red: 0.2,
@@ -110,13 +110,13 @@ fn parent_changes_cascade_until_an_individual_property_is_overridden() {
         .get_mut(&id("Comment.documentation"))
         .unwrap()
         .properties
-        .size = Some(31.);
+        .size = Some(31.0.into());
     sheet
         .character_styles
         .get_mut(&id("Comment"))
         .unwrap()
         .properties
-        .size = Some(26.);
+        .size = Some(26.0.into());
     assert_eq!(resolved(&sheet, "Comment").size, 26.);
     assert_eq!(resolved(&sheet, "Comment.documentation").size, 31.);
     assert_eq!(
@@ -190,11 +190,11 @@ fn version_two_merges_capture_overrides_and_rewrites_parents_and_suppressions() 
     let sheet = parse_json(legacy).unwrap();
     let comment = &sheet.character_styles[&id("Comment")];
     assert_eq!(comment.based_on, None);
-    assert_eq!(comment.properties.size, Some(27.));
+    assert_eq!(comment.properties.size, Some(27.0.into()));
     assert_eq!(comment.properties.bold, Some(true));
     assert_eq!(sheet.character_metadata[&id("Comment")].display_name, "Comment");
     let preserved = resolve_name(&sheet, "Project comments").unwrap();
-    assert_eq!(sheet.character_styles[preserved].properties.size, Some(21.));
+    assert_eq!(sheet.character_styles[preserved].properties.size, Some(21.0.into()));
     assert_eq!(sheet.character_styles[preserved].properties.bold, Some(true));
     assert_eq!(sheet.character_styles[preserved].based_on, None);
     assert_eq!(sheet.character_styles[&id("Comment.documentation")].based_on, Some(id("Comment")));
@@ -304,7 +304,7 @@ fn version_two_custom_parent_between_alias_and_vim_style_keeps_acyclic_identitie
     let notes = StyleId("custom:notes".into());
     old.character_styles.insert(notes.clone(), CharacterStyle {
         id: notes.clone(), based_on: Some(id("Comment")),
-        properties: CharacterProperties { size: Some(23.), ..Default::default() },
+        properties: CharacterProperties { size: Some(23.0.into()), ..Default::default() },
     });
     old.character_metadata.insert(notes.clone(), StyleDefinitionMetadata::generated("Notes"));
     old.character_styles.get_mut(&id("@comment")).unwrap().based_on = Some(notes.clone());
@@ -333,7 +333,7 @@ fn version_two_existing_custom_canonical_name_keeps_identity_and_appearance() {
     let custom = StyleId("custom:comment".into());
     old.character_styles.insert(custom.clone(), CharacterStyle {
         id: custom.clone(), based_on: None,
-        properties: CharacterProperties { size: Some(31.), bold: Some(true), ..Default::default() },
+        properties: CharacterProperties { size: Some(31.0.into()), bold: Some(true), ..Default::default() },
     });
     old.character_metadata.insert(custom.clone(), StyleDefinitionMetadata::generated("Comment"));
     let migrated = parse_json(&version_two_json(&old)).unwrap();
@@ -356,7 +356,7 @@ fn version_two_authored_intermediate_names_are_reused_for_new_dotted_defaults() 
     let text = StyleId("custom:text".into());
     old.character_styles.insert(text.clone(), CharacterStyle {
         id: text.clone(), based_on: Some(id("String")),
-        properties: CharacterProperties { size: Some(29.), ..Default::default() },
+        properties: CharacterProperties { size: Some(29.0.into()), ..Default::default() },
     });
     old.character_metadata.insert(text.clone(), StyleDefinitionMetadata::generated("Text"));
     let migrated = parse_json(&version_two_json(&old)).unwrap();
@@ -377,7 +377,7 @@ fn version_two_authored_intermediate_descendant_keeps_previous_child_parent() {
     let text = StyleId(custom_id.into());
     old.character_styles.insert(text.clone(), CharacterStyle {
         id: text.clone(), based_on: Some(id("@text.uri")),
-        properties: CharacterProperties { size: Some(29.), ..Default::default() },
+        properties: CharacterProperties { size: Some(29.0.into()), ..Default::default() },
     });
     old.character_metadata.insert(text.clone(), StyleDefinitionMetadata::generated("Text"));
     let migrated = parse_json(&version_two_json(&old)).unwrap();
@@ -398,8 +398,8 @@ fn version_two_authored_intermediate_descendant_keeps_previous_child_parent() {
 fn version_two_renamed_base_keeps_existing_custom_children_on_its_preserved_identity() {
     let mut old = default_sheet_with_capture_aliases(true);
     old.character_metadata.get_mut(&id("Comment")).unwrap().display_name = "Project comments".into();
-    old.character_styles.get_mut(&id("Comment")).unwrap().properties.size = Some(21.);
-    old.character_styles.get_mut(&id("@comment")).unwrap().properties.size = Some(27.);
+    old.character_styles.get_mut(&id("Comment")).unwrap().properties.size = Some(21.0.into());
+    old.character_styles.get_mut(&id("@comment")).unwrap().properties.size = Some(27.0.into());
     let notes = StyleId("custom:notes".into());
     old.character_styles.insert(notes.clone(), CharacterStyle {
         id: notes.clone(), based_on: Some(id("Comment")), properties: Default::default(),

@@ -20,7 +20,7 @@ fn update_paragraph(document: &mut Document, size: f32) {
         .block_style(&"Paragraph".into())
         .unwrap()
         .clone();
-    paragraph.character.size = Some(size);
+    paragraph.character.size = Some((size).into());
     document
         .apply_style_request(StyleModelRequest::new(
             document.id(),

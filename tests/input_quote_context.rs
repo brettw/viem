@@ -213,7 +213,7 @@ fn fragment_quotes_keep_configuration_only_typography_and_combining_graphemes() 
         .block_style(&"Paragraph".into())
         .unwrap()
         .clone();
-    style.character.size = Some(31.);
+    style.character.size = Some((31.).into());
     document
         .apply_style_request(StyleModelRequest::new(
             document.id(),

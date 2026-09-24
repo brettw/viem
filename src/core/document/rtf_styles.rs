@@ -109,11 +109,11 @@ pub(super) fn read(input: &NormalizedText) -> RtfSheet {
     });
     let mut sheet = StyleSheet::default();
     sheet.set_intrinsic_character_defaults(CharacterProperties {
-        size: Some(12.0),
+        size: Some(12.0.into()),
         ..Default::default()
     });
     let mut document = sheet.block_style(&sheet.base_paragraph).unwrap().clone();
-    document.character.size = Some(12.0);
+    document.character.size = Some(12.0.into());
     document.character.font_families = rtf::default_font_name(&tables)
         .map(|name| vec![name.to_owned()])
         .or(document.character.font_families);
@@ -395,7 +395,16 @@ pub(super) fn definition_patches(
                 .block_style(&id)
                 .map(|style| format!("{style:?}{:?}", after.block_style_metadata(&id)))
         };
-        if old == new {
+        let relative_paragraph_size = |sheet: &StyleSheet| -> Option<f32> {
+            if character || !matches!(sheet.block_style(&id)?.character.size, Some(FontSize::Percentage(_))) {
+                return None;
+            }
+            sheet.resolve_paragraph_style(&sheet.base_paragraph, &id, None,
+                &BlockProperties::default(), &CharacterProperties::default())
+                .ok().map(|style| style.character.size)
+        };
+        let fallback_size = relative_paragraph_size(after);
+        if old == new && relative_paragraph_size(before) == fallback_size {
             continue;
         }
         let existing = native
@@ -451,6 +460,11 @@ pub(super) fn definition_patches(
                 "\\snext{}",
                 handle(&native, next, false).ok_or(DocumentError::UnsupportedFormatting)?
             ));
+        }
+        // RTF has no relative-size control. Other readers receive a snapshot
+        // in half-points; Viem's following extension retains the declaration.
+        if let Some(size) = fallback_size {
+            controls.push_str(&format!("\\fs{}", ((size * 2.0).round() as i32).max(1)));
         }
         let mut property_patches =
             rtf::character_patches(input, &(usize::MAX - 1..usize::MAX), properties)?;

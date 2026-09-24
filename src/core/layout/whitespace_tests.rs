@@ -66,7 +66,7 @@ fn listchars_validates_all_categories_escapes_width_and_duplicates() {
     assert_eq!(value["codeWhitespace"], "paragraphEn");
     assert_eq!(value["visibleWhitespace"]["enabled"], true);
     let mut options = WhitespacePresentationOptions::default();
-    options.visible_whitespace.style.size = Some(-1.0);
+    options.visible_whitespace.style.size = Some((-1.0).into());
     assert!(options.validate().is_err());
 }
 

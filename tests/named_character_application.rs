@@ -258,7 +258,7 @@ fn html_named_assignment_clears_existing_direct_properties() {
                         id: "Accent".into(),
                         based_on: None,
                         properties: CharacterProperties {
-                            size: Some(22.0),
+                            size: Some((22.0).into()),
                             weight: Some(600),
                             ..Default::default()
                         },
@@ -434,7 +434,7 @@ fn choosing_a_style_preserves_links_and_honors_explicit_named_link_appearance() 
     assert!(!selected.bold);
     assert_eq!(selected.size, 14.);
     let mut definition = document.projection().style_sheet().character_style(&"Accent".into()).unwrap().clone();
-    definition.properties.size = Some(24.);
+    definition.properties.size = Some((24.).into());
     document.apply_style_request(StyleModelRequest::new(
         document.id(), document.revision(),
         StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {

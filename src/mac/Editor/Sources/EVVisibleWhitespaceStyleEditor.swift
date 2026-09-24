@@ -297,7 +297,7 @@ final class EVVisibleWhitespaceStyleEditor: NSWindowController, NSWindowDelegate
     private func refresh() {
         let style = session.style
         let definition = style.definition
-        controls.configure(definition, theme: EVThemeStore.shared.theme)
+        controls.configure(definition, theme: EVThemeStore.shared.theme, allowsPercentageSize: false)
         languageOverride.state = style.language == nil ? .off : .on
         language.isEnabled = style.language != nil
         language.stringValue = style.language ?? ""

@@ -498,7 +498,7 @@ pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, 
                     .fonts
                     .get(&tables.default_font)
                     .map(|name| vec![name.clone()]),
-                size: Some(12.0),
+                size: Some(12.0.into()),
                 weight: Some(400),
                 bold: Some(false),
                 slant: Some(FontSlant::Upright),
@@ -574,7 +574,12 @@ pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, 
         }
         "fs" => {
             if let Some(size) = number.filter(|n| *n > 0) {
-                state.character.size = Some(size as f32 / 2.0);
+                state.character.size = Some((size as f32 / 2.0).into());
+            }
+        }
+        "viemsizepercent" => {
+            if let Some(percent) = number.and_then(|n| u16::try_from(n).ok()).filter(|n| (10..=1000).contains(n)) {
+                state.character.size = Some(super::FontSize::Percentage(percent));
             }
         }
         "cf" => {
@@ -1393,7 +1398,10 @@ pub(super) fn character_patches(
         Ok(scaled as i32)
     };
     if let Some(size) = properties.size {
-        control.push_str(&format!("\\fs{}", exact_scaled(size, 2.0)?));
+        match size {
+            super::FontSize::Points(value) => control.push_str(&format!("\\fs{}", exact_scaled(value, 2.0)?)),
+            super::FontSize::Percentage(value) => control.push_str(&format!("\\viemsizepercent{value}")),
+        }
     }
     if let Some(weight) = properties.weight {
         control.push_str(&format!(

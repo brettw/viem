@@ -233,7 +233,7 @@ internal sealed partial class StyleWindow : Window
         if (selected == null) return;
         string family = sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES));
         var resolved = FontCatalog.Resolve(family) ?? (Family: "Segoe UI", Stretch: FontStretch.Normal);
-        float size = Math.Max(8, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number);
+        float size = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number;
         uint script = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION).enum_value;
         using var format = new CanvasTextFormat { FontFamily = resolved.Family, FontStretch = resolved.Stretch, FontSize = DirectWriteProvider.ScriptSize(size, script), WordWrapping = CanvasWordWrapping.Wrap };
         uint weight = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value;

@@ -54,7 +54,7 @@ fn misnested_formatting_end_preserves_open_paragraph_and_its_direct_properties()
     assert_eq!(direct(&document, 3).weight, None);
     assert_eq!(direct(&document, 3).slant, Some(FontSlant::Italic));
     assert_eq!(direct(&document, 6).slant, None);
-    assert_eq!(direct(&document, 6).size, Some(24.0));
+    assert_eq!(direct(&document, 6).size, Some((24.0).into()));
     assert_eq!(
         document.projection().blocks()[0]
             .direct_paragraph
@@ -76,12 +76,12 @@ fn inline_css_recovers_declarations_and_applies_only_valid_supported_values() {
     assert_eq!(properties.open_type_features.unwrap().get("liga"), Some(&0));
     assert_eq!(properties.underline, Some(true));
     assert_eq!(properties.foreground.unwrap().red, 1.0);
-    assert_eq!(properties.size, Some(12.0));
+    assert_eq!(properties.size, Some((12.0).into()));
     assert_eq!(properties.weight, Some(600));
     assert_eq!(document.source_bytes(), source.as_bytes());
     let document = open("<p style=\"font-family:'unterminated\n; font-size:21pt\">Text</p>");
     assert_eq!(direct(&document, 0).font_families, None);
-    assert_eq!(direct(&document, 0).size, Some(21.0));
+    assert_eq!(direct(&document, 0).size, Some((21.0).into()));
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn super_and_sub_retain_semantic_position_through_font_changes_and_reopen() {
         .block_style(&"Heading2".into())
         .unwrap()
         .clone();
-    heading.character.size = Some(30.0);
+    heading.character.size = Some((30.0).into());
     document
         .apply_style_request(StyleModelRequest::new(
             document.id(),

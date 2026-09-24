@@ -1,4 +1,6 @@
 mod defaults;
+#[cfg(test)]
+mod percentage_tests;
 pub use defaults::StyleDefaultsError;
 pub mod code;
 
@@ -13,6 +15,8 @@ pub const DEFAULT_FONT_FAMILY: &str = if cfg!(target_os = "macos") {
 } else {
     "system-ui"
 };
+
+pub(super) const DEFAULT_FONT_SIZE: f32 = 14.0;
 
 /// Opaque stable identity of a block or character style. The string is a
 /// serialization-friendly token, not the user-visible style name.
@@ -179,12 +183,70 @@ impl ScriptPosition {
     }
 }
 
+/// A sparse size declaration. Percentages are evaluated against the paragraph
+/// parent for block styles and the underlying text for named character styles.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "StoredFontSize", into = "StoredFontSize")]
+pub enum FontSize {
+    Points(f32),
+    Percentage(u16),
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+enum StoredFontSize {
+    Points(f32),
+    Percentage { percentage: u16 },
+}
+
+impl From<StoredFontSize> for FontSize {
+    fn from(value: StoredFontSize) -> Self {
+        match value {
+            StoredFontSize::Points(value) => Self::Points(value),
+            StoredFontSize::Percentage { percentage } => Self::Percentage(percentage),
+        }
+    }
+}
+impl From<FontSize> for StoredFontSize {
+    fn from(value: FontSize) -> Self {
+        match value {
+            FontSize::Points(value) => Self::Points(value),
+            FontSize::Percentage(percentage) => Self::Percentage { percentage },
+        }
+    }
+}
+impl From<f32> for FontSize {
+    fn from(value: f32) -> Self { Self::Points(value) }
+}
+impl FontSize {
+    pub fn resolve(self, underlying_points: f32) -> f32 {
+        match self {
+            Self::Points(value) => value,
+            Self::Percentage(value) => (f64::from(underlying_points) * f64::from(value) / 100.0) as f32,
+        }
+    }
+    pub fn is_valid(self) -> bool {
+        match self {
+            Self::Points(value) => value.is_finite() && value > 0.0,
+            Self::Percentage(value) => (10..=1000).contains(&value),
+        }
+    }
+}
+impl From<FontSize> for StylePropertyValue {
+    fn from(value: FontSize) -> Self {
+        match value {
+            FontSize::Points(value) => Self::Float(value),
+            FontSize::Percentage(value) => Self::Percentage(value),
+        }
+    }
+}
+
 /// Sparse character declarations. `None` means inherit/leave unchanged.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct CharacterProperties {
     pub font_families: Option<Vec<String>>,
-    pub size: Option<f32>,
+    pub size: Option<FontSize>,
     pub weight: Option<u16>,
     /// Semantic emphasis relative to the selected base face/weight.
     pub bold: Option<bool>,
@@ -450,7 +512,7 @@ impl Default for StyleSheet {
                 role: BlockRole::Paragraph,
                 character: CharacterProperties {
                     font_families: Some(vec![DEFAULT_FONT_FAMILY.to_owned()]),
-                    size: Some(14.0),
+                    size: Some(DEFAULT_FONT_SIZE.into()),
                     weight: Some(400),
                     slant: Some(FontSlant::Upright),
                     // Unspecified color follows the application theme.
@@ -486,7 +548,7 @@ impl Default for StyleSheet {
                     next_paragraph_style: Some(paragraph.clone()),
                     role: BlockRole::Paragraph,
                     character: CharacterProperties {
-                        size: Some(26.0 - level as f32 * 2.0),
+                        size: Some((26.0 - level as f32 * 2.0).into()),
                         weight: Some(700),
                         ..CharacterProperties::default()
                     },
@@ -697,7 +759,7 @@ impl Default for ResolvedCharacterStyle {
     fn default() -> Self {
         Self {
             font_families: vec![DEFAULT_FONT_FAMILY.to_owned()],
-            size: 14.0,
+            size: DEFAULT_FONT_SIZE,
             weight: 400,
             base_weight: 400,
             bold: false,
@@ -866,6 +928,7 @@ pub enum StyleNamespace {
 #[derive(Clone, Debug, PartialEq)]
 pub enum StylePropertyValue {
     Float(f32),
+    Percentage(u16),
     FontWeight(u16),
     Boolean(bool),
     Color(Color),
@@ -1713,6 +1776,9 @@ impl StyleSheet {
             }
         }
         for style in candidate.block_styles.values() {
+            if style.id == candidate.base_paragraph && matches!(style.character.size, Some(FontSize::Percentage(_))) {
+                return Err(invalid_style_value(&style.id, StyleProperty::CharacterSize));
+            }
             validate_character_properties(&style.id, &style.character)?;
             validate_block_properties(style)?;
             if style.id != candidate.base_paragraph {
@@ -2020,6 +2086,7 @@ impl StyleSheet {
         }
         apply_document_properties(&mut resolved, direct_canvas);
         apply_character_properties(&mut resolved.character, direct_character);
+        validate_resolved_font_size(&resolved.character, assigned)?;
         Ok(resolved)
     }
 
@@ -2081,6 +2148,7 @@ impl StyleSheet {
             direct_character,
             StyleContributionOrigin::DirectDocumentCharacter,
         );
+        validate_resolved_font_size(&value.character, assigned)?;
         Ok(ResolvedStyle {
             value,
             contributions,
@@ -2181,23 +2249,36 @@ impl StyleSheet {
             apply_character_properties(&mut resolved.character, &style.character);
         }
         apply_character_properties(&mut resolved.character, &document.direct_default_character);
+        let mut parent_font_size = self.intrinsic_character_defaults.size
+            .map_or(DEFAULT_FONT_SIZE, |size| size.resolve(DEFAULT_FONT_SIZE));
         for style in paragraph_chain {
+            if let Some(size) = style.character.size {
+                parent_font_size = size.resolve(parent_font_size);
+            }
             if style.role == BlockRole::Document {
                 continue;
             }
             apply_paragraph_properties(&mut resolved, &style.block);
             if style.id != self.base_paragraph {
                 apply_character_properties(&mut resolved.character, &style.character);
+                if matches!(style.character.size, Some(FontSize::Percentage(_))) {
+                    resolved.character.size = parent_font_size;
+                }
             }
         }
         apply_paragraph_properties(&mut resolved, direct_paragraph);
         apply_character_properties(&mut resolved.character, paragraph_default_character);
         if let Some(id) = character_style {
+            let underlying_size = resolved.character.size;
             for style in self.character_chain(id)? {
                 apply_character_properties(&mut resolved.character, &style.properties);
+                if let Some(FontSize::Percentage(percent)) = style.properties.size {
+                    resolved.character.size = FontSize::Percentage(percent).resolve(underlying_size);
+                }
             }
         }
         apply_character_properties(&mut resolved.character, direct_character);
+        validate_resolved_font_size(&resolved.character, character_style.unwrap_or(paragraph_style))?;
         Ok(resolved)
     }
 
@@ -2264,7 +2345,12 @@ impl StyleSheet {
             &document.direct_default_character,
             StyleContributionOrigin::DirectDocumentCharacter,
         );
+        let mut parent_font_size = self.intrinsic_character_defaults.size
+            .map_or(DEFAULT_FONT_SIZE, |size| size.resolve(DEFAULT_FONT_SIZE));
         for style in paragraph_chain {
+            if let Some(size) = style.character.size {
+                parent_font_size = size.resolve(parent_font_size);
+            }
             if style.role == BlockRole::Document {
                 continue;
             }
@@ -2283,6 +2369,9 @@ impl StyleSheet {
             );
             if style.id != self.base_paragraph {
                 apply_character_properties(&mut value.character, &style.character);
+                if matches!(style.character.size, Some(FontSize::Percentage(_))) {
+                    value.character.size = parent_font_size;
+                }
                 record_character_winners(&mut contributions, &style.character,
                     StyleContributionOrigin::BlockStyle(style.id.clone()));
             }
@@ -2300,6 +2389,7 @@ impl StyleSheet {
             StyleContributionOrigin::DirectParagraphCharacter,
         );
         if let Some(id) = character_style {
+            let underlying_size = value.character.size;
             for style in self.character_chain(id)? {
                 add_dependency(
                     &mut contributions,
@@ -2307,6 +2397,9 @@ impl StyleSheet {
                     StyleDependency::Character(style.id.clone()),
                 );
                 apply_character_properties(&mut value.character, &style.properties);
+                if let Some(FontSize::Percentage(percent)) = style.properties.size {
+                    value.character.size = FontSize::Percentage(percent).resolve(underlying_size);
+                }
                 record_character_winners(
                     &mut contributions,
                     &style.properties,
@@ -2321,6 +2414,7 @@ impl StyleSheet {
             StyleContributionOrigin::DirectCharacter,
         );
 
+        validate_resolved_font_size(&value.character, character_style.unwrap_or(paragraph_style))?;
         Ok(ResolvedStyle {
             value,
             contributions,
@@ -2355,6 +2449,9 @@ impl StyleSheet {
 
     fn replace_block_style(&mut self, style: BlockStyle) -> Result<(), StyleError> {
         if style.id == self.base_paragraph {
+            if matches!(style.character.size, Some(FontSize::Percentage(_))) {
+                return Err(invalid_style_value(&style.id, StyleProperty::CharacterSize));
+            }
             if style.role != BlockRole::Paragraph
                 || style.based_on.is_some()
             {
@@ -2497,7 +2594,14 @@ impl StyleSheet {
                 self.validate_block_parent(style)?;
             }
             self.validate_next_paragraph_style(style)?;
-            let _ = self.block_chain(&style.id, style.role)?;
+            let mut size = self.intrinsic_character_defaults.size
+                .map_or(DEFAULT_FONT_SIZE, |value| value.resolve(DEFAULT_FONT_SIZE));
+            for parent in self.block_chain(&style.id, style.role)? {
+                if let Some(value) = parent.character.size { size = value.resolve(size); }
+                if !size.is_finite() || size <= 0.0 {
+                    return Err(invalid_style_value(&style.id, StyleProperty::CharacterSize));
+                }
+            }
         }
         Ok(())
     }
@@ -2641,7 +2745,7 @@ macro_rules! sparse_property_operations {
         ) -> Result<(), StyleError> {
             match (property, value) {
                 $((StyleProperty::$property, StylePropertyValue::$value(value)) => {
-                    properties.$field = Some(value.clone());
+                    properties.$field = Some(value.clone().into());
                 })+
                 $( (StyleProperty::$property, _) => {
                     return Err(invalid_style_value(style, property));
@@ -2665,7 +2769,7 @@ macro_rules! sparse_property_operations {
 }
 
 sparse_property_operations! {
-    CharacterProperties, set_character_property, clear_character_property;
+    CharacterProperties, set_character_property_value, clear_character_property;
     font_families => CharacterFontFamilies(FontFamilies),
     size => CharacterSize(Float),
     weight => CharacterWeight(FontWeight),
@@ -2680,6 +2784,23 @@ sparse_property_operations! {
     open_type_features => CharacterOpenTypeFeatures(OpenTypeFeatures),
     letter_spacing => CharacterLetterSpacing(Float),
     script_position => CharacterScriptPosition(ScriptPosition),
+}
+
+pub(super) fn set_character_property(
+    style: &StyleId,
+    properties: &mut CharacterProperties,
+    property: StyleProperty,
+    value: &StylePropertyValue,
+) -> Result<(), StyleError> {
+    if let (StyleProperty::CharacterSize, StylePropertyValue::Percentage(value)) = (property, value) {
+        if !(10..=1000).contains(value) {
+            return Err(invalid_style_value(style, property));
+        }
+        properties.size = Some(FontSize::Percentage(*value));
+        Ok(())
+    } else {
+        set_character_property_value(style, properties, property, value)
+    }
 }
 
 sparse_property_operations! {
@@ -2697,6 +2818,17 @@ sparse_property_operations! {
     background => CanvasBackground(Color),
     alignment => ParagraphAlignment(ParagraphAlignment),
     base_direction => ParagraphBaseDirection(WritingDirection),
+}
+
+pub(super) fn validate_direct_character_properties(
+    id: &StyleId,
+    properties: &CharacterProperties,
+) -> Result<(), StyleError> {
+    validate_character_properties(id, properties)?;
+    if matches!(properties.size, Some(FontSize::Percentage(_))) {
+        return Err(invalid_style_value(id, StyleProperty::CharacterSize));
+    }
+    Ok(())
 }
 
 pub(super) fn validate_character_properties(
@@ -2723,7 +2855,7 @@ pub(super) fn validate_character_properties(
         && features_valid
         && properties
             .size
-            .map_or(true, |size| size.is_finite() && size > 0.0)
+            .map_or(true, FontSize::is_valid)
         && properties
             .weight
             .map_or(true, |weight| (1..=1000).contains(&weight))
@@ -3015,6 +3147,11 @@ fn record_paragraph_winners(
     }
 }
 
+fn validate_resolved_font_size(style: &ResolvedCharacterStyle, id: &StyleId) -> Result<(), StyleError> {
+    if style.size.is_finite() && style.size > 0.0 { Ok(()) }
+    else { Err(invalid_style_value(id, StyleProperty::CharacterSize)) }
+}
+
 fn apply_character_properties(
     resolved: &mut ResolvedCharacterStyle,
     properties: &CharacterProperties,
@@ -3023,7 +3160,7 @@ fn apply_character_properties(
         resolved.font_families.clone_from(value);
     }
     if let Some(value) = properties.size {
-        resolved.size = value;
+        resolved.size = value.resolve(resolved.size);
     }
     if let Some(value) = properties.weight {
         resolved.base_weight = value;
@@ -3212,7 +3349,7 @@ mod tests {
         let sheet = StyleSheet::default();
         let paragraph = sheet.block_style(&sheet.base_paragraph).unwrap();
         assert_eq!(paragraph.based_on, None);
-        assert_eq!(paragraph.character.size, Some(14.0));
+        assert_eq!(paragraph.character.size, Some(14.0.into()));
         assert_eq!(paragraph.character.font_families, Some(vec![DEFAULT_FONT_FAMILY.into()]));
         assert_eq!(sheet.block_style_metadata(&sheet.base_paragraph).unwrap().display_name, "Base Paragraph");
         assert!(sheet.block_style(&"Document".into()).is_none());
@@ -3305,7 +3442,7 @@ mod tests {
             role: BlockRole::Document,
             character: CharacterProperties {
                 font_families: Some(vec!["Writer Serif".to_owned(), "system-ui".to_owned()]),
-                size: Some(19.0),
+                size: Some(19.0.into()),
                 weight: Some(525),
                 slant: Some(FontSlant::Italic),
                 foreground: Some(foreground),
@@ -3573,7 +3710,7 @@ mod tests {
             "Broken",
             &StyleId::from(""),
             CharacterProperties {
-                size: Some(f32::NAN),
+                size: Some((f32::NAN).into()),
                 ..CharacterProperties::default()
             },
         );
@@ -3694,7 +3831,7 @@ mod tests {
                     next_paragraph_style: None,
                     role: BlockRole::Document,
                     character: CharacterProperties {
-                        size: Some(18.0),
+                        size: Some(18.0.into()),
                         ..CharacterProperties::default()
                     },
                     block: BlockProperties {
@@ -3775,7 +3912,7 @@ mod tests {
                     next_paragraph_style: None,
                     role: BlockRole::Paragraph,
                     character: CharacterProperties {
-                        size: Some(20.0),
+                        size: Some(20.0.into()),
                         ..CharacterProperties::default()
                     },
                     block: BlockProperties {
@@ -4027,7 +4164,7 @@ mod tests {
                         next_paragraph_style: None,
                         role: BlockRole::Paragraph,
                         character: CharacterProperties {
-                            size: (bits & 1 != 0).then_some(10.0 + (bits % 18) as f32),
+                            size: (bits & 1 != 0).then_some(FontSize::Points(10.0 + (bits % 18) as f32)),
                             weight: (bits & 2 != 0).then_some(300 + (bits % 6) as u16 * 100),
                             underline: (bits & 4 != 0).then_some(bits & 8 != 0),
                             ..CharacterProperties::default()

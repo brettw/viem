@@ -186,7 +186,7 @@ mod tests {
         ));
         assert!(core.views[&id].commands.visible_whitespace().enabled());
         let mut options = WhitespacePresentationOptions::default();
-        options.visible_whitespace.style.size = Some(-1.0);
+        options.visible_whitespace.style.size = Some((-1.0).into());
         assert!(core.set_whitespace_presentation_defaults(options).is_err());
         assert_eq!(core.layout(id).unwrap().configuration_generation(), before);
     }

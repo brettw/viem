@@ -972,7 +972,7 @@ mod tests {
                     role: BlockRole::Document,
                     character: CharacterProperties {
                         font_families: Some(vec!["Theme Sans".to_owned()]),
-                        size: Some(11.0),
+                        size: Some(11.0.into()),
                         weight: Some(550),
                         ..CharacterProperties::default()
                     },
@@ -1006,7 +1006,7 @@ mod tests {
             alpha: 1.0,
         });
         root.direct_default_character.font_families = Some(vec!["Writer Serif".to_owned()]);
-        root.direct_default_character.size = Some(13.0);
+        root.direct_default_character.size = Some(13.0.into());
         let styles = resolve_custom(
             projection,
             &sheet,
@@ -1045,7 +1045,7 @@ mod tests {
         let sheet = projection.style_sheet().clone();
         let mut root = projection.document_style().clone();
         root.direct_default_character.font_families = Some(vec!["Root Sans".to_owned()]);
-        root.direct_default_character.size = Some(12.0);
+        root.direct_default_character.size = Some(12.0.into());
         let mut blocks = projection.blocks().to_vec();
         blocks[0].direct_paragraph = BlockProperties {
             spacing_before: Some(7.0),
@@ -1057,7 +1057,7 @@ mod tests {
         };
         blocks[0].direct_default_character = CharacterProperties {
             font_families: Some(vec!["Paragraph Serif".to_owned()]),
-            size: Some(17.0),
+            size: Some(17.0.into()),
             ..CharacterProperties::default()
         };
 
@@ -1098,7 +1098,7 @@ mod tests {
                     based_on: None,
                     properties: CharacterProperties {
                         font_families: Some(vec!["Named Serif".to_owned()]),
-                        size: Some(20.0),
+                        size: Some(20.0.into()),
                         weight: Some(650),
                         ..CharacterProperties::default()
                     },
@@ -1110,7 +1110,7 @@ mod tests {
         let mut blocks = projection.blocks().to_vec();
         blocks[0].direct_default_character = CharacterProperties {
             font_families: Some(vec!["Paragraph Sans".to_owned()]),
-            size: Some(16.0),
+            size: Some(16.0.into()),
             weight: Some(500),
             ..CharacterProperties::default()
         };
@@ -1122,7 +1122,7 @@ mod tests {
             StyleSpan {
                 range: 0..6,
                 application: StyleApplication::Direct(CharacterProperties {
-                    size: Some(24.0),
+                    size: Some(24.0.into()),
                     slant: Some(FontSlant::Italic),
                     ..CharacterProperties::default()
                 }),
@@ -1183,7 +1183,7 @@ mod tests {
         ));
 
         root = projection.document_style().clone();
-        root.direct_default_character.size = Some(0.0);
+        root.direct_default_character.size = Some(0.0.into());
         assert!(matches!(
             resolve_custom(projection, &sheet, &root, &blocks, &[]),
             Err(DocumentStyleError::Cascade(

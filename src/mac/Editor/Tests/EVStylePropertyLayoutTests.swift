@@ -133,6 +133,31 @@ final class EVStylePropertyLayoutTests: XCTestCase {
                     .filter { !$0.isHiddenOrHasHiddenAncestor && !$0.stringValue.isEmpty }
                 XCTAssertFalse(labels.isEmpty)
                 XCTAssertTrue(labels.contains { $0.stringValue == "pt" })
+                if tab == .character {
+                    let unit = try control(NSPopUpButton.self, label: "Font size unit", in: editor.view)
+                    XCTAssertFalse(unit.isHiddenOrHasHiddenAncestor)
+                    XCTAssertGreaterThanOrEqual(unit.bounds.width, unit.intrinsicContentSize.width - 0.5,
+                        "The size-unit popup must fit at the minimum dialog width")
+                    XCTAssertTrue(editor.view.bounds.contains(editor.view.convert(unit.bounds, from: unit)))
+                    let size = try control(NSTextField.self, label: "Size", in: editor.view)
+                    let stepper = try control(EVStyleStepper.self, label: "Adjust size", in: editor.view)
+                    let checkbox = try control(NSButton.self,
+                        label: "Override \(EVStyleProperty.characterSize.displayName.lowercased())", in: editor.view)
+                    let controls: [NSView] = [checkbox, size, stepper, unit]
+                    for item in controls {
+                        XCTAssertGreaterThanOrEqual(item.bounds.width, item.fittingSize.width - 0.5,
+                            "Native controls must retain their drawing width rather than collapse and overlap")
+                    }
+                    for (left, right) in zip(controls, controls.dropFirst()) {
+                        let leftRect = editor.view.convert(left.bounds, from: left)
+                        let rightRect = editor.view.convert(right.bounds, from: right)
+                        XCTAssertLessThanOrEqual(leftRect.maxX, rightRect.minX,
+                            "Font size controls must not overlap at the minimum dialog width: \(leftRect), \(rightRect)")
+                    }
+                    let digits = ("1000" as NSString).size(withAttributes: [.font: try XCTUnwrap(size.font)]).width
+                    XCTAssertGreaterThanOrEqual(try XCTUnwrap(size.cell).drawingRect(forBounds: size.bounds).width, digits,
+                        "The size entry must fit a four-digit percentage")
+                }
                 for label in labels {
                     XCTAssertGreaterThanOrEqual(label.bounds.width, label.intrinsicContentSize.width - 0.5,
                         "The complete \(label.stringValue) caption must fit on the \(tab) tab")

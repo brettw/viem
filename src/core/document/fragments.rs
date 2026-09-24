@@ -421,7 +421,7 @@ impl Document {
             let expected = resolved.clone();
             let mut properties = CharacterProperties {
                 font_families: Some(resolved.font_families),
-                size: Some(resolved.size),
+                size: Some(resolved.size.into()),
                 weight: Some(resolved.base_weight),
                 bold: Some(resolved.bold),
                 slant: Some(resolved.slant),

@@ -136,6 +136,37 @@ fn named_choice_is_pending_in_normal_insert_and_replace_until_text_commits() {
 }
 
 #[test]
+fn percentage_named_style_sizes_pending_typing_from_the_current_paragraph() {
+    use viem_core::document::StyleDefinitionFieldEdit;
+    for (source, points) in [("# heading", 21.6), ("body", 10.8)] {
+        let (mut core, view) = fixture(Format::Markdown, source);
+        for (namespace, id, value) in [
+            (StyleNamespace::Block, "Paragraph", StylePropertyValue::Float(12.0)),
+            (StyleNamespace::Block, "Heading1", StylePropertyValue::Percentage(200)),
+            (StyleNamespace::Character, "Code", StylePropertyValue::Percentage(90)),
+        ] {
+            core.handle(view, CoreEvent::EditGeneratedStyle {
+                document: core.document().id(), revision: core.document().revision(),
+                style_sheet_revision: core.document().projection().style_sheet().revision,
+                namespace, style: id.into(),
+                edit: StyleDefinitionFieldEdit::SetDeclaration { property: StyleProperty::CharacterSize, value },
+            }).unwrap();
+        }
+        key(&mut core, view, Key::Char('i'));
+        assign(&mut core, view, "Code");
+        assert!((core.selected_typography(view).unwrap().0.size - points).abs() < 0.0001);
+        text(&mut core, view, "new");
+        named_at(core.document(), 0..3, "Code");
+        assert!((DocumentLayoutStyles::character_at(core.document().projection(), 1, false).unwrap().size - points).abs() < 0.0001);
+        key(&mut core, view, Key::Escape);
+        key(&mut core, view, Key::Char('u'));
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        key(&mut core, view, Key::Ctrl('r'));
+        assert!((DocumentLayoutStyles::character_at(core.document().projection(), 1, false).unwrap().size - points).abs() < 0.0001);
+    }
+}
+
+#[test]
 fn named_identity_and_sparse_direct_overrides_remain_separate() {
     let source = r"{\rtf1{\stylesheet{\*\cs2\i Accent;}}word}";
     let (mut core, view) = fixture(Format::Rtf, source);

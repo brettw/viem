@@ -245,7 +245,7 @@ impl Document {
                     style,
                 },
             )?;
-            return self.prepare_html_source_style_translation(translated);
+            return self.prepare_html_source_style_translation(translated, false);
         }
         let original_range = range.clone();
         let mut scratch = self.scratch_document();

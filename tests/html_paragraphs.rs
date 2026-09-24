@@ -55,7 +55,7 @@ fn middle_split_preserves_named_style_direct_paragraph_and_inline_scopes() {
     assert_eq!(direct(&document, 3).bold, Some(true));
     assert_eq!(direct(&document, 5).weight, None);
     assert_eq!(direct(&document, 5).slant, Some(FontSlant::Italic));
-    assert_eq!(direct(&document, 5).size, Some(19.0));
+    assert_eq!(direct(&document, 5).size, Some((19.0).into()));
     let bytes = document.source_bytes();
     let changed = String::from_utf8(bytes.clone()).unwrap();
     assert!(changed.starts_with("<h2 data-id='keep' style='margin-inline-start:12pt;font-size:19pt'><b data-x='original'>ab</b></h2>"));
@@ -326,7 +326,7 @@ fn paragraph_join_and_backspace_keep_first_style_and_second_direct_characters() 
             .leading_indent,
         Some(12.0)
     );
-    assert_eq!(direct(&document, 4).size, Some(17.0));
+    assert_eq!(direct(&document, 4).size, Some((17.0).into()));
     assert_eq!(direct(&document, 4).slant, Some(FontSlant::Italic));
     assert!(String::from_utf8(document.source_bytes())
         .unwrap()

@@ -1590,6 +1590,7 @@ internal static unsafe partial class Native
     public const uint VIEM_STYLE_VALUE_LINE_SPACING = 10u;
     public const uint VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT = 11u;
     public const uint VIEM_STYLE_VALUE_SCRIPT_POSITION = 12u;
+    public const uint VIEM_STYLE_VALUE_PERCENTAGE = 13u;
     public const uint VIEM_SCRIPT_POSITION_NORMAL = 0u;
     public const uint VIEM_SCRIPT_POSITION_SUPERSCRIPT = 1u;
     public const uint VIEM_SCRIPT_POSITION_SUBSCRIPT = 2u;

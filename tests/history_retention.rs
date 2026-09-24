@@ -189,7 +189,7 @@ fn async_save_completion_stays_clean_after_pruned_configuration_only_edits() {
     }).unwrap();
     for size in [18., 24.] {
         let mut style = document.projection().style_sheet().block_style(&"Paragraph".into()).unwrap().clone();
-        style.character.size = Some(size);
+        style.character.size = Some((size).into());
         document.apply_style_request(StyleModelRequest::new(document.id(), document.revision(),
             StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
                 origin: StyleDefinitionOrigin::SourceBacked,

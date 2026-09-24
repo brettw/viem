@@ -29,7 +29,7 @@ internal sealed partial class StyleWindow
         Property(row, "Font family", VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES, Inline(fontFamily, fallback), caption: false);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(fontFamily, "Font family");
         Property(row, "Variant", VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT, fontVariant, caption: false);
-        Number(row, "Size", VIEM_STYLE_PROPERTY_CHARACTER_SIZE, min: 1, max: 256, caption: false);
+        BuildFontSize(row);
         refreshFields.Add(() => {
             string stored = sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES));
             string display = ShowsValue(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES) ? FontCatalog.DisplayFamily(stored) : "";
