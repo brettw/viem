@@ -246,7 +246,22 @@ final class EVMenuBuilderTests: XCTestCase {
 
     func testAllAndOnlySpecifiedKeyEquivalentsAreInstalled() throws {
         let owner = Owner()
-        let main = EVMenuBuilder(owner: owner).buildMainMenu(for: NSApplication.shared)
+        let application = NSApplication.shared
+        let previousMain = application.mainMenu
+        let previousWindows = application.windowsMenu
+        let previousHelp = application.helpMenu
+        let previousServices = application.servicesMenu
+        defer {
+            application.mainMenu = previousMain
+            application.windowsMenu = previousWindows
+            application.helpMenu = previousHelp
+            application.servicesMenu = previousServices
+        }
+        let builder = EVMenuBuilder(owner: owner)
+        let main = builder.buildMainMenu(for: application)
+        // AppKit resolves conflicting shortcuts when the menu is installed.
+        // Unattached items can report equivalents that the app never displays.
+        application.mainMenu = main
         let expected: [String: (String, NSEvent.ModifierFlags)] = [
             "Viem/Settings…": (",", [.command]),
             "Viem/Hide Viem": ("h", [.command]),
@@ -277,6 +292,8 @@ final class EVMenuBuilderTests: XCTestCase {
             "Format/Italic": ("i", [.command]),
             "Format/Underline": ("u", [.command]),
             "Format/Style/Edit Styles…": (String(UnicodeScalar(NSF8FunctionKey)!), []),
+            "Paragraph/Edit Styles…": (String(UnicodeScalar(NSF8FunctionKey)!), []),
+            "Character/Edit Styles…": (String(UnicodeScalar(NSF8FunctionKey)!), []),
             "Paragraph/Base Paragraph": ("0", [.command]),
             "Paragraph/Heading 1": ("1", [.command]),
             "Paragraph/Heading 2": ("2", [.command]),
@@ -321,9 +338,7 @@ final class EVMenuBuilderTests: XCTestCase {
             .revertLastSaved, .browseVersions, .pageSetup, .printDocument,
         ]
         let styleCommands: Set<EVMenuCommand> = [
-            .defaultParagraphStyle, .editCharacterStyles,
-            .baseParagraphStyle, .editParagraphStyles,
-
+            .defaultParagraphStyle, .baseParagraphStyle,
         ]
         let coreSelector = #selector(EVEditorCommandRouting.performEditorMenuCommand(_:))
         let styleSelector = #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:))
@@ -657,7 +672,8 @@ final class EVMenuBuilderTests: XCTestCase {
         let menu = builder.buildMainMenu(for: NSApplication.shared)
 
         for item in allItems(in: menu) where !item.keyEquivalent.isEmpty {
-            if item.tag == EVMenuCommand.editStyles.rawValue {
+            if [EVMenuCommand.editStyles, .editParagraphStyles, .editCharacterStyles]
+                .contains(where: { $0.rawValue == item.tag }) {
                 XCTAssertEqual(item.keyEquivalent, String(UnicodeScalar(NSF8FunctionKey)!))
                 XCTAssertTrue(item.keyEquivalentModifierMask.isEmpty)
                 continue
@@ -790,10 +806,16 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertEqual(actions.map(\.marksCurrentStyle), [true, true, true, false])
         XCTAssertEqual(actions[2].syntaxName, "Custom")
         XCTAssertEqual(actions[2].stableID, "")
-        XCTAssertTrue(menu.items.filter { !$0.isSeparatorItem }.allSatisfy {
-            $0.action == #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:))
-                && $0.keyEquivalent.isEmpty
-        })
+        for item in menu.items where !item.isSeparatorItem {
+            if styleAction(item)?.kind == .editCurrent {
+                XCTAssertEqual(item.action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
+                XCTAssertEqual(item.keyEquivalent, String(UnicodeScalar(NSF8FunctionKey)!))
+                XCTAssertTrue(item.keyEquivalentModifierMask.isEmpty)
+            } else {
+                XCTAssertEqual(item.action, #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:)))
+                XCTAssertTrue(item.keyEquivalent.isEmpty)
+            }
+        }
     }
 
     func testStyleMenuRequeriesProviderRatherThanCachingDefinitionsOrIndexes() throws {

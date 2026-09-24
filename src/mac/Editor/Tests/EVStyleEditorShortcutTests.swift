@@ -43,6 +43,19 @@ final class EVStyleEditorShortcutTests: XCTestCase {
         XCTAssertEqual(item.keyEquivalent, String(UnicodeScalar(NSF8FunctionKey)!))
         XCTAssertTrue(item.keyEquivalentModifierMask.isEmpty)
         XCTAssertNil(item.target, "The shortcut uses the editor responder chain")
+        for title in ["Paragraph", "Character"] {
+            let menu = try XCTUnwrap(main.item(withTitle: title)?.submenu)
+            // Exercise the live rebuild too: AppKit must retain duplicate F8
+            // labels both on installation and when a style menu opens.
+            for rebuild in [false, true] {
+                if rebuild { builder.menuNeedsUpdate(menu) }
+                let footer = try XCTUnwrap(menu.item(withTitle: "Edit Styles…"))
+                XCTAssertEqual(footer.keyEquivalent, item.keyEquivalent, title)
+                XCTAssertTrue(footer.keyEquivalentModifierMask.isEmpty, title)
+                XCTAssertEqual(footer.action, item.action, title)
+                XCTAssertNil(footer.target, title)
+            }
+        }
 
         let session = try XCTUnwrap(surface.session)
         surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 7, length: 0))
