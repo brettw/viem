@@ -13,6 +13,9 @@ final class EVStyleEditorTrackingTests: XCTestCase {
 
     func testNativeEditStylesFootersAndCommandsOpenTheCurrentCaretStyle() throws {
         let surface = try markdownSurface()
+        let controller = EVDocumentWindowController(document: EVDocument(), editorSurface: surface)
+        let window = try XCTUnwrap(controller.window)
+        defer { window.orderOut(nil) }
         let original = try surface.backend.recoverySnapshot()
         let coordinator = EVStyleEditorCoordinator.shared
         coordinatorToSettle = coordinator
@@ -29,8 +32,9 @@ final class EVStyleEditorTrackingTests: XCTestCase {
             let menu = try XCTUnwrap(main.item(withTitle: title)?.submenu)
             builder.menuNeedsUpdate(menu)
             let item = try XCTUnwrap(menu.item(withTitle: "Edit Styles…"))
-            XCTAssertTrue(surface.editorView.validateMenuItem(item))
-            surface.editorView.performEditorStyleMenuAction(item)
+            XCTAssertEqual(item.action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
+            XCTAssertTrue(controller.documentContentController.validateMenuItem(item))
+            controller.documentContentController.performEditorMenuCommand(item)
             XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
         }
 
@@ -49,6 +53,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         }
         XCTAssertEqual(try surface.backend.recoverySnapshot(), original)
         XCTAssertFalse(surface.canUndo)
+        withExtendedLifetime((builder, owner, controller)) {}
     }
 
     func testCaretFollowingPrefersNamedCharactersAndManualPickerSurvivesRefreshAndStyleEdits() throws {
@@ -132,6 +137,9 @@ final class EVStyleEditorTrackingTests: XCTestCase {
 
     func testMixedSelectionsFollowTheirUniformParagraphOrBaseAndCharacterFooterUsesBase() throws {
         let surface = try markdownSurface()
+        let controller = EVDocumentWindowController(document: EVDocument(), editorSurface: surface)
+        let window = try XCTUnwrap(controller.window)
+        defer { window.orderOut(nil) }
         let session = try XCTUnwrap(surface.session)
         let original = try surface.backend.recoverySnapshot()
         moveCaret(7, in: surface)
@@ -157,8 +165,9 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         let character = try XCTUnwrap(main.item(withTitle: "Character")?.submenu)
         builder.menuNeedsUpdate(character)
         let footer = try XCTUnwrap(character.item(withTitle: "Edit Styles…"))
-        XCTAssertTrue(surface.editorView.validateMenuItem(footer))
-        surface.editorView.performEditorStyleMenuAction(footer)
+        XCTAssertEqual(footer.action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
+        XCTAssertTrue(controller.documentContentController.validateMenuItem(footer))
+        controller.documentContentController.performEditorMenuCommand(footer)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading,
                        "Mixed character assignments open the uniform current paragraph style")
 
@@ -176,6 +185,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         }
         XCTAssertEqual(try surface.backend.recoverySnapshot(), original)
         XCTAssertFalse(surface.canUndo)
+        withExtendedLifetime((builder, owner, controller)) {}
     }
 
     func testCodeTrackingKeepsTheGlobalSettingsTargetAndStandaloneSettingsStopFollowing() async throws {

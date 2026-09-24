@@ -635,6 +635,13 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             item.keyEquivalent = String(level)
             item.keyEquivalentModifierMask = [.command]
         } else { item.tag = command.rawValue }
+        if payload.kind == .editCurrent {
+            // AppKit only displays duplicate key equivalents when their actions
+            // match. Use the same route as Format > Style > Edit Styles.
+            item.action = #selector(EVEditorCommandRouting.performEditorMenuCommand(_:))
+            item.keyEquivalent = String(UnicodeScalar(NSF8FunctionKey)!)
+            item.keyEquivalentModifierMask = []
+        }
         item.target = nil
         item.representedObject = payload
         item.isEnabled = presentation.isEnabled

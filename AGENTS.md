@@ -4916,7 +4916,9 @@ their ownership or move their edits into document history.
   relevant availability and error messages remain visible when needed.
 - **F8** opens the style editor through the same **Edit Styles…** action,
   without Command, Control, Option, or Shift. It works in Normal and Insert
-  modes without inserting text or changing the editing mode.
+  modes without inserting text or changing the editing mode. Every **Edit
+  Styles…** menu item displays **F8** as its accelerator, including the
+  **Paragraph** and **Character** menus.
 - Exactly one style-editor window exists application-wide. Invoking any
   `Edit Styles…` action while it is closed creates it. Invoking one while it is
   open brings the existing window forward, retargets it to the invoking
