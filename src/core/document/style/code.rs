@@ -592,6 +592,9 @@ fn validate(sheet: &StyleSheet) -> Result<(), String> {
     if sheet.block_styles.len() != 1 || !sheet.block_styles.contains_key(&sheet.base_paragraph) {
         return Err("Code Base Paragraph is required".into());
     }
+    if matches!(sheet.block_styles[&sheet.base_paragraph].character.size, Some(FontSize::Percentage(_))) {
+        return Err("Code Base Paragraph font size must use points".into());
+    }
     if sheet.block_styles[&sheet.base_paragraph].role != BlockRole::Paragraph
         || sheet.block_styles[&sheet.base_paragraph].based_on.is_some() {
         return Err("Invalid Code base relationships".into());
@@ -812,7 +815,7 @@ mod tests {
             calls,
             "color-only syntax changes must reuse shaping"
         );
-        sheet.character_styles.get_mut(&id).unwrap().properties.size = Some(24.);
+        sheet.character_styles.get_mut(&id).unwrap().properties.size = Some(24.0.into());
         sheet.revision.0 += 1;
         document.install_code_presentation(Arc::new(sheet.clone()), &[run]);
         view.invalidate_syntax_presentation(true);

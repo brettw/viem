@@ -64,7 +64,7 @@ fn html_css_first_attributes_and_unsupported_declarations() {
         properties.font_families,
         Some(vec!["Georgia".into(), "serif".into()])
     );
-    assert_eq!(properties.size, Some(18.0));
+    assert_eq!(properties.size, Some((18.0).into()));
     assert_eq!(properties.weight, Some(650));
     assert_eq!(properties.slant, Some(FontSlant::Italic));
     assert_eq!(properties.letter_spacing, Some(1.0));
@@ -124,7 +124,7 @@ fn rtf_scoped_formatting_tables_controls_and_breaks() {
     assert_eq!(document.text(), "plain bold both bold\nnext\nlast");
     let first = properties_at(&document, 0);
     assert_eq!(first.font_families, Some(vec!["Times New Roman".into()]));
-    assert_eq!(first.size, Some(18.0));
+    assert_eq!(first.size, Some((18.0).into()));
     assert_eq!(first.foreground.unwrap().red, 1.0);
     assert_eq!(properties_at(&document, 6).bold, Some(true));
     assert_eq!(properties_at(&document, 11).slant, Some(FontSlant::Italic));
@@ -244,7 +244,7 @@ fn rich_direct_formatting_appends_rtf_tables_without_renumbering() {
         let mut document = open(source, format);
         let properties = CharacterProperties {
             font_families: Some(vec!["Georgia".into()]),
-            size: Some(18.0),
+            size: Some((18.0).into()),
             weight: Some(700),
             foreground: Some(Color {
                 red: 1.0,

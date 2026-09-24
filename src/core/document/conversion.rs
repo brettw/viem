@@ -845,7 +845,7 @@ mod tests {
                 .block_style(&"Paragraph".into())
                 .unwrap()
                 .clone();
-            paragraph.character.size = Some(30.);
+            paragraph.character.size = Some(30.0.into());
             document
                 .apply_style_request(StyleModelRequest::new(
                     document.id(),

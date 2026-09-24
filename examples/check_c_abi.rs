@@ -274,6 +274,7 @@ _Static_assert(offsetof(ViemTypographyInfoV1, script_position) == {typography_sc
 _Static_assert(offsetof(ViemTypographyInfoV1, background) == {typography_background}, "typography background offset");
 _Static_assert(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION == {script_property}, "script property tag");
 _Static_assert(VIEM_STYLE_VALUE_SCRIPT_POSITION == {script_value}, "script value tag");
+_Static_assert(VIEM_STYLE_VALUE_PERCENTAGE == {percentage_value}, "percentage value tag");
 static ViemStatus (*direct_properties)(ViemCoreHandle, ViemViewId, const ViemDirectStyleEditV1 *, uint64_t, ViemCoreOutcomeV1 *) = viem_core_view_edit_direct_properties;
 static ViemStatus (*copy_formatting)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, ViemStyleSheetInfoV1 *, ViemStylePropertyV1 *, uint64_t, ViemStyleValueItemV1 *, uint64_t, uint8_t *, uint64_t) = viem_core_view_copy_formatting;
 static ViemStatus (*typography_export)(ViemCoreHandle, ViemViewId, uint64_t, ViemTypographyInfoV1 *, uint8_t *, uint64_t, ViemOpenTypeFeatureV1 *, uint64_t) = viem_core_view_typography_export;
@@ -674,6 +675,7 @@ static void typecheck(void) {{
         typography_background = std::mem::offset_of!(ViemTypographyInfoV1, background),
         script_property = VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION,
         script_value = VIEM_STYLE_VALUE_SCRIPT_POSITION,
+        percentage_value = VIEM_STYLE_VALUE_PERCENTAGE,
         style_run = std::mem::size_of::<ViemShapeStyleRunV1>(),
         cluster = std::mem::size_of::<ViemShapedClusterV1>(),
         diagnostic = std::mem::size_of::<ViemShapingDiagnosticV1>(),

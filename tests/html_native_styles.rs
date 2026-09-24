@@ -298,7 +298,7 @@ fn generated_native_code_style_edits_recompute_relative_source_formatting_withou
                 .character_style(&"Code".into())
                 .unwrap()
                 .clone();
-            style.properties.size = Some(28.);
+            style.properties.size = Some((28.).into());
             StyleDefinitionEdit::UpdateCharacter(style)
         } else {
             let mut style = document
@@ -307,7 +307,7 @@ fn generated_native_code_style_edits_recompute_relative_source_formatting_withou
                 .block_style(&"Code Block".into())
                 .unwrap()
                 .clone();
-            style.character.size = Some(28.);
+            style.character.size = Some((28.).into());
             StyleDefinitionEdit::UpdateBlock(style)
         };
         let committed = document
@@ -360,7 +360,7 @@ fn native_source_style_intent_with_export_off_keeps_source_clean() {
         .block_style(&"Paragraph".into())
         .unwrap()
         .clone();
-    style.character.size = Some(28.);
+    style.character.size = Some((28.).into());
     let committed = document
         .apply_style_request(StyleModelRequest::new(
             document.id(),

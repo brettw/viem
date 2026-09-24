@@ -2182,7 +2182,7 @@ pub(super) fn apply_css(
             }
             "font-size" => {
                 if let Some(size) = length(&lower).filter(|n| *n > 0.0) {
-                    character.size = Some(size);
+                    character.size = Some(size.into());
                 }
             }
             "--viem-bold" => character.bold = value.parse().ok(),
@@ -2341,7 +2341,10 @@ pub(super) fn character_css(properties: &CharacterProperties) -> String {
         ));
     }
     if let Some(size) = properties.size {
-        declarations.push(format!("font-size: {size}pt"));
+        declarations.push(match size {
+            super::FontSize::Points(value) => format!("font-size: {value}pt"),
+            super::FontSize::Percentage(value) => format!("font-size: {value}%"),
+        });
     }
     if let Some(bold) = properties.bold {
         let base = properties.weight.unwrap_or(400);

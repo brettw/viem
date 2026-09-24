@@ -898,7 +898,8 @@ Initial character properties include:
 
 - an ordered font-family/fallback request, separate from the concrete font
   identities returned by the shaping provider;
-- font size in layout units, base numeric weight, slant, and semantic Bold;
+- font size in points or an integer percentage from 10 through 1000, base
+  numeric weight, slant, and semantic Bold;
 - optional foreground/background colors (unspecified foreground uses the theme);
 - underline and strike decoration;
 - language and writing-direction override;
@@ -961,6 +962,19 @@ For example, a Code character style declaring Courier and green, with no size,
 is 12 point in a 12-point paragraph and 20 point in a 20-point heading. It never
 reapplies Base Paragraph's size over the heading. Direct formatting does not
 mutate or implicitly create a named style.
+
+A paragraph style's percentage font size is relative to its Based on style's
+effective font size. Relative paragraph chains compose, and changing an
+ancestor's font size updates dependent paragraphs. Base Paragraph has no parent
+and permits only absolute point sizes. A character style's percentage instead
+uses the underlying paragraph/text size before the named character chain. Its
+Based on character style may supply the percentage declaration through ordinary
+inheritance, but does not supply the percentage's size basis. A child percentage
+replaces a parent's size declaration; inherited percentages apply once. For
+example, Code at 90% resolves to 21.6pt over a 24pt heading and 10.8pt over 12pt
+body text. Resolved point sizes retain fractional precision. Relative values
+remain relative in saved style definitions rather than being replaced by the
+currently computed point size.
 
 Direct character formatting is canonicalized per property: applying a property
 replaces that property's value only in the selected range, splitting existing
@@ -1716,6 +1730,14 @@ valid UTF-8, byte provenance, invalid-byte preservation, and reverse-encoding
 behavior required of the conceptual EncodingProjection. RTF does not use the
 shared TextLineEndingProjection: source CR/LF used to format the RTF stream is
 not document content; `\par` and `\line` carry formatted break semantics.
+
+Named-style percentage font sizes persist as the Viem extension
+`\viemsizepercentN`. Relative paragraph definitions also carry a resolved
+`\fsN` fallback, rounded to a positive half-point, which updates when their
+named ancestors change. Viem retains exact relative sizes when reopening.
+RTF has no native dynamic character percentage: other RTF readers ignore this
+extension and use their normal inherited character size. Direct formatting
+continues to use absolute point sizes.
 
 Recognized non-body destinations such as `\fonttbl`, `\colortbl`,
 `\stylesheet`, and `\info` are parsed for supported dependencies but do not
@@ -5034,8 +5056,13 @@ Expose controls for these Character properties (language remains a core/source
 property without an editor control):
 
 - ordered font-family and fallback requests;
-- font size in layout units, aligned with the font-family and face controls
-  without a visible **Size** label above it; retain its accessible control name;
+- font size, aligned with the font-family and face controls without a visible
+  **Size** label above it; retain its accessible control name. The trailing unit
+  is a **pt**/**%** popup. Percentages accept integers from 10 through 1000;
+  Base Paragraph permits only **pt**. Switching units preserves the preview's
+  current effective size as closely as the integer percentage bounds and the
+  source format's point-size precision allow (half-points in RTF).
+  This control and the relative-size rules apply on both macOS and Windows;
 - a native font-face picker (Regular, Light, Bold, Italic, etc.) and separate
   Bold and Italic toggles, with no generic numeric weight/slant fields;
 - native foreground/background color wells, including Default/Inherited;

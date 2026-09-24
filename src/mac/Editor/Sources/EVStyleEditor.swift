@@ -865,7 +865,13 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         }
         availabilityLabel.isHidden = availabilityLabel.stringValue.isEmpty
 
-        compactControls.configure(definition, theme: themeStore.theme, sourceFormat: codeSession != nil ? .code : (document?.backend.sourceFormat ?? .plainText), documentID: snapshot.identity.documentID)
+        let sizeBasisKey = definition.kind == .paragraph ? definition.parentKey : .baseParagraph
+        let sizeBasis: Float? = {
+            guard let sizeBasisKey,
+                  case let .float(value)? = snapshot.definition(for: sizeBasisKey)?.properties[.characterSize]?.effective else { return nil }
+            return value
+        }()
+        compactControls.configure(definition, theme: themeStore.theme, sourceFormat: codeSession != nil ? .code : (document?.backend.sourceFormat ?? .plainText), documentID: snapshot.identity.documentID, fontSizeBasis: sizeBasis)
         nextStyleRow.configure(
             selected: definition.flags.isBase ? nil
                 : definition.nextStyleID.map { EVStyleKey(namespace: .block, id: $0) },
@@ -1464,6 +1470,7 @@ private final class EVFollowingStyleRow: NSObject {
 private func format(_ value: EVStyleValue?) -> String {
     switch value {
     case let .float(number): "\(formatNumber(number)) pt"
+    case let .percentage(number): "\(number)%"
     case let .unsigned(number): String(number)
     case let .boolean(enabled): enabled ? "On" : "Off"
     case let .color(color): colorHex(color)

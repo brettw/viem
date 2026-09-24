@@ -7,6 +7,202 @@ import XCTest
 
 @MainActor
 final class EVCompactStyleControlsTests: XCTestCase {
+    func testFontSizeUnitConversionTracksBasedOnParagraphAndKeepsDeclaration() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(12)))
+        let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
+        editor.selectStyle(heading)
+        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(24)))
+        let unit = try control(NSPopUpButton.self, label: "Font size unit", in: editor.view)
+        let size = try control(NSTextField.self, label: "Size", in: editor.view)
+        let stepper = try control(EVStyleStepper.self, label: "Adjust size", in: editor.view)
+        XCTAssertEqual(unit.itemTitles, ["pt", "%"])
+        XCTAssertEqual(unit.titleOfSelectedItem, "pt")
+        unit.selectItem(withTitle: "%")
+        XCTAssertTrue(unit.sendAction(try XCTUnwrap(unit.action), to: unit.target))
+        XCTAssertEqual(size.stringValue, "200")
+        XCTAssertEqual(stepper.minValue, 10)
+        XCTAssertEqual(stepper.maxValue, 1000)
+        XCTAssertEqual(stepper.increment, 1)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterSize]?.declared, .percentage(200))
+        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterSize], .float(24))
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(unit.titleOfSelectedItem, "pt")
+        XCTAssertEqual(size.stringValue, "24")
+        surface.perform(menuCommand: .redo, sender: nil)
+        XCTAssertEqual(unit.titleOfSelectedItem, "%")
+        XCTAssertEqual(size.stringValue, "200")
+
+        editor.selectStyle(EVStyleKey.baseParagraph)
+        XCTAssertEqual(unit.titleOfSelectedItem, "pt")
+        XCTAssertFalse(try XCTUnwrap(unit.item(withTitle: "%")).isEnabled)
+        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(14)))
+        editor.selectStyle(heading)
+        XCTAssertEqual(unit.titleOfSelectedItem, "%")
+        XCTAssertEqual(size.stringValue, "200")
+        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterSize], .float(28))
+
+        let child = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading2"))
+        editor.selectStyle(child)
+        XCTAssertTrue(editor.setParentForTesting(heading))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(21)))
+        unit.selectItem(withTitle: "%")
+        XCTAssertTrue(unit.sendAction(try XCTUnwrap(unit.action), to: unit.target))
+        XCTAssertEqual(size.stringValue, "75", "A paragraph percentage uses its actual based-on style")
+        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterSize], .float(21))
+        unit.selectItem(withTitle: "pt")
+        XCTAssertTrue(unit.sendAction(try XCTUnwrap(unit.action), to: unit.target))
+        XCTAssertEqual(size.stringValue, "21")
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: child)?.properties[.characterSize]?.declared, .float(21))
+
+        editor.selectStyle(EVStyleKey.baseParagraph)
+        let before = try backend.styleSheetSnapshot()
+        unit.selectItem(withTitle: "%")
+        XCTAssertTrue(unit.sendAction(try XCTUnwrap(unit.action), to: unit.target))
+        XCTAssertEqual(unit.titleOfSelectedItem, "pt")
+        XCTAssertEqual(try backend.styleSheetSnapshot(), before, "Base Paragraph cannot declare a relative size even through an action sent directly")
+    }
+
+    func testCharacterPercentagePreviewIgnoresNamedParentPointSizeAndOverrideClears() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(20)))
+        let parent = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Link"))
+        editor.selectStyle(parent)
+        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(100)))
+        let code = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code"))
+        editor.selectStyle(code)
+        XCTAssertTrue(editor.setParentForTesting(parent), editor.inspection.diagnostic)
+        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(18)), editor.inspection.diagnostic)
+        let unit = try control(NSPopUpButton.self, label: "Font size unit", in: editor.view)
+        let size = try control(NSTextField.self, label: "Size", in: editor.view)
+        unit.selectItem(withTitle: "%")
+        XCTAssertTrue(unit.sendAction(try XCTUnwrap(unit.action), to: unit.target))
+        XCTAssertEqual(size.stringValue, "90", "Character percentages use underlying text; the preview uses Base Paragraph")
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: code)?.properties[.characterSize]?.declared, .percentage(90))
+        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterSize], .float(18))
+        editor.selectStyle(EVStyleKey.baseParagraph)
+        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(12)), editor.inspection.diagnostic)
+        editor.selectStyle(code)
+        XCTAssertEqual(size.stringValue, "90")
+        guard case let .float(points)? = editor.inspection.preview.effectiveValues[.characterSize] else { return XCTFail("Expected resolved points") }
+        XCTAssertEqual(points, 10.8, accuracy: 0.0001, "Resolved percentages retain fractional points")
+        let checkbox = try control(NSButton.self, label: "Override font size", in: editor.view)
+        checkbox.performClick(nil)
+        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: code)?.properties[.characterSize]?.declared)
+        XCTAssertEqual(size.stringValue, "")
+        XCTAssertFalse(unit.isEnabled)
+        XCTAssertNil(unit.selectedItem)
+        checkbox.performClick(nil)
+        XCTAssertEqual(unit.titleOfSelectedItem, "pt")
+        XCTAssertEqual(size.stringValue, "100", "Enabling an inherited override retains the existing resolved-value behavior")
+    }
+
+    func testFontSizePercentageDraftsRequireIntegersWithinBoundsAndStepperUsesPercent() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
+        editor.selectStyle(heading)
+        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .percentage(200)))
+        let size = try control(NSTextField.self, label: "Size", in: editor.view)
+        let stepper = try control(EVStyleStepper.self, label: "Adjust size", in: editor.view)
+        let delegate = try XCTUnwrap(size.delegate as? EVCompactStyleControls)
+        let before = try backend.styleSheetSnapshot()
+        for invalid in ["", "9", "1001", "99.5", "NaN", "-10", "1e2"] {
+            size.stringValue = invalid
+            delegate.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: size))
+            XCTAssertTrue(editor.inspection.hasInvalidDraft, invalid)
+            XCTAssertFalse(stepper.isEnabled, invalid)
+            XCTAssertEqual(try backend.styleSheetSnapshot(), before, invalid)
+        }
+        for valid in [10, 1000, 90] {
+            size.stringValue = String(valid)
+            delegate.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: size))
+            XCTAssertFalse(editor.inspection.hasInvalidDraft)
+            XCTAssertTrue(stepper.isEnabled)
+            XCTAssertEqual(stepper.doubleValue, Double(valid))
+            XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterSize]?.declared, .percentage(UInt32(valid)))
+        }
+        stepper.doubleValue += stepper.increment
+        XCTAssertTrue(stepper.sendAction(try XCTUnwrap(stepper.action), to: stepper.target))
+        XCTAssertEqual(size.stringValue, "91")
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterSize]?.declared, .percentage(91))
+    }
+
+    func testFontSizeUnitConversionRoundsAndClampsOnlyThePercentageDeclaration() throws {
+        let (_, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(12)))
+        editor.selectStyle(EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1")))
+        let unit = try control(NSPopUpButton.self, label: "Font size unit", in: editor.view)
+        let size = try control(NSTextField.self, label: "Size", in: editor.view)
+        let cases: [(Float, UInt32, Float)] = [(10, 83, 9.96), (0.1, 10, 1.2), (200, 1000, 120)]
+        for (points, percent, resolved) in cases {
+            XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(points)))
+            unit.selectItem(withTitle: "%")
+            XCTAssertTrue(unit.sendAction(try XCTUnwrap(unit.action), to: unit.target))
+            XCTAssertEqual(size.stringValue, String(percent))
+            guard case let .float(actual)? = editor.inspection.preview.effectiveValues[.characterSize] else { return XCTFail("Expected points") }
+            XCTAssertEqual(actual, resolved, accuracy: 0.0001)
+        }
+    }
+
+    func testFirstClickOnInheritedFontSizeUnitActivatesPercentageAsOneUndoGesture() throws {
+        let (backend, surface, editor, _) = try makeEditor(html: true)
+        defer { withExtendedLifetime(surface) {} }
+        let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
+        editor.selectStyle(heading)
+        XCTAssertTrue(editor.useInheritedForTesting(.characterSize))
+        let unit = try control(NSPopUpButton.self, label: "Font size unit", in: editor.view)
+        let checkbox = try control(NSButton.self, label: "Override font size", in: editor.view)
+        XCTAssertFalse(unit.isEnabled)
+        try inheritedWrapper(for: unit).activateAndPerform(unit) {
+            unit.selectItem(withTitle: "%")
+            XCTAssertTrue(unit.sendAction(unit.action, to: unit.target))
+        }
+        XCTAssertTrue(unit.isEnabled)
+        XCTAssertEqual(checkbox.state, .on)
+        XCTAssertEqual(unit.titleOfSelectedItem, "%")
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterSize]?.declared, .percentage(100))
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterSize]?.declared)
+        XCTAssertFalse(unit.isEnabled)
+        XCTAssertEqual(checkbox.state, .off)
+    }
+
+    func testRTFPercentageToPointsUsesNearestRepresentableHalfPoint() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-percentage-rtf-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
+        let backend = EVCoreDocumentBackend(configuration: configuration)
+        try backend.read(source: Data(#"{\rtf1{\stylesheet{\s0 Normal;}{\s5\sbasedon0 Heading;}}\s5 Text}"#.utf8), typeName: EVDocument.rtfType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        defer { withExtendedLifetime(surface) {} }
+        surface.loadViewIfNeeded()
+        let editor = EVStyleEditorViewController()
+        editor.themeStore = EVThemeStore(configuration: configuration)
+        editor.retarget(document: surface, styleKey: .baseParagraph)
+        let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "RtfP5"))
+        let cases: [(Float, UInt32, Float)] = [(14, 90, 12.5), (0.5, 10, 0.5)]
+        for (base, percentage, points) in cases {
+            editor.selectStyle(EVStyleKey.baseParagraph)
+            XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(base)))
+            editor.selectStyle(heading)
+            XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .percentage(percentage)))
+            let unit = try control(NSPopUpButton.self, label: "Font size unit", in: editor.view)
+            XCTAssertEqual(unit.titleOfSelectedItem, "%")
+            guard case let .float(resolved)? = editor.inspection.preview.effectiveValues[.characterSize] else { return XCTFail("Expected resolved points") }
+            XCTAssertEqual(resolved, base * Float(percentage) / 100, accuracy: 0.0001,
+                "Keeping percent must retain exact fractional resolution in RTF")
+            unit.selectItem(withTitle: "pt")
+            XCTAssertTrue(unit.sendAction(try XCTUnwrap(unit.action), to: unit.target))
+            XCTAssertEqual(editor.inspection.diagnostic, "")
+            XCTAssertEqual(unit.titleOfSelectedItem, "pt")
+            XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterSize]?.declared, .float(points))
+        }
+    }
+
     func testHTMLBuiltinDeclarationsAreVisibleAndClearingThemRestoresBaseParagraph() throws {
         for type in [EVDocument.htmlType, EVDocument.htmlSourceType] {
             for includeDefinitions in [false, true] {

@@ -215,7 +215,7 @@ impl Document {
             )
             .map_err(|_| DocumentError::UnsupportedFormatting)?;
         }
-        super::super::style::validate_character_properties(&StyleId::from("Typing"), &properties)
+        super::super::style::validate_direct_character_properties(&StyleId::from("Typing"), &properties)
             .map_err(|_| DocumentError::UnsupportedFormatting)?;
         match self.format() {
             Format::Html | Format::HtmlSource | Format::Rtf => {}
@@ -273,7 +273,7 @@ impl Document {
             };
         }
         matches!(font_families)
-            && matches!(size)
+            && p.size.map_or(true, |value| std::matches!(value, crate::document::FontSize::Points(size) if size == current.size))
             && p.weight.map_or(true, |v| v == current.base_weight)
             && matches!(bold)
             && matches!(slant)

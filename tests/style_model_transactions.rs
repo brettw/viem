@@ -23,7 +23,7 @@ fn update_heading(document: &Document, size: f32, spacing_after: f32) -> StyleMo
         .block_style(&StyleId::from("Heading1"))
         .unwrap()
         .clone();
-    heading.character.size = Some(size);
+    heading.character.size = Some((size).into());
     heading.block.spacing_after = Some(spacing_after);
     configure(
         document,
@@ -101,7 +101,7 @@ fn configuration_definition_edit_is_atomic_source_unchanged_and_branching() {
             .unwrap()
             .character
             .size,
-        Some(31.0)
+        Some((31.0).into())
     );
 
     assert!(document.undo());
@@ -164,7 +164,7 @@ fn update_heading_for_plain(document: &Document, size: f32) -> StyleModelRequest
         .block_style(&StyleId::from("Heading1"))
         .unwrap()
         .clone();
-    heading.character.size = Some(size);
+    heading.character.size = Some((size).into());
     configure(
         document,
         ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::UpdateBlock(heading)),
@@ -197,7 +197,7 @@ fn configured_sheet_and_document_root_survive_later_reprojection() {
             &document,
             ConfigurationStyleIntent::SetDocumentDefaultCharacter(CharacterProperties {
                 font_families: Some(vec!["Configured Serif".to_owned()]),
-                size: Some(17.0),
+                size: Some((17.0).into()),
                 ..CharacterProperties::default()
             }),
         ))
@@ -449,7 +449,7 @@ fn base_definition_and_document_style_assignment_require_configuration_authority
         .block_style(&document.projection().style_sheet().base_paragraph)
         .unwrap()
         .clone();
-    base_document.character.size = Some(18.0);
+    base_document.character.size = Some((18.0).into());
     let committed = document
         .apply_style_request(configure(
             &document,
@@ -736,14 +736,14 @@ fn clearing_a_character_override_reports_contextual_heading_metric_changes() {
             document.apply_style_request(configure(&document,
                 ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::InsertCharacter {
                     style: CharacterStyle { id: target.into(), based_on: None, properties: CharacterProperties {
-                        size: Some(14.0), ..Default::default()
+                        size: Some((14.0).into()), ..Default::default()
                     } },
                     metadata: StyleDefinitionMetadata::generated("Code parent"),
                 }))).unwrap();
         }
         let mut code = document.projection().style_sheet().character_style(&"Code".into()).unwrap().clone();
         code.based_on = inherited_from_parent.then(|| target.into());
-        code.properties.size = (!inherited_from_parent).then_some(14.0);
+        code.properties.size = (!inherited_from_parent).then_some(14.0.into());
         document.apply_style_request(configure(&document,
             ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::UpdateCharacter(code)))).unwrap();
         assert_eq!(DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap().size, 14.0);

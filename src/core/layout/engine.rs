@@ -6537,7 +6537,7 @@ mod tests {
                 ..BlockProperties::default()
             },
             CharacterProperties {
-                size: Some(20.0),
+                size: Some(20.0.into()),
                 ..CharacterProperties::default()
             },
         );

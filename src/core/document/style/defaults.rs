@@ -379,13 +379,14 @@ impl StyleSheet {
     }
 
     pub(super) fn retain_defaults(&mut self, previous: &Self) {
-        if previous.default_blocks.is_empty() && previous.default_characters.is_empty() {
-            return;
+        if !previous.default_blocks.is_empty() || !previous.default_characters.is_empty() {
+            self.default_blocks = previous.default_blocks.clone();
+            self.default_characters = previous.default_characters.clone();
+            self.install_default_definitions(&previous.block_metadata, &previous.character_metadata);
         }
-        self.default_blocks = previous.default_blocks.clone();
-        self.default_characters = previous.default_characters.clone();
-        self.install_default_definitions(&previous.block_metadata, &previous.character_metadata);
-        // Configuration-only overrides survive source reparsing too.
+        // Configuration-only overrides survive source reparsing even when the
+        // user has never loaded a saved default sheet. A generated style may
+        // also be the parent of a source-backed or native configuration style.
         for (id, style) in &previous.block_styles {
             if !self.source_defined_blocks.contains(id)
                 && previous

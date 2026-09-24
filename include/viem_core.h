@@ -1014,6 +1014,9 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_VALUE_LINE_SPACING 10u
 #define VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT 11u
 #define VIEM_STYLE_VALUE_SCRIPT_POSITION 12u
+/* Named-style CharacterSize declarations only: enum_value is an integer 10..1000;
+ * number is zero. Effective CharacterSize values remain FLOAT points. */
+#define VIEM_STYLE_VALUE_PERCENTAGE 13u
 
 #define VIEM_SCRIPT_POSITION_NORMAL 0u
 #define VIEM_SCRIPT_POSITION_SUPERSCRIPT 1u

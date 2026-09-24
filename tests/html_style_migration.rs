@@ -117,7 +117,7 @@ fn explicit_style_edit_migrates_v1_atomically_and_preserves_opaque_source() {
                         .unwrap()
                         .character
                         .size,
-                    Some(14.0)
+                    Some((14.0).into())
                 );
             }
             let rich = Document::from_bytes(saved.clone(), encoding, Format::Html).unwrap();

@@ -48,6 +48,7 @@ extension EVCoreViewSession {
       switch raw.kind {
       case UInt32(VIEM_STYLE_VALUE_NONE): return nil
       case UInt32(VIEM_STYLE_VALUE_FLOAT): return .float(raw.number)
+      case UInt32(VIEM_STYLE_VALUE_PERCENTAGE): return .percentage(raw.enum_value)
       case UInt32(VIEM_STYLE_VALUE_UNSIGNED): return .unsigned(raw.enum_value)
       case UInt32(VIEM_STYLE_VALUE_BOOLEAN): return .boolean(raw.enum_value != 0)
       case UInt32(VIEM_STYLE_VALUE_COLOR): return .color(.init(red: raw.color.red,

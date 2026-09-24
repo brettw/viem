@@ -16,7 +16,7 @@ fn switching_into_html_installs_source_styles_and_switching_back_uses_plain_styl
         )
         .unwrap();
     assert_eq!(document.text(), "Large");
-    assert!(document.projection().style_spans().iter().any(|span|matches!(&span.application,viem_core::document::StyleApplication::Direct(properties)if properties.size==Some(30.0))));
+    assert!(document.projection().style_spans().iter().any(|span|matches!(&span.application,viem_core::document::StyleApplication::Direct(properties)if properties.size==Some((30.0).into()))));
     assert_eq!(
         document
             .projection()

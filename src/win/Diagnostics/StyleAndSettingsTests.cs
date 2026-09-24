@@ -83,6 +83,7 @@ internal static class StyleAndSettingsTests
         Check(KeyPolicy.Route(VirtualKey.F8, false, true, false).Kind == VIEM_KEY_FUNCTION
             && KeyPolicy.Route(VirtualKey.F8, false, false, false, true).Kind == VIEM_KEY_FUNCTION, "modified and literal-next F8 remain core function keys");
         await FontChecks(pane, preferences);
+        await StyleFontSizeTests.Run(pane, preferences);
         await FormatMenuTests.Run(preferences);
         await ListInteractionTests.Run(preferences);
         await CodeStyleChecks(pane, preferences);

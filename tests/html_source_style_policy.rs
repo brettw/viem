@@ -17,7 +17,7 @@ fn edit_paragraph_size(document: &mut Document, size: f32) {
         .block_style(&"Paragraph".into())
         .unwrap()
         .clone();
-    style.character.size = Some(size);
+    style.character.size = Some((size).into());
     document
         .apply_style_request(StyleModelRequest::new(
             document.id(),

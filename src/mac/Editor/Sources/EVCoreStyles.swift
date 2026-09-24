@@ -223,6 +223,7 @@ struct EVLineSpacing: Equatable {
 
 enum EVStyleValue: Equatable {
     case float(Float)
+    case percentage(UInt32)
     case unsigned(UInt32)
     case boolean(Bool)
     case color(EVStyleColor)
@@ -692,6 +693,7 @@ enum EVCoreStyleBridge {
             switch raw.kind {
             case UInt32(VIEM_STYLE_VALUE_NONE): return nil
             case UInt32(VIEM_STYLE_VALUE_FLOAT): return .float(raw.number)
+            case UInt32(VIEM_STYLE_VALUE_PERCENTAGE): return .percentage(raw.enum_value)
             case UInt32(VIEM_STYLE_VALUE_UNSIGNED): return .unsigned(raw.enum_value)
             case UInt32(VIEM_STYLE_VALUE_BOOLEAN): return .boolean(raw.enum_value != 0)
             case UInt32(VIEM_STYLE_VALUE_COLOR):
@@ -1007,6 +1009,9 @@ enum EVCoreStyleBridge {
                         case let .float(number):
                             abiValue.kind = UInt32(VIEM_STYLE_VALUE_FLOAT)
                             abiValue.number = number
+                        case let .percentage(number):
+                            abiValue.kind = UInt32(VIEM_STYLE_VALUE_PERCENTAGE)
+                            abiValue.enum_value = number
                         case let .unsigned(number):
                             abiValue.kind = UInt32(VIEM_STYLE_VALUE_UNSIGNED)
                             abiValue.enum_value = number

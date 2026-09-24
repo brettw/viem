@@ -14,6 +14,45 @@ mod scroll_endpoints;
 
 const LINE: &str = "let value = 42; // comment\n";
 
+#[test]
+fn percentage_sizes_refresh_visible_and_distant_text_without_shaping_a_large_document() {
+    use crate::document::{StyleDefinitionFieldEdit, StyleNamespace, StyleProperty, StylePropertyValue};
+    let source = "# `heading`\n\n`body`\n\n".repeat(10_000);
+    let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let mut core = Core::new(document);
+    let view = core.add_view(MockTextMeasurementProvider::new(), 400.0, 240.0);
+    let edit = |core: &mut Core<MockTextMeasurementProvider>, namespace, id: &str, value| {
+        core.handle(view, CoreEvent::EditGeneratedStyle {
+            document: core.document.id(),
+            revision: core.document.revision(),
+            style_sheet_revision: core.document.projection().style_sheet().revision,
+            namespace,
+            style: id.into(),
+            edit: StyleDefinitionFieldEdit::SetDeclaration { property: StyleProperty::CharacterSize, value },
+        }).unwrap();
+    };
+    edit(&mut core, StyleNamespace::Block, "Paragraph", StylePropertyValue::Float(12.0));
+    edit(&mut core, StyleNamespace::Block, "Heading1", StylePropertyValue::Percentage(200));
+    edit(&mut core, StyleNamespace::Character, "Code", StylePropertyValue::Percentage(90));
+    assert!((core.selected_typography(view).unwrap().0.size - 21.6).abs() < 0.0001);
+    let calls = core.views[&view].engine.provider().request_calls();
+    let revision = core.layout(view).unwrap().snapshot().unwrap().revision;
+    edit(&mut core, StyleNamespace::Block, "Paragraph", StylePropertyValue::Float(20.0));
+    let reshaped = core.views[&view].engine.provider().request_calls() - calls;
+    assert!(reshaped > 0 && reshaped < 1000, "Only visible/buffered rows need shaping: {reshaped}");
+    assert_ne!(core.layout(view).unwrap().snapshot().unwrap().revision, revision);
+    assert!((core.selected_typography(view).unwrap().0.size - 36.0).abs() < 0.0001);
+    let at = core.document.text().match_indices("heading").nth(5_000).unwrap().0;
+    let calls = core.views[&view].engine.provider().request_calls();
+    core.handle(view, CoreEvent::PlaceCursor {
+        document_revision: core.document.revision(), text_offset: at,
+        affinity: BoundaryAffinity::Downstream, extend_selection: false,
+    }).unwrap();
+    assert!((core.selected_typography(view).unwrap().0.size - 36.0).abs() < 0.0001);
+    assert!(core.views[&view].engine.provider().request_calls() - calls < 1000);
+    assert_eq!(core.document.source_bytes(), source.as_bytes());
+}
+
 struct DeferredProvider;
 impl SyntaxProvider for DeferredProvider {
     fn analyze(&mut self, request: &SyntaxRequest, cancellation: &AtomicBool) -> SyntaxResult {
@@ -105,7 +144,7 @@ fn publish_large_runs(core: &mut Core<MockTextMeasurementProvider>, size: f32) {
                 id: StyleId("test:large".into()),
                 based_on: None,
                 properties: CharacterProperties {
-                    size: Some(size),
+                    size: Some((size).into()),
                     ..Default::default()
                 },
             },

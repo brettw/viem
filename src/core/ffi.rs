@@ -56,7 +56,7 @@ use crate::document::{
     BlockProperties, BlockRole, BoundaryAffinity, CANVAS_STYLE_PROPERTIES,
     CHARACTER_STYLE_PROPERTIES, PARAGRAPH_STYLE_PROPERTIES, CharacterProperties, Color, Document,
     DocumentError, DocumentId, DocumentStyleAssignment, Encoding, FileFormat, FileFormatOrigin,
-    FontSlant, Format, FormatOperation, FormattedTextError, HardLineQueryError,
+    FontSize, FontSlant, Format, FormatOperation, FormattedTextError, HardLineQueryError,
     HistorySemanticChangeKind, HistorySemanticSummary, LineSpacing, ModelTransactionError,
     ParagraphAlignment, Revision, ScriptPosition,
     SemanticInlineStyle, SourceArtifactDigest, StyleContribution, StyleContributionOrigin,
@@ -1280,6 +1280,7 @@ pub const VIEM_STYLE_VALUE_OPEN_TYPE_FEATURES: u32 = 9;
 pub const VIEM_STYLE_VALUE_LINE_SPACING: u32 = 10;
 pub const VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT: u32 = 11;
 pub const VIEM_STYLE_VALUE_SCRIPT_POSITION: u32 = 12;
+pub const VIEM_STYLE_VALUE_PERCENTAGE: u32 = 13;
 pub const VIEM_SCRIPT_POSITION_NORMAL: u32 = 0;
 pub const VIEM_SCRIPT_POSITION_SUPERSCRIPT: u32 = 1;
 pub const VIEM_SCRIPT_POSITION_SUBSCRIPT: u32 = 2;
@@ -5205,6 +5206,10 @@ fn style_value_to_ffi(
             output.kind = VIEM_STYLE_VALUE_FLOAT;
             output.number = *value;
         }
+        StylePropertyValue::Percentage(value) => {
+            output.kind = VIEM_STYLE_VALUE_PERCENTAGE;
+            output.enum_value = u32::from(*value);
+        }
         StylePropertyValue::ScriptPosition(value) => {
             output.kind = VIEM_STYLE_VALUE_SCRIPT_POSITION;
             output.enum_value = *value as u32;
@@ -5314,7 +5319,10 @@ fn declared_character_property(
             .font_families
             .clone()
             .map(StylePropertyValue::FontFamilies),
-        StyleProperty::CharacterSize => properties.size.map(StylePropertyValue::Float),
+        StyleProperty::CharacterSize => properties.size.map(|size| match size {
+            FontSize::Points(value) => StylePropertyValue::Float(value),
+            FontSize::Percentage(value) => StylePropertyValue::Percentage(value),
+        }),
         StyleProperty::CharacterWeight => properties.weight.map(StylePropertyValue::FontWeight),
         StyleProperty::CharacterBold => properties.bold.map(StylePropertyValue::Boolean),
         StyleProperty::CharacterSlant => properties.slant.map(StylePropertyValue::FontSlant),
@@ -6878,6 +6886,20 @@ unsafe fn parse_style_edit_items<O>(
     Ok(parsed)
 }
 
+// Relative font sizes are named-style declarations. Native direct-formatting
+// controls continue to exchange absolute sizes.
+unsafe fn parse_direct_style_property_value<O>(
+    property: StyleProperty,
+    value: &ViemStyleEditValueV1,
+    out_outcome: *mut O,
+) -> Result<StylePropertyValue, ViemStatus> {
+    let value = unsafe { parse_style_property_value(property, value, out_outcome)? };
+    if matches!(value, StylePropertyValue::Percentage(_)) {
+        return Err(ViemStatus::InvalidStyleValue);
+    }
+    Ok(value)
+}
+
 unsafe fn parse_style_property_value<O>(
     property: StyleProperty,
     value: &ViemStyleEditValueV1,
@@ -6900,7 +6922,6 @@ unsafe fn parse_style_property_value<O>(
         | StyleProperty::ParagraphFirstLineIndent
         | StyleProperty::ParagraphLeadingIndent
         | StyleProperty::ParagraphTrailingIndent
-        | StyleProperty::CharacterSize
         | StyleProperty::CharacterLetterSpacing => {
             if value.kind != VIEM_STYLE_VALUE_FLOAT {
                 return Err(invalid());
@@ -6908,6 +6929,19 @@ unsafe fn parse_style_property_value<O>(
             style_edit_value_has_no_array(value)?;
             style_edit_value_has_no_text(value)?;
             Ok(StylePropertyValue::Float(value.number))
+        }
+        StyleProperty::CharacterSize => {
+            style_edit_value_has_no_array(value)?;
+            style_edit_value_has_no_text(value)?;
+            match value.kind {
+                VIEM_STYLE_VALUE_FLOAT => Ok(StylePropertyValue::Float(value.number)),
+                VIEM_STYLE_VALUE_PERCENTAGE
+                    if (10..=1000).contains(&value.enum_value) && value.number == 0.0 =>
+                {
+                    Ok(StylePropertyValue::Percentage(value.enum_value as u16))
+                }
+                _ => Err(invalid()),
+            }
         }
         StyleProperty::CharacterScriptPosition => {
             if value.kind != VIEM_STYLE_VALUE_SCRIPT_POSITION { return Err(invalid()); }
@@ -9886,7 +9920,7 @@ pub unsafe extern "C" fn viem_core_view_edit_direct_style(
         }
         let value = match request.operation {
             VIEM_STYLE_EDIT_SET_DECLARATION => {
-                Some(unsafe { parse_style_property_value(property, &request.value, out_outcome)? })
+                Some(unsafe { parse_direct_style_property_value(property, &request.value, out_outcome)? })
             }
             VIEM_STYLE_EDIT_CLEAR_DECLARATION
                 if request.value.struct_size >= VIEM_STYLE_EDIT_VALUE_V1_SIZE
@@ -9960,7 +9994,7 @@ pub unsafe extern "C" fn viem_core_view_edit_direct_character_batch(
                 return Err(ViemStatus::InvalidArgument);
             }
             let value =
-                unsafe { parse_style_property_value(property, &request.value, out_outcome)? };
+                unsafe { parse_direct_style_property_value(property, &request.value, out_outcome)? };
             values.push((property, value));
         }
         unsafe {
@@ -11683,6 +11717,9 @@ mod tests {
         paragraph.block.line_spacing = Some(LineSpacing::Exact(19.0));
         paragraph.block.alignment = Some(ParagraphAlignment::Center);
         configure(&mut document, StyleDefinitionEdit::UpdateBlock(paragraph));
+        let mut code = document.projection().style_sheet().character_style(&"Code".into()).unwrap().clone();
+        code.properties.size = Some(super::FontSize::Percentage(90));
+        configure(&mut document, StyleDefinitionEdit::UpdateCharacter(code));
 
         let export = export_style_sheet(&document).unwrap();
         let kinds = export
@@ -11703,6 +11740,7 @@ mod tests {
         assert!(kinds.contains(&super::VIEM_STYLE_VALUE_LINE_SPACING));
         assert!(kinds.contains(&super::VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT));
         assert!(kinds.contains(&super::VIEM_STYLE_VALUE_SCRIPT_POSITION));
+        assert!(kinds.contains(&super::VIEM_STYLE_VALUE_PERCENTAGE));
         assert!(export.value_items.iter().any(|item| {
             item.kind == super::VIEM_STYLE_VALUE_ITEM_OPEN_TYPE_FEATURE
                 && style_arena_text(&export.strings, item.string) == "kern"
@@ -11929,6 +11967,89 @@ mod tests {
             ViemStatus::Ok
         );
         info.identity
+    }
+
+    #[test]
+    fn ffi_percentage_font_sizes_remain_relative_through_edits_export_and_history() {
+        use super::*;
+        let document = Document::from_bytes_with_file_format(
+            b"# heading `code`\n\nbody `code`".to_vec(),
+            Encoding::Utf8,
+            Format::Markdown,
+            FileFormat::Unix,
+        ).unwrap();
+        let mut storage = PaintTestProviderStorage::default();
+        let mut core = Core::new(document);
+        let view = core.add_view(paint_test_provider(&mut storage, 911, 912), 400.0, 200.0);
+        let handle = register_core(core).unwrap();
+        let mut outcome = ViemCoreOutcomeV1::default();
+        for (id, namespace, percent) in [
+            (b"Heading1".as_slice(), VIEM_STYLE_NAMESPACE_BLOCK, 200),
+            (b"Code".as_slice(), VIEM_STYLE_NAMESPACE_CHARACTER, 90),
+        ] {
+            let mut request = style_float_request(current_style_identity(handle), id,
+                VIEM_STYLE_PROPERTY_CHARACTER_SIZE, 0.0);
+            request.namespace = namespace;
+            request.value.kind = VIEM_STYLE_VALUE_PERCENTAGE;
+            request.value.enum_value = percent;
+            assert_eq!(unsafe { viem_core_view_edit_style(handle, view.0, &request, &mut outcome) }, ViemStatus::Ok);
+            assert_ne!(outcome.flags & VIEM_OUTCOME_LAYOUT_CHANGED, 0);
+        }
+
+        let assert_export = |base: f32| {
+            let lease = checkout_core(handle).unwrap();
+            let export = export_style_sheet(lease.core().document()).unwrap();
+            for (id, percent, points) in [("Heading1", 200, base * 2.0), ("Code", 90, base * 0.9)] {
+                let definition = export.definitions.iter().find(|definition|
+                    style_arena_text(&export.strings, definition.stable_id) == id).unwrap();
+                let property = export.properties[definition.first_property as usize
+                    ..(definition.first_property + definition.property_count) as usize]
+                    .iter().find(|property| property.property == VIEM_STYLE_PROPERTY_CHARACTER_SIZE).unwrap();
+                assert_eq!(property.declared.kind, VIEM_STYLE_VALUE_PERCENTAGE);
+                assert_eq!(property.declared.enum_value, percent);
+                assert_eq!(property.declared.number, 0.0);
+                assert_eq!(property.effective.kind, VIEM_STYLE_VALUE_FLOAT);
+                assert!((property.effective.number - points).abs() < 0.0001);
+                let dependencies = &export.dependencies[property.first_dependency as usize
+                    ..(property.first_dependency + property.dependency_count) as usize];
+                assert!(dependencies.iter().any(|dependency|
+                    dependency.namespace == VIEM_STYLE_NAMESPACE_BLOCK
+                        && style_arena_text(&export.strings, dependency.style_id) == "Paragraph"));
+            }
+        };
+        assert_export(14.0);
+        let base = style_float_request(current_style_identity(handle), b"Paragraph",
+            VIEM_STYLE_PROPERTY_CHARACTER_SIZE, 12.0);
+        assert_eq!(unsafe { viem_core_view_edit_style(handle, view.0, &base, &mut outcome) }, ViemStatus::Ok);
+        assert_ne!(outcome.flags & VIEM_OUTCOME_LAYOUT_CHANGED, 0);
+        assert_export(12.0);
+        assert_eq!(unsafe { viem_core_view_undo(handle, view.0, &mut outcome) }, ViemStatus::Ok);
+        assert_export(14.0);
+        assert_eq!(unsafe { viem_core_view_redo(handle, view.0, &mut outcome) }, ViemStatus::Ok);
+        assert_export(12.0);
+
+        let identity = current_style_identity(handle);
+        let mut invalid = style_float_request(identity, b"Heading1",
+            VIEM_STYLE_PROPERTY_CHARACTER_SIZE, 0.0);
+        invalid.value.kind = VIEM_STYLE_VALUE_PERCENTAGE;
+        for percent in [0, 9, 1001, u32::MAX] {
+            invalid.value.enum_value = percent;
+            assert_eq!(unsafe { viem_core_view_edit_style(handle, view.0, &invalid, &mut outcome) }, ViemStatus::InvalidStyleValue);
+            assert_eq!(current_style_identity(handle), identity);
+        }
+        invalid.value.enum_value = 90;
+        invalid.value.number = 90.5;
+        assert_eq!(unsafe { viem_core_view_edit_style(handle, view.0, &invalid, &mut outcome) }, ViemStatus::InvalidStyleValue);
+        assert_eq!(current_style_identity(handle), identity);
+        invalid.value.number = 0.0;
+        invalid.property = VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING;
+        assert_eq!(unsafe { viem_core_view_edit_style(handle, view.0, &invalid, &mut outcome) }, ViemStatus::InvalidStyleValue);
+        assert_eq!(current_style_identity(handle), identity);
+        invalid.property = VIEM_STYLE_PROPERTY_CHARACTER_SIZE;
+        invalid.style_id = ViemUtf8Slice { data: b"Paragraph".as_ptr(), length: 9 };
+        assert_eq!(unsafe { viem_core_view_edit_style(handle, view.0, &invalid, &mut outcome) }, ViemStatus::InvalidStyleValue);
+        assert_eq!(current_style_identity(handle), identity);
+        assert_eq!(viem_core_destroy(handle), ViemStatus::Ok);
     }
 
     #[test]
@@ -12247,7 +12368,7 @@ mod tests {
                     .unwrap()
                     .character
                     .size,
-                Some(31.0)
+                Some((31.0).into())
             );
         }
 
@@ -12442,7 +12563,7 @@ mod tests {
                 .style_sheet()
                 .block_style(&StyleId::from("Heading1"))
                 .unwrap();
-            assert_eq!(style.character.size, Some(31.0));
+            assert_eq!(style.character.size, Some((31.0).into()));
             assert_eq!(style.character.underline, Some(true));
         }
 
@@ -12600,7 +12721,7 @@ mod tests {
                 .unwrap()
                 .character
                 .size,
-            Some(32.0)
+            Some((32.0).into())
         );
         assert_eq!(
             unsafe { super::viem_core_view_undo(handle, second.0, &mut outcome) },
@@ -12617,7 +12738,7 @@ mod tests {
                 .unwrap()
                 .character
                 .size,
-            Some(32.0)
+            Some((32.0).into())
         );
 
         // Owner removal closes a committed group before dropping its
@@ -12678,7 +12799,7 @@ mod tests {
                 .unwrap()
                 .character
                 .size,
-            Some(34.0)
+            Some((34.0).into())
         );
 
         // Core destruction owns final cleanup. The capability cannot be used
@@ -12763,7 +12884,7 @@ mod tests {
                 .style_sheet()
                 .block_style(&StyleId::from("Heading1"))
                 .unwrap();
-            assert_eq!(style.character.size, Some(30.0));
+            assert_eq!(style.character.size, Some((30.0).into()));
             let first_snapshot = lease.core().layout(first).unwrap().snapshot().unwrap();
             let second_snapshot = lease.core().layout(second).unwrap().snapshot().unwrap();
             assert_eq!(first_snapshot.document_revision.0, first_revision);
@@ -12897,7 +13018,7 @@ mod tests {
                 .style_sheet()
                 .block_style(&StyleId::from("Heading1"))
                 .unwrap();
-            assert_eq!(style.character.size, Some(30.0));
+            assert_eq!(style.character.size, Some((30.0).into()));
             assert_eq!(style.character.underline, None);
             assert_eq!(lease.core().document().source_bytes(), source);
         }

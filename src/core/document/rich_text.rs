@@ -907,6 +907,15 @@ pub(super) fn resolved_character_at(
     document: &FormattedDocument,
     at: usize,
 ) -> Option<super::ResolvedCharacterStyle> {
+    resolved_character_at_with_style_context(document, at, document.style_sheet(), document.document_style())
+}
+
+pub(super) fn resolved_character_at_with_style_context(
+    document: &FormattedDocument,
+    at: usize,
+    style_sheet: &super::StyleSheet,
+    document_style: &super::DocumentStyleAssignment,
+) -> Option<super::ResolvedCharacterStyle> {
     let blocks = document.blocks_for_region(&(at..at));
     let block = blocks.iter().find(|block| block.range.contains(&at))?;
     let mut paragraph_style = &block.style;
@@ -929,10 +938,9 @@ pub(super) fn resolved_character_at(
         }
     }
     overlay(&mut semantic, &direct);
-    document
-        .style_sheet()
+    style_sheet
         .resolve_assigned_paragraph_style(
-            document.document_style(),
+            document_style,
             paragraph_style,
             &block.direct_paragraph,
             paragraph_defaults,

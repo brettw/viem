@@ -454,7 +454,7 @@ fn link_paint_change_reuses_shaping_but_font_change_invalidates_it() {
     let paint = DocumentLayoutStyles::character_at(document.projection(), 7, false).unwrap();
     assert_eq!(paint.foreground.red, 0.8);
     assert!(!paint.underline);
-    link.properties.size = Some(28.0);
+    link.properties.size = Some((28.0).into());
     let request = StyleModelRequest::new(
         document.id(),
         document.revision(),

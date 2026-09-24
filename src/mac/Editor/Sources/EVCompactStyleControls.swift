@@ -105,6 +105,9 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private var inheritedGestureActive = false
     private let family = NSComboBox()
     private let face = NSPopUpButton()
+    private let sizeUnit = NSPopUpButton()
+    private var fontSizeBasis: Float?
+    private var allowsPercentageSize = true
     private let fallbackButton = NSButton()
     private(set) var fallbackPopover: NSPopover?
     private let featureButton = NSButton()
@@ -134,7 +137,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         family.target = self
         family.action = #selector(familyChanged(_:))
         family.setAccessibilityLabel("Font family")
-        family.widthAnchor.constraint(greaterThanOrEqualToConstant: 210).isActive = true
+        family.widthAnchor.constraint(greaterThanOrEqualToConstant: 180).isActive = true
         family.setContentHuggingPriority(.defaultLow, for: .horizontal)
         face.target = self
         face.action = #selector(faceChanged(_:))
@@ -150,7 +153,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         let familyRow = row([
             overrideGroup(.characterFontFamilies, control: row([family, fallbackButton], spacing: 4)),
             overrideGroup(.characterWeight, control: face),
-            numeric(.characterSize, title: "Size", width: 62, showsLabel: false),
+            numeric(.characterSize, title: "Size", width: 44, showsLabel: false),
         ])
         let emphasis = row([
             toggle(.characterBold, title: "B", font: .boldSystemFont(ofSize: 14)),
@@ -231,7 +234,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         configure(paragraphView, rows: [paraToolbar, separator(), indents, spacing])
     }
 
-    func configure(_ definition: EVStyleDefinition?, theme: EVTheme = .paper, sourceFormat: EVSourceFormat = .plainText, documentID: UInt64? = nil) {
+    func configure(_ definition: EVStyleDefinition?, theme: EVTheme = .paper, sourceFormat: EVSourceFormat = .plainText, documentID: UInt64? = nil, fontSizeBasis: Float? = nil, allowsPercentageSize: Bool = true) {
         fallbackPopover?.close()
         fallbackPopover = nil
         let activeLineEditor = lineValue.currentEditor() as? NSTextView
@@ -247,6 +250,8 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         }
         self.documentID = documentID
         self.definition = definition
+        self.fontSizeBasis = fontSizeBasis
+        self.allowsPercentageSize = allowsPercentageSize
         editable = definition?.capabilities.contains(.declarations) == true
         hasInvalidDraft = false
         refreshFontControls()
@@ -262,12 +267,20 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             setHelp(button, .characterScriptPosition)
         }
         for (property, button) in buttons { button.isEnabled = isOverridden(property); setHelp(button, property) }
+        sizeUnit.item(withTitle: "%")?.isEnabled = canUsePercentageSize
+        sizeUnit.item(withTitle: "%")?.isHidden = !allowsPercentageSize
+        if isOverridden(.characterSize) {
+            sizeUnit.selectItem(withTitle: declaredSizePercentage == nil ? "pt" : "%")
+        } else { sizeUnit.select(nil) }
+        sizeUnit.isEnabled = isOverridden(.characterSize)
+        setHelp(sizeUnit, .characterSize)
         for (property, field) in fields {
-            field.stringValue = isOverridden(property) ? Self.numberText(number(property, fallback: property == .characterSize ? 14 : 0)) : ""
+            let displayValue = property == .characterSize ? sizeDisplayValue : number(property)
+            field.stringValue = isOverridden(property) ? Self.numberText(displayValue) : ""
             field.isEnabled = isOverridden(property)
             field.textColor = .labelColor
             setHelp(field, property)
-            synchronizeStepper(property, value: Double(number(property, fallback: property == .characterSize ? 14 : 0)), enabled: field.isEnabled)
+            synchronizeStepper(property, value: Double(displayValue), enabled: field.isEnabled)
         }
         refreshThemeColors(theme)
         for (property, popup) in directions { popup.selectItem(at: isOverridden(property) ? min(2, Int(unsigned(property))) : -1); popup.isEnabled = isOverridden(property); setHelp(popup, property) }
@@ -411,11 +424,23 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         field.alignment = .right
         field.widthAnchor.constraint(equalToConstant: width).isActive = true
         fields[property] = field
-        let unit = EVStyleControlLabel(labelWithString: "pt")
-        unit.onClick = { [weak self, weak unit] in self?.activateFromLabel(property, label: unit) }
-        unit.textColor = .secondaryLabelColor
-        unit.font = .systemFont(ofSize: 11)
-        unit.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let unit: NSView
+        if property == .characterSize {
+            sizeUnit.addItems(withTitles: ["pt", "%"])
+            sizeUnit.menu?.autoenablesItems = false
+            sizeUnit.target = self
+            sizeUnit.action = #selector(sizeUnitChanged(_:))
+            sizeUnit.setAccessibilityLabel("Font size unit")
+            sizeUnit.setContentCompressionResistancePriority(.required, for: .horizontal)
+            unit = sizeUnit
+        } else {
+            let label = EVStyleControlLabel(labelWithString: "pt")
+            label.onClick = { [weak self, weak label] in self?.activateFromLabel(property, label: label) }
+            label.textColor = .secondaryLabelColor
+            label.font = .systemFont(ofSize: 11)
+            label.setContentCompressionResistancePriority(.required, for: .horizontal)
+            unit = label
+        }
         var items: [NSView] = symbol.map { [icon($0)] } ?? []
         items += [field, stepper(property, title: title), unit]
         let controls = overrideGroup(property, control: row(items, spacing: 3))
@@ -424,6 +449,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private func stepper(_ property: EVStyleProperty, title: String) -> EVStyleStepper {
         let control = EVStyleStepper()
         control.controlSize = .small
+        control.setContentCompressionResistancePriority(.required, for: .horizontal)
         control.valueWraps = false
         control.autorepeat = true
         control.isContinuous = true
@@ -446,6 +472,15 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
 
     private func synchronizeStepper(_ property: EVStyleProperty, value: Double, enabled: Bool) {
         guard let control = steppers[property] else { return }
+        if property == .characterSize, sizeUnit.titleOfSelectedItem == "%" {
+            control.increment = 1
+            control.minValue = 10
+            control.maxValue = 1000
+            control.doubleValue = value
+            control.isEnabled = enabled
+            control.toolTip = "Font size percentage: a whole number from 10 to 1000."
+            return
+        }
         let relativeLineSpacing = property == .paragraphLineSpacing
             && (lineKind.selectedItem?.tag == Int(VIEM_STYLE_LINE_SPACING_NORMAL)
                 || lineKind.selectedItem?.tag == Int(VIEM_STYLE_LINE_SPACING_MULTIPLIER))
@@ -526,6 +561,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private func overrideGroup(_ property: EVStyleProperty, control: NSView) -> NSView {
         let checkbox = NSButton(checkboxWithTitle: "", target: self, action: #selector(overrideChanged(_:)))
         checkbox.controlSize = .small
+        checkbox.setContentCompressionResistancePriority(.required, for: .horizontal)
         checkbox.tag = Int(property.rawValue)
         checkbox.toolTip = "Override inherited"
         checkbox.setAccessibilityLabel("Override \(property.displayName.lowercased())")
@@ -617,6 +653,38 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     }
     private func number(_ property: EVStyleProperty, fallback: Float = 0) -> Float {
         switch definition?.properties[property]?.effective { case let .float(value)?: value; case let .unsigned(value)?: Float(value); default: fallback }
+    }
+    private var canUsePercentageSize: Bool {
+        allowsPercentageSize && !isBaseParagraph
+            && (definition?.kind == .character || definition?.parentKey != nil)
+    }
+    private var declaredSizePercentage: UInt32? {
+        if case let .percentage(value)? = definition?.properties[.characterSize]?.declared { return value }
+        return nil
+    }
+    private var sizeDisplayValue: Float {
+        declaredSizePercentage.map { Float($0) } ?? number(.characterSize, fallback: 14)
+    }
+    @objc private func sizeUnitChanged(_ sender: NSPopUpButton) {
+        guard !updating, isOverridden(.characterSize) else { return }
+        let points = number(.characterSize, fallback: 14)
+        let value: EVStyleValue
+        if sender.titleOfSelectedItem == "%" {
+            guard canUsePercentageSize, let basis = fontSizeBasis, basis.isFinite, basis > 0 else {
+                sender.selectItem(withTitle: "pt")
+                return
+            }
+            // Unit changes retain the preview's appearance as closely as the
+            // integer percentage range allows. Resolved point sizes stay exact.
+            value = .percentage(UInt32(min(1000, max(10, (Double(points) / Double(basis) * 100).rounded()))))
+        } else {
+            // RTF stores absolute font sizes in half-points. The relative
+            // declaration itself still resolves without this quantization.
+            let absolute = sourceFormat == .rtf ? Float(max(0.5, (Double(points) * 2).rounded() / 2)) : points
+            value = .float(absolute)
+        }
+        hasInvalidDraft = false
+        send([.setDeclaration(.characterSize, value)])
     }
     private func unsigned(_ property: EVStyleProperty) -> UInt32 {
         switch definition?.properties[property]?.effective { case let .fontSlant(value)?, let .writingDirection(value)?, let .paragraphAlignment(value)?, let .scriptPosition(value)?: value; default: 0 }
@@ -803,6 +871,19 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     func controlTextDidChange(_ notification: Notification) {
         guard let field = notification.object as? NSTextField, !(field is NSComboBox), let property = EVStyleProperty(rawValue: UInt32(field.tag)), !updating else { return }
         if property == .paragraphLineSpacing { lineSpacingChanged(field); return }
+        if property == .characterSize, sizeUnit.titleOfSelectedItem == "%" {
+            guard canUsePercentageSize, let value = UInt32(field.stringValue), (10...1000).contains(value) else {
+                field.textColor = .systemRed
+                field.toolTip = "Enter a whole-number percentage from 10 to 1000."
+                steppers[property]?.isEnabled = false
+                hasInvalidDraft = true
+                return
+            }
+            field.textColor = .labelColor
+            hasInvalidDraft = false
+            send([.setDeclaration(property, .percentage(value))])
+            return
+        }
         guard let value = Float(field.stringValue), value.isFinite, property != .characterSize || value > 0 else { field.textColor = .systemRed; steppers[property]?.isEnabled = false; hasInvalidDraft = true; return }
         field.textColor = .labelColor
         hasInvalidDraft = false

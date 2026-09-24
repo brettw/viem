@@ -147,7 +147,7 @@ fn deleted_heading_rules_follow_default_edits_and_explicit_recreation() {
         .block_style(&"Paragraph".into())
         .unwrap()
         .clone();
-    paragraph.character.size = Some(21.0);
+    paragraph.character.size = Some((21.0).into());
     definition(&mut document, StyleDefinitionEdit::UpdateBlock(paragraph)).unwrap();
     let saved = String::from_utf8(document.source_bytes()).unwrap();
     let reopened = html(&saved);
@@ -164,7 +164,7 @@ fn deleted_heading_rules_follow_default_edits_and_explicit_recreation() {
             .unwrap()
             .character
             .size,
-        Some(21.0)
+        Some((21.0).into())
     );
     definition(
         &mut document,
@@ -280,7 +280,7 @@ fn owned_styles_in_templates_atomic_content_and_script_text_are_not_adopted_or_e
         .block_style(&StyleId::from("Paragraph"))
         .unwrap()
         .clone();
-    paragraph.character.size = Some(40.0);
+    paragraph.character.size = Some((40.0).into());
     definition(&mut seed, StyleDefinitionEdit::UpdateBlock(paragraph)).unwrap();
     let seed = String::from_utf8(seed.source_bytes()).unwrap();
     let sheet = &seed[..seed.find("<p>").unwrap()];
@@ -295,7 +295,7 @@ fn owned_styles_in_templates_atomic_content_and_script_text_are_not_adopted_or_e
             .unwrap()
             .character
             .size,
-        Some(40.0)
+        Some((40.0).into())
     );
     for hidden in [
         format!("<template><head>{sheet}</head></template>"),
@@ -312,7 +312,7 @@ fn owned_styles_in_templates_atomic_content_and_script_text_are_not_adopted_or_e
                 .unwrap()
                 .character
                 .size,
-            Some(14.0),
+            Some((14.0).into()),
             "{hidden}"
         );
         enable_style_export(&mut document);
@@ -325,7 +325,7 @@ fn owned_styles_in_templates_atomic_content_and_script_text_are_not_adopted_or_e
                 .block_style(&StyleId::from("Paragraph"))
                 .unwrap()
                 .clone();
-            paragraph.character.size = Some(size);
+            paragraph.character.size = Some((size).into());
             definition(&mut document, StyleDefinitionEdit::UpdateBlock(paragraph)).unwrap();
             assert_eq!(document.text(), text);
             let source = String::from_utf8(document.source_bytes()).unwrap();
@@ -343,7 +343,7 @@ fn owned_styles_in_templates_atomic_content_and_script_text_are_not_adopted_or_e
                     .unwrap()
                     .character
                     .size,
-                Some(size)
+                Some((size).into())
             );
         }
         assert!(document.undo());
@@ -406,7 +406,7 @@ fn anonymous_paragraph_assignment_adds_minimal_wrappers_around_original_inline_s
                     next_paragraph_style: None,
                     role: BlockRole::Paragraph,
                     character: CharacterProperties {
-                        size: Some(22.0),
+                        size: Some((22.0).into()),
                         ..Default::default()
                     },
                     block: Default::default(),
@@ -464,7 +464,7 @@ fn character_assignment_spans_existing_named_and_semantic_wrappers_without_touch
                     id: id.into(),
                     based_on: None,
                     properties: CharacterProperties {
-                        size: Some(if id == "A" { 12.0 } else { 20.0 }),
+                        size: Some(if id == "A" { (12.0).into() } else { (20.0).into() }),
                         ..Default::default()
                     },
                 },
@@ -659,7 +659,7 @@ fn first_applicable_class_wins_and_assigning_preserves_other_attributes() {
                     next_paragraph_style: Some("Paragraph".into()),
                     role: BlockRole::Paragraph,
                     character: CharacterProperties {
-                        size: Some(size),
+                        size: Some((size).into()),
                         ..Default::default()
                     },
                     block: Default::default(),
@@ -823,7 +823,7 @@ fn source_heading_inspector_field_edits_write_a_rule_and_are_undoable() {
             .unwrap()
             .character
             .size,
-        Some(27.0)
+        Some((27.0).into())
     );
     assert!(String::from_utf8(core.document().source_bytes())
         .unwrap()
@@ -905,7 +905,7 @@ fn deleting_custom_paragraph_on_heading_assigns_default_and_preserves_direct_pro
                 next_paragraph_style: None,
                 role: BlockRole::Paragraph,
                 character: CharacterProperties {
-                    size: Some(40.0),
+                    size: Some((40.0).into()),
                     ..Default::default()
                 },
                 block: Default::default(),
@@ -999,7 +999,7 @@ fn named_definition_edit_invalidates_visible_metrics_in_a_large_document() {
                 next_paragraph_style: None,
                 role: BlockRole::Paragraph,
                 character: CharacterProperties {
-                    size: Some(14.0),
+                    size: Some((14.0).into()),
                     ..Default::default()
                 },
                 block: Default::default(),
