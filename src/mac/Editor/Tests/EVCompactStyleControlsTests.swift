@@ -797,7 +797,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
             return XCTFail("Missing noisy multiplier declaration")
         }
         XCTAssertEqual(noisyDeclaration.value, noisy, "Rendering rounds only the display and must not rewrite source")
-        editor.selectStyle(.baseParagraph)
+        editor.selectStyle(EVStyleKey.baseParagraph)
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), sourceWithNoisyValue)
 
         let noisyPoints: Float = 12.299999237

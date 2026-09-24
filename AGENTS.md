@@ -3693,7 +3693,18 @@ word/line operations at their destination.
 macOS marked-text/IME composition is required. An active composition is a
 temporary marked range, updates visually as one composition, and commits as a
 single source transaction/undo unit. Cancelled composition restores the
-pre-composition projection without changing source. Escape/Ctrl-[ and AppKit's
+pre-composition projection without changing source. Native input methods and
+press-and-hold accent picking are available during document text entry (Insert,
+Replace, and native Selection/Vim Select) and status-line command/search entry.
+Normal and Vim Visual modes, including operator/operand pending and Insert
+Ctrl-O command execution, do not expose an AppKit input context or accept marked
+text. Their printable keys and repeats go directly to the command machine;
+already formed Unicode command operands remain supported. A mode transition
+must refresh AppKit's cached input context and dismiss leftover candidates even
+when there is no marked range. Late explicit native replacement callbacks in a
+command mode must not execute their replacement text as commands. Native
+Home/End key bindings continue to resolve through AppKit in every mode.
+Escape/Ctrl-[ and AppKit's
 cancel responder action discard input-context candidate state, including the
 press-and-hold accent picker even when it has no marked-text range. Cancelling
 an active marked range preserves its prior mode and source; dismissing a picker

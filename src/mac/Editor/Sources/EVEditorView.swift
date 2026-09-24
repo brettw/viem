@@ -152,6 +152,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private var markedTextValue = ""
     private var markedSelection = NSRange(location: NSNotFound, length: 0)
     private var markedTextTarget: EVMarkedTextTarget?
+    private var lastNativeInputContext: NSTextInputContext?
+    private var lastNativeTextInputAvailability = false
     private var suppressInputContextDiscard = false
     private var dragAutoscrollTimer: Timer?
     private var dragAutoscrollLocation: NSPoint?
@@ -291,6 +293,33 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         layoutDocumentScrollbars()
     }
     override var acceptsFirstResponder: Bool { true }
+
+    private var acceptsNativeTextInput: Bool {
+        guard let mode = surface?.viewPresentation.mode else { return false }
+        return mode == UInt32(VIEM_MODE_INSERT)
+            || mode == UInt32(VIEM_MODE_REPLACE)
+            || mode == UInt32(VIEM_MODE_COMMAND_LINE)
+            || EVSelectionModes.isTextSelection(mode)
+    }
+
+    // AppKit can consult this before keyDown, so bypassing interpretKeyEvents
+    // alone does not prevent an input method from consuming command keys.
+    override var inputContext: NSTextInputContext? {
+        guard acceptsNativeTextInput else { return nil }
+        let context = nativeTextInputContext
+        lastNativeInputContext = context
+        return context
+    }
+
+    var nativeTextInputContext: NSTextInputContext? { super.inputContext }
+
+    private func discardInputContextMarkedText() {
+        // A mode change may already have made inputContext nil. Keep the last
+        // enabled context so an unmarked accent candidate can still be closed.
+        let context = lastNativeInputContext ?? inputContext
+        lastNativeInputContext = nil
+        context?.discardMarkedText()
+    }
     override var isOpaque: Bool {
         guard let surface,
               let snapshot = surface.layoutSnapshot,
@@ -400,12 +429,23 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     func applyPresentation() {
         synchronizeEditingPreferences()
         reconcileMarkedTextWithCore()
+        updateNativeTextInputAvailability()
         updateDocumentScrollbars()
         updateCustomCaretPresentation()
         invalidatePresentationDamage()
         updateInsertionIndicator()
         updateCompletionPopup()
         notifyTextInputStateChanged()
+    }
+
+    private func updateNativeTextInputAvailability() {
+        let acceptsInput = acceptsNativeTextInput
+        guard acceptsInput != lastNativeTextInputAvailability else { return }
+        lastNativeTextInputAvailability = acceptsInput
+        if !acceptsInput { discardInputContextMarkedText() }
+        // The responder stays focused across Vim mode changes. Refresh AppKit's
+        // cached input context when its eligibility changes, including Ctrl-O.
+        if window?.firstResponder === self { NSApp?.updateWindows() }
     }
 
     /// Retain only overlay rectangles, never pixels or a second document model.
@@ -1521,7 +1561,17 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             surface.performInput { _ = try session.sendKey(kind: kind) }
             return
         }
-        interpretKeyEvents([event])
+        interpretTextInput(event)
+    }
+
+    private func interpretTextInput(_ event: NSEvent) {
+        if acceptsNativeTextInput {
+            interpretKeyEvents([event])
+        } else if let characters = event.characters, !characters.isEmpty {
+            // Preserve the keyboard layout and key repeat, but do not offer
+            // modal command keys to dead keys, IME, or press-and-hold input.
+            insertText(characters, replacementRange: notFoundRange)
+        }
     }
 
     private var literalInputPending: Bool {
@@ -1559,7 +1609,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         } else if let kind = specialKeyKind(for: event) {
             surface.performInput { _ = try session.sendKey(kind: kind) }
         } else {
-            interpretKeyEvents([event])
+            interpretTextInput(event)
         }
         return true
     }
@@ -1590,7 +1640,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         // already inserted, without giving the client a marked range. End
         // that native input session even when there is no core overlay.
         if window?.firstResponder === self {
-            inputContext?.discardMarkedText()
+            discardInputContextMarkedText()
         }
         surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
     }
@@ -1604,6 +1654,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     func insertText(_ string: Any, replacementRange: NSRange) {
         guard let surface else { return }
         guard let session = surface.session, let value = plainText(from: string) else { return }
+        // A late accent/IME replacement from the previous mode is not a Vim
+        // command, even if its old range happens to remain valid.
+        guard acceptsNativeTextInput || replacementRange.location == NSNotFound else { return }
         if replacementRange.location != NSNotFound,
            !surface.acceptCompletionForNativeInput() { return }
         reconcileMarkedTextWithCore()
@@ -1660,19 +1713,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
              UInt32(VIEM_MODE_VISUAL_CHARACTER),
              UInt32(VIEM_MODE_VISUAL_LINE),
              UInt32(VIEM_MODE_VISUAL_BLOCK):
-            if replacementRange.location != NSNotFound,
-               utf8Range(
-                   forUTF16: replacementRange,
-                   requireGraphemeBoundaries: true
-               ) == nil
-            {
-                return
-            }
             guard !value.isEmpty else { return }
             // AppKit delivers printable keys through insertText even in a
             // command mode. Normalize them to keys so core's layout preflight
             // runs for j/k, Visual Block, and other visual commands. Preserve
-            // multi-scalar graphemes as text operands for r/f and IME input.
+            // multi-scalar graphemes as text operands for r/f.
             surface.performInput {
                 for character in value {
                     let scalars = character.unicodeScalars
@@ -2048,6 +2093,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         guard let surface else { return }
+        guard acceptsNativeTextInput else { return }
         guard let session = surface.session,
               let value = plainText(from: string),
               let selection = utf8Range(inMarkedText: value, utf16Range: selectedRange)
@@ -2122,10 +2168,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 using: session
             )
 
-        case UInt32(VIEM_MODE_NORMAL),
-             UInt32(VIEM_MODE_VISUAL_CHARACTER),
-             UInt32(VIEM_MODE_VISUAL_LINE),
-             UInt32(VIEM_MODE_VISUAL_BLOCK), UInt32(VIEM_MODE_SELECT_BLOCK), UInt32(VIEM_MODE_SELECTION_BLOCK):
+        case UInt32(VIEM_MODE_SELECT_BLOCK), UInt32(VIEM_MODE_SELECTION_BLOCK):
             let target: EVCommandInputMarkedTarget
             if keepsCurrentTarget,
                case let .commandInput(existing)? = markedTextTarget
@@ -2530,7 +2573,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             }
         }
         if discardInputContext, window?.firstResponder === self {
-            inputContext?.discardMarkedText()
+            discardInputContextMarkedText()
         }
     }
 
@@ -2870,7 +2913,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             try? withoutInputContextDiscard { _ = try session.cancelComposition() }
         }
         if !suppressInputContextDiscard, window?.firstResponder === self {
-            inputContext?.discardMarkedText()
+            discardInputContextMarkedText()
         }
     }
 

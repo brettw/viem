@@ -99,6 +99,21 @@ import XCTest
         withExtendedLifetime(window) {}
     }
 
+    func testHomeAndEndStillResolveNativeBindingsWithoutCommandModeInputContext() throws {
+        let (_, surface, _, window) = try makeSurface("first\nmiddle\nlast")
+        let view = NativeKeyBindingEditorView(surface: surface)
+        window.contentView = view
+        XCTAssertTrue(window.makeFirstResponder(view))
+        XCTAssertNil(view.inputContext)
+        view.keyDown(with: try key(119, control: false))
+        XCTAssertEqual(view.commands.count, 1)
+        view.keyDown(with: try key(115, control: false))
+        XCTAssertEqual(view.commands.count, 2)
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
+        XCTAssertNil(view.inputContext)
+        withExtendedLifetime(window) {}
+    }
+
     func testMarkdownInsertLineAndParagraphSelectorsFollowWrappedRowsAndPhysicalMode() throws {
         let source = "one two three four five six seven eight nine ten eleven twelve\nTail"
         let selectors = [
@@ -151,6 +166,15 @@ import XCTest
         XCTAssertEqual(try backend.formattedText(), source)
         XCTAssertFalse(backend.persistenceState.isDirty)
         withExtendedLifetime(window) {}
+    }
+}
+
+@MainActor private final class NativeKeyBindingEditorView: EVEditorView {
+    var commands: [Selector] = []
+
+    override func doCommand(by selector: Selector) {
+        commands.append(selector)
+        super.doCommand(by: selector)
     }
 }
 
