@@ -39,7 +39,7 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
       XCTAssertFalse(reopened.persistenceState.isDirty)
       XCTAssertEqual(try reopened.serializedSource(typeName: type), Data(source.utf8))
       let style = try XCTUnwrap(try reopened.styleSheetSnapshot().definition(for: .baseParagraph))
-      XCTAssertNil(style.properties[.characterSize]?.declared)
+      XCTAssertEqual(style.properties[.characterSize]?.declared, .float(27), "Saved defaults are ordinary visible declarations")
       XCTAssertEqual(style.properties[.characterSize]?.effective, .float(27))
     }
   }

@@ -371,6 +371,8 @@ pub struct StyleSheet {
     html_configuration_blocks: BTreeSet<StyleId>,
     html_configuration_characters: BTreeSet<StyleId>,
     source_character_defaults: BTreeMap<StyleId, CharacterProperties>,
+    // Settings-file seeds and assignment provenance. These are not cascade
+    // layers: the editable maps above contain the complete own declarations.
     default_blocks: BTreeMap<StyleId, BlockStyle>,
     default_characters: BTreeMap<StyleId, CharacterStyle>,
 }
@@ -2437,9 +2439,6 @@ impl StyleSheet {
                 .get(style_id)
                 .ok_or_else(|| StyleError::MissingParent(style_id.clone()))?;
             chain.push(style);
-            if let Some(default) = self.default_blocks.get(style_id) {
-                chain.push(default);
-            }
             current = style.based_on.as_ref();
         }
         chain.reverse();
@@ -2486,9 +2485,6 @@ impl StyleSheet {
                 .get(style_id)
                 .ok_or_else(|| StyleError::MissingParent(style_id.clone()))?;
             chain.push(style);
-            if let Some(default) = self.default_characters.get(style_id) {
-                chain.push(default);
-            }
             current = style.based_on.as_ref();
         }
         chain.reverse();

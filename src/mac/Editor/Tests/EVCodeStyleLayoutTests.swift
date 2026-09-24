@@ -14,7 +14,7 @@ final class EVCodeStyleLayoutTests: XCTestCase {
         let before = try fixtures.map { try $0.backend.recoverySnapshot() }
         let originalAdvance = try fixtures.map { try firstVisibleRow($0.surface).line_advance }
         let session = try EVCodeStyleSession(configuration: configuration)
-        let keyword = try XCTUnwrap(session.snapshot().definitions.first { $0.name == "@keyword" })
+        let keyword = try XCTUnwrap(session.snapshot().definitions.first { $0.name == "Keyword" })
         let editor = EVStyleEditorViewController()
         editor.retarget(codeSession: session)
         editor.selectStyle(keyword.key)
@@ -78,7 +78,7 @@ final class EVCodeStyleLayoutTests: XCTestCase {
         let fixture = try makeRustSurface(configuration: configuration, index: 0, lineCount: 8_192)
         let viewSession = try XCTUnwrap(fixture.surface.session)
         let styleSession = try EVCodeStyleSession(configuration: configuration)
-        let keyword = try XCTUnwrap(styleSession.snapshot().definitions.first { $0.name == "@keyword" })
+        let keyword = try XCTUnwrap(styleSession.snapshot().definitions.first { $0.name == "Keyword" })
         try styleSession.edit(key: keyword.key, expected: styleSession.snapshot().identity,
                               mutation: .setDeclaration(.characterSize, .float(28)))
         try await waitForKeywordSize(28, fixture: fixture)

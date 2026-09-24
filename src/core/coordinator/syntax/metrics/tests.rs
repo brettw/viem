@@ -87,7 +87,7 @@ fn effective_metric_coverage_ignores_paint_and_equivalent_capture_boundaries() {
         &sheet,
         &[
             run(0..2, "Large"),
-            run(3..7, "@function"),
+            run(3..7, "Function"),
             run(12..14, "SameAsDefault"),
         ],
     );
@@ -299,7 +299,7 @@ fn large_code_metric_publication_refreshes_two_views_with_bounded_layout_and_reu
         .collect();
     // A later syntax result adds only color runs while existing custom fonts
     // stay unchanged. Preserve exact measured heights and reuse all shaping.
-    runs.push(run(12..15, "@keyword"));
+    runs.push(run(12..15, "Keyword"));
     runs.sort_by_key(|run| run.range.start);
     core.publish_code_presentation(Arc::new(sheet), &runs);
     for (index, id) in views.iter().enumerate() {

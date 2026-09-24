@@ -83,7 +83,7 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
         let configuration = isolatedConfiguration()
         let session = try EVCodeStyleSession(configuration: configuration)
         let snapshot = try session.snapshot()
-        let comment = try XCTUnwrap(snapshot.definitions.first { $0.name == "@comment" })
+        let comment = try XCTUnwrap(snapshot.definitions.first { $0.name == "Comment.documentation" })
         let parentKey = try XCTUnwrap(comment.parentKey)
         let editor = EVStyleEditorViewController()
         editor.themeStore = EVThemeStore(configuration: configuration)

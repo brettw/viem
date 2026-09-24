@@ -135,20 +135,20 @@ mod tests {
         let doc = document(
             "fn //doc\nx\n",
             &[
-                (0..2, "@keyword.function"),
-                (3..8, "@comment.documentation"),
-                (9..10, "@undefined.capture"),
+                (0..2, "Keyword.function"),
+                (3..8, "Comment.documentation"),
+                (9..10, "Undefined.capture"),
             ],
         );
         let projection = doc.projection();
         let query = |at, affinity| projection.selected_code_named_styles(at..at, affinity);
         assert_eq!(
             query(0, BoundaryAffinity::Downstream).character,
-            Some("syntax:@keyword.function".into())
+            Some("syntax:Keyword.function".into())
         );
         assert_eq!(
             query(2, BoundaryAffinity::Upstream).character,
-            Some("syntax:@keyword.function".into())
+            Some("syntax:Keyword.function".into())
         );
         assert_eq!(
             query(2, BoundaryAffinity::Downstream).character,
@@ -156,7 +156,7 @@ mod tests {
         );
         assert_eq!(
             query(4, BoundaryAffinity::Downstream).character,
-            Some("syntax:@comment.documentation".into())
+            Some("syntax:Comment.documentation".into())
         );
         for (at, affinity) in [
             (9, BoundaryAffinity::Downstream),
@@ -173,14 +173,14 @@ mod tests {
             );
             assert!(!selected.character_mixed && !selected.paragraph_mixed);
         }
-        let multiline = document("/*\n\n*/", &[(0..6, "@comment")]);
+        let multiline = document("/*\n\n*/", &[(0..6, "Comment")]);
         for affinity in [BoundaryAffinity::Upstream, BoundaryAffinity::Downstream] {
             assert_eq!(
                 multiline
                     .projection()
                     .selected_code_named_styles(3..3, affinity)
                     .character,
-                Some("syntax:@comment".into()),
+                Some("syntax:Comment".into()),
                 "An empty line inside a displayed multiline capture keeps that style"
             );
         }
@@ -191,16 +191,16 @@ mod tests {
         let doc = document(
             "aa\nbb cc",
             &[
-                (0..2, "@comment"),
-                (3..5, "@comment"),
-                (6..8, "@comment.documentation"),
+                (0..2, "Comment"),
+                (3..5, "Comment"),
+                (6..8, "Comment.documentation"),
             ],
         );
         let query = |range| {
             doc.projection()
                 .selected_code_named_styles(range, BoundaryAffinity::Downstream)
         };
-        assert_eq!(query(0..5).character, Some("syntax:@comment".into()));
+        assert_eq!(query(0..5).character, Some("syntax:Comment".into()));
         for range in [0..6, 3..8] {
             assert!(query(range).character_mixed);
         }
@@ -220,13 +220,13 @@ mod tests {
     fn code_large_selection_classifies_long_separator_gaps_with_tree_aggregates() {
         let text = format!("a{}b", "\n".repeat(20_000));
         let last = text.len() - 1;
-        let doc = document(&text, &[(0..1, "@comment"), (last..last + 1, "@comment")]);
+        let doc = document(&text, &[(0..1, "Comment"), (last..last + 1, "Comment")]);
         let selected = doc
             .projection()
             .selected_code_named_styles(0..text.len(), BoundaryAffinity::Downstream);
-        assert_eq!(selected.character, Some("syntax:@comment".into()));
+        assert_eq!(selected.character, Some("syntax:Comment".into()));
         assert!(!selected.character_mixed && !selected.paragraph_mixed);
-        let unstyled = document(&text, &[(0..1, "@comment")]);
+        let unstyled = document(&text, &[(0..1, "Comment")]);
         assert!(
             unstyled
                 .projection()

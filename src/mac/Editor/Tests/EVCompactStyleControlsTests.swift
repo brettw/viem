@@ -7,6 +7,93 @@ import XCTest
 
 @MainActor
 final class EVCompactStyleControlsTests: XCTestCase {
+    func testHTMLBuiltinDeclarationsAreVisibleAndClearingThemRestoresBaseParagraph() throws {
+        for type in [EVDocument.htmlType, EVDocument.htmlSourceType] {
+            for includeDefinitions in [false, true] {
+                let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-builtin-controls-\(UUID().uuidString)")
+                addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+                let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
+                let backend = EVCoreDocumentBackend(configuration: configuration)
+                let original = Data("<h1>Title</h1><p>Body <code>code</code> <a href='/x'>link</a></p><pre>block</pre><!--keep-->".utf8)
+                try backend.read(source: original, typeName: type)
+                let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+                surface.loadViewIfNeeded()
+                defer { withExtendedLifetime(surface) {} }
+                if includeDefinitions {
+                    try XCTUnwrap(surface.session).setIncludeStyleDefinitionsInFile(true, expected: backend.documentState())
+                }
+                let editor = EVStyleEditorViewController()
+                editor.themeStore = EVThemeStore(configuration: configuration)
+                editor.retarget(document: surface, styleKey: .baseParagraph)
+                let base = try XCTUnwrap(backend.styleSheetSnapshot().definition(for: .baseParagraph))
+                let basePreview = editor.inspection.preview.effectiveValues
+                let styles: [(EVStyleNamespace, String)] = [(.block, "Heading1"), (.block, "Code Block"), (.character, "Code"), (.character, "Link")]
+                for (namespace, id) in styles {
+                    let key = EVStyleKey(namespace: namespace, id: EVStyleID(rawValue: id))
+                    editor.selectStyle(key)
+                    let initial = try XCTUnwrap(backend.styleSheetSnapshot().definition(for: key))
+                    let declared = initial.properties.values.filter(\.isDeclared).map(\.property)
+                    XCTAssertFalse(declared.isEmpty, "\(type) / \(id) must expose its default appearance")
+                    if id == "Heading1" {
+                        XCTAssertEqual(Set(declared), [.characterSize, .characterWeight, .paragraphSpacingBefore, .paragraphSpacingAfter])
+                        XCTAssertEqual(try control(NSTextField.self, label: "Size", in: editor.view).floatValue, 24)
+                        XCTAssertEqual(try control(NSTextField.self, label: "Space before", in: editor.view).floatValue, 10)
+                        XCTAssertEqual(try control(NSTextField.self, label: "Space after", in: editor.view).floatValue, 5)
+                    }
+                    for property in declared {
+                        let checkbox = try control(NSButton.self, label: "Override \(property.displayName.lowercased())", in: editor.view)
+                        XCTAssertEqual(checkbox.state, .on, "\(id): \(property)")
+                        XCTAssertTrue(checkbox.isEnabled)
+                        checkbox.performClick(nil)
+                        XCTAssertEqual(checkbox.state, .off, editor.inspection.diagnostic)
+                    }
+                    let cleared = try XCTUnwrap(backend.styleSheetSnapshot().definition(for: key))
+                    XCTAssertTrue(cleared.properties.values.allSatisfy { !$0.isDeclared })
+                    let properties = namespace == .block
+                        ? EVStyleProperty.characterProperties + EVStyleProperty.paragraphProperties
+                        : EVStyleProperty.characterProperties
+                    for property in properties {
+                        XCTAssertEqual(cleared.properties[property]?.effective, base.properties[property]?.effective,
+                                       "\(type) / \(id) / \(property)")
+                        XCTAssertEqual(editor.inspection.preview.effectiveValues[property], basePreview[property],
+                                       "The preview must reflect cleared \(id) / \(property)")
+                    }
+                }
+                let saved = try backend.serializedSource(typeName: type)
+                if includeDefinitions {
+                    let reopened = EVCoreDocumentBackend(configuration: configuration)
+                    try reopened.read(source: saved, typeName: type)
+                    let fresh = try reopened.styleSheetSnapshot()
+                    let reopenedBase = try XCTUnwrap(fresh.definition(for: .baseParagraph))
+                    for (namespace, id) in styles where id != "Link" {
+                        let key = EVStyleKey(namespace: namespace, id: EVStyleID(rawValue: id))
+                        let style = try XCTUnwrap(fresh.definition(for: key))
+                        XCTAssertTrue(style.properties.values.allSatisfy { !$0.isDeclared }, "Cleared defaults must not return after reopening \(id)")
+                        for property in namespace == .block ? EVStyleProperty.characterProperties + EVStyleProperty.paragraphProperties : EVStyleProperty.characterProperties {
+                            XCTAssertEqual(style.properties[property]?.effective, reopenedBase.properties[property]?.effective)
+                        }
+                    }
+                } else {
+                    XCTAssertEqual(saved, original, "Presentation defaults do not rewrite source while style export is disabled")
+                }
+                // Link appearance is an application default rather than an
+                // owned native HTML selector. Persist its cleared definition
+                // through the explicit default-style settings operation.
+                surface.perform(menuCommand: .saveDefaultStyle, sender: nil)
+                XCTAssertNotNil(try configuration.styleDefaults(named: "html"))
+                let withDefaults = EVCoreDocumentBackend(configuration: configuration)
+                try withDefaults.read(source: saved, typeName: type)
+                let defaults = try withDefaults.styleSheetSnapshot()
+                let link = try XCTUnwrap(defaults.definition(namespace: .character, id: EVStyleID(rawValue: "Link")))
+                let defaultBase = try XCTUnwrap(defaults.definition(for: .baseParagraph))
+                XCTAssertTrue(link.properties.values.allSatisfy { !$0.isDeclared }, "Cleared Link defaults must not return after settings reload")
+                for property in EVStyleProperty.characterProperties {
+                    XCTAssertEqual(link.properties[property]?.effective, defaultBase.properties[property]?.effective)
+                }
+            }
+        }
+    }
+
     func testScriptButtonsShareOneOverrideAndAreExclusive() throws {
         let (backend, surface, editor, _) = try makeEditor(html: true)
         defer { withExtendedLifetime(surface) {} }

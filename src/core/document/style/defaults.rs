@@ -1,4 +1,6 @@
-//! User style defaults are an independent sparse layer, never source syntax.
+//! Saved defaults seed ordinary editable definitions. They are configuration,
+//! not a second inheritance layer: removing an own declaration inherits from
+//! the parent, and source-authored definitions remain authoritative.
 use super::*;
 use serde::{Deserialize, Serialize};
 
@@ -151,20 +153,11 @@ impl StyleSheet {
             if !super::super::html_styles::is_native_style(self, &id, false) {
                 continue;
             }
-            let style = self.block_styles.get_mut(&id).unwrap();
-            if let Some(default) = self.default_blocks.get(&id) {
-                style.character = overlay(&default.character, &style.character);
-                style.block = overlay(&default.block, &style.block);
-            }
             self.block_metadata.get_mut(&id).unwrap().origin = StyleDefinitionOrigin::SourceBacked;
         }
         for id in characters {
             if !super::super::html_styles::is_native_style(self, &id, true) {
                 continue;
-            }
-            let style = self.character_styles.get_mut(&id).unwrap();
-            if let Some(default) = self.default_characters.get(&id) {
-                style.properties = overlay(&default.properties, &style.properties);
             }
             self.character_metadata.get_mut(&id).unwrap().origin =
                 StyleDefinitionOrigin::SourceBacked;
@@ -188,9 +181,6 @@ impl StyleSheet {
                     break;
                 };
                 current = style.based_on.clone();
-                if let Some(default) = self.default_characters.get(&id) {
-                    style.properties = overlay(&default.properties, &style.properties);
-                }
                 self.character_metadata.get_mut(&id).unwrap().origin =
                     StyleDefinitionOrigin::SourceBacked;
                 self.source_defined_characters.insert(id);
@@ -199,10 +189,6 @@ impl StyleSheet {
                     break;
                 };
                 current = style.based_on.clone();
-                if let Some(default) = self.default_blocks.get(&id) {
-                    style.character = overlay(&default.character, &style.character);
-                    style.block = overlay(&default.block, &style.block);
-                }
                 self.block_metadata.get_mut(&id).unwrap().origin =
                     StyleDefinitionOrigin::SourceBacked;
                 self.source_defined_blocks.insert(id);
@@ -320,7 +306,7 @@ impl StyleSheet {
         candidate
             .default_characters
             .retain(|id, _| !id.is_internal() || self.character_styles.contains_key(id));
-        candidate.install_default_layer(&defaults.block_metadata, &defaults.character_metadata);
+        candidate.install_default_definitions(&defaults.block_metadata, &defaults.character_metadata);
         candidate.validate_block_cycles()?;
         candidate.validate_character_cycles()?;
         candidate.resolve_document_style(
@@ -331,7 +317,7 @@ impl StyleSheet {
         Ok(candidate)
     }
 
-    fn install_default_layer(
+    fn install_default_definitions(
         &mut self,
         block_names: &BTreeMap<StyleId, StyleDefinitionMetadata>,
         character_names: &BTreeMap<StyleId, StyleDefinitionMetadata>,
@@ -343,14 +329,11 @@ impl StyleSheet {
                 continue;
             }
             if !self.source_defined_blocks.contains(id) {
-                let mut sparse = default.clone();
-                sparse.character = self
-                    .source_character_defaults
-                    .get(id)
-                    .cloned()
-                    .unwrap_or_default();
-                sparse.block = BlockProperties::default();
-                self.block_styles.insert(id.clone(), sparse);
+                let mut definition = default.clone();
+                if let Some(source) = self.source_character_defaults.get(id) {
+                    definition.character.overlay(source);
+                }
+                self.block_styles.insert(id.clone(), definition);
                 let origin = self
                     .block_metadata
                     .get(id)
@@ -374,9 +357,7 @@ impl StyleSheet {
                 continue;
             }
             if !self.source_defined_characters.contains(id) {
-                let mut sparse = default.clone();
-                sparse.properties = CharacterProperties::default();
-                self.character_styles.insert(id.clone(), sparse);
+                self.character_styles.insert(id.clone(), default.clone());
                 let origin = self
                     .character_metadata
                     .get(id)
@@ -403,7 +384,7 @@ impl StyleSheet {
         }
         self.default_blocks = previous.default_blocks.clone();
         self.default_characters = previous.default_characters.clone();
-        self.install_default_layer(&previous.block_metadata, &previous.character_metadata);
+        self.install_default_definitions(&previous.block_metadata, &previous.character_metadata);
         // Configuration-only overrides survive source reparsing too.
         for (id, style) in &previous.block_styles {
             if !self.source_defined_blocks.contains(id)
@@ -438,10 +419,6 @@ impl StyleSheet {
         let mut blocks = Vec::new();
         for explicit in self.block_styles.values() {
             let mut style = explicit.clone();
-            if let Some(default) = self.default_blocks.get(&style.id) {
-                style.character = overlay(&default.character, &style.character);
-                style.block = overlay(&default.block, &style.block);
-            }
             if style.id == document.style {
                 style.character = overlay(&style.character, &document.direct_default_character);
                 style.block = overlay(&style.block, &document.direct_canvas);
@@ -455,10 +432,7 @@ impl StyleSheet {
             .character_styles
             .values()
             .map(|explicit| {
-                let mut style = explicit.clone();
-                if let Some(default) = self.default_characters.get(&style.id) {
-                    style.properties = overlay(&default.properties, &style.properties);
-                }
+                let style = explicit.clone();
                 CharacterDefault {
                     name: self.character_metadata[&style.id].display_name.clone(),
                     style,

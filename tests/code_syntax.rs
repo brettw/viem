@@ -306,7 +306,7 @@ fn code_newline_edges_unicode_and_existing_highlights_match_a_fresh_projection()
                     Arc::new(code_style::default_sheet()),
                     &[SyntaxRun {
                         range: 0..logical.len(),
-                        name: SyntaxStyleName("@keyword".into()),
+                        name: SyntaxStyleName("Keyword".into()),
                         origin: "test".into(),
                         priority: 0,
                     }],
@@ -451,9 +451,9 @@ fn syntax_winning_unknown_names_and_grapheme_start_ownership_remain_presentation
     document.install_code_presentation(
         sheet.clone(),
         &[
-            run(0..1, "@keyword"),
-            run(1..3, "@string"),
-            run(3..7, "@missing"),
+            run(0..1, "Keyword"),
+            run(1..3, "String"),
+            run(3..7, "Missing"),
         ],
     );
     let spans = document.projection().style_spans();
@@ -473,7 +473,7 @@ fn syntax_winning_unknown_names_and_grapheme_start_ownership_remain_presentation
             .unwrap()
             .foreground_is_default
     );
-    document.install_code_presentation(sheet, &[run(0..3, "@missing")]);
+    document.install_code_presentation(sheet, &[run(0..3, "Missing")]);
     assert!(
         DocumentLayoutStyles::character_at(document.projection(), 0, false)
             .unwrap()
