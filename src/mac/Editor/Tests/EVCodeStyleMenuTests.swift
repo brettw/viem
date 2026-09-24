@@ -39,7 +39,7 @@ final class EVCodeStyleMenuTests: XCTestCase {
         let paragraph = try XCTUnwrap(main.item(withTitle: "Paragraph")?.submenu)
         builder.menuNeedsUpdate(character)
         builder.menuNeedsUpdate(paragraph)
-        let keyword = try XCTUnwrap(character.item(withTitle: "@keyword"))
+        let keyword = try XCTUnwrap(character.item(withTitle: "Keyword"))
         let baseCharacter = try XCTUnwrap(character.item(withTitle: "Default Paragraph"))
         let baseParagraph = try XCTUnwrap(paragraph.item(withTitle: "Base Paragraph"))
         let characterFooter = try XCTUnwrap(character.item(withTitle: "Edit Styles…"))
@@ -90,7 +90,7 @@ final class EVCodeStyleMenuTests: XCTestCase {
         surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 2))
         var catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
         XCTAssertEqual(catalogue.entries.filter { $0.role == .character && $0.presentation.state == .on }
-            .map(\.displayName), ["@keyword"])
+            .map(\.displayName), ["Keyword"])
         XCTAssertEqual(catalogue.entries.first { $0.role == .paragraph && $0.stableID == "Paragraph" }?
             .presentation.state, .on)
 
@@ -112,9 +112,9 @@ final class EVCodeStyleMenuTests: XCTestCase {
         let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
         let characters = catalogue.entries.filter { $0.role == .character }
         XCTAssertEqual(Set(characters.map(\.stableID)),
-                       Set(initial.definitions.filter { $0.kind == .character }.map { $0.key.id.rawValue } + [""]))
+                       Set(initial.definitions.filter { $0.kind == .character && !$0.flags.contains(.internalSyntax) }.map { $0.key.id.rawValue } + [""]))
         XCTAssertTrue(characters.allSatisfy { $0.actionKind == .edit && $0.presentation.isEnabled })
-        let keyword = try XCTUnwrap(characters.first { $0.displayName == "@keyword" })
+        let keyword = try XCTUnwrap(characters.first { $0.displayName == "Keyword" })
         let coordinator = EVStyleEditorCoordinator.shared
         coordinator.close()
         defer { coordinator.close() }
@@ -142,33 +142,33 @@ final class EVCodeStyleMenuTests: XCTestCase {
         let surface = try surface()
         let code = try EVCodeStyleSession(configuration: surface.backend.configuration)
         let initial = try code.snapshot()
-        let keyword = try XCTUnwrap(initial.definitions.first { $0.name == "@keyword" })
+        let keyword = try XCTUnwrap(initial.definitions.first { $0.name == "Keyword" })
         try code.delete(key: keyword.key, expected: initial.identity)
         let before = try surface.backend.recoverySnapshot()
         let missingRevision = try code.snapshot().identity.styleSheetRevision
         for _ in 0..<200 {
             surface.backend.pollSyntax()
-            if try surface.backend.syntaxStyleNames().contains("@keyword") { break }
+            if try surface.backend.syntaxStyleNames().contains("Keyword") { break }
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertTrue(try surface.backend.syntaxStyleNames().contains("@keyword"))
+        XCTAssertTrue(try surface.backend.syntaxStyleNames().contains("Keyword"))
         let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
-        let entry = try XCTUnwrap(catalogue.entries.first { $0.syntaxName == "@keyword" })
+        let entry = try XCTUnwrap(catalogue.entries.first { $0.syntaxName == "Keyword" })
         XCTAssertEqual(entry.actionKind, .defineSyntax)
-        XCTAssertEqual(entry.displayName, "Define @keyword…")
+        XCTAssertEqual(entry.displayName, "Define Keyword…")
         XCTAssertEqual(entry.stableID, "", "An unresolved reference has no invented definition ID")
         XCTAssertEqual(entry.presentation.state, .off)
         XCTAssertEqual(catalogue.entries.first { $0.role == .character && $0.stableID == "" && $0.isBase }?
             .presentation.state, .on, "An unresolved syntax style renders with Default Paragraph")
         XCTAssertEqual(try code.snapshot().identity.styleSheetRevision, missingRevision)
-        XCTAssertFalse(try code.snapshot().definitions.contains { $0.name == "@keyword" })
+        XCTAssertFalse(try code.snapshot().definitions.contains { $0.name == "Keyword" })
         let coordinator = EVStyleEditorCoordinator.shared
         coordinator.close()
         defer { coordinator.close() }
         let item = menuItem(entry, catalogue: catalogue)
         XCTAssertTrue(surface.editorView.validateMenuItem(item))
         surface.editorView.performEditorStyleMenuAction(item)
-        let defined = try XCTUnwrap(code.snapshot().definitions.first { $0.name == "@keyword" })
+        let defined = try XCTUnwrap(code.snapshot().definitions.first { $0.name == "Keyword" })
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, defined.key)
         XCTAssertNotEqual(defined.key, keyword.key)
         XCTAssertFalse(defined.properties.values.contains { $0.declared != nil },
@@ -177,8 +177,8 @@ final class EVCodeStyleMenuTests: XCTestCase {
         XCTAssertFalse(surface.canUndo)
         XCTAssertFalse(surface.editorView.validateMenuItem(item), "An already defined name cannot be created twice")
         let fresh = try XCTUnwrap(surface.currentStyleMenuCatalogue())
-        XCTAssertEqual(fresh.entries.first { $0.displayName == "@keyword" }?.actionKind, .edit)
-        XCTAssertFalse(fresh.entries.contains { $0.syntaxName == "@keyword" })
+        XCTAssertEqual(fresh.entries.first { $0.displayName == "Keyword" }?.actionKind, .edit)
+        XCTAssertFalse(fresh.entries.contains { $0.syntaxName == "Keyword" })
     }
 
     func testCodeEditStylesCommandsTargetBasesAndAssignmentsStayDisabled() throws {
@@ -195,7 +195,7 @@ final class EVCodeStyleMenuTests: XCTestCase {
             XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, 0)
         }
         let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
-        let entry = try XCTUnwrap(catalogue.entries.first { $0.displayName == "@keyword" })
+        let entry = try XCTUnwrap(catalogue.entries.first { $0.displayName == "Keyword" })
         coordinator.close()
         let forged = NSMenuItem(title: "Assign", action: #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:)), keyEquivalent: "")
         forged.representedObject = EVStyleMenuAction(kind: .assign, role: .character, stableID: entry.stableID,

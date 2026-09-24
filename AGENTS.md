@@ -2067,7 +2067,16 @@ Per-document format defaults live beside it in `text_style.json`,
 `html_style.json`, `markdown_style.json`, and `rtf_style.json`. A document loads
 the matching sparse style defaults before source declarations are applied. The
 cascade is built-in styles, user format defaults, source definitions/assignments, then direct
-formatting. An inherited default remains unset in source: changing an unrelated
+formatting. Built-in defaults seed ordinary editable definitions: Heading 1 is
+a sparse delta on Base Paragraph, and its size, weight, and paragraph spacing
+are declarations visible in the style editor. The same applies to other built-in
+paragraph, character, internal, and Code styles. Clearing a declaration inherits
+from its parent or contextual paragraph; it must not uncover a hidden copy of
+that style's original default. Clearing every own declaration therefore leaves
+only parent inheritance. Source-defined styles supply their own declarations
+without an extra per-style fallback underneath them. Loading defaults does not
+flatten parent values into child definitions.
+An inherited default remains unset in source: changing an unrelated
 property must not serialize an inherited font, color, or other declaration.
 Explicit assignment of a custom default style materializes only declarations
 needed to represent that assignment in a source-backed format. Source and
@@ -2159,8 +2168,11 @@ paragraph geometry.
 
 Providers emit coalesced named character-style runs over immutable input
 ranges, using a `SyntaxStyleName` rather than retaining document offsets or
-authoring style assignments. Tree-sitter names preserve captures such as
-`@keyword` and `@function`; Vim names identify effective highlight groups after
+authoring style assignments. Tree-sitter capture names are canonicalized by
+removing their leading `@` and uppercasing only the first letter: `@comment`
+uses `Comment` directly and `@comment.documentation` uses
+`Comment.documentation`. There is no separate `@comment` alias definition.
+Vim names identify effective highlight groups after
 the compiled, cycle-checked group-link mapping. The original language/group or
 capture identity remains available for inspection. Both providers use the same
 Code stylesheet; they never supply platform colors or native font objects.
@@ -2184,19 +2196,32 @@ bundled packages; users may add other names for separately loaded syntaxes.
 
 Built-in syntax definitions MUST use explicit ordinary character-style
 inheritance to share appearance across providers. For example,
-`@comment.documentation` is based on `@comment`, which is based on `Comment`;
-`@keyword.function` is based on `@keyword`, then `Keyword`, then `Statement`.
-Declared capture variants use their nearest declared capture ancestor where
-applicable; root captures link to corresponding Vim groups. Shared groups own
+`Comment.documentation` is based on `Comment`; `Keyword.function` is based on
+`Keyword`, then `Statement`. A dotted built-in style's parent is its name with
+the final dotted segment removed, with required intermediate definitions present
+in the default sheet. Providers share the same definition when their canonical
+names match. Shared groups own
 the default paint, and descendants start with no redundant local declarations.
 Editing a parent changes every inheriting property, including font metrics;
 individual descendants may override properties or choose another valid parent.
 This is a hierarchy of real definitions shown in the style editor, not a
 fallback lookup for missing names. Existing default resolved colors are retained.
 
-Code stylesheet storage version 2 records linked defaults and sparse overrides.
-Only version 2 is accepted; no migration from copied version-1 declarations is
-provided. Reloads preserve explicit overrides even when equal to default values.
+Code stylesheet storage version 3 records canonical names, linked defaults, and
+sparse overrides. Version-2 sheets with `@` capture definitions are migrated on
+read, including parent references and suppressed defaults. Where a former
+capture alias and its canonical definition both have overrides, the capture's
+own declarations win for the overlapping properties. Removing only one of the
+old duplicate root definitions does not remove its surviving counterpart when
+they become one shared style. A displaced custom display name is retained as
+an independent user definition with its prior named appearance. If collapsing
+aliases would create an inheritance cycle, retain the displaced parent's prior
+appearance as an ordinary user definition and redirect the affected old parent
+references to it. Existing custom names take precedence over newly canonicalized
+names; a colliding migrated capture receives a unique display-name suffix while
+exact provider lookup continues to use the existing custom definition. Version-1
+copied declarations are unsupported. Reloads preserve explicit overrides even when
+equal to default values.
 Loading does not rewrite the stylesheet file or add undo history.
 
 In Code, the Character menu MUST expose the global Code character definitions

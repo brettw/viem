@@ -167,7 +167,7 @@ fn formatting_writers_create_owned_header_tables_without_touching_opaque_tables(
 
 
 #[test]
-fn sparse_normal_style_retains_rtf_defaults_below_user_paragraph_defaults() {
+fn source_normal_style_is_authoritative_over_saved_paragraph_defaults() {
     use viem_core::layout::DocumentLayoutStyles;
     let header = r"{\rtf1\deff3{\fonttbl{\f0 Arial;}{\f3 Georgia;}}";
     for stylesheet in ["", r"{\stylesheet{\s0 Normal;}}", r"{\stylesheet{\s0\fs40 Normal;}}"] {
@@ -187,7 +187,15 @@ fn sparse_normal_style_retains_rtf_defaults_below_user_paragraph_defaults() {
         document.initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap()).unwrap();
         let customized = DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap();
         assert_eq!(customized.font_families, vec!["Georgia"], "The authored default-font table remains authoritative");
-        assert_eq!(customized.size, if stylesheet.contains(r"\fs40") { 20.0 } else { 31.0 });
+        // Saved defaults seed missing definitions. A source-authored Normal
+        // definition is complete: an absent size inherits the RTF root's
+        // intrinsic default, rather than reviving an invisible application
+        // declaration after the user has cleared it.
+        assert_eq!(customized.size, if stylesheet.is_empty() { 31.0 }
+            else if stylesheet.contains(r"\fs40") { 20.0 } else { 12.0 });
+        assert_eq!(document.projection().style_sheet().block_style(&"Paragraph".into()).unwrap().character.size,
+            if stylesheet.is_empty() { Some(31.0) }
+            else if stylesheet.contains(r"\fs40") { Some(20.0) } else { None });
         document.insert(0, "X").unwrap();
         assert_eq!(DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap(), customized);
         let mut reopened = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Rtf).unwrap();

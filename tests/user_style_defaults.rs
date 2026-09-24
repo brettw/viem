@@ -17,7 +17,7 @@ fn defaults() -> Vec<u8> {
     serde_json::to_vec(&value).unwrap()
 }
 #[test]
-fn defaults_are_clean_sparse_and_source_declarations_override_them() {
+fn defaults_are_visible_declarations_and_source_declarations_override_them() {
     for (format, source, offset, expected) in [
         (Format::PlainText, "Text", 0, 31.),
         (Format::Markdown, "Text", 0, 31.),
@@ -62,7 +62,7 @@ fn defaults_are_clean_sparse_and_source_declarations_override_them() {
                 .unwrap()
                 .character
                 .size,
-            None
+            Some(31.)
         );
         let original = doc.source_bytes();
         doc.insert(offset, "X").unwrap();
@@ -150,7 +150,7 @@ fn default_files_validate_atomically_and_export_current_overrides() {
 }
 
 #[test]
-fn saved_named_defaults_can_be_assigned_with_only_sparse_supporting_syntax() {
+fn assigning_saved_named_defaults_persists_their_own_declarations() {
     for (format, source) in [
         (Format::Html, "<p>Text</p><!--keep-->"),
         (Format::Rtf, r"{\rtf1 Text{\*\unknown keep}}"),
@@ -250,9 +250,18 @@ fn saved_named_defaults_can_be_assigned_with_only_sparse_supporting_syntax() {
                     "{syntax}"
                 );
             } else {
-                assert!(!syntax.contains("\\fs50"), "{syntax}");
+                // Assigning a named style persists its actual definition, so
+                // another editor does not need the user's settings file.
+                assert!(syntax.contains("\\fs50"), "{syntax}");
             }
             assert!(syntax.contains("keep"));
+            let independent = open(&syntax, format);
+            assert_eq!(
+                DocumentLayoutStyles::character_at(independent.projection(), 1, false)
+                    .unwrap().size,
+                25.,
+                "{format:?} must not need the settings file after explicit assignment"
+            );
             let mut reopened = open(&syntax, format);
             reopened.initialize_style_defaults(&saved).unwrap();
             assert_eq!(

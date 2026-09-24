@@ -7,7 +7,7 @@ import XCTest
 
 @MainActor
 final class EVCodeStyleInheritanceTests: XCTestCase {
-    func testSavedParentLinksLoadWithoutLosingLocalEditsOrRewritingTheFile() throws {
+    func testLegacyCaptureAliasesCanonicalizeWithoutLosingLocalEditsOrRewritingTheFile() throws {
         let configuration = configuration()
         let parentColor: [String: Float] = ["red": 0.1, "green": 0.5, "blue": 0.3, "alpha": 1]
         let localColor: [String: Float] = ["red": 0.2, "green": 0.3, "blue": 0.8, "alpha": 1]
@@ -33,18 +33,19 @@ final class EVCodeStyleInheritanceTests: XCTestCase {
         let session = try EVCodeStyleSession(configuration: configuration)
         XCTAssertNil(session.lastError)
         let snapshot = try session.snapshot()
-        let parent = try definition(named: "Project comments", in: snapshot)
-        let comment = try definition(named: "@comment", in: snapshot)
-        let documentation = try definition(named: "@comment.documentation", in: snapshot)
-        XCTAssertEqual(comment.parentKey, parent.key)
+        let commentKey = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "syntax:Comment"))
+        let comment = try XCTUnwrap(snapshot.definition(for: commentKey))
+        let documentation = try definition(named: "Comment.documentation", in: snapshot)
+        XCTAssertNil(comment.parentKey, "The former capture aliases the existing Comment definition")
         XCTAssertEqual(documentation.parentKey, comment.key)
-        XCTAssertNil(comment.properties[.characterForeground]?.declared)
-        XCTAssertEqual(comment.properties[.characterForeground]?.contributor, parent.key)
-        XCTAssertEqual(comment.properties[.characterSize]?.declared, .float(27))
+        XCTAssertEqual(comment.properties[.characterForeground]?.declared,
+                       .color(EVStyleColor(red: 0.1, green: 0.5, blue: 0.3, alpha: 1)))
+        XCTAssertEqual(comment.properties[.characterSize]?.declared, .float(27),
+                       "The former capture's explicit size takes precedence over its parent")
         XCTAssertEqual(documentation.properties[.characterSize]?.effective, .float(27))
         XCTAssertEqual(documentation.properties[.characterForeground]?.declared,
                        .color(EVStyleColor(red: 0.2, green: 0.3, blue: 0.8, alpha: 1)))
-        XCTAssertFalse(snapshot.definitions.contains { $0.name == "Comment" || $0.name == "Todo" })
+        XCTAssertFalse(snapshot.definitions.contains { $0.key.id.rawValue.contains("syntax:@") || $0.name == "Todo" })
         XCTAssertEqual(try Data(contentsOf: file), saved, "Loading the settings file must not rewrite user settings")
         XCTAssertFalse(session.undoManager.canUndo)
     }
@@ -63,21 +64,20 @@ final class EVCodeStyleInheritanceTests: XCTestCase {
         let session = try EVCodeStyleSession(configuration: configuration)
         let initial = try session.snapshot()
         let comment = try definition(named: "Comment", in: initial)
-        let capture = try definition(named: "@comment", in: initial)
-        let documentation = try definition(named: "@comment.documentation", in: initial)
-        XCTAssertEqual(capture.parentKey, comment.key)
-        XCTAssertEqual(documentation.parentKey, capture.key)
-        for child in [capture, documentation] {
-            XCTAssertNil(child.properties[.characterForeground]?.declared)
-            XCTAssertEqual(child.properties[.characterForeground]?.contributor, comment.key)
-        }
+        let documentation = try definition(named: "Comment.documentation", in: initial)
+        XCTAssertEqual(comment.key.id.rawValue, "syntax:Comment")
+        XCTAssertNil(comment.parentKey)
+        XCTAssertEqual(documentation.parentKey, comment.key)
+        XCTAssertNil(documentation.properties[.characterForeground]?.declared)
+        XCTAssertEqual(documentation.properties[.characterForeground]?.contributor, comment.key)
+        XCTAssertFalse(initial.definitions.contains { $0.name.hasPrefix("@") })
 
         let inheritedColor = EVStyleColor(red: 0.15, green: 0.55, blue: 0.25, alpha: 1)
         try editAppearance(session, key: comment.key, size: 23, color: inheritedColor)
         try await waitForComments(backend: backend, surface: surface,
                                   ordinary: (23, inheritedColor), documentation: (23, inheritedColor))
         let inherited = try session.snapshot()
-        for key in [capture.key, documentation.key] {
+        for key in [comment.key, documentation.key] {
             let style = try XCTUnwrap(inherited.definition(for: key))
             XCTAssertEqual(style.properties[.characterSize]?.effective, .float(23))
             XCTAssertEqual(style.properties[.characterSize]?.contributor, comment.key)
@@ -122,9 +122,8 @@ final class EVCodeStyleInheritanceTests: XCTestCase {
             viem_code_replace_style_json($0.bindMemory(to: UInt8.self).baseAddress, UInt64($0.count))
         }, UInt32(VIEM_STATUS_OK))
         let restored = try session.snapshot()
-        XCTAssertEqual(restored.definition(for: capture.key)?.parentKey, comment.key)
-        XCTAssertEqual(restored.definition(for: documentation.key)?.parentKey, capture.key)
-        XCTAssertNil(restored.definition(for: capture.key)?.properties[.characterForeground]?.declared)
+        XCTAssertNil(restored.definition(for: comment.key)?.parentKey)
+        XCTAssertEqual(restored.definition(for: documentation.key)?.parentKey, comment.key)
         XCTAssertEqual(restored.definition(for: documentation.key)?.properties[.characterSize]?.declared, .float(31))
         try await waitForComments(backend: backend, surface: surface,
                                   ordinary: (26, changedParentColor), documentation: (31, localColor))
@@ -133,6 +132,45 @@ final class EVCodeStyleInheritanceTests: XCTestCase {
         XCTAssertFalse(backend.persistenceState.isDirty)
         XCTAssertFalse(surface.canUndo)
         XCTAssertFalse(surface.canRedo)
+    }
+
+    func testBuiltinCodeDeclarationCanBeUncheckedAndStaysClearedAfterReload() throws {
+        let configuration = configuration()
+        let session = try EVCodeStyleSession(configuration: configuration)
+        let initial = try session.snapshot()
+        let comment = try definition(named: "Comment", in: initial)
+        let documentation = try definition(named: "Comment.documentation", in: initial)
+        XCTAssertEqual(documentation.parentKey, comment.key)
+        XCTAssertNotNil(comment.properties[.characterForeground]?.declared)
+        let editor = EVStyleEditorViewController()
+        editor.themeStore = EVThemeStore(configuration: configuration)
+        editor.retarget(codeSession: session)
+        editor.selectStyle(comment.key)
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let checkbox = try XCTUnwrap(descendants(editor.view).compactMap { $0 as? NSButton }
+            .first { $0.accessibilityLabel() == "Override foreground" })
+        XCTAssertEqual(checkbox.state, .on)
+        checkbox.performClick(nil)
+        XCTAssertEqual(checkbox.state, .off, editor.inspection.diagnostic)
+        let changed = try session.snapshot()
+        XCTAssertNil(changed.definition(for: comment.key)?.properties[.characterForeground]?.declared)
+        XCTAssertEqual(changed.definition(for: comment.key)?.properties[.characterForeground]?.effective,
+                       changed.definition(for: .baseParagraph)?.properties[.characterForeground]?.effective)
+        XCTAssertEqual(changed.definition(for: documentation.key)?.properties[.characterForeground]?.effective,
+                       changed.definition(for: .baseParagraph)?.properties[.characterForeground]?.effective)
+        let saved = try XCTUnwrap(configuration.codeStyleSheet())
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: saved) as? [String: Any])
+        XCTAssertEqual(object["version"] as? Int, 3)
+        XCTAssertFalse(String(decoding: saved, as: UTF8.self).contains("syntax:@"))
+        XCTAssertEqual(viem_code_replace_style_json(nil, 0), UInt32(VIEM_STATUS_OK))
+        XCTAssertEqual(saved.withUnsafeBytes {
+            viem_code_replace_style_json($0.bindMemory(to: UInt8.self).baseAddress, UInt64($0.count))
+        }, UInt32(VIEM_STATUS_OK))
+        let restored = try session.snapshot()
+        XCTAssertNil(restored.definition(for: comment.key)?.properties[.characterForeground]?.declared)
+        XCTAssertEqual(restored.definition(for: documentation.key)?.parentKey, comment.key)
+        XCTAssertEqual(restored.definition(for: documentation.key)?.properties[.characterForeground]?.effective,
+                       restored.definition(for: .baseParagraph)?.properties[.characterForeground]?.effective)
     }
 
     private func configuration() -> EVConfigurationStore {
@@ -188,8 +226,8 @@ final class EVCodeStyleInheritanceTests: XCTestCase {
             if appearanceMatches(at: 3, size: ordinary.0, color: ordinary.1, surface: surface),
                appearanceMatches(at: 24, size: documentation.0, color: documentation.1, surface: surface) {
                 let names = try backend.syntaxStyleNames()
-                XCTAssertTrue(names.contains("@comment"))
-                XCTAssertTrue(names.contains("@comment.documentation"))
+                XCTAssertTrue(names.contains("Comment"))
+                XCTAssertTrue(names.contains("Comment.documentation"))
                 let layout = try XCTUnwrap(surface.layoutSnapshot)
                 let paint = try XCTUnwrap(surface.layoutPaint)
                 XCTAssertTrue(paint.info.identity.isSameLayout(as: layout.info.identity))

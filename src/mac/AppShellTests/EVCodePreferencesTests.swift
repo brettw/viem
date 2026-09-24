@@ -98,17 +98,17 @@ final class EVCodePreferencesTests: XCTestCase {
     XCTAssertNil(try configuration.styleDefaults(named: "text"))
   }
 
-  func testCodeStyleVersionTwoLoadsAndSavesAcrossSettingsUndo() throws {
+  func testCanonicalCodeStylesAndLegacyVersionLoadWithoutResurrectingDeclarations() throws {
     let configuration = fixture()
     let customized = Data(#"{"version":2,"character_styles":[{"id":"syntax:@comment","properties":{"foreground":{"red":0.4}}}]}"#.utf8)
-    let linked = Data(#"{"version":2,"character_styles":[],"suppressed_character_ids":["syntax:Todo"]}"#.utf8)
+    let linked = Data(#"{"version":3,"character_styles":[],"suppressed_character_ids":["syntax:Todo"]}"#.utf8)
     for (data, expectedCount) in [(customized, 1), (linked, 0), (customized, 1), (linked, 0)] {
       try configuration.saveCodeStyleSheet(data)
       let reopened = EVConfigurationStore(directory: configuration.directory, legacyDefaults: nil)
       let saved = try XCTUnwrap(reopened.codeStyleSheet())
       XCTAssertEqual(try reopened.styleDefaults(named: "code"), saved)
       let object = try XCTUnwrap(JSONSerialization.jsonObject(with: saved) as? [String: Any])
-      XCTAssertEqual(object["version"] as? Int, 2)
+      XCTAssertEqual(object["version"] as? Int, data == customized ? 2 : 3)
       XCTAssertEqual((object["character_styles"] as? [[String: Any]])?.count, expectedCount)
     }
     // The generic format entry point must retain Code's complete replacement
@@ -123,10 +123,10 @@ final class EVCodePreferencesTests: XCTestCase {
 
   func testUnsupportedCodeStyleVersionsStayOnDiskUntilExplicitRestore() throws {
     let configuration = fixture()
-    let valid = Data(#"{"version":2,"character_styles":[]}"#.utf8)
+    let valid = Data(#"{"version":3,"character_styles":[]}"#.utf8)
     try configuration.saveCodeStyleSheet(valid)
     let file = configuration.directory.appendingPathComponent("code_style.json")
-    for version in ["0", "1", "3", "2.5", "true", "\"2\""] {
+    for version in ["0", "1", "4", "2.5", "3.5", "true", "\"3\""] {
       let original = try Data(contentsOf: file)
       let unsupported = Data("{\"version\":\(version)}".utf8)
       XCTAssertThrowsError(try configuration.saveCodeStyleSheet(unsupported))

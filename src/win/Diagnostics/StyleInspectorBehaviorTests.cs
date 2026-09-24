@@ -61,9 +61,64 @@ internal static class StyleInspectorBehaviorTests
     }
     internal static async Task Run(EditorPane pane, Preferences preferences)
     {
+        await BuiltinDeclarations(pane, preferences);
         await Following(pane, preferences);
         await Colors(pane, preferences);
         await CodeColors(preferences);
+    }
+    private static async Task BuiltinDeclarations(EditorPane pane, Preferences preferences)
+    {
+        foreach (uint format in new[] { VIEM_FORMAT_HTML, VIEM_FORMAT_HTML_SOURCE })
+        foreach (bool includeDefinitions in new[] { false, true })
+        {
+            byte[] original = "<h1>Title</h1><p>Body</p><!--keep-->"u8.ToArray();
+            using var document = new CoreDocument(original, format: format);
+            using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+            if (includeDefinitions) IncludeStyles(view);
+            var inspector = new StyleWindow(view, preferences, followCaret: false);
+            inspector.Activate(); await Task.Delay(150);
+            try
+            {
+                inspector.StylePicker.SelectedItem = ((StyleDefinition[])inspector.StylePicker.ItemsSource).Single(s => s.Id == "Heading1");
+                var properties = new[] {
+                    ("Size", VIEM_STYLE_PROPERTY_CHARACTER_SIZE, false),
+                    ("Variant", VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT, false),
+                    ("Space before", VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_BEFORE, true),
+                    ("Space after", VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_AFTER, true),
+                };
+                Check(Selected(inspector).Properties.Values.Count(p => (p.flags & VIEM_STYLE_PROPERTY_DECLARED) != 0) == properties.Length,
+                    $"format {format}: Heading 1 exposes its size, weight and both paragraph gaps as declarations");
+                foreach (var (label, property, paragraph) in properties)
+                {
+                    var tab = paragraph ? inspector.ParagraphTab : inspector.CharacterTab;
+                    tab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
+                    var checkbox = Children<CheckBox>(inspector.RootControl).Single(c => AutomationProperties.GetName(c) == "Declare " + label);
+                    Check(checkbox.IsChecked == true && checkbox.IsEnabled && Selected(inspector).Declares(property),
+                        $"format {format}: built-in {label} declaration is checked and editable");
+                    checkbox.Focus(FocusState.Programmatic); await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
+                    Check(inspector.Error.Length == 0 && checkbox.IsChecked == false && !Selected(inspector).Declares(property),
+                        $"format {format}: unchecking built-in {label} removes the declaration");
+                }
+                var sheet = view.Styles();
+                var heading = sheet.Styles.Single(s => s.Id == "Heading1");
+                var paragraphStyle = sheet.Styles.Single(s => s.Id == "Paragraph");
+                Check(properties.All(p => heading.Value(p.Item2).Equals(paragraphStyle.Value(p.Item2))),
+                    $"format {format}: cleared Heading 1 inherits Base Paragraph values");
+                byte[] saved = document.Source(document.State.document_revision);
+                if (includeDefinitions)
+                {
+                    using var reopened = new CoreDocument(saved, format: format);
+                    using var reopenedView = new CoreView(reopened, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+                    var fresh = reopenedView.Styles();
+                    var freshHeading = fresh.Styles.Single(s => s.Id == "Heading1");
+                    var freshBase = fresh.Styles.Single(s => s.Id == "Paragraph");
+                    Check(properties.All(p => !freshHeading.Declares(p.Item2) && freshHeading.Value(p.Item2).Equals(freshBase.Value(p.Item2))),
+                        $"format {format}: cleared built-in declarations stay cleared after save/reopen");
+                }
+                else Check(saved.AsSpan().SequenceEqual(original), "editing generated style declarations preserves source when style export is disabled");
+            }
+            finally { inspector.Close(); }
+        }
     }
     private static async Task Following(EditorPane pane, Preferences preferences)
     {

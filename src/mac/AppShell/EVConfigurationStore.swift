@@ -294,9 +294,9 @@ public final class EVConfigurationStore {
     guard name == "code" else { try validateVersion(object); return }
     guard let version = object["version"] as? NSNumber,
           CFGetTypeID(version) != CFBooleanGetTypeID(),
-          version.intValue == 2,
+          [2, 3].contains(version.intValue),
           version.doubleValue == Double(version.intValue)
-    else { throw invalid("Unsupported Code stylesheet version; expected 2") }
+    else { throw invalid("Unsupported Code stylesheet version; expected 2 or 3") }
   }
   private static func validate(_ object: [String: Any]) throws {
     try validateVersion(object)

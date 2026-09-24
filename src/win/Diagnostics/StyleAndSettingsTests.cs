@@ -350,6 +350,24 @@ internal static class StyleAndSettingsTests
             Check(inspector.Error.Length == 0 && !view.Styles().Styles.Any(s => s.Id == childId || s.Id == parentId)
                 && File.ReadAllBytes(file).AsSpan().SequenceEqual(view.ExportStyleDefaults()), "Restore Defaults replaces and persists shared Code styles");
             Check(source.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision)), "style reset and navigation preserve Code source bytes");
+            var builtins = view.Styles();
+            var comment = builtins.Styles.Single(s => s.Id == "syntax:Comment");
+            Check(!builtins.Styles.Any(s => s.Id.StartsWith("syntax:@", StringComparison.Ordinal))
+                && builtins.Styles.Single(s => s.Id == "syntax:Comment.documentation").Parent == comment.Id,
+                "Tree-sitter captures share canonical styles and dotted captures derive directly from their parent");
+            inspector.StylePicker.SelectedItem = ((StyleDefinition[])inspector.StylePicker.ItemsSource).Single(s => s.Id == comment.Id);
+            var colorDeclaration = Children<CheckBox>(inspector.RootControl).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Declare Text Color");
+            Check(colorDeclaration.IsChecked == true && comment.Declares(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND),
+                "the built-in Comment color is a visible declaration");
+            colorDeclaration.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
+            Check(inspector.Error.Length == 0 && colorDeclaration.IsChecked == false
+                && !view.Styles().Styles.Single(s => s.Id == comment.Id).Declares(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND),
+                "unchecking the built-in Comment color resumes inheritance");
+            byte[] cleared = File.ReadAllBytes(file);
+            view.ReplaceCodeStyles(cleared);
+            Check(!view.Styles().Styles.Single(s => s.Id == comment.Id).Declares(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND),
+                "saved Code styles do not restore a cleared built-in declaration");
+            inspector.StylePicker.SelectedItem = ((StyleDefinition[])inspector.StylePicker.ItemsSource).Single(s => s.Id == "Paragraph");
             inspector.CharacterTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await Task.Delay(200);
             await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".code-styles-character.png");
             inspector.ParagraphTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await Task.Delay(200);

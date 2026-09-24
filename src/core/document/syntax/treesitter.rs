@@ -1373,7 +1373,7 @@ fn execute_query(
             runs.push(RankedRun {
                 run: SyntaxRun {
                     range: start..end,
-                    name: SyntaxStyleName(format!("@{name}")),
+                    name: SyntaxStyleName(crate::document::code_style::canonical_capture_name(name)),
                     origin: format!("treesitter:{}:@{name}", snapshot.package.id),
                     priority: pattern.priority,
                 },

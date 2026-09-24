@@ -86,6 +86,22 @@ invalid external changes preserve the last valid sheet and report a diagnostic.
 Color changes reuse shaping, and metrics/paragraph changes invalidate the
 corresponding layout while preserving viewport anchors.
 
+Tree-sitter capture names are canonicalized before exact style lookup:
+`@comment` uses `Comment`, while `@comment.documentation` uses
+`Comment.documentation` with `Comment` as its immediate parent. Only the first
+letter is uppercased; the rest of each name is preserved. Dotted default styles
+have explicit intermediate parent definitions. Raw capture names remain in
+syntax-run provenance for diagnostics.
+
+Code stylesheet version 3 persists these canonical definitions. Version-2
+files are migrated in memory without rewriting the file on load. Former capture
+overrides take precedence when a capture and a Vim group collapse to one style;
+distinct customized names are preserved as user definitions. Migration preserves
+valid custom inheritance without introducing cycles. Existing custom names win
+new canonical-name collisions, with a unique suffix on the migrated capture's
+display name. New saves use version 3. Clearing a built-in declaration is
+persisted as inheritance, so it does not restore the original default on reload.
+
 ## Reproducible checks
 
 Run the ordinary Rust suite and macOS suite with:

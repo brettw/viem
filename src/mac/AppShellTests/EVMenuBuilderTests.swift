@@ -775,20 +775,20 @@ final class EVMenuBuilderTests: XCTestCase {
         let provider = StyleProvider(catalogue: styleCatalogue(documentRevision: 1, styleSheetRevision: 4, entries: [
             EVStyleMenuEntry(role: .character, stableID: "", displayName: "Default Paragraph",
                              isBase: true, presentation: .enabled, actionKind: .edit),
-            EVStyleMenuEntry(role: .character, stableID: "keyword-id", displayName: "@keyword",
+            EVStyleMenuEntry(role: .character, stableID: "keyword-id", displayName: "Keyword",
                              isBase: false, presentation: .enabled, actionKind: .edit),
-            EVStyleMenuEntry(role: .character, stableID: "", displayName: "Define @custom…",
-                             isBase: false, presentation: .enabled, actionKind: .defineSyntax, syntaxName: "@custom"),
+            EVStyleMenuEntry(role: .character, stableID: "", displayName: "Define Custom…",
+                             isBase: false, presentation: .enabled, actionKind: .defineSyntax, syntaxName: "Custom"),
         ]))
         let builder = EVMenuBuilder(owner: owner, styleMenuProvider: { provider })
         let main = builder.buildMainMenu(for: NSApplication.shared)
         let menu = try submenu("Character", of: main)
         builder.menuNeedsUpdate(menu)
-        XCTAssertEqual(tokens(in: menu), ["Default Paragraph", "@keyword", "Define @custom…", "-", "Edit Styles…"])
+        XCTAssertEqual(tokens(in: menu), ["Default Paragraph", "Keyword", "Define Custom…", "-", "Edit Styles…"])
         let actions = menu.items.compactMap(styleAction)
         XCTAssertEqual(actions.map(\.kind), [.edit, .edit, .defineSyntax, .editCurrent])
         XCTAssertEqual(actions.map(\.marksCurrentStyle), [true, true, true, false])
-        XCTAssertEqual(actions[2].syntaxName, "@custom")
+        XCTAssertEqual(actions[2].syntaxName, "Custom")
         XCTAssertEqual(actions[2].stableID, "")
         XCTAssertTrue(menu.items.filter { !$0.isSeparatorItem }.allSatisfy {
             $0.action == #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:))

@@ -304,7 +304,7 @@ fn total_child_input_limit_clears_coverage_without_creating_parser() {
     output.coverage = Coverage::Exact;
     output.runs.push(SyntaxRun {
         range: 0..10,
-        name: crate::document::syntax::SyntaxStyleName("@string".into()),
+        name: crate::document::syntax::SyntaxStyleName("String".into()),
         origin: "host".into(),
         priority: 100,
     });

@@ -11382,6 +11382,47 @@ mod tests {
     }
 
     #[test]
+    fn style_sheet_export_exposes_builtin_default_deltas_after_loading_configuration() {
+        use super::*;
+        use crate::document::Revision;
+        for (format, source) in [
+            (Format::PlainText, "Text"),
+            (Format::Markdown, "# Heading"),
+            (Format::MarkdownSource, "# Heading"),
+            (Format::Html, "<h1>Heading</h1>"),
+            (Format::HtmlSource, "<h1>Heading</h1>"),
+            (Format::Rtf, r"{\rtf1 Text}"),
+        ] {
+            let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+            document.initialize_style_defaults(br#"{"version":1}"#).unwrap();
+            let export = export_style_sheet(&document).unwrap();
+            let heading = export.definitions.iter().find(|definition|
+                style_arena_text(&export.strings, definition.stable_id) == "Heading1").unwrap();
+            assert_eq!(style_arena_text(&export.strings, heading.parent_id), "Paragraph");
+            let properties = &export.properties[heading.first_property as usize
+                ..(heading.first_property + heading.property_count) as usize];
+            for (key, expected) in [
+                (VIEM_STYLE_PROPERTY_CHARACTER_SIZE, 24.),
+                (VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_BEFORE, 10.),
+                (VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_AFTER, 5.),
+            ] {
+                let property = properties.iter().find(|property| property.property == key).unwrap();
+                assert_ne!(property.flags & VIEM_STYLE_PROPERTY_DECLARED, 0, "{format:?} property {key}");
+                assert_eq!(property.declared.number, expected, "{format:?}");
+                assert_eq!(property.effective.number, expected, "{format:?}");
+                assert_eq!(style_arena_text(&export.strings, property.contributor_style_id), "Heading1");
+            }
+            let weight = properties.iter().find(|property| property.property == VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).unwrap();
+            assert_ne!(weight.flags & VIEM_STYLE_PROPERTY_DECLARED, 0, "{format:?}");
+            assert_eq!(weight.declared.enum_value, 700, "{format:?}");
+            let family = properties.iter().find(|property| property.property == VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES).unwrap();
+            assert_eq!(family.flags & VIEM_STYLE_PROPERTY_DECLARED, 0, "parent values stay inherited in {format:?}");
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            assert_eq!(document.revision(), Revision(0));
+        }
+    }
+
+    #[test]
     fn style_sheet_export_is_exact_typed_and_two_pass_without_partial_writes() {
         let handle = register_core(Core::new(Document::new("plain"))).unwrap();
         let mut info = ViemStyleSheetInfoV1::default();
