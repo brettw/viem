@@ -104,7 +104,7 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
         self.inner.get_range(indices, None)
     }
 
-    #[cfg(test)]
+    /// Number of items whose range starts before `offset`, by tree descent.
     pub(super) fn partition_point_start(&self, offset: usize) -> usize {
         self.inner.partition_point_start(offset)
     }

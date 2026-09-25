@@ -436,7 +436,7 @@ impl SyntaxService {
             range.end -= 1;
         }
         if self.current != Some(input.identity()) {
-            self.rebase_input(input.clone(), None);
+            self.rebase_input(input.clone(), None, None);
         }
         if self.cache.iter().any(|r| {
             r.input == input.identity()

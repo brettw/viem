@@ -29,7 +29,7 @@ use crate::document::{
     StyleSheetRevision, TextAnchor,
 };
 use crate::layout::{
-    compute_layout_job, hard_line_ranges, inspect_layout_provider, install_layout_job,
+    compute_layout_job, hard_line_ranges, inspect_layout_provider, install_layout_job, DocumentLayoutChange,
     prepare_layout_job, DocumentLayoutStyles, InstalledLayoutJob, LayoutCancellationToken, LayoutComputationError,
     LayoutCoverage, LayoutEngine, LayoutError, LayoutExecutionContext, LayoutInstallTarget,
     LayoutJobCandidate, LayoutJobError, LayoutJobId, LayoutJobInstallRejection, LayoutJobPriority,
@@ -790,6 +790,57 @@ fn execute_command_plan(
     }
     let step = plan.publish_success(interpreter, document, changed);
     Ok((step, map, presentation))
+}
+
+/// Translate one committed transaction's exact formatted change into the
+/// presentation-line terms a view's layout state rebases with. Lines of the
+/// blocks the change touched, plus one neighbour on each side (paragraph
+/// spacing depends on the following paragraph), may have new style inputs.
+fn document_layout_change(
+    document: &Document,
+    layout: &ViewLayout,
+    map: &PositionMap,
+    flow: bool,
+    local: Option<&crate::document::LocalFormattedChange>,
+) -> DocumentLayoutChange {
+    let Some(local) = local else {
+        return DocumentLayoutChange::Full;
+    };
+    let projection = document.projection();
+    let text_len = projection.text_tree().byte_len();
+    if local.new.end > text_len
+        || map.target_len() != text_len
+        || layout.height_index_hard_line_count() != local.old_line_counts[usize::from(flow)]
+    {
+        return DocumentLayoutChange::Full;
+    }
+    let blocks = projection.blocks_for_region(&local.new);
+    let (start, end) = match (blocks.first(), blocks.last()) {
+        (Some(first), Some(last)) => (
+            first.range.start.min(local.new.start),
+            last.range.end.max(local.new.end),
+        ),
+        _ => (local.new.start, local.new.end),
+    };
+    let (Some(first_line), Some(last_line)) = (
+        projection.presentation_line_at_offset(start, flow),
+        projection.presentation_line_at_offset(end, flow),
+    ) else {
+        return DocumentLayoutChange::Full;
+    };
+    let new_line_count = projection.presentation_line_count(flow);
+    if new_line_count != local.new_line_counts[usize::from(flow)] || last_line >= new_line_count {
+        return DocumentLayoutChange::Full;
+    }
+    DocumentLayoutChange::Local {
+        old_revision: map.source_revision(),
+        new_revision: map.target_revision(),
+        old_hull: local.old.clone(),
+        new_hull: local.new.clone(),
+        old_line_count: local.old_line_counts[usize::from(flow)],
+        new_line_count,
+        invalidated_lines: first_line.saturating_sub(1)..(last_line + 2).min(new_line_count),
+    }
 }
 
 struct View<P: TextMeasurementProvider> {
@@ -2427,8 +2478,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             refresh_observed_metrics(view);
             let requirements = inspect_layout_provider(&view.engine);
             cancel_obsolete_layout_work(view, document_revision, requirements);
+            let rebased = view.layout.is_rebased_to(self.document.revision());
             view.layout
-                .synchronize_document_hard_line_count(hard_line_count, document_is_stale)
+                .synchronize_document_hard_line_count(hard_line_count, document_is_stale && !rebased)
                 .map_err(LayoutError::from)?;
             let caret_offset = view.search_preview_destination(&self.document).unwrap_or_else(|| view
                 .commands
@@ -3025,8 +3077,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             snapshot.document_id != self.document.id()
                 || snapshot.document_revision != document_revision
         });
+        let rebased = staged_layout.is_rebased_to(document_revision);
         staged_layout
-            .synchronize_document_hard_line_count(hard_line_count, document_is_stale)
+            .synchronize_document_hard_line_count(hard_line_count, document_is_stale && !rebased)
             .map_err(LayoutError::from)?;
 
         // Horizontal materialization uses the requested origin during capture;
@@ -3254,7 +3307,20 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     fn rebase_viewport_anchors(&mut self, map: &PositionMap) -> Result<(), CoreError> {
+        let local_change = (map.source_revision() != map.target_revision())
+            .then(|| self.document.layout_change_between(map.source_revision(), map.target_revision()))
+            .flatten();
         for view in self.views.values_mut() {
+            if map.source_revision() != map.target_revision() {
+                let change = document_layout_change(
+                    &self.document,
+                    &view.layout,
+                    map,
+                    view.layout.paragraph_flow(),
+                    local_change.as_ref(),
+                );
+                view.layout.rebase_document_change(&change);
+            }
             view.long_line_checkpoints
                 .rebase(&self.document, map, view.layout.paragraph_flow());
             let Some(current) = view.viewport_anchor else {

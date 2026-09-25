@@ -1062,6 +1062,7 @@ impl Document {
             edit_group_depth: 0,
             edit_group_generation: 0,
             position_map_capture: None,
+            layout_changes: std::collections::VecDeque::new(),
             artifact_binding: None,
             pending_artifact_writes: Default::default(),
             next_artifact_write_token: 1,
@@ -1415,6 +1416,10 @@ impl Document {
         // this transition into the coordinator's short-lived capture before
         // the first authoritative mutation so publication remains infallible.
         let next_position_capture = self.composed_position_capture(&prepared.text_position_map)?;
+        let old_line_counts = [
+            self.projection().presentation_line_count(false),
+            self.projection().presentation_line_count(true),
+        ];
         let history_record = match &prepared.publication {
             PreparedPublication::State(_) => Some((
                 history_transaction_summary(
@@ -1458,6 +1463,35 @@ impl Document {
         };
         self.position_map_capture = next_position_capture;
         self.advance_code_presentation(&prepared.text_position_map);
+        if prepared.after_revision != prepared.before_revision {
+            let splices = prepared.summary.formatted_splices();
+            let local = (prepared.summary.projection_work().scope()
+                == ProjectionWorkScope::RegionalHardLines
+                && !splices.is_empty())
+            .then(|| {
+                let old = splices.iter().map(|s| s.old_range().start).min().unwrap_or(0)
+                    ..splices.iter().map(|s| s.old_range().end).max().unwrap_or(0);
+                let delta = splices.iter().fold(0i128, |sum, s| {
+                    sum + s.inserted_len() as i128 - s.old_range().len() as i128
+                });
+                let new_end = usize::try_from(old.end as i128 + delta).ok()?;
+                Some(super::LocalFormattedChange {
+                    new: old.start..new_end,
+                    old,
+                    old_line_counts,
+                    new_line_counts: [
+                        self.projection().presentation_line_count(false),
+                        self.projection().presentation_line_count(true),
+                    ],
+                })
+            })
+            .flatten();
+            self.record_layout_change(super::LayoutChangeRecord {
+                before: prepared.before_revision,
+                after: prepared.after_revision,
+                local,
+            });
+        }
 
         debug_assert_eq!(self.revision(), prepared.after_revision);
         super::work_statistics::record(|stats| stats.transaction_commits += 1);
@@ -3542,7 +3576,7 @@ impl Document {
             return self.prepare_text_edits_with_patches(logical_edits,Some(patches));
         }
 
-        if self.format().is_rich_text()
+        if self.format().is_wysiwyg()
             && edits.iter().all(|edit| {
                 !edit.payload.text().contains('\n') && edit.payload.break_offsets().is_empty()
             })
@@ -3554,7 +3588,16 @@ impl Document {
                 logical_edits.iter().zip(&edits)
                     .map(|(text, payload)| (text, Some(payload))),
             )?;
-            return self.prepare_text_edits_with_patches(logical_edits, Some(patches));
+            if self.format().is_rich_text() {
+                return self.prepare_text_edits_with_patches(logical_edits, Some(patches));
+            }
+            // Markdown reaches its bounded regional candidates through the same
+            // text-edit preparation. An edit that route cannot verify, such as
+            // a delimiter typed into a fenced list item, keeps the complete
+            // reparse below as its reference behavior.
+            if let Ok(prepared) = self.prepare_text_edits_with_patches(logical_edits.clone(), Some(patches)) {
+                return Ok(prepared);
+            }
         }
 
         let text_edits = logical_edits;
@@ -7879,20 +7922,28 @@ impl Document {
                 hard_lines.clone()
             } else if self.format().is_markdown() {
                 let provenance = self.projection().provenance_for_region(&old_formatted);
-                let (Some(first), Some(last)) = (provenance.first(), provenance.last()) else {
-                    return Ok(None);
+                let (source_start, source_end) = match (provenance.first(), provenance.last()) {
+                    (Some(first), Some(last)) => (first.source.start, last.source.end),
+                    _ => {
+                        // An empty paragraph contributes no provenance span; its
+                        // editable boundary still identifies the physical row.
+                        let Ok(range) = super::rich_text::text_source_range(self, &old_formatted) else {
+                            return Ok(None);
+                        };
+                        (range.start, range.end.max(range.start + 1))
+                    }
                 };
                 let Some(first) = self
                     .state()
                     .source_hard_lines
-                    .line_at_offset(first.source.start)
+                    .line_at_offset(source_start)
                 else {
                     return Ok(None);
                 };
                 let Some(last) = self
                     .state()
                     .source_hard_lines
-                    .line_at_offset(last.source.end.saturating_sub(1))
+                    .line_at_offset(source_end.saturating_sub(1))
                 else {
                     return Ok(None);
                 };

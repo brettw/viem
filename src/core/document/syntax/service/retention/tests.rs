@@ -53,7 +53,7 @@ fn publish(
 fn seeded(input: &SyntaxInputSnapshot, runs: Vec<SyntaxRun>) -> SyntaxService {
     let mut service =
         SyntaxService::with_factory(Arc::new(|| panic!("This test injects results explicitly")));
-    service.rebase_input(input.clone(), None);
+    service.rebase_input(input.clone(), None, None);
     let result = result(&service, input, 0..input.byte_len(), runs, Coverage::Exact);
     assert!(publish(&mut service, result, input));
     service
@@ -85,7 +85,7 @@ fn exact_maps_retain_surviving_text_across_insertions_deletions_and_disjoint_edi
             Splice::new(12..12, 1).unwrap(),
         ],
     );
-    service.rebase_input(next.clone(), Some(&edits));
+    service.rebase_input(next.clone(), Some(&edits), None);
     assert!(
         service.cache.is_empty(),
         "Retained appearance must never satisfy a fresh syntax request"
@@ -108,7 +108,7 @@ fn exact_maps_retain_surviving_text_across_insertions_deletions_and_disjoint_edi
             Splice::new(13..15, 0).unwrap(),
         ],
     );
-    service.rebase_input(final_input.clone(), Some(&edits));
+    service.rebase_input(final_input.clone(), Some(&edits), None);
     assert_eq!(
         service.runs(final_input.identity()),
         vec![
@@ -127,7 +127,7 @@ fn missing_work_keeps_mapped_colors_and_ready_empty_coverage_clears_only_its_reg
     let old = input(1, "red plain blue");
     let mut service = seeded(&old, vec![run(0..3, "Comment"), run(10..14, "Keyword")]);
     let next = input(2, "red plain blue");
-    service.rebase_input(next.clone(), Some(&map(&old, &next, Vec::new())));
+    service.rebase_input(next.clone(), Some(&map(&old, &next, Vec::new())), None);
     let retained = service.runs(next.identity());
     let mut pending = result(&service, &next, 0..14, Vec::new(), Coverage::Missing);
     pending.continuation = true;
@@ -203,6 +203,7 @@ fn retention_requires_exact_document_revision_generation_and_unicode_boundaries(
     service.rebase_input(
         next.clone(),
         Some(&map(&old, &next, vec![Splice::new(8..8, 1).unwrap()])),
+        None,
     );
     assert_eq!(
         service.runs(next.identity()),
@@ -225,6 +226,7 @@ fn retention_requires_exact_document_revision_generation_and_unicode_boundaries(
             Revision(2),
             9,
         )),
+        None,
     );
     assert!(service.runs(unrelated.identity()).is_empty());
 }
@@ -250,7 +252,7 @@ fn large_rope_retention_stays_bounded_to_cached_runs() {
         old.text_tree().splice(middle..middle, "xx").unwrap(),
     );
     let edits = map(&old, &next, vec![Splice::new(middle..middle, 2).unwrap()]);
-    service.rebase_input(next.clone(), Some(&edits));
+    service.rebase_input(next.clone(), Some(&edits), None);
     assert_eq!(service.runs(next.identity()).len(), 3);
     assert_eq!(
         service.runs(next.identity())[1].range,
@@ -279,7 +281,7 @@ fn current_results_and_retained_colors_share_one_run_memory_budget() {
         .collect();
     let mut service = seeded(&old, runs);
     let next = input(2, "abcdefgh");
-    service.rebase_input(next.clone(), Some(&map(&old, &next, Vec::new())));
+    service.rebase_input(next.clone(), Some(&map(&old, &next, Vec::new())), None);
     assert_eq!(service.retained.len(), 3);
     let mut replacement = run(6..7, "String");
     replacement.origin = "y".repeat(MAX_CACHED_RUN_BYTES / 2);
