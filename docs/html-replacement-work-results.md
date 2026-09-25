@@ -17,8 +17,8 @@ The counter profiles use the mock text measurement provider. Native macOS
 timings are reported separately below; Windows latency was not measured.
 
 ```sh
-MACOSX_DEPLOYMENT_TARGET=26.0 cargo test --locked --test html_replacement_work
-MACOSX_DEPLOYMENT_TARGET=26.0 cargo test --locked --test html_replacement_work -- --ignored --nocapture
+MACOSX_DEPLOYMENT_TARGET=26.0 cargo test --locked --test all html_replacement_work::
+MACOSX_DEPLOYMENT_TARGET=26.0 cargo test --locked --test all html_replacement_work:: -- --ignored --nocapture
 ```
 
 `HTML_REPLACEMENT_PROFILE_COUNTS=1000,10000,100000` selects paragraph counts

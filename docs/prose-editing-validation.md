@@ -41,16 +41,16 @@ Paragraphs** option, HTML trailing blank lines, and inline-formatting exit.
 
 ## Automated coverage
 
-- `tests/paragraph_flow.rs` and coordinator composition tests: source-flow
+- `tests/all/paragraph_flow.rs` and coordinator composition tests: source-flow
   geometry and paragraph identity across distant checkpoints, resize, and IME;
   bounded shaping in 300 KB paragraphs, exact cancellation, and cache reuse.
-- `tests/ex_sort.rs`: grammar, ranges, reverse/unique/numeric/regex keys, source
+- `tests/all/ex_sort.rs`: grammar, ranges, reverse/unique/numeric/regex keys, source
   preservation, rich paragraphs, Unicode, encodings and mixed delimiters,
   stale requests, registers, history, anchors, and a 10,000-row sort.
-- `tests/markdown_typing_boundaries.rs`: source caret exits from nested/triple
+- `tests/all/markdown_typing_boundaries.rs`: source caret exits from nested/triple
   bold and italic delimiters, mid-run formatting splits, Unicode, malformed
   input, exact undo/redo, and local work in a large source buffer.
-- `tests/html_typing_boundaries.rs` and `tests/pending_typing_style.rs`: empty
+- `tests/all/html_typing_boundaries.rs` and `tests/all/pending_typing_style.rs`: empty
   HTML, trailing rows, nested inline context, source caret movement, pending
   styles, Unicode, and exact undo/redo.
 - `src/mac/Editor/Tests/EVProseQualityTests.swift`: native menu state and editing
