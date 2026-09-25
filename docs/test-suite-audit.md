@@ -12,7 +12,7 @@ predate these removals; they measure the earlier speedups.
 
 Follow-up validation passed:
 
-- `cargo test --locked --lib --test vim_command_matrix --test ffi_surface --test core_acceptance --test projection_open_work --test vim_exact_conformance`:
+- `cargo test --locked --lib` and `cargo test --locked --test all -- vim_command_matrix:: ffi_surface:: core_acceptance:: projection_open_work:: vim_exact_conformance::`:
   1,497 passed, 0 failed, 3 existing ignored tests.
 - `scripts/test-mac.sh --filter 'EVFunctionKeyMappingTests|EVLaunchArgumentsTests'`:
   23 passed, 0 failed; ABI validation, runtime verification, app packaging, and
@@ -202,13 +202,13 @@ below include the integration binary, module, or XCTest class.
 | `EVEditorCompositionTests.testFrontendCompositionInstalls` | Calls `EVEditorComposition.install()` with no assertions. | A stand-alone no-crash smoke invocation of global installation. Baseline: below the native timer’s 1 ms resolution. | Launch fixtures and richer frontend/AppShell integration exercise installation and its observable behavior. |
 | `EVFunctionKeyMappingTests.testUnmodifiedFunctionKeyIsMappedInsteadOfInsertedAsPrivateUseText` | The broader modifier test repeats F2 → `l`, expected cursor 1, unchanged text/dirty state, and no command error. | Isolation with no other mappings installed, and immediate text/dirty-state checks after F2; the broader test checks those states after all six inputs. Baseline: 0.050 s. | `testFunctionModifiersAndHighFunctionNumbersReachTheirDistinctMappings` includes the same input/output case, plus modifier variants and F35. |
 
-Sources: `tests/vim_command_matrix.rs`, `tests/ffi_surface.rs`,
+Sources: `tests/all/vim_command_matrix.rs`, `tests/all/ffi_surface.rs`,
 `src/core/document/mod.rs`, `src/mac/Editor/Tests/EVEditorCompositionTests.swift`,
 and `src/mac/Editor/Tests/EVFunctionKeyMappingTests.swift`.
 
 ## Removed tests — status-only command matrices
 
-The removed matrix helper in `tests/vim_command_matrix.rs` checked that dispatch
+The removed matrix helper in `tests/all/vim_command_matrix.rs` checked that dispatch
 produced no error and finished as either `Complete` **or `Cancelled`**. It did
 not check final text, cursor, selections, registers, or mode. An implementation
 that returned `Complete` without doing the command could pass.

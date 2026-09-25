@@ -37,7 +37,7 @@ The invariant error is intentionally still available for defects and unrepresent
 
 ## Validation
 
-`tests/markdown_deletion_audit.rs` exercises every legal deletion range across 30 Markdown fixtures and every range with ordinary text, space, and backtick replacements across seven fixtures. It also covers:
+`tests/all/markdown_deletion_audit.rs` exercises every legal deletion range across 30 Markdown fixtures and every range with ordinary text, space, and backtick replacements across seven fixtures. It also covers:
 
 - Visual `v` selection followed by named-register `x` across wrapped physical lines, exact undo/redo, and reopened source;
 - final inline-code grapheme deletion through Normal `x` and Insert Backspace, including emoji and combining-safe text positions;
@@ -45,13 +45,13 @@ The invariant error is intentionally still available for defects and unrepresent
 - exact patch locality and reopened projection across UTF-8, Latin-1, UTF-16LE, UTF-16BE, LF, CRLF, and CR files;
 - every legal deletion range across HTML/RTF inline scopes, paragraphs, entities, and atomic objects.
 
-`tests/link_edit_verification.rs` additionally covers HTML set/clear formatting with Link defaults present or deleted, destination retention, undo, and source reprojection in all four link formats. It pins the independence of numeric base weight and relative bold when clearing HTML declarations.
+`tests/all/link_edit_verification.rs` additionally covers HTML set/clear formatting with Link defaults present or deleted, destination retention, undo, and source reprojection in all four link formats. It pins the independence of numeric base weight and relative bold when clearing HTML declarations.
 
 Validation passed across the 19 focused editing targets (123 tests at the initial run), followed by the final affected-target rerun including all seven new deletion tests. The Link integration changes also run with the existing `rich_direct_properties` and `typography` targets. Reproduce the new coverage with:
 
 ```sh
-cargo test --offline --test markdown_deletion_audit --test link_edit_verification
-cargo test --offline --test rich_direct_properties --test typography --test paragraph_merge_adapters --test paragraph_editing_keys --test markdown_inline_breaks --test markdown_block_quotes --test fuzz_markdown_edits
+cargo test --offline --test all -- markdown_deletion_audit:: link_edit_verification::
+cargo test --offline --test all -- rich_direct_properties:: typography:: paragraph_merge_adapters:: paragraph_editing_keys:: markdown_inline_breaks:: markdown_block_quotes:: fuzz_markdown_edits::
 ```
 
 ## Integrated validation

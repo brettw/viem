@@ -261,7 +261,7 @@ below. No additional failures appeared. Local follow-up logs:
 
 The remaining Rust failure is
 `projection_fuzz_regressions::markdown_source_fence_edit_requires_explicit_source_intent_when_breaks_reinterpret`.
-At `tests/projection_fuzz_regressions.rs:541`, the test expects rejection but
+At `tests/all/projection_fuzz_regressions.rs:541`, the test expects rejection but
 receives a prepared transaction. The same failure was reproduced offline from
 an isolated archive of clean `7537b4f`, using a separate target directory. It was
 not changed or hidden during this refactor; choosing the intended source-edit

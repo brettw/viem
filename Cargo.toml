@@ -37,6 +37,6 @@ unicode-width = "=0.1.14"
 opt-level = 1
 debug-assertions = true
 overflow-checks = true
-# Keep debug info in split objects, as macOS does by default. Embedding it
-# links a full copy of the core's debug info into each of ~200 test binaries.
+# Keep debug info in split objects, as macOS does by default, rather than
+# linking a copy of the core's debug info into each test executable.
 split-debuginfo = "unpacked"

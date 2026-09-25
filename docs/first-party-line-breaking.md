@@ -68,11 +68,11 @@ Reproduce the Rust and native checks:
 ```sh
 python3 scripts/generate-unicode-break-data.py --check
 cargo test --offline --lib
-cargo test --offline --no-fail-fast \
-  --test first_party_line_breaks --test layout_jobs --test layout_cache_bounds \
-  --test layout_direction --test layout_list_decorations --test command_layout_viewport \
-  --test view_line_modes --test viewport_horizontal_range --test viewport_end \
-  --test paragraph_flow --test html_source_layout --test markdown_source_layout \
-  --test prose_block_layout --test input_layout_atomicity --test vim_command_matrix
+cargo test --offline --no-fail-fast --test all -- \
+  first_party_line_breaks:: layout_jobs:: layout_cache_bounds:: \
+  layout_direction:: layout_list_decorations:: command_layout_viewport:: \
+  view_line_modes:: viewport_horizontal_range:: viewport_end:: \
+  paragraph_flow:: html_source_layout:: markdown_source_layout:: \
+  prose_block_layout:: input_layout_atomicity:: vim_command_matrix::
 scripts/test-mac.sh
 ```

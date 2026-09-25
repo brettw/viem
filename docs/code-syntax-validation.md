@@ -144,7 +144,7 @@ That complete Rust run had one pre-existing rich-caret failure:
 `rich_caret_boundaries::every_visible_rich_caret_boundary_accepts_typing_with_either_affinity`.
 It also fails in an isolated, unmodified archive of baseline commit
 `dfda6f098a427e4269b5d0e1eba997cc8fc44b63`, using its locked dependencies and
-`cargo test --offline --test rich_caret_boundaries every_visible_rich_caret_boundary_accepts_typing_with_either_affinity`.
+`cargo test --offline --test all rich_caret_boundaries::every_visible_rich_caret_boundary_accepts_typing_with_either_affinity`.
 Both runs reject inserting `X`, a space, or `é` at the upstream start of a
 Markdown list body beginning with backticks with `FormattedPayloadCannotReproject`.
 That syntax change did not alter that source-reprojection behavior; its
